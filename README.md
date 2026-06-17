@@ -34,13 +34,22 @@ Lines originally owned their endpoint coordinates directly. Stage 2 replaced thi
 - `backend/tests/test_stage2a_solver.py`: defines two 2D points on a workplane, a single distance constraint between them, calls `solve()`, and asserts the solved points are exactly that distance apart - plus a parametrized variant that re-solves from three different initial guesses for the second point, confirming the solver converges to a valid solution each time, not just once by luck.
 - Does **not** touch the Sketch/Point/Line/Profile model - this is purely a de-risking spike, same as Stage 0 was for OCCT. How constraints attach to the existing Sketch entities is a separate, not-yet-started planning step.
 
+**Stage 2b (wire `py-slvs` into the Sketch model) — complete.**
+
+- `backend/app/sketch/constraints.py`: `Constraint` - a generic base type mirroring the `SketchEntity` pattern from Stage 2 (abstract `type`, abstract `point_ids()`) - and `DistanceConstraint` (two Point ids + a target distance), the only concrete type so far. Constraints are independent objects that reference Point ids directly; `Line`/`SketchEntity` have no knowledge of constraints referencing their points. Each concrete type implements `add_to_solver(builder)`, expressing itself via a small `SolverBuilder` protocol rather than importing `py_slvs` directly - this keeps the constraint model itself free of any solver-library dependency, same as `models.py` stays free of OCCT/FastAPI specifics.
+- `backend/app/sketch/solver.py`: `solve_sketch(sketch)` builds the py-slvs problem from a Sketch's Points + Constraints (via each Constraint's `add_to_solver`), solves, and writes the result back onto `sketch.points` - even on non-convergence (best effort). Returns a `SolveResult` with `converged`, the raw `result_code` and `dof` (both genuine py-slvs diagnostics), and two distinct id lists: `blamed_constraint_ids` (the most-recently-added constraint, **by convention only** - not a diagnosed root cause) and `solver_reported_failed_constraint_ids` (py-slvs's own `Failed` list, translated back to our constraint ids). Empirically, on an inconsistent system (e.g. a triangle whose three target distances violate the triangle inequality), py-slvs's `Failed` lists **every** constraint in the system, not a single culprit - confirming py-slvs has no precise per-constraint attribution to fall back on, which is why blame is a stated convention rather than dressed up as a diagnosis. A future, more expensive subset-removal diagnosis (retry with one constraint removed at a time) is intentionally not built yet; `blamed_constraint_ids` is already a list so it can grow into that without a response-shape change.
+- `Sketch` gained a `constraints: dict[str, Constraint]` field and `add_distance_constraint()`, owned per-sketch exactly like Points/entities - constraints never cross sketch boundaries.
+- Solving is explicit and batched: `PATCH .../points/{id}` (and `Line.set_length`) only ever move a Point as the next initial guess - nothing solves automatically. A separate `POST .../solve` is what actually runs py-slvs and commits results, modelling "drag, then release."
+- New endpoints: `POST/GET /sketch/sketches/{id}/constraints`, `DELETE /sketch/sketches/{id}/constraints/{constraint_id}`, `POST /sketch/sketches/{id}/solve`.
+- `backend/tests/test_stage2b_solver_integration.py`: creating a constraint, solving a simple satisfiable case, solving through an existing Line's Points (the actual Stage 2 <-> Stage 2a wiring check), an intentionally over-constrained triangle (confirms non-convergence is reported rather than crashing or silently returning a wrong answer, the newest constraint is blamed by convention, and genuine py-slvs diagnostics are present), and independent constraints across multiple sketches - plus the equivalent checks over the HTTP API.
+
 CI (`.github/workflows/backend-verify.yml`) builds the backend image and runs the full test suite on both `linux/amd64` and `linux/arm64`.
 
 ## Layout
 
 ```
 backend/        FastAPI + pythonocc-core service (Stage 0-3)
-  app/sketch/    Sketch module (Point/Line entities, planes, Profile detection - Stage 2)
+  app/sketch/    Sketch module (Point/Line entities, planes, Profile detection, Constraints/solver - Stage 2/2b)
 docs/           Project brief and design docs
 .github/        CI workflows
 ```
@@ -48,4 +57,4 @@ docs/           Project brief and design docs
 ## Next steps
 
 - Stage 3: dependency graph (dirty-marking/recompute) + Extrude module + API layer, deploy behind Cloudflare Tunnel / Access.
-- Plan how `py-slvs` constraints attach to the Sketch/Point/Line model (not started - separate piece of work from the Stage 2a spike above).
+- Possible future enhancement: precise over-constraint diagnosis (e.g. retry-with-one-constraint-removed), as opposed to today's "blame the newest constraint" convention.

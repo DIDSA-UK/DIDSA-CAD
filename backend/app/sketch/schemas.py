@@ -86,3 +86,31 @@ class ProfileDetectionResponse(BaseModel):
     profile: ProfileResponse | None = None
     branch_point_ids: list[str] = []
     loops: list[ProfileResponse] = []
+
+
+class DistanceConstraintCreate(BaseModel):
+    point_a_id: str
+    point_b_id: str
+    distance: float
+
+
+# DistanceConstraint is the only Constraint type for now - this becomes a
+# discriminated union (like SketchEntityResponse) once more are added.
+ConstraintCreate = DistanceConstraintCreate
+
+
+class ConstraintResponse(BaseModel):
+    type: Literal["distance"] = "distance"
+    id: str
+    point_a_id: str
+    point_b_id: str
+    distance: float
+
+
+class SolveResultResponse(BaseModel):
+    converged: bool
+    dof: int
+    result_code: int
+    blamed_constraint_ids: list[str]
+    solver_reported_failed_constraint_ids: list[str]
+    detail: str

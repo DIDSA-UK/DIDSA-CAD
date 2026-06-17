@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.sketch.constraints import Constraint, DistanceConstraint
+
 
 class Plane(str, Enum):
     """The three fixed reference planes a Sketch can live on, all through
@@ -104,6 +106,7 @@ class Sketch:
     plane: Plane
     points: dict[str, Point] = field(default_factory=dict)
     entities: dict[str, SketchEntity] = field(default_factory=dict)
+    constraints: dict[str, Constraint] = field(default_factory=dict)
 
     def add_point(self, x: float, y: float) -> Point:
         point = Point(id=str(uuid.uuid4()), x=x, y=y)
@@ -139,3 +142,20 @@ class Sketch:
 
     def lines(self) -> list[Line]:
         return [entity for entity in self.entities.values() if isinstance(entity, Line)]
+
+    def add_distance_constraint(
+        self, point_a_id: str, point_b_id: str, distance: float
+    ) -> DistanceConstraint:
+        if point_a_id not in self.points:
+            raise KeyError(point_a_id)
+        if point_b_id not in self.points:
+            raise KeyError(point_b_id)
+
+        constraint = DistanceConstraint(
+            id=str(uuid.uuid4()),
+            point_a_id=point_a_id,
+            point_b_id=point_b_id,
+            distance=distance,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint

@@ -39,7 +39,13 @@ Each module is independent and only depends on well-defined inputs/outputs — n
 - Entities reference `Point`s by id rather than owning coordinates directly. Two entities connect (e.g. to form a rectangle corner) only when deliberately created referencing the same `Point` id — there is no coordinate-matching or tolerance-based auto-merge of coincident Points.
 - Entity type for v1: **Line** only (references a start and end `Point`, plus a derived length dimension). Entities are built on a generic base (`SketchEntity`) so future entities (circle, arc, etc.) are added as new entity types without changing how Sketch, Profile, or Extrude work.
 - Editing the length dimension moves the end `Point` (direction preserved). Since Points are shared objects, this also moves every other entity referencing that Point — this is the natural and expected behaviour of a shared Point, not a special case.
-- No constraint solver in v1 (no coincident/tangent/parallel constraints) — dimensions directly drive raw coordinates.
+- A geometric constraint solver (`py-slvs`, a SolveSpace-derived 2D/3D solver) is now wired in ahead of the original v1 plan — see Section 4.2a.
+
+### 4.2a Constraint Solving
+- `Constraint` is a generic base type (mirroring `SketchEntity`), independent of and decoupled from entities — constraints reference `Point` ids directly, and `Line`/`SketchEntity` have no knowledge of constraints that reference their points. `DistanceConstraint` (two Point ids + a target distance) is the only concrete type so far; future types (angle, coincident, parallel, ...) slot in the same way Circle/Arc will for entities.
+- Each `Sketch` owns its own constraints, same as its Points/entities — constraints never cross sketch boundaries.
+- Solving is explicit and batched, never automatic: editing a `Point` (directly, or via a Line's length) only updates its position as the next initial guess. A dedicated solve action is what actually runs the solver and commits the result — this models "drag, then release" without needing any UI-level drag state on the server.
+- Over-constrained or otherwise unsatisfiable systems are solved anyway, never rejected — the response reports whether the solve fully converged. When it doesn't, the most-recently-added constraint is flagged as the conventional "blame" target, purely as a pragmatic UX heuristic (point the user at *something* to remove), **not** a mathematically diagnosed root cause. Genuine solver diagnostics (degrees of freedom, the solver's own raw return code, and the solver's own failed-constraint report) are reported alongside it. Empirically, the solver's own failed-constraint report tends to list every constraint in an inconsistent system rather than a single culprit, which is why it isn't used for blame. A more precise diagnosis (e.g. retrying with one constraint removed at a time) is a possible future enhancement, not yet implemented.
 
 ### 4.2 Profile Detection
 - Takes a Sketch's entities and determines whether they form exactly one closed loop, via each entity's two connected Point ids — it has no knowledge of how the entities were created (e.g. it doesn't know "Line", only "an entity that connects two Points").
@@ -123,7 +129,8 @@ Render the returned extrude mesh; verify it updates live when the sketch changes
 ## 9. Explicitly Out of Scope for v1 (Future Modules)
 
 - Circle and Arc sketch entities
-- Constraint solving (coincident, tangent, parallel, etc.)
+- Constraint types beyond distance (coincident, tangent, parallel, angle, etc.) — see Section 4.2a for what's now in scope
+- Precise root-cause diagnosis of over-constrained systems (e.g. subset-removal retry) — see Section 4.2a
 - Revolve module
 - Fillet/Chamfer
 - Boolean operations (union/subtract/intersect)
