@@ -150,6 +150,8 @@ class Sketch:
             raise KeyError(point_a_id)
         if point_b_id not in self.points:
             raise KeyError(point_b_id)
+        if point_a_id == point_b_id:
+            raise ValueError("A distance constraint cannot reference the same point twice")
 
         constraint = DistanceConstraint(
             id=str(uuid.uuid4()),

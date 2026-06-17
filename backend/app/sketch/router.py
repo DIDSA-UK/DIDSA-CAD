@@ -190,6 +190,8 @@ def create_constraint(sketch_id: str, payload: DistanceConstraintCreate) -> Cons
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _constraint_response(constraint)
 
 

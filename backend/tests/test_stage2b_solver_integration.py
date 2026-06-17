@@ -32,6 +32,13 @@ def test_add_distance_constraint_with_unknown_point_raises():
         sketch.add_distance_constraint(a.id, "does-not-exist", 10.0)
 
 
+def test_add_distance_constraint_rejects_same_point_twice():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    with pytest.raises(ValueError):
+        sketch.add_distance_constraint(a.id, a.id, 10.0)
+
+
 def test_solving_two_points_satisfies_distance_constraint():
     sketch = Sketch(id="s", plane=Plane.XY)
     a = sketch.add_point(0.0, 0.0)
@@ -175,6 +182,16 @@ def test_create_constraint_with_unknown_point_is_404():
         json={"point_a_id": a["id"], "point_b_id": "does-not-exist", "distance": 1.0},
     )
     assert response.status_code == 404
+
+
+def test_create_constraint_rejects_same_point_twice_over_the_api():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": a["id"], "distance": 1.0},
+    )
+    assert response.status_code == 400
 
 
 def test_list_constraints_over_the_api():
