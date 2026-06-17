@@ -1,42 +1,141 @@
 import math
-from dataclasses import dataclass
+import uuid
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
 
-Point = tuple[float, float]
+
+class Plane(str, Enum):
+    """The three fixed reference planes a Sketch can live on, all through
+    the origin. Arbitrary/custom planes are explicitly deferred."""
+
+    XY = "XY"
+    XZ = "XZ"
+    YZ = "YZ"
 
 
 @dataclass
-class Line:
-    """A straight Sketch entity defined by two endpoints.
+class Point:
+    """An (x, y) coordinate in a Sketch's local 2D space, with its own id.
 
-    Knows nothing about Profile, Extrude, or any other downstream feature
-    (per the project brief's modularity principle) - it only manages its
-    own endpoints and derived length.
+    Points are shared explicitly: two Lines reference the same Point only
+    when deliberately created with that Point's id. There is no
+    coordinate-matching or auto-merge of coincident Points.
     """
 
     id: str
-    start: Point
-    end: Point
+    x: float
+    y: float
+
+
+class SketchEntity(ABC):
+    """Base type for anything that can live in a Sketch's entity collection.
+
+    Line is the only concrete entity today; Circle/Arc will subclass this
+    later without requiring changes to Sketch, Profile detection, or the
+    API layer.
+    """
+
+    id: str
 
     @property
-    def length(self) -> float:
-        return math.hypot(self.end[0] - self.start[0], self.end[1] - self.start[1])
+    @abstractmethod
+    def type(self) -> str:
+        ...
 
-    @classmethod
-    def from_length_angle(cls, id: str, start: Point, length: float, angle: float) -> "Line":
-        end = (start[0] + length * math.cos(angle), start[1] + length * math.sin(angle))
-        return cls(id=id, start=start, end=end)
+    def endpoint_point_ids(self) -> tuple[str, str] | None:
+        """The (start, end) Point ids this entity connects, if it has that
+        notion at all. Closed-loop detection is built on this method alone,
+        so it knows nothing about Line specifically - any future entity
+        (e.g. Arc) that connects two Points slots in automatically."""
+        return None
 
-    def set_endpoints(self, start: Point, end: Point) -> None:
-        self.start = start
-        self.end = end
 
-    def set_length(self, length: float) -> None:
-        """Move the second endpoint to match the given length, preserving
-        the first endpoint and the current direction."""
-        dx = self.end[0] - self.start[0]
-        dy = self.end[1] - self.start[1]
+@dataclass
+class Line(SketchEntity):
+    """A straight Sketch entity defined by two referenced Points (not
+    coordinates). Editing the length dimension moves the end Point,
+    preserving direction from the start Point - since Points are shared
+    objects, this moves every other Line that references the same end
+    Point too, which is the natural and expected behaviour of a shared
+    Point.
+    """
+
+    id: str
+    start_point_id: str
+    end_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "line"
+
+    def endpoint_point_ids(self) -> tuple[str, str]:
+        return (self.start_point_id, self.end_point_id)
+
+    def length(self, points: dict[str, Point]) -> float:
+        start = points[self.start_point_id]
+        end = points[self.end_point_id]
+        return math.hypot(end.x - start.x, end.y - start.y)
+
+    def set_length(self, points: dict[str, Point], length: float) -> None:
+        start = points[self.start_point_id]
+        end = points[self.end_point_id]
+        dx = end.x - start.x
+        dy = end.y - start.y
         current_length = math.hypot(dx, dy)
         if current_length == 0:
             raise ValueError("Cannot set length: line direction is undefined (zero-length line)")
         scale = length / current_length
-        self.end = (self.start[0] + dx * scale, self.start[1] + dy * scale)
+        end.x = start.x + dx * scale
+        end.y = start.y + dy * scale
+
+
+@dataclass
+class Sketch:
+    """An independent 2D sketch on one of the three fixed reference planes.
+
+    Each Sketch owns its own Points and entities - nothing is shared
+    between Sketches. The plane is stored but not yet used for any 3D
+    transform/embedding (that becomes relevant once there's a 3D viewport
+    and/or Extrude needs it).
+    """
+
+    id: str
+    plane: Plane
+    points: dict[str, Point] = field(default_factory=dict)
+    entities: dict[str, SketchEntity] = field(default_factory=dict)
+
+    def add_point(self, x: float, y: float) -> Point:
+        point = Point(id=str(uuid.uuid4()), x=x, y=y)
+        self.points[point.id] = point
+        return point
+
+    def add_line(
+        self,
+        start_point_id: str,
+        end_point_id: str | None = None,
+        *,
+        length: float | None = None,
+        angle: float | None = None,
+    ) -> Line:
+        """Add a Line from an existing start Point to either an existing
+        end Point (explicit sharing) or a new Point computed from a length
+        and angle (radians from the +x axis)."""
+        start = self.points[start_point_id]
+        if end_point_id is None:
+            end_point_id = self.add_point(
+                start.x + length * math.cos(angle),
+                start.y + length * math.sin(angle),
+            ).id
+        elif end_point_id not in self.points:
+            raise KeyError(end_point_id)
+
+        if start_point_id == end_point_id:
+            raise ValueError("A line cannot start and end at the same point")
+
+        line = Line(id=str(uuid.uuid4()), start_point_id=start_point_id, end_point_id=end_point_id)
+        self.entities[line.id] = line
+        return line
+
+    def lines(self) -> list[Line]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Line)]
