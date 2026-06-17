@@ -35,15 +35,16 @@ This is a learning project as well as a tool — architecture decisions favour c
 Each module is independent and only depends on well-defined inputs/outputs — no module reaches into another's internals.
 
 ### 4.1 Sketch Module
-- Entity type for v1: **Line** only (two endpoints + a derived length dimension).
-- Editing the length dimension recalculates one endpoint (direction preserved).
-- Future entities (circle, arc, etc.) are added as new entity types without changing how Profile or Extrude work.
+- A `Sketch` is an independent collection of `Point`s and entities, created on one of three fixed reference planes (`XY`, `XZ`, `YZ`, all through the origin). Multiple `Sketch`es can exist; they never share Points or entities. Arbitrary/custom planes and 3D embedding of plane coordinates into world space are deferred.
+- Entities reference `Point`s by id rather than owning coordinates directly. Two entities connect (e.g. to form a rectangle corner) only when deliberately created referencing the same `Point` id — there is no coordinate-matching or tolerance-based auto-merge of coincident Points.
+- Entity type for v1: **Line** only (references a start and end `Point`, plus a derived length dimension). Entities are built on a generic base (`SketchEntity`) so future entities (circle, arc, etc.) are added as new entity types without changing how Sketch, Profile, or Extrude work.
+- Editing the length dimension moves the end `Point` (direction preserved). Since Points are shared objects, this also moves every other entity referencing that Point — this is the natural and expected behaviour of a shared Point, not a special case.
 - No constraint solver in v1 (no coincident/tangent/parallel constraints) — dimensions directly drive raw coordinates.
 
 ### 4.2 Profile Detection
-- Takes a set of Sketch entities and determines whether they form a closed loop.
+- Takes a Sketch's entities and determines whether they form exactly one closed loop, via each entity's two connected Point ids — it has no knowledge of how the entities were created (e.g. it doesn't know "Line", only "an entity that connects two Points").
+- Reports four distinct outcomes: a single closed loop (produces an ordered `Profile`), no loop (open chain or no connectable entities), a branch/T-junction (a Point used by 3+ entities), or multiple disjoint loops within one sketch.
 - Outputs a closed wire/profile usable by any downstream feature (Extrude, Revolve, etc.).
-- Knows nothing about how the entities were created.
 
 ### 4.3 Extrude Module
 - Takes a closed Profile + a height value.
@@ -102,14 +103,14 @@ Each module is independent and only depends on well-defined inputs/outputs — n
 **Stage 0 — Environment**
 Confirm OCCT + pythonocc-core build and run inside a Docker container on the Pi 5 (arm64). No application code yet. This is the de-risking step — confirm before proceeding.
 
-**Stage 1 — Sketch module (backend only)**
-Implement the Line entity with endpoint coordinates and a derived length dimension. Test via direct API calls (e.g. Postman/curl) — no UI yet.
+**Stage 1 — Sketch module (backend only, first pass)**
+Implement the Line entity with endpoint coordinates and a derived length dimension. Test via direct API calls (e.g. Postman/curl) — no UI yet. *(Superseded by Stage 2 — Lines no longer own coordinates directly.)*
 
-**Stage 2 — Profile + dependency graph**
-Implement closed-loop detection (Profile) and the dependency graph connecting Sketch → Profile → Extrude, including dirty-marking and auto-recompute.
+**Stage 2 — Sketcher foundation + Profile**
+Rework the Sketch data model before building Extrude: `Point` entities, a generic `SketchEntity` base, the three fixed reference planes, multiple independent Sketches, and closed-loop detection (Profile) — all without a dependency graph yet.
 
-**Stage 3 — Extrude module + API layer**
-Implement the Extrude module consuming a Profile. Wrap Sketch/Profile/Extrude behind an HTTP/WebSocket API. Containerize and expose via the existing Cloudflare Tunnel setup under a new `snail-shell.uk` subdomain, behind Cloudflare Access.
+**Stage 3 — Dependency graph + Extrude module + API layer**
+Implement the dependency graph connecting Sketch → Profile → Extrude, including dirty-marking and auto-recompute, and the Extrude module consuming a Profile. Wrap Sketch/Profile/Extrude behind an HTTP/WebSocket API. Containerize and expose via the existing Cloudflare Tunnel setup under a new `snail-shell.uk` subdomain, behind Cloudflare Access.
 
 **Stage 4 — Flutter client: 2D canvas**
 Build the cursor-based sketch canvas (drag-to-move cursor, Click button to commit points), dimension editing UI, talking to the live API.
