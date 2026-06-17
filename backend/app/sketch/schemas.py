@@ -1,52 +1,88 @@
+from typing import Literal
+
 from pydantic import BaseModel, model_validator
 
+from app.sketch.models import Plane
+from app.sketch.profile import ProfileStatus
 
-class PointModel(BaseModel):
+
+class SketchCreate(BaseModel):
+    plane: Plane
+
+
+class SketchResponse(BaseModel):
+    id: str
+    plane: Plane
+
+
+class PointCreate(BaseModel):
+    x: float
+    y: float
+
+
+class PointUpdate(BaseModel):
+    x: float
+    y: float
+
+
+class PointResponse(BaseModel):
+    id: str
     x: float
     y: float
 
 
 class LineCreate(BaseModel):
-    """Create a line either from two endpoints, or from a start point plus
-    a length and direction angle (radians, measured from the +x axis)."""
+    """Create a line from an existing start Point, plus either an existing
+    end Point's id (explicit sharing - no coordinate-matching/auto-merge)
+    or a length and direction angle (radians from the +x axis), which
+    creates a new end Point."""
 
-    start: PointModel
-    end: PointModel | None = None
+    start_point_id: str
+    end_point_id: str | None = None
     length: float | None = None
     angle: float | None = None
 
     @model_validator(mode="after")
     def check_creation_mode(self) -> "LineCreate":
-        if self.end is not None:
+        if self.end_point_id is not None:
             if self.length is not None or self.angle is not None:
-                raise ValueError("Provide either 'end', or 'length' and 'angle', not both")
+                raise ValueError("Provide either 'end_point_id', or 'length' and 'angle', not both")
         elif self.length is None or self.angle is None:
-            raise ValueError("Provide either 'end', or both 'length' and 'angle'")
+            raise ValueError("Provide either 'end_point_id', or both 'length' and 'angle'")
         return self
 
 
 class LineUpdate(BaseModel):
-    """Update a line either by setting its length (recalculates the second
-    endpoint) or by setting both endpoints directly."""
+    """Update a line's length - the end Point moves along the existing
+    direction. To move an endpoint directly, update the Point itself
+    (PATCH .../points/{point_id}); since Points are shared, that moves
+    every Line referencing it."""
 
-    start: PointModel | None = None
-    end: PointModel | None = None
-    length: float | None = None
-
-    @model_validator(mode="after")
-    def check_update_mode(self) -> "LineUpdate":
-        has_endpoints = self.start is not None or self.end is not None
-        if has_endpoints and self.length is not None:
-            raise ValueError("Provide either endpoints or length, not both")
-        if has_endpoints and (self.start is None or self.end is None):
-            raise ValueError("Updating endpoints requires both 'start' and 'end'")
-        if not has_endpoints and self.length is None:
-            raise ValueError("Provide either endpoints or a length to update")
-        return self
-
-
-class LineResponse(BaseModel):
-    id: str
-    start: PointModel
-    end: PointModel
     length: float
+
+
+# `type` is a discriminator so that when Circle/Arc entities are added,
+# the entity collection response becomes Union[LineResponse, CircleResponse, ...]
+# without restructuring the API layer.
+class LineResponse(BaseModel):
+    type: Literal["line"] = "line"
+    id: str
+    start_point_id: str
+    end_point_id: str
+    length: float
+
+
+SketchEntityResponse = LineResponse
+
+
+class ProfileResponse(BaseModel):
+    point_ids: list[str]
+    line_ids: list[str]
+
+
+class ProfileDetectionResponse(BaseModel):
+    status: ProfileStatus
+    detail: str
+    profile: ProfileResponse | None = None
+    branch_point_ids: list[str] = []
+    loops: list[ProfileResponse] = []
