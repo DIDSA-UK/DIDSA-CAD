@@ -1,4 +1,4 @@
-name: Stage 0 - verify OCCT build
+name: Backend - build and test
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - "**"
     paths:
       - "backend/**"
-      - ".github/workflows/stage0-verify.yml"
+      - ".github/workflows/backend-verify.yml"
   pull_request:
     paths:
       - "backend/**"
@@ -36,8 +36,8 @@ jobs:
           tags: didsa-cad-backend:test
           load: true
 
-      - name: Run OCCT smoke tests inside container
+      - name: Run backend tests inside container
         run: |
           docker run --rm --platform ${{ matrix.platform }} \
             didsa-cad-backend:test \
-            python -m pytest tests/test_stage0_occt.py -v
+            python -m pytest tests/ -v
