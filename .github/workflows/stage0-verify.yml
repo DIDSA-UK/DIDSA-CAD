@@ -1,0 +1,43 @@
+name: Stage 0 - verify OCCT build
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "backend/**"
+      - ".github/workflows/stage0-verify.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          platforms: ${{ matrix.platform }}
+          tags: didsa-cad-backend:test
+          load: true
+
+      - name: Run OCCT smoke tests inside container
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            --entrypoint python didsa-cad-backend:test \
+            -m pytest tests/test_stage0_occt.py -v

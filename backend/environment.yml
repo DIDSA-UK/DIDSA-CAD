@@ -1,0 +1,9 @@
+name: base
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pythonocc-core=7.9.3=novtk*
+  - fastapi=0.115.*
+  - uvicorn=0.34.*
+  - pytest=8.*
