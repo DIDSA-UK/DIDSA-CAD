@@ -39,5 +39,5 @@ jobs:
       - name: Run OCCT smoke tests inside container
         run: |
           docker run --rm --platform ${{ matrix.platform }} \
-            --entrypoint python didsa-cad-backend:test \
-            -m pytest tests/test_stage0_occt.py -v
+            didsa-cad-backend:test \
+            python -m pytest tests/test_stage0_occt.py -v
