@@ -26,6 +26,14 @@ Lines originally owned their endpoint coordinates directly. Stage 2 replaced thi
 - `backend/app/sketch/router.py`: REST API mounted under `/sketch` - `sketches`, nested `points`, nested `lines`, and a `GET .../profile` endpoint. Backed by a temporary in-memory dict, to be replaced by the dependency graph.
 - Tests: `backend/tests/test_stage2_sketch.py` (Points, Lines, shared-point editing, multiple sketches, plane assignment), `backend/tests/test_stage2_profile.py` (closed-loop detection cases).
 
+**Stage 2a (de-risk `py-slvs` constraint solver on arm64) — complete: works.**
+
+- `py-slvs` (Python SWIG bindings to a SolveSpace fork) is not on conda-forge - it's pip-only. Added via the `pip:` subsection of `backend/environment.yml` (`py-slvs==1.0.6`), installed by micromamba alongside the conda-forge packages. Pre-built `manylinux_2_17` wheels exist for both `x86_64` and `aarch64` (cp311), so no source build was needed on either architecture.
+- The installed module is `py_slvs.slvs` (not `slvs` as the PyPI name might suggest), and its high-level `System` class (`addPoint2d`, `addPointsDistance`, `addWorkplane`, `solve`, etc.) is what's usable directly - the lower-level module-level `make*` functions take raw entity/param handles and aren't meant to be called directly.
+- Gotcha: `System.addPoint2d(workplane, u, v)` expects `u`/`v` to be **parameter handles** (from `addParamV`), not raw floats, despite what the type signature suggests at first glance.
+- `backend/tests/test_stage2a_solver.py`: defines two 2D points on a workplane, a single distance constraint between them, calls `solve()`, and asserts the solved points are exactly that distance apart - plus a parametrized variant that re-solves from three different initial guesses for the second point, confirming the solver converges to a valid solution each time, not just once by luck.
+- Does **not** touch the Sketch/Point/Line/Profile model - this is purely a de-risking spike, same as Stage 0 was for OCCT. How constraints attach to the existing Sketch entities is a separate, not-yet-started planning step.
+
 CI (`.github/workflows/backend-verify.yml`) builds the backend image and runs the full test suite on both `linux/amd64` and `linux/arm64`.
 
 ## Layout
@@ -40,3 +48,4 @@ docs/           Project brief and design docs
 ## Next steps
 
 - Stage 3: dependency graph (dirty-marking/recompute) + Extrude module + API layer, deploy behind Cloudflare Tunnel / Access.
+- Plan how `py-slvs` constraints attach to the Sketch/Point/Line model (not started - separate piece of work from the Stage 2a spike above).
