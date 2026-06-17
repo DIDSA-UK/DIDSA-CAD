@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
+from app.sketch.router import router as sketch_router
+
 app = FastAPI()
+app.include_router(sketch_router)
 
 
 @app.get("/health")
