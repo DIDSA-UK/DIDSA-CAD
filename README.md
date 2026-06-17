@@ -10,11 +10,21 @@ Self-hosted, containerized parametric CAD tool built on the OpenCascade (OCCT) g
 - Verified both in CI (amd64 + emulated arm64) and natively on a Raspberry Pi 5.
 - OCCT smoke test: `backend/tests/test_stage0_occt.py`.
 
-**Stage 1 (Sketch module: Line entity) — complete.**
+**Stage 1 (Sketch module: Line entity) — superseded by Stage 2.**
 
-- `backend/app/sketch/models.py`: a `Line` dataclass (two endpoints + derived `length`), with `set_endpoints()` and `set_length()` (recalculates the second endpoint, preserving direction). No knowledge of Profile/Extrude, per the brief's modularity principle.
-- `backend/app/sketch/router.py`: REST API mounted under `/sketch/lines` — `POST` (from endpoints, or start+length+angle), `GET /{id}`, `PATCH /{id}` (update length or endpoints). Backed by a temporary in-memory dict, to be replaced by the Stage 2 dependency graph.
-- Tests: `backend/tests/test_stage1_sketch.py`.
+Lines originally owned their endpoint coordinates directly. Stage 2 replaced this with a Point-based model (see below) - kept here for history.
+
+**Stage 2 (Sketcher foundation: Points, generic entities, planes, multiple sketches, closed-loop detection) — complete.**
+
+- `backend/app/sketch/models.py`:
+  - `Point`: an (x, y) coordinate with its own id, owned by a `Sketch`. Point sharing between Lines is always explicit (by id) - there is no coordinate-matching/auto-merge.
+  - `SketchEntity`: an abstract base that `Line` implements, so future entity types (Circle, Arc) slot in without restructuring Sketch, Profile detection, or the API layer.
+  - `Line`: references a `start_point_id`/`end_point_id` rather than owning coordinates. `set_length()` moves the end Point in place, preserving direction - since Points are shared objects, this also moves every other Line referencing that Point (e.g. a connected rectangle corner).
+  - `Plane`: the three fixed reference planes (`XY`, `XZ`, `YZ`), all through the origin. No arbitrary/custom planes or 3D embedding yet.
+  - `Sketch`: an independent collection of Points + entities on one Plane. Multiple Sketches do not share Points or entities.
+- `backend/app/sketch/profile.py`: closed-loop detection (`detect_profile`). Operates only through `SketchEntity.endpoint_point_ids()`, so it knows nothing about how the entities were created. Distinguishes four outcomes: `closed_loop` (produces an ordered `Profile`), `no_loop` (open chain or no connectable entities), `branch` (a point used by 3+ entities), and `multiple_loops` (disjoint closed loops in one sketch).
+- `backend/app/sketch/router.py`: REST API mounted under `/sketch` - `sketches`, nested `points`, nested `lines`, and a `GET .../profile` endpoint. Backed by a temporary in-memory dict, to be replaced by the dependency graph.
+- Tests: `backend/tests/test_stage2_sketch.py` (Points, Lines, shared-point editing, multiple sketches, plane assignment), `backend/tests/test_stage2_profile.py` (closed-loop detection cases).
 
 CI (`.github/workflows/backend-verify.yml`) builds the backend image and runs the full test suite on both `linux/amd64` and `linux/arm64`.
 
@@ -22,12 +32,11 @@ CI (`.github/workflows/backend-verify.yml`) builds the backend image and runs th
 
 ```
 backend/        FastAPI + pythonocc-core service (Stage 0-3)
-  app/sketch/    Sketch module (Line entity, Stage 1)
+  app/sketch/    Sketch module (Point/Line entities, planes, Profile detection - Stage 2)
 docs/           Project brief and design docs
 .github/        CI workflows
 ```
 
 ## Next steps
 
-- Stage 2: Profile detection (closed-loop) + dependency graph.
-- Stage 3: Extrude module + API layer, deploy behind Cloudflare Tunnel / Access.
+- Stage 3: dependency graph (dirty-marking/recompute) + Extrude module + API layer, deploy behind Cloudflare Tunnel / Access.
