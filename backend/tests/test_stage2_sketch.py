@@ -3,8 +3,10 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.sketch.models import Line, Plane, Point, Sketch
+from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
+client.headers.update({"X-API-Key": TEST_API_KEY})
 
 
 # --- Pure domain model tests (no HTTP) --------------------------------------
