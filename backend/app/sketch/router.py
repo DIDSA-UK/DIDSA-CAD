@@ -2,9 +2,12 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
+from app.sketch.constraints import Constraint, DistanceConstraint
 from app.sketch.models import Line, Point, Sketch
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
+    ConstraintResponse,
+    DistanceConstraintCreate,
     LineCreate,
     LineResponse,
     LineUpdate,
@@ -15,7 +18,9 @@ from app.sketch.schemas import (
     ProfileResponse,
     SketchCreate,
     SketchResponse,
+    SolveResultResponse,
 )
+from app.sketch.solver import SolveResult, solve_sketch
 
 router = APIRouter(prefix="/sketch", tags=["sketch"])
 
@@ -48,6 +53,13 @@ def _get_line_or_404(sketch: Sketch, line_id: str) -> Line:
     return entity
 
 
+def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
+    constraint = sketch.constraints.get(constraint_id)
+    if constraint is None:
+        raise HTTPException(status_code=404, detail="Constraint not found")
+    return constraint
+
+
 def _point_response(point: Point) -> PointResponse:
     return PointResponse(id=point.id, x=point.x, y=point.y)
 
@@ -63,6 +75,28 @@ def _line_response(sketch: Sketch, line: Line) -> LineResponse:
 
 def _profile_response(profile: Profile) -> ProfileResponse:
     return ProfileResponse(point_ids=profile.point_ids, line_ids=profile.line_ids)
+
+
+def _constraint_response(constraint: Constraint) -> ConstraintResponse:
+    if isinstance(constraint, DistanceConstraint):
+        return ConstraintResponse(
+            id=constraint.id,
+            point_a_id=constraint.point_a_id,
+            point_b_id=constraint.point_b_id,
+            distance=constraint.distance,
+        )
+    raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
+
+
+def _solve_result_response(result: SolveResult) -> SolveResultResponse:
+    return SolveResultResponse(
+        converged=result.converged,
+        dof=result.dof,
+        result_code=result.result_code,
+        blamed_constraint_ids=result.blamed_constraint_ids,
+        solver_reported_failed_constraint_ids=result.solver_reported_failed_constraint_ids,
+        detail=result.detail,
+    )
 
 
 @router.post("/sketches", response_model=SketchResponse, status_code=201)
@@ -145,3 +179,37 @@ def get_profile(sketch_id: str) -> ProfileDetectionResponse:
         branch_point_ids=result.branch_point_ids,
         loops=[_profile_response(loop) for loop in result.loops],
     )
+
+
+@router.post("/sketches/{sketch_id}/constraints", response_model=ConstraintResponse, status_code=201)
+def create_constraint(sketch_id: str, payload: DistanceConstraintCreate) -> ConstraintResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        constraint = sketch.add_distance_constraint(
+            payload.point_a_id, payload.point_b_id, payload.distance
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _constraint_response(constraint)
+
+
+@router.get("/sketches/{sketch_id}/constraints", response_model=list[ConstraintResponse])
+def list_constraints(sketch_id: str) -> list[ConstraintResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_constraint_response(constraint) for constraint in sketch.constraints.values()]
+
+
+@router.delete("/sketches/{sketch_id}/constraints/{constraint_id}", status_code=204)
+def delete_constraint(sketch_id: str, constraint_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_constraint_or_404(sketch, constraint_id)
+    del sketch.constraints[constraint_id]
+
+
+@router.post("/sketches/{sketch_id}/solve", response_model=SolveResultResponse)
+def solve(sketch_id: str) -> SolveResultResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    result = solve_sketch(sketch)
+    return _solve_result_response(result)
