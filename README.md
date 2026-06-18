@@ -57,12 +57,22 @@ Done ahead of the rest of Stage 3 (dependency graph + Extrude, still pending - s
 
 CI (`.github/workflows/backend-verify.yml`) builds the backend image and runs the full test suite on both `linux/amd64` and `linux/arm64`.
 
+**Stage 4 (first Flutter client: chained line sketching with live solving) — implemented, partially verified.**
+
+Brought forward ahead of further backend entity expansion (Circle/Arc) per an explicit decision to get a real sketching experience working first.
+
+- `client/` is a single Flutter codebase (`flutter create --platforms windows,android,ios`, plus `linux` purely as a buildable/testable target in this headless dev environment) implementing the project brief's Section 5 interaction model: a persistent on-screen cursor moved either by relative, sensitivity-scaled touch drag (Android/iOS) or absolute 1:1 real mouse movement (Windows), with a dedicated **Click** button (or real mouse click) as the only way to commit a point.
+- Chained line drawing: each Click after the first creates a new end Point and a Line sharing the previous Line's end Point id (a true connected chain, not coincidentally-placed points) - see `client/lib/sketch/sketch_controller.dart`. A **Finish Line** button ends the current chain. Clicking back near the chain's first Point (within a fixed snap radius) closes the loop using that Point's real id, visually indicated by highlighting the start point (orange, green when within snapping range).
+- Backend integration: a Sketch is created on the `XY` plane on startup; every completed Line triggers `POST .../solve`, after which every known Point is re-fetched from the backend so rendering reflects the backend's solved positions, never just local state. Base URL and the `X-API-Key` header live in one place (`client/lib/config.dart`); the real key is read from a gitignored `client/lib/secrets.dart` (template: `client/lib/secrets.example.dart`) and is never committed. All requests have a 15s timeout and surface failures as a visible error banner rather than failing silently or freezing the UI.
+- **Honest verification status** (no display, no Android/iOS device, no Windows host available in this environment): `flutter analyze` is clean, `flutter test` passes (chaining state machine + a widget smoke test, all against a mocked HTTP client - no test talks to the real deployed backend), and `flutter build linux --debug` compiles to a real binary. Actual interactive rendering and touch/mouse input were never driven by a real finger/mouse/display, and no live run against `https://cad-api.snail-shell.uk` has happened from this client - see `client/README.md` for the full breakdown of verified vs. unverified.
+
 ## Layout
 
 ```
 backend/        FastAPI + pythonocc-core service (Stage 0-3)
   app/auth.py    Single static API key check (X-API-Key header) - Stage 3
   app/sketch/    Sketch module (Point/Line entities, planes, Profile detection, Constraints/solver - Stage 2/2b)
+client/         Flutter client (Windows/Android/iOS) - Stage 4
 docs/           Project brief and design docs
 .github/        CI workflows
 ```
@@ -72,3 +82,5 @@ docs/           Project brief and design docs
 - Dependency graph (dirty-marking/recompute) + Extrude module, deploy behind Cloudflare Tunnel / Access.
 - Possible future enhancement: precise over-constraint diagnosis (e.g. retry-with-one-constraint-removed), as opposed to today's "blame the newest constraint" convention.
 - Known gap, not yet built: no rate limiting on the API key check.
+- Stage 4 client: real interactive verification (touch/mouse input, live backend run) on an actual device/desktop - see `client/README.md`.
+- Stage 5: 3D viewport for the Extrude result, once Extrude exists.
