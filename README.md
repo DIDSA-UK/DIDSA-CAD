@@ -43,12 +43,25 @@ Lines originally owned their endpoint coordinates directly. Stage 2 replaced thi
 - New endpoints: `POST/GET /sketch/sketches/{id}/constraints`, `DELETE /sketch/sketches/{id}/constraints/{constraint_id}`, `POST /sketch/sketches/{id}/solve`.
 - `backend/tests/test_stage2b_solver_integration.py`: creating a constraint, solving a simple satisfiable case, solving through an existing Line's Points (the actual Stage 2 <-> Stage 2a wiring check), an intentionally over-constrained triangle (confirms non-convergence is reported rather than crashing or silently returning a wrong answer, the newest constraint is blamed by convention, and genuine py-slvs diagnostics are present), and independent constraints across multiple sketches - plus the equivalent checks over the HTTP API.
 
+**Stage 3 prep (API key authentication) — complete.**
+
+Done ahead of the rest of Stage 3 (dependency graph + Extrude, still pending - see "Next steps") because the API is being put behind a public Cloudflare Tunnel hostname for the first time, and needed its own auth before that happens.
+
+- The API is being put behind a public Cloudflare Tunnel hostname for the first time. Cloudflare Tunnel only makes the container *reachable* - it adds no auth of its own - so `backend/app/auth.py` adds a single static API key check in front of every route.
+- `app/main.py` registers `verify_api_key` as an app-level dependency (`FastAPI(dependencies=[Depends(verify_api_key)])`), so it runs for every route including `/health` - deliberately included rather than left open, since there's no separate uptime-monitoring setup that needs unauthenticated access yet, and an open `/health` would still let any internet scanner confirm the server is alive. The one carve-out is FastAPI's auto-generated `/docs` and `/openapi.json` - these are wired up outside the normal dependency system and stay reachable, but they only expose the API schema, not data.
+- The key is supplied via an `X-API-Key: <key>` request header and checked with `secrets.compare_digest` against the `CAD_API_KEY` environment variable, read once at import time. If `CAD_API_KEY` isn't set, the app raises at startup rather than coming up unauthenticated.
+- A missing or wrong key gets a `401` with `{"detail": "Missing or invalid API key."}` - no stack trace, no 500.
+- **Local development**: pass the key when running the container, e.g. `docker run -e CAD_API_KEY=some-local-key -p 8000:8000 didsa-cad-backend` and then call the API with `-H "X-API-Key: some-local-key"`. Tests don't need a real key - `backend/tests/conftest.py` sets `CAD_API_KEY` to a fixed test value before any test module imports `app.main`, and existing `TestClient` instances send it on every request by default.
+- **Honest security posture**: this is one shared static key suitable for a personal/hobby deployment - not a multi-user auth system. No rate limiting, no per-client keys/revocation, and no rotation mechanism. Good enough to keep the API off the open internet; not a substitute for Cloudflare Access if/when multiple distinct clients need distinguishing.
+- `backend/tests/test_stage3_api_key_auth.py`: confirms a request with no key, and with a wrong key, are both rejected with `401`, and a request with the correct key succeeds - checked against both `/health` and a representative `/sketch` endpoint.
+
 CI (`.github/workflows/backend-verify.yml`) builds the backend image and runs the full test suite on both `linux/amd64` and `linux/arm64`.
 
 ## Layout
 
 ```
 backend/        FastAPI + pythonocc-core service (Stage 0-3)
+  app/auth.py    Single static API key check (X-API-Key header) - Stage 3
   app/sketch/    Sketch module (Point/Line entities, planes, Profile detection, Constraints/solver - Stage 2/2b)
 docs/           Project brief and design docs
 .github/        CI workflows
@@ -56,5 +69,6 @@ docs/           Project brief and design docs
 
 ## Next steps
 
-- Stage 3: dependency graph (dirty-marking/recompute) + Extrude module + API layer, deploy behind Cloudflare Tunnel / Access.
+- Dependency graph (dirty-marking/recompute) + Extrude module, deploy behind Cloudflare Tunnel / Access.
 - Possible future enhancement: precise over-constraint diagnosis (e.g. retry-with-one-constraint-removed), as opposed to today's "blame the newest constraint" convention.
+- Known gap, not yet built: no rate limiting on the API key check.

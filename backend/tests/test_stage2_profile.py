@@ -98,8 +98,10 @@ def test_profile_detection_over_the_api():
     from fastapi.testclient import TestClient
 
     from app.main import app
+    from tests.conftest import TEST_API_KEY
 
     client = TestClient(app)
+    client.headers.update({"X-API-Key": TEST_API_KEY})
     sketch = client.post("/sketch/sketches", json={"plane": "XY"}).json()
     points = [
         client.post(f"/sketch/sketches/{sketch['id']}/points", json={"x": x, "y": y}).json()

@@ -118,6 +118,8 @@ Rework the Sketch data model before building Extrude: `Point` entities, a generi
 **Stage 3 — Dependency graph + Extrude module + API layer**
 Implement the dependency graph connecting Sketch → Profile → Extrude, including dirty-marking and auto-recompute, and the Extrude module consuming a Profile. Wrap Sketch/Profile/Extrude behind an HTTP/WebSocket API. Containerize and expose via the existing Cloudflare Tunnel setup under a new `snail-shell.uk` subdomain, behind Cloudflare Access.
 
+*Stage 3 prep — done ahead of the rest of this stage: a single static API key, checked on every request via a FastAPI dependency (`backend/app/auth.py`), supplied as the `X-API-Key` header and read from a `CAD_API_KEY` environment variable (the app refuses to start without it set). This exists because the container is about to be reachable over a public Cloudflare Tunnel hostname before Cloudflare Access is configured, and the Tunnel itself adds no auth — see README.md for the full design and its explicitly limited security posture (one shared key, no rate limiting, no rotation/revocation).*
+
 **Stage 4 — Flutter client: 2D canvas**
 Build the cursor-based sketch canvas (drag-to-move cursor, Click button to commit points), dimension editing UI, talking to the live API.
 
