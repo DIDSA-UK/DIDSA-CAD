@@ -61,6 +61,27 @@ class LineDto {
       );
 }
 
+class CircleDto {
+  final String id;
+  final String centerPointId;
+  final String radiusPointId;
+  final double radius;
+
+  CircleDto({
+    required this.id,
+    required this.centerPointId,
+    required this.radiusPointId,
+    required this.radius,
+  });
+
+  factory CircleDto.fromJson(Map<String, dynamic> json) => CircleDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
+        radius: (json['radius'] as num).toDouble(),
+      );
+}
+
 class SolveResultDto {
   final bool converged;
   final int dof;
@@ -143,6 +164,18 @@ class SketchApiClient {
               }),
             ),
         (body) => LineDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<CircleDto> createCircle(String sketchId, String centerPointId, String radiusPointId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/circles'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'radius_point_id': radiusPointId,
+              }),
+            ),
+        (body) => CircleDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<SolveResultDto> solve(String sketchId) => _send(

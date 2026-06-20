@@ -20,6 +20,17 @@ class SketchLineView {
   const SketchLineView({required this.id, required this.startPointId, required this.endPointId});
 }
 
+class SketchCircleView {
+  final String id;
+  final String centerPointId;
+  final String radiusPointId;
+
+  const SketchCircleView({required this.id, required this.centerPointId, required this.radiusPointId});
+}
+
+/// Which entity the next Click commits. Selected via the tool-switcher FAB.
+enum SketchTool { line, circle }
+
 /// Owns the sketch's client-side state (cursor, points, lines, the
 /// in-progress chain) and talks to the backend via [SketchApiClient].
 /// The backend's solved point positions are always treated as the source
@@ -43,12 +54,29 @@ class SketchController extends ChangeNotifier {
 
   final Map<String, SketchPointView> points = {};
   final Map<String, SketchLineView> lines = {};
+  final Map<String, SketchCircleView> circles = {};
 
   double cursorX = 0;
   double cursorY = 0;
 
+  SketchTool _activeTool = SketchTool.line;
+  SketchTool get activeTool => _activeTool;
+
+  void setTool(SketchTool tool) {
+    if (_activeTool == tool) return;
+    _activeTool = tool;
+    notifyListeners();
+  }
+
   String? _chainStartPointId;
   String? _chainFirstPointId;
+
+  String? _circleCenterPointId;
+
+  /// The center Point of a Circle placed but not yet completed (waiting on
+  /// the radius-defining Click) - null if no Circle is in progress.
+  String? get circleCenterPointId => _circleCenterPointId;
+  bool get circleInProgress => _circleCenterPointId != null;
 
   /// The Point id the *next* line segment will start from, or null if no
   /// chain is currently in progress.
@@ -106,8 +134,14 @@ class SketchController extends ChangeNotifier {
 
   /// The single "commit an action at the cursor" entry point - driven by
   /// either the on-screen Click button or a real mouse click on Windows.
+  /// What it commits depends on [activeTool].
   Future<void> click() async {
     if (_busy || _sketchId == null) return;
+
+    if (_activeTool == SketchTool.circle) {
+      await _clickCircleTool();
+      return;
+    }
 
     if (!chainInProgress) {
       await _runGuarded(() async {
@@ -148,6 +182,40 @@ class SketchController extends ChangeNotifier {
       } else {
         _chainStartPointId = endPointId;
       }
+    });
+  }
+
+  /// Circle tool's Click handling: first Click places the center Point,
+  /// second Click places the radius Point, creates the Circle (which
+  /// auto-creates its radius DistanceConstraint server-side), and solves -
+  /// self-terminating, unlike a Line chain, so there is no separate
+  /// "finish" step.
+  Future<void> _clickCircleTool() async {
+    if (!circleInProgress) {
+      await _runGuarded(() async {
+        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        _circleCenterPointId = point.id;
+      });
+      return;
+    }
+
+    await _runGuarded(() async {
+      final radiusPoint = await _api.createPoint(_sketchId!, cursorX, cursorY);
+      points[radiusPoint.id] = SketchPointView(id: radiusPoint.id, x: radiusPoint.x, y: radiusPoint.y);
+
+      final circle = await _api.createCircle(_sketchId!, _circleCenterPointId!, radiusPoint.id);
+      circles[circle.id] = SketchCircleView(
+        id: circle.id,
+        centerPointId: circle.centerPointId,
+        radiusPointId: circle.radiusPointId,
+      );
+
+      // Same rule as a completed Line: one finished entity = one solve call.
+      await _api.solve(_sketchId!);
+      await _refreshAllPoints();
+
+      _circleCenterPointId = null;
     });
   }
 

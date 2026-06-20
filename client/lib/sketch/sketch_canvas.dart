@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
@@ -99,16 +101,39 @@ class _SketchPainter extends CustomPainter {
       );
     }
 
+    final circlePaint = Paint()
+      ..color = Colors.blueGrey.shade700
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    for (final circle in controller.circles.values) {
+      final center = controller.points[circle.centerPointId];
+      final radiusPoint = controller.points[circle.radiusPointId];
+      if (center == null || radiusPoint == null) continue;
+      final radius = math.sqrt(
+        math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
+      );
+      canvas.drawCircle(
+        transform.sketchToScreen(center.x, center.y),
+        radius * transform.pixelsPerUnit,
+        circlePaint,
+      );
+    }
+
     final chainFirstId = controller.chainFirstPointId;
     final isSnapping = controller.isHoveringChainStart;
+    final circleCenterId = controller.circleCenterPointId;
     for (final point in controller.points.values) {
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
+      final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
       final screenPos = transform.sketchToScreen(point.x, point.y);
       Color color = Colors.black87;
       double radius = 4;
       if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
         radius = isSnapping ? 11 : 6;
+      } else if (isCircleCenter) {
+        color = Colors.deepOrange;
+        radius = 6;
       }
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
     }
