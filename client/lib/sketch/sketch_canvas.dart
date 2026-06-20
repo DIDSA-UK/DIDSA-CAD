@@ -4,11 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
 import 'sketch_controller.dart';
+import 'sketch_viewport.dart';
 import 'view_transform.dart';
 
 /// The 2D sketch canvas: renders the cursor, Points, Lines, and the
 /// snap-to-start indicator, and turns raw pointer events into the unified
-/// cursor model (relative+scaled for touch, absolute 1:1 for a real mouse).
+/// cursor model (relative+scaled for touch, absolute 1:1 for a real mouse),
+/// plus pan/zoom (pinch and two-finger drag on touch; scroll wheel and
+/// right-click-drag on a mouse) that only ever adjusts [_viewport] - the
+/// controller's cursor stays in sketch-space coordinates throughout, so it
+/// is never "converted back" and is unaffected by how the view is panned
+/// or zoomed.
 class SketchCanvas extends StatefulWidget {
   final SketchController controller;
 
@@ -19,12 +25,12 @@ class SketchCanvas extends StatefulWidget {
 }
 
 class _SketchCanvasState extends State<SketchCanvas> {
-  static const double _pixelsPerUnit = 20;
+  final SketchViewport _viewport = SketchViewport();
 
-  ViewTransform _transformFor(Size size) => ViewTransform(
-        pixelsPerUnit: _pixelsPerUnit,
-        originScreen: Offset(size.width / 2, size.height / 2),
-      );
+  /// Live touch pointers by id, for pinch-zoom/two-finger-pan - tracked
+  /// separately from the single-finger cursor drag, which only applies
+  /// while exactly one touch is active.
+  final Map<int, Offset> _activeTouches = {};
 
   void _handlePointerHover(PointerHoverEvent event, ViewTransform transform) {
     // Hover events only fire for a mouse with no buttons pressed - real
@@ -33,23 +39,89 @@ class _SketchCanvasState extends State<SketchCanvas> {
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
   }
 
-  void _handlePointerMove(PointerMoveEvent event, ViewTransform transform) {
+  void _handlePointerDown(PointerDownEvent event) {
     if (event.kind == PointerDeviceKind.mouse) {
-      widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
-    } else {
-      // Touch: relative, scaled movement - never jumps to the touch point.
+      // Only the primary (left) button commits a point, same as the
+      // on-screen Click button - a right-click starts a pan drag instead
+      // (see _handlePointerMove) and must not also place a point.
+      if (event.buttons & kPrimaryMouseButton != 0) {
+        widget.controller.click();
+      }
+      return;
+    }
+    // Touch-down never moves the persistent cursor or commits a point -
+    // only the Click button does that - but is tracked here so a second
+    // finger touching down is seen by the pinch/pan handling below.
+    _activeTouches[event.pointer] = event.localPosition;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
+    if (event.kind == PointerDeviceKind.mouse) {
+      if (event.buttons & kSecondaryMouseButton != 0) {
+        setState(() => _viewport.panByScreenDelta(event.delta));
+      } else {
+        widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+      }
+      return;
+    }
+
+    if (_activeTouches.length < 2) {
+      // Single-finger: relative, scaled cursor movement - never jumps to
+      // the touch point.
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy);
+      return;
+    }
+
+    final before = Map<int, Offset>.from(_activeTouches);
+    _activeTouches[event.pointer] = event.localPosition;
+    _applyPinchPan(before, _activeTouches, size);
+  }
+
+  void _handlePointerEnd(PointerEvent event) {
+    if (event.kind != PointerDeviceKind.mouse) _activeTouches.remove(event.pointer);
+  }
+
+  void _handlePointerSignal(PointerSignalEvent event, Size size) {
+    if (event is PointerScrollEvent) {
+      // Scrolling "down" (positive dy) zooms out, matching common map/CAD
+      // tool conventions.
+      final scaleFactor = event.scrollDelta.dy > 0 ? 0.9 : 1 / 0.9;
+      setState(() => _viewport.zoomAtScreenPoint(event.localPosition, scaleFactor, size));
     }
   }
 
-  void _handlePointerDown(PointerDownEvent event) {
-    // A real mouse click does the same thing as the on-screen Click
-    // button. Touch-down intentionally does nothing else: per the
-    // interaction model, only the Click button commits a point, and
-    // touching down must not move the persistent cursor.
-    if (event.kind == PointerDeviceKind.mouse) {
-      widget.controller.click();
+  void _applyPinchPan(Map<int, Offset> before, Map<int, Offset> after, Size size) {
+    final beforeCentroid = _centroidOf(before.values);
+    final afterCentroid = _centroidOf(after.values);
+    final beforeSpread = _averageSpread(before.values, beforeCentroid);
+    final afterSpread = _averageSpread(after.values, afterCentroid);
+    final scaleFactor = beforeSpread > 1e-6 ? afterSpread / beforeSpread : 1.0;
+
+    setState(() {
+      _viewport.applyAnchoredZoomPan(
+        anchorScreen: beforeCentroid,
+        targetScreen: afterCentroid,
+        scaleFactor: scaleFactor,
+        size: size,
+      );
+    });
+  }
+
+  Offset _centroidOf(Iterable<Offset> points) {
+    var sum = Offset.zero;
+    for (final point in points) {
+      sum += point;
     }
+    return sum / points.length.toDouble();
+  }
+
+  double _averageSpread(Iterable<Offset> points, Offset centroid) {
+    if (points.length < 2) return 0;
+    var total = 0.0;
+    for (final point in points) {
+      total += (point - centroid).distance;
+    }
+    return total / points.length;
   }
 
   @override
@@ -57,20 +129,37 @@ class _SketchCanvasState extends State<SketchCanvas> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        final transform = _transformFor(size);
-        return Listener(
-          onPointerDown: _handlePointerDown,
-          onPointerHover: (e) => _handlePointerHover(e, transform),
-          onPointerMove: (e) => _handlePointerMove(e, transform),
-          child: AnimatedBuilder(
-            animation: widget.controller,
-            builder: (context, _) {
-              return CustomPaint(
-                size: size,
-                painter: _SketchPainter(controller: widget.controller, transform: transform),
-              );
-            },
-          ),
+        final transform = _viewport.transformFor(size);
+        return Stack(
+          children: [
+            Listener(
+              onPointerDown: _handlePointerDown,
+              onPointerHover: (e) => _handlePointerHover(e, transform),
+              onPointerMove: (e) => _handlePointerMove(e, transform, size),
+              onPointerUp: _handlePointerEnd,
+              onPointerCancel: _handlePointerEnd,
+              onPointerSignal: (e) => _handlePointerSignal(e, size),
+              child: AnimatedBuilder(
+                animation: widget.controller,
+                builder: (context, _) {
+                  return CustomPaint(
+                    size: size,
+                    painter: _SketchPainter(controller: widget.controller, transform: transform),
+                  );
+                },
+              ),
+            ),
+            if (_viewport.zoom != 1 || _viewport.panOffset != Offset.zero)
+              Positioned(
+                top: 8,
+                left: 8,
+                child: IconButton.filled(
+                  tooltip: 'Reset view',
+                  icon: const Icon(Icons.center_focus_strong),
+                  onPressed: () => setState(_viewport.reset),
+                ),
+              ),
+          ],
         );
       },
     );
