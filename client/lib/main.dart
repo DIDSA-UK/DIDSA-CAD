@@ -85,12 +85,10 @@ class _SketchScreenState extends State<SketchScreen> {
               child: Stack(
                 children: [
                   SketchCanvas(controller: _controller),
-                  Positioned(
-                    top: 0,
-                    bottom: 0,
-                    left: 0,
-                    child: SketchRibbon(controller: _controller),
-                  ),
+                  // SketchRibbon aligns and sizes itself (top-left,
+                  // shrink-wrapped to its own content) - this just gives it
+                  // room to do so without forcing a particular size.
+                  Positioned.fill(child: SketchRibbon(controller: _controller)),
                 ],
               ),
             ),

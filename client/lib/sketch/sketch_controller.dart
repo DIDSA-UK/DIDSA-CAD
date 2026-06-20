@@ -254,12 +254,32 @@ class SketchController extends ChangeNotifier {
   /// The "select / tap blank space" gesture - a bare tap/click on the
   /// canvas, as distinct from the Click button (see [click]). A no-op
   /// while drawing is in progress, since drawing-mode interaction must be
-  /// unaffected by selection. While idle, selects whatever is hovered (or
-  /// clears the selection, if nothing is), and opens the ribbon either way.
+  /// unaffected by selection. While idle: hovering an entity selects it and
+  /// opens/keeps open the ribbon. Tapping blank space (nothing hovered)
+  /// while the ribbon is already open dismisses it back to a clean idle
+  /// state, matching how a tap-outside is expected to close a contextual
+  /// panel; tapping blank space while the ribbon is closed instead opens it
+  /// showing the idle actions (e.g. Exit Sketch), same as Stage 6.
   void handleCanvasTap() {
     if (!isIdle) return;
-    _selection = hoveredEntity;
-    _ribbonVisible = true;
+    final hovered = hoveredEntity;
+    if (hovered == null && _ribbonVisible) {
+      _selection = null;
+      _ribbonVisible = false;
+    } else {
+      _selection = hovered;
+      _ribbonVisible = true;
+    }
+    notifyListeners();
+  }
+
+  /// Explicitly closes the ribbon (its close button) and clears any
+  /// selection - the only way to dismiss the ribbon other than starting a
+  /// new chain/circle, since a tap on blank idle canvas re-opens it rather
+  /// than closing it (see [handleCanvasTap]).
+  void closeRibbon() {
+    _selection = null;
+    _ribbonVisible = false;
     notifyListeners();
   }
 

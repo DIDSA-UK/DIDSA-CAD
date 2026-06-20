@@ -19,26 +19,36 @@ class SketchRibbon extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        return ClipRect(
-          child: AnimatedSlide(
-            offset: controller.ribbonVisible ? Offset.zero : const Offset(-1.05, 0),
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOut,
-            child: SafeArea(
-              child: Material(
-                elevation: 4,
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(12),
-                  bottomRight: Radius.circular(12),
-                ),
-                child: SizedBox(
-                  width: 240,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: _actionsFor(context),
+        // Only pinned to the top-left corner (not stretched edge-to-edge
+        // via top:0/bottom:0) so the panel shrink-wraps to its own content
+        // height instead of covering the full canvas height.
+        return Align(
+          alignment: Alignment.topLeft,
+          child: ClipRect(
+            child: AnimatedSlide(
+              offset: controller.ribbonVisible ? Offset.zero : const Offset(-1.05, 0),
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              child: SafeArea(
+                bottom: false,
+                child: Material(
+                  elevation: 4,
+                  borderRadius: const BorderRadius.only(
+                    topRight: Radius.circular(12),
+                    bottomRight: Radius.circular(12),
+                  ),
+                  child: SizedBox(
+                    width: 220,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _RibbonHeader(text: _headingFor(controller.selection), onClose: controller.closeRibbon),
+                          ..._actionsFor(context),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -50,11 +60,19 @@ class SketchRibbon extends StatelessWidget {
     );
   }
 
+  String _headingFor(SketchSelection? selection) {
+    if (selection == null) return 'Sketch';
+    return switch (selection.kind) {
+      SelectionKind.point => 'Point selected',
+      SelectionKind.line => 'Line selected',
+      SelectionKind.circle => 'Circle selected',
+    };
+  }
+
   List<Widget> _actionsFor(BuildContext context) {
     final selection = controller.selection;
     if (selection == null) {
       return [
-        const _RibbonHeading('Sketch'),
         ListTile(
           leading: const Icon(Icons.logout),
           title: const Text('Exit Sketch'),
@@ -66,16 +84,10 @@ class SketchRibbon extends StatelessWidget {
       ];
     }
 
-    final heading = switch (selection.kind) {
-      SelectionKind.point => 'Point selected',
-      SelectionKind.line => 'Line selected',
-      SelectionKind.circle => 'Circle selected',
-    };
     final blockedReason =
         selection.kind == SelectionKind.point ? controller.selectedPointDeleteBlockedReason : null;
 
     return [
-      _RibbonHeading(heading),
       ListTile(
         leading: const Icon(Icons.delete_outline),
         title: const Text('Delete'),
@@ -93,16 +105,31 @@ class SketchRibbon extends StatelessWidget {
   }
 }
 
-class _RibbonHeading extends StatelessWidget {
+/// The panel's top row: a bold heading plus an explicit close button - an
+/// always-available way to dismiss the ribbon, alongside tapping blank
+/// idle canvas space (see [SketchController.handleCanvasTap]).
+class _RibbonHeader extends StatelessWidget {
   final String text;
+  final VoidCallback onClose;
 
-  const _RibbonHeading(this.text);
+  const _RibbonHeader({required this.text, required this.onClose});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: Text(text, style: const TextStyle(fontWeight: FontWeight.bold)),
+      padding: const EdgeInsets.fromLTRB(16, 0, 4, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(text, style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          IconButton(
+            tooltip: 'Close',
+            icon: const Icon(Icons.close, size: 20),
+            onPressed: onClose,
+          ),
+        ],
+      ),
     );
   }
 }

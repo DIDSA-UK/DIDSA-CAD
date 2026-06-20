@@ -431,18 +431,43 @@ void main() {
     expect(controller.ribbonVisible, isTrue);
   });
 
-  test('handleCanvasTap on blank idle space clears any selection but still opens the ribbon', () {
+  test('handleCanvasTap on blank space opens the idle ribbon panel when it was closed', () {
+    controller.cursorX = 50;
+    controller.cursorY = 50;
+    expect(controller.ribbonVisible, isFalse);
+
+    controller.handleCanvasTap();
+
+    expect(controller.selection, isNull);
+    expect(controller.ribbonVisible, isTrue);
+  });
+
+  test('handleCanvasTap on blank space dismisses the ribbon when it is already open', () {
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;
     controller.handleCanvasTap();
     expect(controller.selection, isNotNull);
+    expect(controller.ribbonVisible, isTrue);
 
     controller.cursorX = 50;
     controller.cursorY = 50;
     controller.handleCanvasTap();
 
     expect(controller.selection, isNull);
+    expect(controller.ribbonVisible, isFalse);
+  });
+
+  test('closeRibbon clears the selection and hides the ribbon', () {
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+    controller.handleCanvasTap();
+    expect(controller.selection, isNotNull);
     expect(controller.ribbonVisible, isTrue);
+
+    controller.closeRibbon();
+
+    expect(controller.selection, isNull);
+    expect(controller.ribbonVisible, isFalse);
   });
 
   test('starting a new chain via click hides the ribbon and clears any selection', () async {
