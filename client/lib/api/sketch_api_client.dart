@@ -126,10 +126,25 @@ class SketchApiClient {
       throw ApiException('Could not reach the server: $e');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException('Server returned ${response.statusCode}: ${response.body}');
+      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}');
     }
     final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
     return onSuccess(decoded);
+  }
+
+  /// FastAPI's HTTPException responses are `{"detail": "..."}` - extracting
+  /// that gives a much more useful [ApiException] message (e.g. the actual
+  /// reason a Point delete was rejected) than the raw response body.
+  String _detailOf(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic> && decoded['detail'] is String) {
+        return decoded['detail'] as String;
+      }
+    } catch (_) {
+      // Not JSON (or no `detail` field) - fall through to the raw body.
+    }
+    return response.body;
   }
 
   Future<SketchDto> createSketch({String plane = 'XY'}) => _send(
@@ -180,6 +195,30 @@ class SketchApiClient {
               }),
             ),
         (body) => CircleDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<void> deletePoint(String sketchId, String pointId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/points/$pointId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteLine(String sketchId, String lineId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/lines/$lineId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteCircle(String sketchId, String circleId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/circles/$circleId'),
+              headers: _headers,
+            ),
+        (_) {},
       );
 
   Future<SolveResultDto> solve(String sketchId) => _send(

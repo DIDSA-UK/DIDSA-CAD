@@ -113,6 +113,7 @@ class Circle(SketchEntity):
     id: str
     center_point_id: str
     radius_point_id: str
+    radius_constraint_id: str
 
     @property
     def type(self) -> str:
@@ -222,13 +223,64 @@ class Sketch:
         if center_point_id == radius_point_id:
             raise ValueError("A circle cannot have the same center and radius point")
 
-        circle = Circle(id=str(uuid.uuid4()), center_point_id=center_point_id, radius_point_id=radius_point_id)
+        radius_constraint = self.add_distance_constraint(center_point_id, radius_point_id, distance)
+        circle = Circle(
+            id=str(uuid.uuid4()),
+            center_point_id=center_point_id,
+            radius_point_id=radius_point_id,
+            radius_constraint_id=radius_constraint.id,
+        )
         self.entities[circle.id] = circle
-        self.add_distance_constraint(center_point_id, radius_point_id, distance)
         return circle
 
     def circles(self) -> list[Circle]:
         return [entity for entity in self.entities.values() if isinstance(entity, Circle)]
+
+    def delete_line(self, line_id: str) -> None:
+        """Remove a Line. Its endpoint Points are left untouched - they may
+        be shared with other Lines, so only an explicit Point deletion can
+        remove them (see `delete_point`)."""
+        if not isinstance(self.entities.get(line_id), Line):
+            raise KeyError(line_id)
+        del self.entities[line_id]
+
+    def delete_circle(self, circle_id: str) -> None:
+        """Remove a Circle and the radius DistanceConstraint that `add_circle`
+        always creates alongside it (that constraint is an internal
+        implementation detail of the Circle, not something the user added
+        independently, so it is the one exception to "never auto-delete
+        what a deletion didn't explicitly target"). The center/radius
+        Points themselves are left untouched, same as `delete_line`."""
+        circle = self.entities.get(circle_id)
+        if not isinstance(circle, Circle):
+            raise KeyError(circle_id)
+        del self.entities[circle_id]
+        self.constraints.pop(circle.radius_constraint_id, None)
+
+    def _point_deletion_blocker(self, point_id: str) -> str | None:
+        """A human-readable reason this Point cannot be deleted, or None if
+        deletion is safe. A Point is only ever deleted explicitly, never as
+        an automatic side effect of deleting something that references it -
+        so deletion is blocked outright while anything still depends on it."""
+        if point_id == self._origin_point_id:
+            return "Cannot delete the sketch's origin point"
+        for entity in self.entities.values():
+            if isinstance(entity, Line) and point_id in entity.endpoint_point_ids():
+                return f"Point is still referenced by line {entity.id}"
+            if isinstance(entity, Circle) and point_id in (entity.center_point_id, entity.radius_point_id):
+                return f"Point is still referenced by circle {entity.id}"
+        for constraint in self.constraints.values():
+            if point_id in constraint.point_ids():
+                return f"Point is still referenced by constraint {constraint.id}"
+        return None
+
+    def delete_point(self, point_id: str) -> None:
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        blocker = self._point_deletion_blocker(point_id)
+        if blocker is not None:
+            raise ValueError(blocker)
+        del self.points[point_id]
 
     def add_distance_constraint(
         self, point_a_id: str, point_b_id: str, distance: float

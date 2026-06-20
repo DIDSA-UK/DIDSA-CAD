@@ -152,6 +152,16 @@ def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointRe
     return _point_response(point)
 
 
+@router.delete("/sketches/{sketch_id}/points/{point_id}", status_code=204)
+def delete_point(sketch_id: str, point_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_point_or_404(sketch, point_id)
+    try:
+        sketch.delete_point(point_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/sketches/{sketch_id}/lines", response_model=LineResponse, status_code=201)
 def create_line(sketch_id: str, payload: LineCreate) -> LineResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -173,6 +183,13 @@ def create_line(sketch_id: str, payload: LineCreate) -> LineResponse:
 def get_line(sketch_id: str, line_id: str) -> LineResponse:
     sketch = _get_sketch_or_404(sketch_id)
     return _line_response(sketch, _get_line_or_404(sketch, line_id))
+
+
+@router.delete("/sketches/{sketch_id}/lines/{line_id}", status_code=204)
+def delete_line(sketch_id: str, line_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_line_or_404(sketch, line_id)
+    sketch.delete_line(line_id)
 
 
 @router.patch("/sketches/{sketch_id}/lines/{line_id}", response_model=LineResponse)
@@ -207,6 +224,13 @@ def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
 def get_circle(sketch_id: str, circle_id: str) -> CircleResponse:
     sketch = _get_sketch_or_404(sketch_id)
     return _circle_response(sketch, _get_circle_or_404(sketch, circle_id))
+
+
+@router.delete("/sketches/{sketch_id}/circles/{circle_id}", status_code=204)
+def delete_circle(sketch_id: str, circle_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_circle_or_404(sketch, circle_id)
+    sketch.delete_circle(circle_id)
 
 
 @router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)

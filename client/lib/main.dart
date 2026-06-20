@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'sketch/sketch_canvas.dart';
 import 'sketch/sketch_controller.dart';
+import 'sketch/sketch_ribbon.dart';
 import 'sketch/sketch_speed_dial.dart';
 
 void main() {
@@ -80,7 +81,19 @@ class _SketchScreenState extends State<SketchScreen> {
                 );
               },
             ),
-            Expanded(child: SketchCanvas(controller: _controller)),
+            Expanded(
+              child: Stack(
+                children: [
+                  SketchCanvas(controller: _controller),
+                  Positioned(
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    child: SketchRibbon(controller: _controller),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),

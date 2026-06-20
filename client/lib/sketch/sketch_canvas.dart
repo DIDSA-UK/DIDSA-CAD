@@ -32,6 +32,20 @@ class _SketchCanvasState extends State<SketchCanvas> {
   /// while exactly one touch is active.
   final Map<int, Offset> _activeTouches = {};
 
+  /// Cumulative single-finger travel (pixels) since the touch that's about
+  /// to end started - used to tell a tap (select gesture) apart from a
+  /// cursor-drag. Reset whenever a fresh single-finger touch begins.
+  double _singleTouchTravel = 0;
+
+  /// Set once a second finger has touched down during the current gesture,
+  /// so the tail end of a pinch (as fingers lift one by one) is never
+  /// mistaken for a single tap.
+  bool _multiTouchOccurred = false;
+
+  /// How far (pixels) a single-finger touch may travel and still count as
+  /// a tap rather than a drag.
+  static const double _tapTravelThreshold = 10.0;
+
   void _handlePointerHover(PointerHoverEvent event, ViewTransform transform) {
     // Hover events only fire for a mouse with no buttons pressed - real
     // mouse movement drives the cursor directly, 1:1.
@@ -41,18 +55,26 @@ class _SketchCanvasState extends State<SketchCanvas> {
 
   void _handlePointerDown(PointerDownEvent event) {
     if (event.kind == PointerDeviceKind.mouse) {
-      // Only the primary (left) button commits a point, same as the
-      // on-screen Click button - a right-click starts a pan drag instead
-      // (see _handlePointerMove) and must not also place a point.
+      // Only the primary (left) button counts as a bare tap, same as a
+      // touch tap - a right-click starts a pan drag instead (see
+      // _handlePointerMove) and must not also dispatch a tap.
       if (event.buttons & kPrimaryMouseButton != 0) {
-        widget.controller.click();
+        widget.controller.handleCanvasTap();
       }
       return;
     }
     // Touch-down never moves the persistent cursor or commits a point -
     // only the Click button does that - but is tracked here so a second
-    // finger touching down is seen by the pinch/pan handling below.
+    // finger touching down is seen by the pinch/pan handling below, and so
+    // a single-finger touch ending without much travel can be recognized
+    // as a tap (see _handlePointerEnd).
     _activeTouches[event.pointer] = event.localPosition;
+    if (_activeTouches.length == 1) {
+      _singleTouchTravel = 0;
+      _multiTouchOccurred = false;
+    } else {
+      _multiTouchOccurred = true;
+    }
   }
 
   void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
@@ -69,17 +91,30 @@ class _SketchCanvasState extends State<SketchCanvas> {
       // Single-finger: relative, scaled cursor movement - never jumps to
       // the touch point. Sensitivity scales with the current zoom so the
       // felt responsiveness stays consistent across zoom levels.
+      _singleTouchTravel += event.delta.distance;
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
     }
 
+    _multiTouchOccurred = true;
     final before = Map<int, Offset>.from(_activeTouches);
     _activeTouches[event.pointer] = event.localPosition;
     _applyPinchPan(before, _activeTouches, size);
   }
 
   void _handlePointerEnd(PointerEvent event) {
-    if (event.kind != PointerDeviceKind.mouse) _activeTouches.remove(event.pointer);
+    if (event.kind == PointerDeviceKind.mouse) return;
+
+    // A lone finger lifting (not the tail end of a pinch) after barely
+    // moving is a tap - the select gesture - rather than a drag.
+    final wasTap = event is PointerUpEvent &&
+        _activeTouches.length == 1 &&
+        !_multiTouchOccurred &&
+        _singleTouchTravel < _tapTravelThreshold;
+    _activeTouches.remove(event.pointer);
+    if (wasTap) {
+      widget.controller.handleCanvasTap();
+    }
   }
 
   void _handlePointerSignal(PointerSignalEvent event, Size size) {
@@ -173,17 +208,32 @@ class _SketchPainter extends CustomPainter {
 
   _SketchPainter({required this.controller, required this.transform});
 
+  /// Idle-state hoverable/selectable highlight colors - deliberately
+  /// distinct from each other and from every "in progress" drawing color
+  /// (green/deepOrange/indigo) used elsewhere in this painter.
+  static const Color _hoverColor = Colors.amber;
+  static const Color _selectedColor = Colors.purple;
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
 
-    final linePaint = Paint()
-      ..color = Colors.blueGrey.shade700
-      ..strokeWidth = 2;
+    final hovered = controller.hoveredEntity;
+    final selected = controller.selection;
+
     for (final line in controller.lines.values) {
       final start = controller.points[line.startPointId];
       final end = controller.points[line.endPointId];
       if (start == null || end == null) continue;
+      final isSelected = selected?.kind == SelectionKind.line && selected!.id == line.id;
+      final isHovered = hovered?.kind == SelectionKind.line && hovered!.id == line.id;
+      final linePaint = Paint()
+        ..color = isSelected
+            ? _selectedColor
+            : isHovered
+                ? _hoverColor
+                : Colors.blueGrey.shade700
+        ..strokeWidth = isSelected || isHovered ? 3 : 2;
       canvas.drawLine(
         transform.sketchToScreen(start.x, start.y),
         transform.sketchToScreen(end.x, end.y),
@@ -191,10 +241,6 @@ class _SketchPainter extends CustomPainter {
       );
     }
 
-    final circlePaint = Paint()
-      ..color = Colors.blueGrey.shade700
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
     for (final circle in controller.circles.values) {
       final center = controller.points[circle.centerPointId];
       final radiusPoint = controller.points[circle.radiusPointId];
@@ -202,6 +248,16 @@ class _SketchPainter extends CustomPainter {
       final radius = math.sqrt(
         math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
       );
+      final isSelected = selected?.kind == SelectionKind.circle && selected!.id == circle.id;
+      final isHovered = hovered?.kind == SelectionKind.circle && hovered!.id == circle.id;
+      final circlePaint = Paint()
+        ..color = isSelected
+            ? _selectedColor
+            : isHovered
+                ? _hoverColor
+                : Colors.blueGrey.shade700
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = isSelected || isHovered ? 3 : 2;
       canvas.drawCircle(
         transform.sketchToScreen(center.x, center.y),
         radius * transform.pixelsPerUnit,
@@ -214,8 +270,18 @@ class _SketchPainter extends CustomPainter {
       final origin = controller.points[originId];
       if (origin != null) {
         final isSnappingToOrigin = controller.isHoveringOrigin;
+        final isSelected = selected?.kind == SelectionKind.point && selected!.id == originId;
+        final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == originId;
+        Color color = Colors.indigo;
+        if (isSnappingToOrigin) {
+          color = Colors.green;
+        } else if (isSelected) {
+          color = _selectedColor;
+        } else if (isHovered) {
+          color = _hoverColor;
+        }
         final originPaint = Paint()
-          ..color = isSnappingToOrigin ? Colors.green : Colors.indigo
+          ..color = color
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2;
         final halfSize = isSnappingToOrigin ? 10.0 : 7.0;
@@ -234,6 +300,8 @@ class _SketchPainter extends CustomPainter {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
+      final isSelected = selected?.kind == SelectionKind.point && selected!.id == point.id;
+      final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
       final screenPos = transform.sketchToScreen(point.x, point.y);
       Color color = Colors.black87;
       double radius = 4;
@@ -242,6 +310,12 @@ class _SketchPainter extends CustomPainter {
         radius = isSnapping ? 11 : 6;
       } else if (isCircleCenter) {
         color = Colors.deepOrange;
+        radius = 6;
+      } else if (isSelected) {
+        color = _selectedColor;
+        radius = 7;
+      } else if (isHovered) {
+        color = _hoverColor;
         radius = 6;
       }
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
