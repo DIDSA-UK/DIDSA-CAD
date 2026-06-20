@@ -3,9 +3,11 @@ import uuid
 from fastapi import APIRouter, HTTPException
 
 from app.sketch.constraints import Constraint, DistanceConstraint
-from app.sketch.models import Line, Point, Sketch
+from app.sketch.models import Circle, Line, Point, Sketch
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
+    CircleCreate,
+    CircleResponse,
     ConstraintResponse,
     DistanceConstraintCreate,
     LineCreate,
@@ -53,6 +55,13 @@ def _get_line_or_404(sketch: Sketch, line_id: str) -> Line:
     return entity
 
 
+def _get_circle_or_404(sketch: Sketch, circle_id: str) -> Circle:
+    entity = sketch.entities.get(circle_id)
+    if not isinstance(entity, Circle):
+        raise HTTPException(status_code=404, detail="Circle not found")
+    return entity
+
+
 def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
     constraint = sketch.constraints.get(constraint_id)
     if constraint is None:
@@ -70,6 +79,15 @@ def _line_response(sketch: Sketch, line: Line) -> LineResponse:
         start_point_id=line.start_point_id,
         end_point_id=line.end_point_id,
         length=line.length(sketch.points),
+    )
+
+
+def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
+    return CircleResponse(
+        id=circle.id,
+        center_point_id=circle.center_point_id,
+        radius_point_id=circle.radius_point_id,
+        radius=circle.radius(sketch.points),
     )
 
 
@@ -166,6 +184,29 @@ def update_line(sketch_id: str, line_id: str, payload: LineUpdate) -> LineRespon
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _line_response(sketch, line)
+
+
+@router.post("/sketches/{sketch_id}/circles", response_model=CircleResponse, status_code=201)
+def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        circle = sketch.add_circle(
+            payload.center_point_id,
+            payload.radius_point_id,
+            radius=payload.radius,
+            angle=payload.angle,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _circle_response(sketch, circle)
+
+
+@router.get("/sketches/{sketch_id}/circles/{circle_id}", response_model=CircleResponse)
+def get_circle(sketch_id: str, circle_id: str) -> CircleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _circle_response(sketch, _get_circle_or_404(sketch, circle_id))
 
 
 @router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)

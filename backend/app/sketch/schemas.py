@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Union
 
 from pydantic import BaseModel, model_validator
 
@@ -72,7 +72,36 @@ class LineResponse(BaseModel):
     length: float
 
 
-SketchEntityResponse = LineResponse
+class CircleCreate(BaseModel):
+    """Create a circle from an existing center Point, plus either an
+    existing radius Point's id (explicit sharing) or a radius and angle
+    (radians from the +x axis), which creates a new radius Point -
+    mirroring LineCreate's existing-vs-computed-point pattern."""
+
+    center_point_id: str
+    radius_point_id: str | None = None
+    radius: float | None = None
+    angle: float | None = None
+
+    @model_validator(mode="after")
+    def check_creation_mode(self) -> "CircleCreate":
+        if self.radius_point_id is not None:
+            if self.radius is not None or self.angle is not None:
+                raise ValueError("Provide either 'radius_point_id', or 'radius' and 'angle', not both")
+        elif self.radius is None or self.angle is None:
+            raise ValueError("Provide either 'radius_point_id', or both 'radius' and 'angle'")
+        return self
+
+
+class CircleResponse(BaseModel):
+    type: Literal["circle"] = "circle"
+    id: str
+    center_point_id: str
+    radius_point_id: str
+    radius: float
+
+
+SketchEntityResponse = Union[LineResponse, CircleResponse]
 
 
 class ProfileResponse(BaseModel):

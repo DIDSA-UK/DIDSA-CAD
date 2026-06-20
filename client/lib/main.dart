@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'sketch/sketch_canvas.dart';
 import 'sketch/sketch_controller.dart';
+import 'sketch/sketch_speed_dial.dart';
 
 void main() {
   runApp(const DidsaCadApp());
@@ -80,43 +81,10 @@ class _SketchScreenState extends State<SketchScreen> {
               },
             ),
             Expanded(child: SketchCanvas(controller: _controller)),
-            AnimatedBuilder(
-              animation: _controller,
-              builder: (context, _) {
-                return Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      FilledButton(
-                        onPressed: _controller.busy ? null : _controller.click,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          child: _controller.busy
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Text('Click'),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      OutlinedButton(
-                        onPressed: _controller.chainInProgress ? _controller.finishChain : null,
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          child: Text('Finish Line'),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
           ],
         ),
       ),
+      floatingActionButton: SketchSpeedDial(controller: _controller),
     );
   }
 }

@@ -43,7 +43,7 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  testWidgets('DidsaCadApp renders the Click and Finish Line buttons', (tester) async {
+  testWidgets('DidsaCadApp collapses to a single main FAB and expands into tool actions on tap', (tester) async {
     final mockClient = MockClient((request) async {
       if (request.url.path == '/sketch/sketches' && request.method == 'POST') {
         return _jsonResponse({'id': 'sketch-1', 'plane': 'XY'}, statusCode: 201);
@@ -55,7 +55,23 @@ void main() {
     await tester.pumpWidget(DidsaCadApp(controller: controller));
     await tester.pump();
 
-    expect(find.text('Click'), findsOneWidget);
-    expect(find.text('Finish Line'), findsOneWidget);
+    // Collapsed: the main toggle FAB shows a "+", and the action FABs are
+    // zero-sized (still in the tree under the SizeTransition, but not
+    // tappable - hitTestable excludes them).
+    expect(find.byIcon(Icons.add), findsOneWidget);
+    expect(find.byTooltip('Click').hitTestable(), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('Click').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Line').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Circle').hitTestable(), findsOneWidget);
+    // No chain in progress yet, so there is nothing to Finish.
+    expect(find.byTooltip('Finish').hitTestable(), findsNothing);
+
+    await tester.tap(find.byTooltip('Circle').hitTestable());
+    await tester.pump();
+    expect(controller.activeTool, SketchTool.circle);
   });
 }

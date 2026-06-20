@@ -93,6 +93,38 @@ class Line(SketchEntity):
 
 
 @dataclass
+class Circle(SketchEntity):
+    """A circle defined by two referenced Points: a center Point and a
+    radius Point (a point on the circle's edge). Both are real, independently
+    addressable Points - shareable with other entities via explicit id
+    reference, same as Line's start/end Points.
+
+    Does NOT override `endpoint_point_ids()` (inherits the base class's
+    `None`): unlike a Line, a Circle's center/radius Points are not
+    "connection" points in the chain-walking sense used by closed-loop
+    detection. Sharing a Circle's center or radius Point with a Line is
+    still allowed (it's just point-sharing, same as any two entities can
+    share a Point), but it does not make the Circle part of a Line chain's
+    connectivity graph - a Circle is either its own standalone closed
+    profile, or (for now) not part of profile detection at all. See
+    `profile.py` for how a standalone Circle is detected separately.
+    """
+
+    id: str
+    center_point_id: str
+    radius_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "circle"
+
+    def radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center_point_id]
+        radius_point = points[self.radius_point_id]
+        return math.hypot(radius_point.x - center.x, radius_point.y - center.y)
+
+
+@dataclass
 class Sketch:
     """An independent 2D sketch on one of the three fixed reference planes.
 
@@ -142,6 +174,49 @@ class Sketch:
 
     def lines(self) -> list[Line]:
         return [entity for entity in self.entities.values() if isinstance(entity, Line)]
+
+    def add_circle(
+        self,
+        center_point_id: str,
+        radius_point_id: str | None = None,
+        *,
+        radius: float | None = None,
+        angle: float | None = None,
+    ) -> Circle:
+        """Add a Circle from an existing center Point to either an existing
+        radius Point (explicit sharing) or a new Point computed from a
+        radius and angle (radians from the +x axis), mirroring add_line's
+        existing-vs-computed-point pattern.
+
+        The radius is a real solver constraint, not just a stored number:
+        this always creates a DistanceConstraint between the center and
+        radius Points (reusing the existing constraint type as-is, since a
+        radius IS a distance constraint), so subsequent solves keep it
+        accurate as either Point moves.
+        """
+        center = self.points[center_point_id]
+        if radius_point_id is None:
+            radius_point_id = self.add_point(
+                center.x + radius * math.cos(angle),
+                center.y + radius * math.sin(angle),
+            ).id
+            distance = radius
+        elif radius_point_id not in self.points:
+            raise KeyError(radius_point_id)
+        else:
+            radius_point = self.points[radius_point_id]
+            distance = math.hypot(radius_point.x - center.x, radius_point.y - center.y)
+
+        if center_point_id == radius_point_id:
+            raise ValueError("A circle cannot have the same center and radius point")
+
+        circle = Circle(id=str(uuid.uuid4()), center_point_id=center_point_id, radius_point_id=radius_point_id)
+        self.entities[circle.id] = circle
+        self.add_distance_constraint(center_point_id, radius_point_id, distance)
+        return circle
+
+    def circles(self) -> list[Circle]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Circle)]
 
     def add_distance_constraint(
         self, point_a_id: str, point_b_id: str, distance: float

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 
-from app.sketch.models import Sketch
+from app.sketch.models import Circle, Sketch
 
 
 class ProfileStatus(str, Enum):
@@ -54,9 +54,31 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
         if (endpoints := entity.endpoint_point_ids()) is not None
     ]
     if not connections:
+        # No Lines (or other chain-connecting entities) at all - check for
+        # standalone Circles instead. Each Circle is its own valid closed
+        # profile (a Circle's two points are never "open" the way a Line
+        # chain can be), so this is a separate check rather than folding
+        # Circles into the line-chain adjacency graph above. Scoped to the
+        # no-Lines case only, by design: a Sketch mixing Lines and Circles
+        # does not yet get its Circles included in profile detection - a
+        # known, documented gap rather than an attempt to generalize ahead
+        # of need.
+        circles = sketch.circles()
+        if len(circles) == 1:
+            return ProfileDetectionResult(
+                status=ProfileStatus.CLOSED_LOOP,
+                detail="Standalone circle detected as its own closed profile.",
+                profile=_circle_profile(sketch, circles[0]),
+            )
+        if len(circles) > 1:
+            return ProfileDetectionResult(
+                status=ProfileStatus.MULTIPLE_LOOPS,
+                detail=f"{len(circles)} standalone circles, each its own closed profile.",
+                loops=[_circle_profile(sketch, circle) for circle in circles],
+            )
         return ProfileDetectionResult(
             status=ProfileStatus.NO_LOOP,
-            detail="Sketch has no connectable entities (e.g. lines).",
+            detail="Sketch has no connectable entities (e.g. lines or circles).",
         )
 
     adjacency: dict[str, list[tuple[str, str]]] = {}
@@ -100,6 +122,18 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
         status=ProfileStatus.MULTIPLE_LOOPS,
         detail=f"{len(loops)} disjoint closed loops found in this sketch.",
         loops=loops,
+    )
+
+
+def _circle_profile(sketch: Sketch, circle: Circle) -> Profile:
+    # Profile.line_ids is reused here to hold the Circle's own entity id
+    # (a single-entity "loop") rather than a list of Line ids - there's
+    # only ever one entity tracing this profile's boundary, unlike a
+    # Line-chain loop's multiple Line ids.
+    return Profile(
+        sketch_id=sketch.id,
+        point_ids=[circle.center_point_id, circle.radius_point_id],
+        line_ids=[circle.id],
     )
 
 

@@ -49,6 +49,16 @@ class _FakeBackend {
       }, 201);
     }
 
+    final circlesMatch = RegExp(r'^/sketch/sketches/[^/]+/circles$').hasMatch(path);
+    if (circlesMatch && request.method == 'POST') {
+      return _json({
+        'id': _newId('circle'),
+        'center_point_id': body['center_point_id'],
+        'radius_point_id': body['radius_point_id'],
+        'radius': 1.0,
+      }, 201);
+    }
+
     final solveMatch = RegExp(r'^/sketch/sketches/[^/]+/solve$').hasMatch(path);
     if (solveMatch && request.method == 'POST') {
       return _json({
@@ -159,6 +169,63 @@ void main() {
     expect(controller.chainInProgress, isFalse);
     expect(controller.points.length, 1);
     expect(controller.lines.length, 0);
+  });
+
+  test('selecting the circle tool does not disturb an in-progress line chain state', () async {
+    await controller.click(); // starts a line chain
+    expect(controller.chainInProgress, isTrue);
+
+    controller.setTool(SketchTool.circle);
+
+    expect(controller.activeTool, SketchTool.circle);
+    expect(controller.chainInProgress, isTrue);
+  });
+
+  test('first click in circle tool places only a center point, no circle yet', () async {
+    controller.setTool(SketchTool.circle);
+    controller.cursorX = 3;
+    controller.cursorY = 4;
+
+    await controller.click();
+
+    expect(controller.points.length, 1);
+    expect(controller.circles.length, 0);
+    expect(controller.circleInProgress, isTrue);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('second click in circle tool creates the circle, solves, and ends the in-progress circle', () async {
+    controller.setTool(SketchTool.circle);
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    await controller.click();
+    final centerId = controller.circleCenterPointId;
+
+    controller.cursorX = 5;
+    controller.cursorY = 0;
+    await controller.click();
+
+    expect(controller.points.length, 2);
+    expect(controller.circles.length, 1);
+    final circle = controller.circles.values.first;
+    expect(circle.centerPointId, centerId);
+    expect(circle.radiusPointId, isNot(centerId));
+    expect(controller.circleInProgress, isFalse);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('a third click after a completed circle starts a fresh circle', () async {
+    controller.setTool(SketchTool.circle);
+    await controller.click();
+    await controller.click();
+    expect(controller.circles.length, 1);
+
+    controller.cursorX = 20;
+    controller.cursorY = 20;
+    await controller.click();
+
+    expect(controller.circleInProgress, isTrue);
+    expect(controller.circles.length, 1);
   });
 
   test('a failed request surfaces a visible error message, not a silent failure', () async {
