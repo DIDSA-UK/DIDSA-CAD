@@ -61,15 +61,21 @@ void main() {
     await tester.pumpWidget(DidsaCadApp(controller: controller));
     await tester.pump();
 
-    // Collapsed: the main toggle FAB shows a "+", and the action FABs are
-    // zero-sized (still in the tree under the SizeTransition, but not
-    // tappable - hitTestable excludes them).
+    // Click is its own persistent control, decoupled from the speed dial -
+    // it must be visible and usable even while the speed dial is collapsed.
+    expect(find.byTooltip('Click').hitTestable(), findsOneWidget);
+
+    // Collapsed: the main toggle FAB shows a "+", and the speed dial's own
+    // action FABs are zero-sized (still in the tree under the
+    // SizeTransition, but not tappable - hitTestable excludes them).
     expect(find.byIcon(Icons.add), findsOneWidget);
-    expect(find.byTooltip('Click').hitTestable(), findsNothing);
+    expect(find.byTooltip('Line').hitTestable(), findsNothing);
+    expect(find.byTooltip('Circle').hitTestable(), findsNothing);
 
     await tester.tap(find.byIcon(Icons.add));
     await tester.pumpAndSettle();
 
+    // Still visible and usable now that the speed dial is expanded.
     expect(find.byTooltip('Click').hitTestable(), findsOneWidget);
     expect(find.byTooltip('Line').hitTestable(), findsOneWidget);
     expect(find.byTooltip('Circle').hitTestable(), findsOneWidget);
