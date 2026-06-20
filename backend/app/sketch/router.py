@@ -121,13 +121,13 @@ def _solve_result_response(result: SolveResult) -> SolveResultResponse:
 def create_sketch(payload: SketchCreate) -> SketchResponse:
     sketch = Sketch(id=str(uuid.uuid4()), plane=payload.plane)
     _sketches[sketch.id] = sketch
-    return SketchResponse(id=sketch.id, plane=sketch.plane)
+    return SketchResponse(id=sketch.id, plane=sketch.plane, origin_point_id=sketch.origin_point().id)
 
 
 @router.get("/sketches/{sketch_id}", response_model=SketchResponse)
 def get_sketch(sketch_id: str) -> SketchResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return SketchResponse(id=sketch.id, plane=sketch.plane)
+    return SketchResponse(id=sketch.id, plane=sketch.plane, origin_point_id=sketch.origin_point().id)
 
 
 @router.post("/sketches/{sketch_id}/points", response_model=PointResponse, status_code=201)

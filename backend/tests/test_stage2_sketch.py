@@ -87,6 +87,40 @@ def test_sketches_do_not_share_points_or_entities():
     assert not sketch_two.points
 
 
+def test_bare_sketch_construction_does_not_create_an_origin_point():
+    sketch = Sketch(id="s1", plane=Plane.XY)
+    assert not sketch.points
+
+
+def test_origin_point_is_created_lazily_at_zero_zero():
+    sketch = Sketch(id="s1", plane=Plane.XY)
+    origin = sketch.origin_point()
+
+    assert origin.x == 0.0
+    assert origin.y == 0.0
+    assert sketch.points[origin.id] is origin
+
+
+def test_origin_point_is_stable_across_calls():
+    sketch = Sketch(id="s1", plane=Plane.XY)
+    first = sketch.origin_point()
+    second = sketch.origin_point()
+
+    assert first.id == second.id
+    assert len(sketch.points) == 1
+
+
+def test_origin_point_is_independent_per_sketch():
+    sketch_one = Sketch(id="s1", plane=Plane.XY)
+    sketch_two = Sketch(id="s2", plane=Plane.XY)
+
+    origin_one = sketch_one.origin_point()
+    origin_two = sketch_two.origin_point()
+
+    assert origin_one.id != origin_two.id
+    assert origin_two.id not in sketch_one.points
+
+
 # --- API tests ---------------------------------------------------------------
 
 
@@ -113,11 +147,29 @@ def test_create_sketch_rejects_invalid_plane():
     assert response.status_code == 422
 
 
+def test_create_sketch_exposes_a_real_origin_point_id():
+    sketch = _create_sketch("XY")
+    origin_id = sketch["origin_point_id"]
+
+    response = client.get(f"/sketch/sketches/{sketch['id']}/points/{origin_id}")
+    assert response.status_code == 200
+    assert response.json() == {"id": origin_id, "x": 0.0, "y": 0.0}
+
+
 def test_get_sketch_round_trip():
     created = _create_sketch("YZ")
     response = client.get(f"/sketch/sketches/{created['id']}")
     assert response.status_code == 200
     assert response.json() == created
+
+
+def test_get_sketch_backfills_origin_point_id_consistently():
+    created = _create_sketch("XY")
+    first = client.get(f"/sketch/sketches/{created['id']}").json()
+    second = client.get(f"/sketch/sketches/{created['id']}").json()
+
+    assert first["origin_point_id"] == created["origin_point_id"]
+    assert second["origin_point_id"] == created["origin_point_id"]
 
 
 def test_get_sketch_not_found():

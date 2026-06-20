@@ -139,11 +139,23 @@ class Sketch:
     points: dict[str, Point] = field(default_factory=dict)
     entities: dict[str, SketchEntity] = field(default_factory=dict)
     constraints: dict[str, Constraint] = field(default_factory=dict)
+    _origin_point_id: str | None = field(default=None, repr=False)
 
     def add_point(self, x: float, y: float) -> Point:
         point = Point(id=str(uuid.uuid4()), x=x, y=y)
         self.points[point.id] = point
         return point
+
+    def origin_point(self) -> Point:
+        """The real, addressable Point at (0, 0) in this Sketch's local
+        coordinates - lazily created on first access (not at construction
+        time) so that bare `Sketch(...)` construction in tests/elsewhere
+        never implicitly gains a Point, and so pre-existing Sketches (from
+        before this concept existed) get backfilled automatically the
+        first time anyone asks for it, with no migration step needed."""
+        if self._origin_point_id is None or self._origin_point_id not in self.points:
+            self._origin_point_id = self.add_point(0.0, 0.0).id
+        return self.points[self._origin_point_id]
 
     def add_line(
         self,

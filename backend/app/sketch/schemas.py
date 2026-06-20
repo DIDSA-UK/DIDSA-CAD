@@ -13,6 +13,7 @@ class SketchCreate(BaseModel):
 class SketchResponse(BaseModel):
     id: str
     plane: Plane
+    origin_point_id: str
 
 
 class PointCreate(BaseModel):
