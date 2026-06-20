@@ -1,0 +1,188 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show Offset;
+
+import '../api/sketch_api_client.dart';
+import 'view_transform.dart';
+
+class SketchPointView {
+  final String id;
+  final double x;
+  final double y;
+
+  const SketchPointView({required this.id, required this.x, required this.y});
+}
+
+class SketchLineView {
+  final String id;
+  final String startPointId;
+  final String endPointId;
+
+  const SketchLineView({required this.id, required this.startPointId, required this.endPointId});
+}
+
+/// Owns the sketch's client-side state (cursor, points, lines, the
+/// in-progress chain) and talks to the backend via [SketchApiClient].
+/// The backend's solved point positions are always treated as the source
+/// of truth - see [_refreshAllPoints], called after every solve.
+class SketchController extends ChangeNotifier {
+  final SketchApiClient _api;
+
+  SketchController({SketchApiClient? api}) : _api = api ?? SketchApiClient();
+
+  /// Touch drag moves the cursor relatively, scaled by this factor - not
+  /// 1:1 with finger position, per the project brief's interaction model.
+  static const double touchSensitivity = 0.05;
+
+  /// How close (in sketch units) the cursor must be to a chain's start
+  /// Point before a Click is treated as "close the loop" rather than
+  /// "place a new point".
+  static const double snapRadius = 0.5;
+
+  String? _sketchId;
+  String? get sketchId => _sketchId;
+
+  final Map<String, SketchPointView> points = {};
+  final Map<String, SketchLineView> lines = {};
+
+  double cursorX = 0;
+  double cursorY = 0;
+
+  String? _chainStartPointId;
+  String? _chainFirstPointId;
+
+  /// The Point id the *next* line segment will start from, or null if no
+  /// chain is currently in progress.
+  String? get currentChainStartPointId => _chainStartPointId;
+
+  /// The first Point of the current chain - the one a Click can snap back
+  /// onto to close the loop.
+  String? get chainFirstPointId => _chainFirstPointId;
+
+  bool get chainInProgress => _chainStartPointId != null;
+
+  bool _busy = false;
+  bool get busy => _busy;
+
+  String? errorMessage;
+
+  /// True when the cursor is close enough to the chain's start Point that
+  /// the next Click will close the loop using that Point's id, rather than
+  /// creating a new coincident Point.
+  bool get isHoveringChainStart {
+    if (!chainInProgress || _chainFirstPointId == null) return false;
+    if (_chainStartPointId == _chainFirstPointId) {
+      return false; // First segment - nothing to close onto yet.
+    }
+    final start = points[_chainFirstPointId];
+    if (start == null) return false;
+    final dx = cursorX - start.x;
+    final dy = cursorY - start.y;
+    return (dx * dx + dy * dy) <= snapRadius * snapRadius;
+  }
+
+  Future<void> ensureSketch() async {
+    if (_sketchId != null) return;
+    await _runGuarded(() async {
+      final sketch = await _api.createSketch(plane: 'XY');
+      _sketchId = sketch.id;
+    });
+  }
+
+  /// Touch input: relative movement, scaled. The cursor's absolute position
+  /// persists across separate touches - this only ever adds a delta.
+  void moveCursorRelative(double dxPixels, double dyPixels) {
+    cursorX += dxPixels * touchSensitivity;
+    cursorY -= dyPixels * touchSensitivity; // screen y is down; sketch y is up.
+    notifyListeners();
+  }
+
+  /// Windows mouse input: absolute, 1:1 with device position.
+  void moveCursorAbsoluteScreen(Offset screenPosition, ViewTransform transform) {
+    final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
+    cursorX = coord.x;
+    cursorY = coord.y;
+    notifyListeners();
+  }
+
+  /// The single "commit an action at the cursor" entry point - driven by
+  /// either the on-screen Click button or a real mouse click on Windows.
+  Future<void> click() async {
+    if (_busy || _sketchId == null) return;
+
+    if (!chainInProgress) {
+      await _runGuarded(() async {
+        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        _chainStartPointId = point.id;
+        _chainFirstPointId = point.id;
+      });
+      return;
+    }
+
+    final closingLoop = isHoveringChainStart;
+    await _runGuarded(() async {
+      String endPointId;
+      if (closingLoop) {
+        endPointId = _chainFirstPointId!;
+      } else {
+        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        endPointId = point.id;
+      }
+
+      final line = await _api.createLine(_sketchId!, _chainStartPointId!, endPointId);
+      lines[line.id] = SketchLineView(
+        id: line.id,
+        startPointId: line.startPointId,
+        endPointId: line.endPointId,
+      );
+
+      // One user action (this Click, now that the line is fully placed) =
+      // one solve call - never on intermediate cursor movement.
+      await _api.solve(_sketchId!);
+      await _refreshAllPoints();
+
+      if (closingLoop) {
+        _chainStartPointId = null;
+        _chainFirstPointId = null;
+      } else {
+        _chainStartPointId = endPointId;
+      }
+    });
+  }
+
+  /// Ends the current chain without closing a loop - the next Click starts
+  /// an unrelated new chain.
+  void finishChain() {
+    _chainStartPointId = null;
+    _chainFirstPointId = null;
+    notifyListeners();
+  }
+
+  Future<void> _refreshAllPoints() async {
+    for (final id in points.keys.toList()) {
+      final fresh = await _api.getPoint(_sketchId!, id);
+      points[id] = SketchPointView(id: fresh.id, x: fresh.x, y: fresh.y);
+    }
+  }
+
+  Future<void> _runGuarded(Future<void> Function() body) async {
+    _busy = true;
+    errorMessage = null;
+    notifyListeners();
+    try {
+      await body();
+    } on ApiException catch (e) {
+      errorMessage = e.message;
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    _api.close();
+    super.dispose();
+  }
+}
