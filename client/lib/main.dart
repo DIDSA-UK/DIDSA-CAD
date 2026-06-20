@@ -84,7 +84,26 @@ class _SketchScreenState extends State<SketchScreen> {
           ],
         ),
       ),
-      floatingActionButton: SketchSpeedDial(controller: _controller),
+      floatingActionButton: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Click is always visible and usable regardless of the speed
+          // dial's expanded/collapsed state or which tool is selected - it
+          // is the core "commit a point" action.
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) => FloatingActionButton(
+              heroTag: 'click',
+              tooltip: 'Click',
+              onPressed: _controller.busy ? null : _controller.click,
+              child: const Icon(Icons.touch_app),
+            ),
+          ),
+          const SizedBox(width: 12),
+          SketchSpeedDial(controller: _controller),
+        ],
+      ),
     );
   }
 }

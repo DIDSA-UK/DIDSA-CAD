@@ -19,11 +19,15 @@ class ApiException implements Exception {
 class SketchDto {
   final String id;
   final String plane;
+  final String originPointId;
 
-  SketchDto({required this.id, required this.plane});
+  SketchDto({required this.id, required this.plane, required this.originPointId});
 
-  factory SketchDto.fromJson(Map<String, dynamic> json) =>
-      SketchDto(id: json['id'] as String, plane: json['plane'] as String);
+  factory SketchDto.fromJson(Map<String, dynamic> json) => SketchDto(
+        id: json['id'] as String,
+        plane: json['plane'] as String,
+        originPointId: json['origin_point_id'] as String,
+      );
 }
 
 class PointDto {

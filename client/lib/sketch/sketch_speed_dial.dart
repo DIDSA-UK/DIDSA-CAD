@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 
 import 'sketch_controller.dart';
 
-/// The tool switcher: a single small FAB that expands into Line/Circle tool
-/// selectors and the Click/Finish actions, replacing what used to be a
-/// permanently-visible button row so the canvas gets that screen space
-/// back. Collapsed by default; tapping the main FAB toggles the menu open
-/// or closed (mirrors Flutter's standard expandable-FAB pattern). Once
-/// open, tapping a mini action performs it without auto-closing the menu,
-/// since Click in particular is meant to be tapped repeatedly.
+/// The tool switcher: a single small FAB that expands into the Line/Circle
+/// tool selectors and Finish. Click is deliberately NOT part of this menu -
+/// it is its own always-visible control (see [SketchScreen]'s
+/// floatingActionButton) since it is the core "commit a point" action and
+/// must never be hidden by tool-switching UI. Collapsed by default; tapping
+/// the main FAB toggles the menu open or closed (mirrors Flutter's standard
+/// expandable-FAB pattern).
 class SketchSpeedDial extends StatefulWidget {
   final SketchController controller;
 
@@ -70,11 +70,6 @@ class _SketchSpeedDialState extends State<SketchSpeedDial> with SingleTickerProv
             label: 'Line',
             selected: controller.activeTool == SketchTool.line,
             onPressed: () => controller.setTool(SketchTool.line),
-          ),
-          _SpeedDialAction(
-            icon: Icons.touch_app,
-            label: 'Click',
-            onPressed: controller.busy ? null : controller.click,
           ),
         ];
 

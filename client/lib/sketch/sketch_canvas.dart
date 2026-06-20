@@ -67,8 +67,9 @@ class _SketchCanvasState extends State<SketchCanvas> {
 
     if (_activeTouches.length < 2) {
       // Single-finger: relative, scaled cursor movement - never jumps to
-      // the touch point.
-      widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy);
+      // the touch point. Sensitivity scales with the current zoom so the
+      // felt responsiveness stays consistent across zoom levels.
+      widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
     }
 
@@ -208,10 +209,29 @@ class _SketchPainter extends CustomPainter {
       );
     }
 
+    final originId = controller.originPointId;
+    if (originId != null) {
+      final origin = controller.points[originId];
+      if (origin != null) {
+        final isSnappingToOrigin = controller.isHoveringOrigin;
+        final originPaint = Paint()
+          ..color = isSnappingToOrigin ? Colors.green : Colors.indigo
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2;
+        final halfSize = isSnappingToOrigin ? 10.0 : 7.0;
+        final originScreen = transform.sketchToScreen(origin.x, origin.y);
+        canvas.drawRect(
+          Rect.fromCenter(center: originScreen, width: halfSize * 2, height: halfSize * 2),
+          originPaint,
+        );
+      }
+    }
+
     final chainFirstId = controller.chainFirstPointId;
     final isSnapping = controller.isHoveringChainStart;
     final circleCenterId = controller.circleCenterPointId;
     for (final point in controller.points.values) {
+      if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
       final screenPos = transform.sketchToScreen(point.x, point.y);

@@ -52,6 +52,14 @@ class SketchController extends ChangeNotifier {
   String? _sketchId;
   String? get sketchId => _sketchId;
 
+  String? _originPointId;
+
+  /// The id of this Sketch's real backend origin Point (0, 0) - null until
+  /// [ensureSketch] completes. Used both to render the origin marker and to
+  /// snap onto it, the same way [chainFirstPointId] is used for chain-start
+  /// snapping.
+  String? get originPointId => _originPointId;
+
   final Map<String, SketchPointView> points = {};
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
@@ -108,19 +116,39 @@ class SketchController extends ChangeNotifier {
     return (dx * dx + dy * dy) <= snapRadius * snapRadius;
   }
 
+  /// True when the cursor is close enough to the Sketch's real origin Point
+  /// that the next Click should land exactly on it, rather than creating a
+  /// new coincident Point - the same snap-radius pattern as
+  /// [isHoveringChainStart], applied to the origin instead of a chain start.
+  bool get isHoveringOrigin {
+    final origin = points[_originPointId];
+    if (origin == null) return false;
+    final dx = cursorX - origin.x;
+    final dy = cursorY - origin.y;
+    return (dx * dx + dy * dy) <= snapRadius * snapRadius;
+  }
+
   Future<void> ensureSketch() async {
     if (_sketchId != null) return;
     await _runGuarded(() async {
       final sketch = await _api.createSketch(plane: 'XY');
       _sketchId = sketch.id;
+      _originPointId = sketch.originPointId;
+      points[sketch.originPointId] = SketchPointView(id: sketch.originPointId, x: 0, y: 0);
     });
   }
 
-  /// Touch input: relative movement, scaled. The cursor's absolute position
-  /// persists across separate touches - this only ever adds a delta.
-  void moveCursorRelative(double dxPixels, double dyPixels) {
-    cursorX += dxPixels * touchSensitivity;
-    cursorY -= dyPixels * touchSensitivity; // screen y is down; sketch y is up.
+  /// Touch input: relative movement, scaled by [touchSensitivity] and the
+  /// current [zoom] level so that dragging across the same fraction of the
+  /// visible canvas covers roughly the same fraction of visible sketch-space
+  /// regardless of zoom - zoomed out (zoom < 1) means more sketch-space is
+  /// visible per pixel, so the same drag should move the cursor further,
+  /// and vice versa zoomed in. The cursor's absolute position persists
+  /// across separate touches - this only ever adds a delta.
+  void moveCursorRelative(double dxPixels, double dyPixels, double zoom) {
+    final scale = touchSensitivity / zoom;
+    cursorX += dxPixels * scale;
+    cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
     notifyListeners();
   }
 
@@ -145,24 +173,17 @@ class SketchController extends ChangeNotifier {
 
     if (!chainInProgress) {
       await _runGuarded(() async {
-        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
-        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
-        _chainStartPointId = point.id;
-        _chainFirstPointId = point.id;
+        final pointId = await _pointIdAtCursor();
+        _chainStartPointId = pointId;
+        _chainFirstPointId = pointId;
       });
       return;
     }
 
     final closingLoop = isHoveringChainStart;
     await _runGuarded(() async {
-      String endPointId;
-      if (closingLoop) {
-        endPointId = _chainFirstPointId!;
-      } else {
-        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
-        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
-        endPointId = point.id;
-      }
+      final endPointId =
+          closingLoop ? _chainFirstPointId! : await _pointIdAtCursor(excludeId: _chainStartPointId);
 
       final line = await _api.createLine(_sketchId!, _chainStartPointId!, endPointId);
       lines[line.id] = SketchLineView(
@@ -193,18 +214,15 @@ class SketchController extends ChangeNotifier {
   Future<void> _clickCircleTool() async {
     if (!circleInProgress) {
       await _runGuarded(() async {
-        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
-        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
-        _circleCenterPointId = point.id;
+        _circleCenterPointId = await _pointIdAtCursor();
       });
       return;
     }
 
     await _runGuarded(() async {
-      final radiusPoint = await _api.createPoint(_sketchId!, cursorX, cursorY);
-      points[radiusPoint.id] = SketchPointView(id: radiusPoint.id, x: radiusPoint.x, y: radiusPoint.y);
+      final radiusPointId = await _pointIdAtCursor(excludeId: _circleCenterPointId);
 
-      final circle = await _api.createCircle(_sketchId!, _circleCenterPointId!, radiusPoint.id);
+      final circle = await _api.createCircle(_sketchId!, _circleCenterPointId!, radiusPointId);
       circles[circle.id] = SketchCircleView(
         id: circle.id,
         centerPointId: circle.centerPointId,
@@ -217,6 +235,22 @@ class SketchController extends ChangeNotifier {
 
       _circleCenterPointId = null;
     });
+  }
+
+  /// Resolves the Point id a Click at the current cursor should use: the
+  /// real origin Point's id if the cursor is hovering it (and that id isn't
+  /// [excludeId] - e.g. an entity's own center/chain-start id, which it can
+  /// never coincide with), otherwise a freshly created Point at the cursor.
+  /// The single place every Click path goes through to place/reuse a Point,
+  /// so origin-snapping applies uniformly to chain starts, chain
+  /// continuations, and both Circle clicks.
+  Future<String> _pointIdAtCursor({String? excludeId}) async {
+    if (isHoveringOrigin && _originPointId != excludeId) {
+      return _originPointId!;
+    }
+    final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
+    points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+    return point.id;
   }
 
   /// Ends the current chain without closing a loop - the next Click starts
