@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show Offset;
 
@@ -30,6 +32,19 @@ class SketchCircleView {
 
 /// Which entity the next Click commits. Selected via the tool-switcher FAB.
 enum SketchTool { line, circle }
+
+/// The kind of entity a [SketchSelection] refers to.
+enum SelectionKind { point, line, circle }
+
+/// The single hovered-or-selected entity, idle-state only (see
+/// [SketchController.isIdle]) - distinct from the chain-start/circle-center
+/// "in progress" highlighting, which applies only during active drawing.
+class SketchSelection {
+  final SelectionKind kind;
+  final String id;
+
+  const SketchSelection({required this.kind, required this.id});
+}
 
 /// Owns the sketch's client-side state (cursor, points, lines, the
 /// in-progress chain) and talks to the backend via [SketchApiClient].
@@ -128,6 +143,156 @@ class SketchController extends ChangeNotifier {
     return (dx * dx + dy * dy) <= snapRadius * snapRadius;
   }
 
+  SketchSelection? _selection;
+
+  /// The currently selected entity, or null if nothing is selected - set by
+  /// [handleCanvasTap], cleared whenever a new chain/circle starts being
+  /// drawn (see [click]) or a delete succeeds.
+  SketchSelection? get selection => _selection;
+
+  bool _ribbonVisible = false;
+
+  /// Whether the contextual ribbon panel should be showing - opened by any
+  /// qualifying tap (see [handleCanvasTap]), closed as soon as drawing
+  /// starts again, since the ribbon is for acting on a selection/idle
+  /// canvas, not for drawing.
+  bool get ribbonVisible => _ribbonVisible;
+
+  /// True while nothing is currently being drawn - no chain in progress, no
+  /// circle mid-placement. Hovering/selecting an existing entity, and the
+  /// ribbon, only ever apply while idle; a bare tap during active drawing
+  /// must not trigger either, per the Stage 6 interaction model.
+  bool get isIdle => !chainInProgress && !circleInProgress;
+
+  /// The Point, Line, or Circle nearest the cursor and within [snapRadius],
+  /// or null while not idle, or if nothing is close enough. Points are
+  /// checked before Lines/Circles so a Point at a Line's endpoint or a
+  /// Circle's center/radius always wins over the entity it belongs to.
+  SketchSelection? get hoveredEntity {
+    if (!isIdle) return null;
+
+    for (final point in points.values) {
+      final dx = cursorX - point.x;
+      final dy = cursorY - point.y;
+      if (dx * dx + dy * dy <= snapRadius * snapRadius) {
+        return SketchSelection(kind: SelectionKind.point, id: point.id);
+      }
+    }
+
+    for (final line in lines.values) {
+      final start = points[line.startPointId];
+      final end = points[line.endPointId];
+      if (start == null || end == null) continue;
+      if (_distanceToSegment(cursorX, cursorY, start.x, start.y, end.x, end.y) <= snapRadius) {
+        return SketchSelection(kind: SelectionKind.line, id: line.id);
+      }
+    }
+
+    for (final circle in circles.values) {
+      final center = points[circle.centerPointId];
+      final radiusPoint = points[circle.radiusPointId];
+      if (center == null || radiusPoint == null) continue;
+      final radius = math.sqrt(
+        math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
+      );
+      final distanceToCenter = math.sqrt(
+        math.pow(cursorX - center.x, 2) + math.pow(cursorY - center.y, 2),
+      );
+      if ((distanceToCenter - radius).abs() <= snapRadius) {
+        return SketchSelection(kind: SelectionKind.circle, id: circle.id);
+      }
+    }
+
+    return null;
+  }
+
+  double _distanceToSegment(
+    double px,
+    double py,
+    double ax,
+    double ay,
+    double bx,
+    double by,
+  ) {
+    final abx = bx - ax;
+    final aby = by - ay;
+    final lengthSquared = abx * abx + aby * aby;
+    var t = lengthSquared == 0 ? 0.0 : ((px - ax) * abx + (py - ay) * aby) / lengthSquared;
+    t = t.clamp(0.0, 1.0);
+    final closestX = ax + t * abx;
+    final closestY = ay + t * aby;
+    return math.sqrt(math.pow(px - closestX, 2) + math.pow(py - closestY, 2));
+  }
+
+  /// A human-readable reason [selection] (if it's a Point) cannot be
+  /// deleted, mirroring the backend's own Line/Circle/origin checks so the
+  /// ribbon can grey out Delete without a round-trip - or null if this
+  /// client-side check sees no reason to block it. The backend is still the
+  /// final authority (e.g. for Constraints, which the client doesn't track
+  /// locally) - see [deleteSelected]'s error handling for that fallback, so
+  /// a null result here is not a guarantee the backend will accept it.
+  String? get selectedPointDeleteBlockedReason {
+    final current = _selection;
+    if (current == null || current.kind != SelectionKind.point) return null;
+    final pointId = current.id;
+    if (pointId == _originPointId) {
+      return "Can't delete the sketch's origin point";
+    }
+    for (final line in lines.values) {
+      if (line.startPointId == pointId || line.endPointId == pointId) {
+        return 'Still used by a line';
+      }
+    }
+    for (final circle in circles.values) {
+      if (circle.centerPointId == pointId || circle.radiusPointId == pointId) {
+        return 'Still used by a circle';
+      }
+    }
+    return null;
+  }
+
+  /// The "select / tap blank space" gesture - a bare tap/click on the
+  /// canvas, as distinct from the Click button (see [click]). A no-op
+  /// while drawing is in progress, since drawing-mode interaction must be
+  /// unaffected by selection. While idle, selects whatever is hovered (or
+  /// clears the selection, if nothing is), and opens the ribbon either way.
+  void handleCanvasTap() {
+    if (!isIdle) return;
+    _selection = hoveredEntity;
+    _ribbonVisible = true;
+    notifyListeners();
+  }
+
+  /// Deletes [selection] via the matching backend DELETE endpoint, then
+  /// refreshes from backend state - same backend-is-truth pattern as every
+  /// other mutation. A rejected Point delete (e.g. a Constraint the client
+  /// doesn't track locally) surfaces via [errorMessage], same as any other
+  /// API failure, and the selection is left in place so the ribbon keeps
+  /// showing it.
+  Future<void> deleteSelected() async {
+    final current = _selection;
+    if (current == null || _busy || _sketchId == null) return;
+
+    await _runGuarded(() async {
+      switch (current.kind) {
+        case SelectionKind.line:
+          await _api.deleteLine(_sketchId!, current.id);
+          lines.remove(current.id);
+          break;
+        case SelectionKind.circle:
+          await _api.deleteCircle(_sketchId!, current.id);
+          circles.remove(current.id);
+          break;
+        case SelectionKind.point:
+          await _api.deletePoint(_sketchId!, current.id);
+          points.remove(current.id);
+          break;
+      }
+      await _refreshAllPoints();
+      _selection = null;
+    });
+  }
+
   Future<void> ensureSketch() async {
     if (_sketchId != null) return;
     await _runGuarded(() async {
@@ -172,6 +337,8 @@ class SketchController extends ChangeNotifier {
     }
 
     if (!chainInProgress) {
+      _selection = null;
+      _ribbonVisible = false;
       await _runGuarded(() async {
         final pointId = await _pointIdAtCursor();
         _chainStartPointId = pointId;
@@ -213,6 +380,8 @@ class SketchController extends ChangeNotifier {
   /// "finish" step.
   Future<void> _clickCircleTool() async {
     if (!circleInProgress) {
+      _selection = null;
+      _ribbonVisible = false;
       await _runGuarded(() async {
         _circleCenterPointId = await _pointIdAtCursor();
       });
