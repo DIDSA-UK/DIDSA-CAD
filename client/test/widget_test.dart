@@ -17,7 +17,10 @@ void main() {
   testWidgets('App boots, creates a sketch on startup, and shows controls', (tester) async {
     final mockClient = MockClient((request) async {
       if (request.url.path == '/sketch/sketches' && request.method == 'POST') {
-        return _jsonResponse({'id': 'sketch-1', 'plane': 'XY'}, statusCode: 201);
+        return _jsonResponse(
+          {'id': 'sketch-1', 'plane': 'XY', 'origin_point_id': 'origin-1'},
+          statusCode: 201,
+        );
       }
       return http.Response('not found', 404);
     });
@@ -46,7 +49,10 @@ void main() {
   testWidgets('DidsaCadApp collapses to a single main FAB and expands into tool actions on tap', (tester) async {
     final mockClient = MockClient((request) async {
       if (request.url.path == '/sketch/sketches' && request.method == 'POST') {
-        return _jsonResponse({'id': 'sketch-1', 'plane': 'XY'}, statusCode: 201);
+        return _jsonResponse(
+          {'id': 'sketch-1', 'plane': 'XY', 'origin_point_id': 'origin-1'},
+          statusCode: 201,
+        );
       }
       return http.Response('not found', 404);
     });

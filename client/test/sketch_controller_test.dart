@@ -21,7 +21,12 @@ class _FakeBackend {
     final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
 
     if (path == '/sketch/sketches' && request.method == 'POST') {
-      return _json({'id': 'sketch-1', 'plane': body['plane']}, 201);
+      // Mirror the real backend: the origin Point is a genuine Point the
+      // server already knows about, so it must be GET-able too (e.g. via
+      // the refresh-after-solve path), not just locally cached by the
+      // client.
+      points['origin-1'] = {'id': 'origin-1', 'x': 0.0, 'y': 0.0};
+      return _json({'id': 'sketch-1', 'plane': body['plane'], 'origin_point_id': 'origin-1'}, 201);
     }
 
     final pointsMatch = RegExp(r'^/sketch/sketches/[^/]+/points$').hasMatch(path);
@@ -94,7 +99,10 @@ void main() {
     controller.cursorY = 2;
     await controller.click();
 
-    expect(controller.points.length, 1);
+    // 2, not 1: the Sketch's real origin Point is already present from
+    // ensureSketch(), and this click is far enough from it to create a
+    // distinct new Point rather than snapping onto the origin.
+    expect(controller.points.length, 2);
     expect(controller.lines.length, 0);
     expect(controller.chainInProgress, isTrue);
     expect(controller.errorMessage, isNull);
@@ -188,7 +196,9 @@ void main() {
 
     await controller.click();
 
-    expect(controller.points.length, 1);
+    // 2, not 1: the origin Point already exists, and (3, 4) is outside its
+    // snap radius, so this places a genuinely new center Point.
+    expect(controller.points.length, 2);
     expect(controller.circles.length, 0);
     expect(controller.circleInProgress, isTrue);
     expect(controller.errorMessage, isNull);
@@ -226,6 +236,78 @@ void main() {
 
     expect(controller.circleInProgress, isTrue);
     expect(controller.circles.length, 1);
+  });
+
+  test('ensureSketch tracks the real backend origin Point at (0, 0)', () {
+    expect(controller.originPointId, isNotNull);
+    final origin = controller.points[controller.originPointId];
+    expect(origin, isNotNull);
+    expect(origin!.x, 0);
+    expect(origin.y, 0);
+  });
+
+  test('clicking within the snap radius of the origin lands exactly on its real point id', () async {
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+    await controller.click();
+
+    expect(controller.chainFirstPointId, controller.originPointId);
+    expect(controller.points.length, 1); // reused the origin - no new coincident point
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('a line cannot snap both ends onto the origin - the second click still places a new point', () async {
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    await controller.click(); // chain starts at the origin
+    final startId = controller.chainFirstPointId;
+    expect(startId, controller.originPointId);
+
+    // Still hovering the origin for the second click of the same segment.
+    await controller.click();
+
+    expect(controller.lines.length, 1);
+    final line = controller.lines.values.first;
+    expect(line.startPointId, startId);
+    expect(line.endPointId, isNot(startId)); // excluded - falls back to a new Point
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('a circle cannot snap both center and radius onto the origin', () async {
+    controller.setTool(SketchTool.circle);
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    await controller.click(); // center snaps to the origin
+    expect(controller.circleCenterPointId, controller.originPointId);
+
+    // Still hovering the origin for the radius click.
+    await controller.click();
+
+    expect(controller.circles.length, 1);
+    final circle = controller.circles.values.first;
+    expect(circle.centerPointId, controller.originPointId);
+    expect(circle.radiusPointId, isNot(controller.originPointId));
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('moveCursorRelative sensitivity scales inversely with zoom', () {
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    controller.moveCursorRelative(100, 0, 1);
+    final atDefaultZoom = controller.cursorX;
+
+    controller.cursorX = 0;
+    controller.moveCursorRelative(100, 0, 2);
+    final atDoubleZoom = controller.cursorX;
+
+    controller.cursorX = 0;
+    controller.moveCursorRelative(100, 0, 0.5);
+    final atHalfZoom = controller.cursorX;
+
+    // Zoomed in (zoom 2): same drag covers less sketch-space.
+    expect(atDoubleZoom, closeTo(atDefaultZoom / 2, 1e-9));
+    // Zoomed out (zoom 0.5): same drag covers more sketch-space.
+    expect(atHalfZoom, closeTo(atDefaultZoom * 2, 1e-9));
   });
 
   test('a failed request surfaces a visible error message, not a silent failure', () async {
