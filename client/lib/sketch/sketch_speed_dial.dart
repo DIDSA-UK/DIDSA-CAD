@@ -80,7 +80,7 @@ class _SketchSpeedDialState extends State<SketchSpeedDial> with SingleTickerProv
             for (final action in actions)
               SizeTransition(
                 sizeFactor: _animation,
-                axisAlignment: 1,
+                alignment: const Alignment(-1.0, 1.0),
                 child: FadeTransition(
                   opacity: _animation,
                   child: Padding(padding: const EdgeInsets.only(bottom: 8), child: action),

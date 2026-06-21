@@ -6,9 +6,9 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
-import 'package:didsa_cad_client/main.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
+import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 
 http.Response _jsonResponse(Map<String, dynamic> body, {int statusCode = 200}) =>
     http.Response(jsonEncode(body), statusCode);
@@ -46,7 +46,7 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  testWidgets('DidsaCadApp collapses to a single main FAB and expands into tool actions on tap', (tester) async {
+  testWidgets('SketchScreen collapses to a single main FAB and expands into tool actions on tap', (tester) async {
     final mockClient = MockClient((request) async {
       if (request.url.path == '/sketch/sketches' && request.method == 'POST') {
         return _jsonResponse(
@@ -58,7 +58,7 @@ void main() {
     });
     final controller = SketchController(api: SketchApiClient(httpClient: mockClient));
 
-    await tester.pumpWidget(DidsaCadApp(controller: controller));
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
     await tester.pump();
 
     // Click is its own persistent control, decoupled from the speed dial -

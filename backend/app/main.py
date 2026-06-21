@@ -2,6 +2,7 @@ from fastapi import Depends, FastAPI
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.auth import verify_api_key
+from app.document.router import router as document_router
 from app.sketch.router import router as sketch_router
 
 # Applied at the app level (not per-router) so every route - including
@@ -15,6 +16,7 @@ from app.sketch.router import router as sketch_router
 # dependency system, so they stay reachable (schema only, no data).
 app = FastAPI(dependencies=[Depends(verify_api_key)])
 app.include_router(sketch_router)
+app.include_router(document_router)
 
 
 @app.get("/health")

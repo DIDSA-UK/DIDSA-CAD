@@ -156,6 +156,11 @@ class SketchApiClient {
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 
+  Future<SketchDto> getSketch(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId'), headers: _headers),
+        (body) => SketchDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<PointDto> createPoint(String sketchId, double x, double y) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/points'),

@@ -1,122 +1,20 @@
 import 'package:flutter/material.dart';
 
-import 'sketch/sketch_canvas.dart';
-import 'sketch/sketch_controller.dart';
-import 'sketch/sketch_ribbon.dart';
-import 'sketch/sketch_speed_dial.dart';
+import 'viewport3d/part_screen.dart';
 
 void main() {
   runApp(const DidsaCadApp());
 }
 
 class DidsaCadApp extends StatelessWidget {
-  /// Overridable for tests, so they don't talk to the real backend.
-  final SketchController? controller;
-
-  const DidsaCadApp({super.key, this.controller});
+  const DidsaCadApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'DIDSA-CAD',
       theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo), useMaterial3: true),
-      home: SketchScreen(controller: controller),
-    );
-  }
-}
-
-/// Stage 4: chained line sketching against the live backend. A Sketch is
-/// created on the XY plane on startup; each completed Line triggers a real
-/// solve call, and rendering always reflects the backend's solved Point
-/// positions, never just the client's own local tracking.
-class SketchScreen extends StatefulWidget {
-  /// Overridable for tests, so they don't talk to the real backend.
-  final SketchController? controller;
-
-  const SketchScreen({super.key, this.controller});
-
-  @override
-  State<SketchScreen> createState() => _SketchScreenState();
-}
-
-class _SketchScreenState extends State<SketchScreen> {
-  late final SketchController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = widget.controller ?? SketchController();
-    _controller.ensureSketch();
-  }
-
-  @override
-  void dispose() {
-    // Only dispose a controller this widget created itself - an injected
-    // (e.g. test-owned) controller's lifecycle belongs to its caller.
-    if (widget.controller == null) {
-      _controller.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('DIDSA-CAD Sketch')),
-      body: SafeArea(
-        child: Column(
-          children: [
-            AnimatedBuilder(
-              animation: _controller,
-              builder: (context, _) {
-                if (_controller.errorMessage == null) return const SizedBox.shrink();
-                return Container(
-                  width: double.infinity,
-                  color: Colors.red.shade100,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Text(
-                    _controller.errorMessage!,
-                    style: TextStyle(color: Colors.red.shade900),
-                  ),
-                );
-              },
-            ),
-            Expanded(
-              child: Stack(
-                children: [
-                  SketchCanvas(controller: _controller),
-                  Positioned(
-                    top: 0,
-                    bottom: 0,
-                    left: 0,
-                    child: SketchRibbon(controller: _controller),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: Row(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // Click is always visible and usable regardless of the speed
-          // dial's expanded/collapsed state or which tool is selected - it
-          // is the core "commit a point" action.
-          AnimatedBuilder(
-            animation: _controller,
-            builder: (context, _) => FloatingActionButton(
-              heroTag: 'click',
-              tooltip: 'Click',
-              onPressed: _controller.busy ? null : _controller.click,
-              child: const Icon(Icons.touch_app),
-            ),
-          ),
-          const SizedBox(width: 12),
-          SketchSpeedDial(controller: _controller),
-        ],
-      ),
+      home: const PartScreen(),
     );
   }
 }
