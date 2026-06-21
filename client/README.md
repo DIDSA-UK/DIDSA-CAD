@@ -5,6 +5,15 @@ solving against the deployed backend. See
 [`docs/project-brief.md`](../docs/project-brief.md) Section 5 for the
 canonical interaction design this implements.
 
+## Requirements
+
+**Flutter SDK must be on the `master` channel**, not `stable`. Since Stage
+7, `pubspec.yaml` depends on `flutter_scene ^0.18.1` for the 3D viewport,
+which relies on Dart Native Assets for its build hook - and Native Assets
+only takes effect on the `master` channel. Building on `stable` will fail
+once the build reaches that hook. Check with `flutter channel`; switch with
+`flutter channel master && flutter upgrade` if needed.
+
 ## What this is
 
 A single Flutter codebase (`flutter create --platforms windows,android,ios`,
