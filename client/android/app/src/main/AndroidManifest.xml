@@ -20,6 +20,14 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+            <!-- flutter_scene (the Stage 7 3D viewport) needs the Flutter GPU
+                 embedding feature - without it, `Scene()`'s GpuContext throws
+                 at construction and the viewport spins forever, since that
+                 throw happens inside an unawaited Future with no error UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.EnableFlutterGPU"
+              android:value="true"
+              />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>

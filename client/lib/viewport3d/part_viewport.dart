@@ -30,6 +30,12 @@ class _PartViewportState extends State<PartViewport> {
   Scene? _scene;
   Node? _meshNode;
 
+  /// Set if GPU/scene setup throws - without this, that failure would only
+  /// ever reach the console (it happens inside an unawaited Future), leaving
+  /// [build] stuck showing its loading spinner forever with no way for
+  /// anyone looking at the screen to tell something went wrong.
+  String? _error;
+
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - same
   /// approach as [SketchCanvas]'s `_activeTouches`.
   final Map<int, Offset> _activeTouches = {};
@@ -45,6 +51,10 @@ class _PartViewportState extends State<PartViewport> {
         _scene = Scene();
         _syncMeshNode();
       });
+    }).catchError((Object error) {
+      debugPrint('[PartViewport] GPU/scene setup failed: $error');
+      if (!mounted) return;
+      setState(() => _error = error.toString());
     });
   }
 
@@ -151,6 +161,19 @@ class _PartViewportState extends State<PartViewport> {
 
   @override
   Widget build(BuildContext context) {
+    final error = _error;
+    if (error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Could not start the 3D viewport: $error',
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
     final scene = _scene;
     if (scene == null) {
       return const Center(child: CircularProgressIndicator());
