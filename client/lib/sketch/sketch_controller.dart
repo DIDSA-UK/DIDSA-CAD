@@ -323,16 +323,37 @@ class SketchController extends ChangeNotifier {
 
   /// Initializes this controller from an already-created Sketch (e.g. one
   /// wrapped by a SketchFeature via the document API) instead of creating a
-  /// brand-new one - the only entity it expects to find is the real origin
-  /// Point, since a SketchFeature's Sketch is always empty when first
-  /// created; there is no "load existing points/lines/circles" path because
-  /// nothing else can exist there yet.
+  /// brand-new one. Unlike [ensureSketch], the adopted Sketch may already
+  /// have real content from a previous editing session, so this also loads
+  /// every existing Point/Line/Circle - re-entering a Sketch must reflect
+  /// what the backend actually has, not start from an empty canvas.
   Future<void> adoptSketch(String sketchId) async {
     if (_sketchId != null) return;
     await _runGuarded(() async {
       final sketch = await _api.getSketch(sketchId);
       _adoptSketchDto(sketch);
+      await _loadExistingContent(sketchId);
     });
+  }
+
+  Future<void> _loadExistingContent(String sketchId) async {
+    for (final point in await _api.listPoints(sketchId)) {
+      points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+    }
+    for (final line in await _api.listLines(sketchId)) {
+      lines[line.id] = SketchLineView(
+        id: line.id,
+        startPointId: line.startPointId,
+        endPointId: line.endPointId,
+      );
+    }
+    for (final circle in await _api.listCircles(sketchId)) {
+      circles[circle.id] = SketchCircleView(
+        id: circle.id,
+        centerPointId: circle.centerPointId,
+        radiusPointId: circle.radiusPointId,
+      );
+    }
   }
 
   void _adoptSketchDto(SketchDto sketch) {
