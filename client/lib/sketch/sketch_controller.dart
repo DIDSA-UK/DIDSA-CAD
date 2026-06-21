@@ -317,10 +317,28 @@ class SketchController extends ChangeNotifier {
     if (_sketchId != null) return;
     await _runGuarded(() async {
       final sketch = await _api.createSketch(plane: 'XY');
-      _sketchId = sketch.id;
-      _originPointId = sketch.originPointId;
-      points[sketch.originPointId] = SketchPointView(id: sketch.originPointId, x: 0, y: 0);
+      _adoptSketchDto(sketch);
     });
+  }
+
+  /// Initializes this controller from an already-created Sketch (e.g. one
+  /// wrapped by a SketchFeature via the document API) instead of creating a
+  /// brand-new one - the only entity it expects to find is the real origin
+  /// Point, since a SketchFeature's Sketch is always empty when first
+  /// created; there is no "load existing points/lines/circles" path because
+  /// nothing else can exist there yet.
+  Future<void> adoptSketch(String sketchId) async {
+    if (_sketchId != null) return;
+    await _runGuarded(() async {
+      final sketch = await _api.getSketch(sketchId);
+      _adoptSketchDto(sketch);
+    });
+  }
+
+  void _adoptSketchDto(SketchDto sketch) {
+    _sketchId = sketch.id;
+    _originPointId = sketch.originPointId;
+    points[sketch.originPointId] = SketchPointView(id: sketch.originPointId, x: 0, y: 0);
   }
 
   /// Touch input: relative movement, scaled by [touchSensitivity] and the

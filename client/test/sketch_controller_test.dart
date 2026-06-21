@@ -13,6 +13,7 @@ import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 class _FakeBackend {
   int _nextId = 1;
   final Map<String, Map<String, dynamic>> points = {};
+  final Map<String, Map<String, dynamic>> sketches = {};
 
   /// Point ids that should be rejected with a 400 if a delete is attempted -
   /// used to simulate a backend-only rejection reason (e.g. a Constraint)
@@ -20,6 +21,15 @@ class _FakeBackend {
   final Set<String> blockedPointIds = {};
 
   String _newId(String prefix) => '$prefix-${_nextId++}';
+
+  /// Seeds a Sketch (and its origin Point) as if it had already been
+  /// created server-side - e.g. via a SketchFeature - so [adoptSketch] has
+  /// something to GET without this fake backend having handled a prior
+  /// `POST /sketch/sketches` itself.
+  void seedSketch(String sketchId, String originPointId) {
+    sketches[sketchId] = {'id': sketchId, 'plane': 'XY', 'origin_point_id': originPointId};
+    points[originPointId] = {'id': originPointId, 'x': 0.0, 'y': 0.0};
+  }
 
   http.Response handle(http.Request request) {
     final path = request.url.path;
@@ -67,6 +77,13 @@ class _FakeBackend {
       final point = points[pointGetMatch.group(1)];
       if (point == null) return http.Response('not found', 404);
       return _json(point, 200);
+    }
+
+    final sketchGetMatch = RegExp(r'^/sketch/sketches/([^/]+)$').firstMatch(path);
+    if (sketchGetMatch != null && request.method == 'GET') {
+      final sketch = sketches[sketchGetMatch.group(1)];
+      if (sketch == null) return http.Response('not found', 404);
+      return _json(sketch, 200);
     }
 
     final linesMatch = RegExp(r'^/sketch/sketches/[^/]+/lines$').hasMatch(path);
@@ -606,5 +623,22 @@ void main() {
     expect(controller.selection, isNotNull);
     expect(controller.selection!.id, pointId);
     expect(controller.errorMessage, contains('constraint'));
+  });
+
+  test('adoptSketch loads an existing Sketch instead of creating a new one', () async {
+    // A fresh controller, not the shared one from setUp - that one has
+    // already called ensureSketch(), and adoptSketch() is a no-op once a
+    // Sketch is already adopted.
+    final freshBackend = _FakeBackend();
+    freshBackend.seedSketch('sketch-99', 'origin-99');
+    final mockClient = MockClient((request) async => freshBackend.handle(request));
+    final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+
+    await freshController.adoptSketch('sketch-99');
+
+    expect(freshController.points.keys, ['origin-99']);
+    expect(freshController.points['origin-99']!.x, 0);
+    expect(freshController.points['origin-99']!.y, 0);
+    expect(freshController.errorMessage, isNull);
   });
 }

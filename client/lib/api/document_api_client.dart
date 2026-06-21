@@ -1,0 +1,162 @@
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+import '../config.dart';
+import 'sketch_api_client.dart' show ApiException;
+
+class PartDto {
+  final String id;
+  final String name;
+  final List<String> featureIds;
+
+  PartDto({required this.id, required this.name, required this.featureIds});
+
+  factory PartDto.fromJson(Map<String, dynamic> json) => PartDto(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        featureIds: (json['feature_ids'] as List).cast<String>(),
+      );
+}
+
+/// A Feature in a Part's history. Only SketchFeature exists today - this DTO
+/// covers that one shape directly, the same way LineDto/CircleDto each cover
+/// one backend response shape rather than a shared polymorphic type.
+class FeatureDto {
+  final String id;
+  final String sketchId;
+  final bool locked;
+
+  FeatureDto({required this.id, required this.sketchId, required this.locked});
+
+  factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
+        id: json['id'] as String,
+        sketchId: json['sketch_id'] as String,
+        locked: json['locked'] as bool,
+      );
+}
+
+/// A flat, JSON-shaped mesh: each of [vertices]/[normals] is a list of
+/// `[x, y, z]` triples (parallel, same length), and each entry in
+/// [triangleIndices] is an `[a, b, c]` index triple into both.
+class MeshDto {
+  final List<List<double>> vertices;
+  final List<List<double>> normals;
+  final List<List<int>> triangleIndices;
+
+  MeshDto({required this.vertices, required this.normals, required this.triangleIndices});
+
+  factory MeshDto.fromJson(Map<String, dynamic> json) => MeshDto(
+        vertices: _triples(json['vertices'] as List),
+        normals: _triples(json['normals'] as List),
+        triangleIndices: (json['triangle_indices'] as List)
+            .map((t) => (t as List).map((v) => v as int).toList())
+            .toList(),
+      );
+
+  static List<List<double>> _triples(List raw) =>
+      raw.map((t) => (t as List).map((v) => (v as num).toDouble()).toList()).toList();
+}
+
+class PartMeshDto {
+  final String source;
+  final MeshDto mesh;
+
+  PartMeshDto({required this.source, required this.mesh});
+
+  factory PartMeshDto.fromJson(Map<String, dynamic> json) => PartMeshDto(
+        source: json['source'] as String,
+        mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
+      );
+}
+
+/// Thin wrapper over the backend's `/document` REST API - same shape and
+/// conventions as [SketchApiClient], kept as a separate client rather than
+/// merged into it because it talks to a different backend router
+/// (app.document.router) with its own DTOs.
+class DocumentApiClient {
+  final http.Client _httpClient;
+
+  DocumentApiClient({http.Client? httpClient}) : _httpClient = httpClient ?? http.Client();
+
+  Map<String, String> get _headers => {
+        'Content-Type': 'application/json',
+        'X-API-Key': ApiConfig.apiKey,
+      };
+
+  Uri _uri(String path) => Uri.parse('${ApiConfig.baseUrl}$path');
+
+  Future<T> _send<T>(
+    Future<http.Response> Function() request,
+    T Function(dynamic decodedBody) onSuccess,
+  ) async {
+    http.Response response;
+    try {
+      response = await request().timeout(ApiConfig.requestTimeout);
+    } on Exception catch (e) {
+      throw ApiException('Could not reach the server: $e');
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}');
+    }
+    final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
+    return onSuccess(decoded);
+  }
+
+  String _detailOf(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic> && decoded['detail'] is String) {
+        return decoded['detail'] as String;
+      }
+    } catch (_) {
+      // Not JSON (or no `detail` field) - fall through to the raw body.
+    }
+    return response.body;
+  }
+
+  Future<PartDto> createPart(String name) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts'),
+              headers: _headers,
+              body: jsonEncode({'name': name}),
+            ),
+        (body) => PartDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<PartDto> getPart(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId'), headers: _headers),
+        (body) => PartDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<List<FeatureDto>> listFeatures(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/features'), headers: _headers),
+        (body) => (body as List).map((f) => FeatureDto.fromJson(f as Map<String, dynamic>)).toList(),
+      );
+
+  Future<FeatureDto> getFeature(String partId, String featureId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/features/$featureId'), headers: _headers),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<FeatureDto> createSketchFeature(String partId, {String plane = 'XY'}) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch'),
+              headers: _headers,
+              body: jsonEncode({'plane': plane}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<void> deleteFeature(String partId, String featureId) => _send(
+        () => _httpClient.delete(_uri('/document/parts/$partId/features/$featureId'), headers: _headers),
+        (_) {},
+      );
+
+  Future<PartMeshDto> getPartMesh(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/mesh'), headers: _headers),
+        (body) => PartMeshDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  void close() => _httpClient.close();
+}
