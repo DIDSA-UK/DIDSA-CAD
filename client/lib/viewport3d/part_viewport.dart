@@ -37,7 +37,9 @@ class _PartViewportState extends State<PartViewport> {
   @override
   void initState() {
     super.initState();
+    debugPrint('[PartViewport] Scene.initializeStaticResources()...');
     Scene.initializeStaticResources().then((_) {
+      debugPrint('[PartViewport] Scene.initializeStaticResources() done');
       if (!mounted) return;
       setState(() {
         _scene = Scene();
@@ -62,10 +64,17 @@ class _PartViewportState extends State<PartViewport> {
       _meshNode = null;
     }
     final mesh = widget.mesh;
-    if (mesh == null) return;
-    final node = Node(mesh: Mesh(geometryFromMesh(mesh), UnlitMaterial()));
+    if (mesh == null) {
+      debugPrint('[PartViewport] _syncMeshNode: no mesh yet');
+      return;
+    }
+    debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh(${mesh.vertices.length} verts)...');
+    final geometry = geometryFromMesh(mesh);
+    debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh done, adding Node to Scene...');
+    final node = Node(mesh: Mesh(geometry, UnlitMaterial()));
     scene.add(node);
     _meshNode = node;
+    debugPrint('[PartViewport] _syncMeshNode: Node added to Scene');
   }
 
   void _handlePointerDown(PointerDownEvent event) {
@@ -183,12 +192,25 @@ class _ScenePainter extends CustomPainter {
   final OrbitCamera camera;
   final Size size;
 
+  /// `paint` runs every frame, so this guards [paint]'s diagnostic logging to
+  /// fire only once - the first call already proves `scene.render` (the
+  /// flutter_scene GPU call) didn't hang, which is all the logging is for.
+  static bool _loggedFirstPaint = false;
+
   _ScenePainter({required this.scene, required this.camera, required this.size});
 
   @override
   void paint(Canvas canvas, Size canvasSize) {
+    final isFirstPaint = !_loggedFirstPaint;
+    if (isFirstPaint) {
+      _loggedFirstPaint = true;
+      debugPrint('[PartViewport] _ScenePainter.paint: first frame, calling scene.render()...');
+    }
     canvas.drawRect(Offset.zero & canvasSize, Paint()..color = const Color(0xFF202020));
     scene.render(camera.cameraFor(size), canvas, viewport: Offset.zero & canvasSize);
+    if (isFirstPaint) {
+      debugPrint('[PartViewport] _ScenePainter.paint: first frame, scene.render() returned');
+    }
   }
 
   @override

@@ -57,10 +57,15 @@ class _PartScreenState extends State<PartScreen> {
 
   Future<void> _loadPart() async {
     await _runGuarded(() async {
+      debugPrint('[PartScreen] createPart...');
       final part = await _api.createPart('Part 1');
+      debugPrint('[PartScreen] createPart done: ${part.id}');
       _part = part;
+      debugPrint('[PartScreen] getPartMesh...');
       _mesh = (await _api.getPartMesh(part.id)).mesh;
+      debugPrint('[PartScreen] getPartMesh done: ${_mesh!.vertices.length} vertices');
       await _refreshFeatures();
+      debugPrint('[PartScreen] refreshFeatures done');
     });
   }
 
