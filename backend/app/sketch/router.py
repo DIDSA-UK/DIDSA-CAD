@@ -143,6 +143,15 @@ def create_point(sketch_id: str, payload: PointCreate) -> PointResponse:
     return _point_response(point)
 
 
+@router.get("/sketches/{sketch_id}/points", response_model=list[PointResponse])
+def list_points(sketch_id: str) -> list[PointResponse]:
+    """Every Point currently in this Sketch - the only way a client can
+    learn what a Sketch contains without already knowing specific ids (e.g.
+    re-entering a Sketch it didn't just create), mirroring list_constraints."""
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_point_response(point) for point in sketch.points.values()]
+
+
 @router.get("/sketches/{sketch_id}/points/{point_id}", response_model=PointResponse)
 def get_point(sketch_id: str, point_id: str) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -188,6 +197,12 @@ def create_line(sketch_id: str, payload: LineCreate) -> LineResponse:
     return _line_response(sketch, line)
 
 
+@router.get("/sketches/{sketch_id}/lines", response_model=list[LineResponse])
+def list_lines(sketch_id: str) -> list[LineResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_line_response(sketch, line) for line in sketch.lines()]
+
+
 @router.get("/sketches/{sketch_id}/lines/{line_id}", response_model=LineResponse)
 def get_line(sketch_id: str, line_id: str) -> LineResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -230,6 +245,12 @@ def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _circle_response(sketch, circle)
+
+
+@router.get("/sketches/{sketch_id}/circles", response_model=list[CircleResponse])
+def list_circles(sketch_id: str) -> list[CircleResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_circle_response(sketch, circle) for circle in sketch.circles()]
 
 
 @router.get("/sketches/{sketch_id}/circles/{circle_id}", response_model=CircleResponse)

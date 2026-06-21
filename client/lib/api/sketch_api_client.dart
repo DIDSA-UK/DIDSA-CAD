@@ -178,6 +178,27 @@ class SketchApiClient {
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );
 
+  Future<List<PointDto>> listPoints(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/points'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => PointDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<LineDto>> listLines(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/lines'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => LineDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<CircleDto>> listCircles(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/circles'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => CircleDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<LineDto> createLine(String sketchId, String startPointId, String endPointId) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/lines'),

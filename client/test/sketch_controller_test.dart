@@ -13,6 +13,8 @@ import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 class _FakeBackend {
   int _nextId = 1;
   final Map<String, Map<String, dynamic>> points = {};
+  final Map<String, Map<String, dynamic>> lines = {};
+  final Map<String, Map<String, dynamic>> circles = {};
   final Map<String, Map<String, dynamic>> sketches = {};
 
   /// Point ids that should be rejected with a 400 if a delete is attempted -
@@ -64,12 +66,15 @@ class _FakeBackend {
       return _json({'id': 'sketch-1', 'plane': body['plane'], 'origin_point_id': 'origin-1'}, 201);
     }
 
-    final pointsMatch = RegExp(r'^/sketch/sketches/[^/]+/points$').hasMatch(path);
-    if (pointsMatch && request.method == 'POST') {
+    final pointsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/points$').hasMatch(path);
+    if (pointsCollectionMatch && request.method == 'POST') {
       final id = _newId('point');
       final point = {'id': id, 'x': body['x'], 'y': body['y']};
       points[id] = point;
       return _json(point, 201);
+    }
+    if (pointsCollectionMatch && request.method == 'GET') {
+      return _jsonList(points.values.toList(), 200);
     }
 
     final pointGetMatch = RegExp(r'^/sketch/sketches/[^/]+/points/(.+)$').firstMatch(path);
@@ -86,24 +91,36 @@ class _FakeBackend {
       return _json(sketch, 200);
     }
 
-    final linesMatch = RegExp(r'^/sketch/sketches/[^/]+/lines$').hasMatch(path);
-    if (linesMatch && request.method == 'POST') {
-      return _json({
-        'id': _newId('line'),
+    final linesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/lines$').hasMatch(path);
+    if (linesCollectionMatch && request.method == 'POST') {
+      final id = _newId('line');
+      final line = {
+        'id': id,
         'start_point_id': body['start_point_id'],
         'end_point_id': body['end_point_id'],
         'length': 1.0,
-      }, 201);
+      };
+      lines[id] = line;
+      return _json(line, 201);
+    }
+    if (linesCollectionMatch && request.method == 'GET') {
+      return _jsonList(lines.values.toList(), 200);
     }
 
-    final circlesMatch = RegExp(r'^/sketch/sketches/[^/]+/circles$').hasMatch(path);
-    if (circlesMatch && request.method == 'POST') {
-      return _json({
-        'id': _newId('circle'),
+    final circlesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/circles$').hasMatch(path);
+    if (circlesCollectionMatch && request.method == 'POST') {
+      final id = _newId('circle');
+      final circle = {
+        'id': id,
         'center_point_id': body['center_point_id'],
         'radius_point_id': body['radius_point_id'],
         'radius': 1.0,
-      }, 201);
+      };
+      circles[id] = circle;
+      return _json(circle, 201);
+    }
+    if (circlesCollectionMatch && request.method == 'GET') {
+      return _jsonList(circles.values.toList(), 200);
     }
 
     final solveMatch = RegExp(r'^/sketch/sketches/[^/]+/solve$').hasMatch(path);
@@ -122,6 +139,9 @@ class _FakeBackend {
   }
 
   http.Response _json(Map<String, dynamic> body, int statusCode) =>
+      http.Response(jsonEncode(body), statusCode);
+
+  http.Response _jsonList(List<Map<String, dynamic>> body, int statusCode) =>
       http.Response(jsonEncode(body), statusCode);
 }
 
@@ -639,6 +659,38 @@ void main() {
     expect(freshController.points.keys, ['origin-99']);
     expect(freshController.points['origin-99']!.x, 0);
     expect(freshController.points['origin-99']!.y, 0);
+    expect(freshController.errorMessage, isNull);
+  });
+
+  test('adoptSketch loads an existing Sketch\'s Points, Lines, and Circles, not just its origin', () async {
+    final freshBackend = _FakeBackend();
+    freshBackend.seedSketch('sketch-100', 'origin-100');
+    freshBackend.points['point-a'] = {'id': 'point-a', 'x': 3.0, 'y': 4.0};
+    freshBackend.points['point-b'] = {'id': 'point-b', 'x': 6.0, 'y': 4.0};
+    freshBackend.lines['line-a'] = {
+      'id': 'line-a',
+      'start_point_id': 'point-a',
+      'end_point_id': 'point-b',
+      'length': 3.0,
+    };
+    freshBackend.circles['circle-a'] = {
+      'id': 'circle-a',
+      'center_point_id': 'point-a',
+      'radius_point_id': 'point-b',
+      'radius': 5.0,
+    };
+    final mockClient = MockClient((request) async => freshBackend.handle(request));
+    final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+
+    await freshController.adoptSketch('sketch-100');
+
+    expect(freshController.points.keys, containsAll(['origin-100', 'point-a', 'point-b']));
+    expect(freshController.lines.keys, contains('line-a'));
+    expect(freshController.lines['line-a']!.startPointId, 'point-a');
+    expect(freshController.lines['line-a']!.endPointId, 'point-b');
+    expect(freshController.circles.keys, contains('circle-a'));
+    expect(freshController.circles['circle-a']!.centerPointId, 'point-a');
+    expect(freshController.circles['circle-a']!.radiusPointId, 'point-b');
     expect(freshController.errorMessage, isNull);
   });
 }

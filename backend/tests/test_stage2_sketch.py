@@ -427,3 +427,51 @@ def test_multiple_sketches_do_not_interfere_over_the_api():
 
     response = client.get(f"/sketch/sketches/{sketch_two['id']}/points/{point_one['id']}")
     assert response.status_code == 404
+
+
+def test_list_points_returns_every_point_in_the_sketch():
+    sketch = _create_sketch()
+    origin_id = sketch["origin_point_id"]
+    a = _create_point(sketch["id"], 1.0, 2.0)
+    b = _create_point(sketch["id"], 3.0, 4.0)
+
+    response = client.get(f"/sketch/sketches/{sketch['id']}/points")
+
+    assert response.status_code == 200
+    ids = {point["id"] for point in response.json()}
+    assert ids == {origin_id, a["id"], b["id"]}
+
+
+def test_list_points_does_not_leak_across_sketches():
+    sketch_one = _create_sketch()
+    sketch_two = _create_sketch()
+    _create_point(sketch_one["id"], 1.0, 1.0)
+
+    response = client.get(f"/sketch/sketches/{sketch_two['id']}/points")
+
+    assert response.status_code == 200
+    assert [p["id"] for p in response.json()] == [sketch_two["origin_point_id"]]
+
+
+def test_list_lines_returns_every_line_in_the_sketch():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 1.0, 0.0)
+    line = client.post(
+        f"/sketch/sketches/{sketch['id']}/lines",
+        json={"start_point_id": a["id"], "end_point_id": b["id"]},
+    ).json()
+
+    response = client.get(f"/sketch/sketches/{sketch['id']}/lines")
+
+    assert response.status_code == 200
+    assert [l["id"] for l in response.json()] == [line["id"]]
+
+
+def test_list_lines_on_a_sketch_with_no_lines_is_empty():
+    sketch = _create_sketch()
+
+    response = client.get(f"/sketch/sketches/{sketch['id']}/lines")
+
+    assert response.status_code == 200
+    assert response.json() == []

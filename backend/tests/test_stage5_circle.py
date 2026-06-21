@@ -259,6 +259,29 @@ def test_get_circle_not_found():
     assert response.status_code == 404
 
 
+def test_list_circles_returns_every_circle_in_the_sketch():
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    circle = client.post(
+        f"/sketch/sketches/{sketch['id']}/circles",
+        json={"center_point_id": center["id"], "radius": 9.0, "angle": 0.0},
+    ).json()
+
+    response = client.get(f"/sketch/sketches/{sketch['id']}/circles")
+
+    assert response.status_code == 200
+    assert [c["id"] for c in response.json()] == [circle["id"]]
+
+
+def test_list_circles_on_a_sketch_with_no_circles_is_empty():
+    sketch = _create_sketch()
+
+    response = client.get(f"/sketch/sketches/{sketch['id']}/circles")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
 def test_creating_a_circle_over_the_api_creates_a_solvable_radius_constraint():
     sketch = _create_sketch()
     center = _create_point(sketch["id"], 0.0, 0.0)
