@@ -162,9 +162,12 @@ class _PartViewportState extends State<PartViewport> {
                 painter: _ScenePainter(scene: scene, camera: _camera, size: size),
               ),
             ),
+            // top-right, not top-left, so it doesn't collide with
+            // PartScreen's feature-tree toolbar toggle button which lives
+            // in that corner.
             Positioned(
               top: 8,
-              left: 8,
+              right: 8,
               child: IconButton.filled(
                 tooltip: 'Reset view',
                 icon: const Icon(Icons.center_focus_strong),
