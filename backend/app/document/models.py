@@ -76,6 +76,20 @@ class Part:
             raise ValueError("Only the last Feature in a Part can be deleted")
         self.features.pop()
 
+    def delete_feature_cascade(self, feature_id: str) -> list[Feature]:
+        """Deletes `feature_id` and every Feature after it in order - the
+        only way to remove a locked Feature, since doing so always also
+        removes every later Feature that depends on it being in the
+        history. Returns the deleted Features (in their original order) so
+        callers can clean up anything each one owns - e.g. each
+        SketchFeature's underlying Sketch."""
+        index = next((i for i, f in enumerate(self.features) if f.id == feature_id), None)
+        if index is None:
+            raise ValueError(f"Feature not found: {feature_id}")
+        deleted = self.features[index:]
+        self.features = self.features[:index]
+        return deleted
+
 
 @dataclass
 class Document:

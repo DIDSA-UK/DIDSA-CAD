@@ -4,6 +4,7 @@ import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
+import 'cascade_delete_dialog.dart';
 import 'feature_tree_panel.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
@@ -102,6 +103,36 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// A long-press on any Feature (locked or not) cascade-deletes it and
+  /// every Feature after it, once the user confirms exactly which ones
+  /// will go. The Feature tree is already in creation order, so the
+  /// Features at and after [feature]'s index are precisely the ones the
+  /// backend's cascade-delete will remove.
+  Future<void> _onFeatureLongPress(FeatureDto feature) async {
+    final part = _part;
+    if (part == null || _busy) return;
+
+    final index = _features.indexWhere((f) => f.id == feature.id);
+    if (index == -1) return;
+    final namesToDelete = [
+      for (var i = index; i < _features.length; i++) featureDisplayName(i),
+    ];
+
+    final confirmed = await showCascadeDeleteDialog(context, namesToDelete);
+    if (!confirmed || !mounted) return;
+
+    await _runGuarded(() async {
+      await _api.cascadeDeleteFeature(part.id, feature.id);
+      // Re-fetch rather than trim local state, so the tree always reflects
+      // genuine backend state rather than an assumption about what the
+      // cascade just did.
+      await _refreshFeatures();
+      if (_selectedFeatureId != null && !_features.any((f) => f.id == _selectedFeatureId)) {
+        _selectedFeatureId = null;
+      }
+    });
+  }
+
   void _showFeatureTree() {
     setState(() {
       _featureTreeVisible = true;
@@ -160,6 +191,7 @@ class _PartScreenState extends State<PartScreen> {
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     onFeatureTap: _onFeatureTap,
+                    onFeatureLongPress: _onFeatureLongPress,
                     onClose: () => setState(() => _featureTreeVisible = false),
                   ),
                 ),

@@ -2,12 +2,22 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 
+/// The display name for the Feature at [index] in a Part's ordered Feature
+/// list - shared between the tree's own rows and anything else (e.g. the
+/// cascade-delete confirmation dialog) that needs to name a Feature the
+/// same way the tree does, so the two never drift out of sync.
+String featureDisplayName(int index) => 'Sketch ${index + 1}';
+
 /// The visible Feature tree for a Part: one row per Feature, in creation
 /// order. Locked Features (every Feature except the last) are shown greyed
 /// out with a lock icon and remain tappable - a tap only selects/highlights
 /// them, per the project brief - while the editable (last) Feature is
 /// tappable to open it for editing. Selection is purely a display concern
-/// here; [onFeatureTap] decides what a tap actually does.
+/// here; [onFeatureTap] decides what a tap actually does. A long-press on
+/// any row (locked or not) triggers the cascade-delete flow via
+/// [onFeatureLongPress] - unlike a tap, this is available regardless of
+/// lock state, since cascade-deleting a locked Feature also removes
+/// everything after it that depends on it.
 ///
 /// Hidden by default so the 3D viewport gets full space - slides in from
 /// the left (same [AnimatedSlide] pattern as [SketchRibbon]) when
@@ -20,6 +30,7 @@ class FeatureTreePanel extends StatelessWidget {
   final List<FeatureDto> features;
   final String? selectedFeatureId;
   final void Function(FeatureDto feature) onFeatureTap;
+  final void Function(FeatureDto feature) onFeatureLongPress;
   final VoidCallback onClose;
 
   const FeatureTreePanel({
@@ -28,6 +39,7 @@ class FeatureTreePanel extends StatelessWidget {
     required this.features,
     required this.selectedFeatureId,
     required this.onFeatureTap,
+    required this.onFeatureLongPress,
     required this.onClose,
   });
 
@@ -79,9 +91,10 @@ class FeatureTreePanel extends StatelessWidget {
                               feature.locked ? Icons.lock : Icons.edit,
                               color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
                             ),
-                            title: Text('Sketch ${index + 1}'),
+                            title: Text(featureDisplayName(index)),
                             subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
                             onTap: () => onFeatureTap(feature),
+                            onLongPress: () => onFeatureLongPress(feature),
                           );
                         },
                       ),

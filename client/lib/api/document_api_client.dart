@@ -70,6 +70,22 @@ class PartMeshDto {
       );
 }
 
+/// What a cascade delete actually removed - both the Features and the
+/// Sketches each deleted SketchFeature owned - so a caller can confirm the
+/// backend's view matches what it asked for, even though the client
+/// re-fetches the Feature list afterward rather than trusting this alone.
+class CascadeDeleteResultDto {
+  final List<String> deletedFeatureIds;
+  final List<String> deletedSketchIds;
+
+  CascadeDeleteResultDto({required this.deletedFeatureIds, required this.deletedSketchIds});
+
+  factory CascadeDeleteResultDto.fromJson(Map<String, dynamic> json) => CascadeDeleteResultDto(
+        deletedFeatureIds: (json['deleted_feature_ids'] as List).cast<String>(),
+        deletedSketchIds: (json['deleted_sketch_ids'] as List).cast<String>(),
+      );
+}
+
 /// Thin wrapper over the backend's `/document` REST API - same shape and
 /// conventions as [SketchApiClient], kept as a separate client rather than
 /// merged into it because it talks to a different backend router
@@ -151,6 +167,19 @@ class DocumentApiClient {
   Future<void> deleteFeature(String partId, String featureId) => _send(
         () => _httpClient.delete(_uri('/document/parts/$partId/features/$featureId'), headers: _headers),
         (_) {},
+      );
+
+  /// Deletes [featureId] and every Feature after it in the Part's ordered
+  /// list (plus each deleted SketchFeature's underlying Sketch) - distinct
+  /// from [deleteFeature], which only ever removes a single, unlocked,
+  /// last Feature. Callers must confirm with the user before calling this:
+  /// it has no single-Feature mode.
+  Future<CascadeDeleteResultDto> cascadeDeleteFeature(String partId, String featureId) => _send(
+        () => _httpClient.delete(
+              _uri('/document/parts/$partId/features/$featureId/cascade'),
+              headers: _headers,
+            ),
+        (body) => CascadeDeleteResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<PartMeshDto> getPartMesh(String partId) => _send(
