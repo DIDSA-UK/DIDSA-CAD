@@ -44,8 +44,14 @@ class OrbitCamera {
   double distance;
   vm.Vector3 target;
 
+  /// What [reset] returns [target] to - defaults to the origin, but
+  /// [setTarget] moves this along with [target] so "Reset view" re-centers
+  /// on the real geometry instead of snapping back to world-space (0,0,0).
+  vm.Vector3 _defaultTarget;
+
   OrbitCamera({this.distance = 30, vm.Vector3? target})
       : target = target ?? vm.Vector3.zero(),
+        _defaultTarget = target ?? vm.Vector3.zero(),
         orientation = _defaultOrientation();
 
   /// pi/4 azimuth, pi/6 elevation - the angles a previous azimuth/elevation
@@ -70,36 +76,49 @@ class OrbitCamera {
     return PerspectiveCamera(position: position, target: target, up: _up);
   }
 
-  /// Drag-to-orbit: dragging up tilts the camera further overhead, dragging
-  /// right swings it around to the left - an arbitrary but internally
-  /// consistent convention, same as any orbit-cam UI. Pitch is applied
-  /// about the camera's *current* right axis (so it always tilts the view
-  /// the way it's currently facing), then yaw about the fixed world-up axis
-  /// (so left/right drags always swing around the same vertical regardless
-  /// of how far the camera has already been tilted) - composed as
-  /// quaternions, with no clamping, so this never gets stuck.
+  /// Drag-to-orbit: real-device testing found all four drag directions felt
+  /// backwards (swiping up rotated the model down, swiping right rotated it
+  /// left, etc.) under the original `-dyPixels`/`-dxPixels` mapping, so both
+  /// signs are flipped here. Pitch is applied about the camera's *current*
+  /// right axis (so it always tilts the view the way it's currently
+  /// facing), then yaw about the fixed world-up axis (so left/right drags
+  /// always swing around the same vertical regardless of how far the
+  /// camera has already been tilted) - composed as quaternions, with no
+  /// clamping, so this never gets stuck.
   void orbitByScreenDelta(double dxPixels, double dyPixels) {
-    final pitch = vm.Quaternion.axisAngle(_right, -dyPixels * orbitSensitivity);
-    final yaw = vm.Quaternion.axisAngle(_localUp, -dxPixels * orbitSensitivity);
+    final pitch = vm.Quaternion.axisAngle(_right, dyPixels * orbitSensitivity);
+    final yaw = vm.Quaternion.axisAngle(_localUp, dxPixels * orbitSensitivity);
     orientation = (orientation * pitch * yaw).normalized();
   }
 
   /// Drag-to-pan: moves [target] (and so the whole view) in the camera's own
   /// screen-relative right/up plane, so the point under the cursor at drag
   /// start tracks the cursor - the same "grab and drag the scene" feel as
-  /// [SketchViewport.panByScreenDelta], just projected into 3D.
+  /// [SketchViewport.panByScreenDelta], just projected into 3D. Only the
+  /// horizontal term is negated relative to the vertical one - confirmed on
+  /// a real device that left/right pan was inverted but up/down wasn't.
   void panByScreenDelta(double dxPixels, double dyPixels) {
     final scale = panSensitivityPerDistance * distance;
-    target = target - _right * (dxPixels * scale) + _up * (dyPixels * scale);
+    target = target + _right * (dxPixels * scale) + _up * (dyPixels * scale);
   }
 
   void zoomByFactor(double scaleFactor) {
     distance = (distance * scaleFactor).clamp(minDistance, maxDistance);
   }
 
+  /// Re-centers both the current and "Reset view" target on [newTarget] -
+  /// called once the real geometry's centroid is known, since the
+  /// placeholder box isn't centered at the world origin (see
+  /// [centroidOfMesh]) and orbiting around (0,0,0) instead made it look
+  /// like the model was rotating about one of its corners.
+  void setTarget(vm.Vector3 newTarget) {
+    target = newTarget;
+    _defaultTarget = newTarget;
+  }
+
   void reset() {
     orientation = _defaultOrientation();
     distance = 30;
-    target = vm.Vector3.zero();
+    target = _defaultTarget;
   }
 }

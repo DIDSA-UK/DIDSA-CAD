@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_scene/scene.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 
@@ -89,4 +90,19 @@ UnskinnedGeometry geometryFromMesh(MeshDto mesh) {
     buffers.indexData,
   );
   return geometry;
+}
+
+/// The average of [mesh]'s vertex positions - used to re-center the orbit
+/// camera's target on the actual geometry rather than the world origin.
+/// The current placeholder mesh (see backend/app/document/router.py) is a
+/// `BRepPrimAPI_MakeBox(10, 10, 10)`, which OCCT spans from (0,0,0) to
+/// (10,10,10) rather than centering it at the origin, so its centroid -
+/// and any future mesh's - has to be computed from the real vertex data
+/// rather than assumed to be (0,0,0).
+vm.Vector3 centroidOfMesh(MeshDto mesh) {
+  var sum = vm.Vector3.zero();
+  for (final vertex in mesh.vertices) {
+    sum += vm.Vector3(vertex[0], vertex[1], vertex[2]);
+  }
+  return sum / mesh.vertices.length.toDouble();
 }

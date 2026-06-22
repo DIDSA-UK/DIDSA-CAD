@@ -175,6 +175,12 @@ void main() {
     expect(find.text('Locked'), findsOneWidget);
     expect(find.text('Editable'), findsOneWidget);
 
+    // The hamburger toggle sits in the same top-left corner as the tree's
+    // header, so it's hidden while the tree is open to avoid overlapping
+    // its text - the tree's own X button is the way to close it instead.
+    expect(find.byTooltip('Open toolbar'), findsNothing);
+    expect(find.byTooltip('Close toolbar'), findsNothing);
+
     await tester.tap(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));

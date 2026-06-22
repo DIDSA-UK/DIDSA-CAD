@@ -66,6 +66,7 @@ class _PartViewportState extends State<PartViewport> {
     final node = Node(mesh: Mesh(geometryFromMesh(mesh), UnlitMaterial()));
     scene.add(node);
     _meshNode = node;
+    _camera.setTarget(centroidOfMesh(mesh));
   }
 
   void _handlePointerDown(PointerDownEvent event) {
