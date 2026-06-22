@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -17,25 +16,51 @@ void main() {
     expect((perspective.position - perspective.target).length, closeTo(camera.distance, 1e-4));
   });
 
-  test('orbitByScreenDelta increases azimuth when dragging right', () {
+  test('orbitByScreenDelta moves the camera position when dragging right', () {
     final camera = OrbitCamera();
-    final initialAzimuth = camera.azimuth;
+    final initialPosition = camera.cameraFor(size).position.clone();
 
     camera.orbitByScreenDelta(50, 0);
 
-    expect(camera.azimuth, greaterThan(initialAzimuth));
+    expect(camera.cameraFor(size).position, isNot(initialPosition));
   });
 
-  test('orbitByScreenDelta clamps elevation just shy of the poles', () {
-    final lookingUp = OrbitCamera();
-    lookingUp.orbitByScreenDelta(0, -100000);
-    expect(lookingUp.elevation, lessThan(math.pi / 2));
-    expect(lookingUp.elevation, greaterThan(math.pi / 2 - 0.1));
+  test('orbiting continuously past where the old azimuth/elevation camera used to clamp keeps rotating smoothly', () {
+    // A previous azimuth/elevation implementation clamped elevation just
+    // shy of the poles and froze there - this is exactly the "gets stuck"
+    // bug being fixed. Drive enough cumulative pitch to go well past a
+    // single pole (more than pi radians) and confirm the camera keeps
+    // producing valid, normally-oriented views the whole way, rather than
+    // freezing once some fixed elevation is reached.
+    final camera = OrbitCamera();
+    var sawDistinctPositions = 0;
+    vm.Vector3? lastPosition;
+    for (var i = 0; i < 400; i++) {
+      camera.orbitByScreenDelta(0, -50); // keep dragging up, tilting further overhead each step
+      final position = camera.cameraFor(size).position;
 
-    final lookingDown = OrbitCamera();
-    lookingDown.orbitByScreenDelta(0, 100000);
-    expect(lookingDown.elevation, greaterThan(-math.pi / 2));
-    expect(lookingDown.elevation, lessThan(-math.pi / 2 + 0.1));
+      expect(position.x.isNaN, isFalse);
+      expect(position.y.isNaN, isFalse);
+      expect(position.z.isNaN, isFalse);
+      expect((position - camera.target).length, closeTo(camera.distance, 1e-3));
+
+      final camera2 = camera.cameraFor(size);
+      // up must stay a unit vector orthogonal to the view direction at
+      // every step - this is exactly what breaks down at a pole for a
+      // fixed-world-up, look-at-style camera.
+      final direction = (camera2.position - camera2.target).normalized();
+      expect(camera2.up.length, closeTo(1, 1e-3));
+      expect(camera2.up.dot(direction), closeTo(0, 1e-3));
+
+      if (lastPosition == null || (position - lastPosition).length > 1e-6) {
+        sawDistinctPositions++;
+      }
+      lastPosition = position;
+    }
+    // 400 steps * 0.5 rad/step (50px * 0.01 sensitivity) is over 200
+    // radians of cumulative pitch - if the camera ever got stuck (the old
+    // clamp behavior), positions would stop changing partway through.
+    expect(sawDistinctPositions, 400);
   });
 
   test('panByScreenDelta moves the target without changing distance', () {
@@ -63,14 +88,15 @@ void main() {
 
   test('reset returns to the default orbit state', () {
     final camera = OrbitCamera();
+    final defaultPosition = camera.cameraFor(size).position.clone();
+
     camera.orbitByScreenDelta(50, 30);
     camera.panByScreenDelta(10, 10);
     camera.zoomByFactor(2.0);
 
     camera.reset();
 
-    expect(camera.azimuth, math.pi / 4);
-    expect(camera.elevation, math.pi / 6);
+    expect(camera.cameraFor(size).position, defaultPosition);
     expect(camera.distance, 30);
     expect(camera.target, vm.Vector3.zero());
   });

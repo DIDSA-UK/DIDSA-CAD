@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_scene/scene.dart';
@@ -6,11 +5,18 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 /// Mutable orbit/pan/zoom state for the 3D viewport - the 3D equivalent of
 /// [SketchViewport], producing a `flutter_scene` [PerspectiveCamera] for a
-/// given canvas size. Orbits and pans around [target] using spherical
-/// coordinates ([azimuth]/[elevation]/[distance]) rather than storing a
-/// camera position directly, so "zoom" and "orbit" can never accidentally
-/// fight each other (e.g. zooming all the way in flipping the view through
-/// the target).
+/// given canvas size.
+///
+/// Orientation is tracked as a quaternion rather than azimuth/elevation
+/// Euler angles. An earlier azimuth/elevation version had to clamp
+/// elevation just shy of the poles, because at the poles azimuth becomes
+/// meaningless and the look-at-style camera construction flips - in
+/// practice this felt like the camera "getting stuck" and refusing to
+/// rotate past certain orientations. Composing incremental rotations as
+/// quaternions has no such pole: [direction] and [up] are both derived from
+/// the same [orientation] and stay mutually consistent (orthogonal) at any
+/// orientation, including looking straight down or straight up, so orbiting
+/// can pass through them smoothly with no dead zone or flip.
 class OrbitCamera {
   static const double minDistance = 5;
   static const double maxDistance = 300;
@@ -26,41 +32,56 @@ class OrbitCamera {
   /// how far the camera currently is from its target.
   static const double panSensitivityPerDistance = 0.002;
 
-  /// Clamped just shy of the poles so the camera can never look straight
-  /// down/up, where azimuth becomes meaningless and the view can flip.
-  static const double _maxElevation = 89 * math.pi / 180;
+  static final vm.Vector3 _localRight = vm.Vector3(1, 0, 0);
+  static final vm.Vector3 _localUp = vm.Vector3(0, 1, 0);
+  static final vm.Vector3 _localBack = vm.Vector3(0, 0, 1);
 
-  double azimuth;
-  double elevation;
+  /// Rotation from the local camera frame (right=+X, up=+Y, the camera sits
+  /// along +Z looking back towards [target]) into world space. [direction],
+  /// [up] and [right] are all read from this rather than stored separately,
+  /// so they can never drift out of being mutually orthogonal.
+  vm.Quaternion orientation;
   double distance;
   vm.Vector3 target;
 
-  OrbitCamera({
-    this.azimuth = math.pi / 4,
-    this.elevation = math.pi / 6,
-    this.distance = 30,
-    vm.Vector3? target,
-  }) : target = target ?? vm.Vector3.zero();
+  OrbitCamera({this.distance = 30, vm.Vector3? target})
+      : target = target ?? vm.Vector3.zero(),
+        orientation = _defaultOrientation();
+
+  /// pi/4 azimuth, pi/6 elevation - the angles a previous azimuth/elevation
+  /// version of this camera used as its default view, reproduced here as a
+  /// quaternion so the initial view is unchanged even though the underlying
+  /// representation isn't.
+  static vm.Quaternion _defaultOrientation() {
+    final pitch = vm.Quaternion.axisAngle(_localRight, 0.5235987755982988);
+    final yaw = vm.Quaternion.axisAngle(_localUp, -0.7853981633974483);
+    return (pitch * yaw).normalized();
+  }
 
   /// Unit vector from [target] towards the camera.
-  vm.Vector3 get _direction => vm.Vector3(
-        math.cos(elevation) * math.sin(azimuth),
-        math.sin(elevation),
-        math.cos(elevation) * math.cos(azimuth),
-      );
+  vm.Vector3 get _direction => orientation.rotated(_localBack);
+
+  vm.Vector3 get _up => orientation.rotated(_localUp);
+
+  vm.Vector3 get _right => orientation.rotated(_localRight);
 
   PerspectiveCamera cameraFor(Size size) {
     final position = target + _direction * distance;
-    return PerspectiveCamera(position: position, target: target, up: vm.Vector3(0, 1, 0));
+    return PerspectiveCamera(position: position, target: target, up: _up);
   }
 
-  /// Drag-to-orbit: dragging up tilts the camera further overhead (elevation
-  /// increases), dragging right swings it around to the left (azimuth
-  /// increases) - an arbitrary but internally consistent convention, same as
-  /// any orbit-cam UI.
+  /// Drag-to-orbit: dragging up tilts the camera further overhead, dragging
+  /// right swings it around to the left - an arbitrary but internally
+  /// consistent convention, same as any orbit-cam UI. Pitch is applied
+  /// about the camera's *current* right axis (so it always tilts the view
+  /// the way it's currently facing), then yaw about the fixed world-up axis
+  /// (so left/right drags always swing around the same vertical regardless
+  /// of how far the camera has already been tilted) - composed as
+  /// quaternions, with no clamping, so this never gets stuck.
   void orbitByScreenDelta(double dxPixels, double dyPixels) {
-    azimuth += dxPixels * orbitSensitivity;
-    elevation = (elevation - dyPixels * orbitSensitivity).clamp(-_maxElevation, _maxElevation);
+    final pitch = vm.Quaternion.axisAngle(_right, -dyPixels * orbitSensitivity);
+    final yaw = vm.Quaternion.axisAngle(_localUp, -dxPixels * orbitSensitivity);
+    orientation = (orientation * pitch * yaw).normalized();
   }
 
   /// Drag-to-pan: moves [target] (and so the whole view) in the camera's own
@@ -68,12 +89,8 @@ class OrbitCamera {
   /// start tracks the cursor - the same "grab and drag the scene" feel as
   /// [SketchViewport.panByScreenDelta], just projected into 3D.
   void panByScreenDelta(double dxPixels, double dyPixels) {
-    final forward = -_direction;
-    final worldUp = vm.Vector3(0, 1, 0);
-    final right = worldUp.cross(forward).normalized();
-    final camUp = forward.cross(right).normalized();
     final scale = panSensitivityPerDistance * distance;
-    target = target - right * (dxPixels * scale) + camUp * (dyPixels * scale);
+    target = target - _right * (dxPixels * scale) + _up * (dyPixels * scale);
   }
 
   void zoomByFactor(double scaleFactor) {
@@ -81,8 +98,7 @@ class OrbitCamera {
   }
 
   void reset() {
-    azimuth = math.pi / 4;
-    elevation = math.pi / 6;
+    orientation = _defaultOrientation();
     distance = 30;
     target = vm.Vector3.zero();
   }

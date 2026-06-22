@@ -5,6 +5,7 @@ import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'feature_tree_panel.dart';
+import 'part_toolbar.dart';
 import 'part_viewport.dart';
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
@@ -39,6 +40,11 @@ class _PartScreenState extends State<PartScreen> {
 
   bool _busy = false;
   String? _errorMessage;
+
+  /// The Feature tree is hidden by default so the 3D viewport gets full
+  /// space - revealed via [_toolbarOpen]'s "Show Feature Tree" action.
+  bool _featureTreeVisible = false;
+  bool _toolbarOpen = false;
 
   @override
   void initState() {
@@ -96,6 +102,13 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  void _showFeatureTree() {
+    setState(() {
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+    });
+  }
+
   Future<void> _openSketch(FeatureDto feature) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -135,14 +148,42 @@ class _PartScreenState extends State<PartScreen> {
               child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900)),
             ),
           Expanded(
-            child: Row(
+            child: Stack(
               children: [
-                FeatureTreePanel(
-                  features: _features,
-                  selectedFeatureId: _selectedFeatureId,
-                  onFeatureTap: _onFeatureTap,
+                // Full-space by default - the tree/toolbar below are
+                // overlays, not siblings in a Row, so the viewport never
+                // loses space to a hidden panel.
+                PartViewport(mesh: _mesh),
+                Positioned.fill(
+                  child: FeatureTreePanel(
+                    visible: _featureTreeVisible,
+                    features: _features,
+                    selectedFeatureId: _selectedFeatureId,
+                    onFeatureTap: _onFeatureTap,
+                    onClose: () => setState(() => _featureTreeVisible = false),
+                  ),
                 ),
-                Expanded(child: PartViewport(mesh: _mesh)),
+                Positioned.fill(
+                  child: PartToolbar(
+                    visible: _toolbarOpen,
+                    onShowFeatureTree: _showFeatureTree,
+                  ),
+                ),
+                // Always on top (last in the Stack) so it stays tappable
+                // regardless of whether the toolbar/tree panels underneath
+                // are open.
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: SafeArea(
+                    bottom: false,
+                    child: IconButton.filled(
+                      tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
+                      icon: Icon(_toolbarOpen ? Icons.close : Icons.menu),
+                      onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),

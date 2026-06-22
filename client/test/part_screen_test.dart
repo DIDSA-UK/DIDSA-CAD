@@ -155,7 +155,21 @@ void main() {
         ),
       ),
     );
-    await _pumpUntil(tester, () => find.text('Sketch 1').evaluate().isNotEmpty);
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    // The Feature tree is hidden by default - open it via the toolbar
+    // before it can be found/tapped below. pumpAndSettle can't be used here
+    // (per the _pumpUntil doc comment above: PartViewport's own loading
+    // spinner can keep scheduling frames indefinitely), so each tap is
+    // followed by an explicit zero-duration frame - to apply the tap's
+    // setState and let the AnimatedSlide pick up its new target offset -
+    // then a frame past its 200ms duration to let it finish sliding in.
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Sketch 1'), findsOneWidget);
     expect(find.text('Locked'), findsOneWidget);
