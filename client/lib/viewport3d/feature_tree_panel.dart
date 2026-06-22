@@ -14,10 +14,10 @@ String featureDisplayName(int index) => 'Sketch ${index + 1}';
 /// them, per the project brief - while the editable (last) Feature is
 /// tappable to open it for editing. Selection is purely a display concern
 /// here; [onFeatureTap] decides what a tap actually does. A long-press on
-/// any row (locked or not) triggers the cascade-delete flow via
-/// [onFeatureLongPress] - unlike a tap, this is available regardless of
-/// lock state, since cascade-deleting a locked Feature also removes
-/// everything after it that depends on it.
+/// any row (locked or not) invokes [onFeatureLongPress] - unlike a tap,
+/// this is available regardless of lock state, since the cascade-delete
+/// action it can lead to also removes everything after a locked Feature
+/// that depends on it.
 ///
 /// Hidden by default so the 3D viewport gets full space - slides in from
 /// the left (same [AnimatedSlide] pattern as [SketchRibbon]) when

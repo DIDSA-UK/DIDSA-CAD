@@ -1,9 +1,28 @@
+import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/viewport3d/orbit_camera.dart';
+
+/// Angle of `p` around the world-up (Y) axis, as seen from above - used
+/// below to measure how far a horizontal drag actually swung the camera in
+/// world space, independent of how that was achieved internally.
+double _worldAzimuth(vm.Vector3 p) => math.atan2(p.x, p.z);
+
+/// Normalizes an azimuth delta to (-pi, pi] so a single small drag step
+/// never gets misread as having wrapped around.
+double _wrapAngle(double radians) {
+  var a = radians;
+  while (a > math.pi) {
+    a -= 2 * math.pi;
+  }
+  while (a < -math.pi) {
+    a += 2 * math.pi;
+  }
+  return a;
+}
 
 void main() {
   const size = Size(400, 300);
@@ -54,6 +73,35 @@ void main() {
     expect(verticalOnly.cameraFor(size).position.x, closeTo(initialPosition.x, 1e-4));
     expect(verticalOnly.cameraFor(size).position.y, closeTo(initialPosition.y, 1e-4));
     expect(verticalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-4));
+  });
+
+  test('horizontal orbit direction stays visually consistent once the camera is upside-down', () {
+    // Real-device bug: once orbited past vertical (the model reads as
+    // upside-down), the camera's up vector points away from world-up, so
+    // the screen's left/right sense is effectively mirrored - a fixed
+    // horizontal drag then needs to swing the camera the *opposite* way in
+    // world space to still look like the same on-screen direction. Confirm
+    // that by comparing the world-frame azimuth swing of an identical `+50`
+    // horizontal drag, right-side-up vs upside-down: it must flip sign.
+    final rightSideUp = OrbitCamera();
+    final beforeRightSideUp = rightSideUp.cameraFor(size).position;
+    rightSideUp.orbitByScreenDelta(50, 0);
+    final afterRightSideUp = rightSideUp.cameraFor(size).position;
+    final deltaRightSideUp = _wrapAngle(_worldAzimuth(afterRightSideUp) - _worldAzimuth(beforeRightSideUp));
+
+    final upsideDown = OrbitCamera();
+    while (upsideDown.cameraFor(size).up.dot(vm.Vector3(0, 1, 0)) >= 0) {
+      upsideDown.orbitByScreenDelta(0, -50); // pure vertical drag, tips it past the pole
+    }
+    expect(upsideDown.cameraFor(size).up.dot(vm.Vector3(0, 1, 0)), lessThan(0));
+
+    final beforeUpsideDown = upsideDown.cameraFor(size).position;
+    upsideDown.orbitByScreenDelta(50, 0);
+    final afterUpsideDown = upsideDown.cameraFor(size).position;
+    final deltaUpsideDown = _wrapAngle(_worldAzimuth(afterUpsideDown) - _worldAzimuth(beforeUpsideDown));
+
+    expect(deltaRightSideUp, closeTo(0.5, 1e-4));
+    expect(deltaUpsideDown, closeTo(-0.5, 1e-4));
   });
 
   test('orbiting continuously past where the old azimuth/elevation camera used to clamp keeps rotating smoothly', () {

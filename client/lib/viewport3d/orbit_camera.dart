@@ -88,9 +88,19 @@ class OrbitCamera {
   /// world-up axis (so left/right drags always swing around the same
   /// vertical regardless of how far the camera has already been tilted) -
   /// composed as quaternions, with no clamping, so this never gets stuck.
+  ///
+  /// Once the camera has orbited past vertical, [_up] points away from
+  /// world-up rather than towards it - the model now reads as
+  /// "upside-down" - and yawing about the fixed world-up axis then swings
+  /// the view the opposite way the drag visually suggests. Flipping
+  /// `dxPixels` whenever [_up] and world-up have gone more than 90 degrees
+  /// apart (a negative dot product) keeps horizontal drag direction feeling
+  /// consistent regardless of orientation; vertical/pitch is unaffected.
   void orbitByScreenDelta(double dxPixels, double dyPixels) {
+    final upsideDown = _up.dot(_localUp) < 0;
+    final yawDx = upsideDown ? -dxPixels : dxPixels;
     final pitch = vm.Quaternion.axisAngle(_right, dyPixels * orbitSensitivity);
-    final yaw = vm.Quaternion.axisAngle(_localUp, -dxPixels * orbitSensitivity);
+    final yaw = vm.Quaternion.axisAngle(_localUp, -yawDx * orbitSensitivity);
     orientation = (orientation * pitch * yaw).normalized();
   }
 
