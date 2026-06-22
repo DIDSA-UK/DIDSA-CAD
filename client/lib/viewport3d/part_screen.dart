@@ -5,6 +5,7 @@ import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'cascade_delete_dialog.dart';
+import 'feature_context_menu.dart';
 import 'feature_tree_panel.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
@@ -103,12 +104,27 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// A long-press on any Feature (locked or not) cascade-deletes it and
-  /// every Feature after it, once the user confirms exactly which ones
-  /// will go. The Feature tree is already in creation order, so the
-  /// Features at and after [feature]'s index are precisely the ones the
-  /// backend's cascade-delete will remove.
+  /// A long-press on any Feature (locked or not) opens a context menu of
+  /// actions for it, rather than triggering anything directly - the menu
+  /// is what lets later stages add actions (rename, edit, ...) alongside
+  /// Delete without reworking this entry point. Only Delete exists today.
   Future<void> _onFeatureLongPress(FeatureDto feature) async {
+    if (_busy) return;
+
+    final action = await showFeatureContextMenu(context);
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case FeatureContextMenuAction.delete:
+        await _cascadeDeleteFeature(feature);
+    }
+  }
+
+  /// Cascade-deletes [feature] and every Feature after it, once the user
+  /// confirms exactly which ones will go. The Feature tree is already in
+  /// creation order, so the Features at and after [feature]'s index are
+  /// precisely the ones the backend's cascade-delete will remove.
+  Future<void> _cascadeDeleteFeature(FeatureDto feature) async {
     final part = _part;
     if (part == null || _busy) return;
 

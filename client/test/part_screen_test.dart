@@ -242,12 +242,18 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    // Long-pressing the *first* (locked) Feature must name every Feature
-    // from it onward - all three - not just itself or a generic message.
+    // Long-pressing the *first* (locked) Feature opens its context menu
+    // first, not the dialog directly - tap its Delete entry to reach the
+    // cascade-delete confirmation dialog.
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Delete'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
 
+    // Must name every Feature from it onward - all three - not just itself
+    // or a generic message.
     expect(find.textContaining('Sketch 1\nSketch 2\nSketch 3'), findsOneWidget);
     expect(find.text('Delete all'), findsOneWidget);
 
@@ -290,8 +296,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     // Long-press the locked first Feature - cascade-delete must be
-    // available on a locked Feature too, unlike a single delete.
+    // available on a locked Feature too, unlike a single delete. Opens the
+    // context menu first; tap its Delete entry to reach the dialog.
     await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Delete'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
