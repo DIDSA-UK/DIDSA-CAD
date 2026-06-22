@@ -8,6 +8,8 @@ import 'package:http/testing.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
+import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 
 /// A tiny in-memory fake of the backend's `/document` API - just enough of
 /// Part/Feature/mesh to drive [PartScreen] without a real network call.
@@ -69,6 +71,26 @@ class _FakeDocumentBackend {
       };
       features.add(feature);
       return _json(feature, 201);
+    }
+
+    final cascadeMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)/cascade$').firstMatch(path);
+    if (cascadeMatch != null && method == 'DELETE') {
+      final featureId = cascadeMatch.group(1);
+      final index = features.indexWhere((f) => f['id'] == featureId);
+      if (index == -1) {
+        return http.Response('not found: feature', 404);
+      }
+      final deleted = features.sublist(index);
+      features.removeRange(index, features.length);
+      // Mirror the real backend: the new last Feature (if any survive)
+      // becomes unlocked again.
+      if (features.isNotEmpty) {
+        features.last['locked'] = false;
+      }
+      return _json({
+        'deleted_feature_ids': deleted.map((f) => f['id']).toList(),
+        'deleted_sketch_ids': deleted.map((f) => f['sketch_id']).toList(),
+      }, 200);
     }
 
     return http.Response('not found: $path', 404);
@@ -155,11 +177,31 @@ void main() {
         ),
       ),
     );
-    await _pumpUntil(tester, () => find.text('Sketch 1').evaluate().isNotEmpty);
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    // The Feature tree is hidden by default - open it via the toolbar
+    // before it can be found/tapped below. pumpAndSettle can't be used here
+    // (per the _pumpUntil doc comment above: PartViewport's own loading
+    // spinner can keep scheduling frames indefinitely), so each tap is
+    // followed by an explicit zero-duration frame - to apply the tap's
+    // setState and let the AnimatedSlide pick up its new target offset -
+    // then a frame past its 200ms duration to let it finish sliding in.
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Sketch 1'), findsOneWidget);
     expect(find.text('Locked'), findsOneWidget);
     expect(find.text('Editable'), findsOneWidget);
+
+    // The hamburger toggle sits in the same top-left corner as the tree's
+    // header, so it's hidden while the tree is open to avoid overlapping
+    // its text - the tree's own X button is the way to close it instead.
+    expect(find.byTooltip('Open toolbar'), findsNothing);
+    expect(find.byTooltip('Close toolbar'), findsNothing);
 
     await tester.tap(find.text('Sketch 1'));
     await tester.pump();
@@ -169,6 +211,192 @@ void main() {
     // Sketch, per the project brief.
     expect(find.text('Part 1'), findsOneWidget);
     expect(find.text('DIDSA-CAD Sketch'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('long-pressing a Feature shows a confirmation dialog naming every Feature that will be deleted', (
+    tester,
+  ) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': true},
+        {'id': 'feature-3', 'sketch_id': 'sketch-3', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Long-pressing the *first* (locked) Feature opens its context menu
+    // first, not the dialog directly - tap its Delete entry to reach the
+    // cascade-delete confirmation dialog.
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Delete'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Must name every Feature from it onward - all three - not just itself
+    // or a generic message.
+    expect(find.textContaining('Sketch 1\nSketch 2\nSketch 3'), findsOneWidget);
+    expect(find.text('Delete all'), findsOneWidget);
+
+    // Cancelling must delete nothing.
+    await tester.tap(find.text('Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Sketch 1'), findsOneWidget);
+    expect(find.text('Sketch 2'), findsOneWidget);
+    expect(find.text('Sketch 3'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('confirming the cascade-delete dialog deletes the Feature and everything after it', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Long-press the locked first Feature - cascade-delete must be
+    // available on a locked Feature too, unlike a single delete. Opens the
+    // context menu first; tap its Delete entry to reach the dialog.
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Delete'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Delete all'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await _pumpUntil(tester, () => find.text('Sketch 1').evaluate().isEmpty);
+
+    // Both Features are gone, and the tree shows an empty list rather than
+    // an error - the backend genuinely has zero Features for this Part now.
+    expect(find.text('Sketch 1'), findsNothing);
+    expect(find.text('Sketch 2'), findsNothing);
+    expect(backend.features, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'tapping a reference plane opens the toolbar with a New Sketch action, '
+    'and confirming it creates a SketchFeature on that plane',
+    (tester) async {
+      final backend = _FakeDocumentBackend();
+      final requests = <http.Request>[];
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return backend.handle(request);
+        }),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // PartViewport's real screen-tap -> ray -> plane hit-test is exercised
+      // directly in part_viewport_test.dart against a known camera/viewport
+      // size; here, calling its onPlaneTap straight from the widget tree
+      // stands in for "the 3D viewport reported a tap on the YZ plane" -
+      // exactly the "mocked camera/viewport acceptable" the project brief
+      // allows for this end-to-end toolbar/navigation flow.
+      tester.widget<PartViewport>(find.byType(PartViewport)).onPlaneTap(ReferencePlaneKind.yz);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('New Sketch on YZ'), findsOneWidget);
+
+      await tester.tap(find.text('New Sketch on YZ'));
+      await tester.pump();
+      await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+
+      expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      final createRequest = requests.firstWhere((r) => r.url.path == '/document/parts/part-1/features/sketch');
+      expect(jsonDecode(createRequest.body)['plane'], 'YZ');
+    },
+  );
+
+  testWidgets('tapping the viewport background dismisses the toolbar and clears the plane selection', (
+    tester,
+  ) async {
+    final documentApi = DocumentApiClient(
+      httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+    );
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+    viewport.onPlaneTap(ReferencePlaneKind.xy);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('New Sketch on XY'), findsOneWidget);
+
+    viewport.onBackgroundTap();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('New Sketch on XY'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

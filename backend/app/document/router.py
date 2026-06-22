@@ -6,6 +6,7 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from app.document.mesh import DEFAULT_MESH_QUALITY, tessellate_shape
 from app.document.models import Feature, Part, SketchFeature
 from app.document.schemas import (
+    CascadeDeleteResponse,
     FeatureResponse,
     MeshVertexData,
     PartCreate,
@@ -15,7 +16,7 @@ from app.document.schemas import (
     SketchFeatureResponse,
 )
 from app.document.store import get_document, get_part_or_404
-from app.sketch.store import create_sketch
+from app.sketch.store import create_sketch, delete_sketch
 
 router = APIRouter(prefix="/document", tags=["document"])
 
@@ -86,6 +87,42 @@ def delete_feature(part_id: str, feature_id: str) -> None:
             "later Feature exists. Delete the later Feature(s) first.",
         )
     part.delete_feature(feature_id)
+
+
+@router.delete(
+    "/parts/{part_id}/features/{feature_id}/cascade", response_model=CascadeDeleteResponse
+)
+def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteResponse:
+    """Deletes `feature_id` and every Feature after it, regardless of
+    locking - this is the only way to remove a locked Feature, since
+    removing it always also removes everything later that depends on it
+    being in the history. Distinct from `delete_feature` above (which
+    only ever removes a single, unlocked, last Feature) precisely so a
+    client can't trigger a multi-Feature deletion by accident through the
+    single-delete endpoint.
+
+    Each deleted SketchFeature's underlying Sketch is deleted too, since
+    a Sketch created via this Document/Part/Feature flow is owned solely
+    by the SketchFeature that wraps it - nothing else references it, so
+    nothing else needs it once that SketchFeature is gone. (Sketches
+    created directly via the standalone /sketch API, bypassing a Part
+    entirely, are never touched here - the only Sketches this loop ever
+    sees are the ones already attached to a Feature this Part is deleting.)
+    """
+    part = get_part_or_404(part_id)
+    _get_feature_or_404(part, feature_id)
+    deleted_features = part.delete_feature_cascade(feature_id)
+
+    deleted_sketch_ids = []
+    for feature in deleted_features:
+        if isinstance(feature, SketchFeature):
+            delete_sketch(feature.sketch_id)
+            deleted_sketch_ids.append(feature.sketch_id)
+
+    return CascadeDeleteResponse(
+        deleted_feature_ids=[f.id for f in deleted_features],
+        deleted_sketch_ids=deleted_sketch_ids,
+    )
 
 
 @router.get("/parts/{part_id}/mesh", response_model=PartMeshResponse)

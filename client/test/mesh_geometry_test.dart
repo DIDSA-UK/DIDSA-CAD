@@ -62,4 +62,34 @@ void main() {
 
     expect(indices, [0, 1, 2, 2, 1, 3]);
   });
+
+  test('centroidOfMesh averages the vertex positions, not the origin', () {
+    // Mirrors the real placeholder mesh's actual bounds - a
+    // BRepPrimAPI_MakeBox(10, 10, 10) spans (0,0,0) to (10,10,10), so its
+    // genuine centroid is (5, 5, 5), not the world origin.
+    final mesh = MeshDto(
+      vertices: [
+        [0, 0, 0],
+        [10, 0, 0],
+        [0, 10, 0],
+        [10, 10, 10],
+      ],
+      normals: [
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 1],
+      ],
+      triangleIndices: [
+        [0, 1, 2],
+        [2, 1, 3],
+      ],
+    );
+
+    final centroid = centroidOfMesh(mesh);
+
+    expect(centroid.x, closeTo(5, 1e-9));
+    expect(centroid.y, closeTo(5, 1e-9));
+    expect(centroid.z, closeTo(2.5, 1e-9));
+  });
 }

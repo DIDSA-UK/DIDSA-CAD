@@ -49,3 +49,13 @@ class PartMeshResponse(BaseModel):
 
     source: Literal["placeholder"] = "placeholder"
     mesh: MeshVertexData
+
+
+class CascadeDeleteResponse(BaseModel):
+    """What got deleted by a cascade-delete: the target Feature and every
+    Feature after it, plus the Sketch each deleted SketchFeature owned -
+    in deletion order, so a client can confirm the backend's view matches
+    what it just asked for (or refresh from it directly)."""
+
+    deleted_feature_ids: list[str]
+    deleted_sketch_ids: list[str]

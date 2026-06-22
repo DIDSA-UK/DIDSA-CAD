@@ -22,3 +22,13 @@ def get_sketch_or_404(sketch_id: str) -> Sketch:
     if sketch is None:
         raise HTTPException(status_code=404, detail="Sketch not found")
     return sketch
+
+
+def delete_sketch(sketch_id: str) -> None:
+    """Removes a Sketch from the store. Only intended to be called by
+    app.document's cascade-delete, for a Sketch it has just confirmed is
+    owned by a SketchFeature it is deleting - there is no other reference
+    to a Sketch created via that flow, so no other caller should ever
+    need this. Pops rather than 404ing on a missing id since cascade-delete
+    is the sole caller and already knows the Sketch exists."""
+    _sketches.pop(sketch_id, None)

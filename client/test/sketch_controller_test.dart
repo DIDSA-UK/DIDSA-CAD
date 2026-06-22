@@ -308,6 +308,10 @@ void main() {
     expect(origin.y, 0);
   });
 
+  test('ensureSketch also exposes the Sketch\'s plane', () {
+    expect(controller.plane, 'XY');
+  });
+
   test('clicking within the snap radius of the origin lands exactly on its real point id', () async {
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;

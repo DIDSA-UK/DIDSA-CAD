@@ -75,6 +75,15 @@ class SketchController extends ChangeNotifier {
   /// snapping.
   String? get originPointId => _originPointId;
 
+  String? _plane;
+
+  /// This Sketch's reference plane (`'XY'`/`'XZ'`/`'YZ'`) - null until
+  /// [ensureSketch]/[adoptSketch] completes. Drives [SketchCanvas]'s small
+  /// plane-indicator overlay; otherwise unused, since every Sketch entity
+  /// is still stored/solved in its own local 2D coordinates regardless of
+  /// which 3D plane it's actually on.
+  String? get plane => _plane;
+
   final Map<String, SketchPointView> points = {};
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
@@ -359,6 +368,7 @@ class SketchController extends ChangeNotifier {
   void _adoptSketchDto(SketchDto sketch) {
     _sketchId = sketch.id;
     _originPointId = sketch.originPointId;
+    _plane = sketch.plane;
     points[sketch.originPointId] = SketchPointView(id: sketch.originPointId, x: 0, y: 0);
   }
 
