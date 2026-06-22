@@ -368,6 +368,105 @@ void main() {
     },
   );
 
+  testWidgets('tapping an unlocked (editable) Feature opens its Sketch, animating the camera first', (
+    tester,
+  ) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Sketch 2'));
+    // The camera-animation-into-the-Sketch-plane runs (and must complete)
+    // before navigation - _pumpUntil's bounded pumping carries the tester
+    // through both that animation and the eventual SketchScreen load.
+    await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+
+    expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the Hide/Show context-menu action dims a Feature row and flips its label/icon', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.byIcon(Icons.visibility_off), findsNothing);
+
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Not yet hidden - the context menu's toggle entry must offer "Hide".
+    expect(find.text('Hide'), findsOneWidget);
+    expect(find.text('Show'), findsNothing);
+
+    await tester.tap(find.text('Hide'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Hidden now - the tree row shows the eye-slash trailing icon.
+    expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // The menu now offers "Show" instead, reflecting the toggled state.
+    expect(find.text('Show'), findsOneWidget);
+    expect(find.text('Hide'), findsNothing);
+
+    await tester.tap(find.text('Show'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.byIcon(Icons.visibility_off), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('tapping the viewport background dismisses the toolbar and clears the plane selection', (
     tester,
   ) async {

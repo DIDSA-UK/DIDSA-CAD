@@ -1,7 +1,10 @@
+import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
+
+import 'reference_planes.dart';
 
 /// Mutable orbit/pan/zoom state for the 3D viewport - the 3D equivalent of
 /// [SketchViewport], producing a `flutter_scene` [PerspectiveCamera] for a
@@ -135,3 +138,22 @@ class OrbitCamera {
     target = _defaultTarget;
   }
 }
+
+/// The camera orientation that looks straight down at [plane] from the side
+/// specified for the camera-animation-into-Sketch feature - XY from +Z (down
+/// -Z), XZ from +Y (down -Y), YZ from +X (down -X). Derived by hand from
+/// [OrbitCamera]'s own `_direction = orientation.rotated((0, 0, 1))` /
+/// `_up = orientation.rotated((0, 1, 0))` convention: identity orientation
+/// already gives direction=+Z (XY's case), and the other two are a single
+/// axis-angle rotation each that carries +Z to +Y or +X respectively.
+///
+/// XZ and YZ's resulting "up" (world (0, 0, -1) and world (0, 1, 0)
+/// respectively) is a deliberate but unforced convention choice - the brief
+/// only specifies the look-from direction, not which way is "up" for a
+/// top-down/side-on view - and would benefit from a real-device check that
+/// it doesn't feel upside-down.
+vm.Quaternion orientationFacingPlane(ReferencePlaneKind plane) => switch (plane) {
+      ReferencePlaneKind.xy => vm.Quaternion.identity(),
+      ReferencePlaneKind.xz => vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), -math.pi / 2),
+      ReferencePlaneKind.yz => vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi / 2),
+    };

@@ -131,8 +131,21 @@ def get_part_mesh(part_id: str) -> PartMeshResponse:
     via the real OCCT pipeline in app.document.mesh. NOT derived from the
     Part's actual Feature tree - there is no ExtrudeFeature yet, so this
     cannot reflect real modeled geometry. `source` is "placeholder" so
-    clients can tell the difference once real geometry exists."""
-    get_part_or_404(part_id)
+    clients can tell the difference once real geometry exists.
+
+    Only returned while `Part.produces_solid_geometry` is False, i.e. while
+    no Feature in the Part's history produces real solid geometry - once a
+    future ExtrudeFeature/RevolveFeature exists and is added, this stops
+    appearing automatically, with no further change needed here."""
+    part = get_part_or_404(part_id)
+
+    if part.produces_solid_geometry:
+        # Unreachable today - no Feature type sets `produces_solid_geometry`
+        # True yet. A future ExtrudeFeature's real tessellated shape belongs
+        # here in place of the placeholder box below.
+        raise NotImplementedError(
+            "Real Feature-derived geometry is not implemented yet"
+        )
 
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
     mesh_data = tessellate_shape(box, DEFAULT_MESH_QUALITY)

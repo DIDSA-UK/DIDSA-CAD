@@ -6,6 +6,7 @@ import '../api/document_api_client.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
+import 'sketch_geometry_3d.dart';
 import 'triad.dart';
 
 /// The Stage 7 3D viewport: renders [mesh] (the placeholder Part mesh from
@@ -29,19 +30,28 @@ class PartViewport extends StatefulWidget {
   final void Function(ReferencePlaneKind plane) onPlaneTap;
   final VoidCallback onBackgroundTap;
 
+  /// Per-Feature 3D Sketch geometry (Lines/Circles already projected onto
+  /// their plane, see [SketchGeometry3D]), keyed by Feature id - callers
+  /// should omit hidden Features' entries entirely rather than passing
+  /// [SketchGeometry3D.empty], and should only build a new `Map` instance
+  /// when the content actually changes (see [didUpdateWidget]), since a new
+  /// instance triggers a full GPU geometry rebuild of every entry.
+  final Map<String, SketchGeometry3D> sketchGeometries;
+
   const PartViewport({
     super.key,
     required this.mesh,
     required this.selectedPlane,
     required this.onPlaneTap,
     required this.onBackgroundTap,
+    this.sketchGeometries = const {},
   });
 
   @override
-  State<PartViewport> createState() => _PartViewportState();
+  State<PartViewport> createState() => PartViewportState();
 }
 
-class _PartViewportState extends State<PartViewport> {
+class PartViewportState extends State<PartViewport> with SingleTickerProviderStateMixin {
   final OrbitCamera _camera = OrbitCamera();
 
   /// Null until `flutter_scene`'s static resources (shaders, default
@@ -50,6 +60,7 @@ class _PartViewportState extends State<PartViewport> {
   Scene? _scene;
   Node? _meshNode;
   Map<ReferencePlaneKind, Node> _planeNodes = {};
+  Map<String, Node> _sketchNodes = {};
 
   /// Set if GPU/scene setup throws - without this, that failure would only
   /// ever reach the console (it happens inside an unawaited Future), leaving
@@ -89,6 +100,7 @@ class _PartViewportState extends State<PartViewport> {
         _scene = Scene();
         _syncMeshNode();
         _syncReferencePlaneNodes();
+        _syncSketchNodes();
       });
     }).catchError((Object error) {
       debugPrint('[PartViewport] GPU/scene setup failed: $error');
@@ -105,6 +117,9 @@ class _PartViewportState extends State<PartViewport> {
     }
     if (widget.selectedPlane != oldWidget.selectedPlane) {
       setState(_syncReferencePlaneNodes);
+    }
+    if (widget.sketchGeometries != oldWidget.sketchGeometries) {
+      setState(_syncSketchNodes);
     }
   }
 
@@ -146,6 +161,58 @@ class _PartViewportState extends State<PartViewport> {
     };
     for (final node in _planeNodes.values) {
       scene.add(node);
+    }
+  }
+
+  /// Mirrors [_syncReferencePlaneNodes]: rebuilds every Sketch's geometry
+  /// node from scratch from [PartViewport.sketchGeometries] - relies on the
+  /// widget's own contract (see its doc comment) that a new `Map` instance
+  /// only arrives when content genuinely changed, so this never runs more
+  /// often than that.
+  void _syncSketchNodes() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _sketchNodes.values) {
+      scene.remove(node);
+    }
+    _sketchNodes = {
+      for (final entry in widget.sketchGeometries.entries)
+        if (!entry.value.isEmpty) entry.key: buildSketchGeometryNode(entry.key, entry.value),
+    };
+    for (final node in _sketchNodes.values) {
+      scene.add(node);
+    }
+  }
+
+  /// Animates the camera to look straight down at [plane], per the brief's
+  /// camera-animation-into-Sketch feature - smoothly interpolating
+  /// [OrbitCamera.orientation] via quaternion `slerp` (never Euler angles, so
+  /// there's no risk of gimbal-lock artifacts mid-animation) over
+  /// [duration]. Callers (see `PartScreen`) await this and only navigate to
+  /// the 2D canvas once it completes.
+  ///
+  /// 400ms with [Curves.easeInOut] is this implementation's own judgment
+  /// call, within the brief's specified 300-500ms range - worth confirming
+  /// on a real device that it doesn't feel too slow/fast.
+  Future<void> animateToPlane(
+    ReferencePlaneKind plane, {
+    Duration duration = const Duration(milliseconds: 400),
+  }) async {
+    final from = _camera.orientation;
+    final to = orientationFacingPlane(plane);
+    final controller = AnimationController(vsync: this, duration: duration);
+    final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOut);
+    void tick() {
+      if (!mounted) return;
+      setState(() => _camera.orientation = from.slerp(to, curved.value));
+    }
+
+    controller.addListener(tick);
+    try {
+      await controller.forward();
+    } finally {
+      controller.removeListener(tick);
+      controller.dispose();
     }
   }
 
@@ -278,7 +345,12 @@ class _PartViewportState extends State<PartViewport> {
               onPointerSignal: _handlePointerSignal,
               child: CustomPaint(
                 size: size,
-                painter: _ScenePainter(scene: scene, camera: _camera, size: size),
+                painter: _ScenePainter(
+                  scene: scene,
+                  camera: _camera,
+                  size: size,
+                  polylineCarryingNodes: [..._planeNodes.values, ..._sketchNodes.values],
+                ),
               ),
             ),
             // top-right, not top-left, so it doesn't collide with
@@ -305,12 +377,23 @@ class _ScenePainter extends CustomPainter {
   final OrbitCamera camera;
   final Size size;
 
+  /// Every [Node] (reference planes, Sketch geometry) whose [Mesh] may
+  /// contain a [PolylineGeometry] primitive - each such primitive's
+  /// camera-facing strip must be rebuilt via `updateForCamera` every frame
+  /// before [Scene.render], per [PolylineGeometry]'s own contract.
+  final List<Node> polylineCarryingNodes;
+
   /// `paint` runs every frame, so this guards [paint]'s diagnostic logging to
   /// fire only once - the first call already proves `scene.render` (the
   /// flutter_scene GPU call) didn't hang, which is all the logging is for.
   static bool _loggedFirstPaint = false;
 
-  _ScenePainter({required this.scene, required this.camera, required this.size});
+  _ScenePainter({
+    required this.scene,
+    required this.camera,
+    required this.size,
+    this.polylineCarryingNodes = const [],
+  });
 
   /// Distance of the triad's center from each edge of the viewport - large
   /// enough that its arms (see [paintTriad]'s `armLength`) and axis labels
@@ -326,6 +409,14 @@ class _ScenePainter extends CustomPainter {
     }
     canvas.drawRect(Offset.zero & canvasSize, Paint()..color = const Color(0xFF202020));
     final perspectiveCamera = camera.cameraFor(size);
+    for (final node in polylineCarryingNodes) {
+      for (final primitive in node.mesh?.primitives ?? const []) {
+        final geometry = primitive.geometry;
+        if (geometry is PolylineGeometry) {
+          geometry.updateForCamera(perspectiveCamera, canvasSize);
+        }
+      }
+    }
     scene.render(perspectiveCamera, canvas, viewport: Offset.zero & canvasSize);
     if (isFirstPaint) {
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, scene.render() returned');
