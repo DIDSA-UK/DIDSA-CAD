@@ -4,6 +4,18 @@ import 'package:vector_math/vector_math.dart' as vm;
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 
 void main() {
+  group('referencePlaneKindFromApiValue', () {
+    test('parses every plane apiValue back to its ReferencePlaneKind', () {
+      for (final plane in ReferencePlaneKind.values) {
+        expect(referencePlaneKindFromApiValue(plane.apiValue), plane);
+      }
+    });
+
+    test('returns null for an unrecognized value rather than throwing', () {
+      expect(referencePlaneKindFromApiValue('bogus'), isNull);
+    });
+  });
+
   group('ReferencePlaneKindX.localTransform', () {
     // PlaneGeometry is always built flat in the XZ plane (surface facing
     // +Y) - confirms each plane's rotation actually lands a representative

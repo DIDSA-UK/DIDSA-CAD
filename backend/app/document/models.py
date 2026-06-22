@@ -20,13 +20,23 @@ class Feature(ABC):
     def type(self) -> str:
         ...
 
+    @property
+    def produces_solid_geometry(self) -> bool:
+        """Whether this Feature contributes real solid geometry to its
+        Part's actual modeled shape - false by default. A future
+        ExtrudeFeature/RevolveFeature overrides this to True, which is the
+        only change needed for `get_part_mesh` (see document/router.py) to
+        stop returning its placeholder box once a Part has one."""
+        return False
+
 
 @dataclass
 class SketchFeature(Feature):
     """Wraps an existing Sketch (by id) as a step in a Part's Feature
     history. Does not own or duplicate the Sketch's geometry - app.sketch
     remains the sole owner of Sketch data, this is just a reference plus
-    its position in the Feature list."""
+    its position in the Feature list. A Sketch alone never produces solid
+    geometry - it's only ever an input to a future Extrude/Revolve."""
 
     id: str
     sketch_id: str
@@ -53,6 +63,13 @@ class Part:
 
     def add_feature(self, feature: Feature) -> None:
         self.features.append(feature)
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        """True once any Feature in this Part's history produces real solid
+        geometry (see `Feature.produces_solid_geometry`) - drives whether
+        `get_part_mesh` should keep returning its placeholder box."""
+        return any(f.produces_solid_geometry for f in self.features)
 
     def is_locked(self, feature_id: str) -> bool:
         """True if `feature_id` is not the last Feature in the list (so it

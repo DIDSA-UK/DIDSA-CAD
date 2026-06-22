@@ -10,6 +10,7 @@ import 'feature_tree_panel.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
 import 'reference_planes.dart';
+import 'sketch_geometry_3d.dart';
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -36,6 +37,14 @@ class PartScreen extends StatefulWidget {
 class _PartScreenState extends State<PartScreen> {
   late final DocumentApiClient _api;
 
+  /// Owned by this screen (regardless of whether [PartScreen.sketchApiFactory]
+  /// was supplied) just to look up an existing Feature's Sketch plane/content
+  /// for the 3D viewport - separate from the per-push client
+  /// [_openSketch]/[SketchController] builds for the 2D canvas itself.
+  late final SketchApiClient _sketchApi;
+
+  final GlobalKey<PartViewportState> _viewportKey = GlobalKey<PartViewportState>();
+
   PartDto? _part;
   List<FeatureDto> _features = [];
   MeshDto? _mesh;
@@ -46,6 +55,16 @@ class _PartScreenState extends State<PartScreen> {
   /// "New Sketch on..." entry. Controlled-widget state, same pattern as
   /// [_selectedFeatureId]/[FeatureTreePanel].
   ReferencePlaneKind? _selectedPlane;
+
+  /// Feature ids hidden from the 3D viewport via the long-press
+  /// Hide/Show action - client-side only, never sent to the backend.
+  final Set<String> _hiddenFeatureIds = {};
+
+  /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
+  /// [_hiddenFeatureIds] - [_visibleSketchGeometries] is the
+  /// hidden-filtered view of this actually passed to [PartViewport].
+  Map<String, SketchGeometry3D> _allSketchGeometries = {};
+  Map<String, SketchGeometry3D> _visibleSketchGeometries = {};
 
   bool _busy = false;
   String? _errorMessage;
@@ -59,6 +78,7 @@ class _PartScreenState extends State<PartScreen> {
   void initState() {
     super.initState();
     _api = widget.documentApi ?? DocumentApiClient();
+    _sketchApi = widget.sketchApiFactory?.call() ?? SketchApiClient();
     _loadPart();
   }
 
@@ -67,6 +87,7 @@ class _PartScreenState extends State<PartScreen> {
     if (widget.documentApi == null) {
       _api.close();
     }
+    _sketchApi.close();
     super.dispose();
   }
 
@@ -80,6 +101,7 @@ class _PartScreenState extends State<PartScreen> {
       _mesh = (await _api.getPartMesh(part.id)).mesh;
       debugPrint('[PartScreen] getPartMesh done: ${_mesh!.vertices.length} vertices');
       await _refreshFeatures();
+      await _refreshSketchGeometries();
       debugPrint('[PartScreen] refreshFeatures done');
     });
   }
@@ -88,6 +110,44 @@ class _PartScreenState extends State<PartScreen> {
     final part = _part;
     if (part == null) return;
     _features = await _api.listFeatures(part.id);
+  }
+
+  /// Re-fetches every Feature's Sketch content (points/lines/circles) and
+  /// rebuilds [_allSketchGeometries]/[_visibleSketchGeometries] from it, so
+  /// the 3D viewport's rendered Sketch geometry always matches the latest
+  /// backend state. A single Feature's fetch failing (e.g. a test fixture
+  /// that only stubs `GET /sketch/sketches/{id}`, or a transient network
+  /// issue) only drops that Feature's geometry, not the whole viewport.
+  Future<void> _refreshSketchGeometries() async {
+    final updated = <String, SketchGeometry3D>{};
+    for (final feature in _features) {
+      try {
+        final sketch = await _sketchApi.getSketch(feature.sketchId);
+        final plane = referencePlaneKindFromApiValue(sketch.plane);
+        if (plane == null) continue;
+        final points = await _sketchApi.listPoints(feature.sketchId);
+        final lines = await _sketchApi.listLines(feature.sketchId);
+        final circles = await _sketchApi.listCircles(feature.sketchId);
+        final geometry =
+            sketchGeometry3DFrom(plane: plane, points: points, lines: lines, circles: circles);
+        if (!geometry.isEmpty) updated[feature.id] = geometry;
+      } catch (_) {
+        // Swallow - see doc comment above.
+      }
+    }
+    _allSketchGeometries = updated;
+    _recomputeVisibleSketchGeometries();
+  }
+
+  /// Filters [_allSketchGeometries] down to [_visibleSketchGeometries] by
+  /// [_hiddenFeatureIds] - the only place that builds a new Map instance for
+  /// [PartViewport.sketchGeometries], so its `didUpdateWidget` `!=` check
+  /// only fires on a genuine content/visibility change.
+  void _recomputeVisibleSketchGeometries() {
+    _visibleSketchGeometries = {
+      for (final entry in _allSketchGeometries.entries)
+        if (!_hiddenFeatureIds.contains(entry.key)) entry.key: entry.value,
+    };
   }
 
   /// Creates a SketchFeature on [plane] and navigates straight to its
@@ -102,10 +162,13 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(() async {
       created = await _api.createSketchFeature(part.id, plane: plane.apiValue);
       await _refreshFeatures();
+      await _refreshSketchGeometries();
     });
 
     final feature = created;
     if (feature != null && mounted) {
+      await _viewportKey.currentState?.animateToPlane(plane);
+      if (!mounted) return;
       await _openSketch(feature);
     }
   }
@@ -147,7 +210,30 @@ class _PartScreenState extends State<PartScreen> {
   void _onFeatureTap(FeatureDto feature) {
     setState(() => _selectedFeatureId = feature.id);
     if (!feature.locked) {
-      _openSketch(feature);
+      _openSketchWithAnimation(feature);
+    }
+  }
+
+  /// Animates the 3D camera to face this Feature's Sketch plane (per the
+  /// brief's "camera animation when entering a sketch") before navigating to
+  /// its 2D canvas - skips straight to navigation if the plane can't be
+  /// resolved (e.g. a fetch failure), rather than blocking the open.
+  Future<void> _openSketchWithAnimation(FeatureDto feature) async {
+    final plane = await _planeOfFeature(feature);
+    if (!mounted) return;
+    if (plane != null) {
+      await _viewportKey.currentState?.animateToPlane(plane);
+      if (!mounted) return;
+    }
+    await _openSketch(feature);
+  }
+
+  Future<ReferencePlaneKind?> _planeOfFeature(FeatureDto feature) async {
+    try {
+      final sketch = await _sketchApi.getSketch(feature.sketchId);
+      return referencePlaneKindFromApiValue(sketch.plane);
+    } catch (_) {
+      return null;
     }
   }
 
@@ -158,13 +244,33 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onFeatureLongPress(FeatureDto feature) async {
     if (_busy) return;
 
-    final action = await showFeatureContextMenu(context);
+    final action = await showFeatureContextMenu(
+      context,
+      isHidden: _hiddenFeatureIds.contains(feature.id),
+    );
     if (!mounted || action == null) return;
 
     switch (action) {
+      case FeatureContextMenuAction.toggleVisibility:
+        _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
         await _cascadeDeleteFeature(feature);
     }
+  }
+
+  /// Client-side-only Hide/Show for a Feature's 3D geometry - never sent to
+  /// the backend, so this is purely a local Set toggle plus a recompute of
+  /// [_visibleSketchGeometries] (the reference-plane/mesh viewport itself
+  /// doesn't need this - only Sketch geometry can be hidden per Feature).
+  void _toggleFeatureVisibility(FeatureDto feature) {
+    setState(() {
+      if (_hiddenFeatureIds.contains(feature.id)) {
+        _hiddenFeatureIds.remove(feature.id);
+      } else {
+        _hiddenFeatureIds.add(feature.id);
+      }
+      _recomputeVisibleSketchGeometries();
+    });
   }
 
   /// Cascade-deletes [feature] and every Feature after it, once the user
@@ -190,9 +296,12 @@ class _PartScreenState extends State<PartScreen> {
       // genuine backend state rather than an assumption about what the
       // cascade just did.
       await _refreshFeatures();
+      await _refreshSketchGeometries();
       if (_selectedFeatureId != null && !_features.any((f) => f.id == _selectedFeatureId)) {
         _selectedFeatureId = null;
       }
+      _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+      _recomputeVisibleSketchGeometries();
     });
   }
 
@@ -248,8 +357,10 @@ class _PartScreenState extends State<PartScreen> {
                 // overlays, not siblings in a Row, so the viewport never
                 // loses space to a hidden panel.
                 PartViewport(
+                  key: _viewportKey,
                   mesh: _mesh,
                   selectedPlane: _selectedPlane,
+                  sketchGeometries: _visibleSketchGeometries,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                 ),
@@ -258,6 +369,7 @@ class _PartScreenState extends State<PartScreen> {
                     visible: _featureTreeVisible,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
+                    hiddenFeatureIds: _hiddenFeatureIds,
                     onFeatureTap: _onFeatureTap,
                     onFeatureLongPress: _onFeatureLongPress,
                     onClose: () => setState(() => _featureTreeVisible = false),
@@ -267,7 +379,7 @@ class _PartScreenState extends State<PartScreen> {
                   child: PartToolbar(
                     visible: _toolbarOpen,
                     onShowFeatureTree: _showFeatureTree,
-                    selectedPlaneLabel: _selectedPlane?.apiValue,
+                    selectedPlane: _selectedPlane,
                     onNewSketchOnPlane: _busy ? null : _onNewSketchOnSelectedPlane,
                   ),
                 ),

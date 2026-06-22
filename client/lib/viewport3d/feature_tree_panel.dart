@@ -33,6 +33,12 @@ class FeatureTreePanel extends StatelessWidget {
   final void Function(FeatureDto feature) onFeatureLongPress;
   final VoidCallback onClose;
 
+  /// Feature ids hidden from the 3D viewport (see [PartScreen]'s Hide/Show
+  /// context-menu action) - shown here as a dimmed row with an eye-slash
+  /// icon, so hidden state is visible from the tree, not just invisible by
+  /// its absence in the 3D view.
+  final Set<String> hiddenFeatureIds;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -41,6 +47,7 @@ class FeatureTreePanel extends StatelessWidget {
     required this.onFeatureTap,
     required this.onFeatureLongPress,
     required this.onClose,
+    this.hiddenFeatureIds = const {},
   });
 
   @override
@@ -85,16 +92,21 @@ class FeatureTreePanel extends StatelessWidget {
                         itemBuilder: (context, index) {
                           final feature = features[index];
                           final selected = feature.id == selectedFeatureId;
-                          return ListTile(
-                            selected: selected,
-                            leading: Icon(
-                              feature.locked ? Icons.lock : Icons.edit,
-                              color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
+                          final hidden = hiddenFeatureIds.contains(feature.id);
+                          return Opacity(
+                            opacity: hidden ? 0.5 : 1.0,
+                            child: ListTile(
+                              selected: selected,
+                              leading: Icon(
+                                feature.locked ? Icons.lock : Icons.edit,
+                                color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
+                              ),
+                              title: Text(featureDisplayName(index)),
+                              subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
+                              trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+                              onTap: () => onFeatureTap(feature),
+                              onLongPress: () => onFeatureLongPress(feature),
                             ),
-                            title: Text(featureDisplayName(index)),
-                            subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
-                            onTap: () => onFeatureTap(feature),
-                            onLongPress: () => onFeatureLongPress(feature),
                           );
                         },
                       ),

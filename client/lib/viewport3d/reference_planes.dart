@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
@@ -9,6 +10,19 @@ import 'package:vector_math/vector_math.dart' as vm;
 /// every plane this stage ever renders or hit-tests is one of these three.
 enum ReferencePlaneKind { xy, xz, yz }
 
+/// The inverse of [ReferencePlaneKindX.apiValue] - parses a `SketchDto.plane`
+/// string (always one of `"XY"`/`"XZ"`/`"YZ"`, per the backend's `Plane`
+/// enum) back into a [ReferencePlaneKind], e.g. to resolve which plane an
+/// existing Feature's Sketch lives on for the camera-animation-on-open flow.
+/// Returns null on anything unrecognized rather than throwing, since this
+/// only ever feeds a "skip the animation" fallback, not a hard requirement.
+ReferencePlaneKind? referencePlaneKindFromApiValue(String value) => switch (value) {
+      'XY' => ReferencePlaneKind.xy,
+      'XZ' => ReferencePlaneKind.xz,
+      'YZ' => ReferencePlaneKind.yz,
+      _ => null,
+    };
+
 /// Side length of each rendered reference-plane rectangle, centered on the
 /// origin. Named so it stays easy to tune: large enough to be clearly
 /// visible/tappable at [OrbitCamera]'s default distance (30) without
@@ -18,6 +32,9 @@ const double _referencePlaneHalfSize = referencePlaneSize / 2;
 
 const double _referencePlaneAlpha = 0.25;
 const double _referencePlaneSelectedAlpha = 0.55;
+
+/// Screen-pixel width of each plane's border line (Fix 3).
+const double _referencePlaneBorderWidth = 2.0;
 
 extension ReferencePlaneKindX on ReferencePlaneKind {
   /// The exact `plane` string the backend already accepts (see
@@ -47,26 +64,41 @@ extension ReferencePlaneKindX on ReferencePlaneKind {
         ReferencePlaneKind.yz => const [1, 2],
       };
 
-  /// Standard CAD tint: each plane is colored by mixing the two axis colors
-  /// it contains - XY (red X, green Y) reads yellow-green, XZ (red X, blue
-  /// Z) reads magenta, YZ (green Y, blue Z) reads cyan. [selected] brightens
-  /// the tint (in place of a separate outline) when this is the current tap
-  /// selection.
+  /// Tint convention (Fix 4): each plane is colored by its *normal* axis -
+  /// the one held at zero everywhere on the plane - matching the XYZ
+  /// triad's own axis colors (X=red, Y=green, Z=blue). XY's normal is Z, so
+  /// it reads blue; XZ's normal is Y, so it reads green; YZ's normal is X,
+  /// so it reads red. (Previously this mixed the two *in-plane* axis
+  /// colors instead - e.g. XY read yellow-green - which this stage's brief
+  /// asked to replace with the triad-matching normal-axis convention.)
+  vm.Vector3 get _baseColor => switch (this) {
+        ReferencePlaneKind.xy => vm.Vector3(0.1, 0.1, 0.9),
+        ReferencePlaneKind.xz => vm.Vector3(0.1, 0.9, 0.1),
+        ReferencePlaneKind.yz => vm.Vector3(0.9, 0.1, 0.1),
+      };
+
+  /// The translucent fill color for this plane's rectangle. [selected]
+  /// brightens the alpha (in place of a separate outline) when this is the
+  /// current tap selection.
   vm.Vector4 tintColor({bool selected = false}) {
     final alpha = selected ? _referencePlaneSelectedAlpha : _referencePlaneAlpha;
-    return switch (this) {
-      ReferencePlaneKind.xy => vm.Vector4(0.9, 0.9, 0.1, alpha),
-      ReferencePlaneKind.xz => vm.Vector4(0.9, 0.1, 0.9, alpha),
-      ReferencePlaneKind.yz => vm.Vector4(0.1, 0.9, 0.9, alpha),
-    };
+    final c = _baseColor;
+    return vm.Vector4(c.x, c.y, c.z, alpha);
   }
 
-  /// Reorients `PlaneGeometry`'s rectangle - always built flat in the XZ
-  /// plane - onto this plane: XZ needs no rotation; XY rotates 90 degrees
-  /// about the X axis; YZ rotates 90 degrees about the Z axis. (Derivation:
-  /// `Matrix4.rotationX(pi/2)` maps a local `(x, 0, z)` point to `(x, -z,
-  /// 0)` - on the z=0/XY plane; `Matrix4.rotationZ(pi/2)` maps it to `(0,
-  /// x, z)` - on the x=0/YZ plane. See `reference_planes_test.dart`.)
+  /// The fully-opaque border color (Fix 3) - the same hue as [tintColor],
+  /// just without the transparency.
+  vm.Vector4 get borderColor {
+    final c = _baseColor;
+    return vm.Vector4(c.x, c.y, c.z, 1.0);
+  }
+
+  /// Reorients the plane's local geometry - built flat in local XZ, surface
+  /// facing +Y - onto this plane: XZ needs no rotation; XY rotates 90
+  /// degrees about the X axis; YZ rotates 90 degrees about the Z axis.
+  /// (Derivation: `Matrix4.rotationX(pi/2)` maps a local `(x, 0, z)` point
+  /// to `(x, -z, 0)` - on the z=0/XY plane; `Matrix4.rotationZ(pi/2)` maps
+  /// it to `(0, x, z)` - on the x=0/YZ plane. See `reference_planes_test.dart`.)
   vm.Matrix4 get localTransform => switch (this) {
         ReferencePlaneKind.xy => vm.Matrix4.rotationX(math.pi / 2),
         ReferencePlaneKind.xz => vm.Matrix4.identity(),
@@ -74,25 +106,115 @@ extension ReferencePlaneKindX on ReferencePlaneKind {
       };
 }
 
-/// Builds the always-on-scene [Node] rendering [plane] as a semi-transparent
-/// coloured rectangle. [UnlitMaterial.alphaMode] = [AlphaMode.blend] is
-/// `flutter_scene`'s supported route to a translucent surface - no custom
-/// shader needed - combined with [UnlitMaterial.baseColorFactor]'s alpha
-/// channel for the actual transparency.
+/// The four corners of a [halfSize]-radius square centered on the origin,
+/// flat in the local XZ plane (matching [ReferencePlaneKindX.localTransform]'s
+/// frame), in winding order, with the first corner repeated at the end to
+/// close the loop - ready to hand straight to `PolylineGeometry` for the
+/// border (Fix 3). Pure and shared with [doubleSidedQuadBuffers] below so
+/// the border and fill always outline the same rectangle.
+List<vm.Vector3> referencePlaneBorderPoints(double halfSize) => [
+      vm.Vector3(-halfSize, 0, -halfSize),
+      vm.Vector3(halfSize, 0, -halfSize),
+      vm.Vector3(halfSize, 0, halfSize),
+      vm.Vector3(-halfSize, 0, halfSize),
+      vm.Vector3(-halfSize, 0, -halfSize),
+    ];
+
+/// The pure vertex/index buffers for a double-sided [halfSize]-radius square,
+/// flat in the local XZ plane (Fix 2's fix for single-sided rendering).
 ///
-/// GPU-bound (same as [geometryFromMesh]) via `PlaneGeometry`'s underlying
-/// `MeshGeometry.fromArrays` upload, so - like the placeholder mesh - this
-/// cannot be exercised in a headless `flutter test` run. [hitTestReferencePlanes]
-/// below is the pure, testable counterpart that drives plane selection.
+/// `flutter_scene`'s `Material.bind()` always back-face-culls a translucent
+/// (`AlphaMode.blend`) material's geometry - `cullBackFace = !doubleSided ||
+/// !isOpaque()` unconditionally culls when the material isn't opaque,
+/// regardless of `Material.doubleSided` - so a translucent single quad is
+/// only ever visible from one side no matter what material flag is set.
+/// The fix has to be geometric instead: this duplicates the quad's 4
+/// corners as two oppositely-wound triangle pairs (indices 0-3 wound for a
+/// +Y-facing front; indices 4-7, the same 4 positions again, wound for a
+/// -Y-facing back), so one copy is always front-facing - and therefore
+/// drawn - no matter which side the camera is on.
+class DoubleSidedQuadBuffers {
+  final Float32List positions;
+  final Float32List normals;
+  final List<int> indices;
+
+  const DoubleSidedQuadBuffers({
+    required this.positions,
+    required this.normals,
+    required this.indices,
+  });
+}
+
+DoubleSidedQuadBuffers doubleSidedQuadBuffers(double halfSize) {
+  final corners = referencePlaneBorderPoints(halfSize).take(4).toList();
+
+  final positions = Float32List(8 * 3);
+  final normals = Float32List(8 * 3);
+  for (var i = 0; i < 4; i++) {
+    final p = corners[i];
+
+    final frontBase = i * 3;
+    positions[frontBase] = p.x;
+    positions[frontBase + 1] = p.y;
+    positions[frontBase + 2] = p.z;
+    normals[frontBase + 1] = 1.0;
+
+    final backBase = (i + 4) * 3;
+    positions[backBase] = p.x;
+    positions[backBase + 1] = p.y;
+    positions[backBase + 2] = p.z;
+    normals[backBase + 1] = -1.0;
+  }
+
+  return DoubleSidedQuadBuffers(
+    positions: positions,
+    normals: normals,
+    // Front (+Y, corners 0-3): CCW when viewed from +Y.
+    // Back (-Y, corners 4-7, same positions): reversed winding, so it's
+    // CCW - and therefore not culled - when viewed from -Y instead.
+    indices: const [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7],
+  );
+}
+
+/// Builds the always-on-scene [Node] rendering [plane]: a double-sided
+/// translucent fill (Fix 1/2) plus a fully-opaque border outline (Fix 3),
+/// both tinted by [ReferencePlaneKindX.tintColor]/[borderColor]'s
+/// normal-axis convention (Fix 4) - combined as two [MeshPrimitive]s of one
+/// [Mesh], so they share a single [Node]/transform.
+///
+/// GPU-bound (`MeshGeometry.fromArrays`'s vertex upload, and
+/// `PolylineGeometry`'s own underlying updatable `MeshGeometry`), so - like
+/// the placeholder mesh - this cannot be exercised in a headless
+/// `flutter test` run. [doubleSidedQuadBuffers] and
+/// [referencePlaneBorderPoints] above are the pure, testable counterparts
+/// for the geometry layout, and [hitTestReferencePlanes] below is the pure
+/// counterpart for plane selection.
 Node buildReferencePlaneNode(ReferencePlaneKind plane, {bool selected = false}) {
-  final material = UnlitMaterial()
+  final fillMaterial = UnlitMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = plane.tintColor(selected: selected);
-  final geometry = PlaneGeometry(width: referencePlaneSize, depth: referencePlaneSize);
+  final fillBuffers = doubleSidedQuadBuffers(_referencePlaneHalfSize);
+  final fillGeometry = MeshGeometry.fromArrays(
+    positions: fillBuffers.positions,
+    normals: fillBuffers.normals,
+    indices: fillBuffers.indices,
+  );
+
+  final borderMaterial = UnlitMaterial()
+    ..alphaMode = AlphaMode.opaque
+    ..baseColorFactor = plane.borderColor;
+  final borderGeometry = PolylineGeometry(
+    referencePlaneBorderPoints(_referencePlaneHalfSize),
+    width: _referencePlaneBorderWidth,
+  );
+
   return Node(
     name: 'reference-plane-${plane.apiValue}',
     localTransform: plane.localTransform,
-    mesh: Mesh(geometry, material),
+    mesh: Mesh.primitives(primitives: [
+      MeshPrimitive(fillGeometry, fillMaterial),
+      MeshPrimitive(borderGeometry, borderMaterial),
+    ]),
   );
 }
 
