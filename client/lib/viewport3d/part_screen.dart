@@ -170,20 +170,23 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 ),
                 // Always on top (last in the Stack) so it stays tappable
-                // regardless of whether the toolbar/tree panels underneath
-                // are open.
-                Positioned(
-                  top: 8,
-                  left: 8,
-                  child: SafeArea(
-                    bottom: false,
-                    child: IconButton.filled(
-                      tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
-                      icon: Icon(_toolbarOpen ? Icons.close : Icons.menu),
-                      onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
+                // regardless of whether the toolbar underneath is open -
+                // but hidden while the Feature tree is open since it sits
+                // right on top of the tree's header text otherwise; the
+                // tree's own X button is the way to dismiss it instead.
+                if (!_featureTreeVisible)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: IconButton.filled(
+                        tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
+                        icon: Icon(_toolbarOpen ? Icons.close : Icons.menu),
+                        onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),

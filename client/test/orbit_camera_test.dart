@@ -25,6 +25,32 @@ void main() {
     expect(camera.cameraFor(size).position, isNot(initialPosition));
   });
 
+  test('orbitByScreenDelta is an exact sign-flip: an equal and opposite drag exactly undoes it', () {
+    // Whether "dragging right swings the camera right" (vs. left) is the
+    // real-device "does this feel natural" judgment the project brief
+    // calls out as needing hands-on confirmation, not something a unit
+    // test can settle - but it can confirm the fix is a clean negation
+    // (same magnitude, opposite direction) and nothing else. Tested as two
+    // separate single-axis drags (rather than one combined horizontal +
+    // vertical drag) because pitch is applied about the camera's *current*
+    // right axis, which a yaw also rotates - so only a pure horizontal or
+    // pure vertical drag, on its own, is guaranteed to exactly invert.
+    final horizontalOnly = OrbitCamera();
+    final initialPosition = horizontalOnly.cameraFor(size).position.clone();
+    horizontalOnly.orbitByScreenDelta(50, 0);
+    horizontalOnly.orbitByScreenDelta(-50, 0);
+    expect(horizontalOnly.cameraFor(size).position.x, closeTo(initialPosition.x, 1e-9));
+    expect(horizontalOnly.cameraFor(size).position.y, closeTo(initialPosition.y, 1e-9));
+    expect(horizontalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-9));
+
+    final verticalOnly = OrbitCamera();
+    verticalOnly.orbitByScreenDelta(0, -30);
+    verticalOnly.orbitByScreenDelta(0, 30);
+    expect(verticalOnly.cameraFor(size).position.x, closeTo(initialPosition.x, 1e-9));
+    expect(verticalOnly.cameraFor(size).position.y, closeTo(initialPosition.y, 1e-9));
+    expect(verticalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-9));
+  });
+
   test('orbiting continuously past where the old azimuth/elevation camera used to clamp keeps rotating smoothly', () {
     // A previous azimuth/elevation implementation clamped elevation just
     // shy of the poles and froze there - this is exactly the "gets stuck"
@@ -73,6 +99,19 @@ void main() {
     expect(camera.distance, initialDistance);
   });
 
+  test('panByScreenDelta moves the target in opposite directions for opposite horizontal drags', () {
+    // Regression test for the real-device bug where left/right pan was
+    // inverted - confirm a leftward and a rightward drag move the target
+    // along the camera's right axis in opposite directions.
+    final leftDrag = OrbitCamera();
+    leftDrag.panByScreenDelta(-10, 0);
+    final rightDrag = OrbitCamera();
+    rightDrag.panByScreenDelta(10, 0);
+
+    expect(leftDrag.target, isNot(rightDrag.target));
+    expect(leftDrag.target.x.sign, isNot(rightDrag.target.x.sign));
+  });
+
   test('zoomByFactor scales distance and is clamped to the min/max range', () {
     final camera = OrbitCamera();
 
@@ -99,5 +138,23 @@ void main() {
     expect(camera.cameraFor(size).position, defaultPosition);
     expect(camera.distance, 30);
     expect(camera.target, vm.Vector3.zero());
+  });
+
+  test('setTarget re-centers the camera and becomes what reset returns to', () {
+    // The placeholder box's centroid isn't the world origin (see
+    // centroidOfMesh), so once it's known, "Reset view" must snap back to
+    // it rather than to (0,0,0).
+    final camera = OrbitCamera();
+    final centroid = vm.Vector3(5, 5, 5);
+
+    camera.setTarget(centroid);
+    expect(camera.target, centroid);
+
+    camera.orbitByScreenDelta(50, 30);
+    camera.panByScreenDelta(10, 10);
+    camera.zoomByFactor(2.0);
+    camera.reset();
+
+    expect(camera.target, centroid);
   });
 }
