@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- flutter_scene (the Stage 7 3D viewport) needs the Flutter GPU
+	     embedding feature - without it, Scene()'s GpuContext throws at
+	     construction and the viewport spins forever (see Android's
+	     equivalent EnableFlutterGPU meta-data for why this fails silently). -->
+	<key>FLTEnableFlutterGPU</key>
+	<true/>
 </dict>
 </plist>

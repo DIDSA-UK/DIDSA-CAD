@@ -14,6 +14,28 @@ only takes effect on the `master` channel. Building on `stable` will fail
 once the build reaches that hook. Check with `flutter channel`; switch with
 `flutter channel master && flutter upgrade` if needed.
 
+**The Flutter GPU embedding feature must be enabled**, or the 3D viewport
+spins forever with no visible error. `flutter_scene`'s `Scene()` constructor
+throws `Flutter GPU must be enabled via the Flutter GPU manifest setting`
+if it isn't - and since that throw happens inside an unawaited `Future`,
+it only ever reaches the console (`adb logcat`/the `flutter run` terminal),
+never the screen. This is already set in this repo's platform configs
+(`android/app/src/main/AndroidManifest.xml`'s `EnableFlutterGPU` meta-data,
+`ios/Runner/Info.plist`'s `FLTEnableFlutterGPU` key) - if the viewport spins
+forever after a clean checkout, confirm those weren't stripped by a
+template regeneration (e.g. `flutter create .`).
+
+**Windows has no manifest equivalent for the Flutter GPU setting above** -
+`android/app/.../AndroidManifest.xml` and `ios/Runner/Info.plist` both have
+a static config file the engine reads at startup, but the Windows desktop
+runner (`windows/runner/main.cpp`) only wires up Dart entrypoint arguments,
+not engine switches. Until that's changed, running on Windows needs the
+flag passed explicitly every time: `flutter run -d windows
+--enable-flutter-gpu` (or, for a built `.exe`, set the `FLUTTER_ENGINE_SWITCHES`/
+`FLUTTER_ENGINE_SWITCH_N` environment variables before launching it - see
+`flutter_scene`'s own exception message for the exact wording this all
+comes from).
+
 ## What this is
 
 A single Flutter codebase (`flutter create --platforms windows,android,ios`,

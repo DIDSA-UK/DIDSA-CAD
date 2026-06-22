@@ -8,6 +8,8 @@ import 'package:http/testing.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
+import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 
 /// A tiny in-memory fake of the backend's `/document` API - just enough of
 /// Part/Feature/mesh to drive [PartScreen] without a real network call.
@@ -315,6 +317,86 @@ void main() {
     expect(find.text('Sketch 1'), findsNothing);
     expect(find.text('Sketch 2'), findsNothing);
     expect(backend.features, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'tapping a reference plane opens the toolbar with a New Sketch action, '
+    'and confirming it creates a SketchFeature on that plane',
+    (tester) async {
+      final backend = _FakeDocumentBackend();
+      final requests = <http.Request>[];
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return backend.handle(request);
+        }),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // PartViewport's real screen-tap -> ray -> plane hit-test is exercised
+      // directly in part_viewport_test.dart against a known camera/viewport
+      // size; here, calling its onPlaneTap straight from the widget tree
+      // stands in for "the 3D viewport reported a tap on the YZ plane" -
+      // exactly the "mocked camera/viewport acceptable" the project brief
+      // allows for this end-to-end toolbar/navigation flow.
+      tester.widget<PartViewport>(find.byType(PartViewport)).onPlaneTap(ReferencePlaneKind.yz);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('New Sketch on YZ'), findsOneWidget);
+
+      await tester.tap(find.text('New Sketch on YZ'));
+      await tester.pump();
+      await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+
+      expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      final createRequest = requests.firstWhere((r) => r.url.path == '/document/parts/part-1/features/sketch');
+      expect(jsonDecode(createRequest.body)['plane'], 'YZ');
+    },
+  );
+
+  testWidgets('tapping the viewport background dismisses the toolbar and clears the plane selection', (
+    tester,
+  ) async {
+    final documentApi = DocumentApiClient(
+      httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+    );
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+    viewport.onPlaneTap(ReferencePlaneKind.xy);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('New Sketch on XY'), findsOneWidget);
+
+    viewport.onBackgroundTap();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('New Sketch on XY'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

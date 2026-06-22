@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
+import 'plane_indicator.dart';
 import 'sketch_controller.dart';
 import 'sketch_viewport.dart';
 import 'view_transform.dart';
@@ -195,6 +196,14 @@ class _SketchCanvasState extends State<SketchCanvas> {
                   onPressed: () => setState(_viewport.reset),
                 ),
               ),
+            Positioned(
+              bottom: 8,
+              left: 8,
+              child: AnimatedBuilder(
+                animation: widget.controller,
+                builder: (context, _) => PlaneIndicator(plane: widget.controller.plane),
+              ),
+            ),
           ],
         );
       },
