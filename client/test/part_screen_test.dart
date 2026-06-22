@@ -71,6 +71,26 @@ class _FakeDocumentBackend {
       return _json(feature, 201);
     }
 
+    final cascadeMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)/cascade$').firstMatch(path);
+    if (cascadeMatch != null && method == 'DELETE') {
+      final featureId = cascadeMatch.group(1);
+      final index = features.indexWhere((f) => f['id'] == featureId);
+      if (index == -1) {
+        return http.Response('not found: feature', 404);
+      }
+      final deleted = features.sublist(index);
+      features.removeRange(index, features.length);
+      // Mirror the real backend: the new last Feature (if any survive)
+      // becomes unlocked again.
+      if (features.isNotEmpty) {
+        features.last['locked'] = false;
+      }
+      return _json({
+        'deleted_feature_ids': deleted.map((f) => f['id']).toList(),
+        'deleted_sketch_ids': deleted.map((f) => f['sketch_id']).toList(),
+      }, 200);
+    }
+
     return http.Response('not found: $path', 404);
   }
 
@@ -189,6 +209,102 @@ void main() {
     // Sketch, per the project brief.
     expect(find.text('Part 1'), findsOneWidget);
     expect(find.text('DIDSA-CAD Sketch'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('long-pressing a Feature shows a confirmation dialog naming every Feature that will be deleted', (
+    tester,
+  ) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': true},
+        {'id': 'feature-3', 'sketch_id': 'sketch-3', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Long-pressing the *first* (locked) Feature must name every Feature
+    // from it onward - all three - not just itself or a generic message.
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.textContaining('Sketch 1\nSketch 2\nSketch 3'), findsOneWidget);
+    expect(find.text('Delete all'), findsOneWidget);
+
+    // Cancelling must delete nothing.
+    await tester.tap(find.text('Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Sketch 1'), findsOneWidget);
+    expect(find.text('Sketch 2'), findsOneWidget);
+    expect(find.text('Sketch 3'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('confirming the cascade-delete dialog deletes the Feature and everything after it', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Long-press the locked first Feature - cascade-delete must be
+    // available on a locked Feature too, unlike a single delete.
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Delete all'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await _pumpUntil(tester, () => find.text('Sketch 1').evaluate().isEmpty);
+
+    // Both Features are gone, and the tree shows an empty list rather than
+    // an error - the backend genuinely has zero Features for this Part now.
+    expect(find.text('Sketch 1'), findsNothing);
+    expect(find.text('Sketch 2'), findsNothing);
+    expect(backend.features, isEmpty);
     expect(tester.takeException(), isNull);
   });
 }

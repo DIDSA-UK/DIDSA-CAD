@@ -35,20 +35,25 @@ void main() {
     // vertical drag) because pitch is applied about the camera's *current*
     // right axis, which a yaw also rotates - so only a pure horizontal or
     // pure vertical drag, on its own, is guaranteed to exactly invert.
+    // vector_math's Quaternion/Vector3 are backed by Float32List (32-bit
+    // floats, ~7 significant decimal digits) - on coordinates around 18-30
+    // in magnitude that's an absolute rounding noise floor around 1e-6,
+    // so the tolerance here is 1e-4 (comfortably above that noise, but far
+    // tighter than any real cancellation bug would produce).
     final horizontalOnly = OrbitCamera();
     final initialPosition = horizontalOnly.cameraFor(size).position.clone();
     horizontalOnly.orbitByScreenDelta(50, 0);
     horizontalOnly.orbitByScreenDelta(-50, 0);
-    expect(horizontalOnly.cameraFor(size).position.x, closeTo(initialPosition.x, 1e-9));
-    expect(horizontalOnly.cameraFor(size).position.y, closeTo(initialPosition.y, 1e-9));
-    expect(horizontalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-9));
+    expect(horizontalOnly.cameraFor(size).position.x, closeTo(initialPosition.x, 1e-4));
+    expect(horizontalOnly.cameraFor(size).position.y, closeTo(initialPosition.y, 1e-4));
+    expect(horizontalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-4));
 
     final verticalOnly = OrbitCamera();
     verticalOnly.orbitByScreenDelta(0, -30);
     verticalOnly.orbitByScreenDelta(0, 30);
-    expect(verticalOnly.cameraFor(size).position.x, closeTo(initialPosition.x, 1e-9));
-    expect(verticalOnly.cameraFor(size).position.y, closeTo(initialPosition.y, 1e-9));
-    expect(verticalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-9));
+    expect(verticalOnly.cameraFor(size).position.x, closeTo(initialPosition.x, 1e-4));
+    expect(verticalOnly.cameraFor(size).position.y, closeTo(initialPosition.y, 1e-4));
+    expect(verticalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-4));
   });
 
   test('orbiting continuously past where the old azimuth/elevation camera used to clamp keeps rotating smoothly', () {

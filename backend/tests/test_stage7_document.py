@@ -55,6 +55,42 @@ def test_delete_feature_succeeds_when_last():
     assert part.features == []
 
 
+def test_delete_feature_cascade_removes_the_feature_and_everything_after_it():
+    part = Part(id="p", name="Part 1")
+    first = SketchFeature(id="f1", sketch_id="s1")
+    second = SketchFeature(id="f2", sketch_id="s2")
+    third = SketchFeature(id="f3", sketch_id="s3")
+    part.add_feature(first)
+    part.add_feature(second)
+    part.add_feature(third)
+
+    deleted = part.delete_feature_cascade(second.id)
+
+    assert deleted == [second, third]
+    assert part.features == [first]
+
+
+def test_delete_feature_cascade_from_the_first_feature_deletes_all_of_them():
+    part = Part(id="p", name="Part 1")
+    first = SketchFeature(id="f1", sketch_id="s1")
+    second = SketchFeature(id="f2", sketch_id="s2")
+    part.add_feature(first)
+    part.add_feature(second)
+
+    deleted = part.delete_feature_cascade(first.id)
+
+    assert deleted == [first, second]
+    assert part.features == []
+
+
+def test_delete_feature_cascade_raises_for_an_unknown_feature_id():
+    part = Part(id="p", name="Part 1")
+    part.add_feature(SketchFeature(id="f1", sketch_id="s1"))
+
+    with pytest.raises(ValueError):
+        part.delete_feature_cascade("does-not-exist")
+
+
 def test_document_add_part_creates_independent_parts():
     document = Document(id="d")
     part_a = document.add_part("A")
@@ -234,6 +270,73 @@ def test_reading_a_sketch_behind_a_locked_feature_remains_unrestricted():
     response = client.get(f"/sketch/sketches/{first['sketch_id']}")
 
     assert response.status_code == 200
+
+
+def test_cascade_delete_from_the_last_feature_deletes_only_that_one_over_the_api():
+    part = _create_part()
+    first = _create_sketch_feature(part["id"])
+    second = _create_sketch_feature(part["id"])
+
+    response = client.delete(f"/document/parts/{part['id']}/features/{second['id']}/cascade")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_feature_ids"] == [second["id"]]
+    assert body["deleted_sketch_ids"] == [second["sketch_id"]]
+
+    remaining = client.get(f"/document/parts/{part['id']}/features").json()
+    assert [f["id"] for f in remaining] == [first["id"]]
+
+    # The deleted Feature's Sketch is genuinely gone from the sketch store...
+    assert client.get(f"/sketch/sketches/{second['sketch_id']}").status_code == 404
+    # ...but the surviving Feature's Sketch must be untouched.
+    assert client.get(f"/sketch/sketches/{first['sketch_id']}").status_code == 200
+
+
+def test_cascade_delete_from_the_first_feature_deletes_everything_over_the_api():
+    part = _create_part()
+    first = _create_sketch_feature(part["id"])
+    second = _create_sketch_feature(part["id"])
+    third = _create_sketch_feature(part["id"])
+
+    response = client.delete(f"/document/parts/{part['id']}/features/{first['id']}/cascade")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_feature_ids"] == [first["id"], second["id"], third["id"]]
+    assert set(body["deleted_sketch_ids"]) == {
+        first["sketch_id"],
+        second["sketch_id"],
+        third["sketch_id"],
+    }
+
+    remaining = client.get(f"/document/parts/{part['id']}/features").json()
+    assert remaining == []
+
+    for sketch_id in body["deleted_sketch_ids"]:
+        assert client.get(f"/sketch/sketches/{sketch_id}").status_code == 404
+
+
+def test_cascade_delete_of_a_locked_feature_is_allowed_unlike_single_delete():
+    part = _create_part()
+    first = _create_sketch_feature(part["id"])
+    _create_sketch_feature(part["id"])
+
+    # The single-delete endpoint rejects a locked Feature...
+    assert client.delete(f"/document/parts/{part['id']}/features/{first['id']}").status_code == 400
+
+    # ...but cascade-delete is exactly the way to remove one anyway.
+    response = client.delete(f"/document/parts/{part['id']}/features/{first['id']}/cascade")
+    assert response.status_code == 200
+    assert client.get(f"/document/parts/{part['id']}/features").json() == []
+
+
+def test_cascade_delete_of_an_unknown_feature_is_404_over_the_api():
+    part = _create_part()
+
+    response = client.delete(f"/document/parts/{part['id']}/features/does-not-exist/cascade")
+
+    assert response.status_code == 404
 
 
 def test_get_part_mesh_returns_placeholder_geometry_over_the_api():

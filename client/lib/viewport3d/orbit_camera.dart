@@ -77,17 +77,20 @@ class OrbitCamera {
   }
 
   /// Drag-to-orbit: real-device testing found all four drag directions felt
-  /// backwards (swiping up rotated the model down, swiping right rotated it
-  /// left, etc.) under the original `-dyPixels`/`-dxPixels` mapping, so both
-  /// signs are flipped here. Pitch is applied about the camera's *current*
-  /// right axis (so it always tilts the view the way it's currently
-  /// facing), then yaw about the fixed world-up axis (so left/right drags
-  /// always swing around the same vertical regardless of how far the
-  /// camera has already been tilted) - composed as quaternions, with no
-  /// clamping, so this never gets stuck.
+  /// backwards under the original `-dyPixels`/`-dxPixels` mapping, so both
+  /// signs were flipped to `+dyPixels`/`+dxPixels`. That fixed vertical
+  /// (pitch) orbit, but horizontal (yaw) orbit was still backwards -
+  /// swiping left rotated the model right and vice versa - so only the yaw
+  /// term is flipped again here, back to `-dxPixels`; the pitch term's
+  /// `+dyPixels` is untouched and confirmed correct on-device. Pitch is
+  /// applied about the camera's *current* right axis (so it always tilts
+  /// the view the way it's currently facing), then yaw about the fixed
+  /// world-up axis (so left/right drags always swing around the same
+  /// vertical regardless of how far the camera has already been tilted) -
+  /// composed as quaternions, with no clamping, so this never gets stuck.
   void orbitByScreenDelta(double dxPixels, double dyPixels) {
     final pitch = vm.Quaternion.axisAngle(_right, dyPixels * orbitSensitivity);
-    final yaw = vm.Quaternion.axisAngle(_localUp, dxPixels * orbitSensitivity);
+    final yaw = vm.Quaternion.axisAngle(_localUp, -dxPixels * orbitSensitivity);
     orientation = (orientation * pitch * yaw).normalized();
   }
 
