@@ -9,6 +9,7 @@ import 'feature_context_menu.dart';
 import 'feature_tree_panel.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
+import 'reference_planes.dart';
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -39,6 +40,12 @@ class _PartScreenState extends State<PartScreen> {
   List<FeatureDto> _features = [];
   MeshDto? _mesh;
   String? _selectedFeatureId;
+
+  /// The reference plane currently tap-selected in the 3D viewport, if any -
+  /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
+  /// "New Sketch on..." entry. Controlled-widget state, same pattern as
+  /// [_selectedFeatureId]/[FeatureTreePanel].
+  ReferencePlaneKind? _selectedPlane;
 
   bool _busy = false;
   String? _errorMessage;
@@ -78,13 +85,17 @@ class _PartScreenState extends State<PartScreen> {
     _features = await _api.listFeatures(part.id);
   }
 
-  Future<void> _addSketchFeature() async {
+  /// Creates a SketchFeature on [plane] and navigates straight to its
+  /// SketchScreen - the FAB's path defaults [plane] to XY; a plane tap in
+  /// the 3D viewport instead passes the tapped plane through, via
+  /// [_onNewSketchOnSelectedPlane].
+  Future<void> _addSketchFeature({ReferencePlaneKind plane = ReferencePlaneKind.xy}) async {
     final part = _part;
     if (part == null || _busy) return;
 
     FeatureDto? created;
     await _runGuarded(() async {
-      created = await _api.createSketchFeature(part.id);
+      created = await _api.createSketchFeature(part.id, plane: plane.apiValue);
       await _refreshFeatures();
     });
 
@@ -92,6 +103,37 @@ class _PartScreenState extends State<PartScreen> {
     if (feature != null && mounted) {
       await _openSketch(feature);
     }
+  }
+
+  /// A tap that landed on a reference plane rectangle in the 3D viewport -
+  /// selects it (brighter highlight) and slides the toolbar in with a "New
+  /// Sketch on..." entry for it, per the project brief.
+  void _onPlaneTap(ReferencePlaneKind plane) {
+    setState(() {
+      _selectedPlane = plane;
+      _toolbarOpen = true;
+      _featureTreeVisible = false;
+    });
+  }
+
+  /// A tap that missed every reference plane - dismisses the toolbar and
+  /// clears the selection, mirroring a tap on empty space elsewhere in the
+  /// app deselecting whatever was selected.
+  void _onViewportBackgroundTap() {
+    setState(() {
+      _selectedPlane = null;
+      _toolbarOpen = false;
+    });
+  }
+
+  Future<void> _onNewSketchOnSelectedPlane() async {
+    final plane = _selectedPlane;
+    if (plane == null) return;
+    setState(() {
+      _selectedPlane = null;
+      _toolbarOpen = false;
+    });
+    await _addSketchFeature(plane: plane);
   }
 
   /// A tap always selects/highlights the Feature; only an editable (not
@@ -200,7 +242,12 @@ class _PartScreenState extends State<PartScreen> {
                 // Full-space by default - the tree/toolbar below are
                 // overlays, not siblings in a Row, so the viewport never
                 // loses space to a hidden panel.
-                PartViewport(mesh: _mesh),
+                PartViewport(
+                  mesh: _mesh,
+                  selectedPlane: _selectedPlane,
+                  onPlaneTap: _onPlaneTap,
+                  onBackgroundTap: _onViewportBackgroundTap,
+                ),
                 Positioned.fill(
                   child: FeatureTreePanel(
                     visible: _featureTreeVisible,
@@ -215,6 +262,8 @@ class _PartScreenState extends State<PartScreen> {
                   child: PartToolbar(
                     visible: _toolbarOpen,
                     onShowFeatureTree: _showFeatureTree,
+                    selectedPlaneLabel: _selectedPlane?.apiValue,
+                    onNewSketchOnPlane: _busy ? null : _onNewSketchOnSelectedPlane,
                   ),
                 ),
                 // Always on top (last in the Stack) so it stays tappable
