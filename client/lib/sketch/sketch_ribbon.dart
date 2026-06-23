@@ -76,10 +76,10 @@ class SketchRibbon extends StatelessWidget {
         ListTile(
           leading: const Icon(Icons.logout),
           title: const Text('Exit Sketch'),
-          // No "outside a sketch" app state exists yet (that's the future
-          // 3D navigation shell) - this is a placeholder until it does.
-          subtitle: const Text('Not wired up yet'),
-          onTap: () => _showExitPlaceholder(context),
+          // Same exit path as the back button (both just pop this route) -
+          // PartScreen's _openSketch refreshes the 3D viewport once this
+          // pop is observed there, regardless of which path triggered it.
+          onTap: () => Navigator.of(context).pop(),
         ),
       ];
     }
@@ -96,12 +96,6 @@ class SketchRibbon extends StatelessWidget {
         onTap: controller.deleteSelected,
       ),
     ];
-  }
-
-  void _showExitPlaceholder(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Exit Sketch isn't wired up yet - no outside-sketch view exists.")),
-    );
   }
 }
 
