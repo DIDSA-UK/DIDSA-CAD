@@ -2,11 +2,18 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 
-/// The display name for the Feature at [index] in a Part's ordered Feature
-/// list - shared between the tree's own rows and anything else (e.g. the
-/// cascade-delete confirmation dialog) that needs to name a Feature the
-/// same way the tree does, so the two never drift out of sync.
-String featureDisplayName(int index) => 'Sketch ${index + 1}';
+/// The display name for the Feature at [index] in [features] - shared
+/// between the tree's own rows and anything else (e.g. the cascade-delete
+/// confirmation dialog) that needs to name a Feature the same way the tree
+/// does, so the two never drift out of sync. Named per Feature type (e.g.
+/// "Sketch 2", "Extrude 1") rather than by overall position, counting only
+/// same-type Features up to and including [index].
+String featureDisplayName(List<FeatureDto> features, int index) {
+  final feature = features[index];
+  final label = feature.type == 'extrude' ? 'Extrude' : 'Sketch';
+  final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
+  return '$label $ordinal';
+}
 
 /// The visible Feature tree for a Part: one row per Feature, in creation
 /// order. Locked Features (every Feature except the last) are shown greyed
@@ -98,10 +105,12 @@ class FeatureTreePanel extends StatelessWidget {
                             child: ListTile(
                               selected: selected,
                               leading: Icon(
-                                feature.locked ? Icons.lock : Icons.edit,
+                                feature.locked
+                                    ? Icons.lock
+                                    : (feature.type == 'extrude' ? Icons.view_in_ar : Icons.edit),
                                 color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
                               ),
-                              title: Text(featureDisplayName(index)),
+                              title: Text(featureDisplayName(features, index)),
                               subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
                               trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
                               onTap: () => onFeatureTap(feature),

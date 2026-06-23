@@ -1,6 +1,7 @@
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 
 
 class Feature(ABC):
@@ -44,6 +45,44 @@ class SketchFeature(Feature):
     @property
     def type(self) -> str:
         return "sketch"
+
+
+class ExtrudeType(str, Enum):
+    """Boss adds material to a Part's accumulated solid; Cut removes it -
+    both are the same ExtrudeFeature shape (see below), differing only in
+    this field. Mirrors app.sketch.models.Plane's str-Enum pattern, so it
+    round-trips through pydantic/FastAPI the same way."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class ExtrudeFeature(Feature):
+    """Extrudes the closed Profile of the SketchFeature referenced by
+    `sketch_feature_id` into a real OCCT solid, accumulated into its Part's
+    overall modeled shape - Boss fuses the new solid into whatever
+    accumulated solid came before it, Cut subtracts it. `start_distance`/
+    `end_distance` are independent offsets from the sketch plane along its
+    normal (negative/positive direction respectively), so the sketch plane
+    can sit anywhere within the extruded depth. The actual OCCT geometry
+    construction lives in app.document.extrude, not here - this is just the
+    Feature-tree record of the operation, same separation SketchFeature
+    keeps from app.sketch."""
+
+    id: str
+    sketch_feature_id: str
+    extrude_type: ExtrudeType
+    start_distance: float
+    end_distance: float
+
+    @property
+    def type(self) -> str:
+        return "extrude"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
 
 
 @dataclass

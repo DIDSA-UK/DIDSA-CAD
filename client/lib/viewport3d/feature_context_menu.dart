@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 
 /// Actions available from a Feature's long-press context menu. Stage 8 adds
-/// [toggleVisibility] above the existing [delete] - later stages can add
-/// further entries here without changing how the menu itself is shown or
-/// wired up.
-enum FeatureContextMenuAction { toggleVisibility, delete }
+/// [toggleVisibility] above the existing [delete]; Stage 9 adds [extrude]
+/// above both - later stages can add further entries here without changing
+/// how the menu itself is shown or wired up.
+enum FeatureContextMenuAction { extrude, toggleVisibility, delete }
 
 /// Shows a bottom sheet of actions for a single Feature, opened by a
 /// long-press on its row in the tree. A bottom sheet - rather than wiring
@@ -14,9 +14,19 @@ enum FeatureContextMenuAction { toggleVisibility, delete }
 ///
 /// [isHidden] selects the Hide/Show label and icon for the toggle-visibility
 /// entry, reflecting that Feature's current state in [PartScreen].
+///
+/// [showExtrude] gates the Extrude entry's presence entirely - only a
+/// SketchFeature can be extruded, so an ExtrudeFeature row passes `false`
+/// and gets no entry at all. When shown, [canExtrude] (the closed-profile
+/// check the caller already ran when the menu was opened, not on every
+/// render) determines whether it's enabled; when disabled,
+/// [extrudeDisabledReason] is shown as its subtitle.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
+  bool showExtrude = false,
+  bool canExtrude = false,
+  String? extrudeDisabledReason,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -24,6 +34,16 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (showExtrude)
+            ListTile(
+              enabled: canExtrude,
+              leading: const Icon(Icons.view_in_ar),
+              title: const Text('Extrude'),
+              subtitle: canExtrude ? null : Text(extrudeDisabledReason ?? 'Not available'),
+              onTap: canExtrude
+                  ? () => Navigator.of(context).pop(FeatureContextMenuAction.extrude)
+                  : null,
+            ),
           ListTile(
             leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
             title: Text(isHidden ? 'Show' : 'Hide'),

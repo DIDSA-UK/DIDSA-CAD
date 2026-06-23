@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
@@ -5,6 +7,7 @@ import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'cascade_delete_dialog.dart';
+import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_tree_panel.dart';
 import 'part_toolbar.dart';
@@ -74,6 +77,29 @@ class _PartScreenState extends State<PartScreen> {
   bool _featureTreeVisible = false;
   bool _toolbarOpen = false;
 
+  /// The SketchFeature currently being extruded via [ExtrudePanel], or null
+  /// when the panel is closed - set by the long-press "Extrude" context-menu
+  /// action, cleared on Confirm/Cancel.
+  FeatureDto? _extrudeSketchFeature;
+
+  /// The ExtrudeFeature created by the panel's first live-preview update, so
+  /// later preview updates PATCH it instead of creating another one - and
+  /// Cancel knows what to delete. Null until the first preview update lands.
+  String? _previewExtrudeFeatureId;
+
+  /// [_mesh]'s value from just before the panel opened, restored by Cancel.
+  MeshDto? _meshBeforeExtrude;
+
+  ExtrudeType _extrudeType = ExtrudeType.boss;
+  double _extrudeStartDistance = 0.0;
+  double _extrudeEndDistance = 10.0;
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh by 500ms
+  /// after the last field change, per the brief - cancelled outright by
+  /// Confirm/Cancel/dispose so a stale preview update never fires after the
+  /// panel has already closed.
+  Timer? _extrudeDebounce;
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +110,7 @@ class _PartScreenState extends State<PartScreen> {
 
   @override
   void dispose() {
+    _extrudeDebounce?.cancel();
     if (widget.documentApi == null) {
       _api.close();
     }
@@ -121,13 +148,15 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshSketchGeometries() async {
     final updated = <String, SketchGeometry3D>{};
     for (final feature in _features) {
+      final sketchId = feature.sketchId;
+      if (sketchId == null) continue; // An ExtrudeFeature - no Sketch of its own.
       try {
-        final sketch = await _sketchApi.getSketch(feature.sketchId);
+        final sketch = await _sketchApi.getSketch(sketchId);
         final plane = referencePlaneKindFromApiValue(sketch.plane);
         if (plane == null) continue;
-        final points = await _sketchApi.listPoints(feature.sketchId);
-        final lines = await _sketchApi.listLines(feature.sketchId);
-        final circles = await _sketchApi.listCircles(feature.sketchId);
+        final points = await _sketchApi.listPoints(sketchId);
+        final lines = await _sketchApi.listLines(sketchId);
+        final circles = await _sketchApi.listCircles(sketchId);
         final geometry =
             sketchGeometry3DFrom(plane: plane, points: points, lines: lines, circles: circles);
         if (!geometry.isEmpty) updated[feature.id] = geometry;
@@ -209,7 +238,7 @@ class _PartScreenState extends State<PartScreen> {
   /// re-edit it is explicitly out of scope for this stage.
   void _onFeatureTap(FeatureDto feature) {
     setState(() => _selectedFeatureId = feature.id);
-    if (!feature.locked) {
+    if (!feature.locked && feature.type == 'sketch') {
       _openSketchWithAnimation(feature);
     }
   }
@@ -229,8 +258,10 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   Future<ReferencePlaneKind?> _planeOfFeature(FeatureDto feature) async {
+    final sketchId = feature.sketchId;
+    if (sketchId == null) return null;
     try {
-      final sketch = await _sketchApi.getSketch(feature.sketchId);
+      final sketch = await _sketchApi.getSketch(sketchId);
       return referencePlaneKindFromApiValue(sketch.plane);
     } catch (_) {
       return null;
@@ -240,22 +271,145 @@ class _PartScreenState extends State<PartScreen> {
   /// A long-press on any Feature (locked or not) opens a context menu of
   /// actions for it, rather than triggering anything directly - the menu
   /// is what lets later stages add actions (rename, edit, ...) alongside
-  /// Delete without reworking this entry point. Only Delete exists today.
+  /// Delete without reworking this entry point. Stage 9 adds Extrude,
+  /// gated on a closed-profile check run once here (on menu open), not on
+  /// every render - only a SketchFeature even offers the entry at all.
   Future<void> _onFeatureLongPress(FeatureDto feature) async {
     if (_busy) return;
+
+    final isSketchFeature = feature.type == 'sketch';
+    var canExtrude = false;
+    String? extrudeDisabledReason;
+    if (isSketchFeature) {
+      try {
+        final profile = await _sketchApi.getProfile(feature.sketchId!);
+        canExtrude = profile.isClosedLoop;
+        if (!canExtrude) extrudeDisabledReason = 'Sketch does not contain a closed profile';
+      } catch (_) {
+        extrudeDisabledReason = 'Sketch does not contain a closed profile';
+      }
+    }
+    if (!mounted) return;
 
     final action = await showFeatureContextMenu(
       context,
       isHidden: _hiddenFeatureIds.contains(feature.id),
+      showExtrude: isSketchFeature,
+      canExtrude: canExtrude,
+      extrudeDisabledReason: extrudeDisabledReason,
     );
     if (!mounted || action == null) return;
 
     switch (action) {
+      case FeatureContextMenuAction.extrude:
+        _openExtrudePanel(feature);
       case FeatureContextMenuAction.toggleVisibility:
         _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
         await _cascadeDeleteFeature(feature);
     }
+  }
+
+  /// Opens [ExtrudePanel] for [sketchFeature], resetting every preview-flow
+  /// field back to its default - in particular [_meshBeforeExtrude], which
+  /// Cancel restores to.
+  void _openExtrudePanel(FeatureDto sketchFeature) {
+    setState(() {
+      _extrudeSketchFeature = sketchFeature;
+      _previewExtrudeFeatureId = null;
+      _meshBeforeExtrude = _mesh;
+      _extrudeType = ExtrudeType.boss;
+      _extrudeStartDistance = 0.0;
+      _extrudeEndDistance = 10.0;
+    });
+  }
+
+  /// Creates the preview ExtrudeFeature on the first call, or PATCHes the
+  /// one already created by an earlier call, then refetches the mesh -
+  /// shared by the debounced live-preview path and [_confirmExtrude] (which
+  /// calls this directly, bypassing the debounce, if the user confirms
+  /// before any field change ever fired one).
+  Future<void> _ensureExtrudeFeatureExists(ExtrudeType type, double start, double end) async {
+    final part = _part;
+    final sketchFeature = _extrudeSketchFeature;
+    if (part == null || sketchFeature == null) return;
+
+    final existingId = _previewExtrudeFeatureId;
+    if (existingId == null) {
+      final created = await _api.createExtrudeFeature(
+        part.id,
+        sketchFeatureId: sketchFeature.id,
+        extrudeType: type.apiValue,
+        startDistance: start,
+        endDistance: end,
+      );
+      _previewExtrudeFeatureId = created.id;
+    } else {
+      await _api.updateExtrudeFeature(
+        part.id,
+        existingId,
+        extrudeType: type.apiValue,
+        startDistance: start,
+        endDistance: end,
+      );
+    }
+    _mesh = (await _api.getPartMesh(part.id)).mesh;
+  }
+
+  /// [ExtrudePanel.onChanged] - records the latest values immediately (so
+  /// [_confirmExtrude] always has them, even mid-debounce) and (re)starts
+  /// the 500ms debounce before actually hitting the backend.
+  void _onExtrudeValuesChanged(ExtrudeType type, double start, double end) {
+    _extrudeType = type;
+    _extrudeStartDistance = start;
+    _extrudeEndDistance = end;
+    _extrudeDebounce?.cancel();
+    _extrudeDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureExtrudeFeatureExists(type, start, end));
+    });
+  }
+
+  /// Closes the panel, leaving the ExtrudeFeature the preview flow already
+  /// created/updated in place - per the brief, Confirm has nothing left to
+  /// do beyond that except refresh the Feature tree and mesh, except in the
+  /// edge case where the user confirms before any preview update ever
+  /// fired (no field touched), in which case the Feature doesn't exist yet
+  /// and this creates it with the panel's still-default values first.
+  Future<void> _confirmExtrude() async {
+    _extrudeDebounce?.cancel();
+    await _runGuarded(() async {
+      await _ensureExtrudeFeatureExists(_extrudeType, _extrudeStartDistance, _extrudeEndDistance);
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    setState(() {
+      _extrudeSketchFeature = null;
+      _previewExtrudeFeatureId = null;
+      _meshBeforeExtrude = null;
+    });
+  }
+
+  /// Deletes the preview ExtrudeFeature (if one was ever created) and
+  /// restores the mesh to its pre-extrude state, closing the panel either
+  /// way - mirrors [_confirmExtrude]'s structure but undoes rather than
+  /// keeps the preview's backend-side effects.
+  Future<void> _cancelExtrude() async {
+    _extrudeDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewExtrudeFeatureId;
+    final meshBefore = _meshBeforeExtrude;
+    setState(() {
+      _extrudeSketchFeature = null;
+      _previewExtrudeFeatureId = null;
+      _meshBeforeExtrude = null;
+    });
+    if (part == null || previewId == null) return;
+    await _runGuarded(() async {
+      await _api.deleteFeature(part.id, previewId);
+      _mesh = meshBefore ?? (await _api.getPartMesh(part.id)).mesh;
+      await _refreshFeatures();
+    });
   }
 
   /// Client-side-only Hide/Show for a Feature's 3D geometry - never sent to
@@ -284,7 +438,7 @@ class _PartScreenState extends State<PartScreen> {
     final index = _features.indexWhere((f) => f.id == feature.id);
     if (index == -1) return;
     final namesToDelete = [
-      for (var i = index; i < _features.length; i++) featureDisplayName(i),
+      for (var i = index; i < _features.length; i++) featureDisplayName(_features, i),
     ];
 
     final confirmed = await showCascadeDeleteDialog(context, namesToDelete);
@@ -373,6 +527,7 @@ class _PartScreenState extends State<PartScreen> {
                   sketchGeometries: _visibleSketchGeometries,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
+                  isPreviewMesh: _extrudeSketchFeature != null,
                 ),
                 Positioned.fill(
                   child: FeatureTreePanel(
@@ -393,6 +548,18 @@ class _PartScreenState extends State<PartScreen> {
                     onNewSketchOnPlane: _busy ? null : _onNewSketchOnSelectedPlane,
                   ),
                 ),
+                if (_extrudeSketchFeature != null)
+                  Positioned.fill(
+                    child: ExtrudePanel(
+                      key: ValueKey(_extrudeSketchFeature!.id),
+                      initialType: _extrudeType,
+                      initialStartDistance: _extrudeStartDistance,
+                      initialEndDistance: _extrudeEndDistance,
+                      onChanged: _onExtrudeValuesChanged,
+                      onConfirm: _confirmExtrude,
+                      onCancel: _cancelExtrude,
+                    ),
+                  ),
                 // Always on top (last in the Stack) so it stays tappable
                 // regardless of whether the toolbar underneath is open -
                 // but hidden while the Feature tree is open since it sits

@@ -100,6 +100,26 @@ class SolveResultDto {
       );
 }
 
+/// Result of a Sketch's closed-Profile check - only [status] and [detail]
+/// are used by the client (the Extrude context-menu gate), so the rest of
+/// the backend's `ProfileDetectionResponse` (the actual loop geometry) is
+/// left unparsed.
+class ProfileDetectionDto {
+  static const String closedLoop = 'closed_loop';
+
+  final String status;
+  final String detail;
+
+  ProfileDetectionDto({required this.status, required this.detail});
+
+  bool get isClosedLoop => status == closedLoop;
+
+  factory ProfileDetectionDto.fromJson(Map<String, dynamic> json) => ProfileDetectionDto(
+        status: json['status'] as String,
+        detail: json['detail'] as String,
+      );
+}
+
 /// Thin wrapper over the backend's `/sketch` REST API. Knows nothing about
 /// UI/cursor state - it only translates Dart calls into the HTTP contract
 /// defined by backend/app/sketch/router.py and schemas.py.
@@ -253,6 +273,11 @@ class SketchApiClient {
               headers: _headers,
             ),
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ProfileDetectionDto> getProfile(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/profile'), headers: _headers),
+        (body) => ProfileDetectionDto.fromJson(body as Map<String, dynamic>),
       );
 
   void close() => _httpClient.close();

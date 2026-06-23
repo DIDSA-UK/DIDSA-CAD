@@ -2,6 +2,7 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
+from app.document.models import ExtrudeType
 from app.sketch.models import Plane
 
 
@@ -25,7 +26,7 @@ class SketchFeatureCreate(BaseModel):
 
 
 # `type` is a discriminator, same pattern as app.sketch.schemas'
-# SketchEntityResponse - becomes a real Union once ExtrudeFeature exists.
+# SketchEntityResponse.
 class SketchFeatureResponse(BaseModel):
     type: Literal["sketch"] = "sketch"
     id: str
@@ -33,7 +34,38 @@ class SketchFeatureResponse(BaseModel):
     locked: bool
 
 
-FeatureResponse = Union[SketchFeatureResponse]
+class ExtrudeFeatureCreate(BaseModel):
+    """Creates an ExtrudeFeature from an existing SketchFeature's closed
+    Profile - the API layer validates `sketch_feature_id` resolves to a
+    SketchFeature in this Part with a closed profile before construction
+    (see app.document.router._require_closed_sketch_feature)."""
+
+    sketch_feature_id: str
+    extrude_type: ExtrudeType
+    start_distance: float
+    end_distance: float
+
+
+class ExtrudeFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves - any subset of fields may
+    be supplied; omitted fields keep their current value."""
+
+    extrude_type: ExtrudeType | None = None
+    start_distance: float | None = None
+    end_distance: float | None = None
+
+
+class ExtrudeFeatureResponse(BaseModel):
+    type: Literal["extrude"] = "extrude"
+    id: str
+    sketch_feature_id: str
+    extrude_type: ExtrudeType
+    start_distance: float
+    end_distance: float
+    locked: bool
+
+
+FeatureResponse = Union[SketchFeatureResponse, ExtrudeFeatureResponse]
 
 
 class MeshVertexData(BaseModel):
@@ -43,11 +75,13 @@ class MeshVertexData(BaseModel):
 
 
 class PartMeshResponse(BaseModel):
-    """`source` is "placeholder" for this stage and always will be until a
-    real ExtrudeFeature exists - callers must not treat this mesh as the
-    Part's actual modeled geometry."""
+    """`source` is "placeholder" while the Part has no ExtrudeFeature yet
+    (see `Part.produces_solid_geometry`), and "computed" once real
+    Feature-derived geometry is being returned instead - callers can use
+    this to tell a fixed dev-time stand-in apart from the Part's actual
+    modeled geometry."""
 
-    source: Literal["placeholder"] = "placeholder"
+    source: Literal["placeholder", "computed"]
     mesh: MeshVertexData
 
 
