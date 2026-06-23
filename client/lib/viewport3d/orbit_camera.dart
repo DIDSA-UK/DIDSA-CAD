@@ -110,24 +110,24 @@ class OrbitCamera {
   /// swiping left rotated the model right and vice versa - so only the yaw
   /// term is flipped again here, back to `-dxPixels`; the pitch term's
   /// `+dyPixels` is untouched and confirmed correct on-device. Pitch is
-  /// applied about the camera's *current* right axis (so it always tilts
-  /// the view the way it's currently facing), then yaw about the fixed
-  /// world-up axis (so left/right drags always swing around the same
-  /// vertical regardless of how far the camera has already been tilted) -
-  /// composed as quaternions, with no clamping, so this never gets stuck.
+  /// applied about the camera's *current* right axis, and yaw about the
+  /// camera's *current* up axis - both read fresh from [orientation] every
+  /// call, so each always tilts/swings the view the way it's currently
+  /// facing, regardless of how far it's already been orbited.
   ///
-  /// Once the camera has orbited past vertical, [_up] points away from
-  /// world-up rather than towards it - the model now reads as
-  /// "upside-down" - and yawing about the fixed world-up axis then swings
-  /// the view the opposite way the drag visually suggests. Flipping
-  /// `dxPixels` whenever [_up] and world-up have gone more than 90 degrees
-  /// apart (a negative dot product) keeps horizontal drag direction feeling
-  /// consistent regardless of orientation; vertical/pitch is unaffected.
+  /// An earlier version yawed about the *fixed* world-up axis instead, with
+  /// a special-cased sign flip once [_up] pointed away from world-up (i.e.
+  /// past vertical, where the model reads as "upside-down") to keep
+  /// horizontal drag direction feeling consistent. Yawing about the
+  /// camera's own current up axis needs no such case: that axis already
+  /// incorporates whatever pitch has been applied, so a horizontal drag
+  /// always swings the view the same way relative to the camera's own
+  /// point of view, at any orientation - this is the standard
+  /// trackball-style orbit. Composed as quaternions, with no clamping, so
+  /// this never gets stuck.
   void orbitByScreenDelta(double dxPixels, double dyPixels) {
-    final upsideDown = _up.dot(_localUp) < 0;
-    final yawDx = upsideDown ? -dxPixels : dxPixels;
     final pitch = vm.Quaternion.axisAngle(_right, dyPixels * orbitSensitivity);
-    final yaw = vm.Quaternion.axisAngle(_localUp, -yawDx * orbitSensitivity);
+    final yaw = vm.Quaternion.axisAngle(_up, -dxPixels * orbitSensitivity);
     orientation = (orientation * pitch * yaw).normalized();
   }
 
