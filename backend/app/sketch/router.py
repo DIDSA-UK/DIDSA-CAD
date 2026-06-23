@@ -14,6 +14,7 @@ from app.sketch.schemas import (
     AngleConstraintResponse,
     CircleCreate,
     CircleResponse,
+    CircleUpdate,
     ConstraintCreate,
     ConstraintResponse,
     DistanceConstraintCreate,
@@ -260,10 +261,13 @@ def update_line(sketch_id: str, line_id: str, payload: LineUpdate) -> LineRespon
     sketch = _get_sketch_or_404(sketch_id)
     _ensure_sketch_editable(sketch_id)
     line = _get_line_or_404(sketch, line_id)
-    try:
-        line.set_length(sketch.points, payload.length)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload.length is not None:
+        try:
+            line.set_length(sketch.points, payload.length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload.construction is not None:
+        line.construction = payload.construction
     return _line_response(sketch, line)
 
 
@@ -296,6 +300,16 @@ def list_circles(sketch_id: str) -> list[CircleResponse]:
 def get_circle(sketch_id: str, circle_id: str) -> CircleResponse:
     sketch = _get_sketch_or_404(sketch_id)
     return _circle_response(sketch, _get_circle_or_404(sketch, circle_id))
+
+
+@router.patch("/sketches/{sketch_id}/circles/{circle_id}", response_model=CircleResponse)
+def update_circle(sketch_id: str, circle_id: str, payload: CircleUpdate) -> CircleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _ensure_sketch_editable(sketch_id)
+    circle = _get_circle_or_404(sketch, circle_id)
+    if payload.construction is not None:
+        circle.construction = payload.construction
+    return _circle_response(sketch, circle)
 
 
 @router.delete("/sketches/{sketch_id}/circles/{circle_id}", status_code=204)

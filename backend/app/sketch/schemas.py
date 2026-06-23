@@ -55,12 +55,14 @@ class LineCreate(BaseModel):
 
 
 class LineUpdate(BaseModel):
-    """Update a line's length - the end Point moves along the existing
-    direction. To move an endpoint directly, update the Point itself
-    (PATCH .../points/{point_id}); since Points are shared, that moves
-    every Line referencing it."""
+    """Update a line's length and/or its construction flag. `length` moves
+    the end Point along the existing direction (see PATCH .../points/{id}
+    to move an endpoint directly). `construction` is optional so the
+    client can toggle Make-Construction/Make-Solid without also resending
+    a length - omitted fields are left unchanged."""
 
-    length: float
+    length: float | None = None
+    construction: bool | None = None
 
 
 # `type` is a discriminator so that when Circle/Arc entities are added,
@@ -104,6 +106,14 @@ class CircleResponse(BaseModel):
     radius_point_id: str
     radius: float
     construction: bool = False
+
+
+class CircleUpdate(BaseModel):
+    """Update a circle's construction flag - mirrors LineUpdate. There is
+    no radius field here: a circle's radius is driven by its
+    DistanceConstraint (see Sketch.add_circle), not edited directly."""
+
+    construction: bool | None = None
 
 
 SketchEntityResponse = Union[LineResponse, CircleResponse]
