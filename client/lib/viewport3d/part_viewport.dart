@@ -51,7 +51,7 @@ class PartViewport extends StatefulWidget {
   State<PartViewport> createState() => PartViewportState();
 }
 
-class PartViewportState extends State<PartViewport> with SingleTickerProviderStateMixin {
+class PartViewportState extends State<PartViewport> with TickerProviderStateMixin {
   final OrbitCamera _camera = OrbitCamera();
 
   /// Null until `flutter_scene`'s static resources (shaders, default
@@ -194,6 +194,14 @@ class PartViewportState extends State<PartViewport> with SingleTickerProviderSta
   /// 400ms with [Curves.easeInOut] is this implementation's own judgment
   /// call, within the brief's specified 300-500ms range - worth confirming
   /// on a real device that it doesn't feel too slow/fast.
+  ///
+  /// Needs [TickerProviderStateMixin], not [SingleTickerProviderStateMixin]:
+  /// this is called once per "enter a Sketch" action over this State's
+  /// whole lifetime, and `SingleTickerProviderStateMixin` only permits
+  /// `createTicker` to succeed once ever (even after the prior
+  /// `AnimationController` is disposed) - every call past the first would
+  /// throw on `AnimationController(vsync: this, ...)` below, silently
+  /// rejecting this method's Future before `_openSketch` ever runs.
   Future<void> animateToPlane(
     ReferencePlaneKind plane, {
     Duration duration = const Duration(milliseconds: 400),

@@ -312,6 +312,11 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Pushes the Sketch screen and, once it returns (back button or the
+  /// ribbon's Exit Sketch action - both just pop this route), re-fetches
+  /// Features and their Sketch content: whatever was drawn during this
+  /// visit must show up back in the 3D viewport, not only on the next
+  /// unrelated Feature-creation refresh.
   Future<void> _openSketch(FeatureDto feature) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -321,6 +326,11 @@ class _PartScreenState extends State<PartScreen> {
         ),
       ),
     );
+    if (!mounted) return;
+    await _runGuarded(() async {
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
   }
 
   Future<void> _runGuarded(Future<void> Function() body) async {
