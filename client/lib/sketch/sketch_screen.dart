@@ -19,7 +19,19 @@ class SketchScreen extends StatefulWidget {
   /// a new one.
   final String? adoptSketchId;
 
-  const SketchScreen({super.key, this.controller, this.adoptSketchId});
+  /// Stage 12 item 9: the existing solid's mesh edges, already projected
+  /// onto this Sketch's plane by the caller ([PartScreen], which is the
+  /// only place that has both the Part's mesh and the plane) - empty when
+  /// there's nothing to show (e.g. an empty Part, or this screen reached
+  /// outside [PartScreen] at all, such as in isolated tests).
+  final List<((double, double), (double, double))> referenceGhostSegments;
+
+  const SketchScreen({
+    super.key,
+    this.controller,
+    this.adoptSketchId,
+    this.referenceGhostSegments = const [],
+  });
 
   @override
   State<SketchScreen> createState() => _SketchScreenState();
@@ -27,6 +39,10 @@ class SketchScreen extends StatefulWidget {
 
 class _SketchScreenState extends State<SketchScreen> {
   late final SketchController _controller;
+
+  /// Stage 12 item 9's Hide/Show Reference Body toggle - in-memory only,
+  /// same as PartScreen's `_referencePlanesHidden`. Defaults to shown.
+  bool _referenceBodyHidden = false;
 
   @override
   void initState() {
@@ -76,11 +92,25 @@ class _SketchScreenState extends State<SketchScreen> {
             Expanded(
               child: Stack(
                 children: [
-                  SketchCanvas(controller: _controller),
+                  SketchCanvas(
+                    controller: _controller,
+                    referenceGhostSegments: widget.referenceGhostSegments,
+                    referenceBodyHidden: _referenceBodyHidden,
+                  ),
                   // SketchRibbon aligns and sizes itself (top-left,
                   // shrink-wrapped to its own content) - this just gives it
                   // room to do so without forcing a particular size.
                   Positioned.fill(child: SketchRibbon(controller: _controller)),
+                  if (widget.referenceGhostSegments.isNotEmpty)
+                    Positioned(
+                      top: 8,
+                      right: 8,
+                      child: IconButton.filled(
+                        tooltip: _referenceBodyHidden ? 'Show Reference Body' : 'Hide Reference Body',
+                        icon: Icon(_referenceBodyHidden ? Icons.visibility_off : Icons.visibility),
+                        onPressed: () => setState(() => _referenceBodyHidden = !_referenceBodyHidden),
+                      ),
+                    ),
                 ],
               ),
             ),

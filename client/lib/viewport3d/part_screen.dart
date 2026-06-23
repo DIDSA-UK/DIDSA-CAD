@@ -11,6 +11,7 @@ import 'cascade_delete_dialog.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_tree_panel.dart';
+import 'mesh_geometry.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
 import 'reference_planes.dart';
@@ -232,7 +233,7 @@ class _PartScreenState extends State<PartScreen> {
     if (feature != null && mounted) {
       await _viewportKey.currentState?.animateToPlane(plane);
       if (!mounted) return;
-      await _openSketch(feature);
+      await _openSketch(feature, plane: plane);
     }
   }
 
@@ -340,7 +341,7 @@ class _PartScreenState extends State<PartScreen> {
       await _viewportKey.currentState?.animateToPlane(plane);
       if (!mounted) return;
     }
-    await _openSketch(feature);
+    await _openSketch(feature, plane: plane);
   }
 
   Future<ReferencePlaneKind?> _planeOfFeature(FeatureDto feature) async {
@@ -565,12 +566,18 @@ class _PartScreenState extends State<PartScreen> {
   /// Features and their Sketch content: whatever was drawn during this
   /// visit must show up back in the 3D viewport, not only on the next
   /// unrelated Feature-creation refresh.
-  Future<void> _openSketch(FeatureDto feature) async {
+  Future<void> _openSketch(FeatureDto feature, {ReferencePlaneKind? plane}) async {
+    final mesh = _mesh;
+    final ghostSegments = (plane != null && mesh != null)
+        ? projectMeshEdgesOntoPlane(plane, edgeSegmentsFromMesh(mesh))
+        : const <((double, double), (double, double))>[];
+
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => SketchScreen(
           controller: SketchController(api: widget.sketchApiFactory?.call()),
           adoptSketchId: feature.sketchId,
+          referenceGhostSegments: ghostSegments,
         ),
       ),
     );

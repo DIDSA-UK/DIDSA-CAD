@@ -18,16 +18,28 @@ class SketchLineView {
   final String id;
   final String startPointId;
   final String endPointId;
+  final bool construction;
 
-  const SketchLineView({required this.id, required this.startPointId, required this.endPointId});
+  const SketchLineView({
+    required this.id,
+    required this.startPointId,
+    required this.endPointId,
+    this.construction = false,
+  });
 }
 
 class SketchCircleView {
   final String id;
   final String centerPointId;
   final String radiusPointId;
+  final bool construction;
 
-  const SketchCircleView({required this.id, required this.centerPointId, required this.radiusPointId});
+  const SketchCircleView({
+    required this.id,
+    required this.centerPointId,
+    required this.radiusPointId,
+    this.construction = false,
+  });
 }
 
 /// Which entity the next Click commits. Selected via the tool-switcher FAB.
@@ -87,6 +99,13 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchPointView> points = {};
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
+
+  /// Every Constraint currently on this Sketch, keyed by id - Stage 12 item
+  /// 10's dimension overlays read straight from this. Render-only: there is
+  /// no client-side action that creates/edits one yet (see
+  /// [_refreshConstraints]'s doc comment), so this is only ever populated
+  /// from the backend, never written to directly.
+  final Map<String, ConstraintDto> constraints = {};
 
   double cursorX = 0;
   double cursorY = 0;
@@ -322,6 +341,58 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Whether [selection] is a Line/Circle currently marked construction -
+  /// drives the ribbon's Make-Construction/Make-Solid toggle label. Null
+  /// (rather than false) when the selection isn't a Line/Circle at all, so
+  /// the ribbon knows not to show the toggle for a Point selection.
+  bool? get selectedIsConstruction {
+    final current = _selection;
+    if (current == null) return null;
+    switch (current.kind) {
+      case SelectionKind.line:
+        return lines[current.id]?.construction;
+      case SelectionKind.circle:
+        return circles[current.id]?.construction;
+      case SelectionKind.point:
+        return null;
+    }
+  }
+
+  /// Flips [selection]'s construction flag via the backend PATCH endpoint -
+  /// immediate, no confirmation, mirroring [deleteSelected]'s
+  /// backend-is-truth pattern. A no-op if nothing applicable is selected.
+  Future<void> toggleSelectedConstruction() async {
+    final current = _selection;
+    final currentlyConstruction = selectedIsConstruction;
+    if (current == null || currentlyConstruction == null || _busy || _sketchId == null) return;
+
+    await _runGuarded(() async {
+      final next = !currentlyConstruction;
+      switch (current.kind) {
+        case SelectionKind.line:
+          final updated = await _api.updateLine(_sketchId!, current.id, construction: next);
+          lines[current.id] = SketchLineView(
+            id: updated.id,
+            startPointId: updated.startPointId,
+            endPointId: updated.endPointId,
+            construction: updated.construction,
+          );
+          break;
+        case SelectionKind.circle:
+          final updated = await _api.updateCircle(_sketchId!, current.id, construction: next);
+          circles[current.id] = SketchCircleView(
+            id: updated.id,
+            centerPointId: updated.centerPointId,
+            radiusPointId: updated.radiusPointId,
+            construction: updated.construction,
+          );
+          break;
+        case SelectionKind.point:
+          break;
+      }
+    });
+  }
+
   Future<void> ensureSketch() async {
     if (_sketchId != null) return;
     await _runGuarded(() async {
@@ -354,6 +425,7 @@ class SketchController extends ChangeNotifier {
         id: line.id,
         startPointId: line.startPointId,
         endPointId: line.endPointId,
+        construction: line.construction,
       );
     }
     for (final circle in await _api.listCircles(sketchId)) {
@@ -361,7 +433,29 @@ class SketchController extends ChangeNotifier {
         id: circle.id,
         centerPointId: circle.centerPointId,
         radiusPointId: circle.radiusPointId,
+        construction: circle.construction,
       );
+    }
+    for (final constraint in await _api.listConstraints(sketchId)) {
+      constraints[constraint.id] = constraint;
+    }
+  }
+
+  /// Re-fetches every Constraint from the backend - called after anything
+  /// that can create one server-side as a side effect (so far, only
+  /// [_clickCircleTool]'s auto-created radius DistanceConstraint - see
+  /// `Sketch.add_circle`), so [constraints] stays current within the same
+  /// session without a full [adoptSketch] re-entry. There is no
+  /// client-side UI yet for adding a Vertical/Horizontal/Angle/standalone
+  /// Distance constraint directly - those only ever appear after
+  /// [adoptSketch] re-loads a Sketch that already has them (e.g. created
+  /// via the API directly).
+  Future<void> _refreshConstraints() async {
+    if (_sketchId == null) return;
+    final fetched = await _api.listConstraints(_sketchId!);
+    constraints.clear();
+    for (final constraint in fetched) {
+      constraints[constraint.id] = constraint;
     }
   }
 
@@ -426,6 +520,7 @@ class SketchController extends ChangeNotifier {
         id: line.id,
         startPointId: line.startPointId,
         endPointId: line.endPointId,
+        construction: line.construction,
       );
 
       // One user action (this Click, now that the line is fully placed) =
@@ -465,11 +560,13 @@ class SketchController extends ChangeNotifier {
         id: circle.id,
         centerPointId: circle.centerPointId,
         radiusPointId: circle.radiusPointId,
+        construction: circle.construction,
       );
 
       // Same rule as a completed Line: one finished entity = one solve call.
       await _api.solve(_sketchId!);
       await _refreshAllPoints();
+      await _refreshConstraints();
 
       _circleCenterPointId = null;
     });

@@ -86,8 +86,16 @@ class SketchRibbon extends StatelessWidget {
 
     final blockedReason =
         selection.kind == SelectionKind.point ? controller.selectedPointDeleteBlockedReason : null;
+    final isConstruction = controller.selectedIsConstruction;
 
     return [
+      if (isConstruction != null)
+        ListTile(
+          leading: Icon(isConstruction ? Icons.architecture : Icons.architecture_outlined),
+          title: Text(isConstruction ? 'Make Solid' : 'Make Construction'),
+          enabled: !controller.busy,
+          onTap: controller.toggleSelectedConstruction,
+        ),
       ListTile(
         leading: const Icon(Icons.delete_outline),
         title: const Text('Delete'),
