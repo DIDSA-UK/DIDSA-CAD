@@ -182,6 +182,10 @@ def _max_z(mesh_body: dict) -> float:
     return max(v[2] for v in mesh_body["mesh"]["vertices"])
 
 
+def _min_z(mesh_body: dict) -> float:
+    return min(v[2] for v in mesh_body["mesh"]["vertices"])
+
+
 def test_patch_updates_extrude_distances_and_the_mesh_changes_accordingly():
     part = _create_part()
     sketch_feature = _create_square_sketch_feature(part["id"])
@@ -239,3 +243,122 @@ def test_list_features_includes_extrude_feature_after_its_sketch_feature():
     assert response.status_code == 200
     feature_ids = [f["id"] for f in response.json()]
     assert feature_ids == [sketch_feature["id"], extrude["id"]]
+
+
+# --- Signed start_distance ------------------------------------------------------
+
+
+def test_boss_extrude_with_a_nonzero_start_distance_spans_from_start_to_end():
+    # start_distance/end_distance are both signed offsets from the sketch
+    # plane (see app.document.extrude._solid_for_extrude_feature) - the
+    # solid must span literally from one to the other, not from 0 to
+    # (end - start).
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(
+        part["id"], sketch_feature["id"], start_distance=5.0, end_distance=15.0
+    ).json()
+    assert extrude["start_distance"] == pytest.approx(5.0)
+    assert extrude["end_distance"] == pytest.approx(15.0)
+
+    mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+
+    assert _min_z(mesh) == pytest.approx(5.0)
+    assert _max_z(mesh) == pytest.approx(15.0)
+
+
+def test_boss_extrude_with_a_negative_start_distance_spans_across_the_sketch_plane():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    _create_extrude_feature(part["id"], sketch_feature["id"], start_distance=-5.0, end_distance=5.0)
+
+    mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+
+    assert _min_z(mesh) == pytest.approx(-5.0)
+    assert _max_z(mesh) == pytest.approx(5.0)
+
+
+# --- end_distance > start_distance validation -----------------------------------
+
+
+def test_create_extrude_with_end_distance_not_greater_than_start_distance_is_rejected():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+
+    response = _create_extrude_feature(
+        part["id"], sketch_feature["id"], start_distance=10.0, end_distance=10.0
+    )
+
+    assert response.status_code == 400
+    assert "end_distance must be greater than start_distance" in response.json()["detail"]
+
+
+def test_create_extrude_with_end_distance_less_than_start_distance_is_rejected():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+
+    response = _create_extrude_feature(
+        part["id"], sketch_feature["id"], start_distance=10.0, end_distance=0.0
+    )
+
+    assert response.status_code == 400
+
+
+def test_patch_making_end_distance_not_greater_than_start_distance_is_rejected():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(
+        part["id"], sketch_feature["id"], start_distance=0.0, end_distance=10.0
+    ).json()
+
+    response = client.patch(
+        f"/document/parts/{part['id']}/extrude-features/{extrude['id']}",
+        json={"start_distance": 10.0},
+    )
+
+    assert response.status_code == 400
+    assert "end_distance must be greater than start_distance" in response.json()["detail"]
+
+    # The rejected PATCH must not have mutated the stored feature.
+    mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    assert _max_z(mesh) == pytest.approx(10.0)
+
+
+# --- hidden_feature_ids ----------------------------------------------------------
+
+
+def test_hidden_feature_ids_excludes_a_boss_feature_from_the_computed_mesh():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
+
+    visible_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    assert len(visible_mesh["mesh"]["vertices"]) > 0
+
+    hidden_mesh = client.get(
+        f"/document/parts/{part['id']}/mesh",
+        params={"hidden_feature_ids": [extrude["id"]]},
+    ).json()
+
+    assert hidden_mesh["source"] == "computed"
+    assert hidden_mesh["mesh"]["vertices"] == []
+    assert hidden_mesh["mesh"]["triangle_indices"] == []
+
+
+def test_hidden_feature_ids_un_subtracts_a_hidden_cut_feature():
+    part = _create_part()
+
+    boss_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0, size=10.0)
+    _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")
+    boss_only_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+
+    cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
+    cut = _create_extrude_feature(part["id"], cut_sketch["id"], extrude_type="cut").json()
+
+    cut_hidden_mesh = client.get(
+        f"/document/parts/{part['id']}/mesh",
+        params={"hidden_feature_ids": [cut["id"]]},
+    ).json()
+
+    # With the Cut hidden, the mesh should match the pre-Cut (Boss-only) solid.
+    assert cut_hidden_mesh["mesh"]["vertices"] == boss_only_mesh["mesh"]["vertices"]

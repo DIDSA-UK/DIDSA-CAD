@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_scene/scene.dart';
@@ -92,17 +93,40 @@ UnskinnedGeometry geometryFromMesh(MeshDto mesh) {
   return geometry;
 }
 
-/// The average of [mesh]'s vertex positions - used to re-center the orbit
-/// camera's target on the actual geometry rather than the world origin.
-/// The current placeholder mesh (see backend/app/document/router.py) is a
-/// `BRepPrimAPI_MakeBox(10, 10, 10)`, which OCCT spans from (0,0,0) to
-/// (10,10,10) rather than centering it at the origin, so its centroid -
-/// and any future mesh's - has to be computed from the real vertex data
-/// rather than assumed to be (0,0,0).
-vm.Vector3 centroidOfMesh(MeshDto mesh) {
-  var sum = vm.Vector3.zero();
+/// The axis-aligned bounding box centre and bounding-sphere radius of
+/// [mesh]'s vertices - used to re-center the orbit camera's target on the
+/// actual geometry rather than the world origin (see [OrbitCamera.setTarget])
+/// and to scale its zoom bounds to the geometry's actual size (see
+/// [OrbitCamera.setZoomBoundsForRadius]). The current placeholder mesh (see
+/// backend/app/document/router.py) is a `BRepPrimAPI_MakeBox(10, 10, 10)`,
+/// which OCCT spans from (0,0,0) to (10,10,10) rather than centering it at
+/// the origin, so this - and any future mesh's bounds - has to be computed
+/// from the real vertex data rather than assumed to be centred on (0,0,0).
+///
+/// The bounding centre (not the vertex-position average) is used so a
+/// lopsided triangle distribution (e.g. a fine mesh on one face, coarse on
+/// another) doesn't pull the orbit target off the geometry's visual middle.
+class MeshBounds {
+  final vm.Vector3 center;
+  final double boundingSphereRadius;
+
+  const MeshBounds({required this.center, required this.boundingSphereRadius});
+}
+
+/// Returns `null` for an empty mesh (no vertices) - callers fall back to the
+/// origin/fixed zoom bounds in that case, per [OrbitCamera].
+MeshBounds? boundsOfMesh(MeshDto mesh) {
+  if (mesh.vertices.isEmpty) return null;
+  final first = mesh.vertices.first;
+  var min = vm.Vector3(first[0], first[1], first[2]);
+  var max = min.clone();
   for (final vertex in mesh.vertices) {
-    sum += vm.Vector3(vertex[0], vertex[1], vertex[2]);
+    final p = vm.Vector3(vertex[0], vertex[1], vertex[2]);
+    min = vm.Vector3(math.min(min.x, p.x), math.min(min.y, p.y), math.min(min.z, p.z));
+    max = vm.Vector3(math.max(max.x, p.x), math.max(max.y, p.y), math.max(max.z, p.z));
   }
-  return sum / mesh.vertices.length.toDouble();
+  return MeshBounds(
+    center: (min + max) * 0.5,
+    boundingSphereRadius: (max - min).length * 0.5,
+  );
 }

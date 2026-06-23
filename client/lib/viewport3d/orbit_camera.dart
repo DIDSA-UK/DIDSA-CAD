@@ -21,8 +21,26 @@ import 'reference_planes.dart';
 /// orientation, including looking straight down or straight up, so orbiting
 /// can pass through them smoothly with no dead zone or flip.
 class OrbitCamera {
-  static const double minDistance = 5;
-  static const double maxDistance = 300;
+  /// Zoom bounds used when no body exists yet (or the current body is
+  /// empty) to scale them against - see [setZoomBoundsForRadius].
+  static const double defaultMinDistance = 5;
+  static const double defaultMaxDistance = 300;
+
+  /// Multipliers applied to a body's bounding-sphere radius to derive
+  /// [minDistance]/[maxDistance] - chosen so the minimum keeps the camera
+  /// just outside the body (radius x2) and the maximum keeps it close
+  /// enough to still be a recognisable shape on screen (radius x20), per
+  /// the brief's own heuristic.
+  static const double _minDistanceRadiusFactor = 2;
+  static const double _maxDistanceRadiusFactor = 20;
+
+  /// Mutable, unlike the fixed bounds of an earlier version - scaled to the
+  /// accumulated mesh's actual size by [setZoomBoundsForRadius] (see
+  /// [PartViewport._syncMeshNode]) so zooming out always stops a sensible
+  /// distance from the current geometry rather than a one-size-fits-all
+  /// fixed distance.
+  double minDistance = defaultMinDistance;
+  double maxDistance = defaultMaxDistance;
 
   /// Radians/pixel for a mouse drag or 1:1-scaled touch drag - matches the
   /// "real device px -> visible angle" feel [SketchViewport] aims for with
@@ -47,12 +65,18 @@ class OrbitCamera {
   double distance;
   vm.Vector3 target;
 
+  /// What [reset] returns [distance] to, clamped to the current
+  /// [minDistance]/[maxDistance] - those bounds may since have been
+  /// narrowed by [setZoomBoundsForRadius] to a body smaller than this
+  /// default, so resetting can't just assign it outright.
+  static const double _defaultDistance = 30;
+
   /// What [reset] returns [target] to - defaults to the origin, but
   /// [setTarget] moves this along with [target] so "Reset view" re-centers
   /// on the real geometry instead of snapping back to world-space (0,0,0).
   vm.Vector3 _defaultTarget;
 
-  OrbitCamera({this.distance = 30, vm.Vector3? target})
+  OrbitCamera({this.distance = _defaultDistance, vm.Vector3? target})
       : target = target ?? vm.Vector3.zero(),
         _defaultTarget = target ?? vm.Vector3.zero(),
         orientation = _defaultOrientation();
@@ -122,10 +146,30 @@ class OrbitCamera {
     distance = (distance * scaleFactor).clamp(minDistance, maxDistance);
   }
 
+  /// Scales [minDistance]/[maxDistance] to [radius] (a body's bounding-
+  /// sphere radius - see [boundsOfMesh]), per [_minDistanceRadiusFactor]/
+  /// [_maxDistanceRadiusFactor], so zooming out always stops a sensible
+  /// distance from the current geometry rather than the one-size-fits-all
+  /// [defaultMinDistance]/[defaultMaxDistance]. A non-positive [radius]
+  /// (no body yet, or an empty one - [boundsOfMesh] returns `null` in that
+  /// case) falls back to those defaults instead. [distance] is re-clamped
+  /// to the new bounds immediately, so a body shrinking never leaves the
+  /// camera further out than [maxDistance] now allows.
+  void setZoomBoundsForRadius(double radius) {
+    if (radius > 0) {
+      minDistance = radius * _minDistanceRadiusFactor;
+      maxDistance = radius * _maxDistanceRadiusFactor;
+    } else {
+      minDistance = defaultMinDistance;
+      maxDistance = defaultMaxDistance;
+    }
+    distance = distance.clamp(minDistance, maxDistance);
+  }
+
   /// Re-centers both the current and "Reset view" target on [newTarget] -
-  /// called once the real geometry's centroid is known, since the
+  /// called once the real geometry's bounds are known, since the
   /// placeholder box isn't centered at the world origin (see
-  /// [centroidOfMesh]) and orbiting around (0,0,0) instead made it look
+  /// [boundsOfMesh]) and orbiting around (0,0,0) instead made it look
   /// like the model was rotating about one of its corners.
   void setTarget(vm.Vector3 newTarget) {
     target = newTarget;
@@ -134,7 +178,7 @@ class OrbitCamera {
 
   void reset() {
     orientation = _defaultOrientation();
-    distance = 30;
+    distance = _defaultDistance.clamp(minDistance, maxDistance);
     target = _defaultTarget;
   }
 }

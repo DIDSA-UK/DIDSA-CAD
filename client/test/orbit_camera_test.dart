@@ -172,10 +172,36 @@ void main() {
     expect(camera.distance, 60);
 
     camera.zoomByFactor(1000);
-    expect(camera.distance, OrbitCamera.maxDistance);
+    expect(camera.distance, camera.maxDistance);
 
     camera.zoomByFactor(0.00001);
-    expect(camera.distance, OrbitCamera.minDistance);
+    expect(camera.distance, camera.minDistance);
+  });
+
+  test('setZoomBoundsForRadius scales min/max distance to the body and re-clamps distance', () {
+    final camera = OrbitCamera();
+
+    camera.setZoomBoundsForRadius(10);
+    expect(camera.minDistance, 20); // radius * _minDistanceRadiusFactor (2)
+    expect(camera.maxDistance, 200); // radius * _maxDistanceRadiusFactor (20)
+
+    // Shrinking the bounds below the camera's current distance (30) must
+    // pull it back in immediately, not leave it violating the new max.
+    expect(camera.distance, 30);
+    camera.setZoomBoundsForRadius(1);
+    expect(camera.minDistance, 2);
+    expect(camera.maxDistance, 20);
+    expect(camera.distance, 20);
+  });
+
+  test('setZoomBoundsForRadius falls back to the fixed defaults for a non-positive radius', () {
+    final camera = OrbitCamera();
+
+    camera.setZoomBoundsForRadius(10);
+    camera.setZoomBoundsForRadius(0);
+
+    expect(camera.minDistance, OrbitCamera.defaultMinDistance);
+    expect(camera.maxDistance, OrbitCamera.defaultMaxDistance);
   });
 
   test('reset returns to the default orbit state', () {
@@ -194,9 +220,9 @@ void main() {
   });
 
   test('setTarget re-centers the camera and becomes what reset returns to', () {
-    // The placeholder box's centroid isn't the world origin (see
-    // centroidOfMesh), so once it's known, "Reset view" must snap back to
-    // it rather than to (0,0,0).
+    // The placeholder box's bounding-box centre isn't the world origin (see
+    // boundsOfMesh), so once it's known, "Reset view" must snap back to it
+    // rather than to (0,0,0).
     final camera = OrbitCamera();
     final centroid = vm.Vector3(5, 5, 5);
 
@@ -209,5 +235,18 @@ void main() {
     camera.reset();
 
     expect(camera.target, centroid);
+  });
+
+  test('reset clamps the default distance into a body-scaled zoom range smaller than it', () {
+    // A small body's setZoomBoundsForRadius-derived maxDistance can sit
+    // below the fixed default distance (30) reset would otherwise assign -
+    // reset must respect the current bounds rather than escape them.
+    final camera = OrbitCamera();
+    camera.setZoomBoundsForRadius(1); // maxDistance = 20, below the default distance of 30.
+    camera.zoomByFactor(0.5);
+
+    camera.reset();
+
+    expect(camera.distance, camera.maxDistance);
   });
 }

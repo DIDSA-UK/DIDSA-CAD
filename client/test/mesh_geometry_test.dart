@@ -63,10 +63,13 @@ void main() {
     expect(indices, [0, 1, 2, 2, 1, 3]);
   });
 
-  test('centroidOfMesh averages the vertex positions, not the origin', () {
+  test('boundsOfMesh returns the bounding box centre, not the vertex average', () {
     // Mirrors the real placeholder mesh's actual bounds - a
     // BRepPrimAPI_MakeBox(10, 10, 10) spans (0,0,0) to (10,10,10), so its
-    // genuine centroid is (5, 5, 5), not the world origin.
+    // genuine bounding-box centre is (5, 5, 5) - lopsided vertex placement
+    // (here, three vertices share z=0 and only one sits at z=10) must not
+    // pull the centre away from the box's true geometric middle the way a
+    // plain vertex-position average would (that would land at z=2.5).
     final mesh = MeshDto(
       vertices: [
         [0, 0, 0],
@@ -86,10 +89,19 @@ void main() {
       ],
     );
 
-    final centroid = centroidOfMesh(mesh);
+    final bounds = boundsOfMesh(mesh)!;
 
-    expect(centroid.x, closeTo(5, 1e-9));
-    expect(centroid.y, closeTo(5, 1e-9));
-    expect(centroid.z, closeTo(2.5, 1e-9));
+    expect(bounds.center.x, closeTo(5, 1e-9));
+    expect(bounds.center.y, closeTo(5, 1e-9));
+    expect(bounds.center.z, closeTo(5, 1e-9));
+    // Bounding box is 10x10x10 - its space diagonal is 10*sqrt(3), so the
+    // bounding-sphere radius (half that diagonal) is 5*sqrt(3).
+    expect(bounds.boundingSphereRadius, closeTo(5 * 1.7320508, 1e-4));
+  });
+
+  test('boundsOfMesh returns null for an empty mesh', () {
+    final mesh = MeshDto(vertices: [], normals: [], triangleIndices: []);
+
+    expect(boundsOfMesh(mesh), isNull);
   });
 }
