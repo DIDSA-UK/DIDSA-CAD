@@ -111,31 +111,65 @@ class _SketchScreenState extends State<SketchScreen> {
                         onPressed: () => setState(() => _referenceBodyHidden = !_referenceBodyHidden),
                       ),
                     ),
+                  // Tap-outside barrier: while the FAB menu is open, any tap
+                  // outside the FAB itself (which sits above this in the
+                  // Stack, so remains tappable) closes the menu instead of
+                  // reaching the canvas underneath.
+                  AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, _) {
+                      if (_controller.fabMenu == FabMenuState.closed) {
+                        return const SizedBox.shrink();
+                      }
+                      return Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _controller.closeFabMenu,
+                          child: const SizedBox.expand(),
+                        ),
+                      );
+                    },
+                  ),
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: AnimatedBuilder(
+                        animation: _controller,
+                        builder: (context, _) {
+                          if (_controller.mode == SketchMode.select) {
+                            return const SizedBox.shrink();
+                          }
+                          final pill = Material(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(16),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Text(
+                                _controller.modeLabel,
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          );
+                          return GestureDetector(
+                            onTap: _controller.exitToSelectMode,
+                            child: pill,
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    right: 16,
+                    bottom: 16,
+                    child: SketchSpeedDial(controller: _controller),
+                  ),
                 ],
               ),
             ),
           ],
         ),
-      ),
-      floatingActionButton: Row(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // Click is always visible and usable regardless of the speed
-          // dial's expanded/collapsed state or which tool is selected - it
-          // is the core "commit a point" action.
-          AnimatedBuilder(
-            animation: _controller,
-            builder: (context, _) => FloatingActionButton(
-              heroTag: 'click',
-              tooltip: 'Click',
-              onPressed: _controller.busy ? null : _controller.click,
-              child: const Icon(Icons.touch_app),
-            ),
-          ),
-          const SizedBox(width: 12),
-          SketchSpeedDial(controller: _controller),
-        ],
       ),
     );
   }

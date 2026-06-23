@@ -1,10 +1,16 @@
 import math
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.main import app
 from app.sketch.models import Plane, Sketch
 from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.solver import solve_sketch
+from tests.conftest import TEST_API_KEY
+
+client = TestClient(app)
+client.headers.update({"X-API-Key": TEST_API_KEY})
 
 
 def test_vertical_constraint_forces_same_x_after_solve():
@@ -86,3 +92,63 @@ def test_sketch_with_only_construction_entities_has_no_profile():
     result = detect_profile(sketch)
 
     assert result.status == ProfileStatus.NO_LOOP
+
+
+# --- Stage 13: PATCH constraint value -----------------------------------
+
+
+def _create_sketch(plane: str = "XY") -> dict:
+    response = client.post("/sketch/sketches", json={"plane": plane})
+    assert response.status_code == 201
+    return response.json()
+
+
+def _create_point(sketch_id: str, x: float, y: float) -> dict:
+    response = client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": x, "y": y})
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_patch_distance_constraint_value_produces_correct_new_solved_geometry():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 10.0},
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}",
+        json={"value": 25.0},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["converged"] is True
+
+    updated_b = client.get(f"/sketch/sketches/{sketch['id']}/points/{b['id']}").json()
+    updated_a = client.get(f"/sketch/sketches/{sketch['id']}/points/{a['id']}").json()
+    new_distance = math.hypot(updated_b["x"] - updated_a["x"], updated_b["y"] - updated_a["y"])
+    assert new_distance == pytest.approx(25.0)
+
+
+def test_patch_vertical_constraint_value_is_422():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 10.0)
+    line = client.post(
+        f"/sketch/sketches/{sketch['id']}/lines",
+        json={"start_point_id": a["id"], "end_point_id": b["id"]},
+    ).json()
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "vertical", "line_id": line["id"]},
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}",
+        json={"value": 5.0},
+    )
+
+    assert response.status_code == 422

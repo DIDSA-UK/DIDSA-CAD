@@ -7,15 +7,17 @@ import 'package:http/testing.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 
-/// A tiny in-memory fake of the backend's `/sketch` API (point/line
-/// creation, get, solve) good enough to exercise the controller's chaining
-/// logic without any real network call.
+/// A tiny in-memory fake of the backend's `/sketch` API (point/line/circle
+/// creation, constraints, get, solve) good enough to exercise the
+/// controller's chaining and dimension-ghost-confirmation logic without any
+/// real network call.
 class _FakeBackend {
   int _nextId = 1;
   final Map<String, Map<String, dynamic>> points = {};
   final Map<String, Map<String, dynamic>> lines = {};
   final Map<String, Map<String, dynamic>> circles = {};
   final Map<String, Map<String, dynamic>> sketches = {};
+  final Map<String, Map<String, dynamic>> constraints = {};
 
   /// Point ids that should be rejected with a 400 if a delete is attempted -
   /// used to simulate a backend-only rejection reason (e.g. a Constraint)
@@ -55,6 +57,15 @@ class _FakeBackend {
       }
       points.remove(id);
       return http.Response('', 204);
+    }
+
+    final constraintPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints/(.+)$').firstMatch(path);
+    if (constraintPatchMatch != null && request.method == 'PATCH') {
+      final id = constraintPatchMatch.group(1)!;
+      final constraint = constraints[id];
+      if (constraint == null) return http.Response('not found', 404);
+      constraint['distance'] = (body['value'] as num).toDouble();
+      return _json(_solveResultBody(), 200);
     }
 
     if (path == '/sketch/sketches' && request.method == 'POST') {
@@ -99,6 +110,7 @@ class _FakeBackend {
         'start_point_id': body['start_point_id'],
         'end_point_id': body['end_point_id'],
         'length': 1.0,
+        'construction': false,
       };
       lines[id] = line;
       return _json(line, 201);
@@ -115,28 +127,81 @@ class _FakeBackend {
         'center_point_id': body['center_point_id'],
         'radius_point_id': body['radius_point_id'],
         'radius': 1.0,
+        'construction': false,
       };
       circles[id] = circle;
+      // Mirrors the real backend's Sketch.add_circle, which auto-creates a
+      // radius DistanceConstraint alongside the Circle.
+      final constraintId = _newId('constraint');
+      constraints[constraintId] = {
+        'id': constraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': body['radius_point_id'],
+        'distance': 1.0,
+      };
       return _json(circle, 201);
     }
     if (circlesCollectionMatch && request.method == 'GET') {
       return _jsonList(circles.values.toList(), 200);
     }
 
+    final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
+    if (constraintsCollectionMatch && request.method == 'POST') {
+      final id = _newId('constraint');
+      final type = body['type'] as String? ?? 'distance';
+      Map<String, dynamic> constraint;
+      switch (type) {
+        case 'vertical':
+          final line = lines[body['line_id']];
+          constraint = {
+            'id': id,
+            'type': 'vertical',
+            'line_id': body['line_id'],
+            'point_a_id': line?['start_point_id'],
+            'point_b_id': line?['end_point_id'],
+          };
+          break;
+        case 'horizontal':
+          final line = lines[body['line_id']];
+          constraint = {
+            'id': id,
+            'type': 'horizontal',
+            'line_id': body['line_id'],
+            'point_a_id': line?['start_point_id'],
+            'point_b_id': line?['end_point_id'],
+          };
+          break;
+        default:
+          constraint = {
+            'id': id,
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+            'distance': (body['distance'] as num).toDouble(),
+          };
+      }
+      constraints[id] = constraint;
+      return _json(constraint, 201);
+    }
+    if (constraintsCollectionMatch && request.method == 'GET') {
+      return _jsonList(constraints.values.toList(), 200);
+    }
+
     final solveMatch = RegExp(r'^/sketch/sketches/[^/]+/solve$').hasMatch(path);
     if (solveMatch && request.method == 'POST') {
-      return _json({
+      return _json(_solveResultBody(), 200);
+    }
+
+    return http.Response('not found: $path', 404);
+  }
+
+  Map<String, dynamic> _solveResultBody() => {
         'converged': true,
         'dof': 0,
         'result_code': 0,
         'blamed_constraint_ids': [],
         'solver_reported_failed_constraint_ids': [],
         'detail': 'ok',
-      }, 200);
-    }
-
-    return http.Response('not found: $path', 404);
-  }
+      };
 
   http.Response _json(Map<String, dynamic> body, int statusCode) =>
       http.Response(jsonEncode(body), statusCode);
@@ -156,13 +221,12 @@ void main() {
     await controller.ensureSketch();
   });
 
-  test('first click starts a chain with a single point and no line', () async {
-    controller.cursorX = 1;
-    controller.cursorY = 2;
-    await controller.click();
+  test('first tap in Line mode starts a chain with a single point and no line', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(1, 2);
 
     // 2, not 1: the Sketch's real origin Point is already present from
-    // ensureSketch(), and this click is far enough from it to create a
+    // ensureSketch(), and this tap is far enough from it to create a
     // distinct new Point rather than snapping onto the origin.
     expect(controller.points.length, 2);
     expect(controller.lines.length, 0);
@@ -170,15 +234,12 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  test('second click creates a line sharing the chain start point and solves', () async {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click();
+  test('second tap creates a line sharing the chain start point and solves', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
     final firstPointId = controller.chainFirstPointId;
 
-    controller.cursorX = 5;
-    controller.cursorY = 0;
-    await controller.click();
+    await controller.handleCanvasTap(5, 0);
 
     expect(controller.points.length, 2);
     expect(controller.lines.length, 1);
@@ -188,14 +249,12 @@ void main() {
   });
 
   test('chain continues from the shared end point for a third segment', () async {
-    await controller.click(); // start point
-    controller.cursorX = 5;
-    await controller.click(); // first line
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // start point
+    await controller.handleCanvasTap(5, 0); // first line
     final secondPointId = controller.currentChainStartPointId;
 
-    controller.cursorX = 5;
-    controller.cursorY = 5;
-    await controller.click(); // second line
+    await controller.handleCanvasTap(5, 5); // second line
 
     expect(controller.lines.length, 2);
     final secondLine = controller.lines.values.last;
@@ -203,26 +262,20 @@ void main() {
     expect(controller.points.length, 3);
   });
 
-  test('clicking back near the chain start closes the loop using its real point id', () async {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click();
+  test('tapping back near the chain start closes the loop using its real point id', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
     final startId = controller.chainFirstPointId;
 
-    controller.cursorX = 5;
-    controller.cursorY = 0;
-    await controller.click();
-
-    controller.cursorX = 5;
-    controller.cursorY = 5;
-    await controller.click();
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(5, 5);
 
     // Hover back close to the start point - within snapRadius.
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;
     expect(controller.isHoveringChainStart, isTrue);
 
-    await controller.click();
+    await controller.handleCanvasTap(0.1, 0.1);
 
     expect(controller.lines.length, 3);
     expect(controller.lines.values.last.endPointId, startId);
@@ -231,7 +284,8 @@ void main() {
   });
 
   test('finishChain ends the chain without closing a loop', () async {
-    await controller.click();
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
     expect(controller.chainInProgress, isTrue);
 
     controller.finishChain();
@@ -241,22 +295,21 @@ void main() {
     expect(controller.lines.length, 0);
   });
 
-  test('selecting the circle tool does not disturb an in-progress line chain state', () async {
-    await controller.click(); // starts a line chain
+  test('selecting a different draw tool abandons an in-progress chain, starting clean', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // starts a line chain
     expect(controller.chainInProgress, isTrue);
 
-    controller.setTool(SketchTool.circle);
+    controller.selectDrawTool(SketchTool.circle);
 
     expect(controller.activeTool, SketchTool.circle);
-    expect(controller.chainInProgress, isTrue);
+    expect(controller.chainInProgress, isFalse);
   });
 
-  test('first click in circle tool places only a center point, no circle yet', () async {
-    controller.setTool(SketchTool.circle);
-    controller.cursorX = 3;
-    controller.cursorY = 4;
+  test('first tap in circle tool places only a center point, no circle yet', () async {
+    controller.selectDrawTool(SketchTool.circle);
 
-    await controller.click();
+    await controller.handleCanvasTap(3, 4);
 
     // 2, not 1: the origin Point already exists, and (3, 4) is outside its
     // snap radius, so this places a genuinely new center Point.
@@ -266,16 +319,12 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  test('second click in circle tool creates the circle, solves, and ends the in-progress circle', () async {
-    controller.setTool(SketchTool.circle);
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click();
+  test('second tap in circle tool creates the circle, solves, and ends the in-progress circle', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
     final centerId = controller.circleCenterPointId;
 
-    controller.cursorX = 5;
-    controller.cursorY = 0;
-    await controller.click();
+    await controller.handleCanvasTap(5, 0);
 
     expect(controller.points.length, 2);
     expect(controller.circles.length, 1);
@@ -286,15 +335,13 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  test('a third click after a completed circle starts a fresh circle', () async {
-    controller.setTool(SketchTool.circle);
-    await controller.click();
-    await controller.click();
+  test('a third tap after a completed circle starts a fresh circle', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 0);
     expect(controller.circles.length, 1);
 
-    controller.cursorX = 20;
-    controller.cursorY = 20;
-    await controller.click();
+    await controller.handleCanvasTap(20, 20);
 
     expect(controller.circleInProgress, isTrue);
     expect(controller.circles.length, 1);
@@ -312,25 +359,24 @@ void main() {
     expect(controller.plane, 'XY');
   });
 
-  test('clicking within the snap radius of the origin lands exactly on its real point id', () async {
-    controller.cursorX = 0.1;
-    controller.cursorY = 0.1;
-    await controller.click();
+  test('tapping within the snap radius of the origin lands exactly on its real point id', () async {
+    controller.selectDrawTool(SketchTool.line);
+
+    await controller.handleCanvasTap(0.1, 0.1);
 
     expect(controller.chainFirstPointId, controller.originPointId);
     expect(controller.points.length, 1); // reused the origin - no new coincident point
     expect(controller.errorMessage, isNull);
   });
 
-  test('a line cannot snap both ends onto the origin - the second click still places a new point', () async {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click(); // chain starts at the origin
+  test('a line cannot snap both ends onto the origin - the second tap still places a new point', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // chain starts at the origin
     final startId = controller.chainFirstPointId;
     expect(startId, controller.originPointId);
 
-    // Still hovering the origin for the second click of the same segment.
-    await controller.click();
+    // Still hovering the origin for the second tap of the same segment.
+    await controller.handleCanvasTap(0, 0);
 
     expect(controller.lines.length, 1);
     final line = controller.lines.values.first;
@@ -340,14 +386,12 @@ void main() {
   });
 
   test('a circle cannot snap both center and radius onto the origin', () async {
-    controller.setTool(SketchTool.circle);
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click(); // center snaps to the origin
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // center snaps to the origin
     expect(controller.circleCenterPointId, controller.originPointId);
 
-    // Still hovering the origin for the radius click.
-    await controller.click();
+    // Still hovering the origin for the radius tap.
+    await controller.handleCanvasTap(0, 0);
 
     expect(controller.circles.length, 1);
     final circle = controller.circles.values.first;
@@ -376,6 +420,14 @@ void main() {
     expect(atHalfZoom, closeTo(atDefaultZoom * 2, 1e-9));
   });
 
+  test('hitRadiusForPixelsPerUnit grows the hit radius for small/zoomed-out geometry', () {
+    final farZoomedOut = controller.hitRadiusForPixelsPerUnit(10);
+    final zoomedIn = controller.hitRadiusForPixelsPerUnit(100);
+
+    expect(farZoomedOut, greaterThan(zoomedIn));
+    expect(zoomedIn, greaterThanOrEqualTo(SketchController.snapRadius));
+  });
+
   test('a failed request surfaces a visible error message, not a silent failure', () async {
     final failingClient = MockClient((request) async => http.Response('boom', 500));
     final failingController = SketchController(api: SketchApiClient(httpClient: failingClient));
@@ -390,15 +442,22 @@ void main() {
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------
 
   test('hoveredEntity is null while a chain is in progress, even right on top of an entity', () async {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click(); // starts a chain at the origin
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // starts a chain at the origin
 
     expect(controller.chainInProgress, isTrue);
     expect(controller.hoveredEntity, isNull);
   });
 
-  test('hoveredEntity detects a nearby Point while idle', () {
+  test('hoveredEntity is null in draw mode even when idle', () {
+    controller.selectDrawTool(SketchTool.line);
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+
+    expect(controller.hoveredEntity, isNull);
+  });
+
+  test('hoveredEntity detects a nearby Point while idle in select mode', () {
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;
 
@@ -408,14 +467,12 @@ void main() {
     expect(hovered.id, controller.originPointId);
   });
 
-  test('hoveredEntity detects a nearby Line while idle', () async {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click(); // chain start, snaps to the origin
-    controller.cursorX = 5;
-    controller.cursorY = 0;
-    await controller.click(); // creates the line
+  test('hoveredEntity detects a nearby Line while idle in select mode', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
+    await controller.handleCanvasTap(5, 0); // creates the line
     controller.finishChain();
+    controller.exitToSelectMode();
     final lineId = controller.lines.keys.first;
 
     // Midpoint of the line, just off-axis - not within snap radius of
@@ -429,14 +486,11 @@ void main() {
     expect(hovered.id, lineId);
   });
 
-  test('hoveredEntity detects a nearby Circle edge while idle', () async {
-    controller.setTool(SketchTool.circle);
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click(); // center snaps to the origin
-    controller.cursorX = 5;
-    controller.cursorY = 0;
-    await controller.click(); // radius point, creates the circle
+  test('hoveredEntity detects a nearby Circle edge while idle in select mode', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // center snaps to the origin
+    await controller.handleCanvasTap(5, 0); // radius point, creates the circle
+    controller.exitToSelectMode();
     final circleId = controller.circles.keys.first;
 
     // On the circle's edge (radius 5, centered on the origin) but not near
@@ -450,21 +504,8 @@ void main() {
     expect(hovered.id, circleId);
   });
 
-  test('handleCanvasTap is a no-op while a chain is in progress', () async {
-    await controller.click(); // starts a chain
-    expect(controller.chainInProgress, isTrue);
-
-    controller.handleCanvasTap();
-
-    expect(controller.selection, isNull);
-    expect(controller.ribbonVisible, isFalse);
-  });
-
-  test('handleCanvasTap selects the hovered entity and opens the ribbon while idle', () {
-    controller.cursorX = 0.1;
-    controller.cursorY = 0.1;
-
-    controller.handleCanvasTap();
+  test('handleCanvasTap selects the hovered entity and opens the ribbon while idle', () async {
+    await controller.handleCanvasTap(0.1, 0.1);
 
     expect(controller.selection, isNotNull);
     expect(controller.selection!.kind, SelectionKind.point);
@@ -472,36 +513,47 @@ void main() {
     expect(controller.ribbonVisible, isTrue);
   });
 
-  test('handleCanvasTap on blank space opens the idle ribbon panel when it was closed', () {
-    controller.cursorX = 50;
-    controller.cursorY = 50;
+  test('handleCanvasTap on blank space opens the idle ribbon panel when it was closed', () async {
     expect(controller.ribbonVisible, isFalse);
 
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(50, 50);
 
     expect(controller.selection, isNull);
     expect(controller.ribbonVisible, isTrue);
   });
 
-  test('handleCanvasTap on blank space dismisses the ribbon when it is already open', () {
-    controller.cursorX = 0.1;
-    controller.cursorY = 0.1;
-    controller.handleCanvasTap();
+  test('handleCanvasTap on blank space dismisses the ribbon when it is already open', () async {
+    await controller.handleCanvasTap(0.1, 0.1);
     expect(controller.selection, isNotNull);
     expect(controller.ribbonVisible, isTrue);
 
-    controller.cursorX = 50;
-    controller.cursorY = 50;
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(50, 50);
 
     expect(controller.selection, isNull);
     expect(controller.ribbonVisible, isFalse);
   });
 
-  test('closeRibbon clears the selection and hides the ribbon', () {
-    controller.cursorX = 0.1;
-    controller.cursorY = 0.1;
-    controller.handleCanvasTap();
+  test('a second tap on a different entity while the ribbon is open adds to the selection set', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final lineId = controller.lines.keys.first;
+
+    await controller.handleCanvasTap(0, 0); // selects the origin point
+    expect(controller.selectionSet.length, 1);
+
+    await controller.handleCanvasTap(2.5, 0.1); // adds the line
+    expect(controller.selectionSet.length, 2);
+    expect(
+      controller.selectionSet.any((s) => s.kind == SelectionKind.line && s.id == lineId),
+      isTrue,
+    );
+  });
+
+  test('closeRibbon clears the selection and hides the ribbon', () async {
+    await controller.handleCanvasTap(0.1, 0.1);
     expect(controller.selection, isNotNull);
     expect(controller.ribbonVisible, isTrue);
 
@@ -511,94 +563,77 @@ void main() {
     expect(controller.ribbonVisible, isFalse);
   });
 
-  test('starting a new chain via click hides the ribbon and clears any selection', () async {
-    controller.cursorX = 0.1;
-    controller.cursorY = 0.1;
-    controller.handleCanvasTap();
+  test('selecting a draw tool hides the ribbon, clears any selection, and the next tap starts a chain', () async {
+    await controller.handleCanvasTap(0.1, 0.1);
     expect(controller.selection, isNotNull);
     expect(controller.ribbonVisible, isTrue);
 
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click();
+    controller.selectDrawTool(SketchTool.line);
+    expect(controller.selection, isNull);
+    expect(controller.ribbonVisible, isFalse);
+
+    await controller.handleCanvasTap(0, 0);
 
     expect(controller.chainInProgress, isTrue);
     expect(controller.selection, isNull);
     expect(controller.ribbonVisible, isFalse);
   });
 
-  test('selectedPointDeleteBlockedReason flags the origin point', () {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    controller.handleCanvasTap();
+  test('selectedPointDeleteBlockedReason flags the origin point', () async {
+    await controller.handleCanvasTap(0, 0);
 
     expect(controller.selection!.id, controller.originPointId);
     expect(controller.selectedPointDeleteBlockedReason, isNotNull);
   });
 
   test('selectedPointDeleteBlockedReason flags a point referenced by a line', () async {
-    controller.cursorX = 10;
-    controller.cursorY = 10;
-    await controller.click();
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(10, 10);
     final startId = controller.chainFirstPointId;
-    controller.cursorX = 15;
-    controller.cursorY = 10;
-    await controller.click();
+    await controller.handleCanvasTap(15, 10);
     controller.finishChain();
+    controller.exitToSelectMode();
 
-    controller.cursorX = 10;
-    controller.cursorY = 10;
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(10, 10);
 
     expect(controller.selection!.id, startId);
     expect(controller.selectedPointDeleteBlockedReason, contains('line'));
   });
 
   test('selectedPointDeleteBlockedReason flags a point referenced by a circle', () async {
-    controller.setTool(SketchTool.circle);
-    controller.cursorX = 10;
-    controller.cursorY = 10;
-    await controller.click();
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(10, 10);
     final centerId = controller.circleCenterPointId;
-    controller.cursorX = 15;
-    controller.cursorY = 10;
-    await controller.click();
+    await controller.handleCanvasTap(15, 10);
+    controller.exitToSelectMode();
 
-    controller.cursorX = 10;
-    controller.cursorY = 10;
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(10, 10);
 
     expect(controller.selection!.id, centerId);
     expect(controller.selectedPointDeleteBlockedReason, contains('circle'));
   });
 
   test('selectedPointDeleteBlockedReason is null for a genuinely unreferenced point', () async {
-    controller.cursorX = 20;
-    controller.cursorY = 20;
-    await controller.click(); // chain start only - no Line created yet
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 20); // chain start only - no Line created yet
     controller.finishChain();
+    controller.exitToSelectMode();
 
-    controller.cursorX = 20;
-    controller.cursorY = 20;
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(20, 20);
 
     expect(controller.selection, isNotNull);
     expect(controller.selectedPointDeleteBlockedReason, isNull);
   });
 
   test('deleteSelected removes a selected line and clears the selection', () async {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    await controller.click();
-    controller.cursorX = 5;
-    controller.cursorY = 0;
-    await controller.click();
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
     controller.finishChain();
+    controller.exitToSelectMode();
     final lineId = controller.lines.keys.first;
 
-    controller.cursorX = 2.5;
-    controller.cursorY = 0.1;
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(2.5, 0.1);
     expect(controller.selection!.id, lineId);
 
     await controller.deleteSelected();
@@ -609,15 +644,13 @@ void main() {
   });
 
   test('deleteSelected removes a genuinely unreferenced point and clears the selection', () async {
-    controller.cursorX = 20;
-    controller.cursorY = 20;
-    await controller.click();
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 20);
     controller.finishChain();
+    controller.exitToSelectMode();
     final pointId = controller.points.keys.last;
 
-    controller.cursorX = 20;
-    controller.cursorY = 20;
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(20, 20);
     expect(controller.selection!.id, pointId);
 
     await controller.deleteSelected();
@@ -628,16 +661,14 @@ void main() {
   });
 
   test('deleteSelected surfaces a backend rejection reason and keeps the selection', () async {
-    controller.cursorX = 20;
-    controller.cursorY = 20;
-    await controller.click();
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 20);
     controller.finishChain();
+    controller.exitToSelectMode();
     final pointId = controller.points.keys.last;
     backend.blockedPointIds.add(pointId);
 
-    controller.cursorX = 20;
-    controller.cursorY = 20;
-    controller.handleCanvasTap();
+    await controller.handleCanvasTap(20, 20);
     expect(controller.selection!.id, pointId);
     expect(controller.selectedPointDeleteBlockedReason, isNull); // not locally tracked
 
@@ -676,12 +707,14 @@ void main() {
       'start_point_id': 'point-a',
       'end_point_id': 'point-b',
       'length': 3.0,
+      'construction': false,
     };
     freshBackend.circles['circle-a'] = {
       'id': 'circle-a',
       'center_point_id': 'point-a',
       'radius_point_id': 'point-b',
       'radius': 5.0,
+      'construction': false,
     };
     final mockClient = MockClient((request) async => freshBackend.handle(request));
     final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
@@ -696,5 +729,216 @@ void main() {
     expect(freshController.circles['circle-a']!.centerPointId, 'point-a');
     expect(freshController.circles['circle-a']!.radiusPointId, 'point-b');
     expect(freshController.errorMessage, isNull);
+  });
+
+  // --- Stage 13 item 4: FAB categories --------------------------------------
+
+  test('the FAB menu opens to categories, expands into Sketch Entities, and can go back', () {
+    expect(controller.fabMenu, FabMenuState.closed);
+
+    controller.openFabMenu();
+    expect(controller.fabMenu, FabMenuState.categories);
+
+    controller.showSketchEntitiesCategory();
+    expect(controller.fabMenu, FabMenuState.sketchEntities);
+
+    controller.backToFabCategories();
+    expect(controller.fabMenu, FabMenuState.categories);
+
+    controller.closeFabMenu();
+    expect(controller.fabMenu, FabMenuState.closed);
+  });
+
+  test('selectDrawTool enters draw mode, sets the active tool, and closes the FAB', () {
+    controller.openFabMenu();
+    controller.showSketchEntitiesCategory();
+
+    controller.selectDrawTool(SketchTool.circle);
+
+    expect(controller.mode, SketchMode.draw);
+    expect(controller.activeTool, SketchTool.circle);
+    expect(controller.fabMenu, FabMenuState.closed);
+  });
+
+  test('enterDimensionMode enters dimension mode, closes the FAB, and updates the mode label', () {
+    controller.openFabMenu();
+
+    controller.enterDimensionMode();
+
+    expect(controller.mode, SketchMode.dimension);
+    expect(controller.fabMenu, FabMenuState.closed);
+    expect(controller.modeLabel, 'Dimension');
+  });
+
+  test('exitToSelectMode returns to select mode and discards any dimension pick', () async {
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0.1, 0.1); // picks the origin point - no ghost yet
+
+    controller.exitToSelectMode();
+
+    expect(controller.mode, SketchMode.select);
+    expect(controller.dimensionSelection, isEmpty);
+    expect(controller.ghosts, isEmpty);
+  });
+
+  // --- Stage 13 item 6: Vertical/Horizontal constraint UX -------------------
+
+  test('availableConstraintOptions offers wired Vertical/Horizontal for a single selected line', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(2.5, 2.5);
+
+    final options = controller.availableConstraintOptions;
+    expect(
+      options.map((o) => o.type),
+      containsAll([ConstraintOptionType.vertical, ConstraintOptionType.horizontal]),
+    );
+    expect(options.every((o) => o.wired), isTrue);
+  });
+
+  test('availableConstraintOptions is empty for a single selected point', () async {
+    await controller.handleCanvasTap(0, 0); // selects the origin point
+
+    expect(controller.availableConstraintOptions, isEmpty);
+  });
+
+  test('applyConstraintOption(vertical) creates a VerticalConstraint and re-solves', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(2.5, 2.5);
+
+    await controller.applyConstraintOption(ConstraintOptionType.vertical);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isNotEmpty);
+  });
+
+  test('applyConstraintOption(horizontal) creates a HorizontalConstraint and re-solves', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(2.5, 2.5);
+
+    await controller.applyConstraintOption(ConstraintOptionType.horizontal);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isNotEmpty);
+  });
+
+  // --- Stage 13 item 5: Dimension mode + ghost dimensions -------------------
+
+  test('tapping a line in dimension mode shows a single length ghost', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(5, 0.1); // midpoint, just off-axis
+
+    expect(controller.ghosts.length, 1);
+    expect(controller.ghosts.first.kind, GhostKind.length);
+  });
+
+  test('confirmGhostValue on a fresh line-length ghost creates a DistanceConstraint and clears ghosts', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(5, 0.1);
+    controller.tapGhost('length');
+    expect(controller.activeGhostKey, 'length');
+
+    await controller.confirmGhostValue('length', 25.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ghosts, isEmpty);
+    expect(controller.activeGhostKey, isNull);
+    expect(
+      controller.constraints.values
+          .whereType<DistanceConstraintDto>()
+          .any((c) => c.distance == 25.0),
+      isTrue,
+    );
+  });
+
+  test('cancelGhostEdit clears the active ghost without dismissing the ghosts themselves', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(5, 0.1);
+    controller.tapGhost('length');
+
+    controller.cancelGhostEdit();
+
+    expect(controller.activeGhostKey, isNull);
+    expect(controller.ghosts, isNotEmpty);
+  });
+
+  test('tapping two distinct points in dimension mode shows simultaneous V and H ghosts', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h'});
+  });
+
+  test(
+      'tapping a circle in dimension mode shows radius and diameter ghosts; '
+      'confirming diameter halves the stored distance', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // radius point -> radius 10
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(0, 10); // on the circle's edge
+
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'radius', 'diameter'});
+
+    await controller.confirmGhostValue('diameter', 40.0);
+
+    expect(controller.errorMessage, isNull);
+    final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>();
+    expect(distanceConstraints.single.distance, 20.0); // halved from the 40.0 diameter entered
+  });
+
+  test('tapping empty canvas with nothing picked in dimension mode exits to select mode', () async {
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(50, 50);
+
+    expect(controller.mode, SketchMode.select);
+  });
+
+  test('tapping empty canvas after a pick in dimension mode clears the pick but stays in dimension mode', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(5, 0.1);
+    expect(controller.ghosts, isNotEmpty);
+
+    await controller.handleCanvasTap(50, 50);
+
+    expect(controller.mode, SketchMode.dimension);
+    expect(controller.ghosts, isEmpty);
   });
 }

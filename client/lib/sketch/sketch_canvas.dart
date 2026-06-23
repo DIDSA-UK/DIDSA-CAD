@@ -73,21 +73,51 @@ class _SketchCanvasState extends State<SketchCanvas> {
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
   }
 
-  void _handlePointerDown(PointerDownEvent event) {
+  /// Stage 13 item 3's single dispatch point for "what does a tap at this
+  /// screen location do": in [SketchMode.dimension], a tap on an already
+  /// rendered ghost's label either opens its inline value input or - if a
+  /// different ghost's input is already open - cancels that edit; any other
+  /// tap (every other mode, or a dimension-mode tap that misses every
+  /// ghost) goes to [SketchController.handleCanvasTap] with the tapped
+  /// location converted to sketch-space and a touch-sized hit radius, so
+  /// the actual commit/select/dimension-pick always happens at the tap's
+  /// own screen position rather than wherever a (possibly stale, for touch)
+  /// persistent cursor happens to be.
+  void _dispatchTap(Offset screenPosition, ViewTransform transform) {
+    final controller = widget.controller;
+    if (controller.mode == SketchMode.dimension) {
+      final hitKey = _ghostKeyAt(controller, transform, screenPosition);
+      if (controller.activeGhostKey != null) {
+        if (hitKey != controller.activeGhostKey) {
+          controller.cancelGhostEdit();
+        }
+        return;
+      }
+      if (hitKey != null) {
+        controller.tapGhost(hitKey);
+        return;
+      }
+    }
+    final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
+    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    controller.handleCanvasTap(coord.x, coord.y, hitRadius);
+  }
+
+  void _handlePointerDown(PointerDownEvent event, ViewTransform transform) {
     if (event.kind == PointerDeviceKind.mouse) {
       // Only the primary (left) button counts as a bare tap, same as a
       // touch tap - a right-click starts a pan drag instead (see
       // _handlePointerMove) and must not also dispatch a tap.
       if (event.buttons & kPrimaryMouseButton != 0) {
-        widget.controller.handleCanvasTap();
+        _dispatchTap(event.localPosition, transform);
       }
       return;
     }
-    // Touch-down never moves the persistent cursor or commits a point -
-    // only the Click button does that - but is tracked here so a second
-    // finger touching down is seen by the pinch/pan handling below, and so
-    // a single-finger touch ending without much travel can be recognized
-    // as a tap (see _handlePointerEnd).
+    // Touch-down never commits a point by itself - only a tap (a touch that
+    // lifts again without much travel, see _handlePointerEnd) does that -
+    // but is tracked here so a second finger touching down is seen by the
+    // pinch/pan handling below, and so a single-finger touch ending without
+    // much travel can be recognized as a tap.
     _activeTouches[event.pointer] = event.localPosition;
     if (_activeTouches.length == 1) {
       _singleTouchTravel = 0;
@@ -108,9 +138,10 @@ class _SketchCanvasState extends State<SketchCanvas> {
     }
 
     if (_activeTouches.length < 2) {
-      // Single-finger: relative, scaled cursor movement - never jumps to
-      // the touch point. Sensitivity scales with the current zoom so the
-      // felt responsiveness stays consistent across zoom levels.
+      // Single-finger: relative, scaled cursor movement - a live preview
+      // only (e.g. the crosshair, chain-start snap highlight); it no longer
+      // determines where a tap commits - see _dispatchTap, which always
+      // uses the lifted touch's own screen position instead.
       _singleTouchTravel += event.delta.distance;
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
@@ -122,18 +153,20 @@ class _SketchCanvasState extends State<SketchCanvas> {
     _applyPinchPan(before, _activeTouches, size);
   }
 
-  void _handlePointerEnd(PointerEvent event) {
+  void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
     if (event.kind == PointerDeviceKind.mouse) return;
 
     // A lone finger lifting (not the tail end of a pinch) after barely
-    // moving is a tap - the select gesture - rather than a drag.
+    // moving is a tap - the select/draw/dimension gesture - rather than a
+    // drag.
     final wasTap = event is PointerUpEvent &&
         _activeTouches.length == 1 &&
         !_multiTouchOccurred &&
         _singleTouchTravel < _tapTravelThreshold;
+    final tapPosition = event.localPosition;
     _activeTouches.remove(event.pointer);
     if (wasTap) {
-      widget.controller.handleCanvasTap();
+      _dispatchTap(tapPosition, transform);
     }
   }
 
@@ -189,11 +222,11 @@ class _SketchCanvasState extends State<SketchCanvas> {
         return Stack(
           children: [
             Listener(
-              onPointerDown: _handlePointerDown,
+              onPointerDown: (e) => _handlePointerDown(e, transform),
               onPointerHover: (e) => _handlePointerHover(e, transform),
               onPointerMove: (e) => _handlePointerMove(e, transform, size),
-              onPointerUp: _handlePointerEnd,
-              onPointerCancel: _handlePointerEnd,
+              onPointerUp: (e) => _handlePointerEnd(e, transform),
+              onPointerCancel: (e) => _handlePointerEnd(e, transform),
               onPointerSignal: (e) => _handlePointerSignal(e, size),
               child: AnimatedBuilder(
                 animation: widget.controller,
@@ -209,6 +242,29 @@ class _SketchCanvasState extends State<SketchCanvas> {
                   );
                 },
               ),
+            ),
+            AnimatedBuilder(
+              animation: widget.controller,
+              builder: (context, _) {
+                final key = widget.controller.activeGhostKey;
+                if (key == null) return const SizedBox.shrink();
+                DimensionGhost? ghost;
+                for (final candidate in widget.controller.ghosts) {
+                  if (candidate.key == key) {
+                    ghost = candidate;
+                    break;
+                  }
+                }
+                if (ghost == null) return const SizedBox.shrink();
+                final layout = _layoutGhost(widget.controller, transform, ghost);
+                if (layout == null) return const SizedBox.shrink();
+                return _GhostValueEditor(
+                  key: ValueKey(key),
+                  controller: widget.controller,
+                  ghost: ghost,
+                  anchor: layout.labelCenter,
+                );
+              },
             ),
             if (_viewport.zoom != 1 || _viewport.panOffset != Offset.zero)
               Positioned(
@@ -231,6 +287,190 @@ class _SketchCanvasState extends State<SketchCanvas> {
           ],
         );
       },
+    );
+  }
+}
+
+/// The screen-space geometry for one rendered [DimensionGhost] - shared by
+/// the painter (drawing the dashed extension/dimension lines and the label
+/// pill) and the canvas state (hit-testing a tap against the label, see
+/// [_ghostKeyAt]), so the two never disagree about where a ghost actually
+/// is on screen.
+class _GhostLayout {
+  final Offset labelCenter;
+  final List<List<Offset>> segments;
+
+  const _GhostLayout(this.labelCenter, this.segments);
+}
+
+/// How far (screen pixels) a ghost's dimension line sits offset from the
+/// entity/points it measures - mirrors [_SketchPainter._paintDistanceDimension]'s
+/// own `offsetDistance`, just renamed for this file's ghost-only geometry.
+const double _ghostOffsetPixels = 20.0;
+
+/// Computes [ghost]'s on-screen layout - null if either endpoint Point is
+/// missing from [controller.points] (e.g. a stale ghost after a delete).
+_GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform, DimensionGhost ghost) {
+  final a = controller.points[ghost.pointAId];
+  final b = controller.points[ghost.pointBId];
+  if (a == null || b == null) return null;
+  final aScreen = transform.sketchToScreen(a.x, a.y);
+  final bScreen = transform.sketchToScreen(b.x, b.y);
+
+  switch (ghost.kind) {
+    case GhostKind.length:
+      final delta = bScreen - aScreen;
+      final len = delta.distance;
+      if (len < 1e-6) return null;
+      final normal = Offset(-delta.dy, delta.dx) / len * _ghostOffsetPixels;
+      final p1 = aScreen + normal;
+      final p2 = bScreen + normal;
+      return _GhostLayout((p1 + p2) / 2, [
+        [aScreen, p1],
+        [bScreen, p2],
+        [p1, p2],
+      ]);
+
+    case GhostKind.vertical:
+      final offsetX = math.max(aScreen.dx, bScreen.dx) + _ghostOffsetPixels + 4;
+      final p1 = Offset(offsetX, aScreen.dy);
+      final p2 = Offset(offsetX, bScreen.dy);
+      return _GhostLayout((p1 + p2) / 2, [
+        [aScreen, p1],
+        [bScreen, p2],
+        [p1, p2],
+      ]);
+
+    case GhostKind.horizontal:
+      final offsetY = math.max(aScreen.dy, bScreen.dy) + _ghostOffsetPixels + 4;
+      final p1 = Offset(aScreen.dx, offsetY);
+      final p2 = Offset(bScreen.dx, offsetY);
+      return _GhostLayout((p1 + p2) / 2, [
+        [aScreen, p1],
+        [bScreen, p2],
+        [p1, p2],
+      ]);
+
+    case GhostKind.radius:
+      return _GhostLayout((aScreen + bScreen) / 2, [
+        [aScreen, bScreen],
+      ]);
+
+    case GhostKind.diameter:
+      // The full diameter line through the center, offset perpendicular to
+      // the radius vector so it reads as a distinct line from the radius
+      // ghost's, rather than the same segment extended underneath it.
+      final vector = bScreen - aScreen;
+      final len = vector.distance;
+      if (len < 1e-6) return null;
+      final normal = Offset(-vector.dy, vector.dx) / len * 16.0;
+      final opposite = aScreen - vector + normal;
+      final far = bScreen + normal;
+      return _GhostLayout((opposite + far) / 2, [
+        [opposite, far],
+      ]);
+  }
+}
+
+/// How close (screen pixels) a tap must land to a ghost's label center to
+/// count as tapping that ghost - generous, in the same spirit as Stage 13
+/// item 3's 44px touch target, since a ghost's rendered pill is small.
+const double _ghostHitRadiusPixels = 20.0;
+
+/// The key of whichever currently-rendered ghost's label [screenPosition]
+/// landed on, or null if it missed all of them - see
+/// [_SketchCanvasState._dispatchTap].
+String? _ghostKeyAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
+  for (final ghost in controller.ghosts) {
+    final layout = _layoutGhost(controller, transform, ghost);
+    if (layout == null) continue;
+    if ((screenPosition - layout.labelCenter).distance <= _ghostHitRadiusPixels) {
+      return ghost.key;
+    }
+  }
+  return null;
+}
+
+/// The inline value-entry box for whichever ghost is currently
+/// [SketchController.activeGhostKey] (Stage 13 item 5) - prefilled with the
+/// ghost's live geometric value (see [SketchController.currentGhostValue]),
+/// confirming via [SketchController.confirmGhostValue] on submit/tap, or
+/// dismissing via [SketchController.cancelGhostEdit].
+class _GhostValueEditor extends StatefulWidget {
+  final SketchController controller;
+  final DimensionGhost ghost;
+  final Offset anchor;
+
+  const _GhostValueEditor({
+    super.key,
+    required this.controller,
+    required this.ghost,
+    required this.anchor,
+  });
+
+  @override
+  State<_GhostValueEditor> createState() => _GhostValueEditorState();
+}
+
+class _GhostValueEditorState extends State<_GhostValueEditor> {
+  late final TextEditingController _text;
+
+  @override
+  void initState() {
+    super.initState();
+    final current = widget.controller.currentGhostValue(widget.ghost);
+    _text = TextEditingController(text: current == null ? '' : current.toStringAsFixed(2));
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    final value = double.tryParse(_text.text);
+    if (value == null) return;
+    widget.controller.confirmGhostValue(widget.ghost.key, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: widget.anchor.dx - 70,
+      top: widget.anchor.dy + 14,
+      child: Material(
+        elevation: 4,
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 72,
+                child: TextField(
+                  controller: _text,
+                  autofocus: true,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(isDense: true, suffixText: 'mm'),
+                  onSubmitted: (_) => _confirm(),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Confirm',
+                icon: const Icon(Icons.check, size: 18),
+                onPressed: _confirm,
+              ),
+              IconButton(
+                tooltip: 'Cancel',
+                icon: const Icon(Icons.close, size: 18),
+                onPressed: widget.controller.cancelGhostEdit,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -269,6 +509,15 @@ class _SketchPainter extends CustomPainter {
   /// overlay (Distance/Angle too) keeps them all visually distinct from
   /// entity colors without inventing an unspecified palette.
   static const Color _dimensionColor = Color(0xFFF5A623);
+
+  /// Stage 13 item 5/6's ghost-dimension colors: dashed grey by default,
+  /// blue for the ghost currently being edited, dimmer grey for the
+  /// unchosen ghost in a V/H or radius/diameter pair while the other one is
+  /// being edited.
+  static const Color _ghostDefaultColor = Color(0xFF888888);
+  static const Color _ghostActiveColor = Color(0xFF4A90D9);
+  static const Color _ghostInactiveColor = Color(0xFF555555);
+  static const Color _ghostLabelBackground = Color(0xCC222222);
 
   /// Draws [start]-to-[end] as a dashed segment - used for construction
   /// Lines. There's no dashed-stroke primitive on [Canvas]/[Paint], so this
@@ -418,6 +667,33 @@ class _SketchPainter extends CustomPainter {
     return (transform.sketchToScreen(start.x, start.y) + transform.sketchToScreen(end.x, end.y)) / 2;
   }
 
+  /// Stage 13 item 5's ghost dimensions: every entry in
+  /// [SketchController.ghosts], dashed and labeled '?' (or '⌀?' for a
+  /// diameter ghost) regardless of the live geometric value - see
+  /// [SketchController.currentGhostValue]'s doc comment for why the label
+  /// itself never shows a number. The currently-tapped ghost (if any) is
+  /// drawn in the active color; its sibling, if there is one, is dimmed.
+  void _paintGhosts(Canvas canvas) {
+    if (controller.ghosts.isEmpty) return;
+    final activeKey = controller.activeGhostKey;
+    for (final ghost in controller.ghosts) {
+      final layout = _layoutGhost(controller, transform, ghost);
+      if (layout == null) continue;
+      final isActive = ghost.key == activeKey;
+      final color = isActive
+          ? _ghostActiveColor
+          : (activeKey != null ? _ghostInactiveColor : _ghostDefaultColor);
+      final dashPaint = Paint()
+        ..color = color
+        ..strokeWidth = 1;
+      for (final segment in layout.segments) {
+        _drawDashedLine(canvas, segment[0], segment[1], dashPaint);
+      }
+      final label = ghost.kind == GhostKind.diameter ? '⌀?' : '?';
+      _drawDimensionLabel(canvas, layout.labelCenter, label, _ghostLabelBackground);
+    }
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
@@ -434,23 +710,25 @@ class _SketchPainter extends CustomPainter {
     }
 
     final hovered = controller.hoveredEntity;
-    final selected = controller.selection;
+    final selectionSet = controller.selectionSet;
+    bool isSelected(SelectionKind kind, String id) =>
+        selectionSet.any((s) => s.kind == kind && s.id == id);
 
     for (final line in controller.lines.values) {
       final start = controller.points[line.startPointId];
       final end = controller.points[line.endPointId];
       if (start == null || end == null) continue;
-      final isSelected = selected?.kind == SelectionKind.line && selected!.id == line.id;
+      final lineIsSelected = isSelected(SelectionKind.line, line.id);
       final isHovered = hovered?.kind == SelectionKind.line && hovered!.id == line.id;
       final linePaint = Paint()
-        ..color = isSelected
+        ..color = lineIsSelected
             ? _selectedColor
             : isHovered
                 ? _hoverColor
                 : line.construction
                     ? _constructionColor
                     : Colors.blueGrey.shade700
-        ..strokeWidth = isSelected || isHovered ? 3 : 2;
+        ..strokeWidth = lineIsSelected || isHovered ? 3 : 2;
       final startScreen = transform.sketchToScreen(start.x, start.y);
       final endScreen = transform.sketchToScreen(end.x, end.y);
       if (line.construction) {
@@ -467,10 +745,10 @@ class _SketchPainter extends CustomPainter {
       final radius = math.sqrt(
         math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
       );
-      final isSelected = selected?.kind == SelectionKind.circle && selected!.id == circle.id;
+      final circleIsSelected = isSelected(SelectionKind.circle, circle.id);
       final isHovered = hovered?.kind == SelectionKind.circle && hovered!.id == circle.id;
       final circlePaint = Paint()
-        ..color = isSelected
+        ..color = circleIsSelected
             ? _selectedColor
             : isHovered
                 ? _hoverColor
@@ -478,7 +756,7 @@ class _SketchPainter extends CustomPainter {
                     ? _constructionColor
                     : Colors.blueGrey.shade700
         ..style = PaintingStyle.stroke
-        ..strokeWidth = isSelected || isHovered ? 3 : 2;
+        ..strokeWidth = circleIsSelected || isHovered ? 3 : 2;
       final centerScreen = transform.sketchToScreen(center.x, center.y);
       final radiusPixels = radius * transform.pixelsPerUnit;
       if (circle.construction) {
@@ -493,12 +771,12 @@ class _SketchPainter extends CustomPainter {
       final origin = controller.points[originId];
       if (origin != null) {
         final isSnappingToOrigin = controller.isHoveringOrigin;
-        final isSelected = selected?.kind == SelectionKind.point && selected!.id == originId;
+        final originIsSelected = isSelected(SelectionKind.point, originId);
         final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == originId;
         Color color = Colors.indigo;
         if (isSnappingToOrigin) {
           color = Colors.green;
-        } else if (isSelected) {
+        } else if (originIsSelected) {
           color = _selectedColor;
         } else if (isHovered) {
           color = _hoverColor;
@@ -523,7 +801,7 @@ class _SketchPainter extends CustomPainter {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
-      final isSelected = selected?.kind == SelectionKind.point && selected!.id == point.id;
+      final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
       final screenPos = transform.sketchToScreen(point.x, point.y);
       Color color = Colors.black87;
@@ -534,7 +812,7 @@ class _SketchPainter extends CustomPainter {
       } else if (isCircleCenter) {
         color = Colors.deepOrange;
         radius = 6;
-      } else if (isSelected) {
+      } else if (pointIsSelected) {
         color = _selectedColor;
         radius = 7;
       } else if (isHovered) {
@@ -545,6 +823,7 @@ class _SketchPainter extends CustomPainter {
     }
 
     _paintDimensionOverlays(canvas);
+    _paintGhosts(canvas);
 
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final crosshairPaint = Paint()
