@@ -42,6 +42,7 @@ class LineCreate(BaseModel):
     end_point_id: str | None = None
     length: float | None = None
     angle: float | None = None
+    construction: bool = False
 
     @model_validator(mode="after")
     def check_creation_mode(self) -> "LineCreate":
@@ -71,6 +72,7 @@ class LineResponse(BaseModel):
     start_point_id: str
     end_point_id: str
     length: float
+    construction: bool = False
 
 
 class CircleCreate(BaseModel):
@@ -83,6 +85,7 @@ class CircleCreate(BaseModel):
     radius_point_id: str | None = None
     radius: float | None = None
     angle: float | None = None
+    construction: bool = False
 
     @model_validator(mode="after")
     def check_creation_mode(self) -> "CircleCreate":
@@ -100,6 +103,7 @@ class CircleResponse(BaseModel):
     center_point_id: str
     radius_point_id: str
     radius: float
+    construction: bool = False
 
 
 SketchEntityResponse = Union[LineResponse, CircleResponse]
@@ -119,22 +123,83 @@ class ProfileDetectionResponse(BaseModel):
 
 
 class DistanceConstraintCreate(BaseModel):
+    # `type` defaults to "distance" (rather than being required) so existing
+    # clients/tests that predate Stage 12 and never sent a `type` field keep
+    # working unmodified - Pydantic's smart-mode union resolution (no
+    # explicit `discriminator=`) falls back to this default when `type` is
+    # absent from the request body. The three new constraint types below
+    # have no sensible default (Vertical/Horizontal share an identical
+    # `line_id`-only shape, so a `type` value is the only thing that tells
+    # them apart) and so require it.
+    type: Literal["distance"] = "distance"
     point_a_id: str
     point_b_id: str
     distance: float
 
 
-# DistanceConstraint is the only Constraint type for now - this becomes a
-# discriminated union (like SketchEntityResponse) once more are added.
-ConstraintCreate = DistanceConstraintCreate
+class VerticalConstraintCreate(BaseModel):
+    type: Literal["vertical"]
+    line_id: str
 
 
-class ConstraintResponse(BaseModel):
+class HorizontalConstraintCreate(BaseModel):
+    type: Literal["horizontal"]
+    line_id: str
+
+
+class AngleConstraintCreate(BaseModel):
+    type: Literal["angle"]
+    line1_id: str
+    line2_id: str
+    angle_degrees: float
+
+
+ConstraintCreate = Union[
+    DistanceConstraintCreate,
+    VerticalConstraintCreate,
+    HorizontalConstraintCreate,
+    AngleConstraintCreate,
+]
+
+
+class DistanceConstraintResponse(BaseModel):
     type: Literal["distance"] = "distance"
     id: str
     point_a_id: str
     point_b_id: str
     distance: float
+
+
+class VerticalConstraintResponse(BaseModel):
+    type: Literal["vertical"] = "vertical"
+    id: str
+    line_id: str
+    point_a_id: str
+    point_b_id: str
+
+
+class HorizontalConstraintResponse(BaseModel):
+    type: Literal["horizontal"] = "horizontal"
+    id: str
+    line_id: str
+    point_a_id: str
+    point_b_id: str
+
+
+class AngleConstraintResponse(BaseModel):
+    type: Literal["angle"] = "angle"
+    id: str
+    line1_id: str
+    line2_id: str
+    angle_degrees: float
+
+
+ConstraintResponse = Union[
+    DistanceConstraintResponse,
+    VerticalConstraintResponse,
+    HorizontalConstraintResponse,
+    AngleConstraintResponse,
+]
 
 
 class SolveResultResponse(BaseModel):

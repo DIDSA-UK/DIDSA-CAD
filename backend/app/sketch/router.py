@@ -1,13 +1,25 @@
 from fastapi import APIRouter, HTTPException
 
-from app.sketch.constraints import Constraint, DistanceConstraint
+from app.sketch.constraints import (
+    AngleConstraint,
+    Constraint,
+    DistanceConstraint,
+    HorizontalConstraint,
+    VerticalConstraint,
+)
 from app.sketch.models import Circle, Line, Point, Sketch
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
+    AngleConstraintCreate,
+    AngleConstraintResponse,
     CircleCreate,
     CircleResponse,
+    ConstraintCreate,
     ConstraintResponse,
     DistanceConstraintCreate,
+    DistanceConstraintResponse,
+    HorizontalConstraintCreate,
+    HorizontalConstraintResponse,
     LineCreate,
     LineResponse,
     LineUpdate,
@@ -19,6 +31,8 @@ from app.sketch.schemas import (
     SketchCreate,
     SketchResponse,
     SolveResultResponse,
+    VerticalConstraintCreate,
+    VerticalConstraintResponse,
 )
 from app.sketch.solver import SolveResult, solve_sketch
 from app.sketch.store import create_sketch as _create_sketch
@@ -85,6 +99,7 @@ def _line_response(sketch: Sketch, line: Line) -> LineResponse:
         start_point_id=line.start_point_id,
         end_point_id=line.end_point_id,
         length=line.length(sketch.points),
+        construction=line.construction,
     )
 
 
@@ -94,6 +109,7 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         center_point_id=circle.center_point_id,
         radius_point_id=circle.radius_point_id,
         radius=circle.radius(sketch.points),
+        construction=circle.construction,
     )
 
 
@@ -103,11 +119,32 @@ def _profile_response(profile: Profile) -> ProfileResponse:
 
 def _constraint_response(constraint: Constraint) -> ConstraintResponse:
     if isinstance(constraint, DistanceConstraint):
-        return ConstraintResponse(
+        return DistanceConstraintResponse(
             id=constraint.id,
             point_a_id=constraint.point_a_id,
             point_b_id=constraint.point_b_id,
             distance=constraint.distance,
+        )
+    if isinstance(constraint, VerticalConstraint):
+        return VerticalConstraintResponse(
+            id=constraint.id,
+            line_id=constraint.line_id,
+            point_a_id=constraint.point_a_id,
+            point_b_id=constraint.point_b_id,
+        )
+    if isinstance(constraint, HorizontalConstraint):
+        return HorizontalConstraintResponse(
+            id=constraint.id,
+            line_id=constraint.line_id,
+            point_a_id=constraint.point_a_id,
+            point_b_id=constraint.point_b_id,
+        )
+    if isinstance(constraint, AngleConstraint):
+        return AngleConstraintResponse(
+            id=constraint.id,
+            line1_id=constraint.line1_id,
+            line2_id=constraint.line2_id,
+            angle_degrees=constraint.angle_degrees,
         )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
@@ -189,6 +226,7 @@ def create_line(sketch_id: str, payload: LineCreate) -> LineResponse:
             payload.end_point_id,
             length=payload.length,
             angle=payload.angle,
+            construction=payload.construction,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
@@ -239,6 +277,7 @@ def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
             payload.radius_point_id,
             radius=payload.radius,
             angle=payload.angle,
+            construction=payload.construction,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
@@ -281,15 +320,26 @@ def get_profile(sketch_id: str) -> ProfileDetectionResponse:
 
 
 @router.post("/sketches/{sketch_id}/constraints", response_model=ConstraintResponse, status_code=201)
-def create_constraint(sketch_id: str, payload: DistanceConstraintCreate) -> ConstraintResponse:
+def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _ensure_sketch_editable(sketch_id)
     try:
-        constraint = sketch.add_distance_constraint(
-            payload.point_a_id, payload.point_b_id, payload.distance
-        )
+        if isinstance(payload, DistanceConstraintCreate):
+            constraint = sketch.add_distance_constraint(
+                payload.point_a_id, payload.point_b_id, payload.distance
+            )
+        elif isinstance(payload, VerticalConstraintCreate):
+            constraint = sketch.add_vertical_constraint(payload.line_id)
+        elif isinstance(payload, HorizontalConstraintCreate):
+            constraint = sketch.add_horizontal_constraint(payload.line_id)
+        elif isinstance(payload, AngleConstraintCreate):
+            constraint = sketch.add_angle_constraint(
+                payload.line1_id, payload.line2_id, payload.angle_degrees
+            )
+        else:
+            raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail=f"Referenced id not found: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _constraint_response(constraint)

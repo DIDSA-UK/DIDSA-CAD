@@ -4,7 +4,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
-from app.sketch.constraints import Constraint, DistanceConstraint
+from app.sketch.constraints import (
+    AngleConstraint,
+    Constraint,
+    DistanceConstraint,
+    HorizontalConstraint,
+    VerticalConstraint,
+)
 
 
 class Plane(str, Enum):
@@ -30,15 +36,23 @@ class Point:
     y: float
 
 
+@dataclass
 class SketchEntity(ABC):
     """Base type for anything that can live in a Sketch's entity collection.
 
     Line is the only concrete entity today; Circle/Arc will subclass this
     later without requiring changes to Sketch, Profile detection, or the
     API layer.
+
+    `construction` is persisted in the client's JSON model and round-tripped
+    through the API as-is - the backend never sets it itself, only reads it
+    (e.g. Profile detection excludes construction entities, see profile.py).
+    It's `kw_only` so subclasses (Line, Circle) can add their own required
+    fields after it without violating dataclass field-ordering rules.
     """
 
     id: str
+    construction: bool = field(default=False, kw_only=True)
 
     @property
     @abstractmethod
@@ -165,6 +179,7 @@ class Sketch:
         *,
         length: float | None = None,
         angle: float | None = None,
+        construction: bool = False,
     ) -> Line:
         """Add a Line from an existing start Point to either an existing
         end Point (explicit sharing) or a new Point computed from a length
@@ -181,7 +196,12 @@ class Sketch:
         if start_point_id == end_point_id:
             raise ValueError("A line cannot start and end at the same point")
 
-        line = Line(id=str(uuid.uuid4()), start_point_id=start_point_id, end_point_id=end_point_id)
+        line = Line(
+            id=str(uuid.uuid4()),
+            start_point_id=start_point_id,
+            end_point_id=end_point_id,
+            construction=construction,
+        )
         self.entities[line.id] = line
         return line
 
@@ -195,6 +215,7 @@ class Sketch:
         *,
         radius: float | None = None,
         angle: float | None = None,
+        construction: bool = False,
     ) -> Circle:
         """Add a Circle from an existing center Point to either an existing
         radius Point (explicit sharing) or a new Point computed from a
@@ -229,6 +250,7 @@ class Sketch:
             center_point_id=center_point_id,
             radius_point_id=radius_point_id,
             radius_constraint_id=radius_constraint.id,
+            construction=construction,
         )
         self.entities[circle.id] = circle
         return circle
@@ -297,6 +319,57 @@ class Sketch:
             point_a_id=point_a_id,
             point_b_id=point_b_id,
             distance=distance,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_vertical_constraint(self, line_id: str) -> VerticalConstraint:
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+
+        constraint = VerticalConstraint(
+            id=str(uuid.uuid4()),
+            line_id=line_id,
+            point_a_id=line.start_point_id,
+            point_b_id=line.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_horizontal_constraint(self, line_id: str) -> HorizontalConstraint:
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+
+        constraint = HorizontalConstraint(
+            id=str(uuid.uuid4()),
+            line_id=line_id,
+            point_a_id=line.start_point_id,
+            point_b_id=line.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_angle_constraint(self, line1_id: str, line2_id: str, angle_degrees: float) -> AngleConstraint:
+        line1 = self.entities.get(line1_id)
+        if not isinstance(line1, Line):
+            raise KeyError(line1_id)
+        line2 = self.entities.get(line2_id)
+        if not isinstance(line2, Line):
+            raise KeyError(line2_id)
+        if line1_id == line2_id:
+            raise ValueError("An angle constraint cannot reference the same line twice")
+
+        constraint = AngleConstraint(
+            id=str(uuid.uuid4()),
+            line1_id=line1_id,
+            line2_id=line2_id,
+            angle_degrees=angle_degrees,
+            line1_start_id=line1.start_point_id,
+            line1_end_id=line1.end_point_id,
+            line2_start_id=line2.start_point_id,
+            line2_end_id=line2.end_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint

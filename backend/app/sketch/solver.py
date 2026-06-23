@@ -67,6 +67,7 @@ class _PySlvsBuilder:
         self._workplane = workplane
         self._points = points
         self._point_handles: dict[str, int] = {}
+        self._line_handles: dict[tuple[int, int], int] = {}
 
     def point2d(self, point_id: str) -> int:
         if point_id not in self._point_handles:
@@ -81,6 +82,29 @@ class _PySlvsBuilder:
     def distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
         return self._system.addPointsDistance(
             value, point_a_handle, point_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def vertical(self, point_a_handle: int, point_b_handle: int) -> int:
+        return self._system.addPointsVertical(
+            point_a_handle, point_b_handle, self._workplane, group=_SOLVE_GROUP
+        )
+
+    def horizontal(self, point_a_handle: int, point_b_handle: int) -> int:
+        return self._system.addPointsHorizontal(
+            point_a_handle, point_b_handle, self._workplane, group=_SOLVE_GROUP
+        )
+
+    def line_segment(self, point_a_handle: int, point_b_handle: int) -> int:
+        key = (point_a_handle, point_b_handle)
+        if key not in self._line_handles:
+            self._line_handles[key] = self._system.addLineSegment(
+                point_a_handle, point_b_handle, group=_SOLVE_GROUP
+            )
+        return self._line_handles[key]
+
+    def angle(self, line_a_handle: int, line_b_handle: int, degrees: float) -> int:
+        return self._system.addAngle(
+            degrees, False, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
     def solved_point_ids(self) -> list[str]:
@@ -105,7 +129,12 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
         )
 
     system = slvs.System()
-    origin = system.addPoint3d(0, 0, 0, group=_FIXED_GROUP)
+    # The "V" suffix matters: addPoint3d (no V) takes existing param
+    # *handles*, not raw coordinate values - passing literal 0/0/0 there
+    # silently wires the origin to invalid param handle 0, which only
+    # surfaces once a constraint dereferences a point's absolute (rather
+    # than workplane-relative) position, e.g. AngleConstraint.
+    origin = system.addPoint3dV(0, 0, 0, group=_FIXED_GROUP)
     normal = system.addNormal3dV(1, 0, 0, 0, group=_FIXED_GROUP)
     workplane = system.addWorkplane(origin, normal, group=_FIXED_GROUP)
 

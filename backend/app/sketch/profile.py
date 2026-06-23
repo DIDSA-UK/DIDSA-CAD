@@ -47,10 +47,18 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     nothing about how the entities were created (per the project brief's
     Profile module description) - any future entity type that connects two
     Points (e.g. Arc) participates automatically.
+
+    Construction entities are filtered out here, at the entry point, before
+    any of the graph-walking logic below ever sees them - a construction
+    Line that would otherwise close a loop is invisible to profile
+    detection, full stop, rather than being a special case threaded through
+    the adjacency/branch/loop-tracing logic.
     """
+    real_entities = [entity for entity in sketch.entities.values() if not entity.construction]
+
     connections: list[tuple[str, tuple[str, str]]] = [
         (entity.id, endpoints)
-        for entity in sketch.entities.values()
+        for entity in real_entities
         if (endpoints := entity.endpoint_point_ids()) is not None
     ]
     if not connections:
@@ -63,7 +71,7 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
         # does not yet get its Circles included in profile detection - a
         # known, documented gap rather than an attempt to generalize ahead
         # of need.
-        circles = sketch.circles()
+        circles = [entity for entity in real_entities if isinstance(entity, Circle)]
         if len(circles) == 1:
             return ProfileDetectionResult(
                 status=ProfileStatus.CLOSED_LOOP,
