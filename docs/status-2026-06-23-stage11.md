@@ -139,10 +139,52 @@ the brief asked to audit. **No bugs found.** Specifically checked:
   deliberately still omits the `edges` key, exercising the new
   `MeshDto.fromJson` defensive default directly.
 
+## Post-merge update: real CI execution found and fixed two API bugs
+
+PR #24 went through GitHub Actions (`.github/workflows/backend-verify.yml`,
+job `build-and-test`, which builds the real `backend/Dockerfile` image with
+`pythonocc-core=7.9.3` installed via micromamba and runs `pytest tests/ -v`
+inside it) — this is the first time any of this stage's OCCT code actually
+ran against a real binding, since every sandbox in this project to date has
+lacked a working conda/mamba install (see the SSL failure documented below,
+now superseded by this CI run as the real verification path). CI caught two
+genuine API mismatches in `backend/app/document/mesh.py`'s `_extract_edges`,
+both now fixed and pushed before the PR merged:
+
+- `from OCC.Core.TopExp import TopExp, TopExp_Explorer` /
+  `TopExp.MapShapes(...)` — `OCC.Core.TopExp` has no `TopExp` class; the
+  module exposes a lowercase singleton `topexp` instead. Fixed to
+  `from OCC.Core.TopExp import TopExp_Explorer, topexp` /
+  `topexp.MapShapes(shape, TopAbs_EDGE, edge_map)`.
+- `edge_map.Extent()` / `edge_map(i)` — this binding's
+  `TopTools_IndexedMapOfShape` has no `.Extent()` method and isn't
+  call-indexable. Fixed to `edge_map.Size()` (count) and
+  `edge_map.FindKey(i)` (1-indexed element access), confirmed against
+  ~20 real-world `pythonocc-core` codebases via GitHub code search.
+
+Both fixes are narrowly scoped to `_extract_edges`'s edge-map handling; no
+other line in `mesh.py` changed. With both fixes applied, the full CI suite
+passed (171 passed, including every Stage 11 test and every pre-existing
+Stage 0–9 test that transitively calls `tessellate_shape()`), and PR #24 was
+merged into `main`. The merge commit's own CI run
+(`Backend - build and test`, run 28042914303) is green.
+
+This means the "no issues found" framing in the code-review note further
+down this doc (about `extrude.py`'s copy-transform flag) and the manual
+review of `_extract_edges`/`_sample_edge`'s OCCT API calls were correct on
+the *geometry/coordinate* logic, but missed these two binding-surface API
+name mismatches — exactly the class of bug that only running against a real
+`pythonocc-core` install can catch, not manual review or `py_compile`.
+`_sample_edge`'s `BRepAdaptor_Curve`/`GCPnts_TangentialDeflection`/
+`.NbPoints()`/`.Value(i)` calls and `BRep_Tool.Degenerated` all ran cleanly
+once the edge-map bugs were fixed, so those are now genuinely verified
+rather than just reviewed.
+
 ## Known limitations this session
 
 **Backend (OCCT) code was never executed against a real `pythonocc-core`
-binding.** `pythonocc-core` has no PyPI wheel, so it normally needs a
+binding in this sandbox** (it has since been verified for real via CI — see
+above). `pythonocc-core` has no PyPI wheel, so it normally needs a
 conda/mamba environment; this sandbox has no conda pre-installed but does
 have network + disk, so a Miniforge3 distribution was installed fresh and
 `mamba env create -n didsa -f environment.yml` was attempted. It failed
@@ -206,29 +248,26 @@ fully trusting them.
 
 ## Branch / merge state
 
-All Stage 11 work is committed on `claude/new-session-53c5v5` (the branch
+All Stage 11 work was committed on `claude/new-session-53c5v5` (the branch
 this session was directed to use, overriding the brief's suggested
-`stage-11-edge-rendering` branch name) and pushed to `origin`. A PR from
-`claude/new-session-53c5v5` into `main` is being opened as part of this
-session. **It is not to be merged** — left open for human review, per
-standing project rules.
+`stage-11-edge-rendering` branch name) and pushed to `origin`. **PR #24
+(`claude/new-session-53c5v5` → `main`) is merged** — including the two
+CI-driven `mesh.py` fixes above — and `main`'s own post-merge CI run is
+green.
 
 ## What's next
 
-- Get a working `pythonocc-core` binding (a real conda/mamba install
-  outside this sandbox's network-egress restrictions, or a container with
-  the OCCT bindings pre-baked) and run the full backend suite for real,
-  especially `test_stage11_edges.py` against actual OCCT topology — this is
-  the highest-value unverified piece, since `_extract_edges`/`_sample_edge`
-  have never executed.
+- Backend OCCT execution is now verified for real (via CI, not a local
+  sandbox) — no further action needed there for Stage 11 itself.
 - Run `flutter analyze` and `flutter test` on a machine with the Flutter
   SDK to confirm the new render-mode/edge-rendering client code actually
-  compiles and the new tests pass.
+  compiles and the new tests pass — this is still genuinely unverified, since
+  no CI job in this repo currently runs the Flutter client (`backend-verify.yml`
+  only covers the backend), and no sandbox session has had the Flutter SDK
+  available either.
 - Visually confirm on-device: that Shaded+Edges' outward-nudge actually
   eliminates z-fighting at the box's actual scale (no SDK was available to
   render anything in this sandbox, so `meshEdgeNudgeAmount = 0.02` is an
   untested initial guess, not a tuned value), and that Wireframe mode's
   filled-face suppression doesn't leave a flickering/empty viewport when a
   Part has zero edges (e.g. mid-rebuild).
-- Review the open PR and merge if it looks good — it was deliberately left
-  unmerged.
