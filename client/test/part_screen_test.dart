@@ -10,6 +10,7 @@ import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
+import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 
 /// A tiny in-memory fake of the backend's `/document` API - just enough of
 /// Part/Feature/mesh to drive [PartScreen] without a real network call.
@@ -308,6 +309,60 @@ void main() {
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isFalse);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    "the toolbar's render-mode entries set PartViewport.renderMode and mark the active one with a check",
+    (tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () =>
+                SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Shaded'), findsOneWidget);
+      expect(find.text('Shaded + Edges'), findsOneWidget);
+      expect(find.text('Wireframe'), findsOneWidget);
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).renderMode,
+        ViewportRenderMode.shaded,
+      );
+
+      await tester.tap(find.text('Wireframe'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).renderMode,
+        ViewportRenderMode.wireframe,
+      );
+      expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Wireframe')).trailing, isNotNull);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.text('Shaded + Edges'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).renderMode,
+        ViewportRenderMode.shadedWithEdges,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('the "Add" FAB is hidden while the Extrude panel is open', (tester) async {
     final backend = _FakeDocumentBackend(

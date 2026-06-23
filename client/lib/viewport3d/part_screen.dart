@@ -14,6 +14,7 @@ import 'feature_tree_panel.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
 import 'reference_planes.dart';
+import 'render_mode.dart';
 import 'sketch_geometry_3d.dart';
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
@@ -64,6 +65,11 @@ class _PartScreenState extends State<PartScreen> {
   /// toggled from [PartToolbar]'s "Hide/Show Reference Planes" entry,
   /// in-memory only (no persistence across app restarts, per the brief).
   bool _referencePlanesHidden = false;
+
+  /// Stage 11: the viewport's current display mode - toggled from
+  /// [PartToolbar]'s three render-mode entries, in-memory only (no
+  /// persistence across app restarts, same as [_referencePlanesHidden]).
+  ViewportRenderMode _renderMode = ViewportRenderMode.shaded;
 
   /// Stage 10b: true while the "Add" FAB's flyout's "New Sketch" entry has
   /// been tapped and the user is choosing which reference plane to sketch
@@ -293,6 +299,14 @@ class _PartScreenState extends State<PartScreen> {
   /// "Hide/Show Reference Planes" entry.
   void _onToggleReferencePlanes() {
     setState(() => _referencePlanesHidden = !_referencePlanesHidden);
+  }
+
+  /// Stage 11: the toolbar's render-mode entries - sets [_renderMode]
+  /// directly to whichever entry was tapped (unlike
+  /// [_onToggleReferencePlanes]'s two-state flip, there are three discrete
+  /// choices here, not one "next state").
+  void _onRenderModeChanged(ViewportRenderMode mode) {
+    setState(() => _renderMode = mode);
   }
 
   Future<void> _onNewSketchOnSelectedPlane() async {
@@ -624,6 +638,7 @@ class _PartScreenState extends State<PartScreen> {
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,
                   referencePlanesHidden: _referencePlanesHidden,
+                  renderMode: _renderMode,
                 ),
                 Positioned.fill(
                   child: FeatureTreePanel(
@@ -644,6 +659,8 @@ class _PartScreenState extends State<PartScreen> {
                     onNewSketchOnPlane: _busy ? null : _onNewSketchOnSelectedPlane,
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
+                    renderMode: _renderMode,
+                    onRenderModeChanged: _onRenderModeChanged,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)

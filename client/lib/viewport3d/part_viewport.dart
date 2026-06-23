@@ -7,6 +7,7 @@ import '../api/document_api_client.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
+import 'render_mode.dart';
 import 'sketch_geometry_3d.dart';
 import 'triad.dart';
 
@@ -53,6 +54,14 @@ class PartViewport extends StatefulWidget {
   /// controlled-widget pattern [selectedPlane] already uses.
   final bool referencePlanesHidden;
 
+  /// Stage 11: which of [ViewportRenderMode]'s three display modes is
+  /// currently active - controls whether [mesh]'s filled faces are drawn at
+  /// all ([ViewportRenderMode.showsFilledFaces]) and whether its real OCCT
+  /// edge polylines are drawn on top ([ViewportRenderMode.showsEdges]).
+  /// [PartScreen] owns this, the same controlled-widget pattern
+  /// [referencePlanesHidden] already uses.
+  final ViewportRenderMode renderMode;
+
   const PartViewport({
     super.key,
     required this.mesh,
@@ -62,6 +71,7 @@ class PartViewport extends StatefulWidget {
     this.sketchGeometries = const {},
     this.isPreviewMesh = false,
     this.referencePlanesHidden = false,
+    this.renderMode = ViewportRenderMode.shaded,
   });
 
   @override
@@ -76,6 +86,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// that, so nothing is built until this is non-null.
   Scene? _scene;
   Node? _meshNode;
+
+  /// Stage 11: the Part mesh's real OCCT edge polylines, rendered separately
+  /// from [_meshNode]'s filled faces - present whenever
+  /// [PartViewport.renderMode] has [ViewportRenderModeX.showsEdges] set,
+  /// regardless of whether the faces themselves are also showing.
+  Node? _edgesNode;
   Map<ReferencePlaneKind, Node> _planeNodes = {};
   Map<String, Node> _sketchNodes = {};
 
@@ -116,6 +132,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       setState(() {
         _scene = Scene();
         _syncMeshNode();
+        _syncEdgesNode();
         _syncReferencePlaneNodes();
         _syncSketchNodes();
       });
@@ -129,8 +146,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @override
   void didUpdateWidget(covariant PartViewport oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.mesh != oldWidget.mesh || widget.isPreviewMesh != oldWidget.isPreviewMesh) {
+    if (widget.mesh != oldWidget.mesh ||
+        widget.isPreviewMesh != oldWidget.isPreviewMesh ||
+        widget.renderMode != oldWidget.renderMode) {
       setState(_syncMeshNode);
+    }
+    if (widget.mesh != oldWidget.mesh || widget.renderMode != oldWidget.renderMode) {
+      setState(_syncEdgesNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane ||
         widget.referencePlanesHidden != oldWidget.referencePlanesHidden) {
@@ -166,21 +188,60 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _camera.setZoomBoundsForRadius(0);
       return;
     }
-    debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh(${mesh.vertices.length} verts)...');
-    final geometry = geometryFromMesh(mesh);
-    debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh done, adding Node to Scene...');
-    final material = widget.isPreviewMesh
-        ? (UnlitMaterial()
-          ..alphaMode = AlphaMode.blend
-          ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
-        : UnlitMaterial();
-    final node = Node(mesh: Mesh(geometry, material));
-    scene.add(node);
-    _meshNode = node;
-    debugPrint('[PartViewport] _syncMeshNode: Node added to Scene');
+    // Stage 11: in wireframe mode, the filled-faces Node is skipped
+    // entirely (only the edges Node built by _syncEdgesNode is shown) - but
+    // the camera target/zoom bounds below are still derived from the real
+    // mesh data either way, so switching modes never moves the camera.
+    if (widget.renderMode.showsFilledFaces) {
+      debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh(${mesh.vertices.length} verts)...');
+      final geometry = geometryFromMesh(mesh);
+      debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh done, adding Node to Scene...');
+      final material = widget.isPreviewMesh
+          ? (UnlitMaterial()
+            ..alphaMode = AlphaMode.blend
+            ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
+          : UnlitMaterial();
+      final node = Node(mesh: Mesh(geometry, material));
+      scene.add(node);
+      _meshNode = node;
+      debugPrint('[PartViewport] _syncMeshNode: Node added to Scene');
+    }
     final bounds = boundsOfMesh(mesh);
     _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
     _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
+  }
+
+  /// Stage 11: rebuilds [_edgesNode] from [PartViewport.mesh]'s real OCCT
+  /// edge polylines (see [edgeSegmentsFromMesh]) whenever
+  /// [ViewportRenderModeX.showsEdges] is set - independent of whether the
+  /// filled-faces Node above is also present, since `wireframe` mode shows
+  /// edges with no faces at all. In `shadedWithEdges` mode the segments are
+  /// nudged outward from the mesh's bounding-sphere center first (see
+  /// [nudgeSegmentsOutward]), the closest available substitute for a GPU
+  /// depth bias to keep them from z-fighting against the filled faces
+  /// underneath; `wireframe` mode has no faces to fight, so it skips that.
+  void _syncEdgesNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    if (_edgesNode != null) {
+      scene.remove(_edgesNode!);
+      _edgesNode = null;
+    }
+    final mesh = widget.mesh;
+    if (mesh == null || !widget.renderMode.showsEdges) return;
+    var segments = edgeSegmentsFromMesh(mesh);
+    if (segments.isEmpty) return;
+    if (widget.renderMode == ViewportRenderMode.shadedWithEdges) {
+      final bounds = boundsOfMesh(mesh);
+      segments = nudgeSegmentsOutward(
+        segments,
+        bounds?.center ?? vm.Vector3.zero(),
+        meshEdgeNudgeAmount,
+      );
+    }
+    final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
+    scene.add(node);
+    _edgesNode = node;
   }
 
   /// Rebuilds all three reference-plane nodes from scratch - cheap enough
@@ -399,7 +460,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   scene: scene,
                   camera: _camera,
                   size: size,
-                  polylineCarryingNodes: [..._planeNodes.values, ..._sketchNodes.values],
+                  polylineCarryingNodes: [
+                    ..._planeNodes.values,
+                    ..._sketchNodes.values,
+                    if (_edgesNode != null) _edgesNode!,
+                  ],
                 ),
               ),
             ),

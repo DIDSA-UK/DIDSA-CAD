@@ -61,14 +61,23 @@ class FeatureDto {
 }
 
 /// A flat, JSON-shaped mesh: each of [vertices]/[normals] is a list of
-/// `[x, y, z]` triples (parallel, same length), and each entry in
-/// [triangleIndices] is an `[a, b, c]` index triple into both.
+/// `[x, y, z]` triples (parallel, same length), each entry in
+/// [triangleIndices] is an `[a, b, c]` index triple into both, and [edges]
+/// is a flat `[x1,y1,z1, x2,y2,z2, ...]` array of real OCCT edge polyline
+/// segments (Stage 11 - see backend/app/document/mesh.py's
+/// `_extract_edges`), independent of the triangle data above.
 class MeshDto {
   final List<List<double>> vertices;
   final List<List<double>> normals;
   final List<List<int>> triangleIndices;
+  final List<double> edges;
 
-  MeshDto({required this.vertices, required this.normals, required this.triangleIndices});
+  MeshDto({
+    required this.vertices,
+    required this.normals,
+    required this.triangleIndices,
+    this.edges = const [],
+  });
 
   factory MeshDto.fromJson(Map<String, dynamic> json) => MeshDto(
         vertices: _triples(json['vertices'] as List),
@@ -76,6 +85,9 @@ class MeshDto {
         triangleIndices: (json['triangle_indices'] as List)
             .map((t) => (t as List).map((v) => v as int).toList())
             .toList(),
+        // Defaults to empty rather than required: older fixtures/fakes in
+        // tests predate Stage 11 and omit this key entirely.
+        edges: (json['edges'] as List?)?.map((v) => (v as num).toDouble()).toList() ?? const [],
       );
 
   static List<List<double>> _triples(List raw) =>

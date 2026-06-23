@@ -130,3 +130,75 @@ MeshBounds? boundsOfMesh(MeshDto mesh) {
     boundingSphereRadius: (max - min).length * 0.5,
   );
 }
+
+/// Line width (screen pixels, per [PolylineGeometry]'s default
+/// `widthMode`) for both Stage 11 edge-rendering modes.
+const double meshEdgeLineWidth = 2.0;
+
+/// How far [nudgeSegmentsOutward] pushes each edge point away from the
+/// mesh's bounding-sphere center, in world units - flutter_scene 0.18.1 has
+/// no GPU depth-bias control, so this is the closest available substitute
+/// for preventing z-fighting between the filled mesh and its edge overlay
+/// in `shadedWithEdges` mode: a small static geometric offset rather than a
+/// per-pixel depth adjustment.
+const double meshEdgeNudgeAmount = 0.02;
+
+/// Parses [mesh]'s flat `[x1,y1,z1, x2,y2,z2, ...]` edge polyline data (see
+/// backend/app/document/mesh.py's `_extract_edges`) into segment pairs -
+/// the pure, testable counterpart to [buildMeshEdgesNode] below. Each
+/// 6-float run is one polyline segment; a curved OCCT edge contributes
+/// several consecutive segments, a straight one exactly one.
+List<(vm.Vector3, vm.Vector3)> edgeSegmentsFromMesh(MeshDto mesh) {
+  final segments = <(vm.Vector3, vm.Vector3)>[];
+  for (var i = 0; i + 5 < mesh.edges.length; i += 6) {
+    segments.add((
+      vm.Vector3(mesh.edges[i], mesh.edges[i + 1], mesh.edges[i + 2]),
+      vm.Vector3(mesh.edges[i + 3], mesh.edges[i + 4], mesh.edges[i + 5]),
+    ));
+  }
+  return segments;
+}
+
+/// Pushes every point in [segments] away from [center] by [amount] world
+/// units - see [meshEdgeNudgeAmount]'s doc comment for why. A point
+/// exactly at [center] (zero-length direction) is left unchanged rather
+/// than divided by zero.
+List<(vm.Vector3, vm.Vector3)> nudgeSegmentsOutward(
+  List<(vm.Vector3, vm.Vector3)> segments,
+  vm.Vector3 center,
+  double amount,
+) {
+  vm.Vector3 nudged(vm.Vector3 point) {
+    final direction = point - center;
+    if (direction.length2 < 1e-12) return point.clone();
+    return point + direction.normalized() * amount;
+  }
+
+  return [for (final segment in segments) (nudged(segment.$1), nudged(segment.$2))];
+}
+
+/// Builds the [Node] rendering [segments] as [color]d polylines - one
+/// [MeshPrimitive] per segment, combined into a single [Mesh]/[Node] so
+/// they share one per-frame `updateForCamera` scan (see `PartViewport`'s
+/// `_ScenePainter`), the same pattern [buildSketchGeometryNode] uses.
+///
+/// GPU-bound (`PolylineGeometry`'s underlying updatable `MeshGeometry`), so
+/// - like [geometryFromMesh] - this cannot be exercised in a headless
+/// `flutter test` run; [edgeSegmentsFromMesh]/[nudgeSegmentsOutward] above
+/// are the pure, testable counterparts for this data's actual content.
+Node buildMeshEdgesNode(
+  List<(vm.Vector3, vm.Vector3)> segments, {
+  required vm.Vector4 color,
+  double width = meshEdgeLineWidth,
+}) {
+  final material = UnlitMaterial()
+    ..alphaMode = AlphaMode.opaque
+    ..baseColorFactor = color;
+
+  final primitives = <MeshPrimitive>[
+    for (final segment in segments)
+      MeshPrimitive(PolylineGeometry([segment.$1, segment.$2], width: width), material),
+  ];
+
+  return Node(name: 'mesh-edges', mesh: Mesh.primitives(primitives: primitives));
+}
