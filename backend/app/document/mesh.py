@@ -114,8 +114,8 @@ def _extract_edges(shape) -> list[float]:
     topexp.MapShapes(shape, TopAbs_EDGE, edge_map)
 
     segments: list[float] = []
-    for i in range(1, edge_map.Extent() + 1):
-        edge = topods.Edge(edge_map(i))
+    for i in range(1, edge_map.Size() + 1):
+        edge = topods.Edge(edge_map.FindKey(i))
         if BRep_Tool.Degenerated(edge):
             continue
         points = _sample_edge(edge)
