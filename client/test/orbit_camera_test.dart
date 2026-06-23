@@ -1,28 +1,9 @@
-import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/viewport3d/orbit_camera.dart';
-
-/// Angle of `p` around the world-up (Y) axis, as seen from above - used
-/// below to measure how far a horizontal drag actually swung the camera in
-/// world space, independent of how that was achieved internally.
-double _worldAzimuth(vm.Vector3 p) => math.atan2(p.x, p.z);
-
-/// Normalizes an azimuth delta to (-pi, pi] so a single small drag step
-/// never gets misread as having wrapped around.
-double _wrapAngle(double radians) {
-  var a = radians;
-  while (a > math.pi) {
-    a -= 2 * math.pi;
-  }
-  while (a < -math.pi) {
-    a += 2 * math.pi;
-  }
-  return a;
-}
 
 void main() {
   const size = Size(400, 300);
@@ -75,19 +56,24 @@ void main() {
     expect(verticalOnly.cameraFor(size).position.z, closeTo(initialPosition.z, 1e-4));
   });
 
-  test('horizontal orbit direction stays visually consistent once the camera is upside-down', () {
-    // Real-device bug: once orbited past vertical (the model reads as
-    // upside-down), the camera's up vector points away from world-up, so
-    // the screen's left/right sense is effectively mirrored - a fixed
-    // horizontal drag then needs to swing the camera the *opposite* way in
-    // world space to still look like the same on-screen direction. Confirm
-    // that by comparing the world-frame azimuth swing of an identical `+50`
-    // horizontal drag, right-side-up vs upside-down: it must flip sign.
+  test('horizontal orbit always swings about the camera\'s own current up axis, leaving it unchanged', () {
+    // Real-device bug: a horizontal drag yawed about the *fixed* world-up
+    // axis, which only swings the view the way the drag visually suggests
+    // while the camera is still close to right-side-up - once orbited past
+    // vertical (the model reads as upside-down), the same drag swings the
+    // opposite way on-screen. Yawing about the camera's own *current* up
+    // axis instead fixes this structurally rather than via a special-cased
+    // sign flip: rotating about a vector can never move that vector, so a
+    // pure horizontal drag (dyPixels = 0) must leave [up] exactly fixed,
+    // at any orientation - right-side-up or upside-down alike - which is
+    // exactly the "still feels horizontal from here" guarantee needed.
     final rightSideUp = OrbitCamera();
-    final beforeRightSideUp = rightSideUp.cameraFor(size).position;
+    final upBeforeRightSideUp = rightSideUp.cameraFor(size).up.clone();
     rightSideUp.orbitByScreenDelta(50, 0);
-    final afterRightSideUp = rightSideUp.cameraFor(size).position;
-    final deltaRightSideUp = _wrapAngle(_worldAzimuth(afterRightSideUp) - _worldAzimuth(beforeRightSideUp));
+    final upAfterRightSideUp = rightSideUp.cameraFor(size).up;
+    expect(upAfterRightSideUp.x, closeTo(upBeforeRightSideUp.x, 1e-4));
+    expect(upAfterRightSideUp.y, closeTo(upBeforeRightSideUp.y, 1e-4));
+    expect(upAfterRightSideUp.z, closeTo(upBeforeRightSideUp.z, 1e-4));
 
     final upsideDown = OrbitCamera();
     while (upsideDown.cameraFor(size).up.dot(vm.Vector3(0, 1, 0)) >= 0) {
@@ -95,13 +81,12 @@ void main() {
     }
     expect(upsideDown.cameraFor(size).up.dot(vm.Vector3(0, 1, 0)), lessThan(0));
 
-    final beforeUpsideDown = upsideDown.cameraFor(size).position;
+    final upBeforeUpsideDown = upsideDown.cameraFor(size).up.clone();
     upsideDown.orbitByScreenDelta(50, 0);
-    final afterUpsideDown = upsideDown.cameraFor(size).position;
-    final deltaUpsideDown = _wrapAngle(_worldAzimuth(afterUpsideDown) - _worldAzimuth(beforeUpsideDown));
-
-    expect(deltaRightSideUp, closeTo(0.5, 1e-4));
-    expect(deltaUpsideDown, closeTo(-0.5, 1e-4));
+    final upAfterUpsideDown = upsideDown.cameraFor(size).up;
+    expect(upAfterUpsideDown.x, closeTo(upBeforeUpsideDown.x, 1e-4));
+    expect(upAfterUpsideDown.y, closeTo(upBeforeUpsideDown.y, 1e-4));
+    expect(upAfterUpsideDown.z, closeTo(upBeforeUpsideDown.z, 1e-4));
   });
 
   test('orbiting continuously past where the old azimuth/elevation camera used to clamp keeps rotating smoothly', () {

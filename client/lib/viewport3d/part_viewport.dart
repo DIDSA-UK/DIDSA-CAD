@@ -143,6 +143,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       debugPrint('[PartViewport] _syncMeshNode: no mesh yet');
       return;
     }
+    if (mesh.vertices.isEmpty) {
+      // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a GPU
+      // device buffer sized off the vertex/index data - a zero-length
+      // buffer (e.g. every body hidden, or a Cut with nothing to cut from)
+      // throws "DeviceBuffer creation failed" rather than just rendering
+      // nothing, so skip building a Node entirely in that case (mirrors
+      // what boundsOfMesh returning null would feed the camera below, were
+      // there a Node to compute bounds from).
+      debugPrint('[PartViewport] _syncMeshNode: mesh has no vertices, skipping geometry');
+      _camera.setTarget(vm.Vector3.zero());
+      _camera.setZoomBoundsForRadius(0);
+      return;
+    }
     debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh(${mesh.vertices.length} verts)...');
     final geometry = geometryFromMesh(mesh);
     debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh done, adding Node to Scene...');
