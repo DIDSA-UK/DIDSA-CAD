@@ -1,0 +1,241 @@
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from tests.conftest import TEST_API_KEY
+
+client = TestClient(app)
+client.headers.update({"X-API-Key": TEST_API_KEY})
+
+
+# --- Helpers -----------------------------------------------------------------
+
+
+def _create_part(name: str = "Part 1") -> dict:
+    response = client.post("/document/parts", json={"name": name})
+    assert response.status_code == 201
+    return response.json()
+
+
+def _create_sketch_feature(part_id: str, plane: str = "XY") -> dict:
+    response = client.post(f"/document/parts/{part_id}/features/sketch", json={"plane": plane})
+    assert response.status_code == 201
+    return response.json()
+
+
+def _add_square(sketch_id: str, x0: float, y0: float, size: float) -> None:
+    """Draws a closed `size` x `size` square, bottom-left at (x0, y0), into
+    an existing (empty) Sketch via the real /sketch API - the square shape
+    every test below extrudes."""
+    corners = [
+        client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": x, "y": y}).json()
+        for x, y in [(x0, y0), (x0 + size, y0), (x0 + size, y0 + size), (x0, y0 + size)]
+    ]
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        response = client.post(
+            f"/sketch/sketches/{sketch_id}/lines",
+            json={"start_point_id": a["id"], "end_point_id": b["id"]},
+        )
+        assert response.status_code == 201
+
+
+def _create_square_sketch_feature(part_id: str, *, x0=0.0, y0=0.0, size=10.0, plane="XY") -> dict:
+    feature = _create_sketch_feature(part_id, plane)
+    _add_square(feature["sketch_id"], x0, y0, size)
+    return feature
+
+
+def _create_extrude_feature(
+    part_id: str,
+    sketch_feature_id: str,
+    *,
+    extrude_type: str = "boss",
+    start_distance: float = 0.0,
+    end_distance: float = 10.0,
+) -> dict:
+    response = client.post(
+        f"/document/parts/{part_id}/extrude-features",
+        json={
+            "sketch_feature_id": sketch_feature_id,
+            "extrude_type": extrude_type,
+            "start_distance": start_distance,
+            "end_distance": end_distance,
+        },
+    )
+    return response
+
+
+# --- Creation validation -------------------------------------------------------
+
+
+def test_create_boss_extrude_on_closed_square_profile_succeeds():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+
+    response = _create_extrude_feature(part["id"], sketch_feature["id"])
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["type"] == "extrude"
+    assert body["extrude_type"] == "boss"
+    assert body["sketch_feature_id"] == sketch_feature["id"]
+    assert body["locked"] is False
+
+
+def test_create_extrude_on_sketch_with_no_closed_profile_is_rejected():
+    part = _create_part()
+    # An empty Sketch - no Lines at all, so no closed profile.
+    sketch_feature = _create_sketch_feature(part["id"])
+
+    response = _create_extrude_feature(part["id"], sketch_feature["id"])
+
+    assert response.status_code == 400
+    assert "closed profile" in response.json()["detail"].lower()
+
+
+def test_create_extrude_referencing_a_non_sketch_feature_is_rejected():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude_feature = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
+
+    response = _create_extrude_feature(part["id"], extrude_feature["id"])
+
+    assert response.status_code == 400
+
+
+def test_create_extrude_referencing_unknown_sketch_feature_is_rejected():
+    part = _create_part()
+
+    response = _create_extrude_feature(part["id"], "does-not-exist")
+
+    assert response.status_code == 400
+
+
+# --- Mesh generation -----------------------------------------------------------
+
+
+def test_part_with_no_extrude_feature_returns_placeholder_mesh():
+    part = _create_part()
+
+    response = client.get(f"/document/parts/{part['id']}/mesh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "placeholder"
+    assert len(body["mesh"]["vertices"]) > 0
+
+
+def test_boss_extrude_produces_a_non_empty_computed_mesh():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
+    assert extrude["type"] == "extrude"
+
+    response = client.get(f"/document/parts/{part['id']}/mesh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "computed"
+    assert len(body["mesh"]["vertices"]) > 0
+    assert len(body["mesh"]["triangle_indices"]) > 0
+
+
+def test_cut_with_no_prior_boss_is_skipped_gracefully():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"], extrude_type="cut").json()
+    assert extrude["extrude_type"] == "cut"
+
+    response = client.get(f"/document/parts/{part['id']}/mesh")
+
+    # The mesh request itself must still succeed - just with nothing in it,
+    # since the Cut had no base solid to subtract from.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "computed"
+    assert body["mesh"]["vertices"] == []
+    assert body["mesh"]["triangle_indices"] == []
+
+
+def test_boss_followed_by_cut_produces_a_different_accumulated_solid():
+    part = _create_part()
+
+    boss_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0, size=10.0)
+    _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")
+    boss_only_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    assert len(boss_only_mesh["mesh"]["vertices"]) > 0
+
+    # A smaller square, fully inside the boss footprint and overlapping its
+    # full depth, so the Cut genuinely removes material from the Boss solid.
+    cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
+    cut_response = _create_extrude_feature(part["id"], cut_sketch["id"], extrude_type="cut")
+    assert cut_response.status_code == 201
+
+    boss_and_cut_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+
+    assert boss_and_cut_mesh["source"] == "computed"
+    assert len(boss_and_cut_mesh["mesh"]["vertices"]) > 0
+    assert boss_and_cut_mesh["mesh"]["vertices"] != boss_only_mesh["mesh"]["vertices"]
+
+
+def _max_z(mesh_body: dict) -> float:
+    return max(v[2] for v in mesh_body["mesh"]["vertices"])
+
+
+def test_patch_updates_extrude_distances_and_the_mesh_changes_accordingly():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(
+        part["id"], sketch_feature["id"], start_distance=0.0, end_distance=10.0
+    ).json()
+
+    mesh_before = client.get(f"/document/parts/{part['id']}/mesh").json()
+    assert _max_z(mesh_before) == pytest.approx(10.0)
+
+    response = client.patch(
+        f"/document/parts/{part['id']}/extrude-features/{extrude['id']}",
+        json={"end_distance": 20.0},
+    )
+    assert response.status_code == 200
+    assert response.json()["end_distance"] == pytest.approx(20.0)
+
+    mesh_after = client.get(f"/document/parts/{part['id']}/mesh").json()
+    assert _max_z(mesh_after) == pytest.approx(20.0)
+
+
+def test_patch_on_a_locked_extrude_feature_is_rejected():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
+    # Add a second SketchFeature after it, locking the extrude feature.
+    _create_sketch_feature(part["id"])
+
+    response = client.patch(
+        f"/document/parts/{part['id']}/extrude-features/{extrude['id']}",
+        json={"end_distance": 20.0},
+    )
+
+    assert response.status_code == 400
+
+
+def test_patch_unknown_extrude_feature_is_404():
+    part = _create_part()
+
+    response = client.patch(
+        f"/document/parts/{part['id']}/extrude-features/does-not-exist",
+        json={"end_distance": 20.0},
+    )
+
+    assert response.status_code == 404
+
+
+def test_list_features_includes_extrude_feature_after_its_sketch_feature():
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
+
+    response = client.get(f"/document/parts/{part['id']}/features")
+
+    assert response.status_code == 200
+    feature_ids = [f["id"] for f in response.json()]
+    assert feature_ids == [sketch_feature["id"], extrude["id"]]

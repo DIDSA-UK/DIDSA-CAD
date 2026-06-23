@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import 'mesh_geometry.dart';
@@ -38,6 +39,12 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
+  /// True while [mesh] is an Extrude live preview (see [PartScreen]'s
+  /// debounced create/update-then-refetch flow) rather than confirmed
+  /// geometry - renders the mesh translucent and tinted so a preview solid
+  /// is never mistaken for the Part's actual, saved shape.
+  final bool isPreviewMesh;
+
   const PartViewport({
     super.key,
     required this.mesh,
@@ -45,6 +52,7 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
+    this.isPreviewMesh = false,
   });
 
   @override
@@ -112,7 +120,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @override
   void didUpdateWidget(covariant PartViewport oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.mesh != oldWidget.mesh) {
+    if (widget.mesh != oldWidget.mesh || widget.isPreviewMesh != oldWidget.isPreviewMesh) {
       setState(_syncMeshNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane) {
@@ -138,7 +146,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh(${mesh.vertices.length} verts)...');
     final geometry = geometryFromMesh(mesh);
     debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh done, adding Node to Scene...');
-    final node = Node(mesh: Mesh(geometry, UnlitMaterial()));
+    final material = widget.isPreviewMesh
+        ? (UnlitMaterial()
+          ..alphaMode = AlphaMode.blend
+          ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
+        : UnlitMaterial();
+    final node = Node(mesh: Mesh(geometry, material));
     scene.add(node);
     _meshNode = node;
     debugPrint('[PartViewport] _syncMeshNode: Node added to Scene');

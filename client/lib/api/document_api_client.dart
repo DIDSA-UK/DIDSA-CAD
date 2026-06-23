@@ -19,20 +19,44 @@ class PartDto {
       );
 }
 
-/// A Feature in a Part's history. Only SketchFeature exists today - this DTO
-/// covers that one shape directly, the same way LineDto/CircleDto each cover
-/// one backend response shape rather than a shared polymorphic type.
+/// A Feature in a Part's history - either a SketchFeature or an
+/// ExtrudeFeature, distinguished by [type] (the same discriminator the
+/// backend's `FeatureResponse` union uses). [sketchId] is only present on a
+/// `"sketch"` Feature; [sketchFeatureId]/[extrudeType]/[startDistance]/
+/// [endDistance] only on an `"extrude"` one - kept as one DTO (rather than
+/// two separate classes) since most call sites (the Feature tree, the
+/// long-press menu) only care about [id]/[type]/[locked] regardless of
+/// which kind a row is.
 class FeatureDto {
+  final String type;
   final String id;
-  final String sketchId;
   final bool locked;
+  final String? sketchId;
+  final String? sketchFeatureId;
+  final String? extrudeType;
+  final double? startDistance;
+  final double? endDistance;
 
-  FeatureDto({required this.id, required this.sketchId, required this.locked});
+  FeatureDto({
+    required this.type,
+    required this.id,
+    required this.locked,
+    this.sketchId,
+    this.sketchFeatureId,
+    this.extrudeType,
+    this.startDistance,
+    this.endDistance,
+  });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
+        type: json['type'] as String,
         id: json['id'] as String,
-        sketchId: json['sketch_id'] as String,
         locked: json['locked'] as bool,
+        sketchId: json['sketch_id'] as String?,
+        sketchFeatureId: json['sketch_feature_id'] as String?,
+        extrudeType: json['extrude_type'] as String?,
+        startDistance: (json['start_distance'] as num?)?.toDouble(),
+        endDistance: (json['end_distance'] as num?)?.toDouble(),
       );
 }
 
@@ -160,6 +184,51 @@ class DocumentApiClient {
               _uri('/document/parts/$partId/features/sketch'),
               headers: _headers,
               body: jsonEncode({'plane': plane}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<FeatureDto> createExtrudeFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required String extrudeType,
+    required double startDistance,
+    required double endDistance,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/extrude-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'extrude_type': extrudeType,
+                'start_distance': startDistance,
+                'end_distance': endDistance,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing ExtrudeFeature - any subset of
+  /// [extrudeType]/[startDistance]/[endDistance] may be supplied, mirroring
+  /// the backend's `ExtrudeFeatureUpdate` (omitted fields keep their
+  /// current value). Used for the live-preview debounced re-solve.
+  Future<FeatureDto> updateExtrudeFeature(
+    String partId,
+    String featureId, {
+    String? extrudeType,
+    double? startDistance,
+    double? endDistance,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/extrude-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (extrudeType != null) 'extrude_type': extrudeType,
+                if (startDistance != null) 'start_distance': startDistance,
+                if (endDistance != null) 'end_distance': endDistance,
+              }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );

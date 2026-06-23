@@ -3,10 +3,14 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
-from app.document.mesh import DEFAULT_MESH_QUALITY, tessellate_shape
-from app.document.models import Feature, Part, SketchFeature
+from app.document.extrude import compute_part_solid
+from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
+from app.document.models import ExtrudeFeature, Feature, Part, SketchFeature
 from app.document.schemas import (
     CascadeDeleteResponse,
+    ExtrudeFeatureCreate,
+    ExtrudeFeatureResponse,
+    ExtrudeFeatureUpdate,
     FeatureResponse,
     MeshVertexData,
     PartCreate,
@@ -16,7 +20,8 @@ from app.document.schemas import (
     SketchFeatureResponse,
 )
 from app.document.store import get_document, get_part_or_404
-from app.sketch.store import create_sketch, delete_sketch
+from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
 
 router = APIRouter(prefix="/document", tags=["document"])
 
@@ -39,7 +44,45 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             sketch_id=feature.sketch_id,
             locked=part.is_locked(feature.id),
         )
+    if isinstance(feature, ExtrudeFeature):
+        return ExtrudeFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            extrude_type=feature.extrude_type,
+            start_distance=feature.start_distance,
+            end_distance=feature.end_distance,
+            locked=part.is_locked(feature.id),
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
+
+
+def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
+    return MeshVertexData(
+        vertices=mesh_data.vertices,
+        normals=mesh_data.normals,
+        triangle_indices=[(t.a, t.b, t.c) for t in mesh_data.triangles],
+    )
+
+
+def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> SketchFeature:
+    """Validates that `sketch_feature_id` resolves to a SketchFeature in
+    `part` whose Sketch has a closed Profile - a single 400 for every way
+    this can fail, per the brief ("Validate ... return a clear 400 error if
+    not")."""
+    feature = part.get_feature(sketch_feature_id)
+    if not isinstance(feature, SketchFeature):
+        raise HTTPException(
+            status_code=400,
+            detail="sketch_feature_id does not refer to a SketchFeature in this Part",
+        )
+    sketch = get_sketch_or_404(feature.sketch_id)
+    result = detect_profile(sketch)
+    if result.status != ProfileStatus.CLOSED_LOOP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sketch does not contain a closed profile (status: {result.status.value})",
+        )
+    return feature
 
 
 @router.post("/parts", response_model=PartResponse, status_code=201)
@@ -73,6 +116,51 @@ def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchF
     sketch = create_sketch(payload.plane)
     feature = SketchFeature(id=str(uuid.uuid4()), sketch_id=sketch.id)
     part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/extrude-features", response_model=ExtrudeFeatureResponse, status_code=201
+)
+def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> ExtrudeFeatureResponse:
+    part = get_part_or_404(part_id)
+    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    feature = ExtrudeFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        extrude_type=payload.extrude_type,
+        start_distance=payload.start_distance,
+        end_distance=payload.end_distance,
+    )
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_extrude_feature_or_404(part: Part, feature_id: str) -> ExtrudeFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, ExtrudeFeature):
+        raise HTTPException(status_code=404, detail="Extrude feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/extrude-features/{feature_id}", response_model=ExtrudeFeatureResponse)
+def update_extrude_feature(
+    part_id: str, feature_id: str, payload: ExtrudeFeatureUpdate
+) -> ExtrudeFeatureResponse:
+    part = get_part_or_404(part_id)
+    feature = _get_extrude_feature_or_404(part, feature_id)
+    if part.is_locked(feature_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Only the last Feature in a Part can be edited - it is locked because a "
+            "later Feature exists.",
+        )
+    if payload.extrude_type is not None:
+        feature.extrude_type = payload.extrude_type
+    if payload.start_distance is not None:
+        feature.start_distance = payload.start_distance
+    if payload.end_distance is not None:
+        feature.end_distance = payload.end_distance
     return _feature_response(part, feature)
 
 
@@ -127,32 +215,25 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
 
 @router.get("/parts/{part_id}/mesh", response_model=PartMeshResponse)
 def get_part_mesh(part_id: str) -> PartMeshResponse:
-    """Placeholder mesh for the Stage 7 3D viewport: a fixed box, tessellated
-    via the real OCCT pipeline in app.document.mesh. NOT derived from the
-    Part's actual Feature tree - there is no ExtrudeFeature yet, so this
-    cannot reflect real modeled geometry. `source` is "placeholder" so
-    clients can tell the difference once real geometry exists.
-
-    Only returned while `Part.produces_solid_geometry` is False, i.e. while
-    no Feature in the Part's history produces real solid geometry - once a
-    future ExtrudeFeature/RevolveFeature exists and is added, this stops
-    appearing automatically, with no further change needed here."""
+    """Placeholder mesh (a fixed box) while the Part has no ExtrudeFeature
+    yet, per `Part.produces_solid_geometry`. Once it does, this instead
+    accumulates every ExtrudeFeature's real OCCT solid (Boss/Cut, in order -
+    see app.document.extrude.compute_part_solid) and tessellates that. A
+    Part whose only ExtrudeFeature(s) all skipped (e.g. a Cut with no prior
+    Boss) still gets `source="computed"`, just with an empty mesh - it has
+    "real" geometry in intent, there's just nothing to show yet."""
     part = get_part_or_404(part_id)
 
-    if part.produces_solid_geometry:
-        # Unreachable today - no Feature type sets `produces_solid_geometry`
-        # True yet. A future ExtrudeFeature's real tessellated shape belongs
-        # here in place of the placeholder box below.
-        raise NotImplementedError(
-            "Real Feature-derived geometry is not implemented yet"
+    if not part.produces_solid_geometry:
+        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+        mesh_data = tessellate_shape(box, DEFAULT_MESH_QUALITY)
+        return PartMeshResponse(source="placeholder", mesh=_mesh_vertex_data(mesh_data))
+
+    solid = compute_part_solid(part)
+    if solid is None:
+        return PartMeshResponse(
+            source="computed", mesh=MeshVertexData(vertices=[], normals=[], triangle_indices=[])
         )
 
-    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
-    mesh_data = tessellate_shape(box, DEFAULT_MESH_QUALITY)
-    return PartMeshResponse(
-        mesh=MeshVertexData(
-            vertices=mesh_data.vertices,
-            normals=mesh_data.normals,
-            triangle_indices=[(t.a, t.b, t.c) for t in mesh_data.triangles],
-        )
-    )
+    mesh_data = tessellate_shape(solid, DEFAULT_MESH_QUALITY)
+    return PartMeshResponse(source="computed", mesh=_mesh_vertex_data(mesh_data))

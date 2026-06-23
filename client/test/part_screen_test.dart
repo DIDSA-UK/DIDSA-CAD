@@ -16,10 +16,15 @@ import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 /// Locking is simulated the same way the real backend enforces it: every
 /// Feature except the most-recently-added one is locked.
 class _FakeDocumentBackend {
-  int _nextFeatureId = 1;
+  late int _nextFeatureId;
   final List<Map<String, dynamic>> features;
 
-  _FakeDocumentBackend({List<Map<String, dynamic>>? seedFeatures}) : features = seedFeatures ?? [];
+  // Starts past every seeded Feature's id (seeds are always "feature-N" in
+  // creation order) so a newly-created Feature's id never collides with a
+  // seeded one.
+  _FakeDocumentBackend({List<Map<String, dynamic>>? seedFeatures}) : features = seedFeatures ?? [] {
+    _nextFeatureId = features.length + 1;
+  }
 
   static final Map<String, dynamic> _placeholderMesh = {
     'vertices': [
@@ -65,6 +70,7 @@ class _FakeDocumentBackend {
         feature['locked'] = true;
       }
       final feature = {
+        'type': 'sketch',
         'id': 'feature-${_nextFeatureId++}',
         'sketch_id': 'sketch-$_nextFeatureId',
         'locked': false,
@@ -93,6 +99,45 @@ class _FakeDocumentBackend {
       }, 200);
     }
 
+    if (path == '/document/parts/part-1/extrude-features' && method == 'POST') {
+      for (final feature in features) {
+        feature['locked'] = true;
+      }
+      final feature = {
+        'type': 'extrude',
+        'id': 'feature-${_nextFeatureId++}',
+        'sketch_feature_id': body['sketch_feature_id'],
+        'extrude_type': body['extrude_type'],
+        'start_distance': body['start_distance'],
+        'end_distance': body['end_distance'],
+        'locked': false,
+      };
+      features.add(feature);
+      return _json(feature, 201);
+    }
+
+    final extrudePatchMatch =
+        RegExp(r'^/document/parts/part-1/extrude-features/([^/]+)$').firstMatch(path);
+    if (extrudePatchMatch != null && method == 'PATCH') {
+      final featureId = extrudePatchMatch.group(1);
+      final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
+      if (feature.isEmpty) return http.Response('not found: feature', 404);
+      if (body.containsKey('extrude_type')) feature['extrude_type'] = body['extrude_type'];
+      if (body.containsKey('start_distance')) feature['start_distance'] = body['start_distance'];
+      if (body.containsKey('end_distance')) feature['end_distance'] = body['end_distance'];
+      return _json(feature, 200);
+    }
+
+    final deleteMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)$').firstMatch(path);
+    if (deleteMatch != null && method == 'DELETE') {
+      final featureId = deleteMatch.group(1);
+      final index = features.indexWhere((f) => f['id'] == featureId);
+      if (index == -1) return http.Response('not found: feature', 404);
+      features.removeAt(index);
+      if (features.isNotEmpty) features.last['locked'] = false;
+      return http.Response('', 204);
+    }
+
     return http.Response('not found: $path', 404);
   }
 
@@ -103,7 +148,21 @@ class _FakeDocumentBackend {
 /// satisfy [SketchController.adoptSketch] for a SketchScreen pushed from
 /// [PartScreen].
 class _FakeSketchBackend {
+  /// The `status` every `/profile` request reports - `closed_loop` by
+  /// default (so a Feature's Extrude context-menu entry is enabled in most
+  /// tests), overridden by the one test that exercises the disabled case.
+  final String profileStatus;
+
+  _FakeSketchBackend({this.profileStatus = 'closed_loop'});
+
   http.Response handle(http.Request request) {
+    final profileMatch = RegExp(r'^/sketch/sketches/([^/]+)/profile$').firstMatch(request.url.path);
+    if (profileMatch != null && request.method == 'GET') {
+      return http.Response(
+        jsonEncode({'status': profileStatus, 'detail': 'fake', 'branch_point_ids': [], 'loops': []}),
+        200,
+      );
+    }
     final match = RegExp(r'^/sketch/sketches/([^/]+)$').firstMatch(request.url.path);
     if (match != null && request.method == 'GET') {
       return http.Response(
@@ -162,8 +221,8 @@ void main() {
   testWidgets('tapping a locked Feature only selects it, and does not navigate to its Sketch', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
-        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
       ],
     );
     final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
@@ -219,9 +278,9 @@ void main() {
   ) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
-        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': true},
-        {'id': 'feature-3', 'sketch_id': 'sketch-3', 'locked': false},
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-3', 'sketch_id': 'sketch-3', 'locked': false},
       ],
     );
     final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
@@ -273,8 +332,8 @@ void main() {
   testWidgets('confirming the cascade-delete dialog deletes the Feature and everything after it', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
-        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
       ],
     );
     final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
@@ -373,8 +432,8 @@ void main() {
   ) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
-        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
       ],
     );
     final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
@@ -410,7 +469,7 @@ void main() {
   testWidgets('the Hide/Show context-menu action dims a Feature row and flips its label/icon', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
-        {'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
       ],
     );
     final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
@@ -496,6 +555,155 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('New Sketch on XY'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'long-pressing a SketchFeature with a closed profile offers an enabled Extrude action, and '
+    'confirming it creates an ExtrudeFeature shown in the tree',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Show Feature Tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.longPress(find.text('Sketch 1'));
+      // The closed-profile check is an awaited network round trip before
+      // the menu even shows - pump past it rather than a single frame.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final extrudeTile = find.widgetWithText(ListTile, 'Extrude');
+      expect(extrudeTile, findsOneWidget);
+      expect(tester.widget<ListTile>(extrudeTile).enabled, isTrue);
+
+      await tester.tap(find.text('Extrude'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Confirm'), findsOneWidget);
+      expect(find.text('Cancel'), findsOneWidget);
+
+      await tester.tap(find.text('Confirm'));
+      await tester.pump();
+      await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
+
+      expect(find.text('Extrude 1'), findsOneWidget);
+      expect(backend.features.where((f) => f['type'] == 'extrude'), hasLength(1));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    "long-pressing a SketchFeature without a closed profile shows Extrude disabled, "
+    "with an explanatory subtitle",
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend(profileStatus: 'no_loop');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Show Feature Tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final extrudeTile = find.widgetWithText(ListTile, 'Extrude');
+      expect(extrudeTile, findsOneWidget);
+      expect(tester.widget<ListTile>(extrudeTile).enabled, isFalse);
+      expect(find.text('Sketch does not contain a closed profile'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('cancelling the Extrude panel after a live-preview update deletes the preview ExtrudeFeature', (
+    tester,
+  ) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Open toolbar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Show Feature Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Extrude'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.enterText(find.widgetWithText(TextField, 'End distance'), '20');
+    // Past the 500ms debounce, plus enough extra pumps for the resulting
+    // create-ExtrudeFeature-then-refetch-mesh network round trip to land.
+    await _pumpUntil(tester, () => backend.features.any((f) => f['type'] == 'extrude'));
+
+    expect(backend.features.where((f) => f['type'] == 'extrude'), hasLength(1));
+
+    await tester.tap(find.text('Cancel'));
+    await _pumpUntil(tester, () => backend.features.every((f) => f['type'] != 'extrude'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(backend.features.where((f) => f['type'] == 'extrude'), isEmpty);
+    expect(find.text('Confirm'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }
