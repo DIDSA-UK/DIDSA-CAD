@@ -405,7 +405,11 @@ def test_update_zero_length_line_with_length_is_rejected():
     assert response.status_code == 400
 
 
-def test_update_line_requires_length():
+def test_update_line_with_no_fields_is_a_no_op():
+    # `length` and `construction` are both independently optional on
+    # LineUpdate (Stage 12: a construction toggle must be able to PATCH
+    # `construction` alone, without also resending `length`), so an empty
+    # body is valid input - it just changes nothing.
     sketch = _create_sketch()
     a = _create_point(sketch["id"], 0.0, 0.0)
     b = _create_point(sketch["id"], 1.0, 1.0)
@@ -416,7 +420,10 @@ def test_update_line_requires_length():
 
     response = client.patch(f"/sketch/sketches/{sketch['id']}/lines/{line['id']}", json={})
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["length"] == pytest.approx(line["length"])
+    assert updated["construction"] == line["construction"]
 
 
 def test_multiple_sketches_do_not_interfere_over_the_api():

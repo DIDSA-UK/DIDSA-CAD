@@ -1,0 +1,88 @@
+import math
+
+import pytest
+
+from app.sketch.models import Plane, Sketch
+from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.solver import solve_sketch
+
+
+def test_vertical_constraint_forces_same_x_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 10.0)
+    line = sketch.add_line(a.id, b.id)
+    sketch.add_vertical_constraint(line.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert sketch.points[a.id].x == pytest.approx(sketch.points[b.id].x)
+
+
+def test_horizontal_constraint_forces_same_y_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 10.0)
+    line = sketch.add_line(a.id, b.id)
+    sketch.add_horizontal_constraint(line.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert sketch.points[a.id].y == pytest.approx(sketch.points[b.id].y)
+
+
+def test_angle_constraint_produces_correct_angle_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(0.0, 0.0)
+    d = sketch.add_point(10.0, 1.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_horizontal_constraint(line1.id)
+    sketch.add_angle_constraint(line1.id, line2.id, 30.0)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    p1a, p1b = sketch.points[a.id], sketch.points[b.id]
+    p2a, p2b = sketch.points[c.id], sketch.points[d.id]
+    angle1 = math.atan2(p1b.y - p1a.y, p1b.x - p1a.x)
+    angle2 = math.atan2(p2b.y - p2a.y, p2b.x - p2a.x)
+    angle_between = math.degrees(abs(angle1 - angle2))
+    angle_between = angle_between % 180
+    assert angle_between == pytest.approx(30.0, abs=0.01) or angle_between == pytest.approx(
+        150.0, abs=0.01
+    )
+
+
+def test_construction_line_excluded_from_profile_detection_even_when_closing_a_loop():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(10.0, 10.0)
+    sketch.add_line(a.id, b.id)
+    sketch.add_line(b.id, c.id)
+    # This line would close the loop back to a, but it's construction-only,
+    # so it must be invisible to profile detection.
+    sketch.add_line(c.id, a.id, construction=True)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.NO_LOOP
+
+
+def test_sketch_with_only_construction_entities_has_no_profile():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(10.0, 10.0)
+    sketch.add_line(a.id, b.id, construction=True)
+    sketch.add_line(b.id, c.id, construction=True)
+    sketch.add_line(c.id, a.id, construction=True)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.NO_LOOP

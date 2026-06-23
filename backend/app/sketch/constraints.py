@@ -23,6 +23,29 @@ class SolverBuilder(Protocol):
         returning the resulting py-slvs constraint handle."""
         ...
 
+    def vertical(self, point_a_handle: int, point_b_handle: int) -> int:
+        """Add a py-slvs constraint forcing two point handles to share the
+        same X (workplane U) coordinate, returning the resulting py-slvs
+        constraint handle."""
+        ...
+
+    def horizontal(self, point_a_handle: int, point_b_handle: int) -> int:
+        """Same as `vertical`, but for the Y (workplane V) coordinate."""
+        ...
+
+    def line_segment(self, point_a_handle: int, point_b_handle: int) -> int:
+        """Return a py-slvs line-segment entity handle spanning two point
+        handles, creating it on first use. Needed by AngleConstraint, whose
+        underlying py-slvs primitive (addAngle) takes line entities rather
+        than points directly."""
+        ...
+
+    def angle(self, line_a_handle: int, line_b_handle: int, degrees: float) -> int:
+        """Add a py-slvs angle constraint between two line-segment entity
+        handles (target angle in degrees), returning the resulting py-slvs
+        constraint handle."""
+        ...
+
 
 class Constraint(ABC):
     """Base type for anything that can live in a Sketch's constraint
@@ -74,3 +97,93 @@ class DistanceConstraint(Constraint):
         point_a = builder.point2d(self.point_a_id)
         point_b = builder.point2d(self.point_b_id)
         return builder.distance(point_a, point_b, self.distance)
+
+
+@dataclass
+class VerticalConstraint(Constraint):
+    """Forces a Line's two endpoint Points to share the same X-coordinate
+    (the line runs vertically in the sketch plane).
+
+    References the Line's id for display/API purposes, but - like
+    DistanceConstraint - solves against Point ids directly: `point_a_id`/
+    `point_b_id` are captured from the Line's start/end Point ids at
+    creation time (see Sketch.add_vertical_constraint). This is safe
+    because a Line's start/end Point ids never change after creation, only
+    their coordinates do.
+    """
+
+    id: str
+    line_id: str
+    point_a_id: str
+    point_b_id: str
+
+    @property
+    def type(self) -> str:
+        return "vertical"
+
+    def point_ids(self) -> tuple[str, str]:
+        return (self.point_a_id, self.point_b_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        point_a = builder.point2d(self.point_a_id)
+        point_b = builder.point2d(self.point_b_id)
+        return builder.vertical(point_a, point_b)
+
+
+@dataclass
+class HorizontalConstraint(Constraint):
+    """Same pattern as VerticalConstraint, but forces the shared coordinate
+    to be Y instead of X (the line runs horizontally in the sketch plane)."""
+
+    id: str
+    line_id: str
+    point_a_id: str
+    point_b_id: str
+
+    @property
+    def type(self) -> str:
+        return "horizontal"
+
+    def point_ids(self) -> tuple[str, str]:
+        return (self.point_a_id, self.point_b_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        point_a = builder.point2d(self.point_a_id)
+        point_b = builder.point2d(self.point_b_id)
+        return builder.horizontal(point_a, point_b)
+
+
+@dataclass
+class AngleConstraint(Constraint):
+    """Pins the angle between two Lines to a fixed value in degrees.
+
+    References both Lines' ids for display/API purposes; each Line's
+    endpoint Point ids are captured at creation time (see
+    Sketch.add_angle_constraint), same rationale as VerticalConstraint/
+    HorizontalConstraint above.
+    """
+
+    id: str
+    line1_id: str
+    line2_id: str
+    angle_degrees: float
+    line1_start_id: str
+    line1_end_id: str
+    line2_start_id: str
+    line2_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "angle"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line1_start_id, self.line1_end_id, self.line2_start_id, self.line2_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
+        )
+        line2 = builder.line_segment(
+            builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
+        )
+        return builder.angle(line1, line2, self.angle_degrees)

@@ -22,6 +22,33 @@ vm.Vector3 sketchPointToWorld(ReferencePlaneKind plane, double x, double y) => s
       ReferencePlaneKind.yz => vm.Vector3(0, x, y),
     };
 
+/// The inverse of [sketchPointToWorld]: drops [point]'s off-plane axis to
+/// project it onto [plane]'s local 2D coordinates. Used for Stage 12's
+/// ghost wireframe overlay (see [projectMeshEdgesOntoPlane]) - an orthogonal
+/// drop-the-normal-axis projection is exact (not an approximation) because
+/// every [ReferencePlaneKind] is itself axis-aligned through the origin.
+(double, double) worldPointToSketch(ReferencePlaneKind plane, vm.Vector3 point) => switch (plane) {
+      ReferencePlaneKind.xy => (point.x, point.y),
+      ReferencePlaneKind.xz => (point.x, point.z),
+      ReferencePlaneKind.yz => (point.y, point.z),
+    };
+
+/// Projects every mesh-edge [segments] pair (see [edgeSegmentsFromMesh] in
+/// mesh_geometry.dart) onto [plane] via [worldPointToSketch] - the existing
+/// solid's edges, flattened into the active Sketch's own 2D coordinate
+/// space, ready for [SketchCanvas]'s ghost-overlay painter (Stage 12 item
+/// 9). Plain `(double, double)` tuples rather than a Sketch-package type,
+/// so this stays in viewport3d and the 2D sketch package doesn't need to
+/// depend on it.
+List<((double, double), (double, double))> projectMeshEdgesOntoPlane(
+  ReferencePlaneKind plane,
+  List<(vm.Vector3, vm.Vector3)> segments,
+) =>
+    [
+      for (final segment in segments)
+        (worldPointToSketch(plane, segment.$1), worldPointToSketch(plane, segment.$2)),
+    ];
+
 /// Segments approximating a rendered Circle outline - high enough to read as
 /// round at [referencePlaneSize]-ish scales without costing much per circle.
 const int circleSegments3D = 32;

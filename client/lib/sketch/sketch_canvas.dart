@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
+import '../api/sketch_api_client.dart';
 import 'plane_indicator.dart';
 import 'sketch_controller.dart';
 import 'sketch_viewport.dart';
@@ -19,7 +20,25 @@ import 'view_transform.dart';
 class SketchCanvas extends StatefulWidget {
   final SketchController controller;
 
-  const SketchCanvas({super.key, required this.controller});
+  /// The active Sketch plane's already-projected ghost wireframe (Stage 12
+  /// item 9) - plain 2D coordinate pairs in this Sketch's own local space
+  /// (see `projectMeshEdgesOntoPlane` in viewport3d/sketch_geometry_3d.dart,
+  /// which computes these from the Part's mesh before this widget is ever
+  /// built). Empty when there's no existing solid yet, or this isn't being
+  /// opened from [PartScreen] at all.
+  final List<((double, double), (double, double))> referenceGhostSegments;
+
+  /// Stage 12 item 9's Hide/Show Reference Body toggle - owned by
+  /// [SketchScreen] (mirrors `PartScreen._referencePlanesHidden`'s pattern),
+  /// just threaded through here for the painter to honor.
+  final bool referenceBodyHidden;
+
+  const SketchCanvas({
+    super.key,
+    required this.controller,
+    this.referenceGhostSegments = const [],
+    this.referenceBodyHidden = false,
+  });
 
   @override
   State<SketchCanvas> createState() => _SketchCanvasState();
@@ -181,7 +200,12 @@ class _SketchCanvasState extends State<SketchCanvas> {
                 builder: (context, _) {
                   return CustomPaint(
                     size: size,
-                    painter: _SketchPainter(controller: widget.controller, transform: transform),
+                    painter: _SketchPainter(
+                      controller: widget.controller,
+                      transform: transform,
+                      referenceGhostSegments: widget.referenceGhostSegments,
+                      referenceBodyHidden: widget.referenceBodyHidden,
+                    ),
                   );
                 },
               ),
@@ -214,8 +238,20 @@ class _SketchCanvasState extends State<SketchCanvas> {
 class _SketchPainter extends CustomPainter {
   final SketchController controller;
   final ViewTransform transform;
+  final List<((double, double), (double, double))> referenceGhostSegments;
+  final bool referenceBodyHidden;
 
-  _SketchPainter({required this.controller, required this.transform});
+  _SketchPainter({
+    required this.controller,
+    required this.transform,
+    this.referenceGhostSegments = const [],
+    this.referenceBodyHidden = false,
+  });
+
+  /// Stage 12 item 9's ghost wireframe color - faint and thinner than every
+  /// real entity, so the existing solid always reads as a reference, never
+  /// as something editable in this Sketch.
+  static const Color _referenceGhostColor = Color(0xFF444444);
 
   /// Idle-state hoverable/selectable highlight colors - deliberately
   /// distinct from each other and from every "in progress" drawing color
@@ -223,9 +259,179 @@ class _SketchPainter extends CustomPainter {
   static const Color _hoverColor = Colors.amber;
   static const Color _selectedColor = Colors.purple;
 
+  /// Construction-only Line/Circle color (Stage 12 item 7) - dashed,
+  /// everywhere this painter draws entities, so it stays visually distinct
+  /// from solid geometry at a glance.
+  static const Color _constructionColor = Color(0xFF4A90D9);
+
+  /// Stage 12 item 10's dimension-overlay color - the prompt only names
+  /// this color for the Vertical/Horizontal glyphs, but using it for every
+  /// overlay (Distance/Angle too) keeps them all visually distinct from
+  /// entity colors without inventing an unspecified palette.
+  static const Color _dimensionColor = Color(0xFFF5A623);
+
+  /// Draws [start]-to-[end] as a dashed segment - used for construction
+  /// Lines. There's no dashed-stroke primitive on [Canvas]/[Paint], so this
+  /// walks the segment in fixed-length on/off increments by hand.
+  void _drawDashedLine(Canvas canvas, Offset start, Offset end, Paint paint) {
+    const dashLength = 6.0;
+    const gapLength = 4.0;
+    final total = (end - start).distance;
+    if (total == 0) return;
+    final direction = (end - start) / total;
+    var travelled = 0.0;
+    while (travelled < total) {
+      final dashEnd = math.min(travelled + dashLength, total);
+      canvas.drawLine(start + direction * travelled, start + direction * dashEnd, paint);
+      travelled += dashLength + gapLength;
+    }
+  }
+
+  /// Draws a dashed circle outline - used for construction Circles. Walks
+  /// the circumference in fixed-angle on/off arc increments, mirroring
+  /// [_drawDashedLine]'s fixed-length approach (an arc-length-based dash
+  /// would vary the angular step with radius, which isn't needed here).
+  void _drawDashedCircle(Canvas canvas, Offset center, double radiusPixels, Paint paint) {
+    if (radiusPixels <= 0) return;
+    const dashAngle = 0.12; // radians
+    const gapAngle = 0.08;
+    var angle = 0.0;
+    while (angle < 2 * math.pi) {
+      final sweep = math.min(dashAngle, 2 * math.pi - angle);
+      final path = Path()
+        ..addArc(
+          Rect.fromCircle(center: center, radius: radiusPixels),
+          angle,
+          sweep,
+        );
+      canvas.drawPath(path, paint);
+      angle += dashAngle + gapAngle;
+    }
+  }
+
+  /// Stage 12 item 10: renders every Constraint in [SketchController.constraints]
+  /// as a render-only overlay - there is no client-side UI to create or edit
+  /// a Distance/Angle value yet (the backend has no PATCH endpoint for
+  /// constraint values), so these are display-only, dispatched by runtime
+  /// type since [ConstraintDto] isn't a sealed hierarchy.
+  void _paintDimensionOverlays(Canvas canvas) {
+    for (final constraint in controller.constraints.values) {
+      switch (constraint) {
+        case DistanceConstraintDto c:
+          _paintDistanceDimension(canvas, c);
+        case VerticalConstraintDto c:
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V');
+        case HorizontalConstraintDto c:
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H');
+        case AngleConstraintDto c:
+          _paintAngleDimension(canvas, c);
+        default:
+          break;
+      }
+    }
+  }
+
+  /// Draws a small filled, rounded-rect "chip" centered on [center] with
+  /// [text] in white - shared by every dimension overlay below so they all
+  /// read consistently against busy sketch geometry.
+  void _drawDimensionLabel(Canvas canvas, Offset center, String text, Color color) {
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    const horizontalPadding = 4.0;
+    const verticalPadding = 2.0;
+    final chipRect = Rect.fromCenter(
+      center: center,
+      width: textPainter.width + horizontalPadding * 2,
+      height: textPainter.height + verticalPadding * 2,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(chipRect, const Radius.circular(3)),
+      Paint()..color = color,
+    );
+    textPainter.paint(canvas, center - Offset(textPainter.width / 2, textPainter.height / 2));
+  }
+
+  /// Distance dimension: a standard two-extension-line-plus-offset-segment
+  /// layout, offset perpendicular to the constrained points by a fixed
+  /// pixel amount (so it reads clearly regardless of zoom), labeled with
+  /// the constraint's own [DistanceConstraintDto.distance] (the solved
+  /// value, not a measurement of the current screen geometry).
+  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c) {
+    final a = controller.points[c.pointAId];
+    final b = controller.points[c.pointBId];
+    if (a == null || b == null) return;
+    final aScreen = transform.sketchToScreen(a.x, a.y);
+    final bScreen = transform.sketchToScreen(b.x, b.y);
+    final delta = bScreen - aScreen;
+    final length = delta.distance;
+    if (length < 1e-6) return;
+    final normal = Offset(-delta.dy, delta.dx) / length;
+    const offsetDistance = 18.0;
+    final offset = normal * offsetDistance;
+
+    final dimPaint = Paint()
+      ..color = _dimensionColor
+      ..strokeWidth = 1;
+    canvas.drawLine(aScreen, aScreen + offset, dimPaint);
+    canvas.drawLine(bScreen, bScreen + offset, dimPaint);
+    canvas.drawLine(aScreen + offset, bScreen + offset, dimPaint);
+
+    final midpoint = (aScreen + offset + bScreen + offset) / 2;
+    _drawDimensionLabel(canvas, midpoint, c.distance.toStringAsFixed(2), _dimensionColor);
+  }
+
+  /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
+  /// Line's midpoint - there's no "value" to dimension, only the
+  /// constraint's existence.
+  void _paintAxisIndicator(Canvas canvas, String pointAId, String pointBId, String label) {
+    final a = controller.points[pointAId];
+    final b = controller.points[pointBId];
+    if (a == null || b == null) return;
+    final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
+    _drawDimensionLabel(canvas, midpoint, label, _dimensionColor);
+  }
+
+  /// Angle dimension: deliberately a numeric-only label rather than a
+  /// literal arc sweep - the two constrained Lines have no shared vertex in
+  /// general, so there's no single well-defined arc to draw. Placed at the
+  /// midpoint between each Line's own midpoint, which stays stable and
+  /// roughly "between" the two Lines regardless of their actual layout.
+  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c) {
+    final midpoint1 = _lineMidpointScreen(c.line1Id);
+    final midpoint2 = _lineMidpointScreen(c.line2Id);
+    if (midpoint1 == null || midpoint2 == null) return;
+    final midpoint = (midpoint1 + midpoint2) / 2;
+    _drawDimensionLabel(canvas, midpoint, '∠${c.angleDegrees.toStringAsFixed(1)}°', _dimensionColor);
+  }
+
+  Offset? _lineMidpointScreen(String lineId) {
+    final line = controller.lines[lineId];
+    if (line == null) return null;
+    final start = controller.points[line.startPointId];
+    final end = controller.points[line.endPointId];
+    if (start == null || end == null) return null;
+    return (transform.sketchToScreen(start.x, start.y) + transform.sketchToScreen(end.x, end.y)) / 2;
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
+
+    if (!referenceBodyHidden && referenceGhostSegments.isNotEmpty) {
+      final ghostPaint = Paint()
+        ..color = _referenceGhostColor
+        ..strokeWidth = 1;
+      for (final segment in referenceGhostSegments) {
+        final start = transform.sketchToScreen(segment.$1.$1, segment.$1.$2);
+        final end = transform.sketchToScreen(segment.$2.$1, segment.$2.$2);
+        _drawDashedLine(canvas, start, end, ghostPaint);
+      }
+    }
 
     final hovered = controller.hoveredEntity;
     final selected = controller.selection;
@@ -241,13 +447,17 @@ class _SketchPainter extends CustomPainter {
             ? _selectedColor
             : isHovered
                 ? _hoverColor
-                : Colors.blueGrey.shade700
+                : line.construction
+                    ? _constructionColor
+                    : Colors.blueGrey.shade700
         ..strokeWidth = isSelected || isHovered ? 3 : 2;
-      canvas.drawLine(
-        transform.sketchToScreen(start.x, start.y),
-        transform.sketchToScreen(end.x, end.y),
-        linePaint,
-      );
+      final startScreen = transform.sketchToScreen(start.x, start.y);
+      final endScreen = transform.sketchToScreen(end.x, end.y);
+      if (line.construction) {
+        _drawDashedLine(canvas, startScreen, endScreen, linePaint);
+      } else {
+        canvas.drawLine(startScreen, endScreen, linePaint);
+      }
     }
 
     for (final circle in controller.circles.values) {
@@ -264,14 +474,18 @@ class _SketchPainter extends CustomPainter {
             ? _selectedColor
             : isHovered
                 ? _hoverColor
-                : Colors.blueGrey.shade700
+                : circle.construction
+                    ? _constructionColor
+                    : Colors.blueGrey.shade700
         ..style = PaintingStyle.stroke
         ..strokeWidth = isSelected || isHovered ? 3 : 2;
-      canvas.drawCircle(
-        transform.sketchToScreen(center.x, center.y),
-        radius * transform.pixelsPerUnit,
-        circlePaint,
-      );
+      final centerScreen = transform.sketchToScreen(center.x, center.y);
+      final radiusPixels = radius * transform.pixelsPerUnit;
+      if (circle.construction) {
+        _drawDashedCircle(canvas, centerScreen, radiusPixels, circlePaint);
+      } else {
+        canvas.drawCircle(centerScreen, radiusPixels, circlePaint);
+      }
     }
 
     final originId = controller.originPointId;
@@ -329,6 +543,8 @@ class _SketchPainter extends CustomPainter {
       }
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
     }
+
+    _paintDimensionOverlays(canvas);
 
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final crosshairPaint = Paint()

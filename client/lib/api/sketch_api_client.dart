@@ -49,12 +49,14 @@ class LineDto {
   final String startPointId;
   final String endPointId;
   final double length;
+  final bool construction;
 
   LineDto({
     required this.id,
     required this.startPointId,
     required this.endPointId,
     required this.length,
+    this.construction = false,
   });
 
   factory LineDto.fromJson(Map<String, dynamic> json) => LineDto(
@@ -62,6 +64,7 @@ class LineDto {
         startPointId: json['start_point_id'] as String,
         endPointId: json['end_point_id'] as String,
         length: (json['length'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
       );
 }
 
@@ -70,12 +73,14 @@ class CircleDto {
   final String centerPointId;
   final String radiusPointId;
   final double radius;
+  final bool construction;
 
   CircleDto({
     required this.id,
     required this.centerPointId,
     required this.radiusPointId,
     required this.radius,
+    this.construction = false,
   });
 
   factory CircleDto.fromJson(Map<String, dynamic> json) => CircleDto(
@@ -83,6 +88,113 @@ class CircleDto {
         centerPointId: json['center_point_id'] as String,
         radiusPointId: json['radius_point_id'] as String,
         radius: (json['radius'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+/// Base type for the backend's discriminated Constraint union (Stage 12) -
+/// see app/sketch/schemas.py's `ConstraintResponse`. Only used by the client
+/// to *render* existing constraints (Stage 12 item 10's dimension
+/// overlays); there is no client-side constraint creation/editing UI yet,
+/// so there's no matching `*Create`/`*Update` DTO pair on this side.
+abstract class ConstraintDto {
+  final String id;
+  const ConstraintDto({required this.id});
+
+  /// Dispatches on the backend's `type` discriminator, defaulting to
+  /// [DistanceConstraintDto] when absent - mirrors the backend's own
+  /// smart-union fallback (see DistanceConstraintCreate's `type` default).
+  static ConstraintDto fromJson(Map<String, dynamic> json) {
+    switch (json['type'] as String?) {
+      case 'vertical':
+        return VerticalConstraintDto.fromJson(json);
+      case 'horizontal':
+        return HorizontalConstraintDto.fromJson(json);
+      case 'angle':
+        return AngleConstraintDto.fromJson(json);
+      default:
+        return DistanceConstraintDto.fromJson(json);
+    }
+  }
+}
+
+class DistanceConstraintDto extends ConstraintDto {
+  final String pointAId;
+  final String pointBId;
+  final double distance;
+
+  const DistanceConstraintDto({
+    required super.id,
+    required this.pointAId,
+    required this.pointBId,
+    required this.distance,
+  });
+
+  factory DistanceConstraintDto.fromJson(Map<String, dynamic> json) => DistanceConstraintDto(
+        id: json['id'] as String,
+        pointAId: json['point_a_id'] as String,
+        pointBId: json['point_b_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+      );
+}
+
+class VerticalConstraintDto extends ConstraintDto {
+  final String lineId;
+  final String pointAId;
+  final String pointBId;
+
+  const VerticalConstraintDto({
+    required super.id,
+    required this.lineId,
+    required this.pointAId,
+    required this.pointBId,
+  });
+
+  factory VerticalConstraintDto.fromJson(Map<String, dynamic> json) => VerticalConstraintDto(
+        id: json['id'] as String,
+        lineId: json['line_id'] as String,
+        pointAId: json['point_a_id'] as String,
+        pointBId: json['point_b_id'] as String,
+      );
+}
+
+class HorizontalConstraintDto extends ConstraintDto {
+  final String lineId;
+  final String pointAId;
+  final String pointBId;
+
+  const HorizontalConstraintDto({
+    required super.id,
+    required this.lineId,
+    required this.pointAId,
+    required this.pointBId,
+  });
+
+  factory HorizontalConstraintDto.fromJson(Map<String, dynamic> json) => HorizontalConstraintDto(
+        id: json['id'] as String,
+        lineId: json['line_id'] as String,
+        pointAId: json['point_a_id'] as String,
+        pointBId: json['point_b_id'] as String,
+      );
+}
+
+class AngleConstraintDto extends ConstraintDto {
+  final String line1Id;
+  final String line2Id;
+  final double angleDegrees;
+
+  const AngleConstraintDto({
+    required super.id,
+    required this.line1Id,
+    required this.line2Id,
+    required this.angleDegrees,
+  });
+
+  factory AngleConstraintDto.fromJson(Map<String, dynamic> json) => AngleConstraintDto(
+        id: json['id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+        angleDegrees: (json['angle_degrees'] as num).toDouble(),
       );
 }
 
@@ -219,25 +331,68 @@ class SketchApiClient {
             .toList(),
       );
 
-  Future<LineDto> createLine(String sketchId, String startPointId, String endPointId) => _send(
+  Future<LineDto> createLine(
+    String sketchId,
+    String startPointId,
+    String endPointId, {
+    bool construction = false,
+  }) =>
+      _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/lines'),
               headers: _headers,
               body: jsonEncode({
                 'start_point_id': startPointId,
                 'end_point_id': endPointId,
+                'construction': construction,
               }),
             ),
         (body) => LineDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<CircleDto> createCircle(String sketchId, String centerPointId, String radiusPointId) => _send(
+  Future<CircleDto> createCircle(
+    String sketchId,
+    String centerPointId,
+    String radiusPointId, {
+    bool construction = false,
+  }) =>
+      _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/circles'),
               headers: _headers,
               body: jsonEncode({
                 'center_point_id': centerPointId,
                 'radius_point_id': radiusPointId,
+                'construction': construction,
+              }),
+            ),
+        (body) => CircleDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Toggles a Line's construction flag (Make-Construction/Make-Solid) -
+  /// `length` is left null since this call never needs to also resize the
+  /// line (see backend LineUpdate, where both fields are independently
+  /// optional).
+  Future<LineDto> updateLine(String sketchId, String lineId, {bool? construction, double? length}) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/lines/$lineId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (length != null) 'length': length,
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => LineDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Toggles a Circle's construction flag - mirrors [updateLine].
+  Future<CircleDto> updateCircle(String sketchId, String circleId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/circles/$circleId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
               }),
             ),
         (body) => CircleDto.fromJson(body as Map<String, dynamic>),
@@ -265,6 +420,13 @@ class SketchApiClient {
               headers: _headers,
             ),
         (_) {},
+      );
+
+  Future<List<ConstraintDto>> listConstraints(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/constraints'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => ConstraintDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
       );
 
   Future<SolveResultDto> solve(String sketchId) => _send(
