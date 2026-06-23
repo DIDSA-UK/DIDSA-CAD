@@ -61,6 +61,7 @@ def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
         vertices=mesh_data.vertices,
         normals=mesh_data.normals,
         triangle_indices=[(t.a, t.b, t.c) for t in mesh_data.triangles],
+        edges=mesh_data.edges,
     )
 
 
@@ -256,7 +257,8 @@ def get_part_mesh(
     solid = compute_part_solid(part, frozenset(hidden_feature_ids))
     if solid is None:
         return PartMeshResponse(
-            source="computed", mesh=MeshVertexData(vertices=[], normals=[], triangle_indices=[])
+            source="computed",
+            mesh=MeshVertexData(vertices=[], normals=[], triangle_indices=[], edges=[]),
         )
 
     mesh_data = tessellate_shape(solid, DEFAULT_MESH_QUALITY)

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/mesh_geometry.dart';
@@ -103,5 +104,47 @@ void main() {
     final mesh = MeshDto(vertices: [], normals: [], triangleIndices: []);
 
     expect(boundsOfMesh(mesh), isNull);
+  });
+
+  test('edgeSegmentsFromMesh groups the flat edges array into 6-float segment pairs', () {
+    final mesh = MeshDto(
+      vertices: [],
+      normals: [],
+      triangleIndices: [],
+      edges: [0, 0, 0, 10, 0, 0, 10, 0, 0, 10, 10, 0],
+    );
+
+    final segments = edgeSegmentsFromMesh(mesh);
+
+    expect(segments, hasLength(2));
+    expect(segments[0].$1, vm.Vector3(0, 0, 0));
+    expect(segments[0].$2, vm.Vector3(10, 0, 0));
+    expect(segments[1].$1, vm.Vector3(10, 0, 0));
+    expect(segments[1].$2, vm.Vector3(10, 10, 0));
+  });
+
+  test('edgeSegmentsFromMesh returns no segments for an empty edges array', () {
+    final mesh = MeshDto(vertices: [], normals: [], triangleIndices: [], edges: []);
+
+    expect(edgeSegmentsFromMesh(mesh), isEmpty);
+  });
+
+  test('nudgeSegmentsOutward pushes each point away from center by amount', () {
+    final segments = [(vm.Vector3(0, 0, 0), vm.Vector3(10, 0, 0))];
+
+    final nudged = nudgeSegmentsOutward(segments, vm.Vector3(5, 0, 0), 1.0);
+
+    // The first point is 5 units left of center -> nudged 1 further left.
+    expect(nudged[0].$1, vm.Vector3(-6, 0, 0));
+    // The second point is 5 units right of center -> nudged 1 further right.
+    expect(nudged[0].$2, vm.Vector3(11, 0, 0));
+  });
+
+  test('nudgeSegmentsOutward leaves a point exactly at center unchanged', () {
+    final segments = [(vm.Vector3(5, 5, 5), vm.Vector3(10, 0, 0))];
+
+    final nudged = nudgeSegmentsOutward(segments, vm.Vector3(5, 5, 5), 1.0);
+
+    expect(nudged[0].$1, vm.Vector3(5, 5, 5));
   });
 }

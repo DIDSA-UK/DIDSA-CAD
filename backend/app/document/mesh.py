@@ -1,11 +1,14 @@
 from dataclasses import dataclass, field
 
 from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
-from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_REVERSED
-from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.GCPnts import GCPnts_TangentialDeflection
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
+from OCC.Core.TopExp import TopExp, TopExp_Explorer
 from OCC.Core.TopLoc import TopLoc_Location
-from OCC.Core.TopoDS import TopoDS_Face, topods
+from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Face, topods
+from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 
 @dataclass
@@ -22,6 +25,13 @@ class MeshQuality:
 
 
 DEFAULT_MESH_QUALITY = MeshQuality()
+
+# Chord-height tolerance (Stage 11) for subdividing curved edges into
+# polyline segments - independent of the triangle mesh's own deflection
+# above, since edges are sampled straight from the OCCT curve, not derived
+# from the triangulation.
+EDGE_CHORD_HEIGHT_TOLERANCE = 0.1
+EDGE_ANGULAR_DEFLECTION = 0.5
 
 
 @dataclass
@@ -41,6 +51,11 @@ class MeshData:
     vertices: list[tuple[float, float, float]] = field(default_factory=list)
     normals: list[tuple[float, float, float]] = field(default_factory=list)
     triangles: list[Triangle] = field(default_factory=list)
+    # Stage 11: flat [x1,y1,z1, x2,y2,z2, ...] polyline segments, one run per
+    # OCCT edge - straight edges collapse to a single segment, curved edges
+    # subdivide per EDGE_CHORD_HEIGHT_TOLERANCE. Independent of `triangles`;
+    # never derived from the mesh's own triangle edges.
+    edges: list[float] = field(default_factory=list)
 
 
 def _cross(u: tuple[float, float, float], v: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -81,7 +96,49 @@ def tessellate_shape(shape, quality: MeshQuality = DEFAULT_MESH_QUALITY) -> Mesh
         _append_face_triangles(face, mesh)
         explorer.Next()
 
+    mesh.edges = _extract_edges(shape)
     return mesh
+
+
+def _extract_edges(shape) -> list[float]:
+    """Real-geometry edge polylines for `shape`, sampled from each edge's
+    underlying OCCT curve (BRepAdaptor_Curve), not derived from the
+    triangle mesh - that would show every tessellation triangle's edges
+    instead of the shape's true ones. `TopExp.MapShapes` is used (rather
+    than a plain TopExp_Explorer, as `_append_face_triangles` above uses
+    for faces) because an edge shared between two faces is referenced from
+    both and a plain explorer would walk it twice; the indexed map
+    de-duplicates by underlying shape identity, so e.g. a box's 12 edges
+    are returned exactly once each."""
+    edge_map = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes(shape, TopAbs_EDGE, edge_map)
+
+    segments: list[float] = []
+    for i in range(1, edge_map.Extent() + 1):
+        edge = topods.Edge(edge_map(i))
+        if BRep_Tool.Degenerated(edge):
+            continue
+        points = _sample_edge(edge)
+        for p1, p2 in zip(points, points[1:]):
+            segments.extend([p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]])
+
+    return segments
+
+
+def _sample_edge(edge: TopoDS_Edge) -> list[tuple[float, float, float]]:
+    """Polyline points along `edge`'s real curve: exactly 2 (start/end) for
+    a straight line, more for curved edges, adaptively subdivided so no
+    sampled chord deviates from the true curve by more than
+    EDGE_CHORD_HEIGHT_TOLERANCE - the same tangential-deflection algorithm
+    OCCT's own viewer uses to discretize edges for display."""
+    adaptor = BRepAdaptor_Curve(edge)
+    discretizer = GCPnts_TangentialDeflection(
+        adaptor, EDGE_ANGULAR_DEFLECTION, EDGE_CHORD_HEIGHT_TOLERANCE, 2
+    )
+    return [
+        (point.X(), point.Y(), point.Z())
+        for point in (discretizer.Value(i) for i in range(1, discretizer.NbPoints() + 1))
+    ]
 
 
 def _append_face_triangles(face: TopoDS_Face, mesh: MeshData) -> None:

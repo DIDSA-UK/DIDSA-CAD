@@ -72,6 +72,9 @@ class MeshVertexData(BaseModel):
     vertices: list[tuple[float, float, float]]
     normals: list[tuple[float, float, float]]
     triangle_indices: list[tuple[int, int, int]]
+    # Stage 11: flat [x1,y1,z1, x2,y2,z2, ...] edge polyline segments, sampled
+    # from the shape's real OCCT curves - see app.document.mesh._extract_edges.
+    edges: list[float]
 
 
 class PartMeshResponse(BaseModel):

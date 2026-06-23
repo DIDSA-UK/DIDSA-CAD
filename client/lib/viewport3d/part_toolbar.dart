@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'reference_planes.dart';
+import 'render_mode.dart';
 
 /// [PartScreen]'s contextual toolbar - styled and animated to match
 /// [SketchRibbon]'s slide-in-from-the-left panel (same [Material] card with
@@ -30,6 +31,15 @@ class PartToolbar extends StatelessWidget {
   final bool referencePlanesHidden;
   final VoidCallback? onToggleReferencePlanes;
 
+  /// Stage 11: the viewport's current display mode - mirrors
+  /// [PartViewport]'s controlled `renderMode`, same pattern as
+  /// [referencePlanesHidden]. Renders one tappable entry per
+  /// [ViewportRenderMode] value (not a single cycling toggle, since three
+  /// states don't fit the "label names the next state" convention the
+  /// Hide/Show entry above uses), with a check mark on whichever is active.
+  final ViewportRenderMode renderMode;
+  final void Function(ViewportRenderMode mode)? onRenderModeChanged;
+
   const PartToolbar({
     super.key,
     required this.visible,
@@ -38,6 +48,8 @@ class PartToolbar extends StatelessWidget {
     this.onNewSketchOnPlane,
     this.referencePlanesHidden = false,
     this.onToggleReferencePlanes,
+    this.renderMode = ViewportRenderMode.shaded,
+    this.onRenderModeChanged,
   });
 
   @override
@@ -84,6 +96,17 @@ class PartToolbar extends StatelessWidget {
                           ),
                           onTap: onToggleReferencePlanes,
                         ),
+                        const Divider(height: 1),
+                        for (final mode in ViewportRenderMode.values)
+                          ListTile(
+                            leading: Icon(mode.icon),
+                            title: Text(mode.label),
+                            trailing: mode == renderMode ? const Icon(Icons.check) : null,
+                            onTap: onRenderModeChanged == null
+                                ? null
+                                : () => onRenderModeChanged!(mode),
+                          ),
+                        const Divider(height: 1),
                         if (plane != null)
                           ListTile(
                             leading: Icon(Icons.add_box_outlined, color: _colorOf(plane)),
