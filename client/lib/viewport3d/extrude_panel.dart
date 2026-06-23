@@ -53,12 +53,22 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
   late final TextEditingController _startController;
   late final TextEditingController _endController;
 
+  /// The depth implied by the current start/end fields - `null` once they
+  /// no longer parse as numbers, so [build] can fall back to not showing a
+  /// value rather than a stale one. Mirrors the backend's own validation
+  /// (end_distance must exceed start_distance - see
+  /// app.document.router._validate_extrude_distances) so the user sees why
+  /// a Confirm/preview update would be rejected before they even try it,
+  /// rather than only finding out from a rejected request.
+  double? _depth;
+
   @override
   void initState() {
     super.initState();
     _type = widget.initialType;
     _startController = TextEditingController(text: _formatDistance(widget.initialStartDistance));
     _endController = TextEditingController(text: _formatDistance(widget.initialEndDistance));
+    _depth = widget.initialEndDistance - widget.initialStartDistance;
   }
 
   @override
@@ -74,6 +84,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
   void _emitChange() {
     final start = double.tryParse(_startController.text);
     final end = double.tryParse(_endController.text);
+    setState(() => _depth = (start != null && end != null) ? end - start : null);
     if (start == null || end == null) return;
     widget.onChanged(_type, start, end);
   }
@@ -133,6 +144,20 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _depth == null
+                      ? 'Enter valid numbers for both distances'
+                      : _depth! > 0
+                          ? 'Depth: ${_formatDistance(_depth!)}'
+                          : 'End distance must be greater than start distance',
+                  style: TextStyle(
+                    color: (_depth == null || _depth! <= 0)
+                        ? Theme.of(context).colorScheme.error
+                        : Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
                 ),
                 const SizedBox(height: 12),
                 Row(

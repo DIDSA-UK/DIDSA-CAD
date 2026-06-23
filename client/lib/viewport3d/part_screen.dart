@@ -125,7 +125,7 @@ class _PartScreenState extends State<PartScreen> {
       debugPrint('[PartScreen] createPart done: ${part.id}');
       _part = part;
       debugPrint('[PartScreen] getPartMesh...');
-      _mesh = (await _api.getPartMesh(part.id)).mesh;
+      await _refreshMesh();
       debugPrint('[PartScreen] getPartMesh done: ${_mesh!.vertices.length} vertices');
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -137,6 +137,18 @@ class _PartScreenState extends State<PartScreen> {
     final part = _part;
     if (part == null) return;
     _features = await _api.listFeatures(part.id);
+  }
+
+  /// Re-fetches the Part's mesh with [_hiddenFeatureIds] sent along, so a
+  /// hidden ExtrudeFeature's contribution to the displayed solid (and so to
+  /// the camera target/zoom bounds [PartViewport] derives from it) drops
+  /// out immediately - called after anything that can change either the
+  /// Part's geometry (extrude preview/confirm/cancel, cascade delete) or
+  /// [_hiddenFeatureIds] itself (Hide/Show).
+  Future<void> _refreshMesh() async {
+    final part = _part;
+    if (part == null) return;
+    _mesh = (await _api.getPartMesh(part.id, hiddenFeatureIds: _hiddenFeatureIds.toList())).mesh;
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -304,7 +316,7 @@ class _PartScreenState extends State<PartScreen> {
       case FeatureContextMenuAction.extrude:
         _openExtrudePanel(feature);
       case FeatureContextMenuAction.toggleVisibility:
-        _toggleFeatureVisibility(feature);
+        await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
         await _cascadeDeleteFeature(feature);
     }
@@ -353,7 +365,7 @@ class _PartScreenState extends State<PartScreen> {
         endDistance: end,
       );
     }
-    _mesh = (await _api.getPartMesh(part.id)).mesh;
+    await _refreshMesh();
   }
 
   /// [ExtrudePanel.onChanged] - records the latest values immediately (so
@@ -407,16 +419,22 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || previewId == null) return;
     await _runGuarded(() async {
       await _api.deleteFeature(part.id, previewId);
-      _mesh = meshBefore ?? (await _api.getPartMesh(part.id)).mesh;
+      if (meshBefore != null) {
+        _mesh = meshBefore;
+      } else {
+        await _refreshMesh();
+      }
       await _refreshFeatures();
     });
   }
 
-  /// Client-side-only Hide/Show for a Feature's 3D geometry - never sent to
-  /// the backend, so this is purely a local Set toggle plus a recompute of
-  /// [_visibleSketchGeometries] (the reference-plane/mesh viewport itself
-  /// doesn't need this - only Sketch geometry can be hidden per Feature).
-  void _toggleFeatureVisibility(FeatureDto feature) {
+  /// Client-side-only Hide/Show for a Feature - [_hiddenFeatureIds] itself
+  /// is never sent to the backend, but it *is* re-sent as the mesh
+  /// endpoint's `hidden_feature_ids` query param (see [_refreshMesh]), so
+  /// hiding an ExtrudeFeature also drops its volume from the displayed
+  /// solid, not just its own Sketch geometry from [_visibleSketchGeometries]
+  /// (a SketchFeature has no solid of its own to drop).
+  Future<void> _toggleFeatureVisibility(FeatureDto feature) async {
     setState(() {
       if (_hiddenFeatureIds.contains(feature.id)) {
         _hiddenFeatureIds.remove(feature.id);
@@ -425,6 +443,7 @@ class _PartScreenState extends State<PartScreen> {
       }
       _recomputeVisibleSketchGeometries();
     });
+    await _runGuarded(_refreshMesh);
   }
 
   /// Cascade-deletes [feature] and every Feature after it, once the user
@@ -456,6 +475,7 @@ class _PartScreenState extends State<PartScreen> {
       }
       _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
       _recomputeVisibleSketchGeometries();
+      await _refreshMesh();
     });
   }
 

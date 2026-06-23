@@ -102,22 +102,35 @@ def _solid_for_extrude_feature(
     normal = plane_normal(plane)
     direction = gp_Vec(normal.X(), normal.Y(), normal.Z())
 
+    # start_distance/end_distance are both signed offsets along `direction`
+    # from the sketch plane - the solid spans literally from one to the
+    # other, so the face is moved to start_distance first and the prism
+    # then covers the remaining (end_distance - start_distance) span.
     start_transform = gp_Trsf()
-    start_transform.SetTranslation(direction.Multiplied(-feature.start_distance))
+    start_transform.SetTranslation(direction.Multiplied(feature.start_distance))
     moved_face = BRepBuilderAPI_Transform(face, start_transform, True).Shape()
 
-    prism_vector = direction.Multiplied(feature.start_distance + feature.end_distance)
+    prism_vector = direction.Multiplied(feature.end_distance - feature.start_distance)
     return BRepPrimAPI_MakePrism(moved_face, prism_vector).Shape()
 
 
-def compute_part_solid(part: Part) -> TopoDS_Shape | None:
+def compute_part_solid(
+    part: Part, hidden_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape | None:
     """Accumulates every ExtrudeFeature in `part.features`, in order, into a
     single solid: Boss fuses, Cut subtracts. A Cut with nothing yet
     accumulated is skipped (logged, not raised) since there is nothing to
-    cut from. Returns None if no ExtrudeFeature contributed any geometry."""
+    cut from. Returns None if no ExtrudeFeature contributed any geometry.
+
+    An ExtrudeFeature whose id is in `hidden_feature_ids` (client-side
+    Hide/Show, see app.document.router.get_part_mesh) is skipped entirely,
+    as if it weren't in the Part's history at all - so hiding a Boss drops
+    its volume and hiding a Cut un-subtracts it, in accumulation order."""
     accumulated: TopoDS_Shape | None = None
     for feature in part.features:
         if not isinstance(feature, ExtrudeFeature):
+            continue
+        if feature.id in hidden_feature_ids:
             continue
 
         sketch_feature = part.get_feature(feature.sketch_feature_id)

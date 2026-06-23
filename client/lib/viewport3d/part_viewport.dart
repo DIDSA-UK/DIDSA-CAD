@@ -155,7 +155,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     scene.add(node);
     _meshNode = node;
     debugPrint('[PartViewport] _syncMeshNode: Node added to Scene');
-    _camera.setTarget(centroidOfMesh(mesh));
+    final bounds = boundsOfMesh(mesh);
+    _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
+    _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
   }
 
   /// Rebuilds all three reference-plane nodes from scratch - cheap enough

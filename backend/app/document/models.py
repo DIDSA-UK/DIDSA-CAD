@@ -63,12 +63,15 @@ class ExtrudeFeature(Feature):
     `sketch_feature_id` into a real OCCT solid, accumulated into its Part's
     overall modeled shape - Boss fuses the new solid into whatever
     accumulated solid came before it, Cut subtracts it. `start_distance`/
-    `end_distance` are independent offsets from the sketch plane along its
-    normal (negative/positive direction respectively), so the sketch plane
-    can sit anywhere within the extruded depth. The actual OCCT geometry
-    construction lives in app.document.extrude, not here - this is just the
-    Feature-tree record of the operation, same separation SketchFeature
-    keeps from app.sketch."""
+    `end_distance` are both signed distances from the sketch plane along its
+    normal (positive = in front of the plane, in the normal direction;
+    negative = behind it) - the extrude spans from `start_distance` to
+    `end_distance`, so the sketch plane can sit anywhere within (or outside)
+    the extruded depth. Only `end_distance > start_distance` is enforced
+    (see app.document.router._validate_extrude_distances) - there would
+    otherwise be no volume. The actual OCCT geometry construction lives in
+    app.document.extrude, not here - this is just the Feature-tree record of
+    the operation, same separation SketchFeature keeps from app.sketch."""
 
     id: str
     sketch_feature_id: str

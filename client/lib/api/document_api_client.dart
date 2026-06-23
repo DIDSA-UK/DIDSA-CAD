@@ -251,8 +251,19 @@ class DocumentApiClient {
         (body) => CascadeDeleteResultDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<PartMeshDto> getPartMesh(String partId) => _send(
-        () => _httpClient.get(_uri('/document/parts/$partId/mesh'), headers: _headers),
+  /// [hiddenFeatureIds] is re-sent on every fetch (see
+  /// `PartScreen._hiddenFeatureIds`) - purely client-side Hide/Show state,
+  /// never persisted on the backend - and is encoded as a repeated query
+  /// parameter (`?hidden_feature_ids=a&hidden_feature_ids=b`) matching
+  /// FastAPI's `Query(default=[])` parsing on the other end.
+  Future<PartMeshDto> getPartMesh(String partId, {List<String> hiddenFeatureIds = const []}) => _send(
+        () => _httpClient.get(
+              _uri('/document/parts/$partId/mesh').replace(
+                queryParameters:
+                    hiddenFeatureIds.isEmpty ? null : {'hidden_feature_ids': hiddenFeatureIds},
+              ),
+              headers: _headers,
+            ),
         (body) => PartMeshDto.fromJson(body as Map<String, dynamic>),
       );
 

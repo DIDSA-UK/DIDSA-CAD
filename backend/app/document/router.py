@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.extrude import compute_part_solid
@@ -64,6 +64,18 @@ def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
     )
 
 
+def _validate_extrude_distances(start_distance: float, end_distance: float) -> None:
+    """The only validation Stage 10a requires for start_distance/end_distance:
+    the extrude must span a positive distance (end_distance > start_distance),
+    since both are now signed offsets along the plane normal and the solid
+    spans literally from one to the other (see app.document.extrude)."""
+    if end_distance <= start_distance:
+        raise HTTPException(
+            status_code=400,
+            detail="end_distance must be greater than start_distance",
+        )
+
+
 def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> SketchFeature:
     """Validates that `sketch_feature_id` resolves to a SketchFeature in
     `part` whose Sketch has a closed Profile - a single 400 for every way
@@ -125,6 +137,7 @@ def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchF
 def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> ExtrudeFeatureResponse:
     part = get_part_or_404(part_id)
     _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    _validate_extrude_distances(payload.start_distance, payload.end_distance)
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
@@ -155,12 +168,14 @@ def update_extrude_feature(
             detail="Only the last Feature in a Part can be edited - it is locked because a "
             "later Feature exists.",
         )
+    new_start = payload.start_distance if payload.start_distance is not None else feature.start_distance
+    new_end = payload.end_distance if payload.end_distance is not None else feature.end_distance
+    _validate_extrude_distances(new_start, new_end)
+
     if payload.extrude_type is not None:
         feature.extrude_type = payload.extrude_type
-    if payload.start_distance is not None:
-        feature.start_distance = payload.start_distance
-    if payload.end_distance is not None:
-        feature.end_distance = payload.end_distance
+    feature.start_distance = new_start
+    feature.end_distance = new_end
     return _feature_response(part, feature)
 
 
@@ -214,14 +229,23 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
 
 
 @router.get("/parts/{part_id}/mesh", response_model=PartMeshResponse)
-def get_part_mesh(part_id: str) -> PartMeshResponse:
+def get_part_mesh(
+    part_id: str, hidden_feature_ids: list[str] = Query(default=[])
+) -> PartMeshResponse:
     """Placeholder mesh (a fixed box) while the Part has no ExtrudeFeature
     yet, per `Part.produces_solid_geometry`. Once it does, this instead
-    accumulates every ExtrudeFeature's real OCCT solid (Boss/Cut, in order -
-    see app.document.extrude.compute_part_solid) and tessellates that. A
-    Part whose only ExtrudeFeature(s) all skipped (e.g. a Cut with no prior
-    Boss) still gets `source="computed"`, just with an empty mesh - it has
-    "real" geometry in intent, there's just nothing to show yet."""
+    accumulates every non-hidden ExtrudeFeature's real OCCT solid (Boss/Cut,
+    in order - see app.document.extrude.compute_part_solid) and tessellates
+    that. A Part whose only ExtrudeFeature(s) all skipped (e.g. a Cut with no
+    prior Boss, or every ExtrudeFeature hidden) still gets
+    `source="computed"`, just with an empty mesh - it has "real" geometry in
+    intent, there's just nothing to show yet.
+
+    `hidden_feature_ids` is the client's Hide/Show state (see
+    PartScreen._hiddenFeatureIds) - purely client-side, never persisted here;
+    the client re-sends it on every mesh fetch so a hidden body's
+    contribution to the displayed solid (and so to its bounding box, used
+    for camera centering/zoom - see OrbitCamera) drops out immediately."""
     part = get_part_or_404(part_id)
 
     if not part.produces_solid_geometry:
@@ -229,7 +253,7 @@ def get_part_mesh(part_id: str) -> PartMeshResponse:
         mesh_data = tessellate_shape(box, DEFAULT_MESH_QUALITY)
         return PartMeshResponse(source="placeholder", mesh=_mesh_vertex_data(mesh_data))
 
-    solid = compute_part_solid(part)
+    solid = compute_part_solid(part, frozenset(hidden_feature_ids))
     if solid is None:
         return PartMeshResponse(
             source="computed", mesh=MeshVertexData(vertices=[], normals=[], triangle_indices=[])
