@@ -5,7 +5,7 @@ from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.GCPnts import GCPnts_TangentialDeflection
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
-from OCC.Core.TopExp import TopExp, TopExp_Explorer
+from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopLoc import TopLoc_Location
 from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Face, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
@@ -104,14 +104,14 @@ def _extract_edges(shape) -> list[float]:
     """Real-geometry edge polylines for `shape`, sampled from each edge's
     underlying OCCT curve (BRepAdaptor_Curve), not derived from the
     triangle mesh - that would show every tessellation triangle's edges
-    instead of the shape's true ones. `TopExp.MapShapes` is used (rather
+    instead of the shape's true ones. `topexp.MapShapes` is used (rather
     than a plain TopExp_Explorer, as `_append_face_triangles` above uses
     for faces) because an edge shared between two faces is referenced from
     both and a plain explorer would walk it twice; the indexed map
     de-duplicates by underlying shape identity, so e.g. a box's 12 edges
     are returned exactly once each."""
     edge_map = TopTools_IndexedMapOfShape()
-    TopExp.MapShapes(shape, TopAbs_EDGE, edge_map)
+    topexp.MapShapes(shape, TopAbs_EDGE, edge_map)
 
     segments: list[float] = []
     for i in range(1, edge_map.Extent() + 1):
