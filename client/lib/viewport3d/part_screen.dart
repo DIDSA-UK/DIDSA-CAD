@@ -6,6 +6,7 @@ import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
+import 'add_button_menu.dart';
 import 'cascade_delete_dialog.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
@@ -58,6 +59,21 @@ class _PartScreenState extends State<PartScreen> {
   /// "New Sketch on..." entry. Controlled-widget state, same pattern as
   /// [_selectedFeatureId]/[FeatureTreePanel].
   ReferencePlaneKind? _selectedPlane;
+
+  /// Stage 10b: whether all three reference planes are globally hidden -
+  /// toggled from [PartToolbar]'s "Hide/Show Reference Planes" entry,
+  /// in-memory only (no persistence across app restarts, per the brief).
+  bool _referencePlanesHidden = false;
+
+  /// Stage 10b: true while the "Add" FAB's flyout's "New Sketch" entry has
+  /// been tapped and the user is choosing which reference plane to sketch
+  /// on - the three planes are tappable targets in this mode, and a tap on
+  /// one immediately creates a SketchFeature and navigates to its canvas
+  /// (see [_onPlaneTap]), unlike the plain free-tap plane-selection flow
+  /// below which instead shows a toolbar confirmation step. Exited without
+  /// creating anything by the Cancel button, a background tap, or the
+  /// device back gesture (see [_cancelPlaneSelectionMode]).
+  bool _planeSelectionMode = false;
 
   /// Feature ids hidden from the 3D viewport via the long-press
   /// Hide/Show action - client-side only, never sent to the backend.
@@ -192,9 +208,9 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Creates a SketchFeature on [plane] and navigates straight to its
-  /// SketchScreen - the FAB's path defaults [plane] to XY; a plane tap in
-  /// the 3D viewport instead passes the tapped plane through, via
-  /// [_onNewSketchOnSelectedPlane].
+  /// SketchScreen - called with the tapped plane by both the free-tap
+  /// toolbar flow ([_onNewSketchOnSelectedPlane]) and the FAB's
+  /// flyout-driven plane-selection mode ([_onPlaneTap]).
   Future<void> _addSketchFeature({ReferencePlaneKind plane = ReferencePlaneKind.xy}) async {
     final part = _part;
     if (part == null || _busy) return;
@@ -214,10 +230,21 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// A tap that landed on a reference plane rectangle in the 3D viewport -
-  /// selects it (brighter highlight) and slides the toolbar in with a "New
-  /// Sketch on..." entry for it, per the project brief.
+  /// A tap that landed on a reference plane rectangle in the 3D viewport.
+  ///
+  /// During [_planeSelectionMode] (entered via the "Add" FAB's flyout - see
+  /// [_onAddPressed]), this immediately creates a SketchFeature on the
+  /// tapped plane and navigates to its canvas, exiting the mode - per the
+  /// Stage 10b brief, that flow has no separate confirmation step. Otherwise
+  /// it's the pre-existing free-tap flow: selects the plane (brighter
+  /// highlight) and slides the toolbar in with a "New Sketch on..." entry
+  /// for it instead.
   void _onPlaneTap(ReferencePlaneKind plane) {
+    if (_planeSelectionMode) {
+      setState(() => _planeSelectionMode = false);
+      _addSketchFeature(plane: plane);
+      return;
+    }
     setState(() {
       _selectedPlane = plane;
       _toolbarOpen = true;
@@ -227,12 +254,45 @@ class _PartScreenState extends State<PartScreen> {
 
   /// A tap that missed every reference plane - dismisses the toolbar and
   /// clears the selection, mirroring a tap on empty space elsewhere in the
-  /// app deselecting whatever was selected.
+  /// app deselecting whatever was selected; also exits [_planeSelectionMode]
+  /// without creating anything, since a background tap during that mode is
+  /// as much a "never mind" gesture as the Cancel button is.
   void _onViewportBackgroundTap() {
     setState(() {
       _selectedPlane = null;
       _toolbarOpen = false;
+      _planeSelectionMode = false;
     });
+  }
+
+  /// Opens the "Add" FAB's flyout (Stage 10b) - for now its only entry,
+  /// "New Sketch", enters [_planeSelectionMode] rather than acting directly.
+  Future<void> _onAddPressed() async {
+    if (_busy) return;
+    final action = await showAddButtonMenu(context);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case AddButtonMenuAction.newSketch:
+        setState(() {
+          _planeSelectionMode = true;
+          _selectedPlane = null;
+          _toolbarOpen = false;
+          _featureTreeVisible = false;
+        });
+    }
+  }
+
+  /// Exits [_planeSelectionMode] without creating anything - wired to both
+  /// the mode's Cancel button and the device back gesture (see [build]'s
+  /// `PopScope`).
+  void _cancelPlaneSelectionMode() {
+    setState(() => _planeSelectionMode = false);
+  }
+
+  /// Toggles [_referencePlanesHidden] (Stage 10b) - the toolbar's
+  /// "Hide/Show Reference Planes" entry.
+  void _onToggleReferencePlanes() {
+    setState(() => _referencePlanesHidden = !_referencePlanesHidden);
   }
 
   Future<void> _onNewSketchOnSelectedPlane() async {
@@ -523,6 +583,21 @@ class _PartScreenState extends State<PartScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return PopScope(
+      // While choosing a plane for a new Sketch (Stage 10b), the device
+      // back gesture cancels that mode instead of popping this screen -
+      // canPop: false intercepts it; any other time, popping proceeds
+      // normally.
+      canPop: !_planeSelectionMode,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _cancelPlaneSelectionMode();
+      },
+      child: _buildScaffold(context),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text(_part?.name ?? 'Part')),
       body: Column(
@@ -548,6 +623,7 @@ class _PartScreenState extends State<PartScreen> {
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,
+                  referencePlanesHidden: _referencePlanesHidden,
                 ),
                 Positioned.fill(
                   child: FeatureTreePanel(
@@ -566,6 +642,8 @@ class _PartScreenState extends State<PartScreen> {
                     onShowFeatureTree: _showFeatureTree,
                     selectedPlane: _selectedPlane,
                     onNewSketchOnPlane: _busy ? null : _onNewSketchOnSelectedPlane,
+                    referencePlanesHidden: _referencePlanesHidden,
+                    onToggleReferencePlanes: _onToggleReferencePlanes,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)
@@ -585,7 +663,9 @@ class _PartScreenState extends State<PartScreen> {
                 // but hidden while the Feature tree is open since it sits
                 // right on top of the tree's header text otherwise; the
                 // tree's own X button is the way to dismiss it instead.
-                if (!_featureTreeVisible)
+                // Also hidden during plane-selection mode (Stage 10b), since
+                // its own banner below sits in the same top-left corner.
+                if (!_featureTreeVisible && !_planeSelectionMode)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -598,16 +678,53 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Stage 10b: shown only while choosing a plane for a new
+                // Sketch via the "Add" FAB's flyout - names the mode and
+                // offers an explicit Cancel alongside the back-gesture
+                // handling in [build].
+                if (_planeSelectionMode)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Tap a reference plane for the new sketch'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelPlaneSelectionMode,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        tooltip: 'Add Sketch Feature',
-        onPressed: _busy ? null : _addSketchFeature,
-        child: const Icon(Icons.add),
-      ),
+      // Stage 10b: hidden while the Extrude panel is open, so its bottom-
+      // aligned content never has the FAB sitting on top of it.
+      floatingActionButton: _extrudeSketchFeature != null
+          ? null
+          : FloatingActionButton(
+              tooltip: 'Add',
+              onPressed: _busy ? null : _onAddPressed,
+              child: const Icon(Icons.add),
+            ),
     );
   }
 }
