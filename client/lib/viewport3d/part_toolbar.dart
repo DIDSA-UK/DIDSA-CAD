@@ -23,12 +23,21 @@ class PartToolbar extends StatelessWidget {
   final ReferencePlaneKind? selectedPlane;
   final VoidCallback? onNewSketchOnPlane;
 
+  /// Stage 10b: whether all three reference planes are currently hidden -
+  /// mirrors [PartViewport]'s controlled `referencePlanesHidden`, the same
+  /// pattern [selectedPlane] already uses. Flips the toggle entry's
+  /// label/icon between "Hide"/"Show".
+  final bool referencePlanesHidden;
+  final VoidCallback? onToggleReferencePlanes;
+
   const PartToolbar({
     super.key,
     required this.visible,
     required this.onShowFeatureTree,
     this.selectedPlane,
     this.onNewSketchOnPlane,
+    this.referencePlanesHidden = false,
+    this.onToggleReferencePlanes,
   });
 
   @override
@@ -65,6 +74,15 @@ class PartToolbar extends StatelessWidget {
                           leading: const Icon(Icons.account_tree_outlined),
                           title: const Text('Show Feature Tree'),
                           onTap: onShowFeatureTree,
+                        ),
+                        ListTile(
+                          leading: Icon(
+                            referencePlanesHidden ? Icons.grid_on_outlined : Icons.grid_off_outlined,
+                          ),
+                          title: Text(
+                            referencePlanesHidden ? 'Show Reference Planes' : 'Hide Reference Planes',
+                          ),
+                          onTap: onToggleReferencePlanes,
                         ),
                         if (plane != null)
                           ListTile(

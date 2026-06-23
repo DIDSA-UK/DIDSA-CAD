@@ -45,6 +45,14 @@ class PartViewport extends StatefulWidget {
   /// is never mistaken for the Part's actual, saved shape.
   final bool isPreviewMesh;
 
+  /// Stage 10b: globally hides all three reference planes - both their
+  /// rendered geometry and their [onPlaneTap] hit-testing, so a tap where a
+  /// hidden plane would be falls through to [onBackgroundTap] instead of
+  /// silently selecting an invisible target. [PartScreen] owns the toggle
+  /// (via [PartToolbar]'s "Hide/Show Reference Planes" entry), the same
+  /// controlled-widget pattern [selectedPlane] already uses.
+  final bool referencePlanesHidden;
+
   const PartViewport({
     super.key,
     required this.mesh,
@@ -53,6 +61,7 @@ class PartViewport extends StatefulWidget {
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
     this.isPreviewMesh = false,
+    this.referencePlanesHidden = false,
   });
 
   @override
@@ -123,7 +132,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.mesh != oldWidget.mesh || widget.isPreviewMesh != oldWidget.isPreviewMesh) {
       setState(_syncMeshNode);
     }
-    if (widget.selectedPlane != oldWidget.selectedPlane) {
+    if (widget.selectedPlane != oldWidget.selectedPlane ||
+        widget.referencePlanesHidden != oldWidget.referencePlanesHidden) {
       setState(_syncReferencePlaneNodes);
     }
     if (widget.sketchGeometries != oldWidget.sketchGeometries) {
@@ -182,6 +192,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (scene == null) return;
     for (final node in _planeNodes.values) {
       scene.remove(node);
+    }
+    if (widget.referencePlanesHidden) {
+      _planeNodes = {};
+      return;
     }
     _planeNodes = {
       for (final plane in ReferencePlaneKind.values)
@@ -298,7 +312,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// reimplementing screen-to-world unprojection by hand.
   void _handleTap(Offset localPosition) {
     final ray = _camera.cameraFor(_viewportSize).screenPointToRay(localPosition, _viewportSize);
-    final hit = hitTestReferencePlanes(ray);
+    final hit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
     if (hit != null) {
       widget.onPlaneTap(hit.plane);
     } else {
