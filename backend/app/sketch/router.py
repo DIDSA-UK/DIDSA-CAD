@@ -17,6 +17,7 @@ from app.sketch.schemas import (
     CircleUpdate,
     ConstraintCreate,
     ConstraintResponse,
+    ConstraintValueUpdate,
     DistanceConstraintCreate,
     DistanceConstraintResponse,
     HorizontalConstraintCreate,
@@ -371,6 +372,26 @@ def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     _ensure_sketch_editable(sketch_id)
     _get_constraint_or_404(sketch, constraint_id)
     del sketch.constraints[constraint_id]
+
+
+@router.patch("/sketches/{sketch_id}/constraints/{constraint_id}", response_model=SolveResultResponse)
+def update_constraint_value(
+    sketch_id: str, constraint_id: str, payload: ConstraintValueUpdate
+) -> SolveResultResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _ensure_sketch_editable(sketch_id)
+    constraint = _get_constraint_or_404(sketch, constraint_id)
+    if isinstance(constraint, DistanceConstraint):
+        constraint.distance = payload.value
+    elif isinstance(constraint, AngleConstraint):
+        constraint.angle_degrees = payload.value
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{constraint.type} constraints have no numeric value to update",
+        )
+    result = solve_sketch(sketch)
+    return _solve_result_response(result)
 
 
 @router.post("/sketches/{sketch_id}/solve", response_model=SolveResultResponse)

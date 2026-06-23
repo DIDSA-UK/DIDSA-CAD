@@ -2,57 +2,64 @@ import 'package:flutter/material.dart';
 
 import 'sketch_controller.dart';
 
-/// The tool switcher: a single small FAB that expands into the Line/Circle
-/// tool selectors and Finish. Click is deliberately NOT part of this menu -
-/// it is its own always-visible control (see [SketchScreen]'s
-/// floatingActionButton) since it is the core "commit a point" action and
-/// must never be hidden by tool-switching UI. Collapsed by default; tapping
-/// the main FAB toggles the menu open or closed (mirrors Flutter's standard
-/// expandable-FAB pattern).
-class SketchSpeedDial extends StatefulWidget {
+/// The tool switcher FAB. Two-level menu driven entirely by
+/// [SketchController.fabMenu]: tapping the main FAB opens a "categories"
+/// list ("Sketch Entities" / "Dimensions"); tapping "Sketch Entities"
+/// expands in place into the tool list (Line/Circle/Finish) with a "Back"
+/// action; tapping "Dimensions" enters dimension mode directly and closes
+/// the menu. The open/closed/category state lives on the controller (not
+/// local widget State) so [SketchScreen]'s tap-outside barrier can close
+/// the menu independently of this widget.
+class SketchSpeedDial extends StatelessWidget {
   final SketchController controller;
 
   const SketchSpeedDial({super.key, required this.controller});
 
   @override
-  State<SketchSpeedDial> createState() => _SketchSpeedDialState();
-}
-
-class _SketchSpeedDialState extends State<SketchSpeedDial> with SingleTickerProviderStateMixin {
-  late final AnimationController _animation;
-  bool _open = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _animation = AnimationController(vsync: this, duration: const Duration(milliseconds: 200));
-  }
-
-  @override
-  void dispose() {
-    _animation.dispose();
-    super.dispose();
-  }
-
-  void _toggle() {
-    setState(() {
-      _open = !_open;
-      _open ? _animation.forward() : _animation.reverse();
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: widget.controller,
+      animation: controller,
       builder: (context, _) {
-        final controller = widget.controller;
-        // Finish only ends a Line chain - a Circle's two-click creation is
-        // self-terminating, so the action is irrelevant (and hidden) when
-        // the Circle tool is active.
-        final showFinish = controller.activeTool == SketchTool.line && controller.chainInProgress;
+        final actions = _actionsFor(controller);
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            for (final action in actions)
+              Padding(padding: const EdgeInsets.only(bottom: 8), child: action),
+            FloatingActionButton(
+              heroTag: null,
+              onPressed: controller.fabMenu == FabMenuState.closed
+                  ? controller.openFabMenu
+                  : controller.closeFabMenu,
+              child: Icon(controller.fabMenu == FabMenuState.closed ? Icons.add : Icons.close),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
-        final actions = <Widget>[
+  List<Widget> _actionsFor(SketchController controller) {
+    switch (controller.fabMenu) {
+      case FabMenuState.closed:
+        return const [];
+      case FabMenuState.categories:
+        return [
+          _SpeedDialAction(
+            icon: Icons.straighten,
+            label: 'Dimensions',
+            onPressed: controller.enterDimensionMode,
+          ),
+          _SpeedDialAction(
+            icon: Icons.edit,
+            label: 'Sketch Entities',
+            onPressed: controller.showSketchEntitiesCategory,
+          ),
+        ];
+      case FabMenuState.sketchEntities:
+        final showFinish = controller.activeTool == SketchTool.line && controller.chainInProgress;
+        return [
           if (showFinish)
             _SpeedDialAction(
               icon: Icons.check_circle_outline,
@@ -63,42 +70,21 @@ class _SketchSpeedDialState extends State<SketchSpeedDial> with SingleTickerProv
             icon: Icons.circle_outlined,
             label: 'Circle',
             selected: controller.activeTool == SketchTool.circle,
-            onPressed: () => controller.setTool(SketchTool.circle),
+            onPressed: () => controller.selectDrawTool(SketchTool.circle),
           ),
           _SpeedDialAction(
             icon: Icons.show_chart,
             label: 'Line',
             selected: controller.activeTool == SketchTool.line,
-            onPressed: () => controller.setTool(SketchTool.line),
+            onPressed: () => controller.selectDrawTool(SketchTool.line),
+          ),
+          _SpeedDialAction(
+            icon: Icons.arrow_back,
+            label: 'Back',
+            onPressed: controller.backToFabCategories,
           ),
         ];
-
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            for (final action in actions)
-              SizeTransition(
-                sizeFactor: _animation,
-                alignment: const Alignment(-1.0, 1.0),
-                child: FadeTransition(
-                  opacity: _animation,
-                  child: Padding(padding: const EdgeInsets.only(bottom: 8), child: action),
-                ),
-              ),
-            FloatingActionButton(
-              heroTag: null,
-              onPressed: _toggle,
-              child: AnimatedRotation(
-                turns: _open ? 0.125 : 0,
-                duration: const Duration(milliseconds: 200),
-                child: Icon(_open ? Icons.close : Icons.add),
-              ),
-            ),
-          ],
-        );
-      },
-    );
+    }
   }
 }
 

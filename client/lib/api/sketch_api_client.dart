@@ -93,10 +93,11 @@ class CircleDto {
 }
 
 /// Base type for the backend's discriminated Constraint union (Stage 12) -
-/// see app/sketch/schemas.py's `ConstraintResponse`. Only used by the client
-/// to *render* existing constraints (Stage 12 item 10's dimension
-/// overlays); there is no client-side constraint creation/editing UI yet,
-/// so there's no matching `*Create`/`*Update` DTO pair on this side.
+/// see app/sketch/schemas.py's `ConstraintResponse`. Used by the client both
+/// to *render* existing constraints (Stage 12 item 10's dimension overlays)
+/// and, since Stage 13, to recognize an already-existing `DistanceConstraint`
+/// so a dimension-ghost confirm can PATCH it instead of creating a duplicate
+/// (see SketchApiClient.createDistanceConstraint/updateConstraintValue).
 abstract class ConstraintDto {
   final String id;
   const ConstraintDto({required this.id});
@@ -427,6 +428,62 @@ class SketchApiClient {
         (body) => (body as List)
             .map((e) => ConstraintDto.fromJson(e as Map<String, dynamic>))
             .toList(),
+      );
+
+  /// Stage 13's Dimension workflow: creates a standalone `DistanceConstraint`
+  /// between two existing Points - used for a line-length ghost (the line's
+  /// own endpoints) and a V/H distance ghost (two tapped Points) alike, since
+  /// the backend has no separate "line length" constraint type (see
+  /// Sketch.add_distance_constraint).
+  Future<ConstraintDto> createDistanceConstraint(
+    String sketchId,
+    String pointAId,
+    String pointBId,
+    double distance,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'point_a_id': pointAId,
+                'point_b_id': pointBId,
+                'distance': distance,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ConstraintDto> createVerticalConstraint(String sketchId, String lineId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({'type': 'vertical', 'line_id': lineId}),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ConstraintDto> createHorizontalConstraint(String sketchId, String lineId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({'type': 'horizontal', 'line_id': lineId}),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Stage 13's dimension-edit PATCH: updates an existing `DistanceConstraint`
+  /// or `AngleConstraint`'s numeric value and re-solves server-side - see
+  /// app/sketch/router.py's `update_constraint_value`. The backend rejects
+  /// Vertical/Horizontal targets with a 422, surfaced as an [ApiException].
+  Future<SolveResultDto> updateConstraintValue(String sketchId, String constraintId, double value) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/constraints/$constraintId'),
+              headers: _headers,
+              body: jsonEncode({'value': value}),
+            ),
+        (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<SolveResultDto> solve(String sketchId) => _send(

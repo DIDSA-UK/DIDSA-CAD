@@ -212,6 +212,14 @@ ConstraintResponse = Union[
 ]
 
 
+class ConstraintValueUpdate(BaseModel):
+    """Updates a DistanceConstraint's `distance` or an AngleConstraint's
+    `angle_degrees`. Vertical/Horizontal constraints have no numeric value
+    and reject this with a 422 (see router.update_constraint_value)."""
+
+    value: float
+
+
 class SolveResultResponse(BaseModel):
     converged: bool
     dof: int
