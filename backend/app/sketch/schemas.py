@@ -188,6 +188,19 @@ class EqualLengthConstraintCreate(BaseModel):
     line2_id: str
 
 
+class CollinearConstraintCreate(BaseModel):
+    type: Literal["collinear"]
+    line1_id: str
+    line2_id: str
+
+
+class LineDistanceConstraintCreate(BaseModel):
+    type: Literal["line_distance"]
+    line1_id: str
+    line2_id: str
+    distance: float
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
@@ -197,6 +210,8 @@ ConstraintCreate = Union[
     ParallelConstraintCreate,
     PerpendicularConstraintCreate,
     EqualLengthConstraintCreate,
+    CollinearConstraintCreate,
+    LineDistanceConstraintCreate,
 ]
 
 
@@ -260,6 +275,21 @@ class EqualLengthConstraintResponse(BaseModel):
     line2_id: str
 
 
+class CollinearConstraintResponse(BaseModel):
+    type: Literal["collinear"] = "collinear"
+    id: str
+    line1_id: str
+    line2_id: str
+
+
+class LineDistanceConstraintResponse(BaseModel):
+    type: Literal["line_distance"] = "line_distance"
+    id: str
+    line1_id: str
+    line2_id: str
+    distance: float
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -269,6 +299,8 @@ ConstraintResponse = Union[
     ParallelConstraintResponse,
     PerpendicularConstraintResponse,
     EqualLengthConstraintResponse,
+    CollinearConstraintResponse,
+    LineDistanceConstraintResponse,
 ]
 
 

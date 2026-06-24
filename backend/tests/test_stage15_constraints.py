@@ -163,6 +163,89 @@ def test_equal_length_constraint_forces_same_length_after_solve():
     assert length1 == pytest.approx(length2)
 
 
+def test_add_collinear_constraint_between_two_existing_lines():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(2.0, 3.0)
+    d = sketch.add_point(8.0, 3.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+
+    constraint = sketch.add_collinear_constraint(line1.id, line2.id)
+
+    assert constraint.id in sketch.constraints
+    assert constraint.point_ids() == (a.id, b.id, c.id, d.id)
+
+
+def test_collinear_constraint_forces_lines_onto_same_line_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(2.0, 3.0)
+    d = sketch.add_point(8.0, 3.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_collinear_constraint(line1.id, line2.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    v1 = (sketch.points[b.id].x - sketch.points[a.id].x, sketch.points[b.id].y - sketch.points[a.id].y)
+    v2 = (sketch.points[c.id].x - sketch.points[a.id].x, sketch.points[c.id].y - sketch.points[a.id].y)
+    v3 = (sketch.points[d.id].x - sketch.points[a.id].x, sketch.points[d.id].y - sketch.points[a.id].y)
+    cross_c = v1[0] * v2[1] - v1[1] * v2[0]
+    cross_d = v1[0] * v3[1] - v1[1] * v3[0]
+    assert cross_c == pytest.approx(0.0, abs=1e-6)
+    assert cross_d == pytest.approx(0.0, abs=1e-6)
+
+
+def test_add_line_distance_constraint_between_two_existing_lines():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(0.0, 30.0)
+    d = sketch.add_point(10.0, 30.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+
+    constraint = sketch.add_line_distance_constraint(line1.id, line2.id, 50.0)
+
+    assert constraint.id in sketch.constraints
+    assert constraint.point_ids() == (a.id, b.id, c.id, d.id)
+    assert constraint.distance == 50.0
+
+
+def test_line_distance_constraint_moves_lines_apart_without_creating_points():
+    """Stage 16 item 9: a line-to-line distance dimension must move the
+    Lines themselves (via py-slvs's point-line-distance primitive) rather
+    than the old approach of materializing a midpoint Point on each Line
+    and constraining a plain Point-to-Point DistanceConstraint between
+    those - the bug this regresses against. Two parallel (horizontal)
+    Lines start 30 units apart; raising the constraint's distance to 50
+    must converge with the Lines moved apart and not a single new Point in
+    the Sketch."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(0.0, 30.0)
+    d = sketch.add_point(10.0, 30.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_horizontal_constraint(line1.id)
+    sketch.add_horizontal_constraint(line2.id)
+    point_count_before = len(sketch.points)
+
+    sketch.add_line_distance_constraint(line1.id, line2.id, 50.0)
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert len(sketch.points) == point_count_before
+    gap = abs(sketch.points[c.id].y - sketch.points[a.id].y)
+    assert gap == pytest.approx(50.0, abs=1e-6)
+    assert gap != pytest.approx(30.0, abs=1e-6)  # the Lines actually moved apart
+
+
 # --- API tests ---------------------------------------------------------------
 
 
@@ -265,6 +348,54 @@ def test_create_equal_length_constraint_over_the_api():
     assert body["type"] == "equal_length"
     assert body["line1_id"] == line1["id"]
     assert body["line2_id"] == line2["id"]
+
+
+def test_create_collinear_constraint_over_the_api():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    c = _create_point(sketch["id"], 2.0, 3.0)
+    d = _create_point(sketch["id"], 8.0, 3.0)
+    line1 = _create_line(sketch["id"], a["id"], b["id"])
+    line2 = _create_line(sketch["id"], c["id"], d["id"])
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "collinear", "line1_id": line1["id"], "line2_id": line2["id"]},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["type"] == "collinear"
+    assert body["line1_id"] == line1["id"]
+    assert body["line2_id"] == line2["id"]
+
+
+def test_create_line_distance_constraint_over_the_api():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    c = _create_point(sketch["id"], 0.0, 30.0)
+    d = _create_point(sketch["id"], 10.0, 30.0)
+    line1 = _create_line(sketch["id"], a["id"], b["id"])
+    line2 = _create_line(sketch["id"], c["id"], d["id"])
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={
+            "type": "line_distance",
+            "line1_id": line1["id"],
+            "line2_id": line2["id"],
+            "distance": 50.0,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["type"] == "line_distance"
+    assert body["line1_id"] == line1["id"]
+    assert body["line2_id"] == line2["id"]
+    assert body["distance"] == 50.0
 
 
 def test_create_coincident_constraint_with_unknown_point_is_404():

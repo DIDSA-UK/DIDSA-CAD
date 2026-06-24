@@ -3,10 +3,12 @@ from fastapi import APIRouter, HTTPException
 from app.sketch.constraints import (
     AngleConstraint,
     CoincidentConstraint,
+    CollinearConstraint,
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
     HorizontalConstraint,
+    LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     VerticalConstraint,
@@ -21,6 +23,8 @@ from app.sketch.schemas import (
     CircleUpdate,
     CoincidentConstraintCreate,
     CoincidentConstraintResponse,
+    CollinearConstraintCreate,
+    CollinearConstraintResponse,
     ConstraintCreate,
     ConstraintResponse,
     ConstraintValueUpdate,
@@ -31,6 +35,8 @@ from app.sketch.schemas import (
     HorizontalConstraintCreate,
     HorizontalConstraintResponse,
     LineCreate,
+    LineDistanceConstraintCreate,
+    LineDistanceConstraintResponse,
     LineResponse,
     LineUpdate,
     ParallelConstraintCreate,
@@ -184,6 +190,19 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             line1_id=constraint.line1_id,
             line2_id=constraint.line2_id,
         )
+    if isinstance(constraint, CollinearConstraint):
+        return CollinearConstraintResponse(
+            id=constraint.id,
+            line1_id=constraint.line1_id,
+            line2_id=constraint.line2_id,
+        )
+    if isinstance(constraint, LineDistanceConstraint):
+        return LineDistanceConstraintResponse(
+            id=constraint.id,
+            line1_id=constraint.line1_id,
+            line2_id=constraint.line2_id,
+            distance=constraint.distance,
+        )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
 
@@ -238,6 +257,8 @@ def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointRe
     sketch = _get_sketch_or_404(sketch_id)
     _ensure_sketch_editable(sketch_id)
     point = _get_point_or_404(sketch, point_id)
+    if point_id == sketch.origin_point_id:
+        raise HTTPException(status_code=400, detail="Cannot move the sketch's origin point")
     point.x = payload.x
     point.y = payload.y
     return _point_response(point)
@@ -395,6 +416,12 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_perpendicular_constraint(payload.line1_id, payload.line2_id)
         elif isinstance(payload, EqualLengthConstraintCreate):
             constraint = sketch.add_equal_length_constraint(payload.line1_id, payload.line2_id)
+        elif isinstance(payload, CollinearConstraintCreate):
+            constraint = sketch.add_collinear_constraint(payload.line1_id, payload.line2_id)
+        elif isinstance(payload, LineDistanceConstraintCreate):
+            constraint = sketch.add_line_distance_constraint(
+                payload.line1_id, payload.line2_id, payload.distance
+            )
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
@@ -426,6 +453,8 @@ def update_constraint_value(
     _ensure_sketch_editable(sketch_id)
     constraint = _get_constraint_or_404(sketch, constraint_id)
     if isinstance(constraint, DistanceConstraint):
+        constraint.distance = payload.value
+    elif isinstance(constraint, LineDistanceConstraint):
         constraint.distance = payload.value
     elif isinstance(constraint, AngleConstraint):
         constraint.angle_degrees = payload.value
