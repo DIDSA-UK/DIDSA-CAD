@@ -67,6 +67,24 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   /// a tap rather than a drag.
   static const double _tapTravelThreshold = 10.0;
 
+  /// The moment [_dispatchTap] last ran, or null - compared against the
+  /// next pointer-down to recognize new work package item 8's
+  /// double-click-drag gesture: a second down arriving within
+  /// [_doubleClickTimeout] of a dispatched tap, landing (per the
+  /// controller's own trackpad-style cursor, not this event's literal
+  /// screen position - see [_dispatchTap]'s doc comment) on a draggable
+  /// Point/Line/Circle, starts a drag instead of a second discrete tap.
+  DateTime? _lastTapTime;
+
+  static const Duration _doubleClickTimeout = Duration(milliseconds: 350);
+
+  /// The Point currently grabbed by an active double-click-drag, or null -
+  /// once set, pointer-move feeds [SketchController.updatePointDrag]
+  /// instead of the normal cursor-move/pan/pinch handling, and the
+  /// eventual pointer-up/cancel ends the drag rather than dispatching a
+  /// tap.
+  String? _draggingPointId;
+
   /// The canvas's own render size, refreshed every [build] - read by
   /// [_onEdgePanTick], which runs independently of any pointer event so an
   /// RTS-style edge-pan keeps going even while the pointer itself sits
@@ -166,6 +184,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   /// [SketchController.handleCanvasTap].
   void _dispatchTap(ViewTransform transform) {
     final controller = widget.controller;
+    _lastTapTime = DateTime.now();
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     if (controller.mode == SketchMode.dimension) {
       final hitKey = _ghostKeyAt(controller, transform, cursorScreen);
@@ -191,6 +210,26 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     controller.handleCanvasTap(controller.cursorX, controller.cursorY, hitRadius);
   }
 
+  /// New work package item 8: recognizes a pointer-down arriving shortly
+  /// after the last dispatched tap as the second half of a double-click,
+  /// and - if the controller's cursor (not this event's own screen
+  /// position; see [_dispatchTap]) currently sits on a draggable
+  /// Point/Line/Circle - starts a drag instead of letting the down event
+  /// fall through to a second ordinary tap. Returns whether a drag started.
+  bool _tryStartEntityDrag(ViewTransform transform) {
+    final lastTapTime = _lastTapTime;
+    if (lastTapTime == null || DateTime.now().difference(lastTapTime) > _doubleClickTimeout) {
+      return false;
+    }
+    final controller = widget.controller;
+    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    final pointId = controller.dragTargetPointIdAt(controller.cursorX, controller.cursorY, hitRadius);
+    if (pointId == null || !controller.beginPointDrag(pointId)) return false;
+    _lastTapTime = null;
+    _draggingPointId = pointId;
+    return true;
+  }
+
   void _handlePointerDown(PointerDownEvent event, ViewTransform transform) {
     if (event.kind == PointerDeviceKind.mouse) {
       // Only the primary (left) button counts as a bare tap, same as a
@@ -202,6 +241,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+        if (_tryStartEntityDrag(transform)) return;
         _dispatchTap(transform);
       }
       return;
@@ -212,15 +252,21 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     // pinch/pan handling below, and so a single-finger touch ending without
     // much travel can be recognized as a tap.
     _activeTouches[event.pointer] = event.localPosition;
-    if (_activeTouches.length == 1) {
-      _singleTouchTravel = 0;
-      _multiTouchOccurred = false;
-    } else {
+    if (_activeTouches.length != 1) {
       _multiTouchOccurred = true;
+      return;
     }
+    _singleTouchTravel = 0;
+    _multiTouchOccurred = false;
+    _tryStartEntityDrag(transform);
   }
 
   void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
+    if (_draggingPointId != null) {
+      final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
+      widget.controller.updatePointDrag(coord.x, coord.y);
+      return;
+    }
     if (event.kind == PointerDeviceKind.mouse) {
       if (event.buttons & kSecondaryMouseButton != 0) {
         setState(() => _viewport.panByScreenDelta(event.delta));
@@ -247,6 +293,12 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
+    if (_draggingPointId != null) {
+      _draggingPointId = null;
+      _activeTouches.remove(event.pointer);
+      widget.controller.endPointDrag();
+      return;
+    }
     if (event.kind == PointerDeviceKind.mouse) return;
 
     // A lone finger lifting (not the tail end of a pinch) after barely

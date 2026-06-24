@@ -24,6 +24,12 @@ class _FakeBackend {
   /// that the client doesn't track/check locally.
   final Set<String> blockedPointIds = {};
 
+  /// The `dof` every solve response reports - new work package item 8's
+  /// drag tests flip this to simulate an under-constrained sketch, since
+  /// [SketchController.isUnderConstrained] (and so [dragTargetPointIdAt])
+  /// gates entirely on the last-seen solve result.
+  int dof = 0;
+
   String _newId(String prefix) => '$prefix-${_nextId++}';
 
   /// Seeds a Sketch (and its origin Point) as if it had already been
@@ -103,6 +109,16 @@ class _FakeBackend {
     if (pointGetMatch != null && request.method == 'GET') {
       final point = points[pointGetMatch.group(1)];
       if (point == null) return http.Response('not found', 404);
+      return _json(point, 200);
+    }
+
+    final pointPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/points/(.+)$').firstMatch(path);
+    if (pointPatchMatch != null && request.method == 'PATCH') {
+      final id = pointPatchMatch.group(1)!;
+      final point = points[id];
+      if (point == null) return http.Response('not found', 404);
+      point['x'] = (body['x'] as num).toDouble();
+      point['y'] = (body['y'] as num).toDouble();
       return _json(point, 200);
     }
 
@@ -216,7 +232,7 @@ class _FakeBackend {
 
   Map<String, dynamic> _solveResultBody() => {
         'converged': true,
-        'dof': 0,
+        'dof': dof,
         'result_code': 0,
         'blamed_constraint_ids': [],
         'solver_reported_failed_constraint_ids': [],
@@ -1216,5 +1232,117 @@ void main() {
     // against the start point, giving a linear distance of 5.
     final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
     expect(controller.currentGhostValue(linearGhost), closeTo(5.0, 1e-9));
+  });
+
+  // --- New work package item 8: double-click-and-drag -----------------------
+  //
+  // isUnderConstrained only ever changes on a solve response (see
+  // _solveAndTrackDof), and the Point tool's placement path doesn't solve at
+  // all (see _clickPointTool) - so these tests draw a two-tap Line, whose
+  // second tap's _clickEndToEndLineTool does solve, to drive backend.dof.
+
+  test('dragTargetPointIdAt is null while the sketch is fully constrained', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0); // backend.dof defaults to 0
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    expect(controller.isUnderConstrained, isFalse);
+    expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
+  });
+
+  test('dragTargetPointIdAt returns a directly-hit Point once the sketch is under-constrained',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final line = controller.lines.values.last;
+
+    expect(controller.isUnderConstrained, isTrue);
+    expect(controller.dragTargetPointIdAt(0, 0, 1), line.startPointId);
+  });
+
+  test('dragTargetPointIdAt is null outside select mode even when under-constrained', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    // Still in draw mode (finishChain above doesn't exit it).
+
+    expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
+  });
+
+  test('dragTargetPointIdAt resolves a Line to whichever endpoint is nearer the hit', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final line = controller.lines.values.last;
+
+    expect(controller.dragTargetPointIdAt(8, 0, 1), line.endPointId);
+    expect(controller.dragTargetPointIdAt(2, 0, 1), line.startPointId);
+  });
+
+  test('beginPointDrag sets draggingPointId for a known Point and rejects an unknown id', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final pointId = controller.lines.values.last.startPointId;
+
+    expect(controller.beginPointDrag('does-not-exist'), isFalse);
+    expect(controller.draggingPointId, isNull);
+
+    expect(controller.beginPointDrag(pointId), isTrue);
+    expect(controller.draggingPointId, pointId);
+  });
+
+  test('updatePointDrag PATCHes the dragged Point live without re-solving', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final pointId = controller.lines.values.last.startPointId;
+    controller.beginPointDrag(pointId);
+
+    backend.dof = 7; // would surface in isUnderConstrained if a solve ran
+    await controller.updatePointDrag(12, 34);
+
+    expect(controller.points[pointId]!.x, 12);
+    expect(controller.points[pointId]!.y, 34);
+    expect(controller.isUnderConstrained, isTrue); // unchanged: still the dof=1 from the line's solve
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final pointId = controller.lines.values.last.startPointId;
+    controller.beginPointDrag(pointId);
+    await controller.updatePointDrag(12, 34);
+
+    backend.dof = 0; // simulates the drop settling the sketch fully
+    await controller.endPointDrag();
+
+    expect(controller.draggingPointId, isNull);
+    expect(controller.isUnderConstrained, isFalse);
+    expect(controller.points[pointId]!.x, 12);
+    expect(controller.points[pointId]!.y, 34);
+    expect(controller.errorMessage, isNull);
   });
 }

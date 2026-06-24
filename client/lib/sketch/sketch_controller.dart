@@ -411,6 +411,23 @@ class SketchController extends ChangeNotifier {
 
   String? errorMessage;
 
+  /// The whole-sketch degrees-of-freedom count from the most recent solve -
+  /// 0 until the first solve actually runs (e.g. the very first Line/Circle
+  /// created), which is accurate for a brand-new Sketch (nothing but a
+  /// pinned origin Point has no freedom to report). The backend only ever
+  /// reports one number for the entire system, not a per-entity breakdown,
+  /// so [isUnderConstrained] - new work package item 8's drag-to-reposition
+  /// gate - is necessarily a coarse, whole-sketch approximation: dragging
+  /// is offered whenever *something* in the sketch still has slack, not
+  /// verified against the specific Point being dragged.
+  int _dof = 0;
+  bool get isUnderConstrained => _dof > 0;
+
+  Future<void> _solveAndTrackDof() async {
+    final result = await _api.solve(_sketchId!);
+    _dof = result.dof;
+  }
+
   /// True when the cursor is close enough to the chain's start Point that
   /// the next tap will close the loop using that Point's id, rather than
   /// creating a new coincident Point.
@@ -614,6 +631,94 @@ class SketchController extends ChangeNotifier {
     return direct;
   }
 
+  /// New work package item 8's double-click-drag target resolver: a
+  /// directly-hit Point as-is, or - for a Line/Circle, neither of which is
+  /// itself a Point - whichever of its constituent Points sits nearer
+  /// [x]/[y], since a Line/Circle's shape is entirely defined by the Points
+  /// it references and has no position of its own to drag. Returns null if
+  /// nothing within [radius] qualifies, the sketch isn't in
+  /// [SketchMode.select], or [isUnderConstrained] is false (nothing could
+  /// move into anyway, so there's nothing to offer).
+  String? dragTargetPointIdAt(double x, double y, double radius) {
+    if (_mode != SketchMode.select || !isUnderConstrained) return null;
+    final hit = _entityAt(x, y, radius);
+    if (hit == null) return null;
+    switch (hit.kind) {
+      case SelectionKind.point:
+        return hit.id;
+      case SelectionKind.line:
+        final line = lines[hit.id]!;
+        final start = points[line.startPointId]!;
+        final end = points[line.endPointId]!;
+        final distToStart = math.pow(x - start.x, 2) + math.pow(y - start.y, 2);
+        final distToEnd = math.pow(x - end.x, 2) + math.pow(y - end.y, 2);
+        return distToStart <= distToEnd ? line.startPointId : line.endPointId;
+      case SelectionKind.circle:
+        final circle = circles[hit.id]!;
+        final center = points[circle.centerPointId]!;
+        final radiusPoint = points[circle.radiusPointId]!;
+        final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);
+        final distToRadius = math.pow(x - radiusPoint.x, 2) + math.pow(y - radiusPoint.y, 2);
+        return distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+      case SelectionKind.constraint:
+        return null;
+    }
+  }
+
+  String? _draggingPointId;
+
+  /// The Point currently being live-dragged via [beginPointDrag], or null if
+  /// no drag is in progress - the canvas reads this to suppress its normal
+  /// hover/cursor-move handling while a drag owns pointer-move events.
+  String? get draggingPointId => _draggingPointId;
+
+  /// Starts a live drag of [pointId] (new work package item 8) - false (and
+  /// no-op) if busy or there's no sketch yet, since every other guard
+  /// ([dragTargetPointIdAt]'s mode/dof checks) already ran by the time the
+  /// canvas calls this.
+  bool beginPointDrag(String pointId) {
+    if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
+    _draggingPointId = pointId;
+    notifyListeners();
+    return true;
+  }
+
+  /// Live-updates the dragged Point's position - called on every
+  /// pointer-move while a [beginPointDrag] drag is active. PATCHes the
+  /// backend immediately rather than buffering until release, so every
+  /// other on-canvas reader (the entity itself, any dimension overlay
+  /// anchored to it) tracks the drag the same way it tracks any other
+  /// backend-confirmed position - no separate "ghost position" concept.
+  /// Solving is deferred to [endPointDrag]; mid-drag the raw dragged
+  /// position is shown as-is; rapid out-of-order responses are accepted
+  /// silently, same tradeoff as every other unsequenced PATCH in this file.
+  Future<void> updatePointDrag(double x, double y) async {
+    final pointId = _draggingPointId;
+    if (pointId == null || _sketchId == null) return;
+    try {
+      final updated = await _api.updatePoint(_sketchId!, pointId, x, y);
+      points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
+      notifyListeners();
+    } on ApiException catch (e) {
+      errorMessage = e.message;
+      notifyListeners();
+    }
+  }
+
+  /// Ends the current Point drag (if any) and re-solves from the dropped
+  /// position, same backend-is-truth refresh as every other mutation - any
+  /// remaining constraints (e.g. a Line this Point anchors staying the
+  /// right length) settle here rather than during the drag itself.
+  Future<void> endPointDrag() async {
+    if (_draggingPointId == null) return;
+    _draggingPointId = null;
+    await _runGuarded(() async {
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+    });
+  }
+
   double _distanceToSegment(
     double px,
     double py,
@@ -798,7 +903,7 @@ class SketchController extends ChangeNotifier {
       // geometry the solver already accounted for) this needs an explicit
       // re-solve to reflect the now-looser system.
       if (deletedConstraint) {
-        await _api.solve(_sketchId!);
+        await _solveAndTrackDof();
         await _refreshConstraints();
       }
       await _refreshAllPoints();
@@ -980,7 +1085,7 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       await _api.createVerticalConstraint(_sketchId!, current.id);
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
       _selectionSet.clear();
@@ -995,7 +1100,7 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       await _api.createHorizontalConstraint(_sketchId!, current.id);
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
       _selectionSet.clear();
@@ -1367,7 +1472,7 @@ class SketchController extends ChangeNotifier {
         } else {
           await _api.createAngleConstraint(_sketchId!, target.lineAId!, target.lineBId!, value);
         }
-        await _api.solve(_sketchId!);
+        await _solveAndTrackDof();
         await _refreshAllPoints();
         await _refreshConstraints();
         _ghosts = [];
@@ -1402,7 +1507,7 @@ class SketchController extends ChangeNotifier {
         await _api.updateConstraintValue(_sketchId!, existing.id, distanceValue);
       } else {
         await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, distanceValue);
-        await _api.solve(_sketchId!);
+        await _solveAndTrackDof();
       }
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -1581,7 +1686,7 @@ class SketchController extends ChangeNotifier {
 
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
 
       if (closingLoop) {
@@ -1625,7 +1730,7 @@ class SketchController extends ChangeNotifier {
         construction: line.construction,
       );
 
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       _midpointAnchorX = null;
       _midpointAnchorY = null;
@@ -1659,7 +1764,7 @@ class SketchController extends ChangeNotifier {
       );
 
       // Same rule as a completed Line: one finished entity = one solve call.
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
 
@@ -1719,7 +1824,7 @@ class SketchController extends ChangeNotifier {
         construction: circle.construction,
       );
 
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
     });
