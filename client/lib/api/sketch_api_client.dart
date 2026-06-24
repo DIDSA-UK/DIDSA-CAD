@@ -289,24 +289,30 @@ class SolveResultDto {
       );
 }
 
-/// Result of a Sketch's closed-Profile check - only [status] and [detail]
-/// are used by the client (the Extrude context-menu gate), so the rest of
-/// the backend's `ProfileDetectionResponse` (the actual loop geometry) is
-/// left unparsed.
+/// Result of a Sketch's closed-Profile check. [status]/[detail] drive the
+/// Extrude context-menu gate; [pointIds] (the closed loop's ordered Point
+/// ids, when [isClosedLoop]) drives the sketch canvas's profile-area fill.
+/// The backend's `branch_point_ids`/`loops` (multi-loop detail) aren't
+/// needed by either consumer, so they're left unparsed.
 class ProfileDetectionDto {
   static const String closedLoop = 'closed_loop';
 
   final String status;
   final String detail;
+  final List<String>? pointIds;
 
-  ProfileDetectionDto({required this.status, required this.detail});
+  ProfileDetectionDto({required this.status, required this.detail, this.pointIds});
 
   bool get isClosedLoop => status == closedLoop;
 
-  factory ProfileDetectionDto.fromJson(Map<String, dynamic> json) => ProfileDetectionDto(
-        status: json['status'] as String,
-        detail: json['detail'] as String,
-      );
+  factory ProfileDetectionDto.fromJson(Map<String, dynamic> json) {
+    final profile = json['profile'] as Map<String, dynamic>?;
+    return ProfileDetectionDto(
+      status: json['status'] as String,
+      detail: json['detail'] as String,
+      pointIds: profile == null ? null : (profile['point_ids'] as List<dynamic>).cast<String>(),
+    );
+  }
 }
 
 /// Thin wrapper over the backend's `/sketch` REST API. Knows nothing about

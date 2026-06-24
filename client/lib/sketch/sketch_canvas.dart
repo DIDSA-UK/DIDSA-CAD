@@ -1156,6 +1156,31 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// A soft green fill over the Sketch's single closed loop (if any), so a
+  /// profile that's ready to Extrude reads as a "solid" before the user
+  /// even opens the context menu. [SketchController.closedProfilePointIds]
+  /// is null whenever there isn't exactly one closed loop, so this is a
+  /// no-op for every sketch that doesn't have one.
+  void _paintClosedProfileFill(Canvas canvas) {
+    final pointIds = controller.closedProfilePointIds;
+    if (pointIds == null || pointIds.length < 3) return;
+    final points = <Offset>[];
+    for (final id in pointIds) {
+      final point = controller.points[id];
+      if (point == null) return;
+      points.add(transform.sketchToScreen(point.x, point.y));
+    }
+    final path = Path()..addPolygon(points, true);
+    canvas.drawPath(path, Paint()..color = const Color(0xFF4CAF82).withValues(alpha: 0.15));
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFF4CAF82).withValues(alpha: 0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
@@ -1170,6 +1195,8 @@ class _SketchPainter extends CustomPainter {
         _drawDashedLine(canvas, start, end, ghostPaint);
       }
     }
+
+    _paintClosedProfileFill(canvas);
 
     final hovered = controller.hoveredEntity;
     final selectionSet = controller.selectionSet;

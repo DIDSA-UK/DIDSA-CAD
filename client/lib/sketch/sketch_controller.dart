@@ -2458,6 +2458,21 @@ class SketchController extends ChangeNotifier {
       final fresh = await _api.getPoint(_sketchId!, id);
       points[id] = SketchPointView(id: fresh.id, x: fresh.x, y: fresh.y);
     }
+    await _refreshProfile();
+  }
+
+  List<String>? _closedProfilePointIds;
+
+  /// The ordered Point ids of the sketch's single closed loop, or null if
+  /// there isn't exactly one (no loop, an open chain, or multiple loops).
+  /// Refreshed alongside points/constraints on every [_refreshAllPoints]
+  /// call via the existing `GET /sketch/sketches/{id}/profile` endpoint.
+  List<String>? get closedProfilePointIds => _closedProfilePointIds;
+
+  Future<void> _refreshProfile() async {
+    final profile = await _api.getProfile(_sketchId!);
+    final ids = profile.pointIds;
+    _closedProfilePointIds = profile.isClosedLoop && ids != null && ids.isNotEmpty ? ids : null;
   }
 
   Future<void> _runGuarded(Future<void> Function() body) async {

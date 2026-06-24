@@ -49,6 +49,7 @@ class _FakeBackend {
 
     final lineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/(.+)$').firstMatch(path);
     if (lineDeleteMatch != null && request.method == 'DELETE') {
+      lines.remove(lineDeleteMatch.group(1));
       return http.Response('', 204);
     }
 
@@ -261,7 +262,60 @@ class _FakeBackend {
       return _json(_solveResultBody(), 200);
     }
 
+    final profileMatch = RegExp(r'^/sketch/sketches/[^/]+/profile$').hasMatch(path);
+    if (profileMatch && request.method == 'GET') {
+      return _json(_profileBody(), 200);
+    }
+
     return http.Response('not found: $path', 404);
+  }
+
+  /// A minimal stand-in for the backend's real profile-detection algorithm:
+  /// good enough to flip between a single simple closed loop (every
+  /// involved Point has degree 2, and the line count matches the point
+  /// count) and "not a loop" for these tests, without reimplementing the
+  /// server's general multi-loop/branch-point logic.
+  Map<String, dynamic> _profileBody() {
+    final degree = <String, int>{};
+    final adjacency = <String, List<String>>{};
+    for (final line in lines.values) {
+      final a = line['start_point_id'] as String;
+      final b = line['end_point_id'] as String;
+      degree[a] = (degree[a] ?? 0) + 1;
+      degree[b] = (degree[b] ?? 0) + 1;
+      adjacency.putIfAbsent(a, () => []).add(b);
+      adjacency.putIfAbsent(b, () => []).add(a);
+    }
+    final involved = degree.keys.toList();
+    final isClosedLoop = involved.length >= 3 &&
+        degree.values.every((d) => d == 2) &&
+        lines.length == involved.length;
+    if (!isClosedLoop) {
+      return {
+        'status': 'open',
+        'detail': 'not a closed loop',
+        'profile': null,
+        'branch_point_ids': <String>[],
+        'loops': <Map<String, dynamic>>[],
+      };
+    }
+    final ordered = <String>[involved.first];
+    String prev = involved.first;
+    String curr = adjacency[involved.first]!.first;
+    while (curr != involved.first) {
+      ordered.add(curr);
+      final neighbors = adjacency[curr]!;
+      final next = neighbors[0] == prev ? neighbors[1] : neighbors[0];
+      prev = curr;
+      curr = next;
+    }
+    return {
+      'status': 'closed_loop',
+      'detail': 'ok',
+      'profile': {'point_ids': ordered, 'line_ids': lines.keys.toList()},
+      'branch_point_ids': <String>[],
+      'loops': <Map<String, dynamic>>[],
+    };
   }
 
   Map<String, dynamic> _solveResultBody() => {
@@ -706,6 +760,47 @@ void main() {
     controller.resetLabelOffset(constraintId);
 
     expect(controller.labelOffsetFor(constraintId), Offset.zero);
+  });
+
+  test('closedProfilePointIds is populated with the ordered loop once a chain closes', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    expect(controller.closedProfilePointIds, isNull);
+
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(5, 5);
+    expect(controller.closedProfilePointIds, isNull); // still open
+
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+    await controller.handleCanvasTap(0.1, 0.1); // closes the loop
+
+    expect(controller.closedProfilePointIds, isNotNull);
+    expect(controller.closedProfilePointIds!.length, 3);
+    expect(controller.closedProfilePointIds!.toSet(), controller.points.keys.toSet());
+  });
+
+  test('closedProfilePointIds reverts to null once the loop is broken by deleting a line', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+    await controller.handleCanvasTap(0.1, 0.1); // closes the loop
+    expect(controller.closedProfilePointIds, isNotNull);
+
+    controller.exitToSelectMode();
+    final lineToDelete = controller.lines.keys.first; // the (0, 0)-(5, 0) edge
+
+    // Away from the line's midpoint (2.5, 0) - see the deleteSelected line
+    // test above for why.
+    await controller.handleCanvasTap(4, 0.1);
+    expect(controller.selection!.id, lineToDelete);
+
+    await controller.deleteSelected();
+
+    expect(controller.closedProfilePointIds, isNull);
   });
 
   test('ensureSketch tracks the real backend origin Point at (0, 0)', () {
