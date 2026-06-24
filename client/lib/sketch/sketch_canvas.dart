@@ -85,6 +85,22 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   /// tap.
   String? _draggingPointId;
 
+  /// Stage 15 item 2: the Constraint id currently grabbed by an active
+  /// double-click-drag of its label, or null - mutually exclusive with
+  /// [_draggingPointId] (see [_tryStartEntityDrag], which checks
+  /// [dimensionLabelAt] first).
+  String? _draggingLabelId;
+
+  /// Cumulative screen-pixel travel since [_draggingLabelId] was set - if a
+  /// label drag ends having moved less than [_labelTapTravelThreshold], it's
+  /// treated as a double-tap rather than a drag and the label snaps back to
+  /// its default position (see [_handlePointerEnd]).
+  double _labelDragTravel = 0;
+
+  /// How far (screen pixels) a label "drag" may travel and still count as a
+  /// tap-in-place reset gesture rather than an intentional reposition.
+  static const double _labelTapTravelThreshold = 4.0;
+
   /// The canvas's own render size, refreshed every [build] - read by
   /// [_onEdgePanTick], which runs independently of any pointer event so an
   /// RTS-style edge-pan keeps going even while the pointer itself sits
@@ -100,6 +116,18 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
 
   late final Ticker _edgePanTicker;
   Duration _lastTick = Duration.zero;
+
+  /// Stage 15 item 3: the moment the cursor last actually moved (a non-zero
+  /// pointer-hover/-move delta from the user - never [_onEdgePanTick]'s own
+  /// re-anchoring call, which would otherwise keep the pan alive forever
+  /// once started). Gates edge-pan so it only runs while the cursor is
+  /// genuinely being held at the edge and moving, not just left sitting
+  /// there - see [_edgePanIdleThreshold].
+  DateTime? _lastCursorMoveTime;
+
+  /// How long the cursor may sit without moving before edge-pan stops,
+  /// per item 3.
+  static const Duration _edgePanIdleThreshold = Duration(milliseconds: 150);
 
   @override
   void initState() {
@@ -132,6 +160,8 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     _lastTick = elapsed;
     if (size == null || dt <= 0 || dt > 0.25) return;
     if (_activeTouches.length >= 2) return;
+    final lastMove = _lastCursorMoveTime;
+    if (lastMove == null || DateTime.now().difference(lastMove) >= _edgePanIdleThreshold) return;
 
     final transform = _viewport.transformFor(size);
     final cursorScreen = transform.sketchToScreen(widget.controller.cursorX, widget.controller.cursorY);
@@ -168,6 +198,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     // Hover events only fire for a mouse with no buttons pressed - real
     // mouse movement drives the cursor directly, 1:1.
     if (event.kind != PointerDeviceKind.mouse) return;
+    if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
   }
 
@@ -222,6 +253,14 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       return false;
     }
     final controller = widget.controller;
+    final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
+    final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
+    if (labelId != null && controller.beginLabelDrag(labelId)) {
+      _lastTapTime = null;
+      _draggingLabelId = labelId;
+      _labelDragTravel = 0;
+      return true;
+    }
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     final pointId = controller.dragTargetPointIdAt(controller.cursorX, controller.cursorY, hitRadius);
     if (pointId == null || !controller.beginPointDrag(pointId)) return false;
@@ -262,6 +301,11 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
+    if (_draggingLabelId != null) {
+      _labelDragTravel += event.delta.distance;
+      widget.controller.updateLabelDrag(event.delta);
+      return;
+    }
     if (_draggingPointId != null) {
       final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
       widget.controller.updatePointDrag(coord.x, coord.y);
@@ -271,6 +315,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       if (event.buttons & kSecondaryMouseButton != 0) {
         setState(() => _viewport.panByScreenDelta(event.delta));
       } else {
+        if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
       }
       return;
@@ -282,6 +327,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       // _dispatchTap, which always reads the cursor's current position,
       // never the tap's own screen location).
       _singleTouchTravel += event.delta.distance;
+      if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
     }
@@ -293,6 +339,16 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
+    if (_draggingLabelId != null) {
+      final labelId = _draggingLabelId!;
+      _draggingLabelId = null;
+      _activeTouches.remove(event.pointer);
+      if (_labelDragTravel < _labelTapTravelThreshold) {
+        widget.controller.resetLabelOffset(labelId);
+      }
+      widget.controller.endLabelDrag();
+      return;
+    }
     if (_draggingPointId != null) {
       _draggingPointId = null;
       _activeTouches.remove(event.pointer);
@@ -640,19 +696,38 @@ Offset? _constraintLabelCenter(
   }
 }
 
+/// The id of whichever currently-rendered Constraint's label [canvasPos]
+/// landed within [radius] of, or null if it missed all of them - the
+/// label's *actual* position, i.e. [_constraintLabelCenter]'s default
+/// anchor plus [SketchController.labelOffsetFor] (Stage 15 item 2), so
+/// this never disagrees with where [_SketchPainter] actually draws it
+/// after a drag. Public (unlike its sibling hit-testers in this file) so
+/// it's directly unit-testable without pumping a real widget tree - see
+/// [_SketchCanvasState._tryStartEntityDrag], which checks this *before*
+/// [SketchController.dragTargetPointIdAt] on a second pointer-down.
+String? dimensionLabelAt(
+  SketchController controller,
+  ViewTransform transform,
+  Offset canvasPos,
+  double radius,
+) {
+  for (final entry in controller.constraints.entries) {
+    final center = _constraintLabelCenter(controller, transform, entry.value);
+    if (center == null) continue;
+    final actual = center + controller.labelOffsetFor(entry.key);
+    if ((canvasPos - actual).distance <= radius) {
+      return entry.key;
+    }
+  }
+  return null;
+}
+
 /// The id of whichever currently-rendered Constraint's label
 /// [screenPosition] landed on, or null if it missed all of them - see
 /// [_SketchCanvasState._dispatchTap]. Reuses [_ghostHitRadiusPixels]'s
 /// touch target, same generous tolerance as ghost-label hit-testing.
 String? _constraintIdAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
-  for (final entry in controller.constraints.entries) {
-    final center = _constraintLabelCenter(controller, transform, entry.value);
-    if (center == null) continue;
-    if ((screenPosition - center).distance <= _ghostHitRadiusPixels) {
-      return entry.key;
-    }
-  }
-  return null;
+  return dimensionLabelAt(controller, transform, screenPosition, _ghostHitRadiusPixels);
 }
 
 /// The inline value-entry box for whichever ghost is currently
@@ -840,15 +915,16 @@ class _SketchPainter extends CustomPainter {
       final isSelected =
           selectionSet.any((s) => s.kind == SelectionKind.constraint && s.id == entry.key);
       final color = isSelected ? _selectedColor : _dimensionColor;
+      final labelOffset = controller.labelOffsetFor(entry.key);
       switch (entry.value) {
         case DistanceConstraintDto c:
-          _paintDistanceDimension(canvas, c, color);
+          _paintDistanceDimension(canvas, c, color, labelOffset);
         case VerticalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', color);
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', color, labelOffset);
         case HorizontalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', color);
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', color, labelOffset);
         case AngleConstraintDto c:
-          _paintAngleDimension(canvas, c, color);
+          _paintAngleDimension(canvas, c, color, labelOffset);
         default:
           break;
       }
@@ -885,7 +961,7 @@ class _SketchPainter extends CustomPainter {
   /// pixel amount (so it reads clearly regardless of zoom), labeled with
   /// the constraint's own [DistanceConstraintDto.distance] (the solved
   /// value, not a measurement of the current screen geometry).
-  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color) {
+  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color, Offset labelOffset) {
     final a = controller.points[c.pointAId];
     final b = controller.points[c.pointBId];
     if (a == null || b == null) return;
@@ -906,18 +982,25 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(aScreen + offset, bScreen + offset, dimPaint);
 
     final midpoint = (aScreen + offset + bScreen + offset) / 2;
-    _drawDimensionLabel(canvas, midpoint, c.distance.toStringAsFixed(2), color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
   /// Line's midpoint - there's no "value" to dimension, only the
   /// constraint's existence.
-  void _paintAxisIndicator(Canvas canvas, String pointAId, String pointBId, String label, Color color) {
+  void _paintAxisIndicator(
+    Canvas canvas,
+    String pointAId,
+    String pointBId,
+    String label,
+    Color color,
+    Offset labelOffset,
+  ) {
     final a = controller.points[pointAId];
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
-    _drawDimensionLabel(canvas, midpoint, label, color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
   /// Angle dimension: deliberately a numeric-only label rather than a
@@ -925,12 +1008,12 @@ class _SketchPainter extends CustomPainter {
   /// general, so there's no single well-defined arc to draw. Placed at the
   /// midpoint between each Line's own midpoint, which stays stable and
   /// roughly "between" the two Lines regardless of their actual layout.
-  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color) {
+  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset) {
     final midpoint1 = _lineMidpointScreen(c.line1Id);
     final midpoint2 = _lineMidpointScreen(c.line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawDimensionLabel(canvas, midpoint, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
   }
 
   Offset? _lineMidpointScreen(String lineId) {
@@ -1003,6 +1086,101 @@ class _SketchPainter extends CustomPainter {
     );
   }
 
+  /// Stage 15 item 1: the dashed live preview of whatever the next tap
+  /// would commit (see [SketchController.activeDrawGhost]) - drawn in the
+  /// same in-progress deepOrange family as
+  /// [_paintInProgressConstructionPicks]'s markers, since it's the same
+  /// "not yet real" kind of feedback, just for the shape rather than a bare
+  /// construction pick.
+  static const Color _drawGhostColor = Colors.deepOrange;
+
+  /// Stage 15 item 4's snap-candidate highlight color - cyan, distinct from
+  /// every other highlight/marker color this painter already uses
+  /// (purple selected, amber hover, green sketching cursor, deepOrange
+  /// in-progress/ghost) and readable against both this painter's light
+  /// background and a dark theme's canvas chrome around it.
+  static const Color _snapCandidateColor = Colors.cyan;
+
+  /// Stage 15 item 4: highlights whichever existing Point (if any) the
+  /// cursor is currently snapped onto while placing a new entity (see
+  /// [SketchController.snapCandidatePointId]) - a filled circle at 2x a
+  /// plain Point's render radius, plus a concentric ring outside it, so an
+  /// otherwise-invisible "this tap will reuse that Point" outcome is
+  /// visible before the tap happens.
+  void _paintSnapCandidateHighlight(Canvas canvas) {
+    final pointId = controller.snapCandidatePointId;
+    if (pointId == null) return;
+    final point = controller.points[pointId];
+    if (point == null) return;
+    final screenPos = transform.sketchToScreen(point.x, point.y);
+    const plainPointRadius = 4.0;
+    const highlightRadius = plainPointRadius * 2;
+    canvas.drawCircle(screenPos, highlightRadius, Paint()..color = _snapCandidateColor.withValues(alpha: 0.35));
+    canvas.drawCircle(
+      screenPos,
+      highlightRadius + 4,
+      Paint()
+        ..color = _snapCandidateColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
+  void _paintActiveDrawGhost(Canvas canvas) {
+    final ghost = controller.activeDrawGhost;
+    if (ghost == null) return;
+    final paint = Paint()
+      ..color = _drawGhostColor
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    switch (ghost) {
+      case LineGhost g:
+        _drawDashedLine(
+          canvas,
+          transform.sketchToScreen(g.startX, g.startY),
+          transform.sketchToScreen(g.endX, g.endY),
+          paint,
+        );
+      case CircleGhost g:
+        final center = transform.sketchToScreen(g.centerX, g.centerY);
+        final edge = transform.sketchToScreen(g.edgeX, g.edgeY);
+        final radiusPixels = (edge - center).distance;
+        _drawDashedCircle(canvas, center, radiusPixels, paint);
+      case RectGhost g:
+        final corners = [g.corner0, g.corner1, g.corner2, g.corner3]
+            .map((c) => transform.sketchToScreen(c.$1, c.$2))
+            .toList();
+        for (var i = 0; i < corners.length; i++) {
+          _drawDashedLine(canvas, corners[i], corners[(i + 1) % corners.length], paint);
+        }
+    }
+  }
+
+  /// A soft green fill over the Sketch's single closed loop (if any), so a
+  /// profile that's ready to Extrude reads as a "solid" before the user
+  /// even opens the context menu. [SketchController.closedProfilePointIds]
+  /// is null whenever there isn't exactly one closed loop, so this is a
+  /// no-op for every sketch that doesn't have one.
+  void _paintClosedProfileFill(Canvas canvas) {
+    final pointIds = controller.closedProfilePointIds;
+    if (pointIds == null || pointIds.length < 3) return;
+    final points = <Offset>[];
+    for (final id in pointIds) {
+      final point = controller.points[id];
+      if (point == null) return;
+      points.add(transform.sketchToScreen(point.x, point.y));
+    }
+    final path = Path()..addPolygon(points, true);
+    canvas.drawPath(path, Paint()..color = const Color(0xFF4CAF82).withValues(alpha: 0.15));
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFF4CAF82).withValues(alpha: 0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
@@ -1017,6 +1195,8 @@ class _SketchPainter extends CustomPainter {
         _drawDashedLine(canvas, start, end, ghostPaint);
       }
     }
+
+    _paintClosedProfileFill(canvas);
 
     final hovered = controller.hoveredEntity;
     final selectionSet = controller.selectionSet;
@@ -1135,6 +1315,8 @@ class _SketchPainter extends CustomPainter {
     _paintGhosts(canvas);
     _paintInProgressConstructionPicks(canvas);
     _paintMidpointSnapIndicator(canvas);
+    _paintSnapCandidateHighlight(canvas);
+    _paintActiveDrawGhost(canvas);
 
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final crosshairPaint = Paint()

@@ -65,6 +65,27 @@ class SketchConstructionMethodBar extends StatelessWidget {
         ),
       ];
     }
+    if (controller.activeTool == SketchTool.rectangle) {
+      return [
+        _chip(
+          label: 'Two corner',
+          selected: controller.rectangleConstructionMethod == RectangleConstructionMethod.twoCorner,
+          onTap: () => controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner),
+        ),
+        const SizedBox(width: 8),
+        _chip(
+          label: 'Centre + corner',
+          selected: controller.rectangleConstructionMethod == RectangleConstructionMethod.centreCorner,
+          onTap: () => controller.setRectangleConstructionMethod(RectangleConstructionMethod.centreCorner),
+        ),
+        const SizedBox(width: 8),
+        _chip(
+          label: 'Three point',
+          selected: controller.rectangleConstructionMethod == RectangleConstructionMethod.threePoint,
+          onTap: () => controller.setRectangleConstructionMethod(RectangleConstructionMethod.threePoint),
+        ),
+      ];
+    }
     return [
       _chip(
         label: 'Center + radius',

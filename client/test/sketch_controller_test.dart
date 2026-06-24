@@ -5,7 +5,9 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
+import 'package:didsa_cad_client/sketch/view_transform.dart';
 
 /// A tiny in-memory fake of the backend's `/sketch` API (point/line/circle
 /// creation, constraints, get, solve) good enough to exercise the
@@ -47,6 +49,7 @@ class _FakeBackend {
 
     final lineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/(.+)$').firstMatch(path);
     if (lineDeleteMatch != null && request.method == 'DELETE') {
+      lines.remove(lineDeleteMatch.group(1));
       return http.Response('', 204);
     }
 
@@ -207,6 +210,38 @@ class _FakeBackend {
             'angle_degrees': (body['angle_degrees'] as num).toDouble(),
           };
           break;
+        case 'coincident':
+          constraint = {
+            'id': id,
+            'type': 'coincident',
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+          };
+          break;
+        case 'parallel':
+          constraint = {
+            'id': id,
+            'type': 'parallel',
+            'line1_id': body['line1_id'],
+            'line2_id': body['line2_id'],
+          };
+          break;
+        case 'perpendicular':
+          constraint = {
+            'id': id,
+            'type': 'perpendicular',
+            'line1_id': body['line1_id'],
+            'line2_id': body['line2_id'],
+          };
+          break;
+        case 'equal_length':
+          constraint = {
+            'id': id,
+            'type': 'equal_length',
+            'line1_id': body['line1_id'],
+            'line2_id': body['line2_id'],
+          };
+          break;
         default:
           constraint = {
             'id': id,
@@ -227,7 +262,60 @@ class _FakeBackend {
       return _json(_solveResultBody(), 200);
     }
 
+    final profileMatch = RegExp(r'^/sketch/sketches/[^/]+/profile$').hasMatch(path);
+    if (profileMatch && request.method == 'GET') {
+      return _json(_profileBody(), 200);
+    }
+
     return http.Response('not found: $path', 404);
+  }
+
+  /// A minimal stand-in for the backend's real profile-detection algorithm:
+  /// good enough to flip between a single simple closed loop (every
+  /// involved Point has degree 2, and the line count matches the point
+  /// count) and "not a loop" for these tests, without reimplementing the
+  /// server's general multi-loop/branch-point logic.
+  Map<String, dynamic> _profileBody() {
+    final degree = <String, int>{};
+    final adjacency = <String, List<String>>{};
+    for (final line in lines.values) {
+      final a = line['start_point_id'] as String;
+      final b = line['end_point_id'] as String;
+      degree[a] = (degree[a] ?? 0) + 1;
+      degree[b] = (degree[b] ?? 0) + 1;
+      adjacency.putIfAbsent(a, () => []).add(b);
+      adjacency.putIfAbsent(b, () => []).add(a);
+    }
+    final involved = degree.keys.toList();
+    final isClosedLoop = involved.length >= 3 &&
+        degree.values.every((d) => d == 2) &&
+        lines.length == involved.length;
+    if (!isClosedLoop) {
+      return {
+        'status': 'open',
+        'detail': 'not a closed loop',
+        'profile': null,
+        'branch_point_ids': <String>[],
+        'loops': <Map<String, dynamic>>[],
+      };
+    }
+    final ordered = <String>[involved.first];
+    String prev = involved.first;
+    String curr = adjacency[involved.first]!.first;
+    while (curr != involved.first) {
+      ordered.add(curr);
+      final neighbors = adjacency[curr]!;
+      final next = neighbors[0] == prev ? neighbors[1] : neighbors[0];
+      prev = curr;
+      curr = next;
+    }
+    return {
+      'status': 'closed_loop',
+      'detail': 'ok',
+      'profile': {'point_ids': ordered, 'line_ids': lines.keys.toList()},
+      'branch_point_ids': <String>[],
+      'loops': <Map<String, dynamic>>[],
+    };
   }
 
   Map<String, dynamic> _solveResultBody() => {
@@ -381,6 +469,338 @@ void main() {
 
     expect(controller.circleInProgress, isTrue);
     expect(controller.circles.length, 1);
+  });
+
+  test('Two Corner rectangle: first tap places only a point, second tap completes the rectangle', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+
+    await controller.handleCanvasTap(2, 2);
+
+    expect(controller.rectangleInProgress, isTrue);
+    expect(controller.lines.length, 0);
+    // 2: the real origin Point plus this first corner.
+    expect(controller.points.length, 2);
+
+    await controller.handleCanvasTap(10, 8);
+
+    expect(controller.rectangleInProgress, isFalse);
+    expect(controller.lines.length, 4);
+    // 5: origin + the two tapped corners (2,2) and (10,8) + the two
+    // computed corners (10,2) and (2,8).
+    expect(controller.points.length, 5);
+    expect(
+      controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
+      3,
+    );
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('Centre + Corner rectangle: first tap is a virtual centre, second tap mirrors it into 4 corners', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.centreCorner);
+
+    await controller.handleCanvasTap(5, 5);
+
+    expect(controller.rectangleInProgress, isTrue);
+    // The centre tap is virtual - no Point created for it yet.
+    expect(controller.points.length, 1);
+    expect(controller.lines.length, 0);
+
+    await controller.handleCanvasTap(8, 8);
+
+    expect(controller.rectangleInProgress, isFalse);
+    expect(controller.lines.length, 4);
+    // 5: origin + the tapped corner (8,8) + the 3 mirrored corners
+    // (2,8), (2,2), (8,2).
+    expect(controller.points.length, 5);
+    final xs = controller.points.values.map((p) => p.x).toSet();
+    final ys = controller.points.values.map((p) => p.y).toSet();
+    expect(xs.containsAll([2, 8]), isTrue);
+    expect(ys.containsAll([2, 8]), isTrue);
+    expect(
+      controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
+      3,
+    );
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('3-Point rectangle: builds a non-axis-aligned rectangle from two corners plus a height pick', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.threePoint);
+
+    await controller.handleCanvasTap(1, 1);
+    expect(controller.rectangleInProgress, isTrue);
+    expect(controller.rectangleSecondX, isNull);
+
+    await controller.handleCanvasTap(5, 4);
+    expect(controller.rectangleSecondX, 5);
+    expect(controller.lines.length, 0);
+
+    // A 3-4-5 right triangle's normal off the first side, scaled by 5, so
+    // the resulting rectangle's far corners land on clean coordinates.
+    await controller.handleCanvasTap(-2, 5);
+
+    expect(controller.rectangleInProgress, isFalse);
+    expect(controller.lines.length, 4);
+    // 5: origin + the two side-defining taps (1,1)/(5,4) + the two
+    // computed far corners (2,8)/(-2,5).
+    expect(controller.points.length, 5);
+    final coords = controller.points.values.map((p) => (p.x, p.y)).toSet();
+    expect(coords.contains((1.0, 1.0)), isTrue);
+    expect(coords.contains((5.0, 4.0)), isTrue);
+    expect(
+      coords.any((c) => (c.$1 - 2.0).abs() < 1e-6 && (c.$2 - 8.0).abs() < 1e-6),
+      isTrue,
+    );
+    expect(
+      coords.any((c) => (c.$1 - (-2.0)).abs() < 1e-6 && (c.$2 - 5.0).abs() < 1e-6),
+      isTrue,
+    );
+    expect(
+      controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
+      3,
+    );
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('3-Point rectangle rejects a degenerate first side (two identical points)', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.threePoint);
+
+    await controller.handleCanvasTap(1, 1);
+    await controller.handleCanvasTap(1, 1);
+    await controller.handleCanvasTap(5, 5);
+
+    expect(controller.lines.length, 0);
+    expect(controller.errorMessage, isNotNull);
+  });
+
+  test('a rectangle corner snaps onto an existing nearby Point instead of duplicating it', () async {
+    // Place a real Point at (10, 2) via the line tool first.
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(10, 2);
+    final preplacedId = controller.chainFirstPointId;
+    expect(controller.points.length, 2); // origin + this Point
+
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+
+    await controller.handleCanvasTap(2, 2);
+    await controller.handleCanvasTap(10, 8);
+
+    // The computed corner at (10, 2) should reuse the pre-placed Point
+    // rather than creating a 6th one.
+    expect(controller.points.length, 5);
+    expect(controller.points.containsKey(preplacedId), isTrue);
+    final reused = controller.points[preplacedId]!;
+    expect(reused.x, 10);
+    expect(reused.y, 2);
+    final cornerLines = controller.lines.values
+        .where((l) => l.startPointId == preplacedId || l.endPointId == preplacedId)
+        .toList();
+    expect(cornerLines.length, 2);
+  });
+
+  test('snapCandidatePointId is null outside draw mode and when nothing is nearby', () {
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    expect(controller.snapCandidatePointId, isNull); // select mode by default
+
+    controller.selectDrawTool(SketchTool.line);
+    controller.cursorX = 50;
+    controller.cursorY = 50;
+    expect(controller.snapCandidatePointId, isNull); // nothing within snapRadius
+  });
+
+  test('snapCandidatePointId reports the nearby existing Point while in draw mode', () {
+    controller.selectDrawTool(SketchTool.line);
+    expect(controller.snapCandidatePointId, controller.originPointId); // cursor starts at (0, 0)
+
+    controller.cursorX = 10;
+    controller.cursorY = 10;
+    expect(controller.snapCandidatePointId, isNull);
+  });
+
+  test('activeDrawGhost is null when idle and tracks the cursor for an end-to-end line', () async {
+    expect(controller.activeDrawGhost, isNull); // select mode by default
+
+    controller.selectDrawTool(SketchTool.line);
+    controller.setLineConstructionMethod(LineConstructionMethod.endToEnd);
+    expect(controller.activeDrawGhost, isNull); // no first point placed yet
+
+    await controller.handleCanvasTap(1, 1);
+    controller.cursorX = 4;
+    controller.cursorY = 5;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<LineGhost>());
+    final line = ghost as LineGhost;
+    expect(line.startX, 1);
+    expect(line.startY, 1);
+    expect(line.endX, 4);
+    expect(line.endY, 5);
+  });
+
+  test('activeDrawGhost previews a center-radius circle from its center to the cursor', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    controller.setCircleConstructionMethod(CircleConstructionMethod.centerRadius);
+
+    await controller.handleCanvasTap(2, 2);
+    controller.cursorX = 6;
+    controller.cursorY = 2;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<CircleGhost>());
+    final circle = ghost as CircleGhost;
+    expect(circle.centerX, 2);
+    expect(circle.centerY, 2);
+    expect(circle.edgeX, 6);
+    expect(circle.edgeY, 2);
+  });
+
+  test('activeDrawGhost previews a two-corner rectangle from its first corner to the cursor', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+
+    await controller.handleCanvasTap(1, 1);
+    controller.cursorX = 5;
+    controller.cursorY = 4;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<RectGhost>());
+    final rect = ghost as RectGhost;
+    expect(rect.corner0, (1.0, 1.0));
+    expect(rect.corner1, (5.0, 1.0));
+    expect(rect.corner2, (5.0, 4.0));
+    expect(rect.corner3, (1.0, 4.0));
+  });
+
+  test('dimensionLabelAt hits a dragged label at its offset position and misses its old default anchor', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint (5, 0)
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // Default anchor for this Line's DistanceConstraint label, per
+    // _paintDistanceDimension's own layout: the two Points' screen
+    // positions, each nudged 18px along the perpendicular normal, averaged.
+    const defaultAnchor = Offset(500, 318);
+
+    expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), constraintId);
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(30, -10));
+    controller.endLabelDrag();
+
+    expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), isNull);
+    expect(dimensionLabelAt(controller, transform, const Offset(530, 308), 5), constraintId);
+  });
+
+  test('updateLabelDrag sums successive deltas onto the offset', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(5, 3));
+    controller.updateLabelDrag(const Offset(-2, 7));
+
+    expect(controller.labelOffsetFor(constraintId), const Offset(3, 10));
+  });
+
+  test('endLabelDrag retains the accumulated offset and clears draggingLabelId', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(12, -4));
+    controller.endLabelDrag();
+
+    expect(controller.draggingLabelId, isNull);
+    expect(controller.labelOffsetFor(constraintId), const Offset(12, -4));
+  });
+
+  test('resetLabelOffset (the double-tap-without-drag gesture) snaps a label back to zero', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(2, 1)); // tiny - under the 4px reset threshold
+    controller.endLabelDrag();
+    expect(controller.labelOffsetFor(constraintId), const Offset(2, 1));
+
+    controller.resetLabelOffset(constraintId);
+
+    expect(controller.labelOffsetFor(constraintId), Offset.zero);
+  });
+
+  test('closedProfilePointIds is populated with the ordered loop once a chain closes', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    expect(controller.closedProfilePointIds, isNull);
+
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(5, 5);
+    expect(controller.closedProfilePointIds, isNull); // still open
+
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+    await controller.handleCanvasTap(0.1, 0.1); // closes the loop
+
+    expect(controller.closedProfilePointIds, isNotNull);
+    expect(controller.closedProfilePointIds!.length, 3);
+    expect(controller.closedProfilePointIds!.toSet(), controller.points.keys.toSet());
+  });
+
+  test('closedProfilePointIds reverts to null once the loop is broken by deleting a line', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+    await controller.handleCanvasTap(0.1, 0.1); // closes the loop
+    expect(controller.closedProfilePointIds, isNotNull);
+
+    controller.exitToSelectMode();
+    final lineToDelete = controller.lines.keys.first; // the (0, 0)-(5, 0) edge
+
+    // Away from the line's midpoint (2.5, 0) - see the deleteSelected line
+    // test above for why.
+    await controller.handleCanvasTap(4, 0.1);
+    expect(controller.selection!.id, lineToDelete);
+
+    await controller.deleteSelected();
+
+    expect(controller.closedProfilePointIds, isNull);
   });
 
   test('ensureSketch tracks the real backend origin Point at (0, 0)', () {
@@ -1344,5 +1764,142 @@ void main() {
     expect(controller.points[pointId]!.x, 12);
     expect(controller.points[pointId]!.y, 34);
     expect(controller.errorMessage, isNull);
+  });
+
+  // --- Stage 15 item 5: Coincident/Parallel/Perpendicular/EqualLength -------
+
+  test('canApplyConstraint(coincident) is true for two selected Points, false otherwise', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(3, 9);
+    controller.enterDimensionMode();
+
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+    await controller.handleCanvasTap(0, 5);
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+
+    await controller.handleCanvasTap(3, 9);
+
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.parallel), isFalse);
+  });
+
+  test('canApplyConstraint(parallel/perpendicular/equalLength) is true for two selected Lines',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(8, 0.1); // horizontal line, away from its midpoint
+    await controller.handleCanvasTap(0.1, 8); // vertical line, away from its midpoint
+
+    expect(controller.canApplyConstraint(ConstraintOptionType.parallel), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.perpendicular), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.equalLength), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+  });
+
+  test('addCoincidentConstraint creates a CoincidentConstraint between the two picked Points and '
+      'clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(3, 9);
+    final pointA = controller.points.values.firstWhere((p) => p.x == 0 && p.y == 5).id;
+    final pointB = controller.points.values.firstWhere((p) => p.x == 3 && p.y == 9).id;
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(3, 9);
+
+    await controller.addCoincidentConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<CoincidentConstraintDto>().single;
+    expect({created.pointAId, created.pointBId}, {pointA, pointB});
+  });
+
+  test('addParallelConstraint creates a ParallelConstraint between the two picked Lines and '
+      'clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 6);
+    controller.finishChain();
+    final lineIds = controller.lines.keys.toSet();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // first line, away from its midpoint (5, 0)
+    await controller.handleCanvasTap(8, 5.8); // second line, away from its midpoint (5, 5.5)
+
+    await controller.addParallelConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<ParallelConstraintDto>().single;
+    expect({created.line1Id, created.line2Id}, lineIds);
+  });
+
+  test('addPerpendicularConstraint creates a PerpendicularConstraint between the two picked '
+      'Lines and clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(3, 3);
+    await controller.handleCanvasTap(5, 9);
+    controller.finishChain();
+    final lineIds = controller.lines.keys.toSet();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(3.5, 4.5); // second line, away from its midpoint (4, 6)
+
+    await controller.addPerpendicularConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<PerpendicularConstraintDto>().single;
+    expect({created.line1Id, created.line2Id}, lineIds);
+  });
+
+  test('addEqualLengthConstraint creates an EqualLengthConstraint between the two picked Lines '
+      'and clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(0, 8);
+    controller.finishChain();
+    final lineIds = controller.lines.keys.toSet();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.1, 7.5); // second line, away from its midpoint (0, 6.5)
+
+    await controller.addEqualLengthConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<EqualLengthConstraintDto>().single;
+    expect({created.line1Id, created.line2Id}, lineIds);
+  });
+
+  test('addCoincidentConstraint is a no-op when the current dimension selection is not two Points',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // a single Line, not two Points
+
+    await controller.addCoincidentConstraint();
+
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
   });
 }

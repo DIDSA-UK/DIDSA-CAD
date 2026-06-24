@@ -113,6 +113,14 @@ abstract class ConstraintDto {
         return HorizontalConstraintDto.fromJson(json);
       case 'angle':
         return AngleConstraintDto.fromJson(json);
+      case 'coincident':
+        return CoincidentConstraintDto.fromJson(json);
+      case 'parallel':
+        return ParallelConstraintDto.fromJson(json);
+      case 'perpendicular':
+        return PerpendicularConstraintDto.fromJson(json);
+      case 'equal_length':
+        return EqualLengthConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -199,6 +207,74 @@ class AngleConstraintDto extends ConstraintDto {
       );
 }
 
+class CoincidentConstraintDto extends ConstraintDto {
+  final String pointAId;
+  final String pointBId;
+
+  const CoincidentConstraintDto({
+    required super.id,
+    required this.pointAId,
+    required this.pointBId,
+  });
+
+  factory CoincidentConstraintDto.fromJson(Map<String, dynamic> json) => CoincidentConstraintDto(
+        id: json['id'] as String,
+        pointAId: json['point_a_id'] as String,
+        pointBId: json['point_b_id'] as String,
+      );
+}
+
+class ParallelConstraintDto extends ConstraintDto {
+  final String line1Id;
+  final String line2Id;
+
+  const ParallelConstraintDto({
+    required super.id,
+    required this.line1Id,
+    required this.line2Id,
+  });
+
+  factory ParallelConstraintDto.fromJson(Map<String, dynamic> json) => ParallelConstraintDto(
+        id: json['id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+      );
+}
+
+class PerpendicularConstraintDto extends ConstraintDto {
+  final String line1Id;
+  final String line2Id;
+
+  const PerpendicularConstraintDto({
+    required super.id,
+    required this.line1Id,
+    required this.line2Id,
+  });
+
+  factory PerpendicularConstraintDto.fromJson(Map<String, dynamic> json) => PerpendicularConstraintDto(
+        id: json['id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+      );
+}
+
+class EqualLengthConstraintDto extends ConstraintDto {
+  final String line1Id;
+  final String line2Id;
+
+  const EqualLengthConstraintDto({
+    required super.id,
+    required this.line1Id,
+    required this.line2Id,
+  });
+
+  factory EqualLengthConstraintDto.fromJson(Map<String, dynamic> json) => EqualLengthConstraintDto(
+        id: json['id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+      );
+}
+
 class SolveResultDto {
   final bool converged;
   final int dof;
@@ -213,24 +289,30 @@ class SolveResultDto {
       );
 }
 
-/// Result of a Sketch's closed-Profile check - only [status] and [detail]
-/// are used by the client (the Extrude context-menu gate), so the rest of
-/// the backend's `ProfileDetectionResponse` (the actual loop geometry) is
-/// left unparsed.
+/// Result of a Sketch's closed-Profile check. [status]/[detail] drive the
+/// Extrude context-menu gate; [pointIds] (the closed loop's ordered Point
+/// ids, when [isClosedLoop]) drives the sketch canvas's profile-area fill.
+/// The backend's `branch_point_ids`/`loops` (multi-loop detail) aren't
+/// needed by either consumer, so they're left unparsed.
 class ProfileDetectionDto {
   static const String closedLoop = 'closed_loop';
 
   final String status;
   final String detail;
+  final List<String>? pointIds;
 
-  ProfileDetectionDto({required this.status, required this.detail});
+  ProfileDetectionDto({required this.status, required this.detail, this.pointIds});
 
   bool get isClosedLoop => status == closedLoop;
 
-  factory ProfileDetectionDto.fromJson(Map<String, dynamic> json) => ProfileDetectionDto(
-        status: json['status'] as String,
-        detail: json['detail'] as String,
-      );
+  factory ProfileDetectionDto.fromJson(Map<String, dynamic> json) {
+    final profile = json['profile'] as Map<String, dynamic>?;
+    return ProfileDetectionDto(
+      status: json['status'] as String,
+      detail: json['detail'] as String,
+      pointIds: profile == null ? null : (profile['point_ids'] as List<dynamic>).cast<String>(),
+    );
+  }
 }
 
 /// Thin wrapper over the backend's `/sketch` REST API. Knows nothing about
@@ -510,6 +592,82 @@ class SketchApiClient {
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
               body: jsonEncode({'type': 'horizontal', 'line_id': lineId}),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Stage 15's value-less constraint buttons: each takes exactly two
+  /// existing entity ids and has no numeric value to preview/confirm, unlike
+  /// [createDistanceConstraint]/[createAngleConstraint] - mirrors
+  /// [createVerticalConstraint]'s shape.
+  Future<ConstraintDto> createCoincidentConstraint(
+    String sketchId,
+    String pointAId,
+    String pointBId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'coincident',
+                'point_a_id': pointAId,
+                'point_b_id': pointBId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ConstraintDto> createParallelConstraint(
+    String sketchId,
+    String line1Id,
+    String line2Id,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'parallel',
+                'line1_id': line1Id,
+                'line2_id': line2Id,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ConstraintDto> createPerpendicularConstraint(
+    String sketchId,
+    String line1Id,
+    String line2Id,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'perpendicular',
+                'line1_id': line1Id,
+                'line2_id': line2Id,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ConstraintDto> createEqualLengthConstraint(
+    String sketchId,
+    String line1Id,
+    String line2Id,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'equal_length',
+                'line1_id': line1Id,
+                'line2_id': line2Id,
+              }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );

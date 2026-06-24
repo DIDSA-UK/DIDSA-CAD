@@ -2,9 +2,13 @@ from fastapi import APIRouter, HTTPException
 
 from app.sketch.constraints import (
     AngleConstraint,
+    CoincidentConstraint,
     Constraint,
     DistanceConstraint,
+    EqualLengthConstraint,
     HorizontalConstraint,
+    ParallelConstraint,
+    PerpendicularConstraint,
     VerticalConstraint,
 )
 from app.sketch.models import Circle, Line, Point, Sketch
@@ -15,16 +19,24 @@ from app.sketch.schemas import (
     CircleCreate,
     CircleResponse,
     CircleUpdate,
+    CoincidentConstraintCreate,
+    CoincidentConstraintResponse,
     ConstraintCreate,
     ConstraintResponse,
     ConstraintValueUpdate,
     DistanceConstraintCreate,
     DistanceConstraintResponse,
+    EqualLengthConstraintCreate,
+    EqualLengthConstraintResponse,
     HorizontalConstraintCreate,
     HorizontalConstraintResponse,
     LineCreate,
     LineResponse,
     LineUpdate,
+    ParallelConstraintCreate,
+    ParallelConstraintResponse,
+    PerpendicularConstraintCreate,
+    PerpendicularConstraintResponse,
     PointCreate,
     PointResponse,
     PointUpdate,
@@ -147,6 +159,30 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             line1_id=constraint.line1_id,
             line2_id=constraint.line2_id,
             angle_degrees=constraint.angle_degrees,
+        )
+    if isinstance(constraint, CoincidentConstraint):
+        return CoincidentConstraintResponse(
+            id=constraint.id,
+            point_a_id=constraint.point_a_id,
+            point_b_id=constraint.point_b_id,
+        )
+    if isinstance(constraint, ParallelConstraint):
+        return ParallelConstraintResponse(
+            id=constraint.id,
+            line1_id=constraint.line1_id,
+            line2_id=constraint.line2_id,
+        )
+    if isinstance(constraint, PerpendicularConstraint):
+        return PerpendicularConstraintResponse(
+            id=constraint.id,
+            line1_id=constraint.line1_id,
+            line2_id=constraint.line2_id,
+        )
+    if isinstance(constraint, EqualLengthConstraint):
+        return EqualLengthConstraintResponse(
+            id=constraint.id,
+            line1_id=constraint.line1_id,
+            line2_id=constraint.line2_id,
         )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
@@ -351,6 +387,14 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_angle_constraint(
                 payload.line1_id, payload.line2_id, payload.angle_degrees
             )
+        elif isinstance(payload, CoincidentConstraintCreate):
+            constraint = sketch.add_coincident_constraint(payload.point_a_id, payload.point_b_id)
+        elif isinstance(payload, ParallelConstraintCreate):
+            constraint = sketch.add_parallel_constraint(payload.line1_id, payload.line2_id)
+        elif isinstance(payload, PerpendicularConstraintCreate):
+            constraint = sketch.add_perpendicular_constraint(payload.line1_id, payload.line2_id)
+        elif isinstance(payload, EqualLengthConstraintCreate):
+            constraint = sketch.add_equal_length_constraint(payload.line1_id, payload.line2_id)
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:

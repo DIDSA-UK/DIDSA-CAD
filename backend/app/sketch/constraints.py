@@ -46,6 +46,28 @@ class SolverBuilder(Protocol):
         constraint handle."""
         ...
 
+    def coincident(self, point_a_handle: int, point_b_handle: int) -> int:
+        """Add a py-slvs constraint forcing two point handles to the same
+        position, returning the resulting py-slvs constraint handle."""
+        ...
+
+    def parallel(self, line_a_handle: int, line_b_handle: int) -> int:
+        """Add a py-slvs constraint forcing two line-segment entity handles
+        to be parallel, returning the resulting py-slvs constraint handle."""
+        ...
+
+    def perpendicular(self, line_a_handle: int, line_b_handle: int) -> int:
+        """Add a py-slvs constraint forcing two line-segment entity handles
+        to be perpendicular, returning the resulting py-slvs constraint
+        handle."""
+        ...
+
+    def equal_length(self, line_a_handle: int, line_b_handle: int) -> int:
+        """Add a py-slvs constraint forcing two line-segment entity handles
+        to share the same length, returning the resulting py-slvs constraint
+        handle."""
+        ...
+
 
 class Constraint(ABC):
     """Base type for anything that can live in a Sketch's constraint
@@ -187,3 +209,117 @@ class AngleConstraint(Constraint):
             builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
         )
         return builder.angle(line1, line2, self.angle_degrees)
+
+
+@dataclass
+class CoincidentConstraint(Constraint):
+    """Forces two Points to occupy the same position."""
+
+    id: str
+    point_a_id: str
+    point_b_id: str
+
+    @property
+    def type(self) -> str:
+        return "coincident"
+
+    def point_ids(self) -> tuple[str, str]:
+        return (self.point_a_id, self.point_b_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        point_a = builder.point2d(self.point_a_id)
+        point_b = builder.point2d(self.point_b_id)
+        return builder.coincident(point_a, point_b)
+
+
+@dataclass
+class ParallelConstraint(Constraint):
+    """Forces two Lines to be parallel.
+
+    References both Lines' ids for display/API purposes; each Line's
+    endpoint Point ids are captured at creation time, same rationale as
+    AngleConstraint above.
+    """
+
+    id: str
+    line1_id: str
+    line2_id: str
+    line1_start_id: str
+    line1_end_id: str
+    line2_start_id: str
+    line2_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "parallel"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line1_start_id, self.line1_end_id, self.line2_start_id, self.line2_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
+        )
+        line2 = builder.line_segment(
+            builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
+        )
+        return builder.parallel(line1, line2)
+
+
+@dataclass
+class PerpendicularConstraint(Constraint):
+    """Forces two Lines to be perpendicular. Same shape as ParallelConstraint."""
+
+    id: str
+    line1_id: str
+    line2_id: str
+    line1_start_id: str
+    line1_end_id: str
+    line2_start_id: str
+    line2_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "perpendicular"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line1_start_id, self.line1_end_id, self.line2_start_id, self.line2_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
+        )
+        line2 = builder.line_segment(
+            builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
+        )
+        return builder.perpendicular(line1, line2)
+
+
+@dataclass
+class EqualLengthConstraint(Constraint):
+    """Forces two Lines to share the same length. Same shape as
+    ParallelConstraint."""
+
+    id: str
+    line1_id: str
+    line2_id: str
+    line1_start_id: str
+    line1_end_id: str
+    line2_start_id: str
+    line2_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "equal_length"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line1_start_id, self.line1_end_id, self.line2_start_id, self.line2_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
+        )
+        line2 = builder.line_segment(
+            builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
+        )
+        return builder.equal_length(line1, line2)
