@@ -164,11 +164,39 @@ class AngleConstraintCreate(BaseModel):
     angle_degrees: float
 
 
+class CoincidentConstraintCreate(BaseModel):
+    type: Literal["coincident"]
+    point_a_id: str
+    point_b_id: str
+
+
+class ParallelConstraintCreate(BaseModel):
+    type: Literal["parallel"]
+    line1_id: str
+    line2_id: str
+
+
+class PerpendicularConstraintCreate(BaseModel):
+    type: Literal["perpendicular"]
+    line1_id: str
+    line2_id: str
+
+
+class EqualLengthConstraintCreate(BaseModel):
+    type: Literal["equal_length"]
+    line1_id: str
+    line2_id: str
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
     HorizontalConstraintCreate,
     AngleConstraintCreate,
+    CoincidentConstraintCreate,
+    ParallelConstraintCreate,
+    PerpendicularConstraintCreate,
+    EqualLengthConstraintCreate,
 ]
 
 
@@ -204,11 +232,43 @@ class AngleConstraintResponse(BaseModel):
     angle_degrees: float
 
 
+class CoincidentConstraintResponse(BaseModel):
+    type: Literal["coincident"] = "coincident"
+    id: str
+    point_a_id: str
+    point_b_id: str
+
+
+class ParallelConstraintResponse(BaseModel):
+    type: Literal["parallel"] = "parallel"
+    id: str
+    line1_id: str
+    line2_id: str
+
+
+class PerpendicularConstraintResponse(BaseModel):
+    type: Literal["perpendicular"] = "perpendicular"
+    id: str
+    line1_id: str
+    line2_id: str
+
+
+class EqualLengthConstraintResponse(BaseModel):
+    type: Literal["equal_length"] = "equal_length"
+    id: str
+    line1_id: str
+    line2_id: str
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
     HorizontalConstraintResponse,
     AngleConstraintResponse,
+    CoincidentConstraintResponse,
+    ParallelConstraintResponse,
+    PerpendicularConstraintResponse,
+    EqualLengthConstraintResponse,
 ]
 
 

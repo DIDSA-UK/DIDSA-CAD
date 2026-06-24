@@ -6,9 +6,13 @@ from enum import Enum
 
 from app.sketch.constraints import (
     AngleConstraint,
+    CoincidentConstraint,
     Constraint,
     DistanceConstraint,
+    EqualLengthConstraint,
     HorizontalConstraint,
+    ParallelConstraint,
+    PerpendicularConstraint,
     VerticalConstraint,
 )
 
@@ -366,6 +370,76 @@ class Sketch:
             line1_id=line1_id,
             line2_id=line2_id,
             angle_degrees=angle_degrees,
+            line1_start_id=line1.start_point_id,
+            line1_end_id=line1.end_point_id,
+            line2_start_id=line2.start_point_id,
+            line2_end_id=line2.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_coincident_constraint(self, point_a_id: str, point_b_id: str) -> CoincidentConstraint:
+        if point_a_id not in self.points:
+            raise KeyError(point_a_id)
+        if point_b_id not in self.points:
+            raise KeyError(point_b_id)
+        if point_a_id == point_b_id:
+            raise ValueError("A coincident constraint cannot reference the same point twice")
+
+        constraint = CoincidentConstraint(
+            id=str(uuid.uuid4()), point_a_id=point_a_id, point_b_id=point_b_id
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def _two_lines_or_raise(self, line1_id: str, line2_id: str) -> tuple[Line, Line]:
+        line1 = self.entities.get(line1_id)
+        if not isinstance(line1, Line):
+            raise KeyError(line1_id)
+        line2 = self.entities.get(line2_id)
+        if not isinstance(line2, Line):
+            raise KeyError(line2_id)
+        if line1_id == line2_id:
+            raise ValueError("A constraint cannot reference the same line twice")
+        return line1, line2
+
+    def add_parallel_constraint(self, line1_id: str, line2_id: str) -> ParallelConstraint:
+        line1, line2 = self._two_lines_or_raise(line1_id, line2_id)
+
+        constraint = ParallelConstraint(
+            id=str(uuid.uuid4()),
+            line1_id=line1_id,
+            line2_id=line2_id,
+            line1_start_id=line1.start_point_id,
+            line1_end_id=line1.end_point_id,
+            line2_start_id=line2.start_point_id,
+            line2_end_id=line2.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_perpendicular_constraint(self, line1_id: str, line2_id: str) -> PerpendicularConstraint:
+        line1, line2 = self._two_lines_or_raise(line1_id, line2_id)
+
+        constraint = PerpendicularConstraint(
+            id=str(uuid.uuid4()),
+            line1_id=line1_id,
+            line2_id=line2_id,
+            line1_start_id=line1.start_point_id,
+            line1_end_id=line1.end_point_id,
+            line2_start_id=line2.start_point_id,
+            line2_end_id=line2.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_equal_length_constraint(self, line1_id: str, line2_id: str) -> EqualLengthConstraint:
+        line1, line2 = self._two_lines_or_raise(line1_id, line2_id)
+
+        constraint = EqualLengthConstraint(
+            id=str(uuid.uuid4()),
+            line1_id=line1_id,
+            line2_id=line2_id,
             line1_start_id=line1.start_point_id,
             line1_end_id=line1.end_point_id,
             line2_start_id=line2.start_point_id,

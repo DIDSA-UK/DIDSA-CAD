@@ -1517,6 +1517,71 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Stage 15 item 5: which of [ConstraintOptionType]'s value-less types
+  /// (Coincident/Parallel/Perpendicular/EqualLength) [SketchDimensionBar]
+  /// should currently offer as a tappable button, per [dimensionSelection]'s
+  /// shape - two Points for Coincident, two Lines for the other three.
+  /// Unlike [availableConstraintOptions] (the select-mode flyout, which
+  /// still renders these same types `wired: false`), this is the actually
+  /// wired path - [addCoincidentConstraint]/[addParallelConstraint]/
+  /// [addPerpendicularConstraint]/[addEqualLengthConstraint] below act on
+  /// [dimensionSelection], not [selectionSet].
+  bool canApplyConstraint(ConstraintOptionType type) {
+    if (_dimensionSelection.length != 2) return false;
+    final kinds = _dimensionSelection.map((s) => s.kind).toSet();
+    if (kinds.length != 1) return false;
+    switch (type) {
+      case ConstraintOptionType.coincident:
+        return kinds.single == SelectionKind.point;
+      case ConstraintOptionType.parallel:
+      case ConstraintOptionType.perpendicular:
+      case ConstraintOptionType.equalLength:
+        return kinds.single == SelectionKind.line;
+      default:
+        return false;
+    }
+  }
+
+  /// Shared by the four methods below: clears the dimension pick/ghosts on
+  /// success, same as [confirmGhostValue] - solver errors surface via the
+  /// existing [_runGuarded]/[errorMessage] path, nothing new there.
+  Future<void> _createDimensionSelectionConstraint(
+    Future<void> Function(String sketchId, String idA, String idB) create,
+  ) async {
+    if (_dimensionSelection.length != 2 || _busy || _sketchId == null) return;
+    final idA = _dimensionSelection[0].id;
+    final idB = _dimensionSelection[1].id;
+    await _runGuarded(() async {
+      await create(_sketchId!, idA, idB);
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+      _dimensionSelection.clear();
+      _ghosts = [];
+      _activeGhostKey = null;
+    });
+  }
+
+  Future<void> addCoincidentConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.coincident)) return;
+    await _createDimensionSelectionConstraint(_api.createCoincidentConstraint);
+  }
+
+  Future<void> addParallelConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.parallel)) return;
+    await _createDimensionSelectionConstraint(_api.createParallelConstraint);
+  }
+
+  Future<void> addPerpendicularConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.perpendicular)) return;
+    await _createDimensionSelectionConstraint(_api.createPerpendicularConstraint);
+  }
+
+  Future<void> addEqualLengthConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.equalLength)) return;
+    await _createDimensionSelectionConstraint(_api.createEqualLengthConstraint);
+  }
+
   Future<void> ensureSketch() async {
     if (_sketchId != null) return;
     await _runGuarded(() async {

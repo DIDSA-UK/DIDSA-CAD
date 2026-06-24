@@ -107,6 +107,26 @@ class _PySlvsBuilder:
             degrees, False, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def coincident(self, point_a_handle: int, point_b_handle: int) -> int:
+        return self._system.addPointsCoincident(
+            point_a_handle, point_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def parallel(self, line_a_handle: int, line_b_handle: int) -> int:
+        return self._system.addParallel(
+            line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def perpendicular(self, line_a_handle: int, line_b_handle: int) -> int:
+        return self._system.addPerpendicular(
+            line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def equal_length(self, line_a_handle: int, line_b_handle: int) -> int:
+        return self._system.addEqualLength(
+            line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
     def solved_point_ids(self) -> list[str]:
         return list(self._point_handles)
 

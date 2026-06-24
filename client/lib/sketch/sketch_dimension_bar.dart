@@ -21,6 +21,7 @@ class SketchDimensionBar extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         final selection = controller.dimensionSelection;
+        final constraintButtons = _constraintButtons(controller);
         return SafeArea(
           top: false,
           child: Material(
@@ -29,26 +30,39 @@ class SketchDimensionBar extends StatelessWidget {
             borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: selection.isEmpty
-                        ? const Text('Tap one or two entities to dimension')
-                        : SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(
-                              children: [
-                                for (final entry in selection) _chip(entry),
-                              ],
-                            ),
-                          ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: selection.isEmpty
+                            ? const Text('Tap one or two entities to dimension')
+                            : SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(
+                                  children: [
+                                    for (final entry in selection) _chip(entry),
+                                  ],
+                                ),
+                              ),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        onPressed: controller.exitToSelectMode,
+                        icon: const Icon(Icons.close),
+                        label: const Text('Exit'),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  TextButton.icon(
-                    onPressed: controller.exitToSelectMode,
-                    icon: const Icon(Icons.close),
-                    label: const Text('Exit'),
-                  ),
+                  if (constraintButtons.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(children: constraintButtons),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -56,6 +70,30 @@ class SketchDimensionBar extends StatelessWidget {
         );
       },
     );
+  }
+
+  /// Stage 15 item 5: the value-less constraint buttons (Coincident/
+  /// Parallel/Perpendicular/EqualLength) currently applicable to
+  /// [SketchController.dimensionSelection] - empty when none apply, so the
+  /// extra row above is omitted entirely rather than shown disabled.
+  List<Widget> _constraintButtons(SketchController controller) {
+    final entries = <(ConstraintOptionType, String, Future<void> Function())>[
+      (ConstraintOptionType.coincident, 'Coincident', controller.addCoincidentConstraint),
+      (ConstraintOptionType.parallel, 'Parallel', controller.addParallelConstraint),
+      (ConstraintOptionType.perpendicular, 'Perpendicular', controller.addPerpendicularConstraint),
+      (ConstraintOptionType.equalLength, 'Equal length', controller.addEqualLengthConstraint),
+    ];
+    return [
+      for (final (type, label, action) in entries)
+        if (controller.canApplyConstraint(type))
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: OutlinedButton(
+              onPressed: action,
+              child: Text(label),
+            ),
+          ),
+    ];
   }
 
   Widget _chip(SketchSelection entry) {

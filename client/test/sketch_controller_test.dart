@@ -207,6 +207,38 @@ class _FakeBackend {
             'angle_degrees': (body['angle_degrees'] as num).toDouble(),
           };
           break;
+        case 'coincident':
+          constraint = {
+            'id': id,
+            'type': 'coincident',
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+          };
+          break;
+        case 'parallel':
+          constraint = {
+            'id': id,
+            'type': 'parallel',
+            'line1_id': body['line1_id'],
+            'line2_id': body['line2_id'],
+          };
+          break;
+        case 'perpendicular':
+          constraint = {
+            'id': id,
+            'type': 'perpendicular',
+            'line1_id': body['line1_id'],
+            'line2_id': body['line2_id'],
+          };
+          break;
+        case 'equal_length':
+          constraint = {
+            'id': id,
+            'type': 'equal_length',
+            'line1_id': body['line1_id'],
+            'line2_id': body['line2_id'],
+          };
+          break;
         default:
           constraint = {
             'id': id,
@@ -1344,5 +1376,142 @@ void main() {
     expect(controller.points[pointId]!.x, 12);
     expect(controller.points[pointId]!.y, 34);
     expect(controller.errorMessage, isNull);
+  });
+
+  // --- Stage 15 item 5: Coincident/Parallel/Perpendicular/EqualLength -------
+
+  test('canApplyConstraint(coincident) is true for two selected Points, false otherwise', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(3, 9);
+    controller.enterDimensionMode();
+
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+    await controller.handleCanvasTap(0, 5);
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+
+    await controller.handleCanvasTap(3, 9);
+
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.parallel), isFalse);
+  });
+
+  test('canApplyConstraint(parallel/perpendicular/equalLength) is true for two selected Lines',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(8, 0.1); // horizontal line, away from its midpoint
+    await controller.handleCanvasTap(0.1, 8); // vertical line, away from its midpoint
+
+    expect(controller.canApplyConstraint(ConstraintOptionType.parallel), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.perpendicular), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.equalLength), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+  });
+
+  test('addCoincidentConstraint creates a CoincidentConstraint between the two picked Points and '
+      'clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(3, 9);
+    final pointA = controller.points.values.firstWhere((p) => p.x == 0 && p.y == 5).id;
+    final pointB = controller.points.values.firstWhere((p) => p.x == 3 && p.y == 9).id;
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(3, 9);
+
+    await controller.addCoincidentConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<CoincidentConstraintDto>().single;
+    expect({created.pointAId, created.pointBId}, {pointA, pointB});
+  });
+
+  test('addParallelConstraint creates a ParallelConstraint between the two picked Lines and '
+      'clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 6);
+    controller.finishChain();
+    final lineIds = controller.lines.keys.toSet();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // first line, away from its midpoint (5, 0)
+    await controller.handleCanvasTap(8, 5.8); // second line, away from its midpoint (5, 5.5)
+
+    await controller.addParallelConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<ParallelConstraintDto>().single;
+    expect({created.line1Id, created.line2Id}, lineIds);
+  });
+
+  test('addPerpendicularConstraint creates a PerpendicularConstraint between the two picked '
+      'Lines and clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(3, 3);
+    await controller.handleCanvasTap(5, 9);
+    controller.finishChain();
+    final lineIds = controller.lines.keys.toSet();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(3.5, 4.5); // second line, away from its midpoint (4, 6)
+
+    await controller.addPerpendicularConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<PerpendicularConstraintDto>().single;
+    expect({created.line1Id, created.line2Id}, lineIds);
+  });
+
+  test('addEqualLengthConstraint creates an EqualLengthConstraint between the two picked Lines '
+      'and clears the dimension selection', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(0, 8);
+    controller.finishChain();
+    final lineIds = controller.lines.keys.toSet();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.1, 7.5); // second line, away from its midpoint (0, 6.5)
+
+    await controller.addEqualLengthConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.dimensionSelection, isEmpty);
+    final created = controller.constraints.values.whereType<EqualLengthConstraintDto>().single;
+    expect({created.line1Id, created.line2Id}, lineIds);
+  });
+
+  test('addCoincidentConstraint is a no-op when the current dimension selection is not two Points',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // a single Line, not two Points
+
+    await controller.addCoincidentConstraint();
+
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
   });
 }
