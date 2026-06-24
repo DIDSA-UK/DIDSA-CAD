@@ -121,6 +121,10 @@ abstract class ConstraintDto {
         return PerpendicularConstraintDto.fromJson(json);
       case 'equal_length':
         return EqualLengthConstraintDto.fromJson(json);
+      case 'collinear':
+        return CollinearConstraintDto.fromJson(json);
+      case 'line_distance':
+        return LineDistanceConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -272,6 +276,48 @@ class EqualLengthConstraintDto extends ConstraintDto {
         id: json['id'] as String,
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
+      );
+}
+
+class CollinearConstraintDto extends ConstraintDto {
+  final String line1Id;
+  final String line2Id;
+
+  const CollinearConstraintDto({
+    required super.id,
+    required this.line1Id,
+    required this.line2Id,
+  });
+
+  factory CollinearConstraintDto.fromJson(Map<String, dynamic> json) => CollinearConstraintDto(
+        id: json['id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+      );
+}
+
+/// Stage 16 item 9's fix: a line-to-line distance dimension now PATCHes/
+/// creates this directly against the two Lines (see
+/// SketchApiClient.createLineDistanceConstraint), instead of the old
+/// approach of materializing a midpoint Point on each Line and constraining
+/// a plain [DistanceConstraintDto] between those two new Points.
+class LineDistanceConstraintDto extends ConstraintDto {
+  final String line1Id;
+  final String line2Id;
+  final double distance;
+
+  const LineDistanceConstraintDto({
+    required super.id,
+    required this.line1Id,
+    required this.line2Id,
+    required this.distance,
+  });
+
+  factory LineDistanceConstraintDto.fromJson(Map<String, dynamic> json) => LineDistanceConstraintDto(
+        id: json['id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
       );
 }
 
@@ -667,6 +713,47 @@ class SketchApiClient {
                 'type': 'equal_length',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ConstraintDto> createCollinearConstraint(
+    String sketchId,
+    String line1Id,
+    String line2Id,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'collinear',
+                'line1_id': line1Id,
+                'line2_id': line2Id,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Stage 16 item 9's fix: a line-to-line distance dimension's confirm
+  /// path now goes here instead of [createDistanceConstraint] - see
+  /// LineDistanceConstraintDto's doc comment.
+  Future<ConstraintDto> createLineDistanceConstraint(
+    String sketchId,
+    String line1Id,
+    String line2Id,
+    double distance,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'line_distance',
+                'line1_id': line1Id,
+                'line2_id': line2Id,
+                'distance': distance,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

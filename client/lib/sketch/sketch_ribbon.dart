@@ -142,6 +142,7 @@ class SketchRibbon extends StatelessWidget {
       ConstraintOptionType.perpendicular => Icons.add,
       ConstraintOptionType.equalLength => Icons.straighten,
       ConstraintOptionType.coincident => Icons.join_full,
+      ConstraintOptionType.collinear => Icons.linear_scale,
       ConstraintOptionType.concentric => Icons.adjust,
       ConstraintOptionType.equalRadius => Icons.radio_button_unchecked,
       ConstraintOptionType.tangent => Icons.circle,

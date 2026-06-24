@@ -159,11 +159,13 @@ class SketchSelection {
 enum FabMenuState { closed, categories, sketchEntities }
 
 /// A constraint type the flyout (Stage 13 item 6) can offer for the current
-/// multi-entity [SketchController.selectionSet]. Only [vertical] and
-/// [horizontal] are wired to the backend; every other type renders as a
-/// greyed-out, non-tappable button - this Sketch model has no Arc entity
-/// yet, so the prompt's "1 arc + 1 line -> Tangent" row is offered for
-/// "1 circle + 1 line" instead, the closest available analog.
+/// multi-entity [SketchController.selectionSet]. [vertical], [horizontal],
+/// [coincident], [parallel], [perpendicular], [equalLength], and [collinear]
+/// are wired to the backend; [concentric]/[equalRadius]/[tangent] render as
+/// greyed-out, non-tappable buttons - this Sketch model has no Arc/Concentric/
+/// EqualRadius backend support yet, so the prompt's "1 arc + 1 line ->
+/// Tangent" row is offered for "1 circle + 1 line" instead, the closest
+/// available analog.
 enum ConstraintOptionType {
   vertical,
   horizontal,
@@ -171,6 +173,7 @@ enum ConstraintOptionType {
   perpendicular,
   equalLength,
   coincident,
+  collinear,
   concentric,
   equalRadius,
   tangent,
@@ -708,6 +711,13 @@ class SketchController extends ChangeNotifier {
   /// [hitRadiusForPixelsPerUnit]).
   SketchSelection? _entityAt(double x, double y, double radius) {
     for (final point in points.values) {
+      // The origin is a sketch fixture (always at (0, 0), pinned by the
+      // solver - see Sketch.origin_point/solver.py's _FIXED_GROUP), not
+      // user geometry: it must stay snappable (see
+      // [_existingPointIdNear]/[isHoveringOrigin]) but is never itself
+      // selectable or deletable, so it's excluded here rather than only
+      // being delete-blocked after the fact.
+      if (point.id == _originPointId) continue;
       final dx = x - point.x;
       final dy = y - point.y;
       if (dx * dx + dy * dy <= radius * radius) {
@@ -792,8 +802,11 @@ class SketchController extends ChangeNotifier {
   /// location) a real backend Point at [lineId]'s current midpoint. Not
   /// kept coincident with the midpoint if the Line is later resized/moved -
   /// the backend has no "Point at midpoint of Line" constraint type, so
-  /// this is a one-off snapshot, same scoping tradeoff as the dimension
-  /// revamp's line-pair distance ghost (see [_buildLinePairGhosts]).
+  /// this is a one-off snapshot. Used for midpoint-snap point placement only
+  /// (Stage 16 item 9 moved the line-pair distance ghost off this path onto
+  /// a real `LineDistanceConstraint` instead - see [confirmGhostValue]'s
+  /// `lineDistance` branch - so a line-to-line dimension no longer creates
+  /// any Points).
   Future<String> _materializeMidpoint(String lineId) async {
     final line = lines[lineId]!;
     final start = points[line.startPointId]!;
@@ -895,6 +908,16 @@ class SketchController extends ChangeNotifier {
 
   String? _draggingPointId;
 
+  /// [cursorX]/[cursorY] and the dragged Point's own position, both as of
+  /// the moment [beginPointDrag] started the drag - the fixed reference
+  /// [updatePointDrag] computes every subsequent position from (see its doc
+  /// comment for why this, rather than the touch's raw position, is what
+  /// gets PATCHed).
+  double? _dragOriginCursorX;
+  double? _dragOriginCursorY;
+  double? _dragOriginPointX;
+  double? _dragOriginPointY;
+
   /// The Point currently being live-dragged via [beginPointDrag], or null if
   /// no drag is in progress - the canvas reads this to suppress its normal
   /// hover/cursor-move handling while a drag owns pointer-move events.
@@ -905,28 +928,66 @@ class SketchController extends ChangeNotifier {
   /// progress (mutually exclusive with [beginLabelDrag] - Stage 15 item 2),
   /// since every other guard ([dragTargetPointIdAt]'s mode/dof checks)
   /// already ran by the time the canvas calls this.
+  ///
+  /// Only ever records where the drag started - [_dragOriginCursorX]/
+  /// [_dragOriginCursorY] (the controller's own cursor, not this event's raw
+  /// touch position) and [_dragOriginPointX]/[_dragOriginPointY] (the
+  /// Point's position right now). It must never itself move the Point: a
+  /// double-tap's second pointer-down typically lands a few pixels off the
+  /// Point's actual (snapped) position (within the touch hit-radius, not
+  /// pixel-exact), so issuing any PATCH here - to the touch position rather
+  /// than a delta from it - would visibly teleport the Point on tap-down,
+  /// before the user has dragged at all. See [updatePointDrag].
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null) return false;
+    final point = points[pointId]!;
     _draggingPointId = pointId;
+    _dragOriginCursorX = cursorX;
+    _dragOriginCursorY = cursorY;
+    _dragOriginPointX = point.x;
+    _dragOriginPointY = point.y;
     notifyListeners();
     return true;
   }
 
   /// Live-updates the dragged Point's position - called on every
-  /// pointer-move while a [beginPointDrag] drag is active. PATCHes the
-  /// backend immediately rather than buffering until release, so every
-  /// other on-canvas reader (the entity itself, any dimension overlay
-  /// anchored to it) tracks the drag the same way it tracks any other
-  /// backend-confirmed position - no separate "ghost position" concept.
-  /// Solving is deferred to [endPointDrag]; mid-drag the raw dragged
-  /// position is shown as-is; rapid out-of-order responses are accepted
-  /// silently, same tradeoff as every other unsequenced PATCH in this file.
+  /// pointer-move while a [beginPointDrag] drag is active, with [x]/[y]
+  /// being wherever the touch/cursor currently is in sketch space (same
+  /// convention [beginPointDrag]'s [cursorX]/[cursorY] use). The Point is
+  /// moved by the *delta* between [x]/[y] and [_dragOriginCursorX]/
+  /// [_dragOriginCursorY] applied to [_dragOriginPointX]/[_dragOriginPointY]
+  /// - never snapped directly to [x]/[y] - so it tracks the same offset from
+  /// the touch throughout the drag that it started with, rather than
+  /// jumping to be exactly under the touch on the first move (see
+  /// [beginPointDrag]'s doc comment for why that offset exists at all).
+  ///
+  /// PATCHes the backend immediately rather than buffering until release,
+  /// so every other on-canvas reader (the entity itself, any dimension
+  /// overlay anchored to it) tracks the drag the same way it tracks any
+  /// other backend-confirmed position - no separate "ghost position"
+  /// concept. Solving is deferred to [endPointDrag]; mid-drag the raw
+  /// dragged position is shown as-is; rapid out-of-order responses are
+  /// accepted silently, same tradeoff as every other unsequenced PATCH in
+  /// this file.
   Future<void> updatePointDrag(double x, double y) async {
     final pointId = _draggingPointId;
-    if (pointId == null || _sketchId == null) return;
+    final originCursorX = _dragOriginCursorX;
+    final originCursorY = _dragOriginCursorY;
+    final originPointX = _dragOriginPointX;
+    final originPointY = _dragOriginPointY;
+    if (pointId == null ||
+        _sketchId == null ||
+        originCursorX == null ||
+        originCursorY == null ||
+        originPointX == null ||
+        originPointY == null) {
+      return;
+    }
+    final newX = originPointX + (x - originCursorX);
+    final newY = originPointY + (y - originCursorY);
     try {
-      final updated = await _api.updatePoint(_sketchId!, pointId, x, y);
+      final updated = await _api.updatePoint(_sketchId!, pointId, newX, newY);
       points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
     } on ApiException catch (e) {
@@ -942,6 +1003,10 @@ class SketchController extends ChangeNotifier {
   Future<void> endPointDrag() async {
     if (_draggingPointId == null) return;
     _draggingPointId = null;
+    _dragOriginCursorX = null;
+    _dragOriginCursorY = null;
+    _dragOriginPointX = null;
+    _dragOriginPointY = null;
     await _runGuarded(() async {
       await _solveAndTrackDof();
       await _refreshAllPoints();
@@ -1301,10 +1366,14 @@ class SketchController extends ChangeNotifier {
     });
   }
 
-  /// Stage 13 item 6: which constraint-type buttons the flyout should offer
-  /// for the current [selectionSet], per the prompt's selection-set table.
-  /// Every type besides Vertical/Horizontal is returned with `wired: false`
-  /// so the flyout can render it greyed out rather than omit it entirely.
+  /// Stage 13 item 6 (extended by Stage 16 item 7): which constraint-type
+  /// buttons the flyout should offer for the current [selectionSet], per the
+  /// prompt's selection-set table. Coincident/Parallel/Perpendicular/
+  /// EqualLength/Collinear are wired here (Stage 16 item 7 moved them out of
+  /// the dimension tool's now-removed button row - see
+  /// [SketchDimensionBar]); Concentric/EqualRadius/Tangent remain
+  /// `wired: false` since this Sketch model has no Arc entity or
+  /// Concentric/EqualRadius backend support yet.
   List<ConstraintOption> get availableConstraintOptions {
     final sel = _selectionSet;
 
@@ -1321,13 +1390,14 @@ class SketchController extends ChangeNotifier {
 
     if (kinds.length == 1 && kinds.single == SelectionKind.line) {
       return const [
-        ConstraintOption(type: ConstraintOptionType.parallel, label: 'Parallel', wired: false),
+        ConstraintOption(type: ConstraintOptionType.parallel, label: 'Parallel', wired: true),
         ConstraintOption(
           type: ConstraintOptionType.perpendicular,
           label: 'Perpendicular',
-          wired: false,
+          wired: true,
         ),
-        ConstraintOption(type: ConstraintOptionType.equalLength, label: 'Equal length', wired: false),
+        ConstraintOption(type: ConstraintOptionType.equalLength, label: 'Equal length', wired: true),
+        ConstraintOption(type: ConstraintOptionType.collinear, label: 'Collinear', wired: true),
       ];
     }
 
@@ -1343,7 +1413,7 @@ class SketchController extends ChangeNotifier {
     }
 
     if (kinds.every((k) => k == SelectionKind.point || k == SelectionKind.line)) {
-      return const [ConstraintOption(type: ConstraintOptionType.coincident, label: 'Coincident', wired: false)];
+      return const [ConstraintOption(type: ConstraintOptionType.coincident, label: 'Coincident', wired: true)];
     }
 
     return const [];
@@ -1351,7 +1421,7 @@ class SketchController extends ChangeNotifier {
 
   /// Applies a wired [ConstraintOption] from the flyout - a no-op (besides
   /// being unreachable from the UI, since unwired options render
-  /// non-tappable) for any type besides Vertical/Horizontal.
+  /// non-tappable) for Concentric/EqualRadius/Tangent.
   Future<void> applyConstraintOption(ConstraintOptionType type) async {
     switch (type) {
       case ConstraintOptionType.vertical:
@@ -1359,6 +1429,21 @@ class SketchController extends ChangeNotifier {
         break;
       case ConstraintOptionType.horizontal:
         await addHorizontalConstraint();
+        break;
+      case ConstraintOptionType.coincident:
+        await addCoincidentConstraint();
+        break;
+      case ConstraintOptionType.parallel:
+        await addParallelConstraint();
+        break;
+      case ConstraintOptionType.perpendicular:
+        await addPerpendicularConstraint();
+        break;
+      case ConstraintOptionType.equalLength:
+        await addEqualLengthConstraint();
+        break;
+      case ConstraintOptionType.collinear:
+        await addCollinearConstraint();
         break;
       default:
         break;
@@ -1731,6 +1816,17 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  LineDistanceConstraintDto? _findLineDistanceConstraint(String lineAId, String lineBId) {
+    for (final constraint in constraints.values) {
+      if (constraint is LineDistanceConstraintDto &&
+          ((constraint.line1Id == lineAId && constraint.line2Id == lineBId) ||
+              (constraint.line1Id == lineBId && constraint.line2Id == lineAId))) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// Confirms [key]'s ghost with [value] (Stage 13 item 5): creates a new
   /// `DistanceConstraint` between the ghost's two Points if none exists yet,
   /// or PATCHes the existing one's value otherwise. A diameter ghost is
@@ -1769,23 +1865,31 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
-    String pointAId;
-    String pointBId;
     if (target.kind == GhostKind.lineDistance) {
-      if (_busy || _sketchId == null) return;
-      String? midA;
-      String? midB;
+      // Stage 16 item 9: a `LineDistanceConstraint` (backend's
+      // SLVS_C_PT_LINE_DISTANCE-equivalent) pins the two Lines directly -
+      // no materialized midpoint Points are created, so dragging this
+      // dimension moves the Lines themselves, same as every other
+      // line-to-line constraint (Parallel, Perpendicular, ...).
       await _runGuarded(() async {
-        midA = await _materializeMidpoint(target.lineAId!);
-        midB = await _materializeMidpoint(target.lineBId!);
+        final existing = _findLineDistanceConstraint(target.lineAId!, target.lineBId!);
+        if (existing != null) {
+          await _api.updateConstraintValue(_sketchId!, existing.id, value);
+        } else {
+          await _api.createLineDistanceConstraint(_sketchId!, target.lineAId!, target.lineBId!, value);
+        }
+        await _solveAndTrackDof();
+        await _refreshAllPoints();
+        await _refreshConstraints();
+        _ghosts = [];
+        _dimensionSelection.clear();
+        _activeGhostKey = null;
       });
-      if (midA == null || midB == null) return; // materialization failed - errorMessage is already set.
-      pointAId = midA!;
-      pointBId = midB!;
-    } else {
-      pointAId = target.pointAId!;
-      pointBId = target.pointBId!;
+      return;
     }
+
+    final pointAId = target.pointAId!;
+    final pointBId = target.pointBId!;
     final distanceValue = target.kind == GhostKind.diameter ? value / 2 : value;
 
     await _runGuarded(() async {
@@ -1804,69 +1908,63 @@ class SketchController extends ChangeNotifier {
     });
   }
 
-  /// Stage 15 item 5: which of [ConstraintOptionType]'s value-less types
-  /// (Coincident/Parallel/Perpendicular/EqualLength) [SketchDimensionBar]
-  /// should currently offer as a tappable button, per [dimensionSelection]'s
-  /// shape - two Points for Coincident, two Lines for the other three.
-  /// Unlike [availableConstraintOptions] (the select-mode flyout, which
-  /// still renders these same types `wired: false`), this is the actually
-  /// wired path - [addCoincidentConstraint]/[addParallelConstraint]/
-  /// [addPerpendicularConstraint]/[addEqualLengthConstraint] below act on
-  /// [dimensionSelection], not [selectionSet].
+  /// Stage 15 item 5 (repointed by Stage 16 item 7): whether [type] is both
+  /// offered for the current [selectionSet] shape *and* actually wired to
+  /// the backend, per [availableConstraintOptions]' selection-set table -
+  /// delegating to that getter (rather than re-deriving the same shape
+  /// logic here) keeps the two impossible to disagree, e.g. two selected
+  /// Lines can never satisfy Coincident's "Point and/or Line" row just
+  /// because Lines also happen to match that row's kind check, since
+  /// [availableConstraintOptions] already returns its Parallel/
+  /// Perpendicular/EqualLength/Collinear row first for that exact shape and
+  /// never reaches the Coincident row at all.
   bool canApplyConstraint(ConstraintOptionType type) {
-    if (_dimensionSelection.length != 2) return false;
-    final kinds = _dimensionSelection.map((s) => s.kind).toSet();
-    if (kinds.length != 1) return false;
-    switch (type) {
-      case ConstraintOptionType.coincident:
-        return kinds.single == SelectionKind.point;
-      case ConstraintOptionType.parallel:
-      case ConstraintOptionType.perpendicular:
-      case ConstraintOptionType.equalLength:
-        return kinds.single == SelectionKind.line;
-      default:
-        return false;
-    }
+    return availableConstraintOptions.any((option) => option.type == type && option.wired);
   }
 
-  /// Shared by the four methods below: clears the dimension pick/ghosts on
-  /// success, same as [confirmGhostValue] - solver errors surface via the
-  /// existing [_runGuarded]/[errorMessage] path, nothing new there.
-  Future<void> _createDimensionSelectionConstraint(
+  /// Shared by the five methods below: clears [selectionSet] and closes the
+  /// flyout on success, same as [addVerticalConstraint]/[addHorizontalConstraint]
+  /// - solver errors surface via the existing [_runGuarded]/[errorMessage]
+  /// path, nothing new there.
+  Future<void> _createSelectionSetConstraint(
     Future<void> Function(String sketchId, String idA, String idB) create,
   ) async {
-    if (_dimensionSelection.length != 2 || _busy || _sketchId == null) return;
-    final idA = _dimensionSelection[0].id;
-    final idB = _dimensionSelection[1].id;
+    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
+    final idA = _selectionSet[0].id;
+    final idB = _selectionSet[1].id;
     await _runGuarded(() async {
       await create(_sketchId!, idA, idB);
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
-      _dimensionSelection.clear();
-      _ghosts = [];
-      _activeGhostKey = null;
+      _selectionSet.clear();
+      _ribbonVisible = false;
     });
   }
 
   Future<void> addCoincidentConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.coincident)) return;
-    await _createDimensionSelectionConstraint(_api.createCoincidentConstraint);
+    await _createSelectionSetConstraint(_api.createCoincidentConstraint);
   }
 
   Future<void> addParallelConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.parallel)) return;
-    await _createDimensionSelectionConstraint(_api.createParallelConstraint);
+    await _createSelectionSetConstraint(_api.createParallelConstraint);
   }
 
   Future<void> addPerpendicularConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.perpendicular)) return;
-    await _createDimensionSelectionConstraint(_api.createPerpendicularConstraint);
+    await _createSelectionSetConstraint(_api.createPerpendicularConstraint);
   }
 
   Future<void> addEqualLengthConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.equalLength)) return;
-    await _createDimensionSelectionConstraint(_api.createEqualLengthConstraint);
+    await _createSelectionSetConstraint(_api.createEqualLengthConstraint);
+  }
+
+  Future<void> addCollinearConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.collinear)) return;
+    await _createSelectionSetConstraint(_api.createCollinearConstraint);
   }
 
   Future<void> ensureSketch() async {
