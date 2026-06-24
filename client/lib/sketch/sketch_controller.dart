@@ -46,6 +46,20 @@ class SketchCircleView {
 /// active. Selected via the FAB's "Sketch Entities" category.
 enum SketchTool { line, circle }
 
+/// How a tap-to-place Line is built while [SketchTool.line] is active -
+/// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
+/// chained start/end placement; [midpoint] instead takes the first tap as
+/// the line's center and the second as one end, mirroring it to compute the
+/// other end (see [SketchController._clickMidpointLineTool]).
+enum LineConstructionMethod { endToEnd, midpoint }
+
+/// How a tap-to-place Circle is built while [SketchTool.circle] is active.
+/// [centerRadius] is the original center-then-radius-point placement;
+/// [threePoint] instead takes three points on the circumference and solves
+/// for the circle through them (see
+/// [SketchController._clickThreePointCircleTool]).
+enum CircleConstructionMethod { centerRadius, threePoint }
+
 /// Stage 13 item 3's feature-flag stub: scaffolds a future user preference
 /// to revert tap-to-place back to Stage 12's explicit Click-button
 /// placement. Always true for now - flipping it has no effect yet, since
@@ -205,6 +219,30 @@ class SketchController extends ChangeNotifier {
   SketchTool _activeTool = SketchTool.line;
   SketchTool get activeTool => _activeTool;
 
+  LineConstructionMethod _lineMethod = LineConstructionMethod.endToEnd;
+  LineConstructionMethod get lineConstructionMethod => _lineMethod;
+
+  /// Switches how the next Line is built - from
+  /// [SketchConstructionMethodBar]. Abandons any in-progress chain/anchor,
+  /// same as switching tools entirely, so a half-placed line under one
+  /// method is never finished under the other.
+  void setLineConstructionMethod(LineConstructionMethod method) {
+    _lineMethod = method;
+    _resetTransientDrawState();
+    notifyListeners();
+  }
+
+  CircleConstructionMethod _circleMethod = CircleConstructionMethod.centerRadius;
+  CircleConstructionMethod get circleConstructionMethod => _circleMethod;
+
+  /// Switches how the next Circle is built - see
+  /// [setLineConstructionMethod]'s doc comment, same reasoning.
+  void setCircleConstructionMethod(CircleConstructionMethod method) {
+    _circleMethod = method;
+    _resetTransientDrawState();
+    notifyListeners();
+  }
+
   SketchMode _mode = SketchMode.select;
   SketchMode get mode => _mode;
 
@@ -294,6 +332,12 @@ class SketchController extends ChangeNotifier {
     _chainStartPointId = null;
     _chainFirstPointId = null;
     _circleCenterPointId = null;
+    _midpointAnchorX = null;
+    _midpointAnchorY = null;
+    _threePointFirstX = null;
+    _threePointFirstY = null;
+    _threePointSecondX = null;
+    _threePointSecondY = null;
   }
 
   String? _chainStartPointId;
@@ -305,6 +349,31 @@ class SketchController extends ChangeNotifier {
   /// the radius-defining tap) - null if no Circle is in progress.
   String? get circleCenterPointId => _circleCenterPointId;
   bool get circleInProgress => _circleCenterPointId != null;
+
+  double? _midpointAnchorX;
+  double? _midpointAnchorY;
+
+  /// The first tap's sketch-space location under
+  /// [LineConstructionMethod.midpoint] - the line's eventual center, not
+  /// itself a real Point - or null if no midpoint-line pick is in progress.
+  double? get midpointAnchorX => _midpointAnchorX;
+  double? get midpointAnchorY => _midpointAnchorY;
+  bool get midpointLineInProgress => _midpointAnchorX != null;
+
+  double? _threePointFirstX;
+  double? _threePointFirstY;
+  double? _threePointSecondX;
+  double? _threePointSecondY;
+
+  /// The taps picked so far under [CircleConstructionMethod.threePoint] (0,
+  /// 1, or 2 entries) - none of these are real Points until the third tap
+  /// completes the Circle.
+  List<(double, double)> get threePointCirclePicksSoFar {
+    final picks = <(double, double)>[];
+    if (_threePointFirstX != null) picks.add((_threePointFirstX!, _threePointFirstY!));
+    if (_threePointSecondX != null) picks.add((_threePointSecondX!, _threePointSecondY!));
+    return picks;
+  }
 
   /// The Point id the *next* line segment will start from, or null if no
   /// chain is currently in progress.
@@ -989,9 +1058,9 @@ class SketchController extends ChangeNotifier {
   /// regardless of zoom - zoomed out (zoom < 1) means more sketch-space is
   /// visible per pixel, so the same drag should move the cursor further,
   /// and vice versa zoomed in. The cursor's absolute position persists
-  /// across separate touches - this only ever adds a delta. Purely a visual
-  /// preview now that tap-to-place commits at the tap's own location (Stage
-  /// 13 item 3) rather than at this cursor.
+  /// across separate touches - this only ever adds a delta. Trackpad-style:
+  /// a tap always commits at wherever this cursor currently sits (see
+  /// [SketchController.handleCanvasTap]), not at the tap's own location.
   void moveCursorRelative(double dxPixels, double dyPixels, double zoom) {
     final scale = touchSensitivity / zoom;
     cursorX += dxPixels * scale;
@@ -1008,19 +1077,39 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// [SketchMode.draw]'s tap handling - what it commits depends on
-  /// [activeTool]. [cursorX]/[cursorY] have already been set to the tapped
-  /// location by [handleCanvasTap] before this runs, so every existing
-  /// snap/point-coincidence check below (which all read those fields)
-  /// applies unchanged.
+  /// [SketchMode.draw]'s tap handling - dispatches by [activeTool] and then
+  /// by that tool's construction method ([lineConstructionMethod]/
+  /// [circleConstructionMethod]). [cursorX]/[cursorY] have already been set
+  /// to the tapped location by [handleCanvasTap] before this runs, so every
+  /// snap/point-coincidence check in the methods below (which all read
+  /// those fields) applies unchanged regardless of which method is active.
   Future<void> _handleDrawTap() async {
     if (_busy || _sketchId == null) return;
 
     if (_activeTool == SketchTool.circle) {
-      await _clickCircleTool();
+      switch (_circleMethod) {
+        case CircleConstructionMethod.centerRadius:
+          await _clickCircleTool();
+        case CircleConstructionMethod.threePoint:
+          await _clickThreePointCircleTool();
+      }
       return;
     }
 
+    switch (_lineMethod) {
+      case LineConstructionMethod.endToEnd:
+        await _clickEndToEndLineTool();
+      case LineConstructionMethod.midpoint:
+        await _clickMidpointLineTool();
+    }
+  }
+
+  /// [LineConstructionMethod.endToEnd]: the original chained placement - one
+  /// tap starts the chain at a Point, every following tap creates a Line
+  /// from the previous tap's Point to a new one (or closes the loop back
+  /// onto the chain's start, see [isHoveringChainStart]), continuing until
+  /// [finishChain] or a mode/tool switch ends it.
+  Future<void> _clickEndToEndLineTool() async {
     if (!chainInProgress) {
       _selectionSet.clear();
       _ribbonVisible = false;
@@ -1059,6 +1148,45 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// [LineConstructionMethod.midpoint]: the first tap picks the line's
+  /// center (a construction aid only - never itself a real Point); the
+  /// second tap places one end as a real Point, and the other end is a
+  /// freshly created Point at that end's mirror image through the center.
+  /// Self-terminating, like a Circle tap pair - there is no chaining under
+  /// this method.
+  Future<void> _clickMidpointLineTool() async {
+    if (_midpointAnchorX == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      _midpointAnchorX = cursorX;
+      _midpointAnchorY = cursorY;
+      notifyListeners();
+      return;
+    }
+
+    final midX = _midpointAnchorX!;
+    final midY = _midpointAnchorY!;
+    await _runGuarded(() async {
+      final endAId = await _pointIdAtCursor();
+      final endA = points[endAId]!;
+      final mirrored = await _api.createPoint(_sketchId!, 2 * midX - endA.x, 2 * midY - endA.y);
+      points[mirrored.id] = SketchPointView(id: mirrored.id, x: mirrored.x, y: mirrored.y);
+
+      final line = await _api.createLine(_sketchId!, endAId, mirrored.id);
+      lines[line.id] = SketchLineView(
+        id: line.id,
+        startPointId: line.startPointId,
+        endPointId: line.endPointId,
+        construction: line.construction,
+      );
+
+      await _api.solve(_sketchId!);
+      await _refreshAllPoints();
+      _midpointAnchorX = null;
+      _midpointAnchorY = null;
+    });
+  }
+
   /// Circle tool's tap handling: first tap places the center Point, second
   /// tap places the radius Point, creates the Circle (which auto-creates
   /// its radius DistanceConstraint server-side), and solves -
@@ -1092,6 +1220,80 @@ class SketchController extends ChangeNotifier {
 
       _circleCenterPointId = null;
     });
+  }
+
+  /// [CircleConstructionMethod.threePoint]: the first two taps are
+  /// construction aids only (never real Points); the third tap becomes a
+  /// real Point on the circumference, paired with a freshly created center
+  /// Point solved from all three tapped locations (see [_circumcenter]).
+  /// Three collinear taps have no circumcenter - that attempt is silently
+  /// abandoned (the picks are cleared, surfaced via [errorMessage]) rather
+  /// than left to retry against a degenerate state.
+  Future<void> _clickThreePointCircleTool() async {
+    if (_threePointFirstX == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      _threePointFirstX = cursorX;
+      _threePointFirstY = cursorY;
+      notifyListeners();
+      return;
+    }
+    if (_threePointSecondX == null) {
+      _threePointSecondX = cursorX;
+      _threePointSecondY = cursorY;
+      notifyListeners();
+      return;
+    }
+
+    final ax = _threePointFirstX!, ay = _threePointFirstY!;
+    final bx = _threePointSecondX!, by = _threePointSecondY!;
+    final cx = cursorX, cy = cursorY;
+    _threePointFirstX = null;
+    _threePointFirstY = null;
+    _threePointSecondX = null;
+    _threePointSecondY = null;
+
+    final center = _circumcenter(ax, ay, bx, by, cx, cy);
+    if (center == null) {
+      errorMessage = 'Pick three non-collinear points to define a circle';
+      notifyListeners();
+      return;
+    }
+
+    await _runGuarded(() async {
+      final centerPoint = await _api.createPoint(_sketchId!, center.$1, center.$2);
+      points[centerPoint.id] = SketchPointView(id: centerPoint.id, x: centerPoint.x, y: centerPoint.y);
+      final radiusPoint = await _api.createPoint(_sketchId!, cx, cy);
+      points[radiusPoint.id] = SketchPointView(id: radiusPoint.id, x: radiusPoint.x, y: radiusPoint.y);
+
+      final circle = await _api.createCircle(_sketchId!, centerPoint.id, radiusPoint.id);
+      circles[circle.id] = SketchCircleView(
+        id: circle.id,
+        centerPointId: circle.centerPointId,
+        radiusPointId: circle.radiusPointId,
+        construction: circle.construction,
+      );
+
+      await _api.solve(_sketchId!);
+      await _refreshAllPoints();
+      await _refreshConstraints();
+    });
+  }
+
+  /// The center of the circle through three points, or null if they're
+  /// (near-)collinear and have no unique circumcenter.
+  (double, double)? _circumcenter(double ax, double ay, double bx, double by, double cx, double cy) {
+    final d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    if (d.abs() < 1e-9) return null;
+    final ux = ((ax * ax + ay * ay) * (by - cy) +
+            (bx * bx + by * by) * (cy - ay) +
+            (cx * cx + cy * cy) * (ay - by)) /
+        d;
+    final uy = ((ax * ax + ay * ay) * (cx - bx) +
+            (bx * bx + by * by) * (ax - cx) +
+            (cx * cx + cy * cy) * (bx - ax)) /
+        d;
+    return (ux, uy);
   }
 
   /// Resolves the Point id a tap at the current cursor should use: the

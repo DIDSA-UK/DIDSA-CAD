@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../api/sketch_api_client.dart';
 import 'plane_indicator.dart';
@@ -44,7 +45,7 @@ class SketchCanvas extends StatefulWidget {
   State<SketchCanvas> createState() => _SketchCanvasState();
 }
 
-class _SketchCanvasState extends State<SketchCanvas> {
+class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderStateMixin {
   final SketchViewport _viewport = SketchViewport();
 
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - tracked
@@ -65,6 +66,85 @@ class _SketchCanvasState extends State<SketchCanvas> {
   /// How far (pixels) a single-finger touch may travel and still count as
   /// a tap rather than a drag.
   static const double _tapTravelThreshold = 10.0;
+
+  /// The canvas's own render size, refreshed every [build] - read by
+  /// [_onEdgePanTick], which runs independently of any pointer event so an
+  /// RTS-style edge-pan keeps going even while the pointer itself sits
+  /// still at the edge.
+  Size? _lastSize;
+
+  /// How close (logical pixels) the cursor must sit to a canvas edge to
+  /// trigger panning, and how fast (screen pixels/second) panning ramps up
+  /// to at the very edge - both arbitrary, tuned for a comfortable RTS-style
+  /// feel rather than derived from anything.
+  static const double _edgePanMarginPixels = 48.0;
+  static const double _edgePanMaxSpeed = 700.0;
+
+  late final Ticker _edgePanTicker;
+  Duration _lastTick = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _edgePanTicker = createTicker(_onEdgePanTick)..start();
+  }
+
+  @override
+  void dispose() {
+    _edgePanTicker.dispose();
+    super.dispose();
+  }
+
+  /// Runs every frame regardless of pointer activity: if the cursor's
+  /// current on-screen position sits within [_edgePanMarginPixels] of an
+  /// edge, pans [_viewport] in that direction and then re-anchors the
+  /// controller's cursor to the exact same screen position under the new
+  /// transform. That re-anchoring is what makes this feel like a real RTS
+  /// edge-pan rather than a one-off nudge: a real mouse that hasn't moved
+  /// fires no further hover events, so without it the cursor's *sketch*
+  /// coordinates would stay fixed while the view pans underneath, sliding
+  /// the rendered cursor back toward the center and stopping the pan after
+  /// one frame; pinning it to the same screen pixel keeps it sitting in the
+  /// margin for as long as the pointer actually stays there, exactly like a
+  /// real cursor held at a game window's edge. Skipped during an active
+  /// pinch gesture, so it never fights [_applyPinchPan] over [_viewport].
+  void _onEdgePanTick(Duration elapsed) {
+    final size = _lastSize;
+    final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
+    _lastTick = elapsed;
+    if (size == null || dt <= 0 || dt > 0.25) return;
+    if (_activeTouches.length >= 2) return;
+
+    final transform = _viewport.transformFor(size);
+    final cursorScreen = transform.sketchToScreen(widget.controller.cursorX, widget.controller.cursorY);
+
+    final dx = _edgePanAxisDelta(cursorScreen.dx, size.width, dt);
+    final dy = _edgePanAxisDelta(cursorScreen.dy, size.height, dt);
+    if (dx == 0 && dy == 0) return;
+
+    setState(() => _viewport.panByScreenDelta(Offset(dx, dy)));
+    widget.controller.moveCursorAbsoluteScreen(cursorScreen, _viewport.transformFor(size));
+  }
+
+  /// How far (screen pixels) to pan this tick along one axis, given the
+  /// cursor's [position] along that axis and the canvas's [extent] - 0 if
+  /// the cursor isn't within [_edgePanMarginPixels] of either edge. Speed
+  /// ramps up linearly the deeper the cursor sits into the margin, capped
+  /// at [_edgePanMaxSpeed] right at the boundary. The sign points the
+  /// *content* opposite the cursor's edge (so the camera moves toward
+  /// it, revealing more space in that direction) - same convention as
+  /// [_handlePointerMove]'s right-click-drag pan.
+  double _edgePanAxisDelta(double position, double extent, double dt) {
+    if (position < _edgePanMarginPixels) {
+      final depth = (_edgePanMarginPixels - position).clamp(0.0, _edgePanMarginPixels);
+      return _edgePanMaxSpeed * (depth / _edgePanMarginPixels) * dt;
+    }
+    if (position > extent - _edgePanMarginPixels) {
+      final depth = (position - (extent - _edgePanMarginPixels)).clamp(0.0, _edgePanMarginPixels);
+      return -_edgePanMaxSpeed * (depth / _edgePanMarginPixels) * dt;
+    }
+    return 0;
+  }
 
   void _handlePointerHover(PointerHoverEvent event, ViewTransform transform) {
     // Hover events only fire for a mouse with no buttons pressed - real
@@ -223,6 +303,7 @@ class _SketchCanvasState extends State<SketchCanvas> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
+        _lastSize = size;
         final transform = _viewport.transformFor(size);
         return Stack(
           children: [
@@ -504,6 +585,12 @@ class _SketchPainter extends CustomPainter {
   static const Color _hoverColor = Colors.amber;
   static const Color _selectedColor = Colors.purple;
 
+  /// The crosshair's color while [SketchMode.draw] is active - distinct
+  /// from [_selectCursorColor] so the cursor itself signals "you are
+  /// sketching right now" independent of any toolbar/mode-label text.
+  static const Color _sketchingCursorColor = Colors.green;
+  static const Color _selectCursorColor = Colors.red;
+
   /// Construction-only Line/Circle color (Stage 12 item 7) - dashed,
   /// everywhere this painter draws entities, so it stays visually distinct
   /// from solid geometry at a glance.
@@ -699,6 +786,22 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// Marks taps already picked under [LineConstructionMethod.midpoint] or
+  /// [CircleConstructionMethod.threePoint] that aren't real Points yet -
+  /// same deepOrange as the chain-start/circle-center "in progress"
+  /// markers, since these are the same kind of transient construction aid.
+  void _paintInProgressConstructionPicks(Canvas canvas) {
+    final markerPaint = Paint()..color = Colors.deepOrange;
+    final anchorX = controller.midpointAnchorX;
+    final anchorY = controller.midpointAnchorY;
+    if (anchorX != null && anchorY != null) {
+      canvas.drawCircle(transform.sketchToScreen(anchorX, anchorY), 6, markerPaint);
+    }
+    for (final pick in controller.threePointCirclePicksSoFar) {
+      canvas.drawCircle(transform.sketchToScreen(pick.$1, pick.$2), 6, markerPaint);
+    }
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
@@ -829,10 +932,11 @@ class _SketchPainter extends CustomPainter {
 
     _paintDimensionOverlays(canvas);
     _paintGhosts(canvas);
+    _paintInProgressConstructionPicks(canvas);
 
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final crosshairPaint = Paint()
-      ..color = Colors.red
+      ..color = controller.mode == SketchMode.draw ? _sketchingCursorColor : _selectCursorColor
       ..strokeWidth = 1.5;
     const armLength = 12.0;
     canvas.drawLine(
