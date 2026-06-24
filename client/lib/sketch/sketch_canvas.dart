@@ -340,8 +340,23 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       return;
     }
     if (_draggingPointId != null) {
-      final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
-      widget.controller.updatePointDrag(coord.x, coord.y);
+      final controller = widget.controller;
+      if (event.kind == PointerDeviceKind.mouse) {
+        // A mouse cursor is always absolute/1:1 (see _handlePointerHover), so
+        // the literal screen position converts straight to sketch space.
+        final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
+        controller.updatePointDrag(coord.x, coord.y);
+      } else {
+        // Touch must move the dragged Point by the exact same
+        // relative+scaled delta that drives every other touch interaction
+        // (see moveCursorRelative's touchSensitivity/zoom scaling) - using
+        // the raw absolute touch position here instead (as a naive
+        // screenToSketch of event.localPosition would) applies a far larger,
+        // inconsistent scale, which is what made the Point race away from
+        // the finger instead of tracking it 1:1 with the cursor.
+        controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
+        controller.updatePointDrag(controller.cursorX, controller.cursorY);
+      }
       return;
     }
     if (event.kind == PointerDeviceKind.mouse) {

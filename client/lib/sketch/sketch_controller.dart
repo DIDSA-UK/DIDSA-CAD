@@ -709,15 +709,18 @@ class SketchController extends ChangeNotifier {
   /// [snapRadius]) and every discrete-tap hit-test (select/dimension mode,
   /// using the larger of [snapRadius] and the 44px touch target - see
   /// [hitRadiusForPixelsPerUnit]).
-  SketchSelection? _entityAt(double x, double y, double radius) {
+  SketchSelection? _entityAt(double x, double y, double radius, {bool includeOrigin = false}) {
     for (final point in points.values) {
       // The origin is a sketch fixture (always at (0, 0), pinned by the
       // solver - see Sketch.origin_point/solver.py's _FIXED_GROUP), not
       // user geometry: it must stay snappable (see
-      // [_existingPointIdNear]/[isHoveringOrigin]) but is never itself
-      // selectable or deletable, so it's excluded here rather than only
-      // being delete-blocked after the fact.
-      if (point.id == _originPointId) continue;
+      // [_existingPointIdNear]/[isHoveringOrigin]) and selectable as a
+      // constraint target (e.g. Coincident-to-origin), but [includeOrigin]
+      // defaults to false so it's still excluded from drag targets
+      // ([dragTargetPointIdAt], which never passes true) - deletion is
+      // independently blocked regardless of selectability, see
+      // [selectedPointDeleteBlockedReason].
+      if (point.id == _originPointId && !includeOrigin) continue;
       final dx = x - point.x;
       final dy = y - point.y;
       if (dx * dx + dy * dy <= radius * radius) {
@@ -755,7 +758,7 @@ class SketchController extends ChangeNotifier {
   /// nothing is close enough.
   SketchSelection? get hoveredEntity {
     if (_mode == SketchMode.draw || !isIdle) return null;
-    return _entityAt(cursorX, cursorY, snapRadius);
+    return _entityAt(cursorX, cursorY, snapRadius, includeOrigin: true);
   }
 
   /// The id of the existing Line whose midpoint is nearest the given
@@ -862,7 +865,7 @@ class SketchController extends ChangeNotifier {
   /// work package item 5). Points still win over everything else, same
   /// priority order as plain [_entityAt].
   Future<SketchSelection?> _resolveSelectableAt(double radius) async {
-    final direct = _entityAt(cursorX, cursorY, radius);
+    final direct = _entityAt(cursorX, cursorY, radius, includeOrigin: true);
     if (direct != null && direct.kind == SelectionKind.point) return direct;
     final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, radius);
     if (midpointLineId != null) {

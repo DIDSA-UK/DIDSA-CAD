@@ -2002,6 +2002,38 @@ void main() {
     expect({created.pointAId, created.pointBId}, {pointA, pointB});
   });
 
+  test('the origin is selectable so a Point can be constrained Coincident to it', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(3, 9);
+    final pointB = controller.points.values.firstWhere((p) => p.x == 3 && p.y == 9).id;
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(0, 0); // the origin
+    expect(controller.selection!.kind, SelectionKind.point);
+    expect(controller.selection!.id, controller.originPointId);
+
+    await controller.handleCanvasTap(3, 9); // adds the second Point to the selection
+
+    await controller.addCoincidentConstraint();
+
+    expect(controller.errorMessage, isNull);
+    final created = controller.constraints.values.whereType<CoincidentConstraintDto>().single;
+    expect({created.pointAId, created.pointBId}, {controller.originPointId, pointB});
+  });
+
+  test('dragTargetPointIdAt never offers the origin as a drag target, even under-constrained',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    expect(controller.isUnderConstrained, isTrue);
+    expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
+  });
+
   test('addParallelConstraint creates a ParallelConstraint between the two selected Lines and '
       'clears the selection set', () async {
     controller.selectDrawTool(SketchTool.line);
