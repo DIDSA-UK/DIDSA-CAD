@@ -76,6 +76,51 @@ enum CircleConstructionMethod { centerRadius, threePoint }
 /// [SketchController._clickThreePointRectangleTool].
 enum RectangleConstructionMethod { twoCorner, centreCorner, threePoint }
 
+/// Stage 15 item 1: a live, dashed preview of the entity that the *next*
+/// tap would commit, rendered every frame from [SketchController.cursorX]/
+/// [cursorY] - never round-tripped through the backend, since it vanishes
+/// the moment a real tap, tool switch, or mode switch happens. One sealed
+/// subclass per drawable shape; [SketchController.activeDrawGhost] decides
+/// which one (if any) applies right now.
+sealed class DrawGhost {
+  const DrawGhost();
+}
+
+/// Previews a Line from [startX]/[startY] (already a placed Point, or - for
+/// [LineConstructionMethod.midpoint] - the mirror image of the cursor
+/// through the not-yet-real midpoint anchor) to the cursor.
+class LineGhost extends DrawGhost {
+  final double startX;
+  final double startY;
+  final double endX;
+  final double endY;
+
+  const LineGhost({required this.startX, required this.startY, required this.endX, required this.endY});
+}
+
+/// Previews a Circle centered at [centerX]/[centerY] passing through the
+/// cursor at [edgeX]/[edgeY] - the radius is implied by the distance between
+/// the two, same as the real Circle that a confirming tap would create.
+class CircleGhost extends DrawGhost {
+  final double centerX;
+  final double centerY;
+  final double edgeX;
+  final double edgeY;
+
+  const CircleGhost({required this.centerX, required this.centerY, required this.edgeX, required this.edgeY});
+}
+
+/// Previews a Rectangle's 4 corners, in the same winding order
+/// [SketchController._buildRectangle] would use to create its 4 Lines.
+class RectGhost extends DrawGhost {
+  final (double, double) corner0;
+  final (double, double) corner1;
+  final (double, double) corner2;
+  final (double, double) corner3;
+
+  const RectGhost({required this.corner0, required this.corner1, required this.corner2, required this.corner3});
+}
+
 /// Stage 13 item 3's feature-flag stub: scaffolds a future user preference
 /// to revert tap-to-place back to Stage 12's explicit Click-button
 /// placement. Always true for now - flipping it has no effect yet, since
@@ -536,6 +581,123 @@ class SketchController extends ChangeNotifier {
   /// must not trigger either, per the Stage 6 interaction model.
   bool get isIdle => !chainInProgress && !circleInProgress;
 
+  /// Stage 15 item 1: the live preview of whatever the next tap would
+  /// commit, or null when there's nothing in progress to preview (idle, or
+  /// [SketchTool.point], which is a single self-terminating tap with
+  /// nothing to preview beforehand). Recomputed fresh from [cursorX]/
+  /// [cursorY] on every read, so the canvas painter calling this once per
+  /// frame is exactly how it stays live.
+  DrawGhost? get activeDrawGhost {
+    if (_mode != SketchMode.draw) return null;
+    switch (_activeTool) {
+      case SketchTool.point:
+        return null;
+      case SketchTool.line:
+        return _lineDrawGhost();
+      case SketchTool.circle:
+        return _circleDrawGhost();
+      case SketchTool.rectangle:
+        return _rectangleDrawGhost();
+    }
+  }
+
+  DrawGhost? _lineDrawGhost() {
+    switch (_lineMethod) {
+      case LineConstructionMethod.endToEnd:
+        final startId = _chainStartPointId;
+        if (startId == null) return null;
+        final start = points[startId];
+        if (start == null) return null;
+        return LineGhost(startX: start.x, startY: start.y, endX: cursorX, endY: cursorY);
+      case LineConstructionMethod.midpoint:
+        final midX = _midpointAnchorX;
+        final midY = _midpointAnchorY;
+        if (midX == null || midY == null) return null;
+        // Mirrors the real Line _clickMidpointLineTool would create: the
+        // cursor becomes one end, its mirror image through the anchor the
+        // other.
+        return LineGhost(
+          startX: 2 * midX - cursorX,
+          startY: 2 * midY - cursorY,
+          endX: cursorX,
+          endY: cursorY,
+        );
+    }
+  }
+
+  DrawGhost? _circleDrawGhost() {
+    switch (_circleMethod) {
+      case CircleConstructionMethod.centerRadius:
+        final centerId = _circleCenterPointId;
+        if (centerId == null) return null;
+        final center = points[centerId];
+        if (center == null) return null;
+        return CircleGhost(centerX: center.x, centerY: center.y, edgeX: cursorX, edgeY: cursorY);
+      case CircleConstructionMethod.threePoint:
+        final ax = _threePointFirstX;
+        final ay = _threePointFirstY;
+        if (ax == null || ay == null) return null;
+        final bx = _threePointSecondX;
+        final by = _threePointSecondY;
+        if (bx == null || by == null) {
+          return LineGhost(startX: ax, startY: ay, endX: cursorX, endY: cursorY);
+        }
+        final center = _circumcenter(ax, ay, bx, by, cursorX, cursorY);
+        if (center == null) return null;
+        return CircleGhost(centerX: center.$1, centerY: center.$2, edgeX: cursorX, edgeY: cursorY);
+    }
+  }
+
+  DrawGhost? _rectangleDrawGhost() {
+    switch (_rectangleMethod) {
+      case RectangleConstructionMethod.twoCorner:
+        final x0 = _rectFirstX;
+        final y0 = _rectFirstY;
+        if (x0 == null || y0 == null) return null;
+        return RectGhost(
+          corner0: (x0, y0),
+          corner1: (cursorX, y0),
+          corner2: (cursorX, cursorY),
+          corner3: (x0, cursorY),
+        );
+      case RectangleConstructionMethod.centreCorner:
+        final cx = _rectFirstX;
+        final cy = _rectFirstY;
+        if (cx == null || cy == null) return null;
+        final dx = cursorX - cx;
+        final dy = cursorY - cy;
+        return RectGhost(
+          corner0: (cursorX, cursorY),
+          corner1: (cx - dx, cursorY),
+          corner2: (cx - dx, cy - dy),
+          corner3: (cursorX, cy - dy),
+        );
+      case RectangleConstructionMethod.threePoint:
+        final ax = _rectFirstX;
+        final ay = _rectFirstY;
+        if (ax == null || ay == null) return null;
+        final bx = _rectSecondX;
+        final by = _rectSecondY;
+        if (bx == null || by == null) {
+          return LineGhost(startX: ax, startY: ay, endX: cursorX, endY: cursorY);
+        }
+        final abx = bx - ax;
+        final aby = by - ay;
+        final lenAB = math.sqrt(abx * abx + aby * aby);
+        if (lenAB < 1e-9) return null;
+        final nx = -aby / lenAB;
+        final ny = abx / lenAB;
+        final height = (cursorX - ax) * nx + (cursorY - ay) * ny;
+        if (height.abs() < 1e-9) return null;
+        return RectGhost(
+          corner0: (ax, ay),
+          corner1: (bx, by),
+          corner2: (bx + height * nx, by + height * ny),
+          corner3: (ax + height * nx, ay + height * ny),
+        );
+    }
+  }
+
   /// The Point, Line, or Circle nearest [cursorX]/[cursorY] and within
   /// [radius], or null if nothing is close enough. Points are checked
   /// before Lines/Circles so a Point at a Line's endpoint or a Circle's
@@ -668,6 +830,17 @@ class SketchController extends ChangeNotifier {
       }
     }
     return bestId;
+  }
+
+  /// Stage 15 item 4: the existing Point (if any) that the cursor is
+  /// currently snapped to while placing a new entity - wraps
+  /// [_existingPointIdNear] so the canvas's hover highlight and the actual
+  /// snap a tap would commit to never disagree. Draw-mode only - select/
+  /// dimension-mode taps don't place new entities, so there's nothing to
+  /// preview snapping onto.
+  String? get snapCandidatePointId {
+    if (_mode != SketchMode.draw) return null;
+    return _existingPointIdNear(cursorX, cursorY);
   }
 
   /// The resolved tap target for [SketchMode.select]/[SketchMode.dimension]:

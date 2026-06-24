@@ -546,6 +546,77 @@ void main() {
     expect(cornerLines.length, 2);
   });
 
+  test('snapCandidatePointId is null outside draw mode and when nothing is nearby', () {
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    expect(controller.snapCandidatePointId, isNull); // select mode by default
+
+    controller.selectDrawTool(SketchTool.line);
+    controller.cursorX = 50;
+    controller.cursorY = 50;
+    expect(controller.snapCandidatePointId, isNull); // nothing within snapRadius
+  });
+
+  test('snapCandidatePointId reports the nearby existing Point while in draw mode', () {
+    controller.selectDrawTool(SketchTool.line);
+    expect(controller.snapCandidatePointId, controller.originPointId); // cursor starts at (0, 0)
+
+    controller.cursorX = 10;
+    controller.cursorY = 10;
+    expect(controller.snapCandidatePointId, isNull);
+  });
+
+  test('activeDrawGhost is null when idle and tracks the cursor for an end-to-end line', () async {
+    expect(controller.activeDrawGhost, isNull); // select mode by default
+
+    controller.selectDrawTool(SketchTool.line);
+    controller.setLineConstructionMethod(LineConstructionMethod.endToEnd);
+    expect(controller.activeDrawGhost, isNull); // no first point placed yet
+
+    await controller.handleCanvasTap(1, 1);
+    controller.cursorX = 4;
+    controller.cursorY = 5;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<LineGhost>());
+    final line = ghost as LineGhost;
+    expect(line.startX, 1);
+    expect(line.startY, 1);
+    expect(line.endX, 4);
+    expect(line.endY, 5);
+  });
+
+  test('activeDrawGhost previews a center-radius circle from its center to the cursor', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    controller.setCircleConstructionMethod(CircleConstructionMethod.centerRadius);
+
+    await controller.handleCanvasTap(2, 2);
+    controller.cursorX = 6;
+    controller.cursorY = 2;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<CircleGhost>());
+    final circle = ghost as CircleGhost;
+    expect(circle.centerX, 2);
+    expect(circle.centerY, 2);
+    expect(circle.edgeX, 6);
+    expect(circle.edgeY, 2);
+  });
+
+  test('activeDrawGhost previews a two-corner rectangle from its first corner to the cursor', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+
+    await controller.handleCanvasTap(1, 1);
+    controller.cursorX = 5;
+    controller.cursorY = 4;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<RectGhost>());
+    final rect = ghost as RectGhost;
+    expect(rect.corner0, (1.0, 1.0));
+    expect(rect.corner1, (5.0, 1.0));
+    expect(rect.corner2, (5.0, 4.0));
+    expect(rect.corner3, (1.0, 4.0));
+  });
+
   test('ensureSketch tracks the real backend origin Point at (0, 0)', () {
     expect(controller.originPointId, isNotNull);
     final origin = controller.points[controller.originPointId];

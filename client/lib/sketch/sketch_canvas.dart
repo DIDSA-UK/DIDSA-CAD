@@ -101,6 +101,18 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   late final Ticker _edgePanTicker;
   Duration _lastTick = Duration.zero;
 
+  /// Stage 15 item 3: the moment the cursor last actually moved (a non-zero
+  /// pointer-hover/-move delta from the user - never [_onEdgePanTick]'s own
+  /// re-anchoring call, which would otherwise keep the pan alive forever
+  /// once started). Gates edge-pan so it only runs while the cursor is
+  /// genuinely being held at the edge and moving, not just left sitting
+  /// there - see [_edgePanIdleThreshold].
+  DateTime? _lastCursorMoveTime;
+
+  /// How long the cursor may sit without moving before edge-pan stops,
+  /// per item 3.
+  static const Duration _edgePanIdleThreshold = Duration(milliseconds: 150);
+
   @override
   void initState() {
     super.initState();
@@ -132,6 +144,8 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     _lastTick = elapsed;
     if (size == null || dt <= 0 || dt > 0.25) return;
     if (_activeTouches.length >= 2) return;
+    final lastMove = _lastCursorMoveTime;
+    if (lastMove == null || DateTime.now().difference(lastMove) >= _edgePanIdleThreshold) return;
 
     final transform = _viewport.transformFor(size);
     final cursorScreen = transform.sketchToScreen(widget.controller.cursorX, widget.controller.cursorY);
@@ -168,6 +182,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     // Hover events only fire for a mouse with no buttons pressed - real
     // mouse movement drives the cursor directly, 1:1.
     if (event.kind != PointerDeviceKind.mouse) return;
+    if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
   }
 
@@ -271,6 +286,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       if (event.buttons & kSecondaryMouseButton != 0) {
         setState(() => _viewport.panByScreenDelta(event.delta));
       } else {
+        if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
       }
       return;
@@ -282,6 +298,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       // _dispatchTap, which always reads the cursor's current position,
       // never the tap's own screen location).
       _singleTouchTravel += event.delta.distance;
+      if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
     }
@@ -1003,6 +1020,76 @@ class _SketchPainter extends CustomPainter {
     );
   }
 
+  /// Stage 15 item 1: the dashed live preview of whatever the next tap
+  /// would commit (see [SketchController.activeDrawGhost]) - drawn in the
+  /// same in-progress deepOrange family as
+  /// [_paintInProgressConstructionPicks]'s markers, since it's the same
+  /// "not yet real" kind of feedback, just for the shape rather than a bare
+  /// construction pick.
+  static const Color _drawGhostColor = Colors.deepOrange;
+
+  /// Stage 15 item 4's snap-candidate highlight color - cyan, distinct from
+  /// every other highlight/marker color this painter already uses
+  /// (purple selected, amber hover, green sketching cursor, deepOrange
+  /// in-progress/ghost) and readable against both this painter's light
+  /// background and a dark theme's canvas chrome around it.
+  static const Color _snapCandidateColor = Colors.cyan;
+
+  /// Stage 15 item 4: highlights whichever existing Point (if any) the
+  /// cursor is currently snapped onto while placing a new entity (see
+  /// [SketchController.snapCandidatePointId]) - a filled circle at 2x a
+  /// plain Point's render radius, plus a concentric ring outside it, so an
+  /// otherwise-invisible "this tap will reuse that Point" outcome is
+  /// visible before the tap happens.
+  void _paintSnapCandidateHighlight(Canvas canvas) {
+    final pointId = controller.snapCandidatePointId;
+    if (pointId == null) return;
+    final point = controller.points[pointId];
+    if (point == null) return;
+    final screenPos = transform.sketchToScreen(point.x, point.y);
+    const plainPointRadius = 4.0;
+    const highlightRadius = plainPointRadius * 2;
+    canvas.drawCircle(screenPos, highlightRadius, Paint()..color = _snapCandidateColor.withValues(alpha: 0.35));
+    canvas.drawCircle(
+      screenPos,
+      highlightRadius + 4,
+      Paint()
+        ..color = _snapCandidateColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
+  void _paintActiveDrawGhost(Canvas canvas) {
+    final ghost = controller.activeDrawGhost;
+    if (ghost == null) return;
+    final paint = Paint()
+      ..color = _drawGhostColor
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    switch (ghost) {
+      case LineGhost g:
+        _drawDashedLine(
+          canvas,
+          transform.sketchToScreen(g.startX, g.startY),
+          transform.sketchToScreen(g.endX, g.endY),
+          paint,
+        );
+      case CircleGhost g:
+        final center = transform.sketchToScreen(g.centerX, g.centerY);
+        final edge = transform.sketchToScreen(g.edgeX, g.edgeY);
+        final radiusPixels = (edge - center).distance;
+        _drawDashedCircle(canvas, center, radiusPixels, paint);
+      case RectGhost g:
+        final corners = [g.corner0, g.corner1, g.corner2, g.corner3]
+            .map((c) => transform.sketchToScreen(c.$1, c.$2))
+            .toList();
+        for (var i = 0; i < corners.length; i++) {
+          _drawDashedLine(canvas, corners[i], corners[(i + 1) % corners.length], paint);
+        }
+    }
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
@@ -1135,6 +1222,8 @@ class _SketchPainter extends CustomPainter {
     _paintGhosts(canvas);
     _paintInProgressConstructionPicks(canvas);
     _paintMidpointSnapIndicator(canvas);
+    _paintSnapCandidateHighlight(canvas);
+    _paintActiveDrawGhost(canvas);
 
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final crosshairPaint = Paint()
