@@ -43,8 +43,10 @@ class SketchCircleView {
 }
 
 /// Which entity the next tap-to-place commits, while [SketchMode.draw] is
-/// active. Selected via the FAB's "Sketch Entities" category.
-enum SketchTool { line, circle }
+/// active. Selected via the FAB's "Sketch Entities" category. [point] is a
+/// standalone, self-terminating placement (no chaining, no construction
+/// method choice) - a single tap creates one Point and the tool is done.
+enum SketchTool { line, circle, point }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -73,8 +75,11 @@ const bool kTapToPlace = true;
 /// directly, with no further tool choice.
 enum SketchMode { select, draw, dimension }
 
-/// The kind of entity a [SketchSelection] refers to.
-enum SelectionKind { point, line, circle }
+/// The kind of entity a [SketchSelection] refers to. [constraint] covers
+/// both Dimensions (Distance/Angle, which carry an editable numeric value)
+/// and bare relational Constraints (Vertical/Horizontal, which don't) -
+/// the ribbon distinguishes the two via [SketchController.selectedConstraintHasValue].
+enum SelectionKind { point, line, circle, constraint }
 
 /// The single hovered-or-selected entity, idle-state only (see
 /// [SketchController.isIdle]) - distinct from the chain-start/circle-center
@@ -125,27 +130,36 @@ class ConstraintOption {
 
 /// The kind of dimension a [DimensionGhost] previews. [diameter] is always
 /// backed by the same radius `DistanceConstraint` as [radius] - see
-/// [SketchController.confirmGhostValue].
-enum GhostKind { length, vertical, horizontal, radius, diameter }
+/// [SketchController.confirmGhostValue]. [linear] is the direct point-to-point
+/// distance alongside a pair's [vertical]/[horizontal] components. [lineDistance]
+/// (two parallel Lines) and [angle] (two non-parallel Lines) are the
+/// dimension-mode revamp's line-pair ghosts - see
+/// [SketchController._buildLinePairGhosts].
+enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDistance, angle }
 
 /// A client-side-only preview of a dimension that doesn't exist as a real
 /// Constraint yet (or whose existing value hasn't been confirmed for
 /// editing yet) - Stage 13 item 5. Nothing here is sent to the backend
 /// until [SketchController.confirmGhostValue] runs; [key] is a stable
-/// per-kind identifier ('length'/'v'/'h'/'radius'/'diameter') the UI uses to
-/// address a specific ghost (e.g. which one was tapped, which one to render
-/// active/dimmed).
+/// per-kind identifier the UI uses to address a specific ghost (e.g. which
+/// one was tapped, which one to render active/dimmed). Every ghost is
+/// either Point-anchored ([pointAId]/[pointBId]) or Line-anchored
+/// ([lineAId]/[lineBId]) - never both - per [kind].
 class DimensionGhost {
   final String key;
   final GhostKind kind;
-  final String pointAId;
-  final String pointBId;
+  final String? pointAId;
+  final String? pointBId;
+  final String? lineAId;
+  final String? lineBId;
 
   const DimensionGhost({
     required this.key,
     required this.kind,
-    required this.pointAId,
-    required this.pointBId,
+    this.pointAId,
+    this.pointBId,
+    this.lineAId,
+    this.lineBId,
   });
 }
 
@@ -253,7 +267,14 @@ class SketchController extends ChangeNotifier {
       case SketchMode.select:
         return 'Select';
       case SketchMode.draw:
-        return _activeTool == SketchTool.line ? 'Draw: Line' : 'Draw: Circle';
+        switch (_activeTool) {
+          case SketchTool.line:
+            return 'Draw: Line';
+          case SketchTool.circle:
+            return 'Draw: Circle';
+          case SketchTool.point:
+            return 'Draw: Point';
+        }
       case SketchMode.dimension:
         return 'Dimension';
     }
@@ -390,6 +411,23 @@ class SketchController extends ChangeNotifier {
 
   String? errorMessage;
 
+  /// The whole-sketch degrees-of-freedom count from the most recent solve -
+  /// 0 until the first solve actually runs (e.g. the very first Line/Circle
+  /// created), which is accurate for a brand-new Sketch (nothing but a
+  /// pinned origin Point has no freedom to report). The backend only ever
+  /// reports one number for the entire system, not a per-entity breakdown,
+  /// so [isUnderConstrained] - new work package item 8's drag-to-reposition
+  /// gate - is necessarily a coarse, whole-sketch approximation: dragging
+  /// is offered whenever *something* in the sketch still has slack, not
+  /// verified against the specific Point being dragged.
+  int _dof = 0;
+  bool get isUnderConstrained => _dof > 0;
+
+  Future<void> _solveAndTrackDof() async {
+    final result = await _api.solve(_sketchId!);
+    _dof = result.dof;
+  }
+
   /// True when the cursor is close enough to the chain's start Point that
   /// the next tap will close the loop using that Point's id, rather than
   /// creating a new coincident Point.
@@ -493,6 +531,194 @@ class SketchController extends ChangeNotifier {
     return _entityAt(cursorX, cursorY, snapRadius);
   }
 
+  /// The id of the existing Line whose midpoint is nearest the given
+  /// location and within [radius], or null if none qualifies - the
+  /// lookup behind making "Line midpoints usable when constraining or
+  /// placing new entities" (new work package). A midpoint is never itself a
+  /// stored Point until [_materializeMidpoint] actually creates one.
+  String? _nearestLineMidpointId(double x, double y, double radius) {
+    String? bestId;
+    var bestDistSq = double.infinity;
+    for (final line in lines.values) {
+      final start = points[line.startPointId];
+      final end = points[line.endPointId];
+      if (start == null || end == null) continue;
+      final mx = (start.x + end.x) / 2;
+      final my = (start.y + end.y) / 2;
+      final dx = x - mx;
+      final dy = y - my;
+      final distSq = dx * dx + dy * dy;
+      if (distSq <= radius * radius && distSq < bestDistSq) {
+        bestDistSq = distSq;
+        bestId = line.id;
+      }
+    }
+    return bestId;
+  }
+
+  /// The cursor-hovered Line's current midpoint, in sketch-space, or null
+  /// if none is within [snapRadius] - drives the canvas's midpoint snap
+  /// marker (new work package item 5's discoverability for an otherwise
+  /// invisible snap target), reusing [_nearestLineMidpointId]'s own lookup
+  /// so the marker and the actual snap behavior never disagree.
+  (double, double)? get hoveredLineMidpoint {
+    final lineId = _nearestLineMidpointId(cursorX, cursorY, snapRadius);
+    if (lineId == null) return null;
+    final line = lines[lineId]!;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return null;
+    return ((start.x + end.x) / 2, (start.y + end.y) / 2);
+  }
+
+  /// Creates (or reuses, if one was already materialized at this exact
+  /// location) a real backend Point at [lineId]'s current midpoint. Not
+  /// kept coincident with the midpoint if the Line is later resized/moved -
+  /// the backend has no "Point at midpoint of Line" constraint type, so
+  /// this is a one-off snapshot, same scoping tradeoff as the dimension
+  /// revamp's line-pair distance ghost (see [_buildLinePairGhosts]).
+  Future<String> _materializeMidpoint(String lineId) async {
+    final line = lines[lineId]!;
+    final start = points[line.startPointId]!;
+    final end = points[line.endPointId]!;
+    final mx = (start.x + end.x) / 2;
+    final my = (start.y + end.y) / 2;
+    for (final existing in points.values) {
+      final dx = existing.x - mx;
+      final dy = existing.y - my;
+      if (dx * dx + dy * dy <= 1e-9) return existing.id;
+    }
+    final created = await _api.createPoint(_sketchId!, mx, my);
+    points[created.id] = SketchPointView(id: created.id, x: created.x, y: created.y);
+    return created.id;
+  }
+
+  /// The id of an existing Point within [snapRadius] of [x]/[y] (closest
+  /// one wins), excluding [excludeId] - generalizes the old origin-only
+  /// snap so a new entity's endpoint/center/radius point can reuse *any*
+  /// nearby existing Point (new work package item 2), not just the origin
+  /// (which is itself just another entry in [points], so this subsumes the
+  /// old [isHoveringOrigin]-driven behaviour automatically).
+  String? _existingPointIdNear(double x, double y, {String? excludeId}) {
+    String? bestId;
+    var bestDistSq = double.infinity;
+    for (final point in points.values) {
+      if (point.id == excludeId) continue;
+      final dx = x - point.x;
+      final dy = y - point.y;
+      final distSq = dx * dx + dy * dy;
+      if (distSq <= snapRadius * snapRadius && distSq < bestDistSq) {
+        bestDistSq = distSq;
+        bestId = point.id;
+      }
+    }
+    return bestId;
+  }
+
+  /// The resolved tap target for [SketchMode.select]/[SketchMode.dimension]:
+  /// a direct Point/Line/Circle hit, or - if the tap instead landed on a
+  /// Line's midpoint - a real Point materialized there on the spot (new
+  /// work package item 5). Points still win over everything else, same
+  /// priority order as plain [_entityAt].
+  Future<SketchSelection?> _resolveSelectableAt(double radius) async {
+    final direct = _entityAt(cursorX, cursorY, radius);
+    if (direct != null && direct.kind == SelectionKind.point) return direct;
+    final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, radius);
+    if (midpointLineId != null) {
+      final pointId = await _materializeMidpoint(midpointLineId);
+      return SketchSelection(kind: SelectionKind.point, id: pointId);
+    }
+    return direct;
+  }
+
+  /// New work package item 8's double-click-drag target resolver: a
+  /// directly-hit Point as-is, or - for a Line/Circle, neither of which is
+  /// itself a Point - whichever of its constituent Points sits nearer
+  /// [x]/[y], since a Line/Circle's shape is entirely defined by the Points
+  /// it references and has no position of its own to drag. Returns null if
+  /// nothing within [radius] qualifies, the sketch isn't in
+  /// [SketchMode.select], or [isUnderConstrained] is false (nothing could
+  /// move into anyway, so there's nothing to offer).
+  String? dragTargetPointIdAt(double x, double y, double radius) {
+    if (_mode != SketchMode.select || !isUnderConstrained) return null;
+    final hit = _entityAt(x, y, radius);
+    if (hit == null) return null;
+    switch (hit.kind) {
+      case SelectionKind.point:
+        return hit.id;
+      case SelectionKind.line:
+        final line = lines[hit.id]!;
+        final start = points[line.startPointId]!;
+        final end = points[line.endPointId]!;
+        final distToStart = math.pow(x - start.x, 2) + math.pow(y - start.y, 2);
+        final distToEnd = math.pow(x - end.x, 2) + math.pow(y - end.y, 2);
+        return distToStart <= distToEnd ? line.startPointId : line.endPointId;
+      case SelectionKind.circle:
+        final circle = circles[hit.id]!;
+        final center = points[circle.centerPointId]!;
+        final radiusPoint = points[circle.radiusPointId]!;
+        final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);
+        final distToRadius = math.pow(x - radiusPoint.x, 2) + math.pow(y - radiusPoint.y, 2);
+        return distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+      case SelectionKind.constraint:
+        return null;
+    }
+  }
+
+  String? _draggingPointId;
+
+  /// The Point currently being live-dragged via [beginPointDrag], or null if
+  /// no drag is in progress - the canvas reads this to suppress its normal
+  /// hover/cursor-move handling while a drag owns pointer-move events.
+  String? get draggingPointId => _draggingPointId;
+
+  /// Starts a live drag of [pointId] (new work package item 8) - false (and
+  /// no-op) if busy or there's no sketch yet, since every other guard
+  /// ([dragTargetPointIdAt]'s mode/dof checks) already ran by the time the
+  /// canvas calls this.
+  bool beginPointDrag(String pointId) {
+    if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
+    _draggingPointId = pointId;
+    notifyListeners();
+    return true;
+  }
+
+  /// Live-updates the dragged Point's position - called on every
+  /// pointer-move while a [beginPointDrag] drag is active. PATCHes the
+  /// backend immediately rather than buffering until release, so every
+  /// other on-canvas reader (the entity itself, any dimension overlay
+  /// anchored to it) tracks the drag the same way it tracks any other
+  /// backend-confirmed position - no separate "ghost position" concept.
+  /// Solving is deferred to [endPointDrag]; mid-drag the raw dragged
+  /// position is shown as-is; rapid out-of-order responses are accepted
+  /// silently, same tradeoff as every other unsequenced PATCH in this file.
+  Future<void> updatePointDrag(double x, double y) async {
+    final pointId = _draggingPointId;
+    if (pointId == null || _sketchId == null) return;
+    try {
+      final updated = await _api.updatePoint(_sketchId!, pointId, x, y);
+      points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
+      notifyListeners();
+    } on ApiException catch (e) {
+      errorMessage = e.message;
+      notifyListeners();
+    }
+  }
+
+  /// Ends the current Point drag (if any) and re-solves from the dropped
+  /// position, same backend-is-truth refresh as every other mutation - any
+  /// remaining constraints (e.g. a Line this Point anchors staying the
+  /// right length) settle here rather than during the drag itself.
+  Future<void> endPointDrag() async {
+    if (_draggingPointId == null) return;
+    _draggingPointId = null;
+    await _runGuarded(() async {
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+    });
+  }
+
   double _distanceToSegment(
     double px,
     double py,
@@ -558,13 +784,13 @@ class SketchController extends ChangeNotifier {
     final radius = hitRadius ?? snapRadius;
     switch (_mode) {
       case SketchMode.select:
-        _handleSelectTap(radius);
+        await _handleSelectTap(radius);
         break;
       case SketchMode.draw:
         await _handleDrawTap();
         break;
       case SketchMode.dimension:
-        _handleDimensionTap(radius);
+        await _handleDimensionTap(radius);
         break;
     }
   }
@@ -577,8 +803,13 @@ class SketchController extends ChangeNotifier {
   /// state, matching how a tap-outside is expected to close a contextual
   /// panel; tapping blank space while the flyout is closed instead opens it
   /// showing the idle actions (e.g. Exit Sketch), same as Stage 6.
-  void _handleSelectTap(double hitRadius) {
-    final hit = _entityAt(cursorX, cursorY, hitRadius);
+  Future<void> _handleSelectTap(double hitRadius) async {
+    if (_busy) return;
+    SketchSelection? hit;
+    await _runGuarded(() async {
+      hit = await _resolveSelectableAt(hitRadius);
+    });
+
     if (hit == null) {
       if (_ribbonVisible) {
         _selectionSet.clear();
@@ -590,6 +821,27 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
+    if (_ribbonVisible && _selectionSet.isNotEmpty) {
+      if (!_selectionSet.any((s) => s.sameAs(hit!))) {
+        _selectionSet.add(hit!);
+      }
+    } else {
+      _selectionSet
+        ..clear()
+        ..add(hit!);
+    }
+    _ribbonVisible = true;
+    notifyListeners();
+  }
+
+  /// Selects a Constraint directly by id - the entry point for tapping a
+  /// dimension/constraint label on the canvas (Stage 13's hit-testing for
+  /// those labels lives in [SketchCanvas], in screen space, since the
+  /// controller only knows sketch-space coordinates - mirrors how ghost-label
+  /// taps already short-circuit before reaching [handleCanvasTap]). Follows
+  /// the same add-to-selection-vs-replace rule as [_handleSelectTap].
+  void selectConstraint(String constraintId) {
+    final hit = SketchSelection(kind: SelectionKind.constraint, id: constraintId);
     if (_ribbonVisible && _selectionSet.isNotEmpty) {
       if (!_selectionSet.any((s) => s.sameAs(hit))) {
         _selectionSet.add(hit);
@@ -623,6 +875,7 @@ class SketchController extends ChangeNotifier {
   Future<void> deleteSelected() async {
     if (_selectionSet.isEmpty || _busy || _sketchId == null) return;
     final toDelete = List<SketchSelection>.from(_selectionSet);
+    final deletedConstraint = toDelete.any((s) => s.kind == SelectionKind.constraint);
 
     await _runGuarded(() async {
       for (final current in toDelete) {
@@ -639,10 +892,70 @@ class SketchController extends ChangeNotifier {
             await _api.deletePoint(_sketchId!, current.id);
             points.remove(current.id);
             break;
+          case SelectionKind.constraint:
+            await _api.deleteConstraint(_sketchId!, current.id);
+            constraints.remove(current.id);
+            break;
         }
+      }
+      // Removing a Constraint changes the system's degrees of freedom, so
+      // unlike deleting a Point/Line/Circle (which only ever removes
+      // geometry the solver already accounted for) this needs an explicit
+      // re-solve to reflect the now-looser system.
+      if (deletedConstraint) {
+        await _solveAndTrackDof();
+        await _refreshConstraints();
       }
       await _refreshAllPoints();
       _selectionSet.clear();
+      _ribbonVisible = false;
+    });
+  }
+
+  /// The currently selected single Constraint's editable numeric value
+  /// (Distance's `distance` or Angle's `angle_degrees`), or null if the
+  /// selection isn't exactly one Constraint, or that Constraint has no
+  /// value (Vertical/Horizontal) - drives the ribbon's change-value editor
+  /// (new work package item 3).
+  double? get selectedConstraintValue {
+    if (_selectionSet.length != 1 || _selectionSet.first.kind != SelectionKind.constraint) {
+      return null;
+    }
+    final constraint = constraints[_selectionSet.first.id];
+    if (constraint is DistanceConstraintDto) return constraint.distance;
+    if (constraint is AngleConstraintDto) return constraint.angleDegrees;
+    return null;
+  }
+
+  /// Whether [selectedConstraintValue] has a value worth showing an editor
+  /// for - false (not just null) for a non-Constraint or no selection too,
+  /// so the ribbon can use this directly as a render condition.
+  bool get selectedConstraintHasValue => selectedConstraintValue != null;
+
+  /// Whether the selected single Constraint is an Angle (drives the
+  /// ribbon's value-editor suffix, "°" vs "mm").
+  bool get selectedConstraintIsAngle {
+    if (_selectionSet.length != 1 || _selectionSet.first.kind != SelectionKind.constraint) {
+      return false;
+    }
+    return constraints[_selectionSet.first.id] is AngleConstraintDto;
+  }
+
+  /// PATCHes the selected single Constraint's value (new work package item
+  /// 3's "change value" ribbon action) - mirrors [confirmGhostValue]'s
+  /// PATCH-existing-constraint path, then deselects and closes the ribbon on
+  /// success, same as every other constraint mutation (item 7).
+  Future<void> updateSelectedConstraintValue(double value) async {
+    if (_selectionSet.length != 1 || _busy || _sketchId == null) return;
+    final current = _selectionSet.first;
+    if (current.kind != SelectionKind.constraint) return;
+
+    await _runGuarded(() async {
+      await _api.updateConstraintValue(_sketchId!, current.id, value);
+      await _refreshAllPoints();
+      await _refreshConstraints();
+      _selectionSet.clear();
+      _ribbonVisible = false;
     });
   }
 
@@ -660,6 +973,7 @@ class SketchController extends ChangeNotifier {
       case SelectionKind.circle:
         return circles[current.id]?.construction;
       case SelectionKind.point:
+      case SelectionKind.constraint:
         return null;
     }
   }
@@ -694,6 +1008,7 @@ class SketchController extends ChangeNotifier {
           );
           break;
         case SelectionKind.point:
+        case SelectionKind.constraint:
           break;
       }
     });
@@ -770,9 +1085,11 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       await _api.createVerticalConstraint(_sketchId!, current.id);
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
+      _selectionSet.clear();
+      _ribbonVisible = false;
     });
   }
 
@@ -783,9 +1100,11 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       await _api.createHorizontalConstraint(_sketchId!, current.id);
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
+      _selectionSet.clear();
+      _ribbonVisible = false;
     });
   }
 
@@ -793,8 +1112,10 @@ class SketchController extends ChangeNotifier {
 
   final List<SketchSelection> _dimensionSelection = [];
 
-  /// The entity/entities picked so far in [SketchMode.dimension] - one Line
-  /// or Circle, or up to two Points (see [_handleDimensionTap]).
+  /// The entity/entities picked so far in [SketchMode.dimension] - shown as
+  /// a running list in [SketchDimensionBar] (new work package item 6).
+  /// Capped at two entries - every combination rule below is pairwise, so a
+  /// third tap starts a fresh pick rather than accumulating further.
   List<SketchSelection> get dimensionSelection => List.unmodifiable(_dimensionSelection);
 
   List<DimensionGhost> _ghosts = [];
@@ -811,16 +1132,29 @@ class SketchController extends ChangeNotifier {
   /// which ghost the inline text input is attached to.
   String? get activeGhostKey => _activeGhostKey;
 
-  /// [SketchMode.dimension]'s tap handling. Tapping a Line or Circle/point
-  /// shows that entity's ghost(s) immediately; tapping a second Point while
-  /// exactly one Point is already picked shows the V/H distance ghosts
-  /// between them instead. Tapping empty canvas clears any current pick, or
-  /// exits to [SketchMode.select] if nothing was picked at all (Stage 13
-  /// item 5: "tap empty canvas with no entity selected").
-  void _handleDimensionTap(double hitRadius) {
-    final hit = _entityAt(cursorX, cursorY, hitRadius);
+  /// [SketchMode.dimension]'s tap handling (revamped per the new work
+  /// package): resolves the tap (including line-midpoint materialization,
+  /// same as [_handleSelectTap]) and hands it to [_applyDimensionHit].
+  Future<void> _handleDimensionTap(double hitRadius) async {
+    if (_busy) return;
+    SketchSelection? hit;
+    await _runGuarded(() async {
+      hit = await _resolveSelectableAt(hitRadius);
+    });
+    _applyDimensionHit(hit);
+  }
+
+  /// Tapping an already-picked entity again removes it from the pick (so a
+  /// mis-tap is easy to undo without exiting the tool); tapping a third,
+  /// new entity starts a fresh pick with just that one; tapping empty
+  /// canvas clears the current pick, or exits to [SketchMode.select] if
+  /// nothing was picked at all (unchanged from Stage 13 item 5). Every
+  /// successful pick re-derives the ghost set from scratch via
+  /// [_rebuildDimensionGhosts] - there's no incremental ghost state to keep
+  /// in sync.
+  void _applyDimensionHit(SketchSelection? hit) {
     if (hit == null) {
-      if (_dimensionSelection.isEmpty && _ghosts.isEmpty) {
+      if (_dimensionSelection.isEmpty) {
         exitToSelectMode();
       } else {
         _dimensionSelection.clear();
@@ -831,33 +1165,71 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
-    if (hit.kind == SelectionKind.point &&
-        _dimensionSelection.length == 1 &&
-        _dimensionSelection.first.kind == SelectionKind.point &&
-        _dimensionSelection.first.id != hit.id) {
+    if (_dimensionSelection.any((s) => s.sameAs(hit))) {
+      _dimensionSelection.removeWhere((s) => s.sameAs(hit));
+    } else if (_dimensionSelection.length >= 2) {
+      _dimensionSelection
+        ..clear()
+        ..add(hit);
+    } else {
       _dimensionSelection.add(hit);
-      _activeGhostKey = null;
-      _buildDistanceGhosts(_dimensionSelection[0].id, hit.id);
-      notifyListeners();
+    }
+    _activeGhostKey = null;
+    _rebuildDimensionGhosts();
+    notifyListeners();
+  }
+
+  /// Dispatches [_dimensionSelection]'s current shape onto a ghost set, per
+  /// the new work package's combination table: one Line -> length; one
+  /// Circle -> radius+diameter; two Points, or a Point+Line (substituting
+  /// the Line's nearer endpoint - the backend has no point-to-line distance
+  /// constraint, see [_buildPointLineGhosts]) -> vertical/horizontal/linear
+  /// distance; two Lines -> a line-pair distance ghost if they're
+  /// (near-)parallel, otherwise an angle ghost (see [_buildLinePairGhosts]).
+  /// Any other shape (a bare Point or Circle alone, or anything with more
+  /// than two entities) shows no ghosts.
+  void _rebuildDimensionGhosts() {
+    final sel = _dimensionSelection;
+
+    if (sel.length == 1) {
+      switch (sel.first.kind) {
+        case SelectionKind.line:
+          _buildLineLengthGhost(sel.first.id);
+          return;
+        case SelectionKind.circle:
+          _buildRadiusGhosts(sel.first.id);
+          return;
+        case SelectionKind.point:
+        case SelectionKind.constraint:
+          _ghosts = [];
+          return;
+      }
+    }
+
+    if (sel.length == 2) {
+      final a = sel[0];
+      final b = sel[1];
+      final kinds = {a.kind, b.kind};
+
+      if (kinds.length == 1 && kinds.single == SelectionKind.point) {
+        _buildPointDistanceGhosts(a.id, b.id);
+        return;
+      }
+      if (kinds.length == 1 && kinds.single == SelectionKind.line) {
+        _buildLinePairGhosts(a.id, b.id);
+        return;
+      }
+      if (kinds.contains(SelectionKind.point) && kinds.contains(SelectionKind.line)) {
+        final pointSel = a.kind == SelectionKind.point ? a : b;
+        final lineSel = a.kind == SelectionKind.line ? a : b;
+        _buildPointLineGhosts(pointSel.id, lineSel.id);
+        return;
+      }
+      _ghosts = [];
       return;
     }
 
-    _dimensionSelection
-      ..clear()
-      ..add(hit);
-    _activeGhostKey = null;
-    switch (hit.kind) {
-      case SelectionKind.line:
-        _buildLineLengthGhost(hit.id);
-        break;
-      case SelectionKind.circle:
-        _buildRadiusGhosts(hit.id);
-        break;
-      case SelectionKind.point:
-        _ghosts = [];
-        break;
-    }
-    notifyListeners();
+    _ghosts = [];
   }
 
   void _buildLineLengthGhost(String lineId) {
@@ -874,11 +1246,78 @@ class SketchController extends ChangeNotifier {
           ];
   }
 
-  void _buildDistanceGhosts(String pointAId, String pointBId) {
+  /// Two Points: vertical/horizontal components plus the direct
+  /// point-to-point ("linear") distance - new work package item 6's
+  /// "distance (vertical, horizontal and linear)".
+  void _buildPointDistanceGhosts(String pointAId, String pointBId) {
     _ghosts = [
       DimensionGhost(key: 'v', kind: GhostKind.vertical, pointAId: pointAId, pointBId: pointBId),
       DimensionGhost(key: 'h', kind: GhostKind.horizontal, pointAId: pointAId, pointBId: pointBId),
+      DimensionGhost(key: 'linear', kind: GhostKind.linear, pointAId: pointAId, pointBId: pointBId),
     ];
+  }
+
+  /// A Point + a Line: the backend's `DistanceConstraint` only ever
+  /// connects two Points, so this substitutes the Line's nearer endpoint
+  /// for the Line itself and reuses the two-Point ghost set - a documented
+  /// scoping tradeoff (true point-to-line distance isn't representable as
+  /// a live constraint in this backend), not point-to-line distance.
+  void _buildPointLineGhosts(String pointId, String lineId) {
+    final line = lines[lineId];
+    final point = points[pointId];
+    if (line == null || point == null) {
+      _ghosts = [];
+      return;
+    }
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) {
+      _ghosts = [];
+      return;
+    }
+    final distToStart = math.pow(point.x - start.x, 2) + math.pow(point.y - start.y, 2);
+    final distToEnd = math.pow(point.x - end.x, 2) + math.pow(point.y - end.y, 2);
+    final nearestEndpointId = distToStart <= distToEnd ? line.startPointId : line.endPointId;
+    _buildPointDistanceGhosts(pointId, nearestEndpointId);
+  }
+
+  /// How close to parallel (in radians, via the cross product of the two
+  /// direction vectors) two Lines must be to offer a distance ghost instead
+  /// of an angle ghost - about 1.1 degrees of slack for taps that aren't
+  /// pixel-perfectly aligned.
+  static const double _parallelToleranceRadians = 0.02;
+
+  bool _linesAreParallel(SketchLineView lineA, SketchLineView lineB) {
+    final a1 = points[lineA.startPointId];
+    final a2 = points[lineA.endPointId];
+    final b1 = points[lineB.startPointId];
+    final b2 = points[lineB.endPointId];
+    if (a1 == null || a2 == null || b1 == null || b2 == null) return false;
+    final ax = a2.x - a1.x;
+    final ay = a2.y - a1.y;
+    final bx = b2.x - b1.x;
+    final by = b2.y - b1.y;
+    final lenA = math.sqrt(ax * ax + ay * ay);
+    final lenB = math.sqrt(bx * bx + by * by);
+    if (lenA == 0 || lenB == 0) return false;
+    final cross = (ax * by - ay * bx) / (lenA * lenB);
+    return cross.abs() <= math.sin(_parallelToleranceRadians);
+  }
+
+  /// Two Lines: a distance ghost (between their current midpoints - see
+  /// [confirmGhostValue]'s `lineDistance` branch) if they're parallel,
+  /// otherwise an angle ghost - new work package item 6's "two parallel
+  /// lines or points distance, two non-parallel lines, angle".
+  void _buildLinePairGhosts(String lineAId, String lineBId) {
+    final lineA = lines[lineAId];
+    final lineB = lines[lineBId];
+    if (lineA == null || lineB == null) {
+      _ghosts = [];
+      return;
+    }
+    _ghosts = _linesAreParallel(lineA, lineB)
+        ? [DimensionGhost(key: 'lineDistance', kind: GhostKind.lineDistance, lineAId: lineAId, lineBId: lineBId)]
+        : [DimensionGhost(key: 'angle', kind: GhostKind.angle, lineAId: lineAId, lineBId: lineBId)];
   }
 
   void _buildRadiusGhosts(String circleId) {
@@ -901,15 +1340,69 @@ class SketchController extends ChangeNotifier {
           ];
   }
 
+  /// The angle (degrees, 0-180) between two Lines' direction vectors - the
+  /// `angle` ghost's preview value, and the value sent to
+  /// [SketchApiClient.createAngleConstraint]/[SketchApiClient.updateConstraintValue].
+  double? _angleBetweenLinesDegrees(SketchLineView lineA, SketchLineView lineB) {
+    final a1 = points[lineA.startPointId];
+    final a2 = points[lineA.endPointId];
+    final b1 = points[lineB.startPointId];
+    final b2 = points[lineB.endPointId];
+    if (a1 == null || a2 == null || b1 == null || b2 == null) return null;
+    final ax = a2.x - a1.x;
+    final ay = a2.y - a1.y;
+    final bx = b2.x - b1.x;
+    final by = b2.y - b1.y;
+    final lenA = math.sqrt(ax * ax + ay * ay);
+    final lenB = math.sqrt(bx * bx + by * by);
+    if (lenA == 0 || lenB == 0) return null;
+    final cosAngle = ((ax * bx + ay * by) / (lenA * lenB)).clamp(-1.0, 1.0);
+    return math.acos(cosAngle) * 180 / math.pi;
+  }
+
+  AngleConstraintDto? _findAngleConstraint(String line1Id, String line2Id) {
+    for (final constraint in constraints.values) {
+      if (constraint is AngleConstraintDto &&
+          ((constraint.line1Id == line1Id && constraint.line2Id == line2Id) ||
+              (constraint.line1Id == line2Id && constraint.line2Id == line1Id))) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// The current solved value a ghost would prefill its inline text input
   /// with - the ghost's own ? label (Stage 13 item 5/6's visual spec) is
   /// unaffected by this; it's still always "?" until a value is confirmed.
   double? currentGhostValue(DimensionGhost ghost) {
+    if (ghost.kind == GhostKind.lineDistance) {
+      final lineA = lines[ghost.lineAId];
+      final lineB = lines[ghost.lineBId];
+      if (lineA == null || lineB == null) return null;
+      final startA = points[lineA.startPointId];
+      final endA = points[lineA.endPointId];
+      final startB = points[lineB.startPointId];
+      final endB = points[lineB.endPointId];
+      if (startA == null || endA == null || startB == null || endB == null) return null;
+      final midAX = (startA.x + endA.x) / 2;
+      final midAY = (startA.y + endA.y) / 2;
+      final midBX = (startB.x + endB.x) / 2;
+      final midBY = (startB.y + endB.y) / 2;
+      return math.sqrt(math.pow(midBX - midAX, 2) + math.pow(midBY - midAY, 2));
+    }
+    if (ghost.kind == GhostKind.angle) {
+      final lineA = lines[ghost.lineAId];
+      final lineB = lines[ghost.lineBId];
+      if (lineA == null || lineB == null) return null;
+      return _angleBetweenLinesDegrees(lineA, lineB);
+    }
+
     final a = points[ghost.pointAId];
     final b = points[ghost.pointBId];
     if (a == null || b == null) return null;
     switch (ghost.kind) {
       case GhostKind.length:
+      case GhostKind.linear:
       case GhostKind.radius:
         return math.sqrt(math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2));
       case GhostKind.diameter:
@@ -918,6 +1411,9 @@ class SketchController extends ChangeNotifier {
         return (b.y - a.y).abs();
       case GhostKind.horizontal:
         return (b.x - a.x).abs();
+      case GhostKind.lineDistance:
+      case GhostKind.angle:
+        return null; // handled above.
     }
   }
 
@@ -967,15 +1463,51 @@ class SketchController extends ChangeNotifier {
     }
     if (ghost == null) return;
     final target = ghost;
+
+    if (target.kind == GhostKind.angle) {
+      await _runGuarded(() async {
+        final existing = _findAngleConstraint(target.lineAId!, target.lineBId!);
+        if (existing != null) {
+          await _api.updateConstraintValue(_sketchId!, existing.id, value);
+        } else {
+          await _api.createAngleConstraint(_sketchId!, target.lineAId!, target.lineBId!, value);
+        }
+        await _solveAndTrackDof();
+        await _refreshAllPoints();
+        await _refreshConstraints();
+        _ghosts = [];
+        _dimensionSelection.clear();
+        _activeGhostKey = null;
+      });
+      return;
+    }
+
+    String pointAId;
+    String pointBId;
+    if (target.kind == GhostKind.lineDistance) {
+      if (_busy || _sketchId == null) return;
+      String? midA;
+      String? midB;
+      await _runGuarded(() async {
+        midA = await _materializeMidpoint(target.lineAId!);
+        midB = await _materializeMidpoint(target.lineBId!);
+      });
+      if (midA == null || midB == null) return; // materialization failed - errorMessage is already set.
+      pointAId = midA!;
+      pointBId = midB!;
+    } else {
+      pointAId = target.pointAId!;
+      pointBId = target.pointBId!;
+    }
     final distanceValue = target.kind == GhostKind.diameter ? value / 2 : value;
 
     await _runGuarded(() async {
-      final existing = _findDistanceConstraint(target.pointAId, target.pointBId);
+      final existing = _findDistanceConstraint(pointAId, pointBId);
       if (existing != null) {
         await _api.updateConstraintValue(_sketchId!, existing.id, distanceValue);
       } else {
-        await _api.createDistanceConstraint(_sketchId!, target.pointAId, target.pointBId, distanceValue);
-        await _api.solve(_sketchId!);
+        await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, distanceValue);
+        await _solveAndTrackDof();
       }
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -1086,6 +1618,11 @@ class SketchController extends ChangeNotifier {
   Future<void> _handleDrawTap() async {
     if (_busy || _sketchId == null) return;
 
+    if (_activeTool == SketchTool.point) {
+      await _clickPointTool();
+      return;
+    }
+
     if (_activeTool == SketchTool.circle) {
       switch (_circleMethod) {
         case CircleConstructionMethod.centerRadius:
@@ -1102,6 +1639,19 @@ class SketchController extends ChangeNotifier {
       case LineConstructionMethod.midpoint:
         await _clickMidpointLineTool();
     }
+  }
+
+  /// [SketchTool.point]: a single, self-terminating tap that places one
+  /// Point - reuses [_pointIdAtCursor] so it shares the same snap-to-existing-
+  /// Point/snap-to-midpoint behaviour every other placement path gets, even
+  /// though here that mostly means "do nothing new" (snapping onto an
+  /// already-existing Point creates nothing).
+  Future<void> _clickPointTool() async {
+    _selectionSet.clear();
+    _ribbonVisible = false;
+    await _runGuarded(() async {
+      await _pointIdAtCursor();
+    });
   }
 
   /// [LineConstructionMethod.endToEnd]: the original chained placement - one
@@ -1136,7 +1686,7 @@ class SketchController extends ChangeNotifier {
 
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
 
       if (closingLoop) {
@@ -1180,7 +1730,7 @@ class SketchController extends ChangeNotifier {
         construction: line.construction,
       );
 
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       _midpointAnchorX = null;
       _midpointAnchorY = null;
@@ -1214,7 +1764,7 @@ class SketchController extends ChangeNotifier {
       );
 
       // Same rule as a completed Line: one finished entity = one solve call.
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
 
@@ -1274,7 +1824,7 @@ class SketchController extends ChangeNotifier {
         construction: circle.construction,
       );
 
-      await _api.solve(_sketchId!);
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
     });
@@ -1304,8 +1854,11 @@ class SketchController extends ChangeNotifier {
   /// Point, so origin-snapping applies uniformly to chain starts, chain
   /// continuations, and both Circle taps.
   Future<String> _pointIdAtCursor({String? excludeId}) async {
-    if (isHoveringOrigin && _originPointId != excludeId) {
-      return _originPointId!;
+    final existing = _existingPointIdNear(cursorX, cursorY, excludeId: excludeId);
+    if (existing != null) return existing;
+    final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, snapRadius);
+    if (midpointLineId != null) {
+      return await _materializeMidpoint(midpointLineId);
     }
     final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
     points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);

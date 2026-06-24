@@ -423,6 +423,48 @@ class SketchApiClient {
         (_) {},
       );
 
+  /// Direct-manipulation drag support: repositions a Point without
+  /// re-solving (mirrors backend PointUpdate, which has no auto-solve) - the
+  /// caller is expected to call [solve] itself once the drag ends.
+  Future<PointDto> updatePoint(String sketchId, String pointId, double x, double y) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/points/$pointId'),
+              headers: _headers,
+              body: jsonEncode({'x': x, 'y': y}),
+            ),
+        (body) => PointDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<void> deleteConstraint(String sketchId, String constraintId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/constraints/$constraintId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  /// The angle-dimension ghost's confirm path - between two non-parallel
+  /// Lines, mirrors [createVerticalConstraint]'s shape.
+  Future<ConstraintDto> createAngleConstraint(
+    String sketchId,
+    String line1Id,
+    String line2Id,
+    double angleDegrees,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'angle',
+                'line1_id': line1Id,
+                'line2_id': line2Id,
+                'angle_degrees': angleDegrees,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<List<ConstraintDto>> listConstraints(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/constraints'), headers: _headers),
         (body) => (body as List)

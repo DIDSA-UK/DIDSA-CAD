@@ -69,6 +69,7 @@ class SketchRibbon extends StatelessWidget {
       SelectionKind.point => 'Point selected',
       SelectionKind.line => 'Line selected',
       SelectionKind.circle => 'Circle selected',
+      SelectionKind.constraint => 'Constraint selected',
     };
   }
 
@@ -114,12 +115,22 @@ class SketchRibbon extends StatelessWidget {
       ),
     ];
 
-    return Padding(
+    final chipRow = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(children: chips),
       ),
+    );
+
+    if (!controller.selectedConstraintHasValue) return chipRow;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _ConstraintValueEditor(controller: controller),
+        chipRow,
+      ],
     );
   }
 
@@ -197,5 +208,78 @@ class _RibbonActionChip extends StatelessWidget {
     );
     if (tooltip == null) return column;
     return Tooltip(message: tooltip!, child: column);
+  }
+}
+
+/// New work package item 3's "change value" editor: shown above the chip
+/// row whenever exactly one value-bearing Constraint (Distance or Angle) is
+/// selected. Mirrors the canvas's ghost-dimension value editor, but PATCHes
+/// an existing constraint via [SketchController.updateSelectedConstraintValue]
+/// instead of creating a new one.
+class _ConstraintValueEditor extends StatefulWidget {
+  final SketchController controller;
+
+  const _ConstraintValueEditor({required this.controller});
+
+  @override
+  State<_ConstraintValueEditor> createState() => _ConstraintValueEditorState();
+}
+
+class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
+  late final TextEditingController _textController;
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(
+      text: _formatValue(widget.controller.selectedConstraintValue),
+    );
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  String _formatValue(double? value) {
+    if (value == null) return '';
+    return value.toStringAsFixed(2);
+  }
+
+  void _submit() {
+    final value = double.tryParse(_textController.text);
+    if (value == null) return;
+    widget.controller.updateSelectedConstraintValue(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final suffix = widget.controller.selectedConstraintIsAngle ? '°' : 'mm';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _textController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                isDense: true,
+                suffixText: suffix,
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Apply',
+            icon: const Icon(Icons.check),
+            onPressed: widget.controller.busy ? null : _submit,
+          ),
+        ],
+      ),
+    );
   }
 }

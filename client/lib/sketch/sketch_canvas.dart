@@ -67,6 +67,24 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   /// a tap rather than a drag.
   static const double _tapTravelThreshold = 10.0;
 
+  /// The moment [_dispatchTap] last ran, or null - compared against the
+  /// next pointer-down to recognize new work package item 8's
+  /// double-click-drag gesture: a second down arriving within
+  /// [_doubleClickTimeout] of a dispatched tap, landing (per the
+  /// controller's own trackpad-style cursor, not this event's literal
+  /// screen position - see [_dispatchTap]'s doc comment) on a draggable
+  /// Point/Line/Circle, starts a drag instead of a second discrete tap.
+  DateTime? _lastTapTime;
+
+  static const Duration _doubleClickTimeout = Duration(milliseconds: 350);
+
+  /// The Point currently grabbed by an active double-click-drag, or null -
+  /// once set, pointer-move feeds [SketchController.updatePointDrag]
+  /// instead of the normal cursor-move/pan/pinch handling, and the
+  /// eventual pointer-up/cancel ends the drag rather than dispatching a
+  /// tap.
+  String? _draggingPointId;
+
   /// The canvas's own render size, refreshed every [build] - read by
   /// [_onEdgePanTick], which runs independently of any pointer event so an
   /// RTS-style edge-pan keeps going even while the pointer itself sits
@@ -166,6 +184,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   /// [SketchController.handleCanvasTap].
   void _dispatchTap(ViewTransform transform) {
     final controller = widget.controller;
+    _lastTapTime = DateTime.now();
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     if (controller.mode == SketchMode.dimension) {
       final hitKey = _ghostKeyAt(controller, transform, cursorScreen);
@@ -180,8 +199,35 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
         return;
       }
     }
+    if (controller.mode == SketchMode.select) {
+      final constraintId = _constraintIdAt(controller, transform, cursorScreen);
+      if (constraintId != null) {
+        controller.selectConstraint(constraintId);
+        return;
+      }
+    }
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     controller.handleCanvasTap(controller.cursorX, controller.cursorY, hitRadius);
+  }
+
+  /// New work package item 8: recognizes a pointer-down arriving shortly
+  /// after the last dispatched tap as the second half of a double-click,
+  /// and - if the controller's cursor (not this event's own screen
+  /// position; see [_dispatchTap]) currently sits on a draggable
+  /// Point/Line/Circle - starts a drag instead of letting the down event
+  /// fall through to a second ordinary tap. Returns whether a drag started.
+  bool _tryStartEntityDrag(ViewTransform transform) {
+    final lastTapTime = _lastTapTime;
+    if (lastTapTime == null || DateTime.now().difference(lastTapTime) > _doubleClickTimeout) {
+      return false;
+    }
+    final controller = widget.controller;
+    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    final pointId = controller.dragTargetPointIdAt(controller.cursorX, controller.cursorY, hitRadius);
+    if (pointId == null || !controller.beginPointDrag(pointId)) return false;
+    _lastTapTime = null;
+    _draggingPointId = pointId;
+    return true;
   }
 
   void _handlePointerDown(PointerDownEvent event, ViewTransform transform) {
@@ -195,6 +241,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+        if (_tryStartEntityDrag(transform)) return;
         _dispatchTap(transform);
       }
       return;
@@ -205,15 +252,21 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     // pinch/pan handling below, and so a single-finger touch ending without
     // much travel can be recognized as a tap.
     _activeTouches[event.pointer] = event.localPosition;
-    if (_activeTouches.length == 1) {
-      _singleTouchTravel = 0;
-      _multiTouchOccurred = false;
-    } else {
+    if (_activeTouches.length != 1) {
       _multiTouchOccurred = true;
+      return;
     }
+    _singleTouchTravel = 0;
+    _multiTouchOccurred = false;
+    _tryStartEntityDrag(transform);
   }
 
   void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
+    if (_draggingPointId != null) {
+      final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
+      widget.controller.updatePointDrag(coord.x, coord.y);
+      return;
+    }
     if (event.kind == PointerDeviceKind.mouse) {
       if (event.buttons & kSecondaryMouseButton != 0) {
         setState(() => _viewport.panByScreenDelta(event.delta));
@@ -240,6 +293,12 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
+    if (_draggingPointId != null) {
+      _draggingPointId = null;
+      _activeTouches.remove(event.pointer);
+      widget.controller.endPointDrag();
+      return;
+    }
     if (event.kind == PointerDeviceKind.mouse) return;
 
     // A lone finger lifting (not the tail end of a pinch) after barely
@@ -394,9 +453,56 @@ class _GhostLayout {
 /// own `offsetDistance`, just renamed for this file's ghost-only geometry.
 const double _ghostOffsetPixels = 20.0;
 
-/// Computes [ghost]'s on-screen layout - null if either endpoint Point is
-/// missing from [controller.points] (e.g. a stale ghost after a delete).
+/// A Line's current midpoint in screen space - null if the Line or either
+/// endpoint Point is missing. Shared by [_layoutGhost]'s line-anchored
+/// ghost kinds and [_constraintLabelCenter]'s Angle case, mirroring
+/// [_SketchPainter._lineMidpointScreen] for the free-function (non-painter)
+/// call sites in this file.
+Offset? _lineMidpointScreenFor(SketchController controller, ViewTransform transform, String? lineId) {
+  final line = controller.lines[lineId];
+  if (line == null) return null;
+  final start = controller.points[line.startPointId];
+  final end = controller.points[line.endPointId];
+  if (start == null || end == null) return null;
+  return (transform.sketchToScreen(start.x, start.y) + transform.sketchToScreen(end.x, end.y)) / 2;
+}
+
+/// Computes [ghost]'s on-screen layout - null if its anchor Points/Lines
+/// are missing from [controller] (e.g. a stale ghost after a delete). Point-
+/// anchored kinds (length/linear/vertical/horizontal/radius/diameter) lay
+/// out from [ghost.pointAId]/[ghost.pointBId] directly; line-anchored kinds
+/// (lineDistance/angle - new work package item 6's two-Line ghosts) lay out
+/// from each Line's current midpoint instead, since there's no single pair
+/// of Points to anchor to.
 _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform, DimensionGhost ghost) {
+  if (ghost.kind == GhostKind.lineDistance) {
+    final midA = _lineMidpointScreenFor(controller, transform, ghost.lineAId);
+    final midB = _lineMidpointScreenFor(controller, transform, ghost.lineBId);
+    if (midA == null || midB == null) return null;
+    final delta = midB - midA;
+    final len = delta.distance;
+    if (len < 1e-6) return null;
+    final normal = Offset(-delta.dy, delta.dx) / len * _ghostOffsetPixels;
+    final p1 = midA + normal;
+    final p2 = midB + normal;
+    return _GhostLayout((p1 + p2) / 2, [
+      [midA, p1],
+      [midB, p2],
+      [p1, p2],
+    ]);
+  }
+
+  if (ghost.kind == GhostKind.angle) {
+    final midA = _lineMidpointScreenFor(controller, transform, ghost.lineAId);
+    final midB = _lineMidpointScreenFor(controller, transform, ghost.lineBId);
+    if (midA == null || midB == null) return null;
+    final labelCenter = (midA + midB) / 2;
+    return _GhostLayout(labelCenter, [
+      [midA, labelCenter],
+      [midB, labelCenter],
+    ]);
+  }
+
   final a = controller.points[ghost.pointAId];
   final b = controller.points[ghost.pointBId];
   if (a == null || b == null) return null;
@@ -405,6 +511,7 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
 
   switch (ghost.kind) {
     case GhostKind.length:
+    case GhostKind.linear:
       final delta = bScreen - aScreen;
       final len = delta.distance;
       if (len < 1e-6) return null;
@@ -455,6 +562,10 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
       return _GhostLayout((opposite + far) / 2, [
         [opposite, far],
       ]);
+
+    case GhostKind.lineDistance:
+    case GhostKind.angle:
+      return null; // handled above.
   }
 }
 
@@ -472,6 +583,73 @@ String? _ghostKeyAt(SketchController controller, ViewTransform transform, Offset
     if (layout == null) continue;
     if ((screenPosition - layout.labelCenter).distance <= _ghostHitRadiusPixels) {
       return ghost.key;
+    }
+  }
+  return null;
+}
+
+/// A Point pair's screen-space midpoint - null if either Point is missing.
+/// Shared by [_constraintLabelCenter]'s Vertical/Horizontal cases, mirroring
+/// [_SketchPainter._paintAxisIndicator]'s own midpoint layout.
+Offset? _pointPairMidpointScreen(
+  SketchController controller,
+  ViewTransform transform,
+  String pointAId,
+  String pointBId,
+) {
+  final a = controller.points[pointAId];
+  final b = controller.points[pointBId];
+  if (a == null || b == null) return null;
+  return (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
+}
+
+/// [constraint]'s on-screen label center, for hit-testing a [SketchMode.select]
+/// tap against it (new work package item 4) - mirrors each of
+/// [_SketchPainter._paintDimensionOverlays]'s per-type layouts exactly, so a
+/// tap is recognized precisely where the label is actually drawn.
+Offset? _constraintLabelCenter(
+  SketchController controller,
+  ViewTransform transform,
+  ConstraintDto constraint,
+) {
+  switch (constraint) {
+    case DistanceConstraintDto c:
+      final a = controller.points[c.pointAId];
+      final b = controller.points[c.pointBId];
+      if (a == null || b == null) return null;
+      final aScreen = transform.sketchToScreen(a.x, a.y);
+      final bScreen = transform.sketchToScreen(b.x, b.y);
+      final delta = bScreen - aScreen;
+      final length = delta.distance;
+      if (length < 1e-6) return null;
+      final normal = Offset(-delta.dy, delta.dx) / length;
+      const offsetDistance = 18.0;
+      final offset = normal * offsetDistance;
+      return (aScreen + offset + bScreen + offset) / 2;
+    case VerticalConstraintDto c:
+      return _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+    case HorizontalConstraintDto c:
+      return _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+    case AngleConstraintDto c:
+      final midpoint1 = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final midpoint2 = _lineMidpointScreenFor(controller, transform, c.line2Id);
+      if (midpoint1 == null || midpoint2 == null) return null;
+      return (midpoint1 + midpoint2) / 2;
+    default:
+      return null;
+  }
+}
+
+/// The id of whichever currently-rendered Constraint's label
+/// [screenPosition] landed on, or null if it missed all of them - see
+/// [_SketchCanvasState._dispatchTap]. Reuses [_ghostHitRadiusPixels]'s
+/// touch target, same generous tolerance as ghost-label hit-testing.
+String? _constraintIdAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
+  for (final entry in controller.constraints.entries) {
+    final center = _constraintLabelCenter(controller, transform, entry.value);
+    if (center == null) continue;
+    if ((screenPosition - center).distance <= _ghostHitRadiusPixels) {
+      return entry.key;
     }
   }
   return null;
@@ -522,6 +700,7 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
 
   @override
   Widget build(BuildContext context) {
+    final suffix = widget.ghost.kind == GhostKind.angle ? '°' : 'mm';
     return Positioned(
       left: widget.anchor.dx - 70,
       top: widget.anchor.dy + 14,
@@ -539,7 +718,7 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
                   controller: _text,
                   autofocus: true,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(isDense: true, suffixText: 'mm'),
+                  decoration: InputDecoration(isDense: true, suffixText: suffix),
                   onSubmitted: (_) => _confirm(),
                 ),
               ),
@@ -656,16 +835,20 @@ class _SketchPainter extends CustomPainter {
   /// constraint values), so these are display-only, dispatched by runtime
   /// type since [ConstraintDto] isn't a sealed hierarchy.
   void _paintDimensionOverlays(Canvas canvas) {
-    for (final constraint in controller.constraints.values) {
-      switch (constraint) {
+    final selectionSet = controller.selectionSet;
+    for (final entry in controller.constraints.entries) {
+      final isSelected =
+          selectionSet.any((s) => s.kind == SelectionKind.constraint && s.id == entry.key);
+      final color = isSelected ? _selectedColor : _dimensionColor;
+      switch (entry.value) {
         case DistanceConstraintDto c:
-          _paintDistanceDimension(canvas, c);
+          _paintDistanceDimension(canvas, c, color);
         case VerticalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V');
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', color);
         case HorizontalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H');
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', color);
         case AngleConstraintDto c:
-          _paintAngleDimension(canvas, c);
+          _paintAngleDimension(canvas, c, color);
         default:
           break;
       }
@@ -702,7 +885,7 @@ class _SketchPainter extends CustomPainter {
   /// pixel amount (so it reads clearly regardless of zoom), labeled with
   /// the constraint's own [DistanceConstraintDto.distance] (the solved
   /// value, not a measurement of the current screen geometry).
-  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c) {
+  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color) {
     final a = controller.points[c.pointAId];
     final b = controller.points[c.pointBId];
     if (a == null || b == null) return;
@@ -716,25 +899,25 @@ class _SketchPainter extends CustomPainter {
     final offset = normal * offsetDistance;
 
     final dimPaint = Paint()
-      ..color = _dimensionColor
+      ..color = color
       ..strokeWidth = 1;
     canvas.drawLine(aScreen, aScreen + offset, dimPaint);
     canvas.drawLine(bScreen, bScreen + offset, dimPaint);
     canvas.drawLine(aScreen + offset, bScreen + offset, dimPaint);
 
     final midpoint = (aScreen + offset + bScreen + offset) / 2;
-    _drawDimensionLabel(canvas, midpoint, c.distance.toStringAsFixed(2), _dimensionColor);
+    _drawDimensionLabel(canvas, midpoint, c.distance.toStringAsFixed(2), color);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
   /// Line's midpoint - there's no "value" to dimension, only the
   /// constraint's existence.
-  void _paintAxisIndicator(Canvas canvas, String pointAId, String pointBId, String label) {
+  void _paintAxisIndicator(Canvas canvas, String pointAId, String pointBId, String label, Color color) {
     final a = controller.points[pointAId];
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
-    _drawDimensionLabel(canvas, midpoint, label, _dimensionColor);
+    _drawDimensionLabel(canvas, midpoint, label, color);
   }
 
   /// Angle dimension: deliberately a numeric-only label rather than a
@@ -742,12 +925,12 @@ class _SketchPainter extends CustomPainter {
   /// general, so there's no single well-defined arc to draw. Placed at the
   /// midpoint between each Line's own midpoint, which stays stable and
   /// roughly "between" the two Lines regardless of their actual layout.
-  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c) {
+  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color) {
     final midpoint1 = _lineMidpointScreen(c.line1Id);
     final midpoint2 = _lineMidpointScreen(c.line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawDimensionLabel(canvas, midpoint, '∠${c.angleDegrees.toStringAsFixed(1)}°', _dimensionColor);
+    _drawDimensionLabel(canvas, midpoint, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
   }
 
   Offset? _lineMidpointScreen(String lineId) {
@@ -800,6 +983,24 @@ class _SketchPainter extends CustomPainter {
     for (final pick in controller.threePointCirclePicksSoFar) {
       canvas.drawCircle(transform.sketchToScreen(pick.$1, pick.$2), 6, markerPaint);
     }
+  }
+
+  /// New work package item 5's discoverability cue: a hollow green ring
+  /// around whichever Line midpoint the cursor is currently snapped to (see
+  /// [SketchController.hoveredLineMidpoint]) - otherwise a Line's midpoint
+  /// is an invisible snap target until the moment it's actually tapped.
+  void _paintMidpointSnapIndicator(Canvas canvas) {
+    final midpoint = controller.hoveredLineMidpoint;
+    if (midpoint == null) return;
+    final screenPos = transform.sketchToScreen(midpoint.$1, midpoint.$2);
+    canvas.drawCircle(
+      screenPos,
+      9,
+      Paint()
+        ..color = Colors.green
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
   }
 
   @override
@@ -933,6 +1134,7 @@ class _SketchPainter extends CustomPainter {
     _paintDimensionOverlays(canvas);
     _paintGhosts(canvas);
     _paintInProgressConstructionPicks(canvas);
+    _paintMidpointSnapIndicator(canvas);
 
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final crosshairPaint = Paint()

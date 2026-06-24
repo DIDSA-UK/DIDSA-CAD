@@ -24,6 +24,12 @@ class _FakeBackend {
   /// that the client doesn't track/check locally.
   final Set<String> blockedPointIds = {};
 
+  /// The `dof` every solve response reports - new work package item 8's
+  /// drag tests flip this to simulate an under-constrained sketch, since
+  /// [SketchController.isUnderConstrained] (and so [dragTargetPointIdAt])
+  /// gates entirely on the last-seen solve result.
+  int dof = 0;
+
   String _newId(String prefix) => '$prefix-${_nextId++}';
 
   /// Seeds a Sketch (and its origin Point) as if it had already been
@@ -64,8 +70,19 @@ class _FakeBackend {
       final id = constraintPatchMatch.group(1)!;
       final constraint = constraints[id];
       if (constraint == null) return http.Response('not found', 404);
-      constraint['distance'] = (body['value'] as num).toDouble();
+      final value = (body['value'] as num).toDouble();
+      if (constraint['type'] == 'angle') {
+        constraint['angle_degrees'] = value;
+      } else {
+        constraint['distance'] = value;
+      }
       return _json(_solveResultBody(), 200);
+    }
+
+    final constraintDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints/(.+)$').firstMatch(path);
+    if (constraintDeleteMatch != null && request.method == 'DELETE') {
+      constraints.remove(constraintDeleteMatch.group(1));
+      return http.Response('', 204);
     }
 
     if (path == '/sketch/sketches' && request.method == 'POST') {
@@ -92,6 +109,16 @@ class _FakeBackend {
     if (pointGetMatch != null && request.method == 'GET') {
       final point = points[pointGetMatch.group(1)];
       if (point == null) return http.Response('not found', 404);
+      return _json(point, 200);
+    }
+
+    final pointPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/points/(.+)$').firstMatch(path);
+    if (pointPatchMatch != null && request.method == 'PATCH') {
+      final id = pointPatchMatch.group(1)!;
+      final point = points[id];
+      if (point == null) return http.Response('not found', 404);
+      point['x'] = (body['x'] as num).toDouble();
+      point['y'] = (body['y'] as num).toDouble();
       return _json(point, 200);
     }
 
@@ -171,6 +198,15 @@ class _FakeBackend {
             'point_b_id': line?['end_point_id'],
           };
           break;
+        case 'angle':
+          constraint = {
+            'id': id,
+            'type': 'angle',
+            'line1_id': body['line1_id'],
+            'line2_id': body['line2_id'],
+            'angle_degrees': (body['angle_degrees'] as num).toDouble(),
+          };
+          break;
         default:
           constraint = {
             'id': id,
@@ -196,7 +232,7 @@ class _FakeBackend {
 
   Map<String, dynamic> _solveResultBody() => {
         'converged': true,
-        'dof': 0,
+        'dof': dof,
         'result_code': 0,
         'blamed_constraint_ids': [],
         'solver_reported_failed_constraint_ids': [],
@@ -544,7 +580,9 @@ void main() {
     await controller.handleCanvasTap(0, 0); // selects the origin point
     expect(controller.selectionSet.length, 1);
 
-    await controller.handleCanvasTap(2.5, 0.1); // adds the line
+    // Away from the line's midpoint (2.5, 0) - a tap there now snaps to/
+    // materializes the midpoint Point instead of selecting the Line itself.
+    await controller.handleCanvasTap(4, 0.1); // adds the line
     expect(controller.selectionSet.length, 2);
     expect(
       controller.selectionSet.any((s) => s.kind == SelectionKind.line && s.id == lineId),
@@ -633,7 +671,9 @@ void main() {
     controller.exitToSelectMode();
     final lineId = controller.lines.keys.first;
 
-    await controller.handleCanvasTap(2.5, 0.1);
+    // Away from the line's midpoint (2.5, 0) - see the selection-set test
+    // above for why.
+    await controller.handleCanvasTap(4, 0.1);
     expect(controller.selection!.id, lineId);
 
     await controller.deleteSelected();
@@ -790,7 +830,9 @@ void main() {
     controller.finishChain();
     controller.exitToSelectMode();
 
-    await controller.handleCanvasTap(2.5, 2.5);
+    // Away from the line's midpoint (2.5, 2.5) - a tap there now snaps to/
+    // materializes the midpoint Point instead of selecting the Line itself.
+    await controller.handleCanvasTap(4, 4);
 
     final options = controller.availableConstraintOptions;
     expect(
@@ -812,7 +854,7 @@ void main() {
     await controller.handleCanvasTap(5, 5);
     controller.finishChain();
     controller.exitToSelectMode();
-    await controller.handleCanvasTap(2.5, 2.5);
+    await controller.handleCanvasTap(4, 4); // away from the line's midpoint
 
     await controller.applyConstraintOption(ConstraintOptionType.vertical);
 
@@ -826,7 +868,7 @@ void main() {
     await controller.handleCanvasTap(5, 5);
     controller.finishChain();
     controller.exitToSelectMode();
-    await controller.handleCanvasTap(2.5, 2.5);
+    await controller.handleCanvasTap(4, 4); // away from the line's midpoint
 
     await controller.applyConstraintOption(ConstraintOptionType.horizontal);
 
@@ -843,7 +885,7 @@ void main() {
     controller.finishChain();
     controller.enterDimensionMode();
 
-    await controller.handleCanvasTap(5, 0.1); // midpoint, just off-axis
+    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint (5, 0)
 
     expect(controller.ghosts.length, 1);
     expect(controller.ghosts.first.kind, GhostKind.length);
@@ -855,7 +897,7 @@ void main() {
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(5, 0.1);
+    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint (5, 0)
     controller.tapGhost('length');
     expect(controller.activeGhostKey, 'length');
 
@@ -878,7 +920,7 @@ void main() {
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(5, 0.1);
+    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint (5, 0)
     controller.tapGhost('length');
 
     controller.cancelGhostEdit();
@@ -887,7 +929,7 @@ void main() {
     expect(controller.ghosts, isNotEmpty);
   });
 
-  test('tapping two distinct points in dimension mode shows simultaneous V and H ghosts', () async {
+  test('tapping two distinct points in dimension mode shows simultaneous V, H, and linear ghosts', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
@@ -897,7 +939,7 @@ void main() {
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
 
-    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h'});
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
   });
 
   test(
@@ -933,12 +975,374 @@ void main() {
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(5, 0.1);
+    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint (5, 0)
     expect(controller.ghosts, isNotEmpty);
 
     await controller.handleCanvasTap(50, 50);
 
     expect(controller.mode, SketchMode.dimension);
     expect(controller.ghosts, isEmpty);
+  });
+
+  // --- New work package item 1: Point tool ----------------------------------
+
+  test('the point tool places a single Point and self-terminates (no chain)', () async {
+    controller.selectDrawTool(SketchTool.point);
+
+    await controller.handleCanvasTap(3, 4);
+
+    expect(controller.points.length, 2); // origin + the new point
+    expect(controller.points.values.any((p) => p.x == 3 && p.y == 4), isTrue);
+    expect(controller.chainInProgress, isFalse);
+    expect(controller.circleInProgress, isFalse);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('the point tool snaps onto an existing Point instead of creating a duplicate', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(3, 4);
+    expect(controller.points.length, 2);
+
+    await controller.handleCanvasTap(3.1, 4.1); // within snapRadius of the point just placed
+
+    expect(controller.points.length, 2); // no new point created
+  });
+
+  // --- New work package item 5: line-midpoint snapping ----------------------
+
+  test('a draw-mode tap near a Line\'s midpoint reuses the materialized midpoint Point', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(5.1, 0.1); // within snapRadius of the line's midpoint (5, 0)
+
+    expect(controller.points.length, 3); // origin + 2 line endpoints + midpoint, no extra
+  });
+
+  // --- New work package items 3 & 4: constraint selection/delete/edit -------
+
+  test('selectConstraint selects a Constraint by id and opens the ribbon', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(4, 4); // selects the line, away from its midpoint
+    await controller.applyConstraintOption(ConstraintOptionType.vertical);
+    final constraintId = controller.constraints.keys.single;
+
+    controller.selectConstraint(constraintId);
+
+    expect(controller.selectionSet.length, 1);
+    expect(controller.selectionSet.first.kind, SelectionKind.constraint);
+    expect(controller.selectionSet.first.id, constraintId);
+  });
+
+  test('deleteSelected removes a selected Constraint and re-solves', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(4, 4);
+    await controller.applyConstraintOption(ConstraintOptionType.vertical);
+    final constraintId = controller.constraints.keys.single;
+    controller.selectConstraint(constraintId);
+
+    await controller.deleteSelected();
+
+    expect(controller.constraints, isEmpty);
+    expect(controller.selectionSet, isEmpty);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('selectedConstraintValue/selectedConstraintHasValue are null/false for a Vertical constraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(4, 4);
+    await controller.applyConstraintOption(ConstraintOptionType.vertical);
+    controller.selectConstraint(controller.constraints.keys.single);
+
+    expect(controller.selectedConstraintValue, isNull);
+    expect(controller.selectedConstraintHasValue, isFalse);
+    expect(controller.selectedConstraintIsAngle, isFalse);
+  });
+
+  test(
+      'selectedConstraintValue exposes a Distance constraint\'s value, and '
+      'updateSelectedConstraintValue PATCHes it then deselects', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint
+    await controller.confirmGhostValue('length', 25.0);
+    controller.exitToSelectMode();
+    final constraintId = controller.constraints.keys.single;
+    controller.selectConstraint(constraintId);
+
+    expect(controller.selectedConstraintValue, 25.0);
+    expect(controller.selectedConstraintHasValue, isTrue);
+    expect(controller.selectedConstraintIsAngle, isFalse);
+
+    await controller.updateSelectedConstraintValue(50.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints[constraintId], isA<DistanceConstraintDto>());
+    expect((controller.constraints[constraintId] as DistanceConstraintDto).distance, 50.0);
+    expect(controller.selectionSet, isEmpty);
+  });
+
+  // --- New work package item 6: line-pair ghosts (lineDistance/angle) -------
+
+  test('two parallel Lines selected in dimension mode show a lineDistance ghost', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(8, 0.1); // first line, away from its midpoint
+    await controller.handleCanvasTap(8, 5.1); // second line, away from its midpoint
+
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'lineDistance'});
+    expect(controller.ghosts.single.kind, GhostKind.lineDistance);
+    expect(controller.currentGhostValue(controller.ghosts.single), closeTo(5.0, 1e-9));
+  });
+
+  test(
+      'confirming a lineDistance ghost materializes both midpoints and creates a '
+      'DistanceConstraint between them', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ghosts, isEmpty);
+    expect(
+      controller.constraints.values.whereType<DistanceConstraintDto>().any((c) => c.distance == 7.0),
+      isTrue,
+    );
+  });
+
+  test('two non-parallel Lines selected in dimension mode show an angle ghost', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(8, 0.1); // horizontal line, away from its midpoint
+    await controller.handleCanvasTap(0.1, 8); // vertical line, away from its midpoint
+
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'angle'});
+    expect(controller.ghosts.single.kind, GhostKind.angle);
+    expect(controller.currentGhostValue(controller.ghosts.single), closeTo(90.0, 1e-6));
+  });
+
+  test('confirming an angle ghost creates an AngleConstraint between the two Lines', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.1, 8);
+
+    await controller.confirmGhostValue('angle', 90.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ghosts, isEmpty);
+    expect(controller.dimensionSelection, isEmpty);
+    final angleConstraints = controller.constraints.values.whereType<AngleConstraintDto>();
+    expect(angleConstraints.single.angleDegrees, 90.0);
+  });
+
+  test(
+      'confirming an existing angle ghost a second time PATCHes the existing '
+      'AngleConstraint instead of creating a second one', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.1, 8);
+    await controller.confirmGhostValue('angle', 90.0);
+
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.1, 8);
+    await controller.confirmGhostValue('angle', 45.0);
+
+    expect(controller.errorMessage, isNull);
+    final angleConstraints = controller.constraints.values.whereType<AngleConstraintDto>();
+    expect(angleConstraints.length, 1);
+    expect(angleConstraints.single.angleDegrees, 45.0);
+  });
+
+  // --- New work package item 6: point+line ghost substitution ---------------
+
+  test(
+      'selecting a Point and a Line in dimension mode substitutes the Line\'s '
+      'nearer endpoint for point-distance ghosts', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 5); // a free-standing point above the line's start
+
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 5); // the point
+    await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (nearer to its end)
+
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    // The line's start point (0, 0) is nearer to (0, 5) than its end point
+    // (10, 0) is - distance 5 vs sqrt(125) - so the ghost set is built
+    // against the start point, giving a linear distance of 5.
+    final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
+    expect(controller.currentGhostValue(linearGhost), closeTo(5.0, 1e-9));
+  });
+
+  // --- New work package item 8: double-click-and-drag -----------------------
+  //
+  // isUnderConstrained only ever changes on a solve response (see
+  // _solveAndTrackDof), and the Point tool's placement path doesn't solve at
+  // all (see _clickPointTool) - so these tests draw a two-tap Line, whose
+  // second tap's _clickEndToEndLineTool does solve, to drive backend.dof.
+
+  test('dragTargetPointIdAt is null while the sketch is fully constrained', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0); // backend.dof defaults to 0
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    expect(controller.isUnderConstrained, isFalse);
+    expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
+  });
+
+  test('dragTargetPointIdAt returns a directly-hit Point once the sketch is under-constrained',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final line = controller.lines.values.last;
+
+    expect(controller.isUnderConstrained, isTrue);
+    expect(controller.dragTargetPointIdAt(0, 0, 1), line.startPointId);
+  });
+
+  test('dragTargetPointIdAt is null outside select mode even when under-constrained', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    // Still in draw mode (finishChain above doesn't exit it).
+
+    expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
+  });
+
+  test('dragTargetPointIdAt resolves a Line to whichever endpoint is nearer the hit', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final line = controller.lines.values.last;
+
+    expect(controller.dragTargetPointIdAt(8, 0, 1), line.endPointId);
+    expect(controller.dragTargetPointIdAt(2, 0, 1), line.startPointId);
+  });
+
+  test('beginPointDrag sets draggingPointId for a known Point and rejects an unknown id', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final pointId = controller.lines.values.last.startPointId;
+
+    expect(controller.beginPointDrag('does-not-exist'), isFalse);
+    expect(controller.draggingPointId, isNull);
+
+    expect(controller.beginPointDrag(pointId), isTrue);
+    expect(controller.draggingPointId, pointId);
+  });
+
+  test('updatePointDrag PATCHes the dragged Point live without re-solving', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final pointId = controller.lines.values.last.startPointId;
+    controller.beginPointDrag(pointId);
+
+    backend.dof = 7; // would surface in isUnderConstrained if a solve ran
+    await controller.updatePointDrag(12, 34);
+
+    expect(controller.points[pointId]!.x, 12);
+    expect(controller.points[pointId]!.y, 34);
+    expect(controller.isUnderConstrained, isTrue); // unchanged: still the dof=1 from the line's solve
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    backend.dof = 1;
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final pointId = controller.lines.values.last.startPointId;
+    controller.beginPointDrag(pointId);
+    await controller.updatePointDrag(12, 34);
+
+    backend.dof = 0; // simulates the drop settling the sketch fully
+    await controller.endPointDrag();
+
+    expect(controller.draggingPointId, isNull);
+    expect(controller.isUnderConstrained, isFalse);
+    expect(controller.points[pointId]!.x, 12);
+    expect(controller.points[pointId]!.y, 34);
+    expect(controller.errorMessage, isNull);
   });
 }
