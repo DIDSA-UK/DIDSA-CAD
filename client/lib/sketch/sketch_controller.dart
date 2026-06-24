@@ -46,7 +46,7 @@ class SketchCircleView {
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point }
+enum SketchTool { line, circle, point, rectangle }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -61,6 +61,20 @@ enum LineConstructionMethod { endToEnd, midpoint }
 /// for the circle through them (see
 /// [SketchController._clickThreePointCircleTool]).
 enum CircleConstructionMethod { centerRadius, threePoint }
+
+/// How a tap-to-place Rectangle is built while [SketchTool.rectangle] is
+/// active (Stage 15 item 6) - chosen from [SketchConstructionMethodBar],
+/// same pattern as [LineConstructionMethod]/[CircleConstructionMethod].
+/// [twoCorner] (default) takes two opposite-corner taps and builds an
+/// axis-aligned rectangle between them. [centreCorner] takes a center tap
+/// (a construction aid only, never a real Point - same role as
+/// [SketchController.midpointAnchorX]) then one corner tap, mirroring that
+/// corner through the center for the other three. [threePoint] takes two
+/// taps for one side (both real Points, like a Line's endpoints) plus a
+/// third tap off that side to set the rectangle's height, support
+/// non-axis-aligned rectangles - see
+/// [SketchController._clickThreePointRectangleTool].
+enum RectangleConstructionMethod { twoCorner, centreCorner, threePoint }
 
 /// Stage 13 item 3's feature-flag stub: scaffolds a future user preference
 /// to revert tap-to-place back to Stage 12's explicit Click-button
@@ -257,6 +271,17 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  RectangleConstructionMethod _rectangleMethod = RectangleConstructionMethod.twoCorner;
+  RectangleConstructionMethod get rectangleConstructionMethod => _rectangleMethod;
+
+  /// Switches how the next Rectangle is built - see
+  /// [setLineConstructionMethod]'s doc comment, same reasoning.
+  void setRectangleConstructionMethod(RectangleConstructionMethod method) {
+    _rectangleMethod = method;
+    _resetTransientDrawState();
+    notifyListeners();
+  }
+
   SketchMode _mode = SketchMode.select;
   SketchMode get mode => _mode;
 
@@ -274,6 +299,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Circle';
           case SketchTool.point:
             return 'Draw: Point';
+          case SketchTool.rectangle:
+            return 'Draw: Rectangle';
         }
       case SketchMode.dimension:
         return 'Dimension';
@@ -359,6 +386,12 @@ class SketchController extends ChangeNotifier {
     _threePointFirstY = null;
     _threePointSecondX = null;
     _threePointSecondY = null;
+    _rectFirstX = null;
+    _rectFirstY = null;
+    _rectFirstPointId = null;
+    _rectSecondX = null;
+    _rectSecondY = null;
+    _rectSecondPointId = null;
   }
 
   String? _chainStartPointId;
@@ -395,6 +428,28 @@ class SketchController extends ChangeNotifier {
     if (_threePointSecondX != null) picks.add((_threePointSecondX!, _threePointSecondY!));
     return picks;
   }
+
+  double? _rectFirstX;
+  double? _rectFirstY;
+  String? _rectFirstPointId;
+  double? _rectSecondX;
+  double? _rectSecondY;
+  String? _rectSecondPointId;
+
+  /// The first tap's sketch-space location under any
+  /// [RectangleConstructionMethod] - the picked corner/center for
+  /// [RectangleConstructionMethod.twoCorner]/[RectangleConstructionMethod.centreCorner],
+  /// or the first side-endpoint for [RectangleConstructionMethod.threePoint] -
+  /// or null if no rectangle pick is in progress.
+  double? get rectangleAnchorX => _rectFirstX;
+  double? get rectangleAnchorY => _rectFirstY;
+  bool get rectangleInProgress => _rectFirstX != null;
+
+  /// The second tap's sketch-space location under
+  /// [RectangleConstructionMethod.threePoint] only - the first side's other
+  /// endpoint, picked before the third (height-defining) tap - or null.
+  double? get rectangleSecondX => _rectSecondX;
+  double? get rectangleSecondY => _rectSecondY;
 
   /// The Point id the *next* line segment will start from, or null if no
   /// chain is currently in progress.
@@ -1698,6 +1753,18 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
+    if (_activeTool == SketchTool.rectangle) {
+      switch (_rectangleMethod) {
+        case RectangleConstructionMethod.twoCorner:
+          await _clickTwoCornerRectangleTool();
+        case RectangleConstructionMethod.centreCorner:
+          await _clickCentreCornerRectangleTool();
+        case RectangleConstructionMethod.threePoint:
+          await _clickThreePointRectangleTool();
+      }
+      return;
+    }
+
     switch (_lineMethod) {
       case LineConstructionMethod.endToEnd:
         await _clickEndToEndLineTool();
@@ -1918,16 +1985,231 @@ class SketchController extends ChangeNotifier {
   /// The single place every tap-to-place path goes through to place/reuse a
   /// Point, so origin-snapping applies uniformly to chain starts, chain
   /// continuations, and both Circle taps.
-  Future<String> _pointIdAtCursor({String? excludeId}) async {
-    final existing = _existingPointIdNear(cursorX, cursorY, excludeId: excludeId);
+  Future<String> _pointIdAtCursor({String? excludeId}) =>
+      _pointIdAt(cursorX, cursorY, excludeId: excludeId);
+
+  /// [_pointIdAtCursor]'s logic, generalized to an arbitrary sketch-space
+  /// location - the Rectangle tool's computed (non-tapped) corners go
+  /// through this directly, since they aren't necessarily at the cursor's
+  /// current position.
+  Future<String> _pointIdAt(double x, double y, {String? excludeId}) async {
+    final existing = _existingPointIdNear(x, y, excludeId: excludeId);
     if (existing != null) return existing;
-    final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, snapRadius);
+    final midpointLineId = _nearestLineMidpointId(x, y, snapRadius);
     if (midpointLineId != null) {
       return await _materializeMidpoint(midpointLineId);
     }
-    final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
+    final point = await _api.createPoint(_sketchId!, x, y);
     points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
     return point.id;
+  }
+
+  /// Stage 15 item 6: creates the 4 shared corner Points (snapping/reusing
+  /// per [_pointIdAt], same as every other entity placement) and the 4
+  /// connecting Lines for a Rectangle, going around in order (so each
+  /// consecutive pair of corners shares an edge), then auto-applies 3
+  /// [SketchApiClient.createPerpendicularConstraint] calls between
+  /// consecutive edges and solves once. [corner0Id]/[corner1Id] let a
+  /// caller pass in a Point already placed by an earlier tap (so it isn't
+  /// re-created/re-snapped) - null means "create/snap fresh at this
+  /// coordinate". A quadrilateral's interior angles sum to 360 degrees, so
+  /// constraining 3 of its 4 corners to 90 degrees forces the last corner
+  /// to 90 degrees too - no fourth/redundant perpendicular constraint
+  /// needed.
+  Future<void> _buildRectangle({
+    String? corner0Id,
+    String? corner1Id,
+    required (double, double) corner0,
+    required (double, double) corner1,
+    required (double, double) corner2,
+    required (double, double) corner3,
+  }) async {
+    final p0 = corner0Id ?? await _pointIdAt(corner0.$1, corner0.$2);
+    final p1 = corner1Id ?? await _pointIdAt(corner1.$1, corner1.$2);
+    final p2 = await _pointIdAt(corner2.$1, corner2.$2);
+    final p3 = await _pointIdAt(corner3.$1, corner3.$2);
+
+    final line1 = await _api.createLine(_sketchId!, p0, p1);
+    lines[line1.id] = SketchLineView(
+      id: line1.id,
+      startPointId: line1.startPointId,
+      endPointId: line1.endPointId,
+      construction: line1.construction,
+    );
+    final line2 = await _api.createLine(_sketchId!, p1, p2);
+    lines[line2.id] = SketchLineView(
+      id: line2.id,
+      startPointId: line2.startPointId,
+      endPointId: line2.endPointId,
+      construction: line2.construction,
+    );
+    final line3 = await _api.createLine(_sketchId!, p2, p3);
+    lines[line3.id] = SketchLineView(
+      id: line3.id,
+      startPointId: line3.startPointId,
+      endPointId: line3.endPointId,
+      construction: line3.construction,
+    );
+    final line4 = await _api.createLine(_sketchId!, p3, p0);
+    lines[line4.id] = SketchLineView(
+      id: line4.id,
+      startPointId: line4.startPointId,
+      endPointId: line4.endPointId,
+      construction: line4.construction,
+    );
+
+    await _api.createPerpendicularConstraint(_sketchId!, line1.id, line2.id);
+    await _api.createPerpendicularConstraint(_sketchId!, line2.id, line3.id);
+    await _api.createPerpendicularConstraint(_sketchId!, line3.id, line4.id);
+
+    await _solveAndTrackDof();
+    await _refreshAllPoints();
+    await _refreshConstraints();
+  }
+
+  /// [RectangleConstructionMethod.twoCorner]: the first tap places one real
+  /// corner Point; the second tap is the opposite corner's location (not
+  /// itself snapped/placed until [_buildRectangle] runs) - the other two
+  /// corners are derived to keep the rectangle axis-aligned.
+  Future<void> _clickTwoCornerRectangleTool() async {
+    if (_rectFirstPointId == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _runGuarded(() async {
+        final pointId = await _pointIdAtCursor();
+        _rectFirstPointId = pointId;
+        _rectFirstX = points[pointId]!.x;
+        _rectFirstY = points[pointId]!.y;
+      });
+      return;
+    }
+
+    final x0 = _rectFirstX!;
+    final y0 = _rectFirstY!;
+    final firstPointId = _rectFirstPointId!;
+    final x2 = cursorX;
+    final y2 = cursorY;
+    _rectFirstX = null;
+    _rectFirstY = null;
+    _rectFirstPointId = null;
+
+    await _runGuarded(() async {
+      await _buildRectangle(
+        corner0Id: firstPointId,
+        corner0: (x0, y0),
+        corner1: (x2, y0),
+        corner2: (x2, y2),
+        corner3: (x0, y2),
+      );
+    });
+  }
+
+  /// [RectangleConstructionMethod.centreCorner]: the first tap is a
+  /// construction aid only (the rectangle's center, never itself a real
+  /// Point - same role as [_midpointAnchorX]); the second tap places one
+  /// real corner, mirrored through the center for the opposite corner, with
+  /// the remaining two corners derived to stay axis-aligned.
+  Future<void> _clickCentreCornerRectangleTool() async {
+    if (_rectFirstX == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      _rectFirstX = cursorX;
+      _rectFirstY = cursorY;
+      notifyListeners();
+      return;
+    }
+
+    final cx = _rectFirstX!;
+    final cy = _rectFirstY!;
+    _rectFirstX = null;
+    _rectFirstY = null;
+
+    await _runGuarded(() async {
+      final cornerId = await _pointIdAtCursor();
+      final corner = points[cornerId]!;
+      final dx = corner.x - cx;
+      final dy = corner.y - cy;
+      await _buildRectangle(
+        corner0Id: cornerId,
+        corner0: (corner.x, corner.y),
+        corner1: (cx - dx, corner.y),
+        corner2: (cx - dx, cy - dy),
+        corner3: (corner.x, cy - dy),
+      );
+    });
+  }
+
+  /// [RectangleConstructionMethod.threePoint]: the first two taps place the
+  /// rectangle's first side as two real Points (like a Line's endpoints);
+  /// the third tap is off that side and sets the rectangle's height via its
+  /// perpendicular distance from the first side - the only construction
+  /// method that doesn't force an axis-aligned result. Mirrors
+  /// [_clickThreePointCircleTool]'s "abandon on a degenerate pick" handling:
+  /// two coincident first-side taps, or a third tap that lands back on the
+  /// first side, can't define a rectangle and are surfaced via
+  /// [errorMessage] rather than retried.
+  Future<void> _clickThreePointRectangleTool() async {
+    if (_rectFirstPointId == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _runGuarded(() async {
+        final pointId = await _pointIdAtCursor();
+        _rectFirstPointId = pointId;
+        _rectFirstX = points[pointId]!.x;
+        _rectFirstY = points[pointId]!.y;
+      });
+      return;
+    }
+
+    if (_rectSecondPointId == null) {
+      await _runGuarded(() async {
+        final pointId = await _pointIdAtCursor(excludeId: _rectFirstPointId);
+        _rectSecondPointId = pointId;
+        _rectSecondX = points[pointId]!.x;
+        _rectSecondY = points[pointId]!.y;
+      });
+      return;
+    }
+
+    final ax = _rectFirstX!, ay = _rectFirstY!;
+    final bx = _rectSecondX!, by = _rectSecondY!;
+    final pointAId = _rectFirstPointId!;
+    final pointBId = _rectSecondPointId!;
+    final px = cursorX, py = cursorY;
+    _rectFirstX = null;
+    _rectFirstY = null;
+    _rectFirstPointId = null;
+    _rectSecondX = null;
+    _rectSecondY = null;
+    _rectSecondPointId = null;
+
+    final abx = bx - ax;
+    final aby = by - ay;
+    final lenAB = math.sqrt(abx * abx + aby * aby);
+    if (lenAB < 1e-9) {
+      errorMessage = "Pick two distinct points to define the rectangle's first side";
+      notifyListeners();
+      return;
+    }
+    final nx = -aby / lenAB;
+    final ny = abx / lenAB;
+    final height = (px - ax) * nx + (py - ay) * ny;
+    if (height.abs() < 1e-9) {
+      errorMessage = 'Pick a third point off the first side to give the rectangle some height';
+      notifyListeners();
+      return;
+    }
+
+    await _runGuarded(() async {
+      await _buildRectangle(
+        corner0Id: pointAId,
+        corner1Id: pointBId,
+        corner0: (ax, ay),
+        corner1: (bx, by),
+        corner2: (bx + height * nx, by + height * ny),
+        corner3: (ax + height * nx, ay + height * ny),
+      );
+    });
   }
 
   /// Ends the current chain without closing a loop - the next tap starts an

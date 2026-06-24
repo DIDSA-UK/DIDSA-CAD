@@ -415,6 +415,137 @@ void main() {
     expect(controller.circles.length, 1);
   });
 
+  test('Two Corner rectangle: first tap places only a point, second tap completes the rectangle', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+
+    await controller.handleCanvasTap(2, 2);
+
+    expect(controller.rectangleInProgress, isTrue);
+    expect(controller.lines.length, 0);
+    // 2: the real origin Point plus this first corner.
+    expect(controller.points.length, 2);
+
+    await controller.handleCanvasTap(10, 8);
+
+    expect(controller.rectangleInProgress, isFalse);
+    expect(controller.lines.length, 4);
+    // 5: origin + the two tapped corners (2,2) and (10,8) + the two
+    // computed corners (10,2) and (2,8).
+    expect(controller.points.length, 5);
+    expect(
+      controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
+      3,
+    );
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('Centre + Corner rectangle: first tap is a virtual centre, second tap mirrors it into 4 corners', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.centreCorner);
+
+    await controller.handleCanvasTap(5, 5);
+
+    expect(controller.rectangleInProgress, isTrue);
+    // The centre tap is virtual - no Point created for it yet.
+    expect(controller.points.length, 1);
+    expect(controller.lines.length, 0);
+
+    await controller.handleCanvasTap(8, 8);
+
+    expect(controller.rectangleInProgress, isFalse);
+    expect(controller.lines.length, 4);
+    // 5: origin + the tapped corner (8,8) + the 3 mirrored corners
+    // (2,8), (2,2), (8,2).
+    expect(controller.points.length, 5);
+    final xs = controller.points.values.map((p) => p.x).toSet();
+    final ys = controller.points.values.map((p) => p.y).toSet();
+    expect(xs.containsAll([2, 8]), isTrue);
+    expect(ys.containsAll([2, 8]), isTrue);
+    expect(
+      controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
+      3,
+    );
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('3-Point rectangle: builds a non-axis-aligned rectangle from two corners plus a height pick', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.threePoint);
+
+    await controller.handleCanvasTap(1, 1);
+    expect(controller.rectangleInProgress, isTrue);
+    expect(controller.rectangleSecondX, isNull);
+
+    await controller.handleCanvasTap(5, 4);
+    expect(controller.rectangleSecondX, 5);
+    expect(controller.lines.length, 0);
+
+    // A 3-4-5 right triangle's normal off the first side, scaled by 5, so
+    // the resulting rectangle's far corners land on clean coordinates.
+    await controller.handleCanvasTap(-2, 5);
+
+    expect(controller.rectangleInProgress, isFalse);
+    expect(controller.lines.length, 4);
+    // 5: origin + the two side-defining taps (1,1)/(5,4) + the two
+    // computed far corners (2,8)/(-2,5).
+    expect(controller.points.length, 5);
+    final coords = controller.points.values.map((p) => (p.x, p.y)).toSet();
+    expect(coords.contains((1.0, 1.0)), isTrue);
+    expect(coords.contains((5.0, 4.0)), isTrue);
+    expect(
+      coords.any((c) => (c.$1 - 2.0).abs() < 1e-6 && (c.$2 - 8.0).abs() < 1e-6),
+      isTrue,
+    );
+    expect(
+      coords.any((c) => (c.$1 - (-2.0)).abs() < 1e-6 && (c.$2 - 5.0).abs() < 1e-6),
+      isTrue,
+    );
+    expect(
+      controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
+      3,
+    );
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('3-Point rectangle rejects a degenerate first side (two identical points)', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.threePoint);
+
+    await controller.handleCanvasTap(1, 1);
+    await controller.handleCanvasTap(1, 1);
+    await controller.handleCanvasTap(5, 5);
+
+    expect(controller.lines.length, 0);
+    expect(controller.errorMessage, isNotNull);
+  });
+
+  test('a rectangle corner snaps onto an existing nearby Point instead of duplicating it', () async {
+    // Place a real Point at (10, 2) via the line tool first.
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(10, 2);
+    final preplacedId = controller.chainFirstPointId;
+    expect(controller.points.length, 2); // origin + this Point
+
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+
+    await controller.handleCanvasTap(2, 2);
+    await controller.handleCanvasTap(10, 8);
+
+    // The computed corner at (10, 2) should reuse the pre-placed Point
+    // rather than creating a 6th one.
+    expect(controller.points.length, 5);
+    expect(controller.points.containsKey(preplacedId), isTrue);
+    final reused = controller.points[preplacedId]!;
+    expect(reused.x, 10);
+    expect(reused.y, 2);
+    final cornerLines = controller.lines.values
+        .where((l) => l.startPointId == preplacedId || l.endPointId == preplacedId)
+        .toList();
+    expect(cornerLines.length, 2);
+  });
+
   test('ensureSketch tracks the real backend origin Point at (0, 0)', () {
     expect(controller.originPointId, isNotNull);
     final origin = controller.points[controller.originPointId];
