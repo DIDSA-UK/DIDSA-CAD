@@ -7,10 +7,12 @@ from enum import Enum
 from app.sketch.constraints import (
     AngleConstraint,
     CoincidentConstraint,
+    CollinearConstraint,
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
     HorizontalConstraint,
+    LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     VerticalConstraint,
@@ -164,6 +166,15 @@ class Sketch:
         point = Point(id=str(uuid.uuid4()), x=x, y=y)
         self.points[point.id] = point
         return point
+
+    @property
+    def origin_point_id(self) -> str | None:
+        """The origin Point's id if it has been created (via `origin_point`)
+        already, or None otherwise - unlike `origin_point`, never creates it,
+        so callers that only need to special-case the origin *when present*
+        (e.g. the solver pinning it in place, see solver.py) don't force its
+        creation as a side effect."""
+        return self._origin_point_id
 
     def origin_point(self) -> Point:
         """The real, addressable Point at (0, 0) in this Sketch's local
@@ -437,6 +448,39 @@ class Sketch:
         line1, line2 = self._two_lines_or_raise(line1_id, line2_id)
 
         constraint = EqualLengthConstraint(
+            id=str(uuid.uuid4()),
+            line1_id=line1_id,
+            line2_id=line2_id,
+            line1_start_id=line1.start_point_id,
+            line1_end_id=line1.end_point_id,
+            line2_start_id=line2.start_point_id,
+            line2_end_id=line2.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_line_distance_constraint(
+        self, line1_id: str, line2_id: str, distance: float
+    ) -> LineDistanceConstraint:
+        line1, line2 = self._two_lines_or_raise(line1_id, line2_id)
+
+        constraint = LineDistanceConstraint(
+            id=str(uuid.uuid4()),
+            line1_id=line1_id,
+            line2_id=line2_id,
+            distance=distance,
+            line1_start_id=line1.start_point_id,
+            line1_end_id=line1.end_point_id,
+            line2_start_id=line2.start_point_id,
+            line2_end_id=line2.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_collinear_constraint(self, line1_id: str, line2_id: str) -> CollinearConstraint:
+        line1, line2 = self._two_lines_or_raise(line1_id, line2_id)
+
+        constraint = CollinearConstraint(
             id=str(uuid.uuid4()),
             line1_id=line1_id,
             line2_id=line2_id,

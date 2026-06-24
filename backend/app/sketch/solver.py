@@ -62,20 +62,35 @@ class _PySlvsBuilder:
     py-slvs entity lazily (on first reference by a Constraint) using that
     Point's current x/y as the initial guess."""
 
-    def __init__(self, system: "slvs.System", workplane: int, points: dict[str, Point]):
+    def __init__(
+        self,
+        system: "slvs.System",
+        workplane: int,
+        points: dict[str, Point],
+        origin_point_id: str | None = None,
+    ):
         self._system = system
         self._workplane = workplane
         self._points = points
         self._point_handles: dict[str, int] = {}
         self._line_handles: dict[tuple[int, int], int] = {}
+        # The Sketch's origin Point (see Sketch.origin_point) is real,
+        # addressable geometry - snappable and referenceable like any other
+        # Point - but must never drift under the solver. Adding it (and only
+        # it) to the fixed group rather than the solve group achieves this
+        # the same way the workplane's own origin/normal are fixed: a point
+        # added to a group never passed to system.solve(group=...) keeps
+        # whatever initial value it was given, here always (0, 0).
+        self._origin_point_id = origin_point_id
 
     def point2d(self, point_id: str) -> int:
         if point_id not in self._point_handles:
             point = self._points[point_id]
-            pu = self._system.addParamV(point.x, group=_SOLVE_GROUP)
-            pv = self._system.addParamV(point.y, group=_SOLVE_GROUP)
+            group = _FIXED_GROUP if point_id == self._origin_point_id else _SOLVE_GROUP
+            pu = self._system.addParamV(point.x, group=group)
+            pv = self._system.addParamV(point.y, group=group)
             self._point_handles[point_id] = self._system.addPoint2d(
-                self._workplane, pu, pv, group=_SOLVE_GROUP
+                self._workplane, pu, pv, group=group
             )
         return self._point_handles[point_id]
 
@@ -127,6 +142,16 @@ class _PySlvsBuilder:
             line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def point_on_line(self, point_handle: int, line_handle: int) -> int:
+        return self._system.addPointOnLine(
+            point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def point_line_distance(self, point_handle: int, line_handle: int, value: float) -> int:
+        return self._system.addPointLineDistance(
+            value, point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
     def solved_point_ids(self) -> list[str]:
         return list(self._point_handles)
 
@@ -158,7 +183,7 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
     normal = system.addNormal3dV(1, 0, 0, 0, group=_FIXED_GROUP)
     workplane = system.addWorkplane(origin, normal, group=_FIXED_GROUP)
 
-    builder = _PySlvsBuilder(system, workplane, sketch.points)
+    builder = _PySlvsBuilder(system, workplane, sketch.points, origin_point_id=sketch.origin_point_id)
 
     constraint_id_by_handle: dict[int, str] = {}
     for constraint in sketch.constraints.values():

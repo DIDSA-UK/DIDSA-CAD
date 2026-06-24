@@ -163,20 +163,31 @@ void main() {
     expect(camera.distance, camera.minDistance);
   });
 
-  test('setZoomBoundsForRadius scales min/max distance to the body and re-clamps distance', () {
+  test('setZoomBoundsForRadius scales far/near clip and min/max distance to the body, re-clamping distance', () {
     final camera = OrbitCamera();
 
     camera.setZoomBoundsForRadius(10);
-    expect(camera.minDistance, 20); // radius * _minDistanceRadiusFactor (2)
+    // farClip = max(1000, radius * 4) = max(1000, 40) = 1000 for a small body.
+    expect(camera.farClip, 1000);
+    expect(camera.nearClip, closeTo(0.1, 1e-9)); // farClip / 10000
+    expect(camera.minDistance, closeTo(0.2, 1e-9)); // nearClip * 2
     expect(camera.maxDistance, 200); // radius * _maxDistanceRadiusFactor (20)
 
     // Shrinking the bounds below the camera's current distance (30) must
     // pull it back in immediately, not leave it violating the new max.
     expect(camera.distance, 30);
     camera.setZoomBoundsForRadius(1);
-    expect(camera.minDistance, 2);
     expect(camera.maxDistance, 20);
     expect(camera.distance, 20);
+  });
+
+  test('setZoomBoundsForRadius scales farClip past its floor for a large body', () {
+    final camera = OrbitCamera();
+
+    camera.setZoomBoundsForRadius(1000);
+    expect(camera.farClip, 4000); // radius * 4, above the 1000 floor
+    expect(camera.nearClip, closeTo(0.4, 1e-9)); // farClip / 10000
+    expect(camera.minDistance, closeTo(0.8, 1e-9)); // nearClip * 2
   });
 
   test('setZoomBoundsForRadius falls back to the fixed defaults for a non-positive radius', () {
@@ -187,6 +198,8 @@ void main() {
 
     expect(camera.minDistance, OrbitCamera.defaultMinDistance);
     expect(camera.maxDistance, OrbitCamera.defaultMaxDistance);
+    expect(camera.nearClip, OrbitCamera.defaultNearClip);
+    expect(camera.farClip, OrbitCamera.defaultFarClip);
   });
 
   test('reset returns to the default orbit state', () {

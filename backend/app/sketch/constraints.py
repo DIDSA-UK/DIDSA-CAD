@@ -68,6 +68,27 @@ class SolverBuilder(Protocol):
         handle."""
         ...
 
+    def point_on_line(self, point_handle: int, line_handle: int) -> int:
+        """Add a py-slvs constraint forcing a point handle onto a
+        line-segment entity handle (the point may lie anywhere along the
+        line, not just between its endpoints), returning the resulting
+        py-slvs constraint handle. CollinearConstraint calls this twice
+        (once per endpoint of the second Line) since py-slvs has no single
+        "two lines collinear" primitive - constraining both of one line's
+        endpoints onto the other line is the standard SolveSpace
+        equivalent."""
+        ...
+
+    def point_line_distance(self, point_handle: int, line_handle: int, value: float) -> int:
+        """Add a py-slvs constraint pinning the perpendicular distance from
+        a point handle to a line-segment entity handle (py-slvs's
+        addPointLineDistance - the SLVS_C_PT_LINE_DISTANCE primitive),
+        returning the resulting py-slvs constraint handle. LineDistanceConstraint
+        uses this - rather than DistanceConstraint's addPointsDistance
+        between two materialized midpoint Points - so a line-to-line
+        dimension moves the lines themselves and creates no new Points."""
+        ...
+
 
 class Constraint(ABC):
     """Base type for anything that can live in a Sketch's constraint
@@ -323,3 +344,76 @@ class EqualLengthConstraint(Constraint):
             builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
         )
         return builder.equal_length(line1, line2)
+
+
+@dataclass
+class LineDistanceConstraint(Constraint):
+    """Pins the perpendicular distance between two Lines to a fixed value,
+    via SolverBuilder.point_line_distance (py-slvs's SLVS_C_PT_LINE_DISTANCE
+    equivalent) - anchored at Line 2's start Point against Line 1's
+    segment, rather than DistanceConstraint's addPointsDistance between two
+    separately-materialized midpoint Points. This is the fix for Stage 16
+    item 9: dragging the dimension now moves the Lines themselves (no new
+    Points are created), the same way every other line-to-line constraint
+    here (Parallel, Perpendicular, ...) works directly against the Lines'
+    own endpoints.
+
+    References both Lines' ids for display/API purposes; each Line's
+    endpoint Point ids are captured at creation time, same rationale as
+    ParallelConstraint above.
+    """
+
+    id: str
+    line1_id: str
+    line2_id: str
+    distance: float
+    line1_start_id: str
+    line1_end_id: str
+    line2_start_id: str
+    line2_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "line_distance"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line1_start_id, self.line1_end_id, self.line2_start_id, self.line2_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
+        )
+        point2_start = builder.point2d(self.line2_start_id)
+        return builder.point_line_distance(point2_start, line1, self.distance)
+
+
+@dataclass
+class CollinearConstraint(Constraint):
+    """Forces two Lines onto a single shared line, by pinning both of
+    Line 2's endpoints onto Line 1 (see SolverBuilder.point_on_line). Same
+    id/point-id capture shape as ParallelConstraint."""
+
+    id: str
+    line1_id: str
+    line2_id: str
+    line1_start_id: str
+    line1_end_id: str
+    line2_start_id: str
+    line2_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "collinear"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line1_start_id, self.line1_end_id, self.line2_start_id, self.line2_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
+        )
+        point2_start = builder.point2d(self.line2_start_id)
+        point2_end = builder.point2d(self.line2_end_id)
+        handle = builder.point_on_line(point2_start, line1)
+        builder.point_on_line(point2_end, line1)
+        return handle

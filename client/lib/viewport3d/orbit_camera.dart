@@ -26,13 +26,38 @@ class OrbitCamera {
   static const double defaultMinDistance = 5;
   static const double defaultMaxDistance = 300;
 
-  /// Multipliers applied to a body's bounding-sphere radius to derive
-  /// [minDistance]/[maxDistance] - chosen so the minimum keeps the camera
-  /// just outside the body (radius x2) and the maximum keeps it close
-  /// enough to still be a recognisable shape on screen (radius x20), per
-  /// the brief's own heuristic.
-  static const double _minDistanceRadiusFactor = 2;
+  /// Multiplier applied to a body's bounding-sphere radius to derive
+  /// [maxDistance] - chosen so it keeps the camera close enough to still be
+  /// a recognisable shape on screen (radius x20), per the brief's own
+  /// heuristic. [minDistance] is no longer radius-derived directly - see
+  /// [nearClip]/[setZoomBoundsForRadius].
   static const double _maxDistanceRadiusFactor = 20;
+
+  /// [nearClip]/[farClip] defaults - matches `flutter_scene`'s own
+  /// [PerspectiveCamera] defaults (`fovNear`/`fovFar`), used whenever no body
+  /// exists yet (or the current body is empty).
+  static const double defaultNearClip = 0.1;
+  static const double defaultFarClip = 1000.0;
+
+  /// Multiplier applied to a body's bounding-sphere radius to derive
+  /// [farClip] - generous enough that the far plane never clips a large
+  /// model from any orbit angle, per the project brief.
+  static const double _farClipRadiusFactor = 4.0;
+
+  /// [farClip] never drops below this, even for a tiny/empty body - keeps
+  /// the fixed reference planes (which extend well beyond any one body)
+  /// from being clipped.
+  static const double _minFarClip = 1000.0;
+
+  /// [nearClip] is derived as `farClip / _nearFarRatio` - a 1:10000 near/far
+  /// ratio is safe for a 24-bit depth buffer and avoids z-fighting.
+  static const double _nearFarRatio = 10000.0;
+
+  /// [minDistance] is derived as `nearClip * _minDistanceNearClipFactor` -
+  /// keeps the camera just outside the near clip plane, so zooming in is
+  /// limited by the depth buffer's precision, not an arbitrary distance
+  /// that doesn't scale with the scene (see Item 2 of the Stage 16 brief).
+  static const double _minDistanceNearClipFactor = 2.0;
 
   /// Mutable, unlike the fixed bounds of an earlier version - scaled to the
   /// accumulated mesh's actual size by [setZoomBoundsForRadius] (see
@@ -41,6 +66,15 @@ class OrbitCamera {
   /// fixed distance.
   double minDistance = defaultMinDistance;
   double maxDistance = defaultMaxDistance;
+
+  /// Camera frustum near/far clip distances, fed into [cameraFor]'s
+  /// [PerspectiveCamera] as `fovNear`/`fovFar` - scaled to the current body's
+  /// bounding-sphere radius by [setZoomBoundsForRadius], the same hook
+  /// [minDistance]/[maxDistance] use, so a large model is never far-clipped
+  /// and the near clip plane (and so [minDistance]) shrinks to match a small
+  /// one.
+  double nearClip = defaultNearClip;
+  double farClip = defaultFarClip;
 
   /// Radians/pixel for a mouse drag or 1:1-scaled touch drag - matches the
   /// "real device px -> visible angle" feel [SketchViewport] aims for with
@@ -100,7 +134,13 @@ class OrbitCamera {
 
   PerspectiveCamera cameraFor(Size size) {
     final position = target + _direction * distance;
-    return PerspectiveCamera(position: position, target: target, up: _up);
+    return PerspectiveCamera(
+      position: position,
+      target: target,
+      up: _up,
+      fovNear: nearClip,
+      fovFar: farClip,
+    );
   }
 
   /// Drag-to-orbit: real-device testing found all four drag directions felt
@@ -146,20 +186,25 @@ class OrbitCamera {
     distance = (distance * scaleFactor).clamp(minDistance, maxDistance);
   }
 
-  /// Scales [minDistance]/[maxDistance] to [radius] (a body's bounding-
-  /// sphere radius - see [boundsOfMesh]), per [_minDistanceRadiusFactor]/
-  /// [_maxDistanceRadiusFactor], so zooming out always stops a sensible
-  /// distance from the current geometry rather than the one-size-fits-all
-  /// [defaultMinDistance]/[defaultMaxDistance]. A non-positive [radius]
-  /// (no body yet, or an empty one - [boundsOfMesh] returns `null` in that
-  /// case) falls back to those defaults instead. [distance] is re-clamped
-  /// to the new bounds immediately, so a body shrinking never leaves the
-  /// camera further out than [maxDistance] now allows.
+  /// Scales [nearClip]/[farClip] and [minDistance]/[maxDistance] to [radius]
+  /// (a body's bounding-sphere radius - see [boundsOfMesh]), so a large
+  /// model is never far-clipped, the near clip plane (and so the zoom-in
+  /// limit) shrinks for a small model instead of staying at a one-size-
+  /// fits-all distance, and zooming out always stops a sensible distance
+  /// from the current geometry. A non-positive [radius] (no body yet, or an
+  /// empty one - [boundsOfMesh] returns `null` in that case) falls back to
+  /// the `default*` constants instead. [distance] is re-clamped to the new
+  /// bounds immediately, so a body shrinking never leaves the camera further
+  /// out than [maxDistance] now allows.
   void setZoomBoundsForRadius(double radius) {
     if (radius > 0) {
-      minDistance = radius * _minDistanceRadiusFactor;
+      farClip = math.max(_minFarClip, radius * _farClipRadiusFactor);
+      nearClip = farClip / _nearFarRatio;
+      minDistance = nearClip * _minDistanceNearClipFactor;
       maxDistance = radius * _maxDistanceRadiusFactor;
     } else {
+      nearClip = defaultNearClip;
+      farClip = defaultFarClip;
       minDistance = defaultMinDistance;
       maxDistance = defaultMaxDistance;
     }

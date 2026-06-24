@@ -129,6 +129,39 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   /// per item 3.
   static const Duration _edgePanIdleThreshold = Duration(milliseconds: 150);
 
+  /// Real touchscreens report pointer-move/-hover events with non-zero but
+  /// imperceptible (sub-pixel sensor noise) deltas even while a finger or
+  /// mouse sits still - left unfiltered (the previous `event.delta !=
+  /// Offset.zero` check), that noise kept refreshing [_lastCursorMoveTime]
+  /// indefinitely, so [_edgePanIdleThreshold] never elapsed and edge-pan
+  /// kept running for a pointer that, to the user, was just sitting at the
+  /// edge. Only a move whose distance from the last recorded raw pointer
+  /// position exceeds this (logical pixels) counts as real movement - see
+  /// [_refreshCursorMoveTimeIfMoved].
+  static const double _edgePanMoveThreshold = 1.5;
+
+  /// The last raw pointer position seen by [_refreshCursorMoveTimeIfMoved],
+  /// compared against each new event's position to detect real movement.
+  /// Deliberately the event's own screen position, not the controller's
+  /// (transformed/scaled, relative-for-touch) cursor position, and not
+  /// `event.delta` - which is exactly what carries the sensor noise
+  /// [_edgePanMoveThreshold] exists to filter out.
+  Offset? _lastPointerPosition;
+
+  /// Refreshes [_lastCursorMoveTime] only if [position] is more than
+  /// [_edgePanMoveThreshold] from the last recorded raw pointer position -
+  /// see that field's doc comment for why a plain non-zero-delta check
+  /// isn't enough. Always updates [_lastPointerPosition], regardless of
+  /// whether the threshold was cleared, so successive sub-threshold jitters
+  /// don't silently accumulate into a false "real movement" later.
+  void _refreshCursorMoveTimeIfMoved(Offset position) {
+    final last = _lastPointerPosition;
+    if (last == null || (position - last).distance > _edgePanMoveThreshold) {
+      _lastCursorMoveTime = DateTime.now();
+    }
+    _lastPointerPosition = position;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -198,7 +231,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     // Hover events only fire for a mouse with no buttons pressed - real
     // mouse movement drives the cursor directly, 1:1.
     if (event.kind != PointerDeviceKind.mouse) return;
-    if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
+    _refreshCursorMoveTimeIfMoved(event.localPosition);
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
   }
 
@@ -315,7 +348,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       if (event.buttons & kSecondaryMouseButton != 0) {
         setState(() => _viewport.panByScreenDelta(event.delta));
       } else {
-        if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
+        _refreshCursorMoveTimeIfMoved(event.localPosition);
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
       }
       return;
@@ -327,7 +360,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       // _dispatchTap, which always reads the cursor's current position,
       // never the tap's own screen location).
       _singleTouchTravel += event.delta.distance;
-      if (event.delta != Offset.zero) _lastCursorMoveTime = DateTime.now();
+      _refreshCursorMoveTimeIfMoved(event.localPosition);
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
     }
@@ -691,6 +724,17 @@ Offset? _constraintLabelCenter(
       final midpoint2 = _lineMidpointScreenFor(controller, transform, c.line2Id);
       if (midpoint1 == null || midpoint2 == null) return null;
       return (midpoint1 + midpoint2) / 2;
+    case LineDistanceConstraintDto c:
+      final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final midB = _lineMidpointScreenFor(controller, transform, c.line2Id);
+      if (midA == null || midB == null) return null;
+      final delta = midB - midA;
+      final length = delta.distance;
+      if (length < 1e-6) return null;
+      final normal = Offset(-delta.dy, delta.dx) / length;
+      const offsetDistance = 18.0;
+      final offset = normal * offsetDistance;
+      return (midA + offset + midB + offset) / 2;
     default:
       return null;
   }
@@ -925,10 +969,24 @@ class _SketchPainter extends CustomPainter {
           _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', color, labelOffset);
         case AngleConstraintDto c:
           _paintAngleDimension(canvas, c, color, labelOffset);
+        case LineDistanceConstraintDto c:
+          _paintLineDistanceDimension(canvas, c, color, labelOffset);
         default:
           break;
       }
     }
+  }
+
+  /// Stage 16 item 9: connects a dimension's default (un-offset) label
+  /// anchor to wherever the user has actually dragged the label (Stage 15
+  /// item 2's [SketchController.labelOffsetFor]) - without this, dragging a
+  /// label away from its dimension line/glyph left it visually floating
+  /// with nothing tying it back to the geometry it measures. A no-op when
+  /// [labelOffset] is [Offset.zero] (the untouched, default position),
+  /// since there's nothing to lead to in that case.
+  void _drawLeaderLine(Canvas canvas, Offset anchor, Offset labelOffset, Color color) {
+    if (labelOffset == Offset.zero) return;
+    canvas.drawLine(anchor, anchor + labelOffset, Paint()..color = color..strokeWidth = 1);
   }
 
   /// Draws a small filled, rounded-rect "chip" centered on [center] with
@@ -982,6 +1040,35 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(aScreen + offset, bScreen + offset, dimPaint);
 
     final midpoint = (aScreen + offset + bScreen + offset) / 2;
+    _drawLeaderLine(canvas, midpoint, labelOffset, color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
+  }
+
+  /// Line-to-line distance dimension (Stage 16 item 9's `LineDistanceConstraint`):
+  /// same two-extension-line-plus-offset-segment layout as
+  /// [_paintDistanceDimension], but anchored at each Line's current midpoint
+  /// rather than two Points, since a `LineDistanceConstraint` references
+  /// Lines directly and creates no Points of its own.
+  void _paintLineDistanceDimension(Canvas canvas, LineDistanceConstraintDto c, Color color, Offset labelOffset) {
+    final midA = _lineMidpointScreen(c.line1Id);
+    final midB = _lineMidpointScreen(c.line2Id);
+    if (midA == null || midB == null) return;
+    final delta = midB - midA;
+    final length = delta.distance;
+    if (length < 1e-6) return;
+    final normal = Offset(-delta.dy, delta.dx) / length;
+    const offsetDistance = 18.0;
+    final offset = normal * offsetDistance;
+
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = 1;
+    canvas.drawLine(midA, midA + offset, dimPaint);
+    canvas.drawLine(midB, midB + offset, dimPaint);
+    canvas.drawLine(midA + offset, midB + offset, dimPaint);
+
+    final midpoint = (midA + offset + midB + offset) / 2;
+    _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
   }
 
@@ -1000,6 +1087,7 @@ class _SketchPainter extends CustomPainter {
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
+    _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
@@ -1013,6 +1101,7 @@ class _SketchPainter extends CustomPainter {
     final midpoint2 = _lineMidpointScreen(c.line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
+    _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
   }
 
