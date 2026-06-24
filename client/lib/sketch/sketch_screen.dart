@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'sketch_canvas.dart';
+import 'sketch_construction_method_bar.dart';
 import 'sketch_controller.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
@@ -164,6 +165,34 @@ class _SketchScreenState extends State<SketchScreen> {
                     right: 16,
                     bottom: 16,
                     child: SketchSpeedDial(controller: _controller),
+                  ),
+                  // Construction-method picker: flies up from the bottom
+                  // whenever a draw tool is active, non-modal so taps still
+                  // reach the canvas underneath (see
+                  // SketchConstructionMethodBar's own doc comment for why).
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: AnimatedBuilder(
+                      animation: _controller,
+                      builder: (context, _) {
+                        final visible = _controller.mode == SketchMode.draw;
+                        return IgnorePointer(
+                          ignoring: !visible,
+                          child: AnimatedSlide(
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeOut,
+                            offset: visible ? Offset.zero : const Offset(0, 1),
+                            child: AnimatedOpacity(
+                              duration: const Duration(milliseconds: 200),
+                              opacity: visible ? 1 : 0,
+                              child: SketchConstructionMethodBar(controller: _controller),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ],
               ),
