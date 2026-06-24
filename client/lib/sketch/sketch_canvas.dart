@@ -85,6 +85,22 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   /// tap.
   String? _draggingPointId;
 
+  /// Stage 15 item 2: the Constraint id currently grabbed by an active
+  /// double-click-drag of its label, or null - mutually exclusive with
+  /// [_draggingPointId] (see [_tryStartEntityDrag], which checks
+  /// [dimensionLabelAt] first).
+  String? _draggingLabelId;
+
+  /// Cumulative screen-pixel travel since [_draggingLabelId] was set - if a
+  /// label drag ends having moved less than [_labelTapTravelThreshold], it's
+  /// treated as a double-tap rather than a drag and the label snaps back to
+  /// its default position (see [_handlePointerEnd]).
+  double _labelDragTravel = 0;
+
+  /// How far (screen pixels) a label "drag" may travel and still count as a
+  /// tap-in-place reset gesture rather than an intentional reposition.
+  static const double _labelTapTravelThreshold = 4.0;
+
   /// The canvas's own render size, refreshed every [build] - read by
   /// [_onEdgePanTick], which runs independently of any pointer event so an
   /// RTS-style edge-pan keeps going even while the pointer itself sits
@@ -237,6 +253,14 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       return false;
     }
     final controller = widget.controller;
+    final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
+    final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
+    if (labelId != null && controller.beginLabelDrag(labelId)) {
+      _lastTapTime = null;
+      _draggingLabelId = labelId;
+      _labelDragTravel = 0;
+      return true;
+    }
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     final pointId = controller.dragTargetPointIdAt(controller.cursorX, controller.cursorY, hitRadius);
     if (pointId == null || !controller.beginPointDrag(pointId)) return false;
@@ -277,6 +301,11 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
+    if (_draggingLabelId != null) {
+      _labelDragTravel += event.delta.distance;
+      widget.controller.updateLabelDrag(event.delta);
+      return;
+    }
     if (_draggingPointId != null) {
       final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
       widget.controller.updatePointDrag(coord.x, coord.y);
@@ -310,6 +339,16 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
+    if (_draggingLabelId != null) {
+      final labelId = _draggingLabelId!;
+      _draggingLabelId = null;
+      _activeTouches.remove(event.pointer);
+      if (_labelDragTravel < _labelTapTravelThreshold) {
+        widget.controller.resetLabelOffset(labelId);
+      }
+      widget.controller.endLabelDrag();
+      return;
+    }
     if (_draggingPointId != null) {
       _draggingPointId = null;
       _activeTouches.remove(event.pointer);
@@ -657,19 +696,38 @@ Offset? _constraintLabelCenter(
   }
 }
 
+/// The id of whichever currently-rendered Constraint's label [canvasPos]
+/// landed within [radius] of, or null if it missed all of them - the
+/// label's *actual* position, i.e. [_constraintLabelCenter]'s default
+/// anchor plus [SketchController.labelOffsetFor] (Stage 15 item 2), so
+/// this never disagrees with where [_SketchPainter] actually draws it
+/// after a drag. Public (unlike its sibling hit-testers in this file) so
+/// it's directly unit-testable without pumping a real widget tree - see
+/// [_SketchCanvasState._tryStartEntityDrag], which checks this *before*
+/// [SketchController.dragTargetPointIdAt] on a second pointer-down.
+String? dimensionLabelAt(
+  SketchController controller,
+  ViewTransform transform,
+  Offset canvasPos,
+  double radius,
+) {
+  for (final entry in controller.constraints.entries) {
+    final center = _constraintLabelCenter(controller, transform, entry.value);
+    if (center == null) continue;
+    final actual = center + controller.labelOffsetFor(entry.key);
+    if ((canvasPos - actual).distance <= radius) {
+      return entry.key;
+    }
+  }
+  return null;
+}
+
 /// The id of whichever currently-rendered Constraint's label
 /// [screenPosition] landed on, or null if it missed all of them - see
 /// [_SketchCanvasState._dispatchTap]. Reuses [_ghostHitRadiusPixels]'s
 /// touch target, same generous tolerance as ghost-label hit-testing.
 String? _constraintIdAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
-  for (final entry in controller.constraints.entries) {
-    final center = _constraintLabelCenter(controller, transform, entry.value);
-    if (center == null) continue;
-    if ((screenPosition - center).distance <= _ghostHitRadiusPixels) {
-      return entry.key;
-    }
-  }
-  return null;
+  return dimensionLabelAt(controller, transform, screenPosition, _ghostHitRadiusPixels);
 }
 
 /// The inline value-entry box for whichever ghost is currently
@@ -857,15 +915,16 @@ class _SketchPainter extends CustomPainter {
       final isSelected =
           selectionSet.any((s) => s.kind == SelectionKind.constraint && s.id == entry.key);
       final color = isSelected ? _selectedColor : _dimensionColor;
+      final labelOffset = controller.labelOffsetFor(entry.key);
       switch (entry.value) {
         case DistanceConstraintDto c:
-          _paintDistanceDimension(canvas, c, color);
+          _paintDistanceDimension(canvas, c, color, labelOffset);
         case VerticalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', color);
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', color, labelOffset);
         case HorizontalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', color);
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', color, labelOffset);
         case AngleConstraintDto c:
-          _paintAngleDimension(canvas, c, color);
+          _paintAngleDimension(canvas, c, color, labelOffset);
         default:
           break;
       }
@@ -902,7 +961,7 @@ class _SketchPainter extends CustomPainter {
   /// pixel amount (so it reads clearly regardless of zoom), labeled with
   /// the constraint's own [DistanceConstraintDto.distance] (the solved
   /// value, not a measurement of the current screen geometry).
-  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color) {
+  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color, Offset labelOffset) {
     final a = controller.points[c.pointAId];
     final b = controller.points[c.pointBId];
     if (a == null || b == null) return;
@@ -923,18 +982,25 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(aScreen + offset, bScreen + offset, dimPaint);
 
     final midpoint = (aScreen + offset + bScreen + offset) / 2;
-    _drawDimensionLabel(canvas, midpoint, c.distance.toStringAsFixed(2), color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
   /// Line's midpoint - there's no "value" to dimension, only the
   /// constraint's existence.
-  void _paintAxisIndicator(Canvas canvas, String pointAId, String pointBId, String label, Color color) {
+  void _paintAxisIndicator(
+    Canvas canvas,
+    String pointAId,
+    String pointBId,
+    String label,
+    Color color,
+    Offset labelOffset,
+  ) {
     final a = controller.points[pointAId];
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
-    _drawDimensionLabel(canvas, midpoint, label, color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
   /// Angle dimension: deliberately a numeric-only label rather than a
@@ -942,12 +1008,12 @@ class _SketchPainter extends CustomPainter {
   /// general, so there's no single well-defined arc to draw. Placed at the
   /// midpoint between each Line's own midpoint, which stays stable and
   /// roughly "between" the two Lines regardless of their actual layout.
-  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color) {
+  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset) {
     final midpoint1 = _lineMidpointScreen(c.line1Id);
     final midpoint2 = _lineMidpointScreen(c.line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawDimensionLabel(canvas, midpoint, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
   }
 
   Offset? _lineMidpointScreen(String lineId) {

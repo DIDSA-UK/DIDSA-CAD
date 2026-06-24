@@ -5,7 +5,9 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
+import 'package:didsa_cad_client/sketch/view_transform.dart';
 
 /// A tiny in-memory fake of the backend's `/sketch` API (point/line/circle
 /// creation, constraints, get, solve) good enough to exercise the
@@ -615,6 +617,95 @@ void main() {
     expect(rect.corner1, (5.0, 1.0));
     expect(rect.corner2, (5.0, 4.0));
     expect(rect.corner3, (1.0, 4.0));
+  });
+
+  test('dimensionLabelAt hits a dragged label at its offset position and misses its old default anchor', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint (5, 0)
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // Default anchor for this Line's DistanceConstraint label, per
+    // _paintDistanceDimension's own layout: the two Points' screen
+    // positions, each nudged 18px along the perpendicular normal, averaged.
+    const defaultAnchor = Offset(500, 318);
+
+    expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), constraintId);
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(30, -10));
+    controller.endLabelDrag();
+
+    expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), isNull);
+    expect(dimensionLabelAt(controller, transform, const Offset(530, 308), 5), constraintId);
+  });
+
+  test('updateLabelDrag sums successive deltas onto the offset', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(5, 3));
+    controller.updateLabelDrag(const Offset(-2, 7));
+
+    expect(controller.labelOffsetFor(constraintId), const Offset(3, 10));
+  });
+
+  test('endLabelDrag retains the accumulated offset and clears draggingLabelId', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(12, -4));
+    controller.endLabelDrag();
+
+    expect(controller.draggingLabelId, isNull);
+    expect(controller.labelOffsetFor(constraintId), const Offset(12, -4));
+  });
+
+  test('resetLabelOffset (the double-tap-without-drag gesture) snaps a label back to zero', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    controller.beginLabelDrag(constraintId);
+    controller.updateLabelDrag(const Offset(2, 1)); // tiny - under the 4px reset threshold
+    controller.endLabelDrag();
+    expect(controller.labelOffsetFor(constraintId), const Offset(2, 1));
+
+    controller.resetLabelOffset(constraintId);
+
+    expect(controller.labelOffsetFor(constraintId), Offset.zero);
   });
 
   test('ensureSketch tracks the real backend origin Point at (0, 0)', () {

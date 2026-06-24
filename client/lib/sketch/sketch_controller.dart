@@ -901,11 +901,13 @@ class SketchController extends ChangeNotifier {
   String? get draggingPointId => _draggingPointId;
 
   /// Starts a live drag of [pointId] (new work package item 8) - false (and
-  /// no-op) if busy or there's no sketch yet, since every other guard
-  /// ([dragTargetPointIdAt]'s mode/dof checks) already ran by the time the
-  /// canvas calls this.
+  /// no-op) if busy, there's no sketch yet, or a label drag is already in
+  /// progress (mutually exclusive with [beginLabelDrag] - Stage 15 item 2),
+  /// since every other guard ([dragTargetPointIdAt]'s mode/dof checks)
+  /// already ran by the time the canvas calls this.
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
+    if (_draggingLabelId != null) return false;
     _draggingPointId = pointId;
     notifyListeners();
     return true;
@@ -945,6 +947,63 @@ class SketchController extends ChangeNotifier {
       await _refreshAllPoints();
       await _refreshConstraints();
     });
+  }
+
+  /// Stage 15 item 2: per-Constraint screen-pixel offset from its default
+  /// painted label position, applied by the painter on top of whichever
+  /// anchor it would otherwise use - purely a client-side display tweak
+  /// (no backend call), so it survives a sketch refresh but not a fresh
+  /// [ensureSketch]/[adoptSketch] (same lifetime as the controller itself).
+  final Map<String, Offset> _labelOffsets = {};
+
+  /// [constraintId]'s current user-applied offset, or [Offset.zero] if it
+  /// has never been dragged - read by the painter to place the label and
+  /// by [dimensionLabelAt] (sketch_canvas.dart) to hit-test against where
+  /// the label actually is, not just its un-offset default anchor.
+  Offset labelOffsetFor(String constraintId) => _labelOffsets[constraintId] ?? Offset.zero;
+
+  String? _draggingLabelId;
+
+  /// The Constraint label currently being live-dragged via [beginLabelDrag],
+  /// or null if no label drag is in progress - mirrors [draggingPointId];
+  /// the two are mutually exclusive within a single double-click-drag
+  /// gesture (see [beginPointDrag]/[beginLabelDrag]'s guards).
+  String? get draggingLabelId => _draggingLabelId;
+
+  /// Starts a live drag of [constraintId]'s label - false (no-op) if a
+  /// Point drag is already active. Unlike [beginPointDrag] this never
+  /// touches the backend, so there's no busy/sketch-id guard to fail on.
+  bool beginLabelDrag(String constraintId) {
+    if (_draggingPointId != null) return false;
+    _draggingLabelId = constraintId;
+    return true;
+  }
+
+  /// Live-updates the dragged label's offset by [canvasDelta] (screen
+  /// pixels, same convention as a raw [PointerMoveEvent.delta] - never
+  /// converted through a [ViewTransform], since the offset itself lives in
+  /// screen space so a label stays a fixed number of pixels from its
+  /// anchor regardless of zoom). Accumulates onto whatever offset the
+  /// label already had, so repeated calls during one drag sum correctly.
+  void updateLabelDrag(Offset canvasDelta) {
+    final id = _draggingLabelId;
+    if (id == null) return;
+    _labelOffsets[id] = labelOffsetFor(id) + canvasDelta;
+    notifyListeners();
+  }
+
+  /// Ends the current label drag (if any). The accumulated offset is kept
+  /// as-is - a drag that actually moved the label leaves it wherever it
+  /// was dropped; see [resetLabelOffset] for the separate "double-tap
+  /// without dragging" gesture that snaps a label back to its default.
+  void endLabelDrag() {
+    _draggingLabelId = null;
+  }
+
+  /// Clears [constraintId]'s offset back to its default painted anchor -
+  /// Stage 15 item 2's double-tap-without-drag reset gesture.
+  void resetLabelOffset(String constraintId) {
+    if (_labelOffsets.remove(constraintId) != null) notifyListeners();
   }
 
   double _distanceToSegment(
