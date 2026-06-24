@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'sketch_canvas.dart';
 import 'sketch_construction_method_bar.dart';
 import 'sketch_controller.dart';
+import 'sketch_dimension_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
 
@@ -166,9 +167,9 @@ class _SketchScreenState extends State<SketchScreen> {
                     bottom: 16,
                     child: SketchSpeedDial(controller: _controller),
                   ),
-                  // Construction-method picker: flies up from the bottom
-                  // whenever a draw tool is active, non-modal so taps still
-                  // reach the canvas underneath (see
+                  // Construction-method/dimension picker: flies up from the
+                  // bottom whenever draw or dimension mode is active,
+                  // non-modal so taps still reach the canvas underneath (see
                   // SketchConstructionMethodBar's own doc comment for why).
                   Positioned(
                     left: 0,
@@ -177,7 +178,16 @@ class _SketchScreenState extends State<SketchScreen> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        final visible = _controller.mode == SketchMode.draw;
+                        final mode = _controller.mode;
+                        // SketchTool.point has no construction-method choice
+                        // (it's a single self-terminating tap), so the
+                        // construction-method bar only shows for Line/Circle.
+                        final showConstructionBar =
+                            mode == SketchMode.draw && _controller.activeTool != SketchTool.point;
+                        final visible = showConstructionBar || mode == SketchMode.dimension;
+                        final bar = mode == SketchMode.dimension
+                            ? SketchDimensionBar(controller: _controller)
+                            : SketchConstructionMethodBar(controller: _controller);
                         return IgnorePointer(
                           ignoring: !visible,
                           child: AnimatedSlide(
@@ -187,7 +197,7 @@ class _SketchScreenState extends State<SketchScreen> {
                             child: AnimatedOpacity(
                               duration: const Duration(milliseconds: 200),
                               opacity: visible ? 1 : 0,
-                              child: SketchConstructionMethodBar(controller: _controller),
+                              child: bar,
                             ),
                           ),
                         );
