@@ -73,20 +73,22 @@ class _SketchCanvasState extends State<SketchCanvas> {
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
   }
 
-  /// Stage 13 item 3's single dispatch point for "what does a tap at this
-  /// screen location do": in [SketchMode.dimension], a tap on an already
-  /// rendered ghost's label either opens its inline value input or - if a
-  /// different ghost's input is already open - cancels that edit; any other
-  /// tap (every other mode, or a dimension-mode tap that misses every
-  /// ghost) goes to [SketchController.handleCanvasTap] with the tapped
-  /// location converted to sketch-space and a touch-sized hit radius, so
-  /// the actual commit/select/dimension-pick always happens at the tap's
-  /// own screen position rather than wherever a (possibly stale, for touch)
-  /// persistent cursor happens to be.
-  void _dispatchTap(Offset screenPosition, ViewTransform transform) {
+  /// Trackpad-style dispatch point for "what does a click do right now":
+  /// always commits at the controller's own persistent [cursorX]/[cursorY]
+  /// (the on-canvas crosshair), never at the literal screen location of the
+  /// pointer-down/up that triggered the click - same as a laptop trackpad,
+  /// where swiping moves the cursor and tapping clicks wherever the cursor
+  /// already sits, even if the tap itself lands elsewhere on the pad. In
+  /// [SketchMode.dimension], a click on an already rendered ghost's label
+  /// either opens its inline value input or - if a different ghost's input
+  /// is already open - cancels that edit; any other click (every other
+  /// mode, or a dimension-mode click that misses every ghost) goes to
+  /// [SketchController.handleCanvasTap].
+  void _dispatchTap(ViewTransform transform) {
     final controller = widget.controller;
+    final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     if (controller.mode == SketchMode.dimension) {
-      final hitKey = _ghostKeyAt(controller, transform, screenPosition);
+      final hitKey = _ghostKeyAt(controller, transform, cursorScreen);
       if (controller.activeGhostKey != null) {
         if (hitKey != controller.activeGhostKey) {
           controller.cancelGhostEdit();
@@ -98,18 +100,22 @@ class _SketchCanvasState extends State<SketchCanvas> {
         return;
       }
     }
-    final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
-    controller.handleCanvasTap(coord.x, coord.y, hitRadius);
+    controller.handleCanvasTap(controller.cursorX, controller.cursorY, hitRadius);
   }
 
   void _handlePointerDown(PointerDownEvent event, ViewTransform transform) {
     if (event.kind == PointerDeviceKind.mouse) {
       // Only the primary (left) button counts as a bare tap, same as a
       // touch tap - a right-click starts a pan drag instead (see
-      // _handlePointerMove) and must not also dispatch a tap.
+      // _handlePointerMove) and must not also dispatch a tap. A mouse's
+      // cursor is always 1:1 with the pointer (see _handlePointerHover), so
+      // syncing it to the down position here is a no-op in the normal case
+      // and only matters if the button is pressed without a preceding
+      // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
-        _dispatchTap(event.localPosition, transform);
+        widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+        _dispatchTap(transform);
       }
       return;
     }
@@ -138,10 +144,10 @@ class _SketchCanvasState extends State<SketchCanvas> {
     }
 
     if (_activeTouches.length < 2) {
-      // Single-finger: relative, scaled cursor movement - a live preview
-      // only (e.g. the crosshair, chain-start snap highlight); it no longer
-      // determines where a tap commits - see _dispatchTap, which always
-      // uses the lifted touch's own screen position instead.
+      // Single-finger: relative, scaled cursor movement, trackpad-style -
+      // this is what determines where a subsequent tap commits (see
+      // _dispatchTap, which always reads the cursor's current position,
+      // never the tap's own screen location).
       _singleTouchTravel += event.delta.distance;
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
@@ -163,10 +169,9 @@ class _SketchCanvasState extends State<SketchCanvas> {
         _activeTouches.length == 1 &&
         !_multiTouchOccurred &&
         _singleTouchTravel < _tapTravelThreshold;
-    final tapPosition = event.localPosition;
     _activeTouches.remove(event.pointer);
     if (wasTap) {
-      _dispatchTap(tapPosition, transform);
+      _dispatchTap(transform);
     }
   }
 

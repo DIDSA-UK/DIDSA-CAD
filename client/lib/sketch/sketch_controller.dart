@@ -471,12 +471,15 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// The single entry point for every tap on the 2D sketch canvas - Stage
-  /// 13 item 3 replaces the old separate "move cursor, then press Click"
-  /// flow with this: [sketchX]/[sketchY] is the tapped location, already
-  /// converted from screen space by the caller. Dispatches on [mode]:
-  /// drawing (replaces the old `click()`), selecting (replaces the old
-  /// no-arg `handleCanvasTap()`), or picking a dimension target/ghost.
+  /// The single entry point for every click/tap on the 2D sketch canvas -
+  /// Stage 13 item 3 replaces the old separate "move cursor, then press
+  /// Click" flow with this: [sketchX]/[sketchY] is where the click commits,
+  /// which is the controller's own persistent [cursorX]/[cursorY] (see
+  /// [moveCursorRelative]/[moveCursorAbsoluteScreen]) - trackpad-style, a
+  /// tap clicks wherever the cursor already sits, not wherever the tap
+  /// itself physically landed. Dispatches on [mode]: drawing (replaces the
+  /// old `click()`), selecting (replaces the old no-arg
+  /// `handleCanvasTap()`), or picking a dimension target/ghost.
   /// Returns a [Future] so tests/callers that care can await the underlying
   /// network calls in [SketchMode.draw]; [SketchCanvas] itself fires this
   /// without awaiting, same as Stage 12's Click button did.
