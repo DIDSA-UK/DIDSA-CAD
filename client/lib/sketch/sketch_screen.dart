@@ -179,11 +179,13 @@ class _SketchScreenState extends State<SketchScreen> {
                       animation: _controller,
                       builder: (context, _) {
                         final mode = _controller.mode;
-                        // SketchTool.point has no construction-method choice
-                        // (it's a single self-terminating tap), so the
-                        // construction-method bar only shows for Line/Circle.
-                        final showConstructionBar =
-                            mode == SketchMode.draw && _controller.activeTool != SketchTool.point;
+                        // Every draw tool gets this fly-up bar (with its Exit
+                        // button) while active - SketchTool.point has no
+                        // construction-method choice, so
+                        // SketchConstructionMethodBar shows a plain
+                        // "Tap to place a point" message instead of chips,
+                        // but the bar (and its Exit button) still appears.
+                        final showConstructionBar = mode == SketchMode.draw;
                         final visible = showConstructionBar || mode == SketchMode.dimension;
                         final bar = mode == SketchMode.dimension
                             ? SketchDimensionBar(controller: _controller)
