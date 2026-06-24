@@ -123,6 +123,14 @@ class _PartScreenState extends State<PartScreen> {
   /// panel has already closed.
   Timer? _extrudeDebounce;
 
+  /// True while [ExtrudePanel] is open (i.e. [_extrudeSketchFeature] is
+  /// non-null) - the Feature tree auto-hides (slides left, via
+  /// [FeatureTreePanel]'s own [AnimatedSlide]) while this is true, per Stage
+  /// 16 item 8, so the bottom-sheet-style panel never has the tree sitting
+  /// on top of it; restores on Confirm/Cancel since those null out
+  /// [_extrudeSketchFeature] without otherwise touching [_featureTreeVisible].
+  bool get _extrudeActive => _extrudeSketchFeature != null;
+
   @override
   void initState() {
     super.initState();
@@ -149,7 +157,7 @@ class _PartScreenState extends State<PartScreen> {
       _part = part;
       debugPrint('[PartScreen] getPartMesh...');
       await _refreshMesh();
-      debugPrint('[PartScreen] getPartMesh done: ${_mesh!.vertices.length} vertices');
+      debugPrint('[PartScreen] getPartMesh done: ${_mesh?.vertices.length ?? 0} vertices');
       await _refreshFeatures();
       await _refreshSketchGeometries();
       debugPrint('[PartScreen] refreshFeatures done');
@@ -168,10 +176,19 @@ class _PartScreenState extends State<PartScreen> {
   /// out immediately - called after anything that can change either the
   /// Part's geometry (extrude preview/confirm/cancel, cascade delete) or
   /// [_hiddenFeatureIds] itself (Hide/Show).
+  ///
+  /// Discards the response entirely when its `source` is `"placeholder"`
+  /// (see `backend/app/document/router.py`'s `BRepPrimAPI_MakeBox(10,10,10)`
+  /// fallback for a Part with no ExtrudeFeature yet) rather than rendering
+  /// it - that placeholder box is a backend implementation detail to keep
+  /// the mesh endpoint's response shape uniform, not real geometry the user
+  /// created, and showing it as a stray cube in an otherwise-empty viewport
+  /// was confusing on-device.
   Future<void> _refreshMesh() async {
     final part = _part;
     if (part == null) return;
-    _mesh = (await _api.getPartMesh(part.id, hiddenFeatureIds: _hiddenFeatureIds.toList())).mesh;
+    final response = await _api.getPartMesh(part.id, hiddenFeatureIds: _hiddenFeatureIds.toList());
+    _mesh = response.source == 'placeholder' ? null : response.mesh;
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -649,7 +666,7 @@ class _PartScreenState extends State<PartScreen> {
                 ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: _featureTreeVisible,
+                    visible: _featureTreeVisible && !_extrudeActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _hiddenFeatureIds,
