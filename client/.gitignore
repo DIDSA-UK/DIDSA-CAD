@@ -44,5 +44,7 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Local secrets - never commit the real API key. See lib/secrets.example.dart.
+# Pre-Stage-18 local secrets file - superseded by the runtime Connection
+# screen (shared_preferences), but still ignored in case a stale copy
+# lingers in a local checkout.
 /lib/secrets.dart

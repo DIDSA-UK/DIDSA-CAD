@@ -10,6 +10,7 @@ import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'sketch_geometry_3d.dart';
 import 'triad.dart';
+import 'view_preferences.dart';
 
 /// The Stage 7 3D viewport: renders [mesh] (the placeholder Part mesh from
 /// `/document/parts/{id}/mesh`) via `flutter_scene`'s default Unlit
@@ -62,6 +63,17 @@ class PartViewport extends StatefulWidget {
   /// [referencePlanesHidden] already uses.
   final ViewportRenderMode renderMode;
 
+  /// Stage 18: the 3D viewport's appearance preferences (see
+  /// [ViewPreferences]) - [PartScreen] owns these, the same controlled-
+  /// widget pattern [renderMode] already uses. [bgColourHex] repaints the
+  /// canvas background every frame (see [_ScenePainter.paint]); [bodyColourHex]/
+  /// [bodyOpacity] only take effect on the next [_syncMeshNode] rebuild
+  /// (see [didUpdateWidget]), since they're baked into [_meshNode]'s
+  /// material rather than read per-frame.
+  final String bgColourHex;
+  final String bodyColourHex;
+  final double bodyOpacity;
+
   const PartViewport({
     super.key,
     required this.mesh,
@@ -72,6 +84,9 @@ class PartViewport extends StatefulWidget {
     this.isPreviewMesh = false,
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
+    this.bgColourHex = ViewPreferences.defaultBgColourHex,
+    this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
+    this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
   });
 
   @override
@@ -148,7 +163,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     super.didUpdateWidget(oldWidget);
     if (widget.mesh != oldWidget.mesh ||
         widget.isPreviewMesh != oldWidget.isPreviewMesh ||
-        widget.renderMode != oldWidget.renderMode) {
+        widget.renderMode != oldWidget.renderMode ||
+        widget.bodyColourHex != oldWidget.bodyColourHex ||
+        widget.bodyOpacity != oldWidget.bodyOpacity) {
       setState(_syncMeshNode);
     }
     if (widget.mesh != oldWidget.mesh || widget.renderMode != oldWidget.renderMode) {
@@ -200,7 +217,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           ? (UnlitMaterial()
             ..alphaMode = AlphaMode.blend
             ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
-          : UnlitMaterial();
+          // TODO: flutter_scene's UnlitMaterial has no roughness/metallic (or
+          // any other lit-shading) parameter to give the body a "subtle
+          // specular highlight"/matte-metallic finish per the brief -
+          // revisit if/when a PBR material type ships.
+          : (UnlitMaterial()
+            ..alphaMode = widget.bodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
+            ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: widget.bodyOpacity));
       final node = Node(mesh: Mesh(geometry, material));
       scene.add(node);
       _meshNode = node;
@@ -460,6 +483,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   scene: scene,
                   camera: _camera,
                   size: size,
+                  backgroundColor: colorFromHex(widget.bgColourHex),
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
                     ..._sketchNodes.values,
@@ -491,6 +515,7 @@ class _ScenePainter extends CustomPainter {
   final Scene scene;
   final OrbitCamera camera;
   final Size size;
+  final Color backgroundColor;
 
   /// Every [Node] (reference planes, Sketch geometry) whose [Mesh] may
   /// contain a [PolylineGeometry] primitive - each such primitive's
@@ -507,6 +532,7 @@ class _ScenePainter extends CustomPainter {
     required this.scene,
     required this.camera,
     required this.size,
+    required this.backgroundColor,
     this.polylineCarryingNodes = const [],
   });
 
@@ -522,7 +548,7 @@ class _ScenePainter extends CustomPainter {
       _loggedFirstPaint = true;
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, calling scene.render()...');
     }
-    canvas.drawRect(Offset.zero & canvasSize, Paint()..color = const Color(0xFF202020));
+    canvas.drawRect(Offset.zero & canvasSize, Paint()..color = backgroundColor);
     final perspectiveCamera = camera.cameraFor(size);
     for (final node in polylineCarryingNodes) {
       for (final primitive in node.mesh?.primitives ?? const []) {

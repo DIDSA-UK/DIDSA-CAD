@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
@@ -187,6 +188,14 @@ Future<void> _pumpUntil(WidgetTester tester, bool Function() done, {int maxPumps
 }
 
 void main() {
+  // PartScreen now loads Stage 18's view preferences (background/body
+  // colour, opacity) via shared_preferences on initState - without a mock
+  // store, that call hits a real platform channel that doesn't exist under
+  // flutter test and throws.
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets('PartScreen loads the placeholder mesh and Add Sketch Feature navigates to SketchScreen', (
     tester,
   ) async {

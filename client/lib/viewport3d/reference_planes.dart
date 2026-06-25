@@ -30,8 +30,8 @@ ReferencePlaneKind? referencePlaneKindFromApiValue(String value) => switch (valu
 const double referencePlaneSize = 20.0;
 const double _referencePlaneHalfSize = referencePlaneSize / 2;
 
-const double _referencePlaneAlpha = 0.25;
-const double _referencePlaneSelectedAlpha = 0.55;
+const double _referencePlaneAlpha = 0.20;
+const double _referencePlaneSelectedAlpha = 0.45;
 
 /// Screen-pixel width of each plane's border line (Fix 3).
 const double _referencePlaneBorderWidth = 2.0;
@@ -64,17 +64,15 @@ extension ReferencePlaneKindX on ReferencePlaneKind {
         ReferencePlaneKind.yz => const [1, 2],
       };
 
-  /// Tint convention (Fix 4): each plane is colored by its *normal* axis -
-  /// the one held at zero everywhere on the plane - matching the XYZ
-  /// triad's own axis colors (X=red, Y=green, Z=blue). XY's normal is Z, so
-  /// it reads blue; XZ's normal is Y, so it reads green; YZ's normal is X,
-  /// so it reads red. (Previously this mixed the two *in-plane* axis
-  /// colors instead - e.g. XY read yellow-green - which this stage's brief
-  /// asked to replace with the triad-matching normal-axis convention.)
+  /// Stage 18's fixed per-plane tint, matching the conventional RGB-axis
+  /// colour coding used by Fusion 360/Blender/most CAD tools (XY="Top"=blue,
+  /// XZ="Front"=red, YZ="Right"=green) - a per-`ReferencePlaneKind` constant
+  /// rather than derived from [_zeroAxis], since that derivation would put
+  /// XZ/YZ on the opposite colors from the brief's explicit table.
   vm.Vector3 get _baseColor => switch (this) {
-        ReferencePlaneKind.xy => vm.Vector3(0.1, 0.1, 0.9),
-        ReferencePlaneKind.xz => vm.Vector3(0.1, 0.9, 0.1),
-        ReferencePlaneKind.yz => vm.Vector3(0.9, 0.1, 0.1),
+        ReferencePlaneKind.xy => vm.Vector3(0x3A / 255, 0x7B / 255, 0xD5 / 255),
+        ReferencePlaneKind.xz => vm.Vector3(0xE8 / 255, 0x36 / 255, 0x4A / 255),
+        ReferencePlaneKind.yz => vm.Vector3(0x27 / 255, 0xAE / 255, 0x60 / 255),
       };
 
   /// The translucent fill color for this plane's rectangle. [selected]
