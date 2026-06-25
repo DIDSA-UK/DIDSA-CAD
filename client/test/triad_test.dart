@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart' show Colors;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_scene/scene.dart' show PerspectiveCamera;
 import 'package:vector_math/vector_math.dart' as vm;
@@ -12,9 +11,9 @@ void main() {
       final axes = triadAxes(camera);
 
       expect(axes.map((a) => a.label).toList(), ['X', 'Y', 'Z']);
-      expect(axes[0].color, Colors.red);
-      expect(axes[1].color, Colors.green);
-      expect(axes[2].color, Colors.blue);
+      expect(axes[0].color, triadColorX);
+      expect(axes[1].color, triadColorY);
+      expect(axes[2].color, triadColorZ);
     });
 
     test('looking down -Z with +Y up projects Y up on screen and Z towards the camera', () {

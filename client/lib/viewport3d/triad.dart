@@ -16,6 +16,12 @@ class TriadAxis {
   const TriadAxis({required this.label, required this.color, required this.direction});
 }
 
+/// Stage 18's axis colours, matching the reference planes' own RGB-axis
+/// coding (see `reference_planes.dart`'s `_baseColor`).
+const Color triadColorX = Color(0xFFE8364A);
+const Color triadColorY = Color(0xFF27AE60);
+const Color triadColorZ = Color(0xFF3A7BD5);
+
 /// Orientation-only projection of the world X/Y/Z axes onto [camera]'s
 /// screen right/up directions - the same "compass gizmo" approach CAD tools
 /// use for an always-readable orientation indicator. Deliberately ignores
@@ -36,9 +42,9 @@ List<TriadAxis> triadAxes(PerspectiveCamera camera) {
   Offset project(vm.Vector3 worldAxis) => Offset(worldAxis.dot(right), -worldAxis.dot(up));
 
   return [
-    TriadAxis(label: 'X', color: Colors.red, direction: project(vm.Vector3(1, 0, 0))),
-    TriadAxis(label: 'Y', color: Colors.green, direction: project(vm.Vector3(0, 1, 0))),
-    TriadAxis(label: 'Z', color: Colors.blue, direction: project(vm.Vector3(0, 0, 1))),
+    TriadAxis(label: 'X', color: triadColorX, direction: project(vm.Vector3(1, 0, 0))),
+    TriadAxis(label: 'Y', color: triadColorY, direction: project(vm.Vector3(0, 1, 0))),
+    TriadAxis(label: 'Z', color: triadColorZ, direction: project(vm.Vector3(0, 0, 1))),
   ];
 }
 

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
+import '../connection_screen.dart';
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
@@ -17,6 +18,7 @@ import 'part_viewport.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'sketch_geometry_3d.dart';
+import 'view_preferences.dart';
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -71,6 +73,15 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartToolbar]'s three render-mode entries, in-memory only (no
   /// persistence across app restarts, same as [_referencePlanesHidden]).
   ViewportRenderMode _renderMode = ViewportRenderMode.shaded;
+
+  /// Stage 18: the 3D viewport's appearance preferences (see
+  /// [ViewPreferences]) - default to the same constants [ViewPreferences]
+  /// itself defaults to, then overwritten once [_loadViewPreferences]'s
+  /// async `shared_preferences` read completes, so the viewport never waits
+  /// on that read before its first frame.
+  String _bgColourHex = ViewPreferences.defaultBgColourHex;
+  String _bodyColourHex = ViewPreferences.defaultBodyColourHex;
+  double _bodyOpacity = ViewPreferences.defaultBodyOpacity;
 
   /// Stage 10b: true while the "Add" FAB's flyout's "New Sketch" entry has
   /// been tapped and the user is choosing which reference plane to sketch
@@ -137,6 +148,46 @@ class _PartScreenState extends State<PartScreen> {
     _api = widget.documentApi ?? DocumentApiClient();
     _sketchApi = widget.sketchApiFactory?.call() ?? SketchApiClient();
     _loadPart();
+    _loadViewPreferences();
+  }
+
+  /// Loads [ViewPreferences] in the background, not awaited from
+  /// [initState] - the viewport renders with the in-memory defaults already
+  /// set above immediately, then repaints with whatever was actually stored
+  /// once this completes.
+  Future<void> _loadViewPreferences() async {
+    await ViewPreferences.load();
+    if (!mounted) return;
+    setState(() {
+      _bgColourHex = ViewPreferences.bgColourHex;
+      _bodyColourHex = ViewPreferences.bodyColourHex;
+      _bodyOpacity = ViewPreferences.bodyOpacity;
+    });
+  }
+
+  Future<void> _onBgColourChanged(String hex) async {
+    setState(() => _bgColourHex = hex);
+    await ViewPreferences.setBgColourHex(hex);
+  }
+
+  Future<void> _onBodyColourChanged(String hex) async {
+    setState(() => _bodyColourHex = hex);
+    await ViewPreferences.setBodyColourHex(hex);
+  }
+
+  Future<void> _onBodyOpacityChanged(double opacity) async {
+    setState(() => _bodyOpacity = opacity);
+    await ViewPreferences.setBodyOpacity(opacity);
+  }
+
+  /// Opens [ConnectionScreen] from the File menu's "Connection Settings"
+  /// entry - [ConnectionScreen.isSettingsRevisit] tells it to pop back here
+  /// on success rather than pushing a brand new [PartScreen].
+  Future<void> _openConnectionSettings() async {
+    setState(() => _toolbarOpen = false);
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const ConnectionScreen(isSettingsRevisit: true)),
+    );
   }
 
   @override
@@ -663,6 +714,9 @@ class _PartScreenState extends State<PartScreen> {
                   isPreviewMesh: _extrudeSketchFeature != null,
                   referencePlanesHidden: _referencePlanesHidden,
                   renderMode: _renderMode,
+                  bgColourHex: _bgColourHex,
+                  bodyColourHex: _bodyColourHex,
+                  bodyOpacity: _bodyOpacity,
                 ),
                 Positioned.fill(
                   child: FeatureTreePanel(
@@ -685,6 +739,13 @@ class _PartScreenState extends State<PartScreen> {
                     onToggleReferencePlanes: _onToggleReferencePlanes,
                     renderMode: _renderMode,
                     onRenderModeChanged: _onRenderModeChanged,
+                    onOpenConnectionSettings: _openConnectionSettings,
+                    bgColourHex: _bgColourHex,
+                    bodyColourHex: _bodyColourHex,
+                    bodyOpacity: _bodyOpacity,
+                    onBgColourChanged: _onBgColourChanged,
+                    onBodyColourChanged: _onBodyColourChanged,
+                    onBodyOpacityChanged: _onBodyOpacityChanged,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'viewport3d/part_screen.dart';
+import 'connection_screen.dart';
 
 void main() {
   runApp(const DidsaCadApp());
@@ -14,7 +14,7 @@ class DidsaCadApp extends StatelessWidget {
     return MaterialApp(
       title: 'DIDSA-CAD',
       theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo), useMaterial3: true),
-      home: const PartScreen(),
+      home: const ConnectionScreen(),
     );
   }
 }

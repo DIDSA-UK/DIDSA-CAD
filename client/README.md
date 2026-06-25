@@ -64,22 +64,37 @@ headless dev environment - see "What was actually verified" below) that:
 
 ## Configuration: base URL and API key
 
-Both live in one place, [`lib/config.dart`](lib/config.dart). The base URL
-defaults to the deployed backend
-(`https://cad-api.snail-shell.uk`); the API key has **no default** - it's
-read from `lib/secrets.dart`, which is **gitignored and must never be
-committed** (verify with `git check-ignore -v lib/secrets.dart`).
+As of Stage 18, both are entered at runtime on the **Connection screen**
+shown on cold launch, rather than baked in at compile time. Both are read
+from / written to `shared_preferences` (`server_url`/`api_key` keys) via
+[`lib/config.dart`](lib/config.dart)'s `ApiConfig` - the single place every
+HTTP client (`DocumentApiClient`/`SketchApiClient`) reads them from. The
+Connection screen pre-fills its fields once both are present; if either is
+missing, the fields stay blank and Connect is disabled until both are
+filled in. Connect runs a `GET /health` check against the entered URL/key
+before persisting and proceeding - a failed check shows an inline error
+and never saves anything. Already-saved values can be changed again from
+`PartScreen`'s hamburger menu → File → Connection Settings.
 
-To run locally:
+## 3D viewport appearance preferences
 
-```sh
-cp lib/secrets.example.dart lib/secrets.dart
-# edit lib/secrets.dart: set apiKey to the real key, and optionally
-# apiBaseUrlOverride (e.g. 'http://localhost:8000') for local backend dev.
-```
-
-`lib/secrets.dart` not existing is a compile error - this is intentional;
-there's no silent "runs unauthenticated" fallback path.
+Stage 18 also restructured the 3D viewport's hamburger-equivalent menu
+(`PartToolbar`) into **File** and **View** `ExpansionTile`s. File's items are
+all disabled placeholders (New/Open…/Save/Save As…/Import…/Export STEP/Export
+STL) except **Connection Settings**, which reopens the Connection screen
+without losing the open Part. View holds Show Feature Tree, Hide/Show
+Reference Planes, the Shaded/Shaded+Edges/Wireframe render-mode picker, and
+three new entries - **Background Colour**, **Body Colour**, **Body
+Transparency** - each a bottom-sheet picker. All three persist to
+`shared_preferences` (`view_bg_colour`/`view_body_colour`/`view_body_opacity`,
+see [`lib/viewport3d/view_preferences.dart`](lib/viewport3d/view_preferences.dart))
+and apply live to the `flutter_scene` material/canvas background - colour is
+always stored/transmitted as a `"#RRGGBB"` string, never decomposed from a
+Flutter `Color`, to stay independent of whichever `Color` channel-accessor
+API a given Flutter version ships. Defaults: background `#1E1E2E` (Studio
+Dark), body `#B0B8C1` (Aluminium) at full opacity - also the reference
+planes' (`#3A7BD5`/`#E8364A`/`#27AE60` for XY/XZ/YZ at 20% opacity) and
+triad's matching axis colors.
 
 ## Error handling
 
