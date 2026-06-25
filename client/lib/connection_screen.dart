@@ -81,6 +81,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         throw Exception('health check returned ${response.statusCode}');
       }
       await ApiConfig.save(baseUrl: url, apiKey: key);
+      TextInput.finishAutofillContext();
       if (!mounted) return;
       if (widget.isSettingsRevisit) {
         Navigator.of(context).pop();
@@ -124,33 +125,45 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     style: TextStyle(color: Colors.white70, fontSize: 16),
                   ),
                   const SizedBox(height: 32),
-                  TextField(
-                    controller: _serverUrlController,
-                    keyboardType: TextInputType.url,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: const InputDecoration(
-                      labelText: 'Server URL',
-                      labelStyle: TextStyle(color: Colors.white70),
-                      enabledBorder: OutlineInputBorder(),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _apiKeyController,
-                    obscureText: _obscureApiKey,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
-                      labelText: 'API Key',
-                      labelStyle: const TextStyle(color: Colors.white70),
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscureApiKey ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                          color: Colors.white70,
+                  // Stage 19a Item 7: grouped so the platform autofill
+                  // service (Bitwarden, Android autofill, etc.) treats the
+                  // URL/API-key pair as one related save/fill set rather
+                  // than two unrelated fields.
+                  AutofillGroup(
+                    child: Column(
+                      children: [
+                        TextField(
+                          controller: _serverUrlController,
+                          keyboardType: TextInputType.url,
+                          autofillHints: const [AutofillHints.url],
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            labelText: 'Server URL',
+                            labelStyle: TextStyle(color: Colors.white70),
+                            enabledBorder: OutlineInputBorder(),
+                            border: OutlineInputBorder(),
+                          ),
                         ),
-                        onPressed: () => setState(() => _obscureApiKey = !_obscureApiKey),
-                      ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _apiKeyController,
+                          obscureText: _obscureApiKey,
+                          autofillHints: const [AutofillHints.password],
+                          style: const TextStyle(color: Colors.white),
+                          decoration: InputDecoration(
+                            labelText: 'API Key',
+                            labelStyle: const TextStyle(color: Colors.white70),
+                            border: const OutlineInputBorder(),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _obscureApiKey ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                color: Colors.white70,
+                              ),
+                              onPressed: () => setState(() => _obscureApiKey = !_obscureApiKey),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 24),

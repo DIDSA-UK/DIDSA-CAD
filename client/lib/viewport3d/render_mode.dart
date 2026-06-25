@@ -5,9 +5,9 @@ import 'package:vector_math/vector_math.dart' as vm;
 /// flyout: `shaded` (the pre-Stage-11 default - filled faces only),
 /// `shadedWithEdges` (filled faces plus the Part's real OCCT edge
 /// polylines drawn on top), and `wireframe` (edges only, no filled faces).
-/// [PartScreen] owns the current mode the same way it owns
-/// `referencePlanesHidden` - in-memory only, no persistence across app
-/// restarts.
+/// [PartScreen] owns the current mode, persisted via [ViewPreferences]
+/// (`view_render_mode`) since Stage 19a Item 5 - was in-memory only, always
+/// resetting to [ViewportRenderMode.shaded] on app restart.
 enum ViewportRenderMode { shaded, shadedWithEdges, wireframe }
 
 extension ViewportRenderModeX on ViewportRenderMode {
