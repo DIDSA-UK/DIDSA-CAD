@@ -2,36 +2,56 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
-/// Single source of truth for the Stage 18 3D-viewport appearance
-/// preferences - background colour, body colour, body opacity - the same
-/// `shared_preferences`-backed, load-then-read-getters pattern [ApiConfig]
-/// (`lib/config.dart`) already uses for connection details.
+import 'render_mode.dart';
+
+/// Single source of truth for the Stage 18/19a 3D-viewport appearance
+/// preferences - background colour, body colour, body opacity, render mode -
+/// the same `shared_preferences`-backed, load-then-read-getters pattern
+/// [ApiConfig] (`lib/config.dart`) already uses for connection details.
 class ViewPreferences {
   ViewPreferences._();
 
   static const String bgColourPrefKey = 'view_bg_colour';
   static const String bodyColourPrefKey = 'view_body_colour';
   static const String bodyOpacityPrefKey = 'view_body_opacity';
+  static const String renderModePrefKey = 'view_render_mode';
 
-  static const String defaultBgColourHex = '#1E1E2E';
+  /// Stage 19a Item 4: was `#1E1E2E` (Studio Dark) through Stage 18 - anyone
+  /// who already has that stored keeps it (see [load]); this only changes
+  /// the fallback for new installs / cleared preferences.
+  static const String defaultBgColourHex = '#F5F5F0';
   static const String defaultBodyColourHex = '#B0B8C1';
   static const double defaultBodyOpacity = 1.0;
+
+  /// Stage 19a Item 5: the most common default render mode in professional
+  /// CAD tools (Fusion 360, SolidWorks, Onshape) - was [ViewportRenderMode.shaded].
+  static const ViewportRenderMode defaultRenderMode = ViewportRenderMode.shadedWithEdges;
 
   static String _bgColourHex = defaultBgColourHex;
   static String _bodyColourHex = defaultBodyColourHex;
   static double _bodyOpacity = defaultBodyOpacity;
+  static ViewportRenderMode _renderMode = defaultRenderMode;
 
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
   static double get bodyOpacity => _bodyOpacity;
+  static ViewportRenderMode get renderMode => _renderMode;
 
   /// Populates the in-memory cache from `shared_preferences`, falling back to
-  /// the defaults above for any key never [save]d.
+  /// the defaults above for any key never [save]d. [renderModePrefKey] is
+  /// stored as [ViewportRenderMode.name] - an unrecognised/corrupt stored
+  /// string (e.g. from a future enum value an older client doesn't know
+  /// about) falls back to [defaultRenderMode] rather than throwing.
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     _bgColourHex = prefs.getString(bgColourPrefKey) ?? defaultBgColourHex;
     _bodyColourHex = prefs.getString(bodyColourPrefKey) ?? defaultBodyColourHex;
     _bodyOpacity = prefs.getDouble(bodyOpacityPrefKey) ?? defaultBodyOpacity;
+    final storedRenderMode = prefs.getString(renderModePrefKey);
+    _renderMode = ViewportRenderMode.values.firstWhere(
+      (mode) => mode.name == storedRenderMode,
+      orElse: () => defaultRenderMode,
+    );
   }
 
   static Future<void> setBgColourHex(String hex) async {
@@ -50,6 +70,12 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(bodyOpacityPrefKey, opacity);
     _bodyOpacity = opacity;
+  }
+
+  static Future<void> setRenderMode(ViewportRenderMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(renderModePrefKey, mode.name);
+    _renderMode = mode;
   }
 }
 

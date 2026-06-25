@@ -69,10 +69,12 @@ class _PartScreenState extends State<PartScreen> {
   /// in-memory only (no persistence across app restarts, per the brief).
   bool _referencePlanesHidden = false;
 
-  /// Stage 11: the viewport's current display mode - toggled from
-  /// [PartToolbar]'s three render-mode entries, in-memory only (no
-  /// persistence across app restarts, same as [_referencePlanesHidden]).
-  ViewportRenderMode _renderMode = ViewportRenderMode.shaded;
+  /// Stage 11: the viewport's current display mode, toggled from
+  /// [PartToolbar]'s three render-mode entries. Stage 19a Item 5: now
+  /// persisted via [ViewPreferences] (`view_render_mode`), the same
+  /// default-then-overwrite pattern [_bgColourHex] etc. below use - was
+  /// in-memory-only, always starting from [ViewportRenderMode.shaded].
+  ViewportRenderMode _renderMode = ViewPreferences.defaultRenderMode;
 
   /// Stage 18: the 3D viewport's appearance preferences (see
   /// [ViewPreferences]) - default to the same constants [ViewPreferences]
@@ -162,6 +164,7 @@ class _PartScreenState extends State<PartScreen> {
       _bgColourHex = ViewPreferences.bgColourHex;
       _bodyColourHex = ViewPreferences.bodyColourHex;
       _bodyOpacity = ViewPreferences.bodyOpacity;
+      _renderMode = ViewPreferences.renderMode;
     });
   }
 
@@ -373,9 +376,14 @@ class _PartScreenState extends State<PartScreen> {
   /// Stage 11: the toolbar's render-mode entries - sets [_renderMode]
   /// directly to whichever entry was tapped (unlike
   /// [_onToggleReferencePlanes]'s two-state flip, there are three discrete
-  /// choices here, not one "next state").
-  void _onRenderModeChanged(ViewportRenderMode mode) {
+  /// choices here, not one "next state"). Stage 19a Item 5: now also
+  /// persisted, the same async-but-`void`-typed-callback pattern
+  /// [_onBgColourChanged] etc. use - `PartToolbar.onRenderModeChanged` is
+  /// declared `void Function(ViewportRenderMode)`, so this `await`s inside
+  /// its own body rather than the call site awaiting it.
+  Future<void> _onRenderModeChanged(ViewportRenderMode mode) async {
     setState(() => _renderMode = mode);
+    await ViewPreferences.setRenderMode(mode);
   }
 
   Future<void> _onNewSketchOnSelectedPlane() async {

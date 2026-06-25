@@ -154,7 +154,7 @@ void main() {
     final camera = OrbitCamera();
 
     camera.zoomByFactor(2.0);
-    expect(camera.distance, 60);
+    expect(camera.distance, 96);
 
     camera.zoomByFactor(1000);
     expect(camera.distance, camera.maxDistance);
@@ -173,9 +173,9 @@ void main() {
     expect(camera.minDistance, closeTo(0.2, 1e-9)); // nearClip * 2
     expect(camera.maxDistance, 200); // radius * _maxDistanceRadiusFactor (20)
 
-    // Shrinking the bounds below the camera's current distance (30) must
+    // Shrinking the bounds below the camera's current distance (48) must
     // pull it back in immediately, not leave it violating the new max.
-    expect(camera.distance, 30);
+    expect(camera.distance, 48);
     camera.setZoomBoundsForRadius(1);
     expect(camera.maxDistance, 20);
     expect(camera.distance, 20);
@@ -213,7 +213,7 @@ void main() {
     camera.reset();
 
     expect(camera.cameraFor(size).position, defaultPosition);
-    expect(camera.distance, 30);
+    expect(camera.distance, 48);
     expect(camera.target, vm.Vector3.zero());
   });
 
@@ -237,7 +237,7 @@ void main() {
 
   test('reset clamps the default distance into a body-scaled zoom range smaller than it', () {
     // A small body's setZoomBoundsForRadius-derived maxDistance can sit
-    // below the fixed default distance (30) reset would otherwise assign -
+    // below the fixed default distance (48) reset would otherwise assign -
     // reset must respect the current bounds rather than escape them.
     final camera = OrbitCamera();
     camera.setZoomBoundsForRadius(1); // maxDistance = 20, below the default distance of 30.

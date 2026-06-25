@@ -103,7 +103,14 @@ class OrbitCamera {
   /// [minDistance]/[maxDistance] - those bounds may since have been
   /// narrowed by [setZoomBoundsForRadius] to a body smaller than this
   /// default, so resetting can't just assign it outright.
-  static const double _defaultDistance = 30;
+  ///
+  /// Stage 19a Item 6: was `30`, which - given `flutter_scene`'s 45-degree
+  /// default vertical FOV and the fixed reference planes' real
+  /// [referencePlaneSize] of 20 world units - left the planes filling
+  /// nearly the full screen (~80% of its linear extent) on a cold launch.
+  /// default zoom: planes ~25% of screen (~50% of linear extent needs
+  /// distance ~48.28 at this FOV/plane size; rounded to a clean 48).
+  static const double _defaultDistance = 48;
 
   /// What [reset] returns [target] to - defaults to the origin, but
   /// [setTarget] moves this along with [target] so "Reset view" re-centers
@@ -132,8 +139,14 @@ class OrbitCamera {
 
   vm.Vector3 get _right => orientation.rotated(_localRight);
 
+  /// World-space camera position derived from [target]/[orientation]/
+  /// [distance] - the same value [cameraFor] feeds [PerspectiveCamera], but
+  /// exposed directly for callers (see [PartViewport]'s approximate edge
+  /// back-face cull) that need just the position, not a full [Size]-scoped
+  /// [PerspectiveCamera].
+  vm.Vector3 get position => target + _direction * distance;
+
   PerspectiveCamera cameraFor(Size size) {
-    final position = target + _direction * distance;
     return PerspectiveCamera(
       position: position,
       target: target,

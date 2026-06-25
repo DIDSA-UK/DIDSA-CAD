@@ -345,9 +345,11 @@ void main() {
       expect(find.text('Shaded'), findsOneWidget);
       expect(find.text('Shaded + Edges'), findsOneWidget);
       expect(find.text('Wireframe'), findsOneWidget);
+      // Stage 19a Item 5: the default render mode is now Shaded + Edges
+      // (was Shaded), so that's the active entry on first load.
       expect(
         tester.widget<PartViewport>(find.byType(PartViewport)).renderMode,
-        ViewportRenderMode.shaded,
+        ViewportRenderMode.shadedWithEdges,
       );
 
       await tester.tap(find.text('Wireframe'));
@@ -361,13 +363,13 @@ void main() {
       expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Wireframe')).trailing, isNotNull);
       expect(tester.takeException(), isNull);
 
-      await tester.tap(find.text('Shaded + Edges'));
+      await tester.tap(find.text('Shaded'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(
         tester.widget<PartViewport>(find.byType(PartViewport)).renderMode,
-        ViewportRenderMode.shadedWithEdges,
+        ViewportRenderMode.shaded,
       );
       expect(tester.takeException(), isNull);
     },
