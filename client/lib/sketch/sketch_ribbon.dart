@@ -179,6 +179,11 @@ Future<void> _showSetLengthDialog(
     builder: (context) => _SetLengthDialog(textController: textController),
   );
   textController.dispose();
+  // Stage 20 item 3: this is a freestanding function (not a State method),
+  // so it has no `mounted` getter of its own - guard with `context.mounted`
+  // before any further use of context-derived state, in case the ribbon
+  // (and this function's caller) was torn down while the dialog was open.
+  if (!context.mounted) return;
   if (value != null) {
     controller.setLineLength(lineId, value);
   }

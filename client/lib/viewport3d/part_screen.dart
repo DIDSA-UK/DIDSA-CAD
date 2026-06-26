@@ -768,7 +768,20 @@ class _PartScreenState extends State<PartScreen> {
 
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_part?.name ?? 'Part')),
+      appBar: AppBar(
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Image.asset(
+              'assets/images/didsa_logo.png',
+              height: 28,
+              errorBuilder: (context, error, stackTrace) =>
+                  const Text('DIDSA', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            Text(_part?.name ?? 'Part'),
+          ],
+        ),
+      ),
       body: Column(
         children: [
           if (_errorMessage != null)
