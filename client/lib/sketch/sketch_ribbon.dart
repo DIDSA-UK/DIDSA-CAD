@@ -93,6 +93,16 @@ class SketchRibbon extends StatelessWidget {
     final isConstruction = controller.selectedIsConstruction;
 
     final chips = <Widget>[
+      // Stage 19b item 6: only meaningful for a single selected Line -
+      // inserted first/leftmost per the brief, ahead of Make Construction.
+      if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.line)
+        _RibbonActionChip(
+          icon: Icons.straighten,
+          label: 'Set Length',
+          onTap: controller.busy
+              ? null
+              : () => _showSetLengthDialog(context, controller, selectionSet.first.id),
+        ),
       if (isConstruction != null)
         _RibbonActionChip(
           icon: isConstruction ? Icons.architecture : Icons.architecture_outlined,
@@ -147,6 +157,80 @@ class SketchRibbon extends StatelessWidget {
       ConstraintOptionType.equalRadius => Icons.radio_button_unchecked,
       ConstraintOptionType.tangent => Icons.circle,
     };
+  }
+}
+
+/// Stage 19b item 6: prompts for a new length for the given Line, pre-filled
+/// with its current length (2dp), then calls
+/// [SketchController.setLineLength] - mirrors how the canvas's ghost-value
+/// editor commits a typed dimension, but reachable directly from the ribbon
+/// instead of requiring Dimension mode.
+Future<void> _showSetLengthDialog(
+  BuildContext context,
+  SketchController controller,
+  String lineId,
+) async {
+  final currentLength = controller.lineLength(lineId);
+  final textController = TextEditingController(
+    text: currentLength == null ? '' : currentLength.toStringAsFixed(2),
+  );
+  final value = await showDialog<double>(
+    context: context,
+    builder: (context) => _SetLengthDialog(textController: textController),
+  );
+  textController.dispose();
+  if (value != null) {
+    controller.setLineLength(lineId, value);
+  }
+}
+
+class _SetLengthDialog extends StatefulWidget {
+  final TextEditingController textController;
+
+  const _SetLengthDialog({required this.textController});
+
+  @override
+  State<_SetLengthDialog> createState() => _SetLengthDialogState();
+}
+
+class _SetLengthDialogState extends State<_SetLengthDialog> {
+  String? _error;
+
+  void _submit() {
+    final value = double.tryParse(widget.textController.text);
+    if (value == null || value <= 0) {
+      setState(() => _error = 'Enter a positive number');
+      return;
+    }
+    Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Set Length'),
+      content: TextField(
+        controller: widget.textController,
+        autofocus: true,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(
+          suffixText: 'mm',
+          errorText: _error,
+          border: const OutlineInputBorder(),
+        ),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('Set'),
+        ),
+      ],
+    );
   }
 }
 

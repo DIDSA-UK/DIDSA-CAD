@@ -140,10 +140,7 @@ class OrbitCamera {
   vm.Vector3 get _right => orientation.rotated(_localRight);
 
   /// World-space camera position derived from [target]/[orientation]/
-  /// [distance] - the same value [cameraFor] feeds [PerspectiveCamera], but
-  /// exposed directly for callers (see [PartViewport]'s approximate edge
-  /// back-face cull) that need just the position, not a full [Size]-scoped
-  /// [PerspectiveCamera].
+  /// [distance] - the same value [cameraFor] feeds [PerspectiveCamera].
   vm.Vector3 get position => target + _direction * distance;
 
   PerspectiveCamera cameraFor(Size size) {

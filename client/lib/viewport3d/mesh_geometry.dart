@@ -178,61 +178,6 @@ List<(vm.Vector3, vm.Vector3)> nudgeSegmentsOutward(
   return [for (final segment in segments) (nudged(segment.$1), nudged(segment.$2))];
 }
 
-/// Stage 19a Item 1 - approximate back-face cull for edge segments, so
-/// `shadedWithEdges` mode doesn't show the far side of a solid's edges
-/// bleeding through its near faces.
-///
-/// Investigation (this stage): `flutter_scene`'s real opaque render pass
-/// (`scene_encoder.dart`, upstream) does enable depth write and a
-/// `lessEqual` depth test for opaque draws, and [buildMeshEdgesNode]'s
-/// material is already `AlphaMode.opaque` - so in principle the GPU should
-/// already occlude a back-side edge behind a nearer opaque face regardless
-/// of node submission order (this app adds the mesh Node before the edges
-/// Node either way). In practice the symptom is still visible, and there is
-/// no clean way to fix it at the "depth/draw-order" level (brief option 1)
-/// from this codebase, nor a CPU MVP-projection occlusion test against the
-/// real depth buffer (option 2) - `flutter_scene` 0.18.1 exposes no read-back
-/// of its depth attachment, and a full CPU ray-vs-triangle occlusion test
-/// against the mesh for every edge segment, every frame, has no way to be
-/// verified visually in this sandbox (no GPU/device available).
-///
-/// This implements the brief's option-3 fallback - cull edges whose
-/// adjacent faces both point away from the camera - adapted to the data
-/// this app actually has: [mesh.edges] is extracted directly from the OCCT
-/// edges (see `backend/app/document/mesh.py`'s `_extract_edges`), entirely
-/// separately from the triangulated faces' indices/normals, so there is no
-/// real edge-to-face adjacency to test against. Instead this reuses the same
-/// approximation [nudgeSegmentsOutward] already relies on for this same
-/// data/limitation: treating the direction from the mesh's bounding-sphere
-/// [center] to a segment's midpoint as a stand-in for that edge's local
-/// "outward face normal". A segment is kept if that stand-in normal points
-/// at least partway towards [cameraPosition], i.e. the edge is on the
-/// camera-facing side of the body.
-///
-/// This is exact for a sphere and a reasonable approximation for any
-/// roughly convex/star-shaped-from-center solid (the only shapes this
-/// project's Sketch+Extrude pipeline can currently produce), but - like the
-/// brief itself acknowledges of the back-face heuristic in general - it
-/// won't perfectly handle self-occlusion on a concave body. Only meaningful
-/// in `shadedWithEdges` mode, where edges share the screen with opaque
-/// faces; `wireframe` mode (no faces to bleed through) shows every edge.
-List<(vm.Vector3, vm.Vector3)> cullBackFacingSegments(
-  List<(vm.Vector3, vm.Vector3)> segments,
-  vm.Vector3 center,
-  vm.Vector3 cameraPosition,
-) {
-  bool facesCamera((vm.Vector3, vm.Vector3) segment) {
-    final midpoint = (segment.$1 + segment.$2) * 0.5;
-    final outward = midpoint - center;
-    if (outward.length2 < 1e-12) return true;
-    final toCamera = cameraPosition - midpoint;
-    if (toCamera.length2 < 1e-12) return true;
-    return outward.normalized().dot(toCamera.normalized()) >= 0;
-  }
-
-  return [for (final segment in segments) if (facesCamera(segment)) segment];
-}
-
 /// Builds the [Node] rendering [segments] as [color]d polylines - one
 /// [MeshPrimitive] per segment, combined into a single [Mesh]/[Node] so
 /// they share one per-frame `updateForCamera` scan (see `PartViewport`'s

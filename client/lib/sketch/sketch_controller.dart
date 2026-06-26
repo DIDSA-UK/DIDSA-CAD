@@ -823,6 +823,10 @@ class SketchController extends ChangeNotifier {
     }
     final created = await _api.createPoint(_sketchId!, mx, my);
     points[created.id] = SketchPointView(id: created.id, x: created.x, y: created.y);
+    _pushUndo(() async {
+      await _api.deletePoint(_sketchId!, created.id);
+      points.remove(created.id);
+    });
     return created.id;
   }
 
@@ -1004,13 +1008,20 @@ class SketchController extends ChangeNotifier {
   /// remaining constraints (e.g. a Line this Point anchors staying the
   /// right length) settle here rather than during the drag itself.
   Future<void> endPointDrag() async {
-    if (_draggingPointId == null) return;
+    final pointId = _draggingPointId;
+    if (pointId == null) return;
+    final originX = _dragOriginPointX!;
+    final originY = _dragOriginPointY!;
     _draggingPointId = null;
     _dragOriginCursorX = null;
     _dragOriginCursorY = null;
     _dragOriginPointX = null;
     _dragOriginPointY = null;
     await _runGuarded(() async {
+      _pushUndo(() async {
+        final restored = await _api.updatePoint(_sketchId!, pointId, originX, originY);
+        points[pointId] = SketchPointView(id: restored.id, x: restored.x, y: restored.y);
+      });
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -1220,6 +1231,24 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Stage 19b item 5: selects every Line/Circle/Point - excluding the
+  /// sketch's origin Point, which is pinned by the solver and so isn't a
+  /// meaningful delete/constrain target - via the same multi-entity
+  /// [selectionSet] every other multi-select path uses. Only meaningful in
+  /// [SketchMode.select]; the toolbar button itself is hidden in draw mode.
+  void selectAll() {
+    if (_mode != SketchMode.select) return;
+    _selectionSet
+      ..clear()
+      ..addAll(points.keys.where((id) => id != _originPointId).map(
+            (id) => SketchSelection(kind: SelectionKind.point, id: id),
+          ))
+      ..addAll(lines.keys.map((id) => SketchSelection(kind: SelectionKind.line, id: id)))
+      ..addAll(circles.keys.map((id) => SketchSelection(kind: SelectionKind.circle, id: id)));
+    _ribbonVisible = _selectionSet.isNotEmpty;
+    notifyListeners();
+  }
+
   /// Deletes every entity in [selectionSet] via the matching backend DELETE
   /// endpoint, then refreshes from backend state - same backend-is-truth
   /// pattern as every other mutation. A rejected delete (e.g. a Constraint
@@ -1231,6 +1260,35 @@ class SketchController extends ChangeNotifier {
     if (_selectionSet.isEmpty || _busy || _sketchId == null) return;
     final toDelete = List<SketchSelection>.from(_selectionSet);
     final deletedConstraint = toDelete.any((s) => s.kind == SelectionKind.constraint);
+
+    // Stage 19b item 4: captured before anything is actually removed, so
+    // the undo entry pushed below has the data needed to recreate each one
+    // (the backend always assigns fresh ids on recreation - see
+    // [_restoreDeletedEntities]).
+    final capturedPoints = <SketchPointView>[];
+    final capturedLines = <SketchLineView>[];
+    final capturedCircles = <SketchCircleView>[];
+    final capturedConstraints = <ConstraintDto>[];
+    for (final current in toDelete) {
+      switch (current.kind) {
+        case SelectionKind.line:
+          final line = lines[current.id];
+          if (line != null) capturedLines.add(line);
+          break;
+        case SelectionKind.circle:
+          final circle = circles[current.id];
+          if (circle != null) capturedCircles.add(circle);
+          break;
+        case SelectionKind.point:
+          final point = points[current.id];
+          if (point != null) capturedPoints.add(point);
+          break;
+        case SelectionKind.constraint:
+          final constraint = constraints[current.id];
+          if (constraint != null) capturedConstraints.add(constraint);
+          break;
+      }
+    }
 
     await _runGuarded(() async {
       for (final current in toDelete) {
@@ -1253,6 +1311,12 @@ class SketchController extends ChangeNotifier {
             break;
         }
       }
+      _pushUndo(() => _restoreDeletedEntities(
+            capturedPoints,
+            capturedLines,
+            capturedCircles,
+            capturedConstraints,
+          ));
       // Removing a Constraint changes the system's degrees of freedom, so
       // unlike deleting a Point/Line/Circle (which only ever removes
       // geometry the solver already accounted for) this needs an explicit
@@ -1265,6 +1329,105 @@ class SketchController extends ChangeNotifier {
       _selectionSet.clear();
       _ribbonVisible = false;
     });
+  }
+
+  /// [deleteSelected]'s undo: recreates every captured entity in dependency
+  /// order (Points, then Lines/Circles, then Constraints) since the backend
+  /// always assigns fresh ids to a recreated entity - [idMap] tracks each
+  /// old id -> new id as Points/Lines/Circles are recreated, so the Lines/
+  /// Circles/Constraints recreated after them substitute the right (new) id
+  /// for whichever endpoint they referenced; an id with no entry in [idMap]
+  /// was never deleted, so the original id is still valid as-is.
+  Future<void> _restoreDeletedEntities(
+    List<SketchPointView> capturedPoints,
+    List<SketchLineView> capturedLines,
+    List<SketchCircleView> capturedCircles,
+    List<ConstraintDto> capturedConstraints,
+  ) async {
+    final idMap = <String, String>{};
+
+    for (final point in capturedPoints) {
+      final created = await _api.createPoint(_sketchId!, point.x, point.y);
+      idMap[point.id] = created.id;
+      points[created.id] = SketchPointView(id: created.id, x: created.x, y: created.y);
+    }
+    for (final line in capturedLines) {
+      final created = await _api.createLine(
+        _sketchId!,
+        idMap[line.startPointId] ?? line.startPointId,
+        idMap[line.endPointId] ?? line.endPointId,
+        construction: line.construction,
+      );
+      idMap[line.id] = created.id;
+      lines[created.id] = SketchLineView(
+        id: created.id,
+        startPointId: created.startPointId,
+        endPointId: created.endPointId,
+        construction: created.construction,
+      );
+    }
+    for (final circle in capturedCircles) {
+      final created = await _api.createCircle(
+        _sketchId!,
+        idMap[circle.centerPointId] ?? circle.centerPointId,
+        idMap[circle.radiusPointId] ?? circle.radiusPointId,
+        construction: circle.construction,
+      );
+      idMap[circle.id] = created.id;
+      circles[created.id] = SketchCircleView(
+        id: created.id,
+        centerPointId: created.centerPointId,
+        radiusPointId: created.radiusPointId,
+        construction: created.construction,
+      );
+    }
+    for (final constraint in capturedConstraints) {
+      await _recreateConstraint(constraint, idMap);
+    }
+  }
+
+  /// [_restoreDeletedEntities]'s per-subtype dispatcher - each
+  /// [ConstraintDto] subtype needs a different [SketchApiClient]
+  /// `create*Constraint` call, with its Point/Line ids substituted through
+  /// [idMap] (falling back to the original id when it was never deleted).
+  Future<void> _recreateConstraint(ConstraintDto dto, Map<String, String> idMap) async {
+    String mapped(String id) => idMap[id] ?? id;
+    if (dto is VerticalConstraintDto) {
+      await _api.createVerticalConstraint(_sketchId!, mapped(dto.lineId));
+    } else if (dto is HorizontalConstraintDto) {
+      await _api.createHorizontalConstraint(_sketchId!, mapped(dto.lineId));
+    } else if (dto is AngleConstraintDto) {
+      await _api.createAngleConstraint(
+        _sketchId!,
+        mapped(dto.line1Id),
+        mapped(dto.line2Id),
+        dto.angleDegrees,
+      );
+    } else if (dto is CoincidentConstraintDto) {
+      await _api.createCoincidentConstraint(_sketchId!, mapped(dto.pointAId), mapped(dto.pointBId));
+    } else if (dto is ParallelConstraintDto) {
+      await _api.createParallelConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+    } else if (dto is PerpendicularConstraintDto) {
+      await _api.createPerpendicularConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+    } else if (dto is EqualLengthConstraintDto) {
+      await _api.createEqualLengthConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+    } else if (dto is CollinearConstraintDto) {
+      await _api.createCollinearConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+    } else if (dto is LineDistanceConstraintDto) {
+      await _api.createLineDistanceConstraint(
+        _sketchId!,
+        mapped(dto.line1Id),
+        mapped(dto.line2Id),
+        dto.distance,
+      );
+    } else if (dto is DistanceConstraintDto) {
+      await _api.createDistanceConstraint(
+        _sketchId!,
+        mapped(dto.pointAId),
+        mapped(dto.pointBId),
+        dto.distance,
+      );
+    }
   }
 
   /// The currently selected single Constraint's editable numeric value
@@ -1296,6 +1459,47 @@ class SketchController extends ChangeNotifier {
     return constraints[_selectionSet.first.id] is AngleConstraintDto;
   }
 
+  /// [lineId]'s current length in sketch units, or null if it isn't a known
+  /// Line - drives Stage 19b item 6's "Set Length" dialog's pre-filled
+  /// value.
+  double? lineLength(String lineId) {
+    final line = lines[lineId];
+    if (line == null) return null;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return null;
+    return math.sqrt(math.pow(end.x - start.x, 2) + math.pow(end.y - start.y, 2));
+  }
+
+  /// Stage 19b item 6's ribbon "Set Length" action: the same flow
+  /// [confirmGhostValue]'s `length` ghost would run (a plain
+  /// `DistanceConstraint` between the Line's two endpoints - the backend's
+  /// only way to represent a Line's length, see [_buildLineLengthGhost]),
+  /// callable directly from the ribbon without first entering Dimension mode
+  /// and tapping the ghost label.
+  Future<void> setLineLength(String lineId, double value) async {
+    if (_busy || _sketchId == null) return;
+    final line = lines[lineId];
+    if (line == null) return;
+    final pointAId = line.startPointId;
+    final pointBId = line.endPointId;
+
+    await _runGuarded(() async {
+      final existing = _findDistanceConstraint(pointAId, pointBId);
+      if (existing != null) {
+        final oldValue = existing.distance;
+        await _api.updateConstraintValue(_sketchId!, existing.id, value);
+        _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
+      } else {
+        final constraint = await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, value);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+        await _solveAndTrackDof();
+      }
+      await _refreshAllPoints();
+      await _refreshConstraints();
+    });
+  }
+
   /// PATCHes the selected single Constraint's value (new work package item
   /// 3's "change value" ribbon action) - mirrors [confirmGhostValue]'s
   /// PATCH-existing-constraint path, then deselects and closes the ribbon on
@@ -1305,8 +1509,12 @@ class SketchController extends ChangeNotifier {
     final current = _selectionSet.first;
     if (current.kind != SelectionKind.constraint) return;
 
+    final oldValue = selectedConstraintValue;
     await _runGuarded(() async {
       await _api.updateConstraintValue(_sketchId!, current.id, value);
+      if (oldValue != null) {
+        _pushUndo(() async => _api.updateConstraintValue(_sketchId!, current.id, oldValue));
+      }
       await _refreshAllPoints();
       await _refreshConstraints();
       _selectionSet.clear();
@@ -1459,7 +1667,8 @@ class SketchController extends ChangeNotifier {
     if (current.kind != SelectionKind.line) return;
 
     await _runGuarded(() async {
-      await _api.createVerticalConstraint(_sketchId!, current.id);
+      final constraint = await _api.createVerticalConstraint(_sketchId!, current.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -1474,7 +1683,8 @@ class SketchController extends ChangeNotifier {
     if (current.kind != SelectionKind.line) return;
 
     await _runGuarded(() async {
-      await _api.createHorizontalConstraint(_sketchId!, current.id);
+      final constraint = await _api.createHorizontalConstraint(_sketchId!, current.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -1854,9 +2064,13 @@ class SketchController extends ChangeNotifier {
       await _runGuarded(() async {
         final existing = _findAngleConstraint(target.lineAId!, target.lineBId!);
         if (existing != null) {
+          final oldValue = existing.angleDegrees;
           await _api.updateConstraintValue(_sketchId!, existing.id, value);
+          _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
         } else {
-          await _api.createAngleConstraint(_sketchId!, target.lineAId!, target.lineBId!, value);
+          final constraint =
+              await _api.createAngleConstraint(_sketchId!, target.lineAId!, target.lineBId!, value);
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
         await _solveAndTrackDof();
         await _refreshAllPoints();
@@ -1877,9 +2091,17 @@ class SketchController extends ChangeNotifier {
       await _runGuarded(() async {
         final existing = _findLineDistanceConstraint(target.lineAId!, target.lineBId!);
         if (existing != null) {
+          final oldValue = existing.distance;
           await _api.updateConstraintValue(_sketchId!, existing.id, value);
+          _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
         } else {
-          await _api.createLineDistanceConstraint(_sketchId!, target.lineAId!, target.lineBId!, value);
+          final constraint = await _api.createLineDistanceConstraint(
+            _sketchId!,
+            target.lineAId!,
+            target.lineBId!,
+            value,
+          );
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
         await _solveAndTrackDof();
         await _refreshAllPoints();
@@ -1898,9 +2120,13 @@ class SketchController extends ChangeNotifier {
     await _runGuarded(() async {
       final existing = _findDistanceConstraint(pointAId, pointBId);
       if (existing != null) {
+        final oldValue = existing.distance;
         await _api.updateConstraintValue(_sketchId!, existing.id, distanceValue);
+        _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
       } else {
-        await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, distanceValue);
+        final constraint =
+            await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, distanceValue);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         await _solveAndTrackDof();
       }
       await _refreshAllPoints();
@@ -1930,13 +2156,14 @@ class SketchController extends ChangeNotifier {
   /// - solver errors surface via the existing [_runGuarded]/[errorMessage]
   /// path, nothing new there.
   Future<void> _createSelectionSetConstraint(
-    Future<void> Function(String sketchId, String idA, String idB) create,
+    Future<ConstraintDto> Function(String sketchId, String idA, String idB) create,
   ) async {
     if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
     final idA = _selectionSet[0].id;
     final idB = _selectionSet[1].id;
     await _runGuarded(() async {
-      await create(_sketchId!, idA, idB);
+      final constraint = await create(_sketchId!, idA, idB);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -2148,6 +2375,10 @@ class SketchController extends ChangeNotifier {
         endPointId: line.endPointId,
         construction: line.construction,
       );
+      _pushUndo(() async {
+        await _api.deleteLine(_sketchId!, line.id);
+        lines.remove(line.id);
+      });
 
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
@@ -2186,6 +2417,10 @@ class SketchController extends ChangeNotifier {
       final endA = points[endAId]!;
       final mirrored = await _api.createPoint(_sketchId!, 2 * midX - endA.x, 2 * midY - endA.y);
       points[mirrored.id] = SketchPointView(id: mirrored.id, x: mirrored.x, y: mirrored.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, mirrored.id);
+        points.remove(mirrored.id);
+      });
 
       final line = await _api.createLine(_sketchId!, endAId, mirrored.id);
       lines[line.id] = SketchLineView(
@@ -2194,6 +2429,10 @@ class SketchController extends ChangeNotifier {
         endPointId: line.endPointId,
         construction: line.construction,
       );
+      _pushUndo(() async {
+        await _api.deleteLine(_sketchId!, line.id);
+        lines.remove(line.id);
+      });
 
       await _solveAndTrackDof();
       await _refreshAllPoints();
@@ -2227,6 +2466,10 @@ class SketchController extends ChangeNotifier {
         radiusPointId: circle.radiusPointId,
         construction: circle.construction,
       );
+      _pushUndo(() async {
+        await _api.deleteCircle(_sketchId!, circle.id);
+        circles.remove(circle.id);
+      });
 
       // Same rule as a completed Line: one finished entity = one solve call.
       await _solveAndTrackDof();
@@ -2278,8 +2521,16 @@ class SketchController extends ChangeNotifier {
     await _runGuarded(() async {
       final centerPoint = await _api.createPoint(_sketchId!, center.$1, center.$2);
       points[centerPoint.id] = SketchPointView(id: centerPoint.id, x: centerPoint.x, y: centerPoint.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, centerPoint.id);
+        points.remove(centerPoint.id);
+      });
       final radiusPoint = await _api.createPoint(_sketchId!, cx, cy);
       points[radiusPoint.id] = SketchPointView(id: radiusPoint.id, x: radiusPoint.x, y: radiusPoint.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, radiusPoint.id);
+        points.remove(radiusPoint.id);
+      });
 
       final circle = await _api.createCircle(_sketchId!, centerPoint.id, radiusPoint.id);
       circles[circle.id] = SketchCircleView(
@@ -2288,6 +2539,10 @@ class SketchController extends ChangeNotifier {
         radiusPointId: circle.radiusPointId,
         construction: circle.construction,
       );
+      _pushUndo(() async {
+        await _api.deleteCircle(_sketchId!, circle.id);
+        circles.remove(circle.id);
+      });
 
       await _solveAndTrackDof();
       await _refreshAllPoints();
@@ -2334,6 +2589,10 @@ class SketchController extends ChangeNotifier {
     }
     final point = await _api.createPoint(_sketchId!, x, y);
     points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+    _pushUndo(() async {
+      await _api.deletePoint(_sketchId!, point.id);
+      points.remove(point.id);
+    });
     return point.id;
   }
 
@@ -2369,6 +2628,10 @@ class SketchController extends ChangeNotifier {
       endPointId: line1.endPointId,
       construction: line1.construction,
     );
+    _pushUndo(() async {
+      await _api.deleteLine(_sketchId!, line1.id);
+      lines.remove(line1.id);
+    });
     final line2 = await _api.createLine(_sketchId!, p1, p2);
     lines[line2.id] = SketchLineView(
       id: line2.id,
@@ -2376,6 +2639,10 @@ class SketchController extends ChangeNotifier {
       endPointId: line2.endPointId,
       construction: line2.construction,
     );
+    _pushUndo(() async {
+      await _api.deleteLine(_sketchId!, line2.id);
+      lines.remove(line2.id);
+    });
     final line3 = await _api.createLine(_sketchId!, p2, p3);
     lines[line3.id] = SketchLineView(
       id: line3.id,
@@ -2383,6 +2650,10 @@ class SketchController extends ChangeNotifier {
       endPointId: line3.endPointId,
       construction: line3.construction,
     );
+    _pushUndo(() async {
+      await _api.deleteLine(_sketchId!, line3.id);
+      lines.remove(line3.id);
+    });
     final line4 = await _api.createLine(_sketchId!, p3, p0);
     lines[line4.id] = SketchLineView(
       id: line4.id,
@@ -2390,10 +2661,17 @@ class SketchController extends ChangeNotifier {
       endPointId: line4.endPointId,
       construction: line4.construction,
     );
+    _pushUndo(() async {
+      await _api.deleteLine(_sketchId!, line4.id);
+      lines.remove(line4.id);
+    });
 
-    await _api.createPerpendicularConstraint(_sketchId!, line1.id, line2.id);
-    await _api.createPerpendicularConstraint(_sketchId!, line2.id, line3.id);
-    await _api.createPerpendicularConstraint(_sketchId!, line3.id, line4.id);
+    final perp1 = await _api.createPerpendicularConstraint(_sketchId!, line1.id, line2.id);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp1.id));
+    final perp2 = await _api.createPerpendicularConstraint(_sketchId!, line2.id, line3.id);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp2.id));
+    final perp3 = await _api.createPerpendicularConstraint(_sketchId!, line3.id, line4.id);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp3.id));
 
     await _solveAndTrackDof();
     await _refreshAllPoints();
@@ -2574,6 +2852,45 @@ class SketchController extends ChangeNotifier {
     final profile = await _api.getProfile(_sketchId!);
     final ids = profile.pointIds;
     _closedProfilePointIds = profile.isClosedLoop && ids != null && ids.isNotEmpty ? ids : null;
+  }
+
+  // --- Stage 19b item 4: undo --------------------------------------------
+
+  /// Client-side-only undo (Stage 19b item 4). The backend is the source of
+  /// truth for every entity (see this class's own doc comment), so a literal
+  /// "snapshot the local maps and restore them" undo would desync from it -
+  /// instead each mutating method below pushes a closure that performs the
+  /// real backend-and-local *inverse* of what it just did; [undo] pops and
+  /// runs the most recent one through the same solve/refresh pipeline every
+  /// other mutation already uses. Capped at 50 entries (oldest dropped once
+  /// full) - fresh per [SketchController] instance, so never shared across
+  /// sketches.
+  final List<Future<void> Function()> _undoStack = [];
+  static const int _maxUndoStackEntries = 50;
+
+  bool get canUndo => _undoStack.isNotEmpty;
+
+  void _pushUndo(Future<void> Function() inverse) {
+    _undoStack.add(inverse);
+    if (_undoStack.length > _maxUndoStackEntries) {
+      _undoStack.removeAt(0);
+    }
+  }
+
+  // TODO: redo
+
+  /// Pops and runs the most recent undo entry pushed by [_pushUndo], then
+  /// re-solves/refreshes exactly like any other mutation - a no-op if the
+  /// stack is empty, already busy, or there's no active sketch.
+  Future<void> undo() async {
+    if (_undoStack.isEmpty || _busy || _sketchId == null) return;
+    final inverse = _undoStack.removeLast();
+    await _runGuarded(() async {
+      await inverse();
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+    });
   }
 
   Future<void> _runGuarded(Future<void> Function() body) async {

@@ -147,42 +147,4 @@ void main() {
 
     expect(nudged[0].$1, vm.Vector3(5, 5, 5));
   });
-
-  test('cullBackFacingSegments keeps an edge on the camera-facing side of the body', () {
-    // Center at origin, camera far out along +X - an edge sitting on the
-    // +X side of center (midpoint (10,0,0)) faces the camera.
-    final segments = [(vm.Vector3(9, -1, 0), vm.Vector3(9, 1, 0))];
-
-    final kept = cullBackFacingSegments(segments, vm.Vector3.zero(), vm.Vector3(100, 0, 0));
-
-    expect(kept, segments);
-  });
-
-  test('cullBackFacingSegments drops an edge on the far side of the body from the camera', () {
-    // Same body/camera as above, but the edge sits on the -X (far) side.
-    final segments = [(vm.Vector3(-9, -1, 0), vm.Vector3(-9, 1, 0))];
-
-    final kept = cullBackFacingSegments(segments, vm.Vector3.zero(), vm.Vector3(100, 0, 0));
-
-    expect(kept, isEmpty);
-  });
-
-  test('cullBackFacingSegments keeps a silhouette edge exactly perpendicular to the camera', () {
-    // Midpoint (0, 9, 0) is perpendicular to the camera direction (+X) as
-    // seen from a center at the origin - the dot product is exactly zero,
-    // which should count as "facing the camera" (kept), not culled.
-    final segments = [(vm.Vector3(-1, 9, 0), vm.Vector3(1, 9, 0))];
-
-    final kept = cullBackFacingSegments(segments, vm.Vector3.zero(), vm.Vector3(100, 0, 0));
-
-    expect(kept, segments);
-  });
-
-  test('cullBackFacingSegments keeps a segment whose midpoint sits exactly at center', () {
-    final segments = [(vm.Vector3(-1, 0, 0), vm.Vector3(1, 0, 0))];
-
-    final kept = cullBackFacingSegments(segments, vm.Vector3.zero(), vm.Vector3(100, 0, 0));
-
-    expect(kept, segments);
-  });
 }

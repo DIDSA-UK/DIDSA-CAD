@@ -239,14 +239,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [ViewportRenderModeX.showsEdges] is set - independent of whether the
   /// filled-faces Node above is also present, since `wireframe` mode shows
   /// edges with no faces at all. In `shadedWithEdges` mode the segments are
-  /// first approximately back-face-culled against the camera's current
-  /// position (Stage 19a Item 1 - see [cullBackFacingSegments]) so the far
-  /// side of the body's edges don't bleed through its near faces, then
   /// nudged outward from the mesh's bounding-sphere center (see
   /// [nudgeSegmentsOutward]), the closest available substitute for a GPU
-  /// depth bias to keep the surviving edges from z-fighting against the
-  /// filled faces underneath; `wireframe` mode has no faces to fight or
-  /// bleed through, so it skips both.
+  /// depth bias to keep them from z-fighting against the filled faces
+  /// underneath; `wireframe` mode has no faces to fight, so it skips this.
   void _syncEdgesNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -260,14 +256,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (segments.isEmpty) return;
     if (widget.renderMode == ViewportRenderMode.shadedWithEdges) {
       final center = boundsOfMesh(mesh)?.center ?? vm.Vector3.zero();
-      // Stage 19a Item 1: approximate back-face cull, recomputed against
-      // the camera's current position every time this rebuilds (including
-      // after every orbit drag - see _handlePointerMove/animateToPlane/the
-      // "Reset view" button) so it tracks the live view angle, not just
-      // whatever angle was active when the mesh last changed. See
-      // cullBackFacingSegments's doc comment for why this approximation
-      // (rather than a real depth/adjacency-based fix) was chosen.
-      segments = cullBackFacingSegments(segments, center, _camera.position);
       segments = nudgeSegmentsOutward(segments, center, meshEdgeNudgeAmount);
     }
     final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
@@ -346,10 +334,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOut);
     void tick() {
       if (!mounted) return;
-      setState(() {
-        _camera.orientation = from.slerp(to, curved.value);
-        _resyncEdgesAfterOrbit();
-      });
+      setState(() => _camera.orientation = from.slerp(to, curved.value));
     }
 
     controller.addListener(tick);
@@ -368,24 +353,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _hadMultiTouch = _activeTouches.length > 1;
   }
 
-  /// Re-syncs [_edgesNode] after an orbit (camera-facing change) - only
-  /// rebuilds anything in `shadedWithEdges` mode, since that's the only mode
-  /// whose edges are camera-position-dependent (see [cullBackFacingSegments]
-  /// inside [_syncEdgesNode]); a no-op in `shaded`/`wireframe` mode.
-  void _resyncEdgesAfterOrbit() {
-    if (widget.renderMode == ViewportRenderMode.shadedWithEdges) {
-      _syncEdgesNode();
-    }
-  }
-
   void _handlePointerMove(PointerMoveEvent event) {
     _gestureTravel += event.delta.distance;
     if (event.kind == PointerDeviceKind.mouse) {
       if (event.buttons & kPrimaryMouseButton != 0) {
-        setState(() {
-          _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy);
-          _resyncEdgesAfterOrbit();
-        });
+        setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
       } else if (event.buttons & kSecondaryMouseButton != 0) {
         setState(() => _camera.panByScreenDelta(event.delta.dx, event.delta.dy));
       }
@@ -393,10 +365,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
 
     if (_activeTouches.length < 2) {
-      setState(() {
-        _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy);
-        _resyncEdgesAfterOrbit();
-      });
+      setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
       return;
     }
 
@@ -528,10 +497,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               child: IconButton.filled(
                 tooltip: 'Reset view',
                 icon: const Icon(Icons.center_focus_strong),
-                onPressed: () => setState(() {
-                  _camera.reset();
-                  _resyncEdgesAfterOrbit();
-                }),
+                onPressed: () => setState(_camera.reset),
               ),
             ),
           ],

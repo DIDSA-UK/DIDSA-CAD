@@ -223,8 +223,10 @@ void main() {
 
     // Stage 10b: the FAB now opens a flyout rather than acting directly -
     // "New Sketch" enters plane-selection mode, then a plane tap creates the
-    // Feature and navigates, same as before.
-    await tester.tap(find.byType(FloatingActionButton));
+    // Feature and navigates, same as before. Stage 19b Item 1 added a second
+    // (small, "Feature tree") FAB, so target the main "Add" one by tooltip
+    // rather than by type.
+    await tester.tap(find.byTooltip('Add'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('New Sketch'), findsOneWidget);
@@ -257,7 +259,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byType(FloatingActionButton));
+      await tester.tap(find.byTooltip('Add'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('New Sketch'));
@@ -394,12 +396,11 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    expect(find.byType(FloatingActionButton), findsOneWidget);
+    // Stage 19b Item 1 added a second (small, "Feature tree") FAB, so target
+    // the main "Add" one by tooltip rather than by type.
+    expect(find.byTooltip('Add'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Show Feature Tree'));
+    await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -411,14 +412,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Confirm'), findsOneWidget);
-    expect(find.byType(FloatingActionButton), findsNothing);
+    expect(find.byTooltip('Add'), findsNothing);
     expect(tester.takeException(), isNull);
 
     await tester.tap(find.text('Cancel'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    expect(find.byType(FloatingActionButton), findsOneWidget);
+    expect(find.byTooltip('Add'), findsOneWidget);
   });
 
   testWidgets('tapping a locked Feature only selects it, and does not navigate to its Sketch', (tester) async {
@@ -448,10 +449,7 @@ void main() {
     // followed by an explicit zero-duration frame - to apply the tap's
     // setState and let the AnimatedSlide pick up its new target offset -
     // then a frame past its 200ms duration to let it finish sliding in.
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Show Feature Tree'));
+    await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -499,10 +497,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Show Feature Tree'));
+    await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -552,10 +547,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Show Feature Tree'));
+    await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -583,7 +575,7 @@ void main() {
   });
 
   testWidgets(
-    'tapping a reference plane opens the toolbar with a New Sketch action, '
+    'tapping a reference plane opens a fly-up sheet with a New Sketch action, '
     'and confirming it creates a SketchFeature on that plane',
     (tester) async {
       final backend = _FakeDocumentBackend();
@@ -652,10 +644,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Show Feature Tree'));
+    await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -688,10 +677,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Show Feature Tree'));
+    await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -729,7 +715,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('tapping the viewport background dismisses the toolbar and clears the plane selection', (
+  testWidgets('tapping outside the plane fly-up sheet dismisses it and clears the plane selection', (
     tester,
   ) async {
     final documentApi = DocumentApiClient(
@@ -753,7 +739,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('New Sketch on XY'), findsOneWidget);
 
-    viewport.onBackgroundTap();
+    // The sheet is a modal route; tapping its barrier (away from the sheet's
+    // own bottom-aligned content) dismisses it like a background tap would,
+    // and PartScreen clears _selectedPlane once that dismissal resolves.
+    await tester.tapAt(const Offset(10, 10));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -783,10 +772,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Show Feature Tree'));
+      await tester.tap(find.byTooltip('Feature tree'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -839,10 +825,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Show Feature Tree'));
+      await tester.tap(find.byTooltip('Feature tree'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -879,10 +862,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Show Feature Tree'));
+    await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 

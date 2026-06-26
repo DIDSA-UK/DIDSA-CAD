@@ -1,0 +1,75 @@
+import 'package:flutter/material.dart';
+
+/// Actions available from the "Add" FAB's second-level Feature picker.
+/// [extrude] is the only entry wired to a real flow for now - Revolve/Sweep/
+/// Fillet/Chamfer are listed (per the Stage 19b brief) but rendered disabled
+/// since this codebase has no flow for them yet.
+enum FeaturePickerAction { extrude }
+
+/// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
+/// Feature entry offers - same drag-handle/rounded-top-corner shape as
+/// [showPlaneContextSheet], so both Stage 19b fly-ups feel consistent.
+Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
+  return showModalBottomSheet<FeaturePickerAction>(
+    context: context,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (context) {
+      final disabledColor = Theme.of(context).disabledColor;
+      return SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: _DragHandle(),
+            ),
+            ListTile(
+              leading: const Icon(Icons.move_to_inbox_outlined),
+              title: const Text('Extrude'),
+              onTap: () => Navigator.of(context).pop(FeaturePickerAction.extrude),
+            ),
+            ListTile(
+              enabled: false,
+              leading: Icon(Icons.rotate_right, color: disabledColor),
+              title: Text('Revolve', style: TextStyle(color: disabledColor)),
+            ),
+            ListTile(
+              enabled: false,
+              leading: Icon(Icons.gesture, color: disabledColor),
+              title: Text('Sweep', style: TextStyle(color: disabledColor)),
+            ),
+            ListTile(
+              enabled: false,
+              leading: Icon(Icons.rounded_corner, color: disabledColor),
+              title: Text('Fillet', style: TextStyle(color: disabledColor)),
+            ),
+            ListTile(
+              enabled: false,
+              leading: Icon(Icons.change_history, color: disabledColor),
+              title: Text('Chamfer', style: TextStyle(color: disabledColor)),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+class _DragHandle extends StatelessWidget {
+  const _DragHandle();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 32,
+      height: 4,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(2),
+      ),
+    );
+  }
+}
