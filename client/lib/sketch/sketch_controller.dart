@@ -827,6 +827,18 @@ class SketchController extends ChangeNotifier {
       await _api.deletePoint(_sketchId!, created.id);
       points.remove(created.id);
     });
+
+    // Stage 20 item 6: ties the new Point to lineId's true midpoint, so it
+    // stays correct if either endpoint is later dragged/constrained, instead
+    // of being a one-off snapshot of where the midpoint happened to be when
+    // tapped.
+    // NOTE: mid-point implemented as two equal half-length distance constraints (backend has no SLVS_C_AT_MIDPOINT)
+    final halfLength = line.length / 2;
+    final toStart = await _api.createDistanceConstraint(_sketchId!, created.id, line.startPointId, halfLength);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, toStart.id));
+    final toEnd = await _api.createDistanceConstraint(_sketchId!, created.id, line.endPointId, halfLength);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, toEnd.id));
+
     return created.id;
   }
 
@@ -995,6 +1007,14 @@ class SketchController extends ChangeNotifier {
     final newY = originPointY + (y - originCursorY);
     try {
       final updated = await _api.updatePoint(_sketchId!, pointId, newX, newY);
+      // [endPointDrag] clears _draggingPointId synchronously before it solves
+      // and refreshes - if this PATCH straggles past that point (e.g. a
+      // pointer-move fired right before pointer-up), applying it here would
+      // clobber the just-solved, constraint-satisfying position with this
+      // stale unconstrained drag position, which is exactly what made a
+      // constraint (e.g. Vertical) look violated until some unrelated later
+      // mutation forced a fresh refresh.
+      if (_draggingPointId != pointId) return;
       points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
     } on ApiException catch (e) {
@@ -1291,7 +1311,19 @@ class SketchController extends ChangeNotifier {
     }
 
     await _runGuarded(() async {
-      for (final current in toDelete) {
+      // Backend rejects deleting a Point still referenced by a Line/Circle,
+      // and a Line/Circle can itself still be referenced by a Constraint -
+      // so deletion must run in the reverse of creation/dependency order
+      // (Constraints, then Lines/Circles, then Points), regardless of the
+      // order entities happened to be selected/tapped in. Mirrors
+      // [_restoreDeletedEntities]'s own (forward) Points -> Lines/Circles ->
+      // Constraints ordering.
+      final constraintsToDelete = toDelete.where((s) => s.kind == SelectionKind.constraint);
+      final linesCirclesToDelete = toDelete.where(
+        (s) => s.kind == SelectionKind.line || s.kind == SelectionKind.circle,
+      );
+      final pointsToDelete = toDelete.where((s) => s.kind == SelectionKind.point);
+      for (final current in [...constraintsToDelete, ...linesCirclesToDelete, ...pointsToDelete]) {
         switch (current.kind) {
           case SelectionKind.line:
             await _api.deleteLine(_sketchId!, current.id);
@@ -2343,6 +2375,13 @@ class SketchController extends ChangeNotifier {
     _ribbonVisible = false;
     await _runGuarded(() async {
       await _pointIdAtCursor();
+      // A midpoint-snapped placement (see _materializeMidpoint) adds two new
+      // DistanceConstraints, which a plain new Point never did before - solve
+      // and refresh unconditionally, same as every other entity-placement
+      // tool, so a midpoint Point's constraints are reflected immediately.
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
     });
   }
 
