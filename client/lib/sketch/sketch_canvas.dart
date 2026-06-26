@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -34,18 +35,36 @@ class SketchCanvas extends StatefulWidget {
   /// just threaded through here for the painter to honor.
   final bool referenceBodyHidden;
 
+  /// Stage 23f's View submenu toggle - owned by [SketchScreen], session-only
+  /// (no persistence, unlike `viewport3d`'s `ViewPreferences`). Suppresses
+  /// [_SketchPainter._paintDimensionOverlays] entirely when off; tap-to-select
+  /// on a constraint label is left as-is (see [dimensionLabelAt]), since the
+  /// brief only calls for hiding the rendering.
+  final bool constraintLabelsVisible;
+
+  /// Stage 23f's View submenu colour/transparency controls - also
+  /// session-only, owned by [SketchScreen]. [defaultColor] matches the fixed
+  /// background this painter always drew before Stage 23f.
+  final Color canvasColor;
+  final double canvasOpacity;
+
+  static const Color defaultColor = Color(0xFFF2F2F2);
+
   const SketchCanvas({
     super.key,
     required this.controller,
     this.referenceGhostSegments = const [],
     this.referenceBodyHidden = false,
+    this.constraintLabelsVisible = true,
+    this.canvasColor = defaultColor,
+    this.canvasOpacity = 1.0,
   });
 
   @override
   State<SketchCanvas> createState() => _SketchCanvasState();
 }
 
-class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderStateMixin {
+class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixin {
   final SketchViewport _viewport = SketchViewport();
 
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - tracked
@@ -162,16 +181,134 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     _lastPointerPosition = position;
   }
 
+  /// Stage 23g: pending long-press timer started by [_maybeStartLongPress] -
+  /// non-null only while waiting to see whether the pointer stays put for
+  /// [_longPressDuration]; canceled (see [_cancelLongPress]) by excess
+  /// travel, the pointer lifting first, or a second pointer touching down.
+  Timer? _longPressTimer;
+
+  /// How long a stationary press on empty canvas must hold before it grows
+  /// into a marquee-select, per the brief - arbitrary, tuned to feel like a
+  /// deliberate "long" press rather than an ordinary tap.
+  static const Duration _longPressDuration = Duration(milliseconds: 500);
+
+  /// The screen position the pending long-press (or, once it fires, the
+  /// active marquee) started at - both one corner of the eventual marquee
+  /// rectangle and the point compared against later pointer-move positions
+  /// to cancel a long-press that moves too far before firing.
+  Offset? _longPressDownScreen;
+
+  /// Whether the swell-and-pop-then-marquee gesture is currently dragging -
+  /// once true, [_handlePointerMove]/[_handlePointerEnd] divert entirely to
+  /// marquee handling instead of the usual cursor-move/pan/tap dispatch.
+  bool _marqueeActive = false;
+
+  /// The live other corner of the marquee rectangle while [_marqueeActive] -
+  /// null only in the instant between the long-press firing and the first
+  /// subsequent pointer-move.
+  Offset? _marqueeCurrentScreen;
+
+  /// Drives the swell-and-pop circle shown at the long-press point the
+  /// moment it fires. Requires the broader `TickerProviderStateMixin`
+  /// (rather than the single-ticker variant used before Stage 23g) since it
+  /// must coexist with [_edgePanTicker]'s own ticker.
+  late final AnimationController _longPressPopController;
+  late final Animation<double> _longPressPopRadius;
+  late final Animation<double> _longPressPopOpacity;
+
+  /// Screen position of the swell-and-pop circle - null whenever there's
+  /// nothing to show, including once [_longPressPopController] finishes.
+  Offset? _longPressPopCenter;
+
   @override
   void initState() {
     super.initState();
     _edgePanTicker = createTicker(_onEdgePanTick)..start();
+    _longPressPopController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          setState(() => _longPressPopCenter = null);
+        }
+      });
+    _longPressPopRadius = Tween<double>(begin: 6, end: 26).animate(
+      CurvedAnimation(parent: _longPressPopController, curve: Curves.easeOut),
+    );
+    _longPressPopOpacity = Tween<double>(begin: 0.6, end: 0.0).animate(
+      CurvedAnimation(parent: _longPressPopController, curve: Curves.easeOut),
+    );
   }
 
   @override
   void dispose() {
     _edgePanTicker.dispose();
+    _longPressPopController.dispose();
+    _longPressTimer?.cancel();
     super.dispose();
+  }
+
+  /// Stage 23g: starts the long-press timer when [downScreen] (the
+  /// pointer-down position that's already been confirmed the sketch's only
+  /// active pointer) lands on blank canvas while in [SketchMode.select] -
+  /// the only situation a long-press should grow into a marquee-select
+  /// rather than being left to the existing tap/pan/entity-drag handling.
+  /// No-op otherwise, so e.g. a long-press on an existing Point still just
+  /// behaves like an ordinary press-and-hold (no special gesture fires).
+  void _maybeStartLongPress(Offset downScreen, ViewTransform transform) {
+    final controller = widget.controller;
+    if (controller.mode != SketchMode.select) return;
+    final coord = transform.screenToSketch(downScreen.dx, downScreen.dy);
+    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    if (controller.hasEntityNear(coord.x, coord.y, hitRadius)) return;
+    _longPressDownScreen = downScreen;
+    _longPressTimer?.cancel();
+    _longPressTimer = Timer(_longPressDuration, () => _startMarquee(downScreen));
+  }
+
+  /// Fires once [_longPressDuration] elapses without the pointer traveling
+  /// far enough to cancel - shows the swell-and-pop circle and switches the
+  /// gesture state machine over to marquee-drag mode.
+  void _startMarquee(Offset downScreen) {
+    _longPressTimer = null;
+    setState(() {
+      _marqueeActive = true;
+      _longPressDownScreen = downScreen;
+      _marqueeCurrentScreen = downScreen;
+      _longPressPopCenter = downScreen;
+    });
+    _longPressPopController.forward(from: 0);
+  }
+
+  /// Cancels a pending (not yet fired) long-press timer - does not affect
+  /// an already-active marquee, which only ends via [_endMarquee].
+  void _cancelLongPress() {
+    _longPressTimer?.cancel();
+    _longPressTimer = null;
+    _longPressDownScreen = null;
+  }
+
+  /// Ends the active marquee on pointer-up/-cancel: selects every entity
+  /// fully inside the box spanned by [_longPressDownScreen] and
+  /// [_marqueeCurrentScreen] (both screen-space, converted to sketch space
+  /// here since [SketchController.selectInRect] only knows sketch
+  /// coordinates) via [SketchController.selectInRect], then resets all
+  /// marquee state. A long-press that never actually dragged (so both
+  /// corners coincide) simply selects nothing, same as a deselecting tap.
+  void _endMarquee(ViewTransform transform) {
+    final anchor = _longPressDownScreen;
+    final current = _marqueeCurrentScreen;
+    _marqueeActive = false;
+    _longPressDownScreen = null;
+    _marqueeCurrentScreen = null;
+    if (anchor == null || current == null) return;
+    final anchorSketch = transform.screenToSketch(anchor.dx, anchor.dy);
+    final currentSketch = transform.screenToSketch(current.dx, current.dy);
+    final rect = Rect.fromPoints(
+      Offset(anchorSketch.x, anchorSketch.y),
+      Offset(currentSketch.x, currentSketch.y),
+    );
+    widget.controller.selectInRect(rect);
   }
 
   /// Runs every frame regardless of pointer activity: if the cursor's
@@ -303,6 +440,11 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerDown(PointerDownEvent event, ViewTransform transform) {
+    // Stage 23g: the marquee gesture only ever tracks one pointer - a
+    // second finger touching down mid-drag is ignored outright rather than
+    // feeding into the pinch/pan handling below, which would otherwise
+    // fight the marquee over what the gesture even means.
+    if (_marqueeActive) return;
     if (event.kind == PointerDeviceKind.mouse) {
       // Only the primary (left) button counts as a bare tap, same as a
       // touch tap - a right-click starts a pan drag instead (see
@@ -314,6 +456,7 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       if (event.buttons & kPrimaryMouseButton != 0) {
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
         if (_tryStartEntityDrag(transform)) return;
+        _maybeStartLongPress(event.localPosition, transform);
         _dispatchTap(transform);
       }
       return;
@@ -330,10 +473,21 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
     }
     _singleTouchTravel = 0;
     _multiTouchOccurred = false;
-    _tryStartEntityDrag(transform);
+    if (_tryStartEntityDrag(transform)) return;
+    _maybeStartLongPress(event.localPosition, transform);
   }
 
   void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
+    if (_marqueeActive) {
+      setState(() => _marqueeCurrentScreen = event.localPosition);
+      return;
+    }
+    if (_longPressTimer != null) {
+      final down = _longPressDownScreen;
+      if (down != null && (event.localPosition - down).distance > _tapTravelThreshold) {
+        _cancelLongPress();
+      }
+    }
     if (_draggingLabelId != null) {
       _labelDragTravel += event.delta.distance;
       widget.controller.updateLabelDrag(event.delta);
@@ -387,6 +541,15 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
   }
 
   void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
+    if (_marqueeActive) {
+      _activeTouches.remove(event.pointer);
+      setState(() => _endMarquee(transform));
+      return;
+    }
+    // A pending (not yet fired) long-press timer never gets the chance to
+    // fire if its pointer lifts first - same as any other gesture that's
+    // still ambiguous when the pointer ends.
+    _cancelLongPress();
     if (_draggingLabelId != null) {
       final labelId = _draggingLabelId!;
       _draggingLabelId = null;
@@ -487,6 +650,9 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
                       transform: transform,
                       referenceGhostSegments: widget.referenceGhostSegments,
                       referenceBodyHidden: widget.referenceBodyHidden,
+                      labelsVisible: widget.constraintLabelsVisible,
+                      canvasColor: widget.canvasColor,
+                      canvasOpacity: widget.canvasOpacity,
                     ),
                   );
                 },
@@ -515,16 +681,52 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
                 );
               },
             ),
-            if (_viewport.zoom != 1 || _viewport.panOffset != Offset.zero)
-              Positioned(
-                top: 8,
-                left: 8,
-                child: IconButton.filled(
-                  tooltip: 'Reset view',
-                  icon: const Icon(Icons.center_focus_strong),
-                  onPressed: () => setState(_viewport.reset),
+            // Stage 23g: the live marquee rectangle - shrink-wraps to
+            // whatever's been dragged so far between the long-press anchor
+            // and the current pointer position, both screen-space.
+            if (_marqueeActive)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: size,
+                  painter: _MarqueePainter(
+                    rect: Rect.fromPoints(
+                      _longPressDownScreen ?? Offset.zero,
+                      _marqueeCurrentScreen ?? _longPressDownScreen ?? Offset.zero,
+                    ),
+                  ),
                 ),
               ),
+            // Stage 23g: the swell-and-pop circle that announces a
+            // long-press just fired, right before the marquee itself
+            // becomes draggable.
+            AnimatedBuilder(
+              animation: _longPressPopController,
+              builder: (context, _) {
+                final center = _longPressPopCenter;
+                if (center == null) return const SizedBox.shrink();
+                return IgnorePointer(
+                  child: CustomPaint(
+                    size: size,
+                    painter: _LongPressPopPainter(
+                      center: center,
+                      radius: _longPressPopRadius.value,
+                      opacity: _longPressPopOpacity.value,
+                    ),
+                  ),
+                );
+              },
+            ),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: IconButton.filled(
+                tooltip: 'Zoom to fit',
+                icon: const Icon(Icons.center_focus_strong),
+                onPressed: () => setState(
+                  () => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size),
+                ),
+              ),
+            ),
             Positioned(
               bottom: 8,
               left: 8,
@@ -538,6 +740,61 @@ class _SketchCanvasState extends State<SketchCanvas> with SingleTickerProviderSt
       },
     );
   }
+}
+
+/// Stage 23g: the live marquee rectangle drawn while
+/// [_SketchCanvasState._marqueeActive] - a light fill plus a solid border,
+/// matching the conventional "rubber-band select" look.
+class _MarqueePainter extends CustomPainter {
+  final Rect rect;
+
+  const _MarqueePainter({required this.rect});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(rect, Paint()..color = Colors.blue.withValues(alpha: 0.12));
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..color = Colors.blue.withValues(alpha: 0.8)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _MarqueePainter oldDelegate) => oldDelegate.rect != rect;
+}
+
+/// Stage 23g: the swell-and-pop circle shown at the instant a long-press
+/// fires - [radius] grows and [opacity] fades as
+/// [_SketchCanvasState._longPressPopController] runs.
+class _LongPressPopPainter extends CustomPainter {
+  final Offset center;
+  final double radius;
+  final double opacity;
+
+  const _LongPressPopPainter({
+    required this.center,
+    required this.radius,
+    required this.opacity,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = Colors.blue.withValues(alpha: opacity)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _LongPressPopPainter oldDelegate) =>
+      oldDelegate.center != center || oldDelegate.radius != radius || oldDelegate.opacity != opacity;
 }
 
 /// The screen-space geometry for one rendered [DimensionGhost] - shared by
@@ -569,6 +826,21 @@ Offset? _lineMidpointScreenFor(SketchController controller, ViewTransform transf
   final end = controller.points[line.endPointId];
   if (start == null || end == null) return null;
   return (transform.sketchToScreen(start.x, start.y) + transform.sketchToScreen(end.x, end.y)) / 2;
+}
+
+/// The midpoint between two Lines' own midpoints - the "between the two
+/// entities" anchor heuristic (Stage 23e) shared by every value-less
+/// two-Line constraint type (Parallel/Perpendicular/EqualLength/Collinear).
+Offset? _twoLineMidpointScreen(
+  SketchController controller,
+  ViewTransform transform,
+  String line1Id,
+  String line2Id,
+) {
+  final mid1 = _lineMidpointScreenFor(controller, transform, line1Id);
+  final mid2 = _lineMidpointScreenFor(controller, transform, line2Id);
+  if (mid1 == null || mid2 == null) return null;
+  return (mid1 + mid2) / 2;
 }
 
 /// Computes [ghost]'s on-screen layout - null if its anchor Points/Lines
@@ -750,6 +1022,27 @@ Offset? _constraintLabelCenter(
       const offsetDistance = 18.0;
       final offset = normal * offsetDistance;
       return (midA + offset + midB + offset) / 2;
+    // Stage 23e: extends label rendering/hit-testing to every remaining
+    // constraint type. AtMidpointConstraintDto is deliberately excluded -
+    // Stage 22 decided it renders no badge at all, since it's purely a
+    // construction-time fixup with nothing useful to label or delete from
+    // the canvas.
+    case CoincidentConstraintDto c:
+      return _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+    case ParallelConstraintDto c:
+      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+    case PerpendicularConstraintDto c:
+      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+    case EqualLengthConstraintDto c:
+      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+    case CollinearConstraintDto c:
+      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+    case PointLineDistanceConstraintDto c:
+      final point = controller.points[c.pointId];
+      final lineMid = _lineMidpointScreenFor(controller, transform, c.lineId);
+      if (point == null || lineMid == null) return null;
+      final pointScreen = transform.sketchToScreen(point.x, point.y);
+      return (pointScreen + lineMid) / 2;
     default:
       return null;
   }
@@ -879,12 +1172,18 @@ class _SketchPainter extends CustomPainter {
   final ViewTransform transform;
   final List<((double, double), (double, double))> referenceGhostSegments;
   final bool referenceBodyHidden;
+  final bool labelsVisible;
+  final Color canvasColor;
+  final double canvasOpacity;
 
   _SketchPainter({
     required this.controller,
     required this.transform,
     this.referenceGhostSegments = const [],
     this.referenceBodyHidden = false,
+    this.labelsVisible = true,
+    this.canvasColor = SketchCanvas.defaultColor,
+    this.canvasOpacity = 1.0,
   });
 
   /// Stage 12 item 9's ghost wireframe color - faint and thinner than every
@@ -986,6 +1285,20 @@ class _SketchPainter extends CustomPainter {
           _paintAngleDimension(canvas, c, color, labelOffset);
         case LineDistanceConstraintDto c:
           _paintLineDistanceDimension(canvas, c, color, labelOffset);
+        // Stage 23e: every remaining constraint type gets a small label too
+        // (AtMidpointConstraintDto stays excluded - see _constraintLabelCenter).
+        case CoincidentConstraintDto c:
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'Coinc.', color, labelOffset);
+        case ParallelConstraintDto c:
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '∥', color, labelOffset);
+        case PerpendicularConstraintDto c:
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '⟂', color, labelOffset);
+        case EqualLengthConstraintDto c:
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '=', color, labelOffset);
+        case CollinearConstraintDto c:
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, 'Collin.', color, labelOffset);
+        case PointLineDistanceConstraintDto c:
+          _paintPointLineDistanceDimension(canvas, c, color, labelOffset);
         default:
           break;
       }
@@ -1118,6 +1431,44 @@ class _SketchPainter extends CustomPainter {
     final midpoint = (midpoint1 + midpoint2) / 2;
     _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
+  }
+
+  /// Generic two-Line glyph (Stage 23e): a small text chip at the midpoint
+  /// between each Line's own midpoint - the value-less counterpart to
+  /// [_paintAngleDimension]'s anchor, used for Parallel/Perpendicular/
+  /// EqualLength/Collinear, which only need to show their own existence.
+  void _paintTwoLineGlyph(
+    Canvas canvas,
+    String line1Id,
+    String line2Id,
+    String label,
+    Color color,
+    Offset labelOffset,
+  ) {
+    final midpoint1 = _lineMidpointScreen(line1Id);
+    final midpoint2 = _lineMidpointScreen(line2Id);
+    if (midpoint1 == null || midpoint2 == null) return;
+    final midpoint = (midpoint1 + midpoint2) / 2;
+    _drawLeaderLine(canvas, midpoint, labelOffset, color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
+  }
+
+  /// Point-to-Line distance dimension (Stage 23e, [PointLineDistanceConstraintDto]):
+  /// anchored between the Point and the Line's own midpoint, with the same
+  /// numeric-label convention as [_paintDistanceDimension].
+  void _paintPointLineDistanceDimension(
+    Canvas canvas,
+    PointLineDistanceConstraintDto c,
+    Color color,
+    Offset labelOffset,
+  ) {
+    final point = controller.points[c.pointId];
+    final lineMid = _lineMidpointScreen(c.lineId);
+    if (point == null || lineMid == null) return;
+    final pointScreen = transform.sketchToScreen(point.x, point.y);
+    final midpoint = (pointScreen + lineMid) / 2;
+    _drawLeaderLine(canvas, midpoint, labelOffset, color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
   }
 
   Offset? _lineMidpointScreen(String lineId) {
@@ -1287,7 +1638,7 @@ class _SketchPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFF2F2F2));
+    canvas.drawRect(Offset.zero & size, Paint()..color = canvasColor.withValues(alpha: canvasOpacity));
 
     if (!referenceBodyHidden && referenceGhostSegments.isNotEmpty) {
       final ghostPaint = Paint()
@@ -1415,7 +1766,7 @@ class _SketchPainter extends CustomPainter {
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
     }
 
-    _paintDimensionOverlays(canvas);
+    if (labelsVisible) _paintDimensionOverlays(canvas);
     _paintGhosts(canvas);
     _paintInProgressConstructionPicks(canvas);
     _paintMidpointSnapIndicator(canvas);

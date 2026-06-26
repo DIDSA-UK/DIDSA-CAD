@@ -75,15 +75,12 @@ class SketchRibbon extends StatelessWidget {
 
   Widget _body(BuildContext context) {
     final selectionSet = controller.selectionSet;
+    // Stage 23d: the ribbon can no longer be opened with an empty selection
+    // (tapping blank canvas is now a no-op - see
+    // SketchController._handleSelectTap), so this is unreachable in
+    // practice. Exit Sketch now lives in the hamburger menu (Stage 23f).
     if (selectionSet.isEmpty) {
-      return ListTile(
-        leading: const Icon(Icons.logout),
-        title: const Text('Exit Sketch'),
-        // Same exit path as the back button (both just pop this route) -
-        // PartScreen's _openSketch refreshes the 3D viewport once this
-        // pop is observed there, regardless of which path triggered it.
-        onTap: () => Navigator.of(context).pop(),
-      );
+      return const SizedBox.shrink();
     }
 
     final blockedReason =
@@ -98,7 +95,7 @@ class SketchRibbon extends StatelessWidget {
       if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.line)
         _RibbonActionChip(
           icon: Icons.straighten,
-          label: 'Set Length',
+          label: 'Length',
           onTap: controller.busy
               ? null
               : () => _showSetLengthDialog(context, controller, selectionSet.first.id),
@@ -133,13 +130,27 @@ class SketchRibbon extends StatelessWidget {
       ),
     );
 
-    if (!controller.selectedConstraintHasValue) return chipRow;
+    final content = !controller.selectedConstraintHasValue
+        ? chipRow
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ConstraintValueEditor(controller: controller),
+              chipRow,
+            ],
+          );
+
+    // Stage 23h: only once 2+ entities are actually selected - a lone
+    // selection is already named by this panel's own heading (see
+    // [_heading]), so a one-row list repeating it would be redundant.
+    if (selectionSet.length < 2) return content;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _ConstraintValueEditor(controller: controller),
-        chipRow,
+        _SelectedEntitiesList(controller: controller),
+        const Divider(height: 1),
+        content,
       ],
     );
   }
@@ -200,6 +211,13 @@ class _SetLengthDialog extends StatefulWidget {
 
 class _SetLengthDialogState extends State<_SetLengthDialog> {
   String? _error;
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
 
   void _submit() {
     final value = double.tryParse(widget.textController.text);
@@ -207,7 +225,17 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
       setState(() => _error = 'Enter a positive number');
       return;
     }
+    // Stage 23a: the focused TextField must release its focus before the
+    // dialog route is popped - autofocus's deferred focus-grant otherwise
+    // races the synchronous pop and trips a `_dependents.isEmpty` assertion
+    // when the focus scope is torn down mid-rebuild.
+    _focusNode.unfocus();
     Navigator.of(context).pop(value);
+  }
+
+  void _cancel() {
+    _focusNode.unfocus();
+    Navigator.of(context).pop();
   }
 
   @override
@@ -216,6 +244,7 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
       title: const Text('Set Length'),
       content: TextField(
         controller: widget.textController,
+        focusNode: _focusNode,
         autofocus: true,
         keyboardType: const TextInputType.numberWithOptions(decimal: true),
         decoration: InputDecoration(
@@ -227,7 +256,7 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _cancel,
           child: const Text('Cancel'),
         ),
         FilledButton(
@@ -263,6 +292,46 @@ class _RibbonHeader extends StatelessWidget {
             onPressed: onClose,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Stage 23h: lists every entity currently in [SketchController.selectionSet]
+/// by its session-only auto-name (see [SketchController.selectionLabel]),
+/// each with a × that deselects just that one entity (via
+/// [SketchController.deselect]) without touching the rest - shown above the
+/// usual chip row whenever 2+ entities are selected (see
+/// [SketchRibbon._body]). Capped to a scrollable height rather than growing
+/// the panel unboundedly for a very large marquee selection.
+class _SelectedEntitiesList extends StatelessWidget {
+  final SketchController controller;
+
+  const _SelectedEntitiesList({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final selectionSet = controller.selectionSet;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 160),
+      child: ListView.builder(
+        shrinkWrap: true,
+        padding: EdgeInsets.zero,
+        itemCount: selectionSet.length,
+        itemBuilder: (context, index) {
+          final selection = selectionSet[index];
+          return ListTile(
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            contentPadding: const EdgeInsets.only(left: 16, right: 4),
+            title: Text(controller.selectionLabel(selection)),
+            trailing: IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              tooltip: 'Remove from selection',
+              onPressed: controller.busy ? null : () => controller.deselect(selection),
+            ),
+          );
+        },
       ),
     );
   }

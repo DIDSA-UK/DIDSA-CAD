@@ -993,13 +993,16 @@ void main() {
     expect(controller.ribbonVisible, isTrue);
   });
 
-  test('handleCanvasTap on blank space opens the idle ribbon panel when it was closed', () async {
+  test('handleCanvasTap on blank space is a no-op when the ribbon was already closed', () async {
+    // Stage 23d: tapping blank canvas no longer surfaces the idle ribbon
+    // (which used to offer only "Exit Sketch") - that action moved to the
+    // hamburger menu.
     expect(controller.ribbonVisible, isFalse);
 
     await controller.handleCanvasTap(50, 50);
 
     expect(controller.selection, isNull);
-    expect(controller.ribbonVisible, isTrue);
+    expect(controller.ribbonVisible, isFalse);
   });
 
   test('handleCanvasTap on blank space dismisses the ribbon when it is already open', () async {
@@ -2161,5 +2164,134 @@ void main() {
 
     expect(controller.errorMessage, isNull);
     expect(controller.constraints.values.whereType<CollinearConstraintDto>().length, 1);
+  });
+
+  // --- Stage 23g/23h: marquee selection and the Selected Entities list ------
+
+  test('hasEntityNear is true near existing geometry and false on truly empty canvas', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(10, 10);
+    await controller.handleCanvasTap(20, 10);
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    expect(controller.hasEntityNear(10, 10, 1), isTrue);
+    expect(controller.hasEntityNear(500, 500, 1), isFalse);
+  });
+
+  test('hasEntityNear is true near the origin Point even though it is never selectable',
+      () async {
+    expect(controller.hasEntityNear(0, 0, 1), isTrue);
+  });
+
+  test('selectInRect selects a Line and its endpoints when fully inside the rect, and excludes '
+      'a Line that falls outside it', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(5, 5);
+    await controller.handleCanvasTap(15, 5);
+    controller.finishChain();
+    final insideLine = controller.lines.values.first;
+    await controller.handleCanvasTap(50, 50);
+    await controller.handleCanvasTap(60, 50);
+    controller.finishChain();
+    final outsideLine = controller.lines.values.last;
+    controller.exitToSelectMode();
+
+    controller.selectInRect(const Rect.fromLTRB(4, 4, 16, 6));
+
+    final selectedIds = controller.selectionSet.map((s) => s.id).toSet();
+    expect(selectedIds, contains(insideLine.id));
+    expect(selectedIds, isNot(contains(outsideLine.id)));
+    expect(
+      controller.selectionSet.where((s) => s.kind == SelectionKind.point).length,
+      2, // the inside Line's two endpoints
+    );
+    expect(controller.ribbonVisible, isTrue);
+  });
+
+  test('selectInRect never selects the origin Point even when the rect contains it', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(50, 50);
+    await controller.handleCanvasTap(60, 50);
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    controller.selectInRect(const Rect.fromLTRB(-1, -1, 1, 1));
+
+    expect(controller.selectionSet, isEmpty);
+    expect(controller.ribbonVisible, isFalse);
+  });
+
+  test('selectInRect selects a Circle only once its full bounding box is inside the rect',
+      () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(30, 30); // center
+    await controller.handleCanvasTap(35, 30); // radius point - radius 5
+    final circle = controller.circles.values.first;
+    controller.exitToSelectMode();
+
+    controller.selectInRect(const Rect.fromLTRB(40, 40, 60, 60)); // misses the circle entirely
+    expect(controller.selectionSet.any((s) => s.kind == SelectionKind.circle), isFalse);
+
+    controller.selectInRect(const Rect.fromLTRB(20, 20, 40, 40)); // fully contains it
+    expect(
+      controller.selectionSet,
+      contains(predicate<SketchSelection>((s) => s.kind == SelectionKind.circle && s.id == circle.id)),
+    );
+  });
+
+  test('deselect removes one entity from a multi-selection and closes the ribbon once the last '
+      'one is removed', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(5, 5);
+    await controller.handleCanvasTap(15, 5);
+    controller.finishChain();
+    await controller.handleCanvasTap(5, 50);
+    await controller.handleCanvasTap(15, 50);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    controller.selectInRect(const Rect.fromLTRB(0, 0, 20, 60));
+    expect(controller.selectionSet.length, greaterThanOrEqualTo(2));
+    final toRemove = controller.selectionSet.first;
+
+    controller.deselect(toRemove);
+
+    expect(controller.selectionSet.any((s) => s.sameAs(toRemove)), isFalse);
+    expect(controller.ribbonVisible, isTrue);
+
+    for (final remaining in List<SketchSelection>.from(controller.selectionSet)) {
+      controller.deselect(remaining);
+    }
+    expect(controller.selectionSet, isEmpty);
+    expect(controller.ribbonVisible, isFalse);
+  });
+
+  test('selectionLabel names Lines, Points and Circles by creation order, excluding the origin '
+      'Point from Point numbering', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(5, 5);
+    await controller.handleCanvasTap(15, 5);
+    controller.finishChain();
+    final line = controller.lines.values.first;
+    final linePoints = controller.points.values.where((p) => p.x != 0 || p.y != 0).toList();
+
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(30, 30);
+    await controller.handleCanvasTap(35, 30);
+    final circle = controller.circles.values.first;
+    controller.exitToSelectMode();
+
+    expect(
+      controller.selectionLabel(SketchSelection(kind: SelectionKind.line, id: line.id)),
+      'Line 1',
+    );
+    expect(
+      controller.selectionLabel(SketchSelection(kind: SelectionKind.point, id: linePoints.first.id)),
+      'Point 1',
+    );
+    expect(
+      controller.selectionLabel(SketchSelection(kind: SelectionKind.circle, id: circle.id)),
+      'Circle 1',
+    );
   });
 }
