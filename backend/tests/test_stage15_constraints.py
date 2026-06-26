@@ -265,6 +265,85 @@ def test_point_line_distance_constraint_pins_point_onto_line_after_solve():
     assert math.hypot(px - ax, py - ay) == pytest.approx(5.0, abs=1e-6)
 
 
+def test_add_at_midpoint_constraint_between_a_point_and_a_line():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    p = sketch.add_point(5.0, 5.0)
+    line = sketch.add_line(a.id, b.id)
+
+    constraint = sketch.add_at_midpoint_constraint(p.id, line.id)
+
+    assert constraint.id in sketch.constraints
+    assert constraint.point_ids() == (p.id, a.id, b.id)
+
+
+def test_add_at_midpoint_constraint_with_unknown_point_raises():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    line = sketch.add_line(a.id, b.id)
+    with pytest.raises(KeyError):
+        sketch.add_at_midpoint_constraint("does-not-exist", line.id)
+
+
+def test_at_midpoint_constraint_pins_point_to_midpoint_after_solve():
+    """Stage 22 item 1: SLVS_C_AT_MIDPOINT pins the Point to the Line's
+    actual geometric midpoint - unlike Stage 21's point_line_distance(0) +
+    distance(half-length) workaround, this must still hold even as the
+    Line's own length changes, since there is no fixed half-length value
+    baked into the constraint."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    p = sketch.add_point(5.0, 5.0)  # off the line to start
+    line = sketch.add_line(a.id, b.id)
+    sketch.add_at_midpoint_constraint(p.id, line.id)
+    # Pin the line's own length so the system is fully determined.
+    sketch.add_distance_constraint(a.id, b.id, 20.0)
+    sketch.add_horizontal_constraint(line.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    ax, ay = sketch.points[a.id].x, sketch.points[a.id].y
+    bx, by = sketch.points[b.id].x, sketch.points[b.id].y
+    px, py = sketch.points[p.id].x, sketch.points[p.id].y
+    assert px == pytest.approx((ax + bx) / 2, abs=1e-6)
+    assert py == pytest.approx((ay + by) / 2, abs=1e-6)
+
+
+def test_at_midpoint_constraint_tracks_midpoint_as_line_length_changes():
+    """Regresses against the Stage 21 workaround's actual bug: pinning the
+    Point with a fixed half-length DistanceConstraint meant it stopped
+    tracking the midpoint once the Line's length changed independently.
+    SLVS_C_AT_MIDPOINT has no such fixed value, so it must still land on
+    the midpoint after the Line's length constraint is changed and the
+    sketch is re-solved."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    p = sketch.add_point(5.0, 0.0)
+    line = sketch.add_line(a.id, b.id)
+    sketch.add_at_midpoint_constraint(p.id, line.id)
+    sketch.add_horizontal_constraint(line.id)
+    length = sketch.add_distance_constraint(a.id, b.id, 10.0)
+
+    result = solve_sketch(sketch)
+    assert result.converged
+    assert sketch.points[p.id].x == pytest.approx(
+        (sketch.points[a.id].x + sketch.points[b.id].x) / 2, abs=1e-6
+    )
+
+    length.distance = 40.0
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert sketch.points[p.id].x == pytest.approx(
+        (sketch.points[a.id].x + sketch.points[b.id].x) / 2, abs=1e-6
+    )
+
+
 def test_line_distance_constraint_moves_lines_apart_without_creating_points():
     """Stage 16 item 9: a line-to-line distance dimension must move the
     Lines themselves (via py-slvs's point-line-distance primitive) rather
@@ -470,6 +549,65 @@ def test_create_point_line_distance_constraint_over_the_api():
     assert body["point_id"] == p["id"]
     assert body["line_id"] == line["id"]
     assert body["distance"] == 5.0
+
+
+def test_create_at_midpoint_constraint_over_the_api():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    p = _create_point(sketch["id"], 5.0, 5.0)
+    line = _create_line(sketch["id"], a["id"], b["id"])
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "at_midpoint", "point_id": p["id"], "line_id": line["id"]},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["type"] == "at_midpoint"
+    assert body["point_id"] == p["id"]
+    assert body["line_id"] == line["id"]
+    assert "distance" not in body
+
+
+def test_patch_at_midpoint_constraint_value_is_422():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    p = _create_point(sketch["id"], 5.0, 5.0)
+    line = _create_line(sketch["id"], a["id"], b["id"])
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "at_midpoint", "point_id": p["id"], "line_id": line["id"]},
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}",
+        json={"value": 5.0},
+    )
+
+    assert response.status_code == 422
+
+
+def test_delete_at_midpoint_constraint_over_the_api():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    p = _create_point(sketch["id"], 5.0, 5.0)
+    line = _create_line(sketch["id"], a["id"], b["id"])
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "at_midpoint", "point_id": p["id"], "line_id": line["id"]},
+    ).json()
+
+    response = client.delete(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}"
+    )
+
+    assert response.status_code == 204
+    remaining = client.get(f"/sketch/sketches/{sketch['id']}/constraints").json()
+    assert constraint["id"] not in [c["id"] for c in remaining]
 
 
 def test_create_coincident_constraint_with_unknown_point_is_404():

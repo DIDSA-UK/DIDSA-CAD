@@ -802,14 +802,14 @@ class SketchController extends ChangeNotifier {
   }
 
   /// Creates (or reuses, if one was already materialized at this exact
-  /// location) a real backend Point at [lineId]'s current midpoint. Not
-  /// kept coincident with the midpoint if the Line is later resized/moved -
-  /// the backend has no "Point at midpoint of Line" constraint type, so
-  /// this is a one-off snapshot. Used for midpoint-snap point placement only
-  /// (Stage 16 item 9 moved the line-pair distance ghost off this path onto
-  /// a real `LineDistanceConstraint` instead - see [confirmGhostValue]'s
-  /// `lineDistance` branch - so a line-to-line dimension no longer creates
-  /// any Points).
+  /// location) a real backend Point at [lineId]'s current midpoint, kept
+  /// coincident with the true midpoint via a native `at_midpoint` constraint
+  /// (see [SketchApiClient.createAtMidpointConstraint]) as the Line's
+  /// endpoints are later dragged/constrained. Used for midpoint-snap point
+  /// placement only (Stage 16 item 9 moved the line-pair distance ghost off
+  /// this path onto a real `LineDistanceConstraint` instead - see
+  /// [confirmGhostValue]'s `lineDistance` branch - so a line-to-line
+  /// dimension no longer creates any Points).
   Future<String> _materializeMidpoint(String lineId) async {
     final line = lines[lineId]!;
     final start = points[line.startPointId]!;
@@ -828,27 +828,10 @@ class SketchController extends ChangeNotifier {
       points.remove(created.id);
     });
 
-    // Stage 20 item 6: ties the new Point to lineId's true midpoint, so it
-    // stays correct if either endpoint is later dragged/constrained, instead
-    // of being a one-off snapshot of where the midpoint happened to be when
-    // tapped.
-    // NOTE: mid-point: point-on-line (point_line_distance=0) + half-length
-    // distance to one endpoint
-    //
-    // Stage 21 item 3: the original two-equal-DistanceConstraint
-    // implementation only pinned distance from each endpoint, which leaves
-    // the point free to swing in an arc off the line - it never actually
-    // constrained collinearity. Pinning the point onto the line (constraint
-    // 1, perpendicular distance 0) plus a single half-length distance to one
-    // endpoint (constraint 2) is the correct, solver-stable definition.
-    final halfLength = math.sqrt(math.pow(end.x - start.x, 2) + math.pow(end.y - start.y, 2)) / 2;
-    final onLine = await _api.createPointLineDistanceConstraint(_sketchId!, created.id, lineId, 0.0);
-    final toStart = await _api.createDistanceConstraint(_sketchId!, created.id, line.startPointId, halfLength);
-    // Undo stack is LIFO, so constraint 1 (onLine)'s undo is pushed first
-    // and constraint 2 (toStart)'s second - undoing pops toStart before
-    // onLine, the reverse of creation order.
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, onLine.id));
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, toStart.id));
+    // Midpoint: SLVS_C_AT_MIDPOINT — solver maintains point at geometric
+    // midpoint of line as endpoints move
+    final midpointConstraint = await _api.createAtMidpointConstraint(_sketchId!, created.id, lineId);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, midpointConstraint.id));
 
     return created.id;
   }
@@ -1483,6 +1466,8 @@ class SketchController extends ChangeNotifier {
         mapped(dto.lineId),
         dto.distance,
       );
+    } else if (dto is AtMidpointConstraintDto) {
+      await _api.createAtMidpointConstraint(_sketchId!, mapped(dto.pointId), mapped(dto.lineId));
     } else if (dto is DistanceConstraintDto) {
       await _api.createDistanceConstraint(
         _sketchId!,

@@ -868,12 +868,20 @@ class _PartScreenState extends State<PartScreen> {
                           // Stage 19b Item 1: dedicated secondary FAB,
                           // replacing the hamburger drawer's old "Show
                           // Feature Tree" entry.
-                          FloatingActionButton.small(
-                            heroTag: 'feature-tree-fab',
-                            tooltip: 'Feature tree',
-                            onPressed: _toggleFeatureTree,
-                            child: const Icon(Icons.account_tree_outlined),
-                          ),
+                          //
+                          // Stage 22 item 3: hidden while the toolbar is
+                          // open, since it otherwise paints on top of the
+                          // toolbar panel (this FAB sits later in this
+                          // Stack than [PartToolbar], so it would always
+                          // win paint order) - it isn't usable while the
+                          // toolbar is open anyway.
+                          if (!_toolbarOpen)
+                            FloatingActionButton.small(
+                              heroTag: 'feature-tree-fab',
+                              tooltip: 'Feature tree',
+                              onPressed: _toggleFeatureTree,
+                              child: const Icon(Icons.account_tree_outlined),
+                            ),
                         ],
                       ),
                     ),
@@ -918,7 +926,13 @@ class _PartScreenState extends State<PartScreen> {
       ),
       // Stage 10b: hidden while the Extrude panel is open, so its bottom-
       // aligned content never has the FAB sitting on top of it.
-      floatingActionButton: _extrudeSketchFeature != null
+      //
+      // Stage 22 item 3: also hidden while the toolbar is open - Scaffold
+      // always paints floatingActionButton after the entire body
+      // (including the body Stack's PartToolbar entry), so it would
+      // otherwise sit on top of the open toolbar panel regardless of the
+      // body Stack's own child order.
+      floatingActionButton: (_extrudeSketchFeature != null || _toolbarOpen)
           ? null
           : FloatingActionButton(
               tooltip: 'Add',

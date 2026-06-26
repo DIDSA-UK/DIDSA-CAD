@@ -208,6 +208,12 @@ class PointLineDistanceConstraintCreate(BaseModel):
     distance: float
 
 
+class AtMidpointConstraintCreate(BaseModel):
+    type: Literal["at_midpoint"]
+    point_id: str
+    line_id: str
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
@@ -220,6 +226,7 @@ ConstraintCreate = Union[
     CollinearConstraintCreate,
     LineDistanceConstraintCreate,
     PointLineDistanceConstraintCreate,
+    AtMidpointConstraintCreate,
 ]
 
 
@@ -306,6 +313,13 @@ class PointLineDistanceConstraintResponse(BaseModel):
     distance: float
 
 
+class AtMidpointConstraintResponse(BaseModel):
+    type: Literal["at_midpoint"] = "at_midpoint"
+    id: str
+    point_id: str
+    line_id: str
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -318,6 +332,7 @@ ConstraintResponse = Union[
     CollinearConstraintResponse,
     LineDistanceConstraintResponse,
     PointLineDistanceConstraintResponse,
+    AtMidpointConstraintResponse,
 ]
 
 

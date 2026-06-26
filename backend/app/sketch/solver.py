@@ -152,6 +152,11 @@ class _PySlvsBuilder:
             value, point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def at_midpoint(self, point_handle: int, line_handle: int) -> int:
+        return self._system.addMidPoint(
+            point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
     def solved_point_ids(self) -> list[str]:
         return list(self._point_handles)
 

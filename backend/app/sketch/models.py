@@ -6,6 +6,7 @@ from enum import Enum
 
 from app.sketch.constraints import (
     AngleConstraint,
+    AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     Constraint,
@@ -507,6 +508,23 @@ class Sketch:
             point_id=point_id,
             line_id=line_id,
             distance=distance,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_at_midpoint_constraint(self, point_id: str, line_id: str) -> AtMidpointConstraint:
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+
+        constraint = AtMidpointConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            line_id=line_id,
             line_start_id=line.start_point_id,
             line_end_id=line.end_point_id,
         )
