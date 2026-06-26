@@ -432,6 +432,15 @@ class PointLineDistanceConstraint(Constraint):
     plain point-to-point DistanceConstraints (which only pin distance from
     each endpoint and let the Point swing off the Line in an arc).
 
+    py-slvs's addPointLineDistance is formulated around a signed/absolute
+    perpendicular distance and has a degenerate gradient at an exact-zero
+    target - confirmed in CI (see test_stage15_constraints.py), it
+    "converges" but to the wrong point. SolverBuilder.point_on_line
+    (addPointOnLine, already proven via CollinearConstraint above) is the
+    numerically correct primitive for that case, so add_to_solver below
+    special-cases distance == 0.0 to dispatch to it instead. Nonzero
+    distances are unaffected and still use point_line_distance.
+
     References the Line's id for display/API purposes; its endpoint Point
     ids are captured at creation time, same rationale as
     LineDistanceConstraint above.
@@ -456,4 +465,6 @@ class PointLineDistanceConstraint(Constraint):
         line = builder.line_segment(
             builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
         )
+        if self.distance == 0.0:
+            return builder.point_on_line(point, line)
         return builder.point_line_distance(point, line, self.distance)

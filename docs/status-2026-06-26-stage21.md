@@ -190,12 +190,37 @@ visual or interactive change (AppBar layout, logo tap-through, midpoint
 placement actually holding under drag, select-all → delete actually
 succeeding) was possible in this sandbox.
 
+## Post-push CI fix
+
+CI on this branch (run for commit `e0ab84e`) failed exactly one test:
+`test_point_line_distance_constraint_pins_point_onto_line_after_solve`.
+The solver reported `converged == True`, but the resulting Point landed at
+`y≈0.333` instead of the expected `y=0.0` — confirming the risk flagged
+above: py-slvs's `addPointLineDistance` (via `SolverBuilder.point_line_distance`)
+has a degenerate gradient at an exact-zero target and converges to the
+wrong critical point, rather than rejecting `0.0` outright.
+
+Fixed by special-casing `PointLineDistanceConstraint.add_to_solver`
+(`backend/app/sketch/constraints.py`) to dispatch to
+`SolverBuilder.point_on_line` (`addPointOnLine`) instead of
+`point_line_distance` when `distance == 0.0` — the same primitive already
+proven correct via `CollinearConstraint`, and the semantically right tool
+for "pin a Point onto a Line's extension" regardless. Nonzero distances
+are unaffected and still go through `point_line_distance`. No client-side
+or test changes were needed: `_materializeMidpoint`'s call site already
+passes `0.0`, and the existing test's expected values (`x=5.0`, `y=0.0`)
+were already geometrically correct — only the server-side solver call
+needed to change. Updated the `// NOTE:` comment in
+`_materializeMidpoint` (`sketch_controller.dart`) to record why
+`distance=0.0` works (server-side dispatch), not just that it's used.
+
+This was caught only via the real GitHub Actions CI run (job logs,
+`mcp__github__get_job_logs`) — this sandbox still has no Python backend
+environment to run pytest locally, so CI remains the only feedback loop
+for solver-level correctness.
+
 ## Known gaps / deferred
 
-- Item 3's `point_line_distance` value of exactly `0.0` is unverified
-  against the real py-slvs solver in this sandbox. If midpoint placement
-  fails to converge on-device, try `0.001` instead (per the brief's own
-  fallback suggestion) as the first thing to check.
 - No new test coverage was added on the Flutter side for Item 3 (the
   rewritten `_materializeMidpoint`) or Item 4 (`selectAll`/
   `deleteSelected`'s constraint-inclusion fix) — `sketch_controller_test.dart`
@@ -220,5 +245,7 @@ succeeding) was possible in this sandbox.
 
 ## Branch / commits
 
-Branch: `claude/prompt-item-1-camera-gvbptx`. Commit pending as of this
-doc's writing — see the branch's actual commit log for the final message.
+Branch: `claude/prompt-item-1-camera-gvbptx`. Two commits: the Stage 21
+implementation (`e0ab84e`), then a CI-driven fix for the
+`point_line_distance`-at-zero solver bug described above — see the
+branch's actual commit log for exact messages/hashes.
