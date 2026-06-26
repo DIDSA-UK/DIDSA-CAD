@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../didsa_logo_button.dart';
 import 'sketch_canvas.dart';
 import 'sketch_construction_method_bar.dart';
 import 'sketch_controller.dart';
@@ -73,18 +74,10 @@ class _SketchScreenState extends State<SketchScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Image.asset(
-              'assets/images/didsa_logo.png',
-              height: 28,
-              errorBuilder: (context, error, stackTrace) =>
-                  const Text('DIDSA', style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-            const Text('DIDSA-CAD Sketch'),
-          ],
-        ),
+        leading: const DidsaLogoButton(),
+        leadingWidth: 100,
+        centerTitle: false,
+        title: const Text('DIDSA-CAD Sketch', textAlign: TextAlign.right),
         actions: [
           // Stage 19b item 4: always visible, disabled once the undo stack
           // is empty - placed first (nearest the title/back button) per the

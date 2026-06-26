@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../connection_screen.dart';
+import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
@@ -769,18 +770,10 @@ class _PartScreenState extends State<PartScreen> {
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Image.asset(
-              'assets/images/didsa_logo.png',
-              height: 28,
-              errorBuilder: (context, error, stackTrace) =>
-                  const Text('DIDSA', style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-            Text(_part?.name ?? 'Part'),
-          ],
-        ),
+        leading: const DidsaLogoButton(),
+        leadingWidth: 100,
+        centerTitle: false,
+        title: Text(_part?.name ?? 'Part', textAlign: TextAlign.right),
       ),
       body: Column(
         children: [

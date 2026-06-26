@@ -417,3 +417,43 @@ class CollinearConstraint(Constraint):
         handle = builder.point_on_line(point2_start, line1)
         builder.point_on_line(point2_end, line1)
         return handle
+
+
+@dataclass
+class PointLineDistanceConstraint(Constraint):
+    """Pins the perpendicular distance from an arbitrary Point to a Line to
+    a fixed value, via SolverBuilder.point_line_distance - generalizes
+    LineDistanceConstraint's shape (which is anchored at a second Line's
+    own start Point) to any Point id. Stage 21 item 3's midpoint fix uses
+    this at distance 0 to pin a Point onto a Line's infinite extension
+    (a "point-on-line" constraint), paired with a DistanceConstraint to the
+    Line's own endpoint to fix the Point's position along it - together
+    the correct, solver-stable definition of a midpoint, unlike a pair of
+    plain point-to-point DistanceConstraints (which only pin distance from
+    each endpoint and let the Point swing off the Line in an arc).
+
+    References the Line's id for display/API purposes; its endpoint Point
+    ids are captured at creation time, same rationale as
+    LineDistanceConstraint above.
+    """
+
+    id: str
+    point_id: str
+    line_id: str
+    distance: float
+    line_start_id: str
+    line_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "point_line_distance"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.point_id, self.line_start_id, self.line_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        point = builder.point2d(self.point_id)
+        line = builder.line_segment(
+            builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
+        )
+        return builder.point_line_distance(point, line, self.distance)

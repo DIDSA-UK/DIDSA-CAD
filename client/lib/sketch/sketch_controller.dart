@@ -832,12 +832,22 @@ class SketchController extends ChangeNotifier {
     // stays correct if either endpoint is later dragged/constrained, instead
     // of being a one-off snapshot of where the midpoint happened to be when
     // tapped.
-    // NOTE: mid-point implemented as two equal half-length distance constraints (backend has no SLVS_C_AT_MIDPOINT)
+    // NOTE: mid-point: point-on-line (line_distance=0) + half-length distance to one endpoint
+    //
+    // Stage 21 item 3: the original two-equal-DistanceConstraint
+    // implementation only pinned distance from each endpoint, which leaves
+    // the point free to swing in an arc off the line - it never actually
+    // constrained collinearity. Pinning the point onto the line (constraint
+    // 1, perpendicular distance 0) plus a single half-length distance to one
+    // endpoint (constraint 2) is the correct, solver-stable definition.
     final halfLength = math.sqrt(math.pow(end.x - start.x, 2) + math.pow(end.y - start.y, 2)) / 2;
+    final onLine = await _api.createPointLineDistanceConstraint(_sketchId!, created.id, lineId, 0.0);
     final toStart = await _api.createDistanceConstraint(_sketchId!, created.id, line.startPointId, halfLength);
+    // Undo stack is LIFO, so constraint 1 (onLine)'s undo is pushed first
+    // and constraint 2 (toStart)'s second - undoing pops toStart before
+    // onLine, the reverse of creation order.
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, onLine.id));
     _pushUndo(() async => _api.deleteConstraint(_sketchId!, toStart.id));
-    final toEnd = await _api.createDistanceConstraint(_sketchId!, created.id, line.endPointId, halfLength);
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, toEnd.id));
 
     return created.id;
   }
@@ -1264,7 +1274,14 @@ class SketchController extends ChangeNotifier {
             (id) => SketchSelection(kind: SelectionKind.point, id: id),
           ))
       ..addAll(lines.keys.map((id) => SketchSelection(kind: SelectionKind.line, id: id)))
-      ..addAll(circles.keys.map((id) => SketchSelection(kind: SelectionKind.circle, id: id)));
+      ..addAll(circles.keys.map((id) => SketchSelection(kind: SelectionKind.circle, id: id)))
+      // Stage 21 item 4: without this, deleteSelected()'s constraints-first
+      // ordering only ever covers constraints the user explicitly tapped -
+      // any constraint on a selected Point/Line that select-all itself
+      // didn't pick up still blocks that Point's deletion server-side
+      // ("Point is still referenced by constraint ..."), since deleting a
+      // Line never auto-deletes the constraints that reference it.
+      ..addAll(constraints.keys.map((id) => SketchSelection(kind: SelectionKind.constraint, id: id)));
     _ribbonVisible = _selectionSet.isNotEmpty;
     notifyListeners();
   }
@@ -1278,7 +1295,13 @@ class SketchController extends ChangeNotifier {
   /// showing it.
   Future<void> deleteSelected() async {
     if (_selectionSet.isEmpty || _busy || _sketchId == null) return;
-    final toDelete = List<SketchSelection>.from(_selectionSet);
+    // Stage 21 item 4: the origin Point is pinned by the solver and the
+    // backend always rejects deleting it - silently drop it here rather
+    // than surfacing that rejection as an [errorMessage], since it's never
+    // a meaningful delete target even if it ended up selected.
+    final toDelete = List<SketchSelection>.from(_selectionSet)
+      ..removeWhere((s) => s.kind == SelectionKind.point && s.id == _originPointId);
+    if (toDelete.isEmpty) return;
     final deletedConstraint = toDelete.any((s) => s.kind == SelectionKind.constraint);
 
     // Stage 19b item 4: captured before anything is actually removed, so
@@ -1450,6 +1473,13 @@ class SketchController extends ChangeNotifier {
         _sketchId!,
         mapped(dto.line1Id),
         mapped(dto.line2Id),
+        dto.distance,
+      );
+    } else if (dto is PointLineDistanceConstraintDto) {
+      await _api.createPointLineDistanceConstraint(
+        _sketchId!,
+        mapped(dto.pointId),
+        mapped(dto.lineId),
         dto.distance,
       );
     } else if (dto is DistanceConstraintDto) {
