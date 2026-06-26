@@ -195,24 +195,43 @@ succeeding) was possible in this sandbox.
 CI on this branch (run for commit `e0ab84e`) failed exactly one test:
 `test_point_line_distance_constraint_pins_point_onto_line_after_solve`.
 The solver reported `converged == True`, but the resulting Point landed at
-`y≈0.333` instead of the expected `y=0.0` — confirming the risk flagged
-above: py-slvs's `addPointLineDistance` (via `SolverBuilder.point_line_distance`)
-has a degenerate gradient at an exact-zero target and converges to the
-wrong critical point, rather than rejecting `0.0` outright.
+`y≈0.333` instead of the test's expected `y=0.0`.
 
-Fixed by special-casing `PointLineDistanceConstraint.add_to_solver`
-(`backend/app/sketch/constraints.py`) to dispatch to
-`SolverBuilder.point_on_line` (`addPointOnLine`) instead of
-`point_line_distance` when `distance == 0.0` — the same primitive already
-proven correct via `CollinearConstraint`, and the semantically right tool
-for "pin a Point onto a Line's extension" regardless. Nonzero distances
-are unaffected and still go through `point_line_distance`. No client-side
-or test changes were needed: `_materializeMidpoint`'s call site already
-passes `0.0`, and the existing test's expected values (`x=5.0`, `y=0.0`)
-were already geometrically correct — only the server-side solver call
-needed to change. Updated the `// NOTE:` comment in
-`_materializeMidpoint` (`sketch_controller.dart`) to record why
-`distance=0.0` works (server-side dispatch), not just that it's used.
+First hypothesis (wrong): suspected py-slvs's `addPointLineDistance` had
+a degenerate gradient at an exact-zero target, and "fixed" it by
+special-casing `add_to_solver` to dispatch to `SolverBuilder.point_on_line`
+(`addPointOnLine`, the primitive `CollinearConstraint` already uses) when
+`distance == 0.0`. Pushed (`c6435e2`), re-checked CI — **identical
+failure, identical `y≈0.333` value**, which is the tell that the actual
+bug was never in which solver primitive was used.
+
+Real root cause: the test's Points `a`/`b` (the Line's endpoints) are
+themselves completely unconstrained free Points — nothing pins them in
+place, same as `a`/`b`/`c`/`d` in the already-passing
+`test_collinear_constraint_forces_lines_onto_same_line_after_solve`. Two
+constraints (perpendicular-distance-0, distance-to-`a`-of-5) on a system
+with three fully free 2D points (6 unknowns) is legitimately
+underdetermined (4 excess DOF) — the solver is free to (and does) move
+the line `ab` itself to satisfy both constraints from the initial guess,
+rather than holding `a`/`b` fixed and solving only for `p`. The test's
+absolute-coordinate assertions (`x=5.0`, `y=0.0`) assumed `a`/`b` stay
+put, which nothing guarantees; that assumption was false, not the solver
+or the constraint type.
+
+Reverted the `point_on_line` special-case in
+`PointLineDistanceConstraint.add_to_solver`
+(`backend/app/sketch/constraints.py`) back to always using
+`point_line_distance` — unneeded once the real cause was found, and the
+codebase's existing convention (see the collinear test) is to test
+underdetermined solver-integration scenarios via relative geometric
+invariants, not absolute coordinates. Rewrote the test to do the same:
+asserts the cross product of `(b-a)` and `(p-a)` is zero (p stays on the
+line, wherever the line ends up) and that `|p-a| == 5.0` (the distance
+constraint still holds), mirroring the collinear test's pattern exactly.
+No production code (`_materializeMidpoint`'s `0.0` call, or the dispatch
+branches in `models.py`/`schemas.py`/`router.py`) needed any change —
+this was purely a test-assertion bug, confirmed only by the second,
+unchanged-output CI run.
 
 This was caught only via the real GitHub Actions CI run (job logs,
 `mcp__github__get_job_logs`) — this sandbox still has no Python backend

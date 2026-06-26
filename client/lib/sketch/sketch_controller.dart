@@ -832,9 +832,8 @@ class SketchController extends ChangeNotifier {
     // stays correct if either endpoint is later dragged/constrained, instead
     // of being a one-off snapshot of where the midpoint happened to be when
     // tapped.
-    // NOTE: mid-point: point-on-line (point_line_distance=0, special-cased
-    // server-side to addPointOnLine - addPointLineDistance has a degenerate
-    // gradient at an exact-zero target) + half-length distance to one endpoint
+    // NOTE: mid-point: point-on-line (point_line_distance=0) + half-length
+    // distance to one endpoint
     //
     // Stage 21 item 3: the original two-equal-DistanceConstraint
     // implementation only pinned distance from each endpoint, which leaves

@@ -233,10 +233,19 @@ def test_add_point_line_distance_constraint_between_a_point_and_a_line():
 def test_point_line_distance_constraint_pins_point_onto_line_after_solve():
     """Stage 21 item 3: a midpoint Point must stay collinear with its Line
     even as the Line moves - a perpendicular distance of 0 pins the Point
-    onto the Line's infinite extension (py-slvs's point-on-line primitive),
-    unlike a pair of plain point-to-point DistanceConstraints (which only
-    pin distance from each endpoint and let the Point swing off the Line in
-    an arc)."""
+    onto the Line's infinite extension, unlike a pair of plain
+    point-to-point DistanceConstraints (which only pin distance from each
+    endpoint and let the Point swing off the Line in an arc).
+
+    a/b are themselves unconstrained free Points (same as every other
+    solver-integration test in this file, e.g.
+    test_collinear_constraint_forces_lines_onto_same_line_after_solve), so
+    the system is legitimately underdetermined and the solver is free to
+    move the Line too - asserting p's *absolute* coordinates would wrongly
+    assume a/b stay put. Assert the same relative invariants the collinear
+    test uses instead: p stays on the (possibly-moved) line ab, and the
+    distance constraint to a still holds.
+    """
     sketch = Sketch(id="s", plane=Plane.XY)
     a = sketch.add_point(0.0, 0.0)
     b = sketch.add_point(10.0, 0.0)
@@ -248,8 +257,12 @@ def test_point_line_distance_constraint_pins_point_onto_line_after_solve():
     result = solve_sketch(sketch)
 
     assert result.converged
-    assert sketch.points[p.id].y == pytest.approx(0.0, abs=1e-6)
-    assert sketch.points[p.id].x == pytest.approx(5.0, abs=1e-6)
+    ax, ay = sketch.points[a.id].x, sketch.points[a.id].y
+    bx, by = sketch.points[b.id].x, sketch.points[b.id].y
+    px, py = sketch.points[p.id].x, sketch.points[p.id].y
+    cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    assert cross == pytest.approx(0.0, abs=1e-6)
+    assert math.hypot(px - ax, py - ay) == pytest.approx(5.0, abs=1e-6)
 
 
 def test_line_distance_constraint_moves_lines_apart_without_creating_points():
