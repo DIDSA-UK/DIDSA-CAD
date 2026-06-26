@@ -108,7 +108,7 @@ current length:
 
 ```dart
 // NOTE: mid-point implemented as two equal half-length distance constraints (backend has no SLVS_C_AT_MIDPOINT)
-final halfLength = line.length / 2;
+final halfLength = math.sqrt(math.pow(end.x - start.x, 2) + math.pow(end.y - start.y, 2)) / 2;
 final toStart = await _api.createDistanceConstraint(_sketchId!, created.id, line.startPointId, halfLength);
 _pushUndo(() async => _api.deleteConstraint(_sketchId!, toStart.id));
 final toEnd = await _api.createDistanceConstraint(_sketchId!, created.id, line.endPointId, halfLength);
@@ -156,6 +156,16 @@ to nothing), so `flutter analyze` and `flutter test` could not be run.
 All verification this stage was manual code reading and
 cross-referencing of method signatures/call sites only — consistent with
 every prior stage's documented limitation.
+
+This manual-only verification missed a real compile error: Item 6's
+`_materializeMidpoint` referenced a non-existent `line.length` getter
+(`SketchLineView` has no `length` field — only `lineLength(lineId)` on
+the controller computes a Line's length, from its endpoints' `Point`
+positions). Caught by the user's own on-device `flutter run`, not by
+this sandbox's review. Fixed by inlining the same endpoint-distance
+calculation `lineLength` uses, from `start`/`end` (already in scope in
+that method) directly, rather than adding a getter to
+`SketchLineView` that nothing else needs.
 
 No existing tests were altered: Items 2 and 7 change internal control
 flow only (no signature/behavioural change observable from existing
