@@ -72,7 +72,35 @@ class _SketchScreenState extends State<SketchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('DIDSA-CAD Sketch')),
+      appBar: AppBar(
+        title: const Text('DIDSA-CAD Sketch'),
+        actions: [
+          // Stage 19b item 4: always visible, disabled once the undo stack
+          // is empty - placed first (nearest the title/back button) per the
+          // brief.
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) => IconButton(
+              icon: const Icon(Icons.undo),
+              tooltip: 'Undo',
+              onPressed: _controller.canUndo ? _controller.undo : null,
+            ),
+          ),
+          // Stage 19b item 5: only shown in select mode - greyed out/hidden
+          // in draw mode, where there's nothing to multi-select onto.
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) {
+              if (_controller.mode != SketchMode.select) return const SizedBox.shrink();
+              return IconButton(
+                icon: const Icon(Icons.select_all),
+                tooltip: 'Select all',
+                onPressed: _controller.selectAll,
+              );
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Column(
           children: [

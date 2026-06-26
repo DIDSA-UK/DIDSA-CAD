@@ -1,15 +1,13 @@
 import 'package:flutter/material.dart';
 
 /// Actions available from the floating "Add" button's flyout. Stage 10b adds
-/// just [newSketch]; structured as an enum (mirroring
-/// [FeatureContextMenuAction]) so a later stage can add more entries (e.g.
-/// "Import", "New plane") without reworking how the menu itself is shown.
-enum AddButtonMenuAction { newSketch }
+/// [newSketch]; Stage 19b Item 3 adds [feature] (opens the second-level
+/// Feature picker - see [showFeaturePickerSheet]) alongside it.
+enum AddButtonMenuAction { newSketch, feature }
 
 /// Shows a bottom sheet of actions for the "Add" FAB, replacing its old
 /// direct-to-`_addSketchFeature` behaviour - per the Stage 10b brief, the FAB
-/// should open a flyout rather than act directly, even though for now it
-/// only ever offers one entry.
+/// should open a flyout rather than act directly.
 Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context) {
   return showModalBottomSheet<AddButtonMenuAction>(
     context: context,
@@ -21,6 +19,11 @@ Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context) {
             leading: const Icon(Icons.edit_outlined),
             title: const Text('New Sketch'),
             onTap: () => Navigator.of(context).pop(AddButtonMenuAction.newSketch),
+          ),
+          ListTile(
+            leading: const Icon(Icons.layers_outlined),
+            title: const Text('Feature'),
+            onTap: () => Navigator.of(context).pop(AddButtonMenuAction.feature),
           ),
         ],
       ),

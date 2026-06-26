@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'view_prefs_sheets.dart';
 import 'view_preferences.dart';
@@ -11,22 +10,12 @@ import 'view_preferences.dart';
 /// hide), opened via [PartScreen]'s persistent top-left toggle button.
 ///
 /// Stage 18 restructures this into the brief's two top-level categories,
-/// File and View, as [ExpansionTile]s. "New Sketch on [selectedPlane]" -
-/// the one contextual action this toolbar shows, when a reference plane is
-/// tap-selected in the 3D viewport - sits outside both categories, since
-/// it's a one-off contextual action rather than part of the static menu
-/// structure the brief describes.
+/// File and View, as [ExpansionTile]s. Stage 19b Item 2 moved the one
+/// contextual action this used to show ("New Sketch on [plane]") out into
+/// its own fly-up bottom sheet (see [showPlaneContextSheet]), so this is now
+/// purely the static File/View menu structure with no contextual entries.
 class PartToolbar extends StatelessWidget {
   final bool visible;
-  final VoidCallback onShowFeatureTree;
-
-  /// The currently tap-selected reference plane, or null if none is
-  /// selected - mirrors [PartViewport]'s controlled `selectedPlane`. Drives
-  /// whether the "New Sketch on..." entry below shows at all, and (Fix 4)
-  /// its leading color swatch, matching the plane's own
-  /// [ReferencePlaneKindX.borderColor] tint in the 3D viewport.
-  final ReferencePlaneKind? selectedPlane;
-  final VoidCallback? onNewSketchOnPlane;
 
   /// Stage 10b: whether all three reference planes are currently hidden -
   /// mirrors [PartViewport]'s controlled `referencePlanesHidden`, the same
@@ -65,9 +54,6 @@ class PartToolbar extends StatelessWidget {
   const PartToolbar({
     super.key,
     required this.visible,
-    required this.onShowFeatureTree,
-    this.selectedPlane,
-    this.onNewSketchOnPlane,
     this.referencePlanesHidden = false,
     this.onToggleReferencePlanes,
     this.renderMode = ViewportRenderMode.shaded,
@@ -83,7 +69,6 @@ class PartToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final plane = selectedPlane;
     return Align(
       alignment: Alignment.topLeft,
       child: ClipRect(
@@ -115,12 +100,6 @@ class PartToolbar extends StatelessWidget {
                         children: [
                           _buildFileMenu(context),
                           _buildViewMenu(context),
-                          if (plane != null)
-                            ListTile(
-                              leading: Icon(Icons.add_box_outlined, color: _colorOf(plane)),
-                              title: Text('New Sketch on ${plane.apiValue}'),
-                              onTap: onNewSketchOnPlane,
-                            ),
                         ],
                       ),
                     ),
@@ -169,11 +148,6 @@ class PartToolbar extends StatelessWidget {
       leading: const Icon(Icons.visibility_outlined),
       title: const Text('View'),
       children: [
-        ListTile(
-          leading: const Icon(Icons.account_tree_outlined),
-          title: const Text('Show Feature Tree'),
-          onTap: onShowFeatureTree,
-        ),
         ListTile(
           leading: Icon(
             referencePlanesHidden ? Icons.grid_on_outlined : Icons.grid_off_outlined,
@@ -234,18 +208,5 @@ class PartToolbar extends StatelessWidget {
   Future<void> _pickBodyOpacity(BuildContext context) async {
     final opacity = await showBodyOpacitySheet(context, initialOpacity: bodyOpacity);
     if (opacity != null) onBodyOpacityChanged!(opacity);
-  }
-
-  /// Converts [plane]'s [ReferencePlaneKindX.borderColor] (a `flutter_scene`
-  /// `vm.Vector4`, 0..1 per channel) into a Flutter [Color] for the leading
-  /// swatch above - the only place this toolbar needs that conversion.
-  Color _colorOf(ReferencePlaneKind plane) {
-    final c = plane.borderColor;
-    return Color.fromARGB(
-      (c.w * 255).round(),
-      (c.x * 255).round(),
-      (c.y * 255).round(),
-      (c.z * 255).round(),
-    );
   }
 }

@@ -11,10 +11,12 @@ import 'add_button_menu.dart';
 import 'cascade_delete_dialog.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
+import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'mesh_geometry.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
+import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'sketch_geometry_3d.dart';
@@ -286,9 +288,9 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Creates a SketchFeature on [plane] and navigates straight to its
-  /// SketchScreen - called with the tapped plane by both the free-tap
-  /// toolbar flow ([_onNewSketchOnSelectedPlane]) and the FAB's
-  /// flyout-driven plane-selection mode ([_onPlaneTap]).
+  /// SketchScreen - called from both the free-tap fly-up sheet flow
+  /// ([_showPlaneContextSheet]) and the FAB's flyout-driven
+  /// plane-selection mode ([_onPlaneTap]).
   Future<void> _addSketchFeature({ReferencePlaneKind plane = ReferencePlaneKind.xy}) async {
     final part = _part;
     if (part == null || _busy) return;
@@ -315,8 +317,9 @@ class _PartScreenState extends State<PartScreen> {
   /// tapped plane and navigates to its canvas, exiting the mode - per the
   /// Stage 10b brief, that flow has no separate confirmation step. Otherwise
   /// it's the pre-existing free-tap flow: selects the plane (brighter
-  /// highlight) and slides the toolbar in with a "New Sketch on..." entry
-  /// for it instead.
+  /// highlight) and opens [showPlaneContextSheet]'s fly-up with its
+  /// contextual action - Stage 19b Item 2 moved that out of the hamburger
+  /// drawer, which must no longer open on a selection tap.
   void _onPlaneTap(ReferencePlaneKind plane) {
     if (_planeSelectionMode) {
       setState(() => _planeSelectionMode = false);
@@ -325,9 +328,22 @@ class _PartScreenState extends State<PartScreen> {
     }
     setState(() {
       _selectedPlane = plane;
-      _toolbarOpen = true;
       _featureTreeVisible = false;
     });
+    _showPlaneContextSheet(plane);
+  }
+
+  /// Awaits [showPlaneContextSheet] and acts on whatever it returns, clearing
+  /// the plane highlight once it's dismissed either way (action taken or
+  /// just swiped away) - the highlight is only meant to last while the sheet
+  /// is open.
+  Future<void> _showPlaneContextSheet(ReferencePlaneKind plane) async {
+    final action = await showPlaneContextSheet(context, plane: plane);
+    if (!mounted) return;
+    setState(() => _selectedPlane = null);
+    if (action == PlaneContextSheetAction.newSketch) {
+      await _addSketchFeature(plane: plane);
+    }
   }
 
   /// A tap that missed every reference plane - dismisses the toolbar and
@@ -343,8 +359,9 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Opens the "Add" FAB's flyout (Stage 10b) - for now its only entry,
-  /// "New Sketch", enters [_planeSelectionMode] rather than acting directly.
+  /// Opens the "Add" FAB's flyout. "New Sketch" enters [_planeSelectionMode]
+  /// rather than acting directly (Stage 10b); Stage 19b Item 3's "Feature"
+  /// opens the second-level Feature picker instead.
   Future<void> _onAddPressed() async {
     if (_busy) return;
     final action = await showAddButtonMenu(context);
@@ -357,7 +374,55 @@ class _PartScreenState extends State<PartScreen> {
           _toolbarOpen = false;
           _featureTreeVisible = false;
         });
+      case AddButtonMenuAction.feature:
+        await _onFeaturePressed();
     }
+  }
+
+  /// The "Add" FAB's "Feature" entry - shows the second-level picker and
+  /// acts on whichever (enabled) entry was tapped. Only Extrude is wired up
+  /// per the Stage 19b brief; the rest render disabled in the sheet itself
+  /// and so never produce an action here.
+  Future<void> _onFeaturePressed() async {
+    final action = await showFeaturePickerSheet(context);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case FeaturePickerAction.extrude:
+        await _extrudeSelectedFeature();
+    }
+  }
+
+  /// Extrudes the Feature currently selected in the tree, opened from the
+  /// "Add" FAB's Feature picker rather than a Feature's own long-press menu
+  /// - unlike that entry point, there's no Feature already in hand here, so
+  /// this resolves one from [_selectedFeatureId] first and surfaces a snack
+  /// bar instead of silently doing nothing when there's no eligible
+  /// selection.
+  Future<void> _extrudeSelectedFeature() async {
+    final featureId = _selectedFeatureId;
+    final feature = featureId == null ? null : _featureById(featureId);
+    if (feature == null || feature.type != 'sketch') {
+      _showSnack('Select a sketch feature in the tree first');
+      return;
+    }
+    final reason = await _checkExtrudeEligibility(feature);
+    if (!mounted) return;
+    if (reason != null) {
+      _showSnack(reason);
+      return;
+    }
+    _openExtrudePanel(feature);
+  }
+
+  FeatureDto? _featureById(String id) {
+    for (final feature in _features) {
+      if (feature.id == id) return feature;
+    }
+    return null;
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// Exits [_planeSelectionMode] without creating anything - wired to both
@@ -384,16 +449,6 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onRenderModeChanged(ViewportRenderMode mode) async {
     setState(() => _renderMode = mode);
     await ViewPreferences.setRenderMode(mode);
-  }
-
-  Future<void> _onNewSketchOnSelectedPlane() async {
-    final plane = _selectedPlane;
-    if (plane == null) return;
-    setState(() {
-      _selectedPlane = null;
-      _toolbarOpen = false;
-    });
-    await _addSketchFeature(plane: plane);
   }
 
   /// A tap always selects/highlights the Feature; only an editable (not
@@ -441,17 +496,8 @@ class _PartScreenState extends State<PartScreen> {
     if (_busy) return;
 
     final isSketchFeature = feature.type == 'sketch';
-    var canExtrude = false;
-    String? extrudeDisabledReason;
-    if (isSketchFeature) {
-      try {
-        final profile = await _sketchApi.getProfile(feature.sketchId!);
-        canExtrude = profile.isClosedLoop;
-        if (!canExtrude) extrudeDisabledReason = 'Sketch does not contain a closed profile';
-      } catch (_) {
-        extrudeDisabledReason = 'Sketch does not contain a closed profile';
-      }
-    }
+    final extrudeDisabledReason = isSketchFeature ? await _checkExtrudeEligibility(feature) : null;
+    final canExtrude = isSketchFeature && extrudeDisabledReason == null;
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -470,6 +516,20 @@ class _PartScreenState extends State<PartScreen> {
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
         await _cascadeDeleteFeature(feature);
+    }
+  }
+
+  /// Runs the closed-profile check an Extrude action requires - shared by
+  /// [_onFeatureLongPress] (Stage 9's original entry point) and Stage 19b's
+  /// [_extrudeSelectedFeature] (the "Add" FAB's Feature picker), so the two
+  /// don't drift out of sync on what makes a Sketch extrude-eligible.
+  /// Returns null when eligible, otherwise the reason to show the caller.
+  Future<String?> _checkExtrudeEligibility(FeatureDto feature) async {
+    try {
+      final profile = await _sketchApi.getProfile(feature.sketchId!);
+      return profile.isClosedLoop ? null : 'Sketch does not contain a closed profile';
+    } catch (_) {
+      return 'Sketch does not contain a closed profile';
     }
   }
 
@@ -538,8 +598,14 @@ class _PartScreenState extends State<PartScreen> {
   /// edge case where the user confirms before any preview update ever
   /// fired (no field touched), in which case the Feature doesn't exist yet
   /// and this creates it with the panel's still-default values first.
+  ///
+  /// Stage 19b extra: also auto-hides [_extrudeSketchFeature] itself from the
+  /// 3D viewport - once a Sketch has been consumed by a Feature, its own
+  /// profile drawing is visual clutter on top of the resulting solid, and
+  /// the user otherwise had to remember to hide it manually from the tree.
   Future<void> _confirmExtrude() async {
     _extrudeDebounce?.cancel();
+    final sketchFeature = _extrudeSketchFeature;
     await _runGuarded(() async {
       await _ensureExtrudeFeatureExists(_extrudeType, _extrudeStartDistance, _extrudeEndDistance);
       await _refreshFeatures();
@@ -547,6 +613,8 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (!mounted) return;
     setState(() {
+      if (sketchFeature != null) _hiddenFeatureIds.add(sketchFeature.id);
+      _recomputeVisibleSketchGeometries();
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
@@ -630,10 +698,14 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  void _showFeatureTree() {
+  /// Stage 19b Item 1's dedicated FAB - toggles the Feature tree panel
+  /// open/closed (the FAB itself is hidden while it's open, same as the
+  /// hamburger toggle below, since [FeatureTreePanel] has its own close
+  /// button once open).
+  void _toggleFeatureTree() {
     setState(() {
-      _featureTreeVisible = true;
-      _toolbarOpen = false;
+      _featureTreeVisible = !_featureTreeVisible;
+      if (_featureTreeVisible) _toolbarOpen = false;
     });
   }
 
@@ -740,9 +812,6 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
-                    onShowFeatureTree: _showFeatureTree,
-                    selectedPlane: _selectedPlane,
-                    onNewSketchOnPlane: _busy ? null : _onNewSketchOnSelectedPlane,
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
                     renderMode: _renderMode,
@@ -781,10 +850,25 @@ class _PartScreenState extends State<PartScreen> {
                     left: 8,
                     child: SafeArea(
                       bottom: false,
-                      child: IconButton.filled(
-                        tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
-                        icon: Icon(_toolbarOpen ? Icons.close : Icons.menu),
-                        onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          IconButton.filled(
+                            tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
+                            icon: Icon(_toolbarOpen ? Icons.close : Icons.menu),
+                            onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
+                          ),
+                          const SizedBox(height: 8),
+                          // Stage 19b Item 1: dedicated secondary FAB,
+                          // replacing the hamburger drawer's old "Show
+                          // Feature Tree" entry.
+                          FloatingActionButton.small(
+                            heroTag: 'feature-tree-fab',
+                            tooltip: 'Feature tree',
+                            onPressed: _toggleFeatureTree,
+                            child: const Icon(Icons.account_tree_outlined),
+                          ),
+                        ],
                       ),
                     ),
                   ),
