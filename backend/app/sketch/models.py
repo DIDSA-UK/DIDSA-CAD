@@ -15,6 +15,7 @@ from app.sketch.constraints import (
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
+    PointLineDistanceConstraint,
     VerticalConstraint,
 )
 
@@ -488,6 +489,26 @@ class Sketch:
             line1_end_id=line1.end_point_id,
             line2_start_id=line2.start_point_id,
             line2_end_id=line2.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_point_line_distance_constraint(
+        self, point_id: str, line_id: str, distance: float
+    ) -> PointLineDistanceConstraint:
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+
+        constraint = PointLineDistanceConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            line_id=line_id,
+            distance=distance,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint

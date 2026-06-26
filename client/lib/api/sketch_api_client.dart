@@ -125,6 +125,8 @@ abstract class ConstraintDto {
         return CollinearConstraintDto.fromJson(json);
       case 'line_distance':
         return LineDistanceConstraintDto.fromJson(json);
+      case 'point_line_distance':
+        return PointLineDistanceConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -317,6 +319,33 @@ class LineDistanceConstraintDto extends ConstraintDto {
         id: json['id'] as String,
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+      );
+}
+
+/// Stage 21 item 3's midpoint fix: pins the perpendicular distance from an
+/// arbitrary Point to a Line - generalizes [LineDistanceConstraintDto]
+/// (anchored at a second Line's own start Point) to any Point id, so
+/// SketchController.materializeMidpoint can pin a new Point onto a Line's
+/// infinite extension (distance 0) without it being one of that Line's own
+/// endpoints.
+class PointLineDistanceConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String lineId;
+  final double distance;
+
+  const PointLineDistanceConstraintDto({
+    required super.id,
+    required this.pointId,
+    required this.lineId,
+    required this.distance,
+  });
+
+  factory PointLineDistanceConstraintDto.fromJson(Map<String, dynamic> json) =>
+      PointLineDistanceConstraintDto(
+        id: json['id'] as String,
+        pointId: json['point_id'] as String,
+        lineId: json['line_id'] as String,
         distance: (json['distance'] as num).toDouble(),
       );
 }
@@ -753,6 +782,28 @@ class SketchApiClient {
                 'type': 'line_distance',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
+                'distance': distance,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Stage 21 item 3's midpoint fix: pins a Point onto a Line (perpendicular
+  /// distance, typically 0) - see PointLineDistanceConstraintDto's doc comment.
+  Future<ConstraintDto> createPointLineDistanceConstraint(
+    String sketchId,
+    String pointId,
+    String lineId,
+    double distance,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'point_line_distance',
+                'point_id': pointId,
+                'line_id': lineId,
                 'distance': distance,
               }),
             ),

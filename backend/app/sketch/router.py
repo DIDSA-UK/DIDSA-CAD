@@ -11,6 +11,7 @@ from app.sketch.constraints import (
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
+    PointLineDistanceConstraint,
     VerticalConstraint,
 )
 from app.sketch.models import Circle, Line, Point, Sketch
@@ -44,6 +45,8 @@ from app.sketch.schemas import (
     PerpendicularConstraintCreate,
     PerpendicularConstraintResponse,
     PointCreate,
+    PointLineDistanceConstraintCreate,
+    PointLineDistanceConstraintResponse,
     PointResponse,
     PointUpdate,
     ProfileDetectionResponse,
@@ -201,6 +204,13 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             id=constraint.id,
             line1_id=constraint.line1_id,
             line2_id=constraint.line2_id,
+            distance=constraint.distance,
+        )
+    if isinstance(constraint, PointLineDistanceConstraint):
+        return PointLineDistanceConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            line_id=constraint.line_id,
             distance=constraint.distance,
         )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
@@ -421,6 +431,10 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
         elif isinstance(payload, LineDistanceConstraintCreate):
             constraint = sketch.add_line_distance_constraint(
                 payload.line1_id, payload.line2_id, payload.distance
+            )
+        elif isinstance(payload, PointLineDistanceConstraintCreate):
+            constraint = sketch.add_point_line_distance_constraint(
+                payload.point_id, payload.line_id, payload.distance
             )
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")

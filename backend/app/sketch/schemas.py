@@ -201,6 +201,13 @@ class LineDistanceConstraintCreate(BaseModel):
     distance: float
 
 
+class PointLineDistanceConstraintCreate(BaseModel):
+    type: Literal["point_line_distance"]
+    point_id: str
+    line_id: str
+    distance: float
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
@@ -212,6 +219,7 @@ ConstraintCreate = Union[
     EqualLengthConstraintCreate,
     CollinearConstraintCreate,
     LineDistanceConstraintCreate,
+    PointLineDistanceConstraintCreate,
 ]
 
 
@@ -290,6 +298,14 @@ class LineDistanceConstraintResponse(BaseModel):
     distance: float
 
 
+class PointLineDistanceConstraintResponse(BaseModel):
+    type: Literal["point_line_distance"] = "point_line_distance"
+    id: str
+    point_id: str
+    line_id: str
+    distance: float
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -301,6 +317,7 @@ ConstraintResponse = Union[
     EqualLengthConstraintResponse,
     CollinearConstraintResponse,
     LineDistanceConstraintResponse,
+    PointLineDistanceConstraintResponse,
 ]
 
 
