@@ -127,6 +127,8 @@ abstract class ConstraintDto {
         return LineDistanceConstraintDto.fromJson(json);
       case 'point_line_distance':
         return PointLineDistanceConstraintDto.fromJson(json);
+      case 'at_midpoint':
+        return AtMidpointConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -347,6 +349,29 @@ class PointLineDistanceConstraintDto extends ConstraintDto {
         pointId: json['point_id'] as String,
         lineId: json['line_id'] as String,
         distance: (json['distance'] as num).toDouble(),
+      );
+}
+
+/// Stage 22 item 1's fix: pins a Point to a Line's geometric midpoint via
+/// py-slvs's native SLVS_C_AT_MIDPOINT primitive, replacing the Stage 21
+/// [PointLineDistanceConstraintDto](distance 0) + [DistanceConstraintDto]
+/// (half-length) pair SketchController.materializeMidpoint used to create -
+/// no numeric value field, since the solver tracks the midpoint directly as
+/// the Line's endpoints move.
+class AtMidpointConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String lineId;
+
+  const AtMidpointConstraintDto({
+    required super.id,
+    required this.pointId,
+    required this.lineId,
+  });
+
+  factory AtMidpointConstraintDto.fromJson(Map<String, dynamic> json) => AtMidpointConstraintDto(
+        id: json['id'] as String,
+        pointId: json['point_id'] as String,
+        lineId: json['line_id'] as String,
       );
 }
 
@@ -805,6 +830,27 @@ class SketchApiClient {
                 'point_id': pointId,
                 'line_id': lineId,
                 'distance': distance,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Stage 22 item 1's fix: pins a Point to a Line's geometric midpoint via
+  /// the native SLVS_C_AT_MIDPOINT primitive - see AtMidpointConstraintDto's
+  /// doc comment.
+  Future<ConstraintDto> createAtMidpointConstraint(
+    String sketchId,
+    String pointId,
+    String lineId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'at_midpoint',
+                'point_id': pointId,
+                'line_id': lineId,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

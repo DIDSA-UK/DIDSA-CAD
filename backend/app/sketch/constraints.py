@@ -89,6 +89,15 @@ class SolverBuilder(Protocol):
         dimension moves the lines themselves and creates no new Points."""
         ...
 
+    def at_midpoint(self, point_handle: int, line_handle: int) -> int:
+        """Add a py-slvs constraint pinning a point handle to the geometric
+        midpoint of a line-segment entity handle (py-slvs's addMidPoint -
+        the SLVS_C_AT_MIDPOINT primitive), returning the resulting py-slvs
+        constraint handle. AtMidpointConstraint uses this in place of the
+        Stage 21 PointLineDistanceConstraint+DistanceConstraint pair, since
+        py-slvs has a native primitive for this exact relationship."""
+        ...
+
 
 class Constraint(ABC):
     """Base type for anything that can live in a Sketch's constraint
@@ -457,3 +466,42 @@ class PointLineDistanceConstraint(Constraint):
             builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
         )
         return builder.point_line_distance(point, line, self.distance)
+
+
+@dataclass
+class AtMidpointConstraint(Constraint):
+    """Pins a Point to the geometric midpoint of a Line, via
+    SolverBuilder.at_midpoint (py-slvs's native SLVS_C_AT_MIDPOINT
+    primitive). Replaces the Stage 21 PointLineDistanceConstraint(distance=0)
+    + DistanceConstraint(half-length) pair with a single solver-native
+    constraint - same geometric result, but the Point's position along the
+    Line is no longer pinned by a separate fixed half-length value, so it
+    tracks the midpoint correctly as the Line's own length changes.
+
+    No numeric value field - this is a pure geometric constraint, like
+    Coincident/Parallel/Perpendicular/EqualLength/Collinear.
+
+    References the Line's id for display/API purposes; its endpoint Point
+    ids are captured at creation time, same rationale as
+    PointLineDistanceConstraint above.
+    """
+
+    id: str
+    point_id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "at_midpoint"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.point_id, self.line_start_id, self.line_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        point = builder.point2d(self.point_id)
+        line = builder.line_segment(
+            builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
+        )
+        return builder.at_midpoint(point, line)

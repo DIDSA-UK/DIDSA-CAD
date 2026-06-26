@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.sketch.constraints import (
     AngleConstraint,
+    AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     Constraint,
@@ -19,6 +20,8 @@ from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
     AngleConstraintResponse,
+    AtMidpointConstraintCreate,
+    AtMidpointConstraintResponse,
     CircleCreate,
     CircleResponse,
     CircleUpdate,
@@ -212,6 +215,12 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             point_id=constraint.point_id,
             line_id=constraint.line_id,
             distance=constraint.distance,
+        )
+    if isinstance(constraint, AtMidpointConstraint):
+        return AtMidpointConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            line_id=constraint.line_id,
         )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
@@ -436,6 +445,8 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_point_line_distance_constraint(
                 payload.point_id, payload.line_id, payload.distance
             )
+        elif isinstance(payload, AtMidpointConstraintCreate):
+            constraint = sketch.add_at_midpoint_constraint(payload.point_id, payload.line_id)
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
