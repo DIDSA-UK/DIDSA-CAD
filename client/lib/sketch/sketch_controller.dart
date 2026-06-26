@@ -833,7 +833,7 @@ class SketchController extends ChangeNotifier {
     // of being a one-off snapshot of where the midpoint happened to be when
     // tapped.
     // NOTE: mid-point implemented as two equal half-length distance constraints (backend has no SLVS_C_AT_MIDPOINT)
-    final halfLength = line.length / 2;
+    final halfLength = math.sqrt(math.pow(end.x - start.x, 2) + math.pow(end.y - start.y, 2)) / 2;
     final toStart = await _api.createDistanceConstraint(_sketchId!, created.id, line.startPointId, halfLength);
     _pushUndo(() async => _api.deleteConstraint(_sketchId!, toStart.id));
     final toEnd = await _api.createDistanceConstraint(_sketchId!, created.id, line.endPointId, halfLength);
