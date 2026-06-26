@@ -47,6 +47,20 @@ class _SketchScreenState extends State<SketchScreen> {
   /// same as PartScreen's `_referencePlanesHidden`. Defaults to shown.
   bool _referenceBodyHidden = false;
 
+  /// Stage 23f: lets the AppBar's menu button open/close [_buildDrawer]'s
+  /// [Drawer] without relying on `Scaffold.of(context)` - the outer `build`
+  /// method's own context sits *above* the Scaffold it returns, not below
+  /// it, so that lookup would fail; a [GlobalKey] sidesteps the question of
+  /// which context is in scope entirely.
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  /// Stage 23f's View submenu controls - all in-memory only/session-only
+  /// per the brief, with no `shared_preferences` persistence (unlike
+  /// `viewport3d`'s analogous `ViewPreferences`).
+  bool _constraintLabelsVisible = true;
+  Color _canvasColor = SketchCanvas.defaultColor;
+  double _canvasOpacity = 1.0;
+
   @override
   void initState() {
     super.initState();
@@ -73,15 +87,25 @@ class _SketchScreenState extends State<SketchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
+      drawer: _buildDrawer(context),
       appBar: AppBar(
         leading: const DidsaLogoButton(),
         leadingWidth: 100,
         centerTitle: false,
         title: const Text('DIDSA-CAD Sketch', textAlign: TextAlign.right),
         actions: [
+          // Stage 23f: opens [_buildDrawer] - the only entry point for it,
+          // since this AppBar's `leading` slot is already the logo button
+          // rather than Flutter's auto-generated hamburger icon.
+          IconButton(
+            icon: const Icon(Icons.menu),
+            tooltip: 'Menu',
+            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+          ),
           // Stage 19b item 4: always visible, disabled once the undo stack
-          // is empty - placed first (nearest the title/back button) per the
-          // brief.
+          // is empty - placed right after the Stage 23f menu button (nearest
+          // the title/back button) per the brief.
           AnimatedBuilder(
             animation: _controller,
             builder: (context, _) => IconButton(
@@ -130,6 +154,9 @@ class _SketchScreenState extends State<SketchScreen> {
                     controller: _controller,
                     referenceGhostSegments: widget.referenceGhostSegments,
                     referenceBodyHidden: _referenceBodyHidden,
+                    constraintLabelsVisible: _constraintLabelsVisible,
+                    canvasColor: _canvasColor,
+                    canvasOpacity: _canvasOpacity,
                   ),
                   // SketchRibbon aligns and sizes itself (top-left,
                   // shrink-wrapped to its own content) - this just gives it
@@ -239,6 +266,196 @@ class _SketchScreenState extends State<SketchScreen> {
                     ),
                   ),
                 ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Stage 23f: the hamburger drawer - Exit Sketch up top (prominent, per
+  /// the brief), then a View submenu for the constraint-label-visibility
+  /// toggle and the canvas colour/transparency controls.
+  Widget _buildDrawer(BuildContext context) {
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Exit Sketch'),
+              onTap: () {
+                // Closing the drawer first (rather than letting the second
+                // pop below do double duty) keeps this independent of
+                // whichever local-history-entry behavior the Drawer happens
+                // to rely on internally.
+                _scaffoldKey.currentState?.closeDrawer();
+                Navigator.of(context).pop();
+              },
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                children: [
+                  ExpansionTile(
+                    leading: const Icon(Icons.visibility_outlined),
+                    title: const Text('View'),
+                    initiallyExpanded: true,
+                    children: [
+                      SwitchListTile(
+                        title: const Text('Constraint Labels'),
+                        value: _constraintLabelsVisible,
+                        onChanged: (value) => setState(() => _constraintLabelsVisible = value),
+                      ),
+                      ListTile(
+                        leading: Icon(Icons.palette_outlined, color: _canvasColor),
+                        title: const Text('Canvas Colour'),
+                        onTap: () => _pickCanvasColor(context),
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.opacity_outlined),
+                        title: const Text('Canvas Transparency'),
+                        onTap: () => _pickCanvasOpacity(context),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static const List<Color> _canvasColorSwatches = [
+    SketchCanvas.defaultColor,
+    Color(0xFFFFFFFF),
+    Color(0xFFE8F0FE),
+    Color(0xFF2C2C2C),
+    Color(0xFF1E1E2E),
+  ];
+
+  Future<void> _pickCanvasColor(BuildContext context) async {
+    final chosen = await showModalBottomSheet<Color>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Wrap(
+            spacing: 20,
+            runSpacing: 16,
+            children: [
+              for (final color in _canvasColorSwatches)
+                _CanvasColorSwatch(
+                  color: color,
+                  selected: color == _canvasColor,
+                  onTap: () => Navigator.of(sheetContext).pop(color),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (chosen != null) setState(() => _canvasColor = chosen);
+  }
+
+  Future<void> _pickCanvasOpacity(BuildContext context) async {
+    final opacity = await showModalBottomSheet<double>(
+      context: context,
+      builder: (sheetContext) => _CanvasOpacitySheet(initialOpacity: _canvasOpacity),
+    );
+    if (opacity != null) setState(() => _canvasOpacity = opacity);
+  }
+}
+
+/// One tappable swatch in [_SketchScreenState._pickCanvasColor]'s sheet -
+/// mirrors `viewport3d/view_prefs_sheets.dart`'s `_SwatchTile`, but plain
+/// [Color] rather than a persisted `"#RRGGBB"` string, since this is
+/// session-only.
+class _CanvasColorSwatch extends StatelessWidget {
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _CanvasColorSwatch({required this.color, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected ? Theme.of(context).colorScheme.primary : Colors.grey,
+            width: selected ? 3 : 1,
+          ),
+        ),
+        child: selected ? const Icon(Icons.check) : null,
+      ),
+    );
+  }
+}
+
+/// Stage 23f's canvas transparency slider - mirrors
+/// `viewport3d/view_prefs_sheets.dart`'s `_BodyOpacitySheet` (0% = fully
+/// opaque, 100% = fully transparent, 5% steps), but pops the chosen
+/// *opacity* directly rather than going through [ViewPreferences].
+class _CanvasOpacitySheet extends StatefulWidget {
+  final double initialOpacity;
+  const _CanvasOpacitySheet({required this.initialOpacity});
+
+  @override
+  State<_CanvasOpacitySheet> createState() => _CanvasOpacitySheetState();
+}
+
+class _CanvasOpacitySheetState extends State<_CanvasOpacitySheet> {
+  late double _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _opacity = widget.initialOpacity;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final transparencyPercent = ((1 - _opacity) * 100).round();
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Canvas Transparency', style: Theme.of(context).textTheme.titleMedium),
+            Row(
+              children: [
+                Expanded(
+                  child: Slider(
+                    value: transparencyPercent.toDouble(),
+                    min: 0,
+                    max: 100,
+                    divisions: 20,
+                    label: '$transparencyPercent%',
+                    onChanged: (value) => setState(() => _opacity = 1 - (value / 100)),
+                  ),
+                ),
+                SizedBox(width: 48, child: Text('$transparencyPercent%', textAlign: TextAlign.end)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(_opacity),
+                child: const Text('Apply'),
               ),
             ),
           ],

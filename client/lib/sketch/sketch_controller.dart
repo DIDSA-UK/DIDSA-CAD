@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart' show Offset;
+import 'package:flutter/widgets.dart' show Offset, Rect;
 
 import '../api/sketch_api_client.dart';
 import 'view_transform.dart';
@@ -282,6 +282,43 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchPointView> points = {};
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
+
+  /// Stage 23b: the sketch-space bounding box of every Point, plus every
+  /// Circle's full extent (center +/- radius, since a circle's own Points
+  /// are just its center and radius handle, not its rim) - null when the
+  /// sketch has no geometry at all. Feeds [SketchViewport.zoomToFit]; has
+  /// no opinion on padding or screen size, just the raw geometry extents.
+  Rect? get geometryBoundingBox {
+    if (points.isEmpty) return null;
+
+    double minX = double.infinity;
+    double minY = double.infinity;
+    double maxX = -double.infinity;
+    double maxY = -double.infinity;
+
+    void include(double x, double y) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+
+    for (final point in points.values) {
+      include(point.x, point.y);
+    }
+    for (final circle in circles.values) {
+      final center = points[circle.centerPointId];
+      final radiusPoint = points[circle.radiusPointId];
+      if (center == null || radiusPoint == null) continue;
+      final radius = math.sqrt(
+        math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
+      );
+      include(center.x - radius, center.y - radius);
+      include(center.x + radius, center.y + radius);
+    }
+
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
 
   /// Every Constraint currently on this Sketch, keyed by id - the dimension
   /// overlays (Stage 12 item 10) read straight from this, and Stage 13's
@@ -1181,8 +1218,10 @@ class SketchController extends ChangeNotifier {
   /// replacing it (Stage 13 item 6's multi-entity selection); tapping blank
   /// space while the flyout is open dismisses it back to a clean idle
   /// state, matching how a tap-outside is expected to close a contextual
-  /// panel; tapping blank space while the flyout is closed instead opens it
-  /// showing the idle actions (e.g. Exit Sketch), same as Stage 6.
+  /// panel. Stage 23d: tapping blank space while the flyout is already
+  /// closed is now a no-op - it used to open the flyout showing only an
+  /// "Exit Sketch" action, which has moved to the hamburger menu and is no
+  /// longer reachable via the canvas at all.
   Future<void> _handleSelectTap(double hitRadius) async {
     if (_busy) return;
     SketchSelection? hit;
@@ -1194,10 +1233,8 @@ class SketchController extends ChangeNotifier {
       if (_ribbonVisible) {
         _selectionSet.clear();
         _ribbonVisible = false;
-      } else {
-        _ribbonVisible = true;
+        notifyListeners();
       }
-      notifyListeners();
       return;
     }
 
@@ -1245,6 +1282,38 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Stage 23h: removes one entity from [selectionSet] without disturbing
+  /// the rest - the × on each row of the flyout's Selected Entities list.
+  /// Closes the ribbon entirely once the last entity is removed this way,
+  /// same as any other selection becoming empty.
+  void deselect(SketchSelection selection) {
+    _selectionSet.removeWhere((s) => s.sameAs(selection));
+    _ribbonVisible = _selectionSet.isNotEmpty;
+    notifyListeners();
+  }
+
+  /// Stage 23h: a short, human-friendly label for [selection] - e.g.
+  /// "Line 2" - for the flyout's Selected Entities list. Purely derived
+  /// from each entity map's current iteration order (i.e. creation order:
+  /// [_loadExistingContent] seeds that order from the backend, and every
+  /// later draw-tool method only ever appends new ids), not a separately
+  /// persisted number - stable for this session only, and "Point" numbering
+  /// excludes the origin Point, same as every other selection path
+  /// ([selectAll]/[selectInRect]) excludes it from being selectable at all.
+  String selectionLabel(SketchSelection selection) {
+    switch (selection.kind) {
+      case SelectionKind.point:
+        final ids = points.keys.where((id) => id != _originPointId).toList();
+        return 'Point ${ids.indexOf(selection.id) + 1}';
+      case SelectionKind.line:
+        return 'Line ${lines.keys.toList().indexOf(selection.id) + 1}';
+      case SelectionKind.circle:
+        return 'Circle ${circles.keys.toList().indexOf(selection.id) + 1}';
+      case SelectionKind.constraint:
+        return 'Constraint ${constraints.keys.toList().indexOf(selection.id) + 1}';
+    }
+  }
+
   /// Stage 19b item 5: selects every Line/Circle/Point - excluding the
   /// sketch's origin Point, which is pinned by the solver and so isn't a
   /// meaningful delete/constrain target - via the same multi-entity
@@ -1266,6 +1335,73 @@ class SketchController extends ChangeNotifier {
       // ("Point is still referenced by constraint ..."), since deleting a
       // Line never auto-deletes the constraints that reference it.
       ..addAll(constraints.keys.map((id) => SketchSelection(kind: SelectionKind.constraint, id: id)));
+    _ribbonVisible = _selectionSet.isNotEmpty;
+    notifyListeners();
+  }
+
+  /// Stage 23g: whether any selectable entity sits within [radius] of
+  /// (x, y), in sketch coordinates - used to tell a long-press on truly
+  /// empty canvas (which should start the marquee gesture) apart from one
+  /// that lands on or near existing geometry (which shouldn't). Reuses the
+  /// same hit-test core as ordinary tap-select/hover, including the origin
+  /// Point.
+  bool hasEntityNear(double x, double y, double radius) {
+    return _entityAt(x, y, radius, includeOrigin: true) != null;
+  }
+
+  /// Stage 23g: replaces [selectionSet] with every Point/Line/Circle whose
+  /// geometry falls *entirely* inside [sketchRect] (already converted to
+  /// sketch coordinates by the caller) - the marquee-drag analogue of
+  /// [selectAll]. The origin Point is excluded, same as [selectAll], since
+  /// it's pinned by the solver and not a meaningful delete/constrain
+  /// target. A Line/Circle only counts as "inside" when both its endpoints
+  /// (or its full bounding box, for a Circle) lie within the rect.
+  ///
+  /// Deliberately does NOT auto-include each selected entity's
+  /// Constraints the way [selectAll] does (see that method's Stage 21 item
+  /// 4 comment) - the brief only asks for "entities fully inside the box,"
+  /// and the ordinary tap-based multi-select path has the same
+  /// constraints-not-auto-included limitation today, so this stays
+  /// consistent with existing behavior rather than introducing new
+  /// special-casing.
+  void selectInRect(Rect sketchRect) {
+    bool insideRect(double x, double y) {
+      return x >= sketchRect.left &&
+          x <= sketchRect.right &&
+          y >= sketchRect.top &&
+          y <= sketchRect.bottom;
+    }
+
+    final selected = <SketchSelection>[];
+    for (final point in points.values) {
+      if (point.id == _originPointId) continue;
+      if (insideRect(point.x, point.y)) {
+        selected.add(SketchSelection(kind: SelectionKind.point, id: point.id));
+      }
+    }
+    for (final line in lines.values) {
+      final start = points[line.startPointId];
+      final end = points[line.endPointId];
+      if (start == null || end == null) continue;
+      if (insideRect(start.x, start.y) && insideRect(end.x, end.y)) {
+        selected.add(SketchSelection(kind: SelectionKind.line, id: line.id));
+      }
+    }
+    for (final circle in circles.values) {
+      final center = points[circle.centerPointId];
+      final edge = points[circle.radiusPointId];
+      if (center == null || edge == null) continue;
+      final radius = math.sqrt(
+        math.pow(edge.x - center.x, 2) + math.pow(edge.y - center.y, 2),
+      );
+      if (insideRect(center.x - radius, center.y - radius) &&
+          insideRect(center.x + radius, center.y + radius)) {
+        selected.add(SketchSelection(kind: SelectionKind.circle, id: circle.id));
+      }
+    }
+    _selectionSet
+      ..clear()
+      ..addAll(selected);
     _ribbonVisible = _selectionSet.isNotEmpty;
     notifyListeners();
   }
@@ -1638,8 +1774,8 @@ class SketchController extends ChangeNotifier {
 
     if (sel.length == 1 && sel.first.kind == SelectionKind.line) {
       return const [
-        ConstraintOption(type: ConstraintOptionType.vertical, label: 'Vertical', wired: true),
-        ConstraintOption(type: ConstraintOptionType.horizontal, label: 'Horizontal', wired: true),
+        ConstraintOption(type: ConstraintOptionType.vertical, label: 'Vert.', wired: true),
+        ConstraintOption(type: ConstraintOptionType.horizontal, label: 'Horiz.', wired: true),
       ];
     }
 
@@ -1652,10 +1788,10 @@ class SketchController extends ChangeNotifier {
         ConstraintOption(type: ConstraintOptionType.parallel, label: 'Parallel', wired: true),
         ConstraintOption(
           type: ConstraintOptionType.perpendicular,
-          label: 'Perpendicular',
+          label: 'Perp.',
           wired: true,
         ),
-        ConstraintOption(type: ConstraintOptionType.equalLength, label: 'Equal length', wired: true),
+        ConstraintOption(type: ConstraintOptionType.equalLength, label: 'Equal', wired: true),
         ConstraintOption(type: ConstraintOptionType.collinear, label: 'Collinear', wired: true),
       ];
     }
@@ -1672,7 +1808,7 @@ class SketchController extends ChangeNotifier {
     }
 
     if (kinds.every((k) => k == SelectionKind.point || k == SelectionKind.line)) {
-      return const [ConstraintOption(type: ConstraintOptionType.coincident, label: 'Coincident', wired: true)];
+      return const [ConstraintOption(type: ConstraintOptionType.coincident, label: 'Coinc.', wired: true)];
     }
 
     return const [];
