@@ -1,0 +1,362 @@
+import 'dart:ui' show Size;
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:vector_math/vector_math.dart' as vm;
+
+import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
+
+void main() {
+  // Every ray below travels straight down +Z from the origin - the
+  // worked-out pixel-distance numbers in each test's comments assume this
+  // exact ray plus a 800x600 viewport at the default 45-degree vertical
+  // FOV (kCameraVerticalFovRadians): at depth z, one screen pixel covers
+  // `2 * z * tan(22.5deg) / 600` world units.
+  final straightDownZ = vm.Ray.originDirection(vm.Vector3(0, 0, 0), vm.Vector3(0, 0, 1));
+  const viewportSize = Size(800, 600);
+
+  group('hitTestVertices', () {
+    test('a vertex within the pixel radius at its depth is hit', () {
+      // At depth 10, world-units-per-pixel ~= 0.0138, so 9px ~= 0.1243
+      // world units - this vertex sits 0.05 off the ray, well inside.
+      final hit = hitTestVertices(
+        straightDownZ,
+        viewportSize,
+        [vm.Vector3(0.05, 0, 10)],
+        [3],
+      );
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
+    });
+
+    test('a vertex outside the pixel radius at its depth is not hit', () {
+      // 0.2 world units off the ray at depth 10 is ~14.5px - past the
+      // default 9px radius.
+      final hit = hitTestVertices(
+        straightDownZ,
+        viewportSize,
+        [vm.Vector3(0.2, 0, 10)],
+        [3],
+      );
+      expect(hit, isNull);
+    });
+
+    test('a vertex behind the ray origin is never hit', () {
+      final hit = hitTestVertices(
+        straightDownZ,
+        viewportSize,
+        [vm.Vector3(0, 0, -5)],
+        [3],
+      );
+      expect(hit, isNull);
+    });
+
+    test('the nearer of two in-radius vertices wins', () {
+      final hit = hitTestVertices(
+        straightDownZ,
+        viewportSize,
+        [vm.Vector3(0.05, 0, 10), vm.Vector3(0.01, 0, 10)],
+        [3, 9],
+      );
+      expect(hit?.entity.id, 9);
+    });
+  });
+
+  group('hitTestEdges', () {
+    test('a segment whose closest point to the ray is within radius is hit', () {
+      final hit = hitTestEdges(
+        straightDownZ,
+        viewportSize,
+        [(vm.Vector3(0.05, -1, 10), vm.Vector3(0.05, 1, 10))],
+        [5],
+      );
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.edge, id: 5));
+    });
+
+    test('a segment whose closest point is outside radius is not hit', () {
+      final hit = hitTestEdges(
+        straightDownZ,
+        viewportSize,
+        [(vm.Vector3(0.5, -1, 10), vm.Vector3(0.5, 1, 10))],
+        [5],
+      );
+      expect(hit, isNull);
+    });
+
+    test('the segment endpoint is respected: the closest point cannot fall outside it', () {
+      // The infinite line through this segment passes within 0.05 of the
+      // ray at y=0, but the segment itself only spans y in [1, 2] - its
+      // nearest actual point is the y=1 endpoint, far from the ray.
+      final hit = hitTestEdges(
+        straightDownZ,
+        viewportSize,
+        [(vm.Vector3(0.05, 1, 10), vm.Vector3(0.05, 2, 10))],
+        [5],
+      );
+      expect(hit, isNull);
+    });
+
+    test('a segment entirely behind the ray origin is never hit', () {
+      final hit = hitTestEdges(
+        straightDownZ,
+        viewportSize,
+        [(vm.Vector3(0, -1, -5), vm.Vector3(0, 1, -5))],
+        [5],
+      );
+      expect(hit, isNull);
+    });
+  });
+
+  group('hitTestFaces', () {
+    final triangle = (vm.Vector3(-1, -1, 10), vm.Vector3(1, -1, 10), vm.Vector3(0, 1, 10));
+
+    test('a ray through the triangle is hit, with no radius check', () {
+      final hit = hitTestFaces(straightDownZ, [triangle], [4]);
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.face, id: 4));
+    });
+
+    test('a ray that misses the triangle entirely returns null', () {
+      final missRay = vm.Ray.originDirection(vm.Vector3(5, 5, 0), vm.Vector3(0, 0, 1));
+      final hit = hitTestFaces(missRay, [triangle], [4]);
+      expect(hit, isNull);
+    });
+
+    test('the nearer of two overlapping triangles wins', () {
+      final near = (vm.Vector3(-1, -1, 5), vm.Vector3(1, -1, 5), vm.Vector3(0, 1, 5));
+      final far = (vm.Vector3(-1, -1, 10), vm.Vector3(1, -1, 10), vm.Vector3(0, 1, 10));
+      final hit = hitTestFaces(straightDownZ, [far, near], [1, 2]);
+      expect(hit?.entity.id, 2);
+    });
+  });
+
+  group('topologyVerticesFromMesh / trianglesFromMesh', () {
+    test('parses topologyVertices into Vector3s in order', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [1, 2, 3],
+          [4, 5, 6],
+        ],
+      );
+      final parsed = topologyVerticesFromMesh(mesh);
+      expect(parsed, [vm.Vector3(1, 2, 3), vm.Vector3(4, 5, 6)]);
+    });
+
+    test('resolves triangleIndices into actual corner positions', () {
+      final mesh = MeshDto(
+        vertices: const [
+          [0, 0, 0],
+          [1, 0, 0],
+          [0, 1, 0],
+        ],
+        normals: const [],
+        triangleIndices: const [
+          [0, 1, 2],
+        ],
+      );
+      final parsed = trianglesFromMesh(mesh);
+      expect(parsed, [(vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0))]);
+    });
+  });
+
+  group('hitTestMeshEntities', () {
+    test('a vertex wins over an in-radius edge when it is strictly nearer', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [0.02, 0, 10],
+        ],
+        topologyVertexIds: const [3],
+        edges: const [0.05, -1, 10, 0.05, 1, 10],
+        edgeIds: const [5],
+      );
+      final hit = hitTestMeshEntities(ray: straightDownZ, viewportSize: viewportSize, mesh: mesh);
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
+    });
+
+    test('an exact vertex/edge tie resolves to the vertex', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [0.05, 0, 10],
+        ],
+        topologyVertexIds: const [3],
+        edges: const [0.05, -1, 10, 0.05, 1, 10],
+        edgeIds: const [5],
+      );
+      final hit = hitTestMeshEntities(ray: straightDownZ, viewportSize: viewportSize, mesh: mesh);
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
+    });
+
+    test('an in-radius edge wins over a far vertex', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [0.5, 0, 10],
+        ],
+        topologyVertexIds: const [3],
+        edges: const [0.02, -1, 10, 0.02, 1, 10],
+        edgeIds: const [5],
+      );
+      final hit = hitTestMeshEntities(ray: straightDownZ, viewportSize: viewportSize, mesh: mesh);
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.edge, id: 5));
+    });
+
+    test('falls back to the nearest intersected face when nothing is within radius', () {
+      final mesh = MeshDto(
+        vertices: const [
+          [-1, -1, 10],
+          [1, -1, 10],
+          [0, 1, 10],
+        ],
+        normals: const [],
+        triangleIndices: const [
+          [0, 1, 2],
+        ],
+        faceIds: const [7],
+        topologyVertices: const [
+          [5, 5, 10],
+        ],
+        topologyVertexIds: const [3],
+        edges: const [5, 4, 10, 5, 6, 10],
+        edgeIds: const [5],
+      );
+      final hit = hitTestMeshEntities(ray: straightDownZ, viewportSize: viewportSize, mesh: mesh);
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.face, id: 7));
+    });
+
+    test('returns null when nothing in the mesh is near the ray or intersected by it', () {
+      final mesh = MeshDto(
+        vertices: const [
+          [-1, -1, 10],
+          [1, -1, 10],
+          [0, 1, 10],
+        ],
+        normals: const [],
+        triangleIndices: const [
+          [0, 1, 2],
+        ],
+        faceIds: const [7],
+      );
+      final missRay = vm.Ray.originDirection(vm.Vector3(50, 50, 0), vm.Vector3(0, 0, 1));
+      final hit = hitTestMeshEntities(ray: missRay, viewportSize: viewportSize, mesh: mesh);
+      expect(hit, isNull);
+    });
+  });
+
+  group('vertexPositionForId', () {
+    test('returns the position of the matching topology vertex', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [1, 2, 3],
+          [4, 5, 6],
+        ],
+        topologyVertexIds: const [10, 20],
+      );
+      expect(vertexPositionForId(mesh, 20), vm.Vector3(4, 5, 6));
+    });
+
+    test('returns null when the id is not present', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [1, 2, 3],
+        ],
+        topologyVertexIds: const [10],
+      );
+      expect(vertexPositionForId(mesh, 99), isNull);
+    });
+  });
+
+  group('edgeSegmentsForId', () {
+    test('returns every segment sharing the given edge id, in order', () {
+      // Simulates one curved edge sampled into two segments sharing id 5,
+      // plus an unrelated straight edge with id 6.
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        edges: const [
+          0, 0, 0, 1, 0, 0, // segment 0, id 5
+          1, 0, 0, 2, 0, 0, // segment 1, id 5
+          0, 1, 0, 0, 2, 0, // segment 2, id 6
+        ],
+        edgeIds: const [5, 5, 6],
+      );
+      final segments = edgeSegmentsForId(mesh, 5);
+      expect(segments, [
+        (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0)),
+        (vm.Vector3(1, 0, 0), vm.Vector3(2, 0, 0)),
+      ]);
+    });
+
+    test('returns an empty list when the id is not present', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        edges: const [0, 0, 0, 1, 0, 0],
+        edgeIds: const [5],
+      );
+      expect(edgeSegmentsForId(mesh, 99), isEmpty);
+    });
+  });
+
+  group('faceTrianglesForId', () {
+    test('returns every triangle sharing the given face id, in order', () {
+      // Simulates one OCCT face tessellated into two triangles sharing id 2,
+      // plus an unrelated triangle with id 3.
+      final mesh = MeshDto(
+        vertices: const [
+          [0, 0, 0],
+          [1, 0, 0],
+          [0, 1, 0],
+          [1, 1, 0],
+          [5, 5, 5],
+          [6, 5, 5],
+          [5, 6, 5],
+        ],
+        normals: const [],
+        triangleIndices: const [
+          [0, 1, 2],
+          [1, 3, 2],
+          [4, 5, 6],
+        ],
+        faceIds: const [2, 2, 3],
+      );
+      final triangles = faceTrianglesForId(mesh, 2);
+      expect(triangles, [
+        (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0)),
+        (vm.Vector3(1, 0, 0), vm.Vector3(1, 1, 0), vm.Vector3(0, 1, 0)),
+      ]);
+    });
+
+    test('returns an empty list when the id is not present', () {
+      final mesh = MeshDto(
+        vertices: const [
+          [0, 0, 0],
+          [1, 0, 0],
+          [0, 1, 0],
+        ],
+        normals: const [],
+        triangleIndices: const [
+          [0, 1, 2],
+        ],
+        faceIds: const [2],
+      );
+      expect(faceTrianglesForId(mesh, 99), isEmpty);
+    });
+  });
+}

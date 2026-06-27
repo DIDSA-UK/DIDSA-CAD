@@ -20,6 +20,9 @@ import 'part_viewport.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
+import 'selection_context_panel.dart';
+import 'selection_hit_test.dart' show SelectionEntityRef;
+import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'view_preferences.dart';
 
@@ -101,6 +104,49 @@ class _PartScreenState extends State<PartScreen> {
   /// Feature ids hidden from the 3D viewport via the long-press
   /// Hide/Show action - client-side only, never sent to the backend.
   final Set<String> _hiddenFeatureIds = {};
+
+  /// Stage 23 Item 1: whether the viewport is in Selection mode (vs the
+  /// default Orbit mode) - toggled by the second FAB added below. Per Item
+  /// 7, this is read by [PartViewport] only to decide which gesture-handler
+  /// set to dispatch pointer events to; the existing orbit handlers
+  /// themselves are never touched.
+  bool _selectionMode = false;
+
+  /// Stage 23 Item 4: the accumulated set of selected mesh entities, only
+  /// ever non-empty while [_selectionMode] is true - cleared whenever
+  /// Selection mode is exited (see [_toggleSelectionMode]), which also
+  /// dismisses the selection-list drawer/context panel below it (both
+  /// gated on this being non-empty) and removes the cursor (gated on
+  /// [_selectionMode] itself).
+  final Set<SelectionEntityRef> _selectedEntities = {};
+
+  /// The second FAB's callback (Item 1) - switching back to Orbit mode
+  /// clears the entire selection outright, per the brief, rather than
+  /// preserving it for a later return to Selection mode.
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      if (!_selectionMode) _selectedEntities.clear();
+    });
+  }
+
+  /// Item 4: "Unselected entity tap -> add; already-selected -> remove
+  /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by its
+  /// Select button when the cursor's hover hit is non-null.
+  void _toggleSelectedEntity(SelectionEntityRef entity) {
+    setState(() {
+      if (!_selectedEntities.remove(entity)) {
+        _selectedEntities.add(entity);
+      }
+    });
+  }
+
+  /// Item 4: "Empty space + Select -> clears entire selection set" - passed
+  /// to [PartViewport.onClearSelection], fired by its Select button when the
+  /// cursor's hover hit is null.
+  void _clearSelectedEntities() {
+    setState(_selectedEntities.clear);
+  }
 
   /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
   /// [_hiddenFeatureIds] - [_visibleSketchGeometries] is the
@@ -803,6 +849,57 @@ class _PartScreenState extends State<PartScreen> {
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
                   bodyOpacity: _bodyOpacity,
+                  selectionMode: _selectionMode,
+                  selectedEntities: _selectedEntities,
+                  onSelectionToggle: _toggleSelectedEntity,
+                  onClearSelection: _clearSelectedEntities,
+                ),
+                // Stage 23 Item 1: a subtle tinted border around the
+                // viewport while in Selection mode - an overlay rather than
+                // a decoration on PartViewport itself, so its own layout
+                // (and the orbit gesture handling underneath) stays
+                // untouched.
+                if (_selectionMode)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Stage 23 Items 5/6: the context action panel and
+                // selection list drawer, stacked bottom-to-top (panel above
+                // drawer, per the brief) and both gated on the same "is
+                // anything selected" condition so they appear/disappear
+                // together. Drawn as one Positioned/Column rather than two
+                // independent bottom-anchored widgets so the panel always
+                // sits directly above the drawer with no manual height
+                // bookkeeping between them. The Stage 23 mode-toggle FAB
+                // lives in Scaffold's own floatingActionButton slot, which
+                // Flutter always paints above this body Stack, so this
+                // never needs special-cased margin to avoid obscuring it.
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: SafeArea(
+                    top: false,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SelectionContextPanel(selectedEntities: _selectedEntities),
+                        SelectionListDrawer(
+                          selectedEntities: _selectedEntities,
+                          onRemove: _toggleSelectedEntity,
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
                 Positioned.fill(
                   child: FeatureTreePanel(
@@ -932,12 +1029,34 @@ class _PartScreenState extends State<PartScreen> {
       // (including the body Stack's PartToolbar entry), so it would
       // otherwise sit on top of the open toolbar panel regardless of the
       // body Stack's own child order.
+      //
+      // Stage 23 Item 1: the mode-toggle FAB sits above the "Add" FAB,
+      // hidden under the exact same conditions - it follows the same Stage
+      // 22 z-order rules as every other FAB here.
       floatingActionButton: (_extrudeSketchFeature != null || _toolbarOpen)
           ? null
-          : FloatingActionButton(
-              tooltip: 'Add',
-              onPressed: _busy ? null : _onAddPressed,
-              child: const Icon(Icons.add),
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FloatingActionButton(
+                  heroTag: 'selection-mode-fab',
+                  tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+                  backgroundColor:
+                      _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
+                  onPressed: _busy ? null : _toggleSelectionMode,
+                  // The icon shows the mode a tap will switch *into*: a
+                  // cursor/pointer while in (default) Orbit mode, an
+                  // orbit/rotate glyph while in Selection mode.
+                  child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
+                ),
+                const SizedBox(height: 12),
+                FloatingActionButton(
+                  heroTag: 'add-fab',
+                  tooltip: 'Add',
+                  onPressed: _busy ? null : _onAddPressed,
+                  child: const Icon(Icons.add),
+                ),
+              ],
             ),
     );
   }

@@ -75,6 +75,15 @@ class MeshVertexData(BaseModel):
     # Stage 11: flat [x1,y1,z1, x2,y2,z2, ...] edge polyline segments, sampled
     # from the shape's real OCCT curves - see app.document.mesh._extract_edges.
     edges: list[float]
+    # Stage 23: stable per-triangle/per-edge-segment/per-topology-vertex ids -
+    # foundation for the 3D viewport's selection mode hit-testing (face/edge/
+    # vertex pick -> entity id). Defaulted to [] for backward compatibility
+    # with any client mesh fixture built before this stage. Only stable
+    # within one response - see app.document.mesh.MeshData's own field docs.
+    face_ids: list[int] = []
+    edge_ids: list[int] = []
+    topology_vertices: list[tuple[float, float, float]] = []
+    topology_vertex_ids: list[int] = []
 
 
 class PartMeshResponse(BaseModel):

@@ -147,4 +147,55 @@ void main() {
 
     expect(nudged[0].$1, vm.Vector3(5, 5, 5));
   });
+
+  group('vertexMarkerSegments', () {
+    test('turns each position into a near-zero-length segment starting at that position', () {
+      final segments = vertexMarkerSegments([vm.Vector3(1, 2, 3), vm.Vector3(4, 5, 6)]);
+
+      expect(segments, hasLength(2));
+      expect(segments[0].$1, vm.Vector3(1, 2, 3));
+      expect((segments[0].$2 - segments[0].$1).length, lessThan(1e-3));
+      expect(segments[1].$1, vm.Vector3(4, 5, 6));
+      expect((segments[1].$2 - segments[1].$1).length, lessThan(1e-3));
+    });
+
+    test('returns no segments for an empty position list', () {
+      expect(vertexMarkerSegments([]), isEmpty);
+    });
+  });
+
+  group('triangleHighlightBuffers', () {
+    test('packs each triangle into 3 vertices carrying its face normal', () {
+      final buffers = triangleHighlightBuffers([
+        (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0)),
+      ]);
+
+      expect(buffers.vertexCount, 3);
+      final vertex0 = buffers.vertexData.sublist(0, 12);
+      expect(vertex0, [
+        0, 0, 0, // position
+        0, 0, 1, // normal (cross of the two edges, +Z for this winding)
+        0, 0, // uv
+        1, 1, 1, 1, // color
+      ]);
+    });
+
+    test('writes a flat 16-bit index buffer of 0..vertexCount-1', () {
+      final buffers = triangleHighlightBuffers([
+        (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0)),
+        (vm.Vector3(0, 0, 0), vm.Vector3(0, 1, 0), vm.Vector3(0, 0, 1)),
+      ]);
+
+      final indices = Uint16List.sublistView(buffers.indexData);
+      expect(indices, [0, 1, 2, 3, 4, 5]);
+    });
+
+    test('a degenerate (zero-area) triangle gets the zero normal rather than NaN', () {
+      final buffers = triangleHighlightBuffers([
+        (vm.Vector3(0, 0, 0), vm.Vector3(0, 0, 0), vm.Vector3(0, 0, 0)),
+      ]);
+
+      expect(buffers.vertexData.sublist(3, 6), [0, 0, 0]);
+    });
+  });
 }
