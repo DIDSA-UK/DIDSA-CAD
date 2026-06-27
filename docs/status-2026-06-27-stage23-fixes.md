@@ -30,7 +30,7 @@ today's confirmation pass.
 | 3 | Vertex hover highlight not appearing | Confirmed correct | `backend/app/document/mesh.py` (`_extract_topology_vertices`), `schemas.py`, `document_api_client.dart` (`MeshDto.topologyVertices`/`topologyVertexIds`), `mesh_geometry.dart` (`buildVertexMarkersNode`) |
 | 4 | Tap screen to select (remove Select button) | Confirmed correct | `part_viewport.dart` (`_onPointerDown`/`_onPointerMove`/`_onPointerEnd`, `_commitSelection`) - no `FilledButton`/`ElevatedButton` labelled Select exists anywhere in the file |
 | 5 | Bottom drawer FAB overlap / excessive height | Confirmed correct | `selection_list_drawer.dart` (`DraggableScrollableSheet` sizes, `_fabColumnClearance` padding, `SafeArea`) |
-| 6 | `_dependents.isEmpty` assertion on Set Length | Confirmed correct | `sketch_canvas.dart` (`_GhostValueEditorState` owns its own `FocusNode`, calls `unfocus()` before the controller call that removes the widget); no `InheritedWidget`/`InheritedNotifier` exists anywhere under `client/lib` |
+| 6 | `_dependents.isEmpty` assertion on Set Length | Superseded - see Addendum below | Initially "Confirmed correct" per `sketch_canvas.dart`'s `unfocus()` pattern, but a real-device report falsified that; genuinely fixed (deferred removal past a full frame) in both `sketch_canvas.dart` and `sketch_ribbon.dart` |
 | 7 | Hamburger → FAB above feature-tree FAB | Confirmed correct | `part_screen.dart` (FAB column: `hamburger-fab` always visible unless `_toolbarOpen` is false and an extrude panel is active, `feature-tree-fab` below it, `selection-mode-fab` in the `Scaffold.floatingActionButton` slot) |
 
 ## Detail per item
@@ -137,3 +137,70 @@ None found against the 7 items in this prompt. As in every prior round, test
 *execution* (as opposed to static code review) remains blocked by the
 sandbox's lack of a Flutter SDK and pythonocc-core/OCCT - this is an
 environment limitation, not a known defect in the code.
+
+## Addendum — real-device report, same day
+
+After the audit above shipped, real-device screenshots of a freshly-rebuilt
+`main` pull surfaced two problems the static read missed:
+
+**A. Sketch screen's menu FAB at bottom-right, not top-left.** Unlike
+`part_screen.dart`'s 3D viewport (top-left hamburger, per item 7 above),
+`sketch_screen.dart`'s `sketch-menu-fab` was stacked above
+`SketchSpeedDial` at bottom-right - inconsistent with the viewport's
+convention. Moved it to its own `Positioned(top: 8, left: 8, ...)` block
+(rendered after `SketchRibbon` in the `Stack` so it stays tappable on top of
+the ribbon), and `SketchSpeedDial`'s `Positioned` reverted to holding just
+itself. No test referenced `sketch-menu-fab`/`openDrawer`/`sketch_screen` by
+name, so this carried no test-breakage risk.
+
+**B. Item 6's `_dependents.isEmpty` crash still reproduces live**, confirmed
+by the reporter on a freshly-rebuilt app when confirming a "Set Length"
+dialog - i.e. through `sketch_ribbon.dart`'s `_SetLengthDialog` (reached from
+the ribbon's Length chip on a selected Line), not through the canvas's inline
+dimension-mode ghost editor this round's item 6 verified. This directly
+falsifies that "Confirmed correct" conclusion: the `unfocus()`-before-removal
+pattern, present in *both* `_GhostValueEditorState` (`sketch_canvas.dart`,
+Stage 23's own fix) and `_SetLengthDialogState` (`sketch_ribbon.dart`, an
+earlier "Stage 23a" fix per its comment), is not sufficient by itself.
+
+Root cause, by Flutter framework behavior rather than a captured stack trace
+(still blocked by no Flutter SDK in this sandbox - see `Test results` above,
+and `docs/status-2026-06-26-stage20.md`'s own prior conclusion that pinning
+the exact dependent `Element` needs a real device stack trace beyond the
+single assertion line): `FocusNode.unfocus()` only *schedules* a focus
+change: `FocusManager` applies it during the next frame's pre-build phase,
+not synchronously. Both sites were calling `unfocus()` and then immediately
+performing the action that removes the focused `TextField`'s element in the
+very same synchronous call - `Navigator.of(context).pop(value)` in the
+dialog, the `confirmGhostValue`/`cancelGhostEdit` controller call in the
+canvas editor - racing the deferred focus-change application instead of
+waiting for it.
+
+Fix applied to both sites: keep the `unfocus()` call, but defer the
+removal-triggering call itself to `WidgetsBinding.instance.
+addPostFrameCallback`, guaranteeing a full frame (and the focus-change
+application within it) elapses before the focused widget is actually torn
+down:
+- `sketch_ribbon.dart`: `_SetLengthDialogState._submit()`/`_cancel()` now
+  both funnel through a shared `_dismiss(value)` that unfocuses, captures the
+  `NavigatorState`, then pops inside a post-frame callback (guarded by
+  `navigator.mounted`).
+- `sketch_canvas.dart`: `_GhostValueEditorState._confirm()`/`_cancel()` defer
+  their `confirmGhostValue`/`cancelGhostEdit` calls the same way (guarded by
+  `mounted`).
+
+Added `client/test/sketch_ribbon_set_length_test.dart` - a regression test
+for the `_SetLengthDialog` flow specifically (select a Line, tap the Length
+chip, type a value, tap Set), since the existing
+`sketch_canvas_ghost_editor_test.dart` only ever covered the canvas's ghost
+editor and never exercised this dialog at all.
+
+Caveat, stated plainly: without a Flutter SDK in this sandbox, none of these
+widget tests can actually be run, and the fix is reasoned from documented
+`FocusManager`/frame-scheduling behavior rather than a captured device stack
+trace pinpointing the exact dependent `Element`. This is a genuine
+strengthening of the mitigation (a stricter ordering guarantee than the
+prior "call unfocus() first" pattern alone), not a guaranteed-by-reproduction
+fix - if it recurs, the most useful next artifact is the full scrolled error
+detail/stack trace from the device's red error screen, as
+`status-2026-06-26-stage20.md` already recommended.

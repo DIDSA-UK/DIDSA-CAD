@@ -225,17 +225,25 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
       setState(() => _error = 'Enter a positive number');
       return;
     }
-    // Stage 23a: the focused TextField must release its focus before the
-    // dialog route is popped - autofocus's deferred focus-grant otherwise
-    // races the synchronous pop and trips a `_dependents.isEmpty` assertion
-    // when the focus scope is torn down mid-rebuild.
-    _focusNode.unfocus();
-    Navigator.of(context).pop(value);
+    _dismiss(value);
   }
 
-  void _cancel() {
+  void _cancel() => _dismiss(null);
+
+  // Stage 23a's fix (unfocus() immediately before pop()) still reproduced
+  // the `_dependents.isEmpty` crash on a real device: unfocus() only
+  // *schedules* the focus change - FocusManager applies it during the next
+  // frame's pre-build phase, so popping the route synchronously in the same
+  // frame can still tear down the focused TextField's Element subtree before
+  // that application runs. Deferring the actual pop to a post-frame callback
+  // guarantees a full frame (and the focus-change application within it)
+  // elapses first.
+  void _dismiss(double? value) {
     _focusNode.unfocus();
-    Navigator.of(context).pop();
+    final navigator = Navigator.of(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (navigator.mounted) navigator.pop(value);
+    });
   }
 
   @override

@@ -153,11 +153,9 @@ class _SketchScreenState extends State<SketchScreen> {
                   // shrink-wrapped to its own content) - this just gives it
                   // room to do so without forcing a particular size.
                   Positioned.fill(child: SketchRibbon(controller: _controller)),
-                  // Matches the 3D viewport's top-left hamburger/feature-
-                  // tree FAB column style: a dedicated small FAB per action,
-                  // stacked rather than buried in the AppBar/drawer. Exit
-                  // Sketch sits on top since it's the most prominent/most
-                  // reached-for of the two.
+                  // Top-right: Exit Sketch (most prominent/most reached-for
+                  // action) plus the optional reference-body visibility
+                  // toggle.
                   Positioned(
                     top: 8,
                     right: 8,
@@ -184,6 +182,24 @@ class _SketchScreenState extends State<SketchScreen> {
                             ),
                           ],
                         ],
+                      ),
+                    ),
+                  ),
+                  // Top-left: the menu FAB, matching the 3D viewport screen's
+                  // hamburger-fab position exactly (rather than just its
+                  // "stacked small FAB" style) - rendered after SketchRibbon
+                  // in this Stack so it stays on top and tappable even while
+                  // the ribbon is showing.
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: FloatingActionButton.small(
+                        heroTag: 'sketch-menu-fab',
+                        tooltip: 'Menu',
+                        onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                        child: const Icon(Icons.menu),
                       ),
                     ),
                   ),
@@ -236,27 +252,10 @@ class _SketchScreenState extends State<SketchScreen> {
                       ),
                     ),
                   ),
-                  // Stage 23f: the hamburger - now a FAB above the main
-                  // speed-dial FAB, matching the 3D viewport's
-                  // hamburger-fab-above-feature-tree-fab column style,
-                  // rather than an AppBar icon button.
                   Positioned(
                     right: 16,
                     bottom: 16,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        FloatingActionButton.small(
-                          heroTag: 'sketch-menu-fab',
-                          tooltip: 'Menu',
-                          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-                          child: const Icon(Icons.menu),
-                        ),
-                        const SizedBox(height: 8),
-                        SketchSpeedDial(controller: _controller),
-                      ],
-                    ),
+                    child: SketchSpeedDial(controller: _controller),
                   ),
                   // Construction-method/dimension picker: flies up from the
                   // bottom whenever draw or dimension mode is active,
