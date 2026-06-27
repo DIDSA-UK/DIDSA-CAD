@@ -72,9 +72,6 @@ void main() {
       await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
       await tester.pump();
 
-      // Orbit mode never shows the selection-mode cursor or Select button.
-      expect(find.text('Select'), findsNothing);
-
       // A drag is exactly the gesture the existing orbit handler reads -
       // Item 7 requires this to keep driving the camera, not the new
       // cursor/hover dispatch, and to never fire either selection callback.
@@ -83,13 +80,12 @@ void main() {
 
       expect(selectionToggled, isFalse);
       expect(selectionCleared, isFalse);
-      expect(find.text('Select'), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
 
   testWidgets(
-    'Stage 23 Items 2/3: entering selection mode shows a Select button and the cursor resets to the viewport centre',
+    'Stage 23 Items 2/3: entering selection mode resets the cursor to the viewport centre',
     (tester) async {
       Widget buildViewport(bool selectionMode) {
         return MaterialApp(
@@ -112,18 +108,16 @@ void main() {
       await tester.pumpWidget(buildViewport(false));
       await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
       await tester.pump();
-      expect(find.text('Select'), findsNothing);
 
       await tester.pumpWidget(buildViewport(true));
       await tester.pump();
 
-      expect(find.text('Select'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
 
   testWidgets(
-    'Stage 23 Item 4: tapping Select over empty space (no mesh) clears the selection, not toggles an entity',
+    'Fix 4: tapping the viewport in selection mode over empty space (no mesh) clears the selection, not toggles an entity',
     (tester) async {
       var cleared = false;
       var toggled = false;
@@ -147,16 +141,56 @@ void main() {
           ),
         ),
       );
-      // Scene initialization (see initState's Scene.initializeStaticResources
-      // call) doesn't depend on mesh being non-null - only the loading
-      // spinner does - so the Select button still appears once that
-      // resolves, with nothing for its hover hit-test to find.
-      await _pumpUntil(tester, () => find.text('Select').evaluate().isNotEmpty);
+      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      await tester.pump();
 
-      await tester.tap(find.text('Select'));
+      // Fix 4: a tap (no drag) directly on the viewport commits the current
+      // hover - here, nothing's under the cursor (no mesh), so it clears
+      // the selection rather than toggling an entity.
+      await tester.tap(find.byType(PartViewport));
       await tester.pump();
 
       expect(cleared, isTrue);
+      expect(toggled, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Fix 4: a drag past the tap threshold in selection mode moves the cursor and commits no selection',
+    (tester) async {
+      var cleared = false;
+      var toggled = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: PartViewport(
+                mesh: _boxMesh,
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+                selectionMode: true,
+                onSelectionToggle: (_) => toggled = true,
+                onClearSelection: () => cleared = true,
+              ),
+            ),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      await tester.pump();
+
+      // A drag well past the tap-travel threshold (10.0 logical pixels) must
+      // move the cursor only - not commit a selection - per Fix 4's
+      // tap-vs-drag disambiguation.
+      await tester.dragFrom(const Offset(200, 200), const Offset(60, 0));
+      await tester.pump();
+
+      expect(cleared, isFalse);
       expect(toggled, isFalse);
       expect(tester.takeException(), isNull);
     },

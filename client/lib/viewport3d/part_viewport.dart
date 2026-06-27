@@ -88,13 +88,13 @@ class PartViewport extends StatefulWidget {
   /// widget only renders it (see [_syncSelectedEntityNodes]).
   final Set<SelectionEntityRef> selectedEntities;
 
-  /// Fired when the Select button commits a non-empty hover hit - the
-  /// caller (see [PartScreen]) decides whether this adds or removes the
-  /// entity from [selectedEntities] (Item 4's toggle rule).
+  /// Fired when a tap (Fix 4) commits a non-empty hover hit - the caller
+  /// (see [PartScreen]) decides whether this adds or removes the entity
+  /// from [selectedEntities] (Item 4's toggle rule).
   final void Function(SelectionEntityRef entity)? onSelectionToggle;
 
-  /// Fired when the Select button commits while the cursor is over empty
-  /// space - Item 4's "clears entire selection set" rule.
+  /// Fired when a tap (Fix 4) commits while the cursor is over empty space -
+  /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
 
   const PartViewport({
@@ -164,16 +164,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   static const double _tapTravelThreshold = 10.0;
 
-  /// See the Select button's [Positioned.bottom] comment in [build] -
-  /// clearance above Items 5/6's bottom panel/drawer when something is
-  /// selected.
-  static const double _kSelectButtonRaisedBottom = 232.0;
+  /// Fix 4: cumulative pointer travel since the current gesture's
+  /// pointer-down, *while in selection mode* - the selection-mode
+  /// equivalent of [_gestureTravel], kept as its own field rather than
+  /// reusing [_gestureTravel] so this never interacts with the orbit
+  /// handlers' own tap/drag bookkeeping (which only ever runs when selection
+  /// mode is off). A gesture that stays under [_tapTravelThreshold] commits
+  /// the current hover via [_commitSelection]; one that exceeds it was a
+  /// cursor drag, not a tap.
+  double _selectionGestureTravel = 0;
 
   /// Stage 23 Item 2: the cursor's current screen position while
   /// [PartViewport.selectionMode] is true - null whenever selection mode is
-  /// off (so the crosshair overlay/Select button in [build] hide entirely)
-  /// or before the first `didUpdateWidget` entry into selection mode has had
-  /// a chance to set it to the viewport centre.
+  /// off (so the crosshair overlay in [build] hides entirely) or before the
+  /// first `didUpdateWidget` entry into selection mode has had a chance to
+  /// set it to the viewport centre.
   Offset? _cursorPosition;
 
   /// Stage 23 Item 3: the nearest face/edge/vertex to [_cursorPosition],
@@ -252,7 +257,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       });
     }
     if (widget.selectedEntities != oldWidget.selectedEntities) {
-      setState(_syncSelectedEntityNodes);
+      // Fix 2: re-adding the hover node *after* the selected nodes (rather
+      // than leaving it wherever it last landed in the Scene's node list)
+      // keeps the hover highlight rendering on top of a newly-selected
+      // entity at the same position, per the brief's required paint order
+      // (base mesh -> selected -> hover).
+      setState(() {
+        _syncSelectedEntityNodes();
+        _syncHoverNode();
+      });
     }
     if (widget.mesh != oldWidget.mesh && widget.selectionMode) {
       // The mesh's entity ids are only stable within one response (see
@@ -542,7 +555,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Offset _viewportCenter() => Offset(_viewportSize.width / 2, _viewportSize.height / 2);
 
   void _onPointerDown(PointerDownEvent event) {
-    if (widget.selectionMode) return; // Item 2: no tap-gesture detection.
+    if (widget.selectionMode) {
+      // Fix 4: starts the tap/drag disambiguation for this gesture, mirroring
+      // the orbit handler's own _gestureTravel reset in _handlePointerDown.
+      _selectionGestureTravel = 0;
+      return;
+    }
     _handlePointerDown(event);
   }
 
@@ -551,6 +569,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _handlePointerMove(event);
       return;
     }
+    _selectionGestureTravel += event.delta.distance;
     if (event.kind == PointerDeviceKind.mouse) {
       _handleSelectionPointerHover(event.localPosition);
     } else {
@@ -559,7 +578,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerEnd(PointerEvent event) {
-    if (widget.selectionMode) return; // Item 2: no tap-gesture detection.
+    if (widget.selectionMode) {
+      // Fix 4: tap-to-select - a pointer-up that stayed within the tap
+      // travel threshold commits the current hover, the same logic the
+      // removed "Select" button used to call. A drag that moved the cursor
+      // (PointerCancel, or PointerUp past the threshold) commits nothing.
+      if (event is PointerUpEvent && _selectionGestureTravel < _tapTravelThreshold) {
+        _commitSelection();
+      }
+      return;
+    }
     _handlePointerEnd(event);
   }
 
@@ -614,9 +642,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _hoverHit = hitTestMeshEntities(ray: ray, viewportSize: _viewportSize, mesh: mesh);
   }
 
-  /// The Select button's `onPressed` (Item 4): commits the current hover (if
-  /// any) as a toggle, or clears the whole selection set if the cursor is
-  /// over empty space - [PartScreen] (which owns the actual selection set)
+  /// Fix 4 (Item 4): fired by a tap (as opposed to a cursor-drag - see
+  /// [_onPointerEnd]) in selection mode. Commits the current hover (if any)
+  /// as a toggle, or clears the whole selection set if the cursor is over
+  /// empty space - [PartScreen] (which owns the actual selection set)
   /// decides add-vs-remove via [PartViewport.onSelectionToggle].
   void _commitSelection() {
     final hit = _hoverHit;
@@ -789,26 +818,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   painter: _CursorCrosshairPainter(position: _cursorPosition!, hasHover: _hoverHit != null),
                 ),
               ),
-            if (widget.selectionMode)
-              Positioned(
-                // Items 5/6's context panel + selection list drawer (see
-                // PartScreen) sit at the very bottom of the screen once
-                // anything is selected - this button rises clear of them in
-                // that case. _kSelectButtonRaisedBottom is a static
-                // estimate of their combined height (not a measured
-                // layout), since this widget has no visibility into a
-                // sibling's actual rendered size.
-                bottom: widget.selectedEntities.isEmpty ? 16 : _kSelectButtonRaisedBottom,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: FilledButton.icon(
-                    onPressed: _commitSelection,
-                    icon: const Icon(Icons.center_focus_weak),
-                    label: const Text('Select'),
-                  ),
-                ),
-              ),
           ],
         );
       },
@@ -820,7 +829,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 /// screen-space crosshair, mirroring [SketchCanvas]'s own cursor look.
 /// [hasHover] swaps it to the "selected" colour when something's under it,
 /// the same colour [PartViewportState._selectedColor] uses, so the cursor
-/// itself previews what the Select button is about to commit.
+/// itself previews what a tap (Fix 4) is about to commit.
 class _CursorCrosshairPainter extends CustomPainter {
   final Offset position;
   final bool hasHover;
