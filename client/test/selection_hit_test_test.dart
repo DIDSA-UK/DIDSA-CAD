@@ -193,6 +193,36 @@ void main() {
       expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
     });
 
+    test('a vertex within its own radius wins even when a different edge is strictly nearer', () {
+      // Regression test for a real bug: a vertex sits at the shared
+      // endpoint of one or more edges, so comparing raw pixel distance (the
+      // old logic) meant an edge's closest point - free to slide along the
+      // segment toward wherever the cursor actually is - would beat the
+      // fixed vertex point for almost any cursor position off its exact
+      // projected pixel. That defeated the entire purpose of
+      // kVertexSelectionHitRadiusPixels being wider than the edge radius:
+      // in practice a vertex could (almost) never win once any edge was
+      // anywhere nearby, no matter how generous its own radius was. Here
+      // the vertex (~10.8px off-ray) is outside the 9px edge radius but
+      // inside its own 16px radius, while an unrelated edge (~1.4px
+      // off-ray) is far closer in raw distance - the vertex must still win
+      // because it's in-radius at all, not because it's nearer than the
+      // edge.
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [0.15, 0, 10],
+        ],
+        topologyVertexIds: const [3],
+        edges: const [0.02, -1, 10, 0.02, 1, 10],
+        edgeIds: const [5],
+      );
+      final hit = hitTestMeshEntities(ray: straightDownZ, viewportSize: viewportSize, mesh: mesh);
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
+    });
+
     test('a vertex beyond the edge radius but within the wider vertex radius is hit', () {
       // 12px off-ray at depth 10 is past kSelectionHitRadiusPixels (9px,
       // what edges use) but still inside kVertexSelectionHitRadiusPixels

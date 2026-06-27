@@ -204,3 +204,62 @@ prior "call unfocus() first" pattern alone), not a guaranteed-by-reproduction
 fix - if it recurs, the most useful next artifact is the full scrolled error
 detail/stack trace from the device's red error screen, as
 `status-2026-06-26-stage20.md` already recommended.
+
+## Addendum 2 — vertex hover/selection (almost) never winning over an edge
+
+A follow-up question from the user ("the cursor is over a vertex and the
+line is highlighted instead") led to a second genuine bug in
+`client/lib/viewport3d/selection_hit_test.dart`'s `hitTestMeshEntities`, not
+covered by item 3's "Confirmed correct" verdict above (that item only
+checked that vertex hover/selection *renders correctly once a vertex hit is
+returned* - it never checked whether `hitTestMeshEntities` reliably returns
+one in the first place).
+
+`kVertexSelectionHitRadiusPixels` (16px) is deliberately wider than
+`kSelectionHitRadiusPixels` (9px, used for edges), with a doc comment
+explicitly stating the wider radius exists "so a corner is realistically
+reachable without needing pixel-perfect cursor placement." But the old
+comparison was:
+
+```dart
+if (vertexHit != null && (edgeHit == null || vertexHit.pixelDistance! <= edgeHit.pixelDistance!)) {
+  return vertexHit;
+}
+```
+
+i.e. being inside the vertex's wider radius was not itself sufficient - the
+vertex still had to be at least as close as any in-radius edge. Every
+vertex sits at the shared endpoint of one or more edges, and an edge's
+closest-point-to-ray calculation is free to slide along the segment toward
+wherever the cursor actually is, while the vertex is a single fixed point.
+So for almost any cursor position off the vertex's *exact* projected pixel
+- any direction with a component along an adjacent edge, which is nearly
+every direction once 2+ edges meet at a corner - the edge becomes strictly
+closer and wins outright, regardless of how generous the vertex's own
+radius was. In practice this meant a vertex could be hit only in a sliver
+a pixel or two wide dead-center on its own projection - consistent with the
+user's report that moving the cursor around a vertex never highlighted it.
+
+Fix: a vertex within its own radius now wins unconditionally, matching the
+radius's stated intent -
+
+```dart
+if (vertexHit != null) return vertexHit;
+if (edgeHit != null) return edgeHit;
+```
+
+Added a regression test,
+`'a vertex within its own radius wins even when a different edge is
+strictly nearer'`, in `client/test/selection_hit_test_test.dart` -
+constructs a vertex ~10.8px off-ray (outside the edge radius, inside the
+vertex radius) alongside an unrelated edge ~1.4px off-ray (much closer in
+raw distance) and asserts the vertex still wins. All pre-existing
+`hitTestMeshEntities` tests continue to pass unmodified, since every one of
+them already had the vertex within radius (the bug only manifested when an
+in-radius edge was *also* present and closer, which none of the existing
+cases happened to exercise).
+
+Same standing caveat as elsewhere in this document: no Flutter SDK in this
+sandbox, so this is verified by static reading of the corrected logic
+against the new and existing unit tests' worked-out pixel-distance math,
+not by an actual `flutter test` run.
