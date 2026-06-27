@@ -62,6 +62,10 @@ def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
         normals=mesh_data.normals,
         triangle_indices=[(t.a, t.b, t.c) for t in mesh_data.triangles],
         edges=mesh_data.edges,
+        face_ids=mesh_data.face_ids,
+        edge_ids=mesh_data.edge_ids,
+        topology_vertices=mesh_data.topology_vertices,
+        topology_vertex_ids=mesh_data.topology_vertex_ids,
     )
 
 

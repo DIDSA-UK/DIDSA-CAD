@@ -203,3 +203,102 @@ Node buildMeshEdgesNode(
 
   return Node(name: 'mesh-edges', mesh: Mesh.primitives(primitives: primitives));
 }
+
+/// Stage 23 Item 3: thicker than [kEdgeStrokeWidth] for both hover and
+/// selected edge highlights - "colour change + thickness increase" per the
+/// brief - the two states are told apart by colour alone, not by a further
+/// width difference between them.
+const double kHighlightEdgeStrokeWidth = kEdgeStrokeWidth * 3;
+
+/// Stage 23 Item 3: width (screen pixels, same [PolylineGeometry] convention
+/// as [kEdgeStrokeWidth]) of the "small filled circle" vertex highlight
+/// marker [buildVertexMarkersNode] renders.
+const double kVertexMarkerWidth = 14.0;
+
+/// Turns each of [positions] into a near-zero-length segment - the pure,
+/// testable step behind [buildVertexMarkersNode]'s "fake dot" trick: a
+/// [PolylineGeometry] segment too short to see as a line, given a large
+/// [kVertexMarkerWidth], renders as a constant on-screen-size dot regardless
+/// of camera distance (since that width is in screen pixels, not world
+/// units - see [kEdgeStrokeWidth]'s doc comment), with no dedicated
+/// point-sprite primitive needed.
+List<(vm.Vector3, vm.Vector3)> vertexMarkerSegments(List<vm.Vector3> positions) => [
+      for (final p in positions) (p, p + vm.Vector3(1e-5, 1e-5, 1e-5)),
+    ];
+
+/// Builds a [Node] rendering [positions] as small constant-screen-size dot
+/// markers - Stage 23 Item 3's vertex highlight. GPU-bound (delegates to
+/// [buildMeshEdgesNode]), so cannot be exercised in a headless `flutter
+/// test` run; [vertexMarkerSegments] above is the pure, testable
+/// counterpart for this data's actual content.
+Node buildVertexMarkersNode(
+  List<vm.Vector3> positions, {
+  required vm.Vector4 color,
+  double width = kVertexMarkerWidth,
+}) =>
+    buildMeshEdgesNode(vertexMarkerSegments(positions), color: color, width: width);
+
+/// Pure vertex/index buffer builder for an ad-hoc triangle list (not a full
+/// [MeshDto]) - the testable counterpart to [buildHighlightFacesNode], the
+/// same split [meshBuffersFromMesh]/[geometryFromMesh] use above. Each
+/// triangle's face normal is computed via cross product, since these ad-hoc
+/// highlight triangles (unlike a [MeshDto]'s real ones) carry no separate
+/// per-vertex normal data of their own; a degenerate (zero-area) triangle's
+/// normal is left as the zero vector rather than dividing by zero.
+MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles) {
+  final vertexCount = triangles.length * 3;
+  final vertexData = Float32List(vertexCount * 12);
+  for (var t = 0; t < triangles.length; t++) {
+    final corners = [triangles[t].$1, triangles[t].$2, triangles[t].$3];
+    final cross = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+    final normal = cross.length2 < 1e-12 ? vm.Vector3.zero() : cross.normalized();
+    for (var i = 0; i < 3; i++) {
+      final position = corners[i];
+      final base = (t * 3 + i) * 12;
+      vertexData[base] = position.x;
+      vertexData[base + 1] = position.y;
+      vertexData[base + 2] = position.z;
+      vertexData[base + 3] = normal.x;
+      vertexData[base + 4] = normal.y;
+      vertexData[base + 5] = normal.z;
+      vertexData[base + 6] = 0; // u
+      vertexData[base + 7] = 0; // v
+      vertexData[base + 8] = 1; // r
+      vertexData[base + 9] = 1; // g
+      vertexData[base + 10] = 1; // b
+      vertexData[base + 11] = 1; // a
+    }
+  }
+  final indices = Uint16List(vertexCount);
+  for (var i = 0; i < vertexCount; i++) {
+    indices[i] = i;
+  }
+  return MeshBuffers(
+    vertexData: vertexData,
+    vertexCount: vertexCount,
+    indexData: ByteData.sublistView(indices),
+  );
+}
+
+/// Builds a [Node] rendering [triangles] as a translucent flat tint - Stage
+/// 23 Item 3's face highlight ("subtle tint"). GPU-bound
+/// (`UnskinnedGeometry.uploadVertexData`, same as [geometryFromMesh]), so
+/// cannot be exercised in a headless `flutter test` run;
+/// [triangleHighlightBuffers] above is the pure, testable counterpart for
+/// this data's actual content.
+Node buildHighlightFacesNode(
+  List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles, {
+  required vm.Vector4 color,
+}) {
+  final buffers = triangleHighlightBuffers(triangles);
+  final geometry = UnskinnedGeometry();
+  geometry.uploadVertexData(
+    ByteData.sublistView(buffers.vertexData),
+    buffers.vertexCount,
+    buffers.indexData,
+  );
+  final material = UnlitMaterial()
+    ..alphaMode = AlphaMode.blend
+    ..baseColorFactor = color;
+  return Node(name: 'highlight-faces', mesh: Mesh(geometry, material));
+}

@@ -243,6 +243,48 @@ void main() {
   });
 
   testWidgets(
+    'Stage 23 Item 1: the mode-toggle FAB switches tooltip/icon between Orbit and Selection mode',
+    (tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () =>
+                SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // Defaults to Orbit mode: the FAB's tooltip names the mode a tap will
+      // switch *into* (Selection), and the viewport carries no tinted
+      // border yet.
+      expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
+      expect(find.byIcon(Icons.touch_app), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Switch to selection mode'));
+      await tester.pump();
+
+      expect(find.byTooltip('Switch to orbit mode'), findsOneWidget);
+      expect(find.byIcon(Icons.threed_rotation), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // Switching back to Orbit mode removes the FAB's active styling and
+      // the viewport's tinted border again.
+      await tester.tap(find.byTooltip('Switch to orbit mode'));
+      await tester.pump();
+
+      expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'the "Add" FAB flyout\'s New Sketch entry enters plane-selection mode, and Cancel exits it without creating anything',
     (tester) async {
       final backend = _FakeDocumentBackend();

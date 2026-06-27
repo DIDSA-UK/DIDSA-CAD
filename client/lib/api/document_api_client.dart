@@ -71,12 +71,24 @@ class MeshDto {
   final List<List<double>> normals;
   final List<List<int>> triangleIndices;
   final List<double> edges;
+  // Stage 23: stable per-triangle/per-edge-segment/per-topology-vertex ids -
+  // foundation for the 3D viewport's selection mode hit-testing. Default to
+  // const [] for backward compatibility with fixtures/fakes that predate
+  // this stage and omit these keys entirely (same pattern as `edges` above).
+  final List<int> faceIds;
+  final List<int> edgeIds;
+  final List<List<double>> topologyVertices;
+  final List<int> topologyVertexIds;
 
   MeshDto({
     required this.vertices,
     required this.normals,
     required this.triangleIndices,
     this.edges = const [],
+    this.faceIds = const [],
+    this.edgeIds = const [],
+    this.topologyVertices = const [],
+    this.topologyVertexIds = const [],
   });
 
   factory MeshDto.fromJson(Map<String, dynamic> json) => MeshDto(
@@ -88,6 +100,13 @@ class MeshDto {
         // Defaults to empty rather than required: older fixtures/fakes in
         // tests predate Stage 11 and omit this key entirely.
         edges: (json['edges'] as List?)?.map((v) => (v as num).toDouble()).toList() ?? const [],
+        faceIds: (json['face_ids'] as List?)?.map((v) => v as int).toList() ?? const [],
+        edgeIds: (json['edge_ids'] as List?)?.map((v) => v as int).toList() ?? const [],
+        topologyVertices: json['topology_vertices'] == null
+            ? const []
+            : _triples(json['topology_vertices'] as List),
+        topologyVertexIds:
+            (json['topology_vertex_ids'] as List?)?.map((v) => v as int).toList() ?? const [],
       );
 
   static List<List<double>> _triples(List raw) =>
