@@ -131,8 +131,8 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
-  /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by its
-  /// Select button when the cursor's hover hit is non-null.
+  /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
+  /// (Fix 4) when the cursor's hover hit is non-null.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
     setState(() {
       if (!_selectedEntities.remove(entity)) {
@@ -141,8 +141,8 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Item 4: "Empty space + Select -> clears entire selection set" - passed
-  /// to [PartViewport.onClearSelection], fired by its Select button when the
+  /// Item 4: "Empty space tap -> clears entire selection set" - passed to
+  /// [PartViewport.onClearSelection], fired by a tap (Fix 4) when the
   /// cursor's hover hit is null.
   void _clearSelectedEntities() {
     setState(_selectedEntities.clear);
@@ -872,33 +872,24 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
-                // Stage 23 Items 5/6: the context action panel and
-                // selection list drawer, stacked bottom-to-top (panel above
-                // drawer, per the brief) and both gated on the same "is
-                // anything selected" condition so they appear/disappear
-                // together. Drawn as one Positioned/Column rather than two
-                // independent bottom-anchored widgets so the panel always
-                // sits directly above the drawer with no manual height
-                // bookkeeping between them. The Stage 23 mode-toggle FAB
-                // lives in Scaffold's own floatingActionButton slot, which
-                // Flutter always paints above this body Stack, so this
-                // never needs special-cased margin to avoid obscuring it.
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: SafeArea(
-                    top: false,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SelectionContextPanel(selectedEntities: _selectedEntities),
-                        SelectionListDrawer(
-                          selectedEntities: _selectedEntities,
-                          onRemove: _toggleSelectedEntity,
-                        ),
-                      ],
-                    ),
+                // Stage 23 Items 5/6, Fix 5: the context action panel is
+                // passed into the drawer as its [SelectionListDrawer.header]
+                // (rendered above the entity list, inside the same draggable
+                // sheet) so the two stay visually stacked panel-above-list
+                // with no separate height bookkeeping between two
+                // independently-positioned widgets. [Positioned.fill] (not a
+                // bottom-anchored Positioned) is required here because
+                // [DraggableScrollableSheet] sizes itself as a fraction of
+                // its parent's height, which only a bounded/full-height
+                // ancestor can provide. The Stage 23 mode-toggle FAB lives in
+                // Scaffold's own floatingActionButton slot, which Flutter
+                // always paints above this body Stack, so this never needs
+                // special-cased margin to avoid obscuring it.
+                Positioned.fill(
+                  child: SelectionListDrawer(
+                    selectedEntities: _selectedEntities,
+                    onRemove: _toggleSelectedEntity,
+                    header: SelectionContextPanel(selectedEntities: _selectedEntities),
                   ),
                 ),
                 Positioned.fill(
@@ -956,11 +947,22 @@ class _PartScreenState extends State<PartScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          IconButton.filled(
-                            tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
-                            icon: Icon(_toolbarOpen ? Icons.close : Icons.menu),
-                            onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
-                          ),
+                          // Fix 7: was an IconButton.filled, now a FAB above
+                          // 'feature-tree-fab' in this same Column, matching
+                          // how every other toolbar/viewport toggle here is a
+                          // FAB. Stage 22's _extrudeSketchFeature/_toolbarOpen
+                          // hiding rule applies for the extrude-panel case
+                          // specifically, but never while _toolbarOpen is
+                          // true - the hamburger is the only way to close the
+                          // toolbar once it's open, so it must stay visible
+                          // then regardless of anything else.
+                          if (_toolbarOpen || _extrudeSketchFeature == null)
+                            FloatingActionButton.small(
+                              heroTag: 'hamburger-fab',
+                              tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
+                              onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
+                              child: Icon(_toolbarOpen ? Icons.close : Icons.menu),
+                            ),
                           const SizedBox(height: 8),
                           // Stage 19b Item 1: dedicated secondary FAB,
                           // replacing the hamburger drawer's old "Show
