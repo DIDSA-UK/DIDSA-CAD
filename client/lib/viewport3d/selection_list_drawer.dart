@@ -55,32 +55,41 @@ class SelectionListDrawer extends StatelessWidget {
             child: Material(
               elevation: 2,
               borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 6),
-                    child: _DragHandle(),
-                  ),
-                  if (header != null) header!,
-                  Expanded(
-                    child: ListView.builder(
-                      controller: scrollController,
-                      itemCount: entries.length,
-                      itemBuilder: (context, index) {
-                        final entity = entries[index];
-                        return ListTile(
-                          dense: true,
-                          leading: Icon(_iconFor(entity.kind)),
-                          title: Text('${_labelFor(entity.kind)} #${entity.id}'),
-                          trailing: IconButton(
-                            tooltip: 'Remove from selection',
-                            icon: const Icon(Icons.close, size: 18),
-                            onPressed: () => onRemove(entity),
-                          ),
-                        );
-                      },
+              child: CustomScrollView(
+                // A single scrolling unit (drag handle + header + list, all
+                // as slivers sharing one scrollController) rather than a
+                // fixed-height Column topped by an Expanded ListView: with
+                // the old split, dragging the sheet down toward
+                // minChildSize could shrink it below the drag handle's +
+                // header's combined height, and Expanded can't go
+                // negative - Flutter clipped it to zero and still raised a
+                // "RenderFlex overflowed" warning. A CustomScrollView has
+                // no such fixed/flexible split to overflow: it just scrolls
+                // the header out of view instead.
+                controller: scrollController,
+                slivers: [
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: _DragHandle(),
                     ),
+                  ),
+                  if (header != null) SliverToBoxAdapter(child: header),
+                  SliverList.builder(
+                    itemCount: entries.length,
+                    itemBuilder: (context, index) {
+                      final entity = entries[index];
+                      return ListTile(
+                        dense: true,
+                        leading: Icon(_iconFor(entity.kind)),
+                        title: Text('${_labelFor(entity.kind)} #${entity.id}'),
+                        trailing: IconButton(
+                          tooltip: 'Remove from selection',
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () => onRemove(entity),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),

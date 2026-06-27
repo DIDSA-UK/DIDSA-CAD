@@ -112,22 +112,26 @@ class _PartScreenState extends State<PartScreen> {
   /// themselves are never touched.
   bool _selectionMode = false;
 
-  /// Stage 23 Item 4: the accumulated set of selected mesh entities, only
-  /// ever non-empty while [_selectionMode] is true - cleared whenever
-  /// Selection mode is exited (see [_toggleSelectionMode]), which also
-  /// dismisses the selection-list drawer/context panel below it (both
-  /// gated on this being non-empty) and removes the cursor (gated on
-  /// [_selectionMode] itself).
-  final Set<SelectionEntityRef> _selectedEntities = {};
+  /// Stage 23 Item 4: the accumulated set of selected mesh entities -
+  /// survives switching back and forth between Orbit and Selection mode
+  /// (see [_toggleSelectionMode]); the selection-list drawer/context panel
+  /// stays visible whenever this is non-empty, even in Orbit mode, and the
+  /// cursor is removed/restored separately, gated on [_selectionMode]
+  /// itself.
+  ///
+  /// Reassigned (never mutated in place) on every change, rather than
+  /// `final` - [PartViewport.selectedEntities]'s `didUpdateWidget` check is
+  /// `widget.selectedEntities != oldWidget.selectedEntities`, and `Set` has
+  /// no value-based `==`, so an in-place `.add()`/`.remove()`/`.clear()`
+  /// would leave both sides pointing at the identical object and silently
+  /// skip re-syncing the selected-entity highlight nodes.
+  Set<SelectionEntityRef> _selectedEntities = {};
 
-  /// The second FAB's callback (Item 1) - switching back to Orbit mode
-  /// clears the entire selection outright, per the brief, rather than
-  /// preserving it for a later return to Selection mode.
+  /// The second FAB's callback (Item 1) - just toggles which gesture set
+  /// the viewport dispatches to; the selection itself is preserved across
+  /// the switch so returning to Selection mode picks up where it left off.
   void _toggleSelectionMode() {
-    setState(() {
-      _selectionMode = !_selectionMode;
-      if (!_selectionMode) _selectedEntities.clear();
-    });
+    setState(() => _selectionMode = !_selectionMode);
   }
 
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
@@ -135,9 +139,9 @@ class _PartScreenState extends State<PartScreen> {
   /// (Fix 4) when the cursor's hover hit is non-null.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
     setState(() {
-      if (!_selectedEntities.remove(entity)) {
-        _selectedEntities.add(entity);
-      }
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (!next.remove(entity)) next.add(entity);
+      _selectedEntities = next;
     });
   }
 
@@ -145,7 +149,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartViewport.onClearSelection], fired by a tap (Fix 4) when the
   /// cursor's hover hit is null.
   void _clearSelectedEntities() {
-    setState(_selectedEntities.clear);
+    setState(() => _selectedEntities = {});
   }
 
   /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
