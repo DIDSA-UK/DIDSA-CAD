@@ -226,7 +226,7 @@ HoverHit? hitTestFaces(
     }
   }
   if (bestT == null || bestId == null) return null;
-  return HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.face, id: bestId));
+  return HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.face, id: bestId), rayT: bestT);
 }
 
 /// [mesh.topologyVertices] as [vm.Vector3]s, parallel to

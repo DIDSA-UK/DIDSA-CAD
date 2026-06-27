@@ -5,21 +5,21 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 /// now (no Chamfer/Fillet/Create Plane logic exists yet; wiring is a later
 /// stage's job - see the `// TODO: wire up <action>` comment at each
 /// button's callback site in `selection_context_panel.dart`).
-class ContextAction {
+class SelectionContextAction {
   final String label;
   final bool enabled;
 
-  const ContextAction(this.label, {this.enabled = false});
+  const SelectionContextAction(this.label, {this.enabled = false});
 
   @override
   bool operator ==(Object other) =>
-      other is ContextAction && other.label == label && other.enabled == enabled;
+      other is SelectionContextAction && other.label == label && other.enabled == enabled;
 
   @override
   int get hashCode => Object.hash(label, enabled);
 
   @override
-  String toString() => 'ContextAction($label)';
+  String toString() => 'SelectionContextAction($label)';
 }
 
 /// The Item 6 composition table: which scaffolded operations are offered for
@@ -27,7 +27,7 @@ class ContextAction {
 /// contains - never on the entities' actual count or geometry. Labels for
 /// mixed-kind combinations are static text describing the intended
 /// operation, not dynamically computed from the selection.
-List<ContextAction> contextActionsFor(Set<SelectionEntityRef> selection) {
+List<SelectionContextAction> contextActionsFor(Set<SelectionEntityRef> selection) {
   if (selection.isEmpty) return const [];
 
   final hasFace = selection.any((s) => s.kind == SelectionEntityKind.face);
@@ -37,20 +37,20 @@ List<ContextAction> contextActionsFor(Set<SelectionEntityRef> selection) {
   if (hasEdge && hasFace) {
     // Mixed edges+faces (any vertices too) - the full operation set.
     return const [
-      ContextAction('Create Plane'),
-      ContextAction('Chamfer'),
-      ContextAction('Fillet'),
+      SelectionContextAction('Create Plane'),
+      SelectionContextAction('Chamfer'),
+      SelectionContextAction('Fillet'),
     ];
   }
   if (hasEdge && hasVertex) {
-    return const [ContextAction('Create Plane (Normal to Edge Through Vertex)')];
+    return const [SelectionContextAction('Create Plane (Normal to Edge Through Vertex)')];
   }
   if (hasFace && hasVertex) {
-    return const [ContextAction('Create Plane (Parallel to Face Through Vertex)')];
+    return const [SelectionContextAction('Create Plane (Parallel to Face Through Vertex)')];
   }
   if (hasEdge) {
-    return const [ContextAction('Chamfer'), ContextAction('Fillet')];
+    return const [SelectionContextAction('Chamfer'), SelectionContextAction('Fillet')];
   }
   // hasFace || hasVertex, alone.
-  return const [ContextAction('Create Plane')];
+  return const [SelectionContextAction('Create Plane')];
 }

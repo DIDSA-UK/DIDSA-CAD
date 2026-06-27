@@ -55,7 +55,7 @@ class SelectionContextPanel extends StatelessWidget {
   /// the brief) - kept as a per-action switch, rather than one shared
   /// `null` constant, so each future CAD operation gets its own
   /// `// TODO: wire up <action>` comment at its own callback site.
-  VoidCallback? _disabledCallbackFor(ContextAction action) {
+  VoidCallback? _disabledCallbackFor(SelectionContextAction action) {
     switch (action.label) {
       case 'Chamfer':
         // TODO: wire up Chamfer once the backend Chamfer operation exists.
