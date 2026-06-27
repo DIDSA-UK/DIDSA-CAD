@@ -1105,6 +1105,7 @@ class _GhostValueEditor extends StatefulWidget {
 
 class _GhostValueEditorState extends State<_GhostValueEditor> {
   late final TextEditingController _text;
+  final FocusNode _focusNode = FocusNode();
 
   @override
   void initState() {
@@ -1116,13 +1117,25 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
   @override
   void dispose() {
     _text.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
+  // Releasing focus explicitly before the controller call below removes
+  // this whole widget (activeGhostKey reverting to null) avoids a Flutter
+  // framework race where a still-focused TextField is unmounted before its
+  // Focus dependents are cleaned up, which trips the
+  // '_dependents.isEmpty' assertion in framework.dart.
   void _confirm() {
     final value = double.tryParse(_text.text);
     if (value == null) return;
+    _focusNode.unfocus();
     widget.controller.confirmGhostValue(widget.ghost.key, value);
+  }
+
+  void _cancel() {
+    _focusNode.unfocus();
+    widget.controller.cancelGhostEdit();
   }
 
   @override
@@ -1143,6 +1156,7 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
                 width: 72,
                 child: TextField(
                   controller: _text,
+                  focusNode: _focusNode,
                   autofocus: true,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   decoration: InputDecoration(isDense: true, suffixText: suffix),
@@ -1157,7 +1171,7 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
               IconButton(
                 tooltip: 'Cancel',
                 icon: const Icon(Icons.close, size: 18),
-                onPressed: widget.controller.cancelGhostEdit,
+                onPressed: _cancel,
               ),
             ],
           ),
