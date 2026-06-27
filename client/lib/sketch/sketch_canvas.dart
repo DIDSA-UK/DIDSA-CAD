@@ -1125,17 +1125,27 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
   // this whole widget (activeGhostKey reverting to null) avoids a Flutter
   // framework race where a still-focused TextField is unmounted before its
   // Focus dependents are cleaned up, which trips the
-  // '_dependents.isEmpty' assertion in framework.dart.
+  // '_dependents.isEmpty' assertion in framework.dart. unfocus() only
+  // *schedules* that focus change though - FocusManager applies it during
+  // the next frame's pre-build phase, so the controller call that removes
+  // this widget (via notifyListeners() triggering the AnimatedBuilder in
+  // [SketchCanvas] that owns this editor) is deferred to a post-frame
+  // callback, guaranteeing a full frame elapses first rather than racing
+  // the focus-change application within the same frame.
   void _confirm() {
     final value = double.tryParse(_text.text);
     if (value == null) return;
     _focusNode.unfocus();
-    widget.controller.confirmGhostValue(widget.ghost.key, value);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller.confirmGhostValue(widget.ghost.key, value);
+    });
   }
 
   void _cancel() {
     _focusNode.unfocus();
-    widget.controller.cancelGhostEdit();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller.cancelGhostEdit();
+    });
   }
 
   @override

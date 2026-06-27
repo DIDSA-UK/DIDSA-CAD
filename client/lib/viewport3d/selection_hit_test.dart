@@ -304,16 +304,18 @@ List<(vm.Vector3, vm.Vector3, vm.Vector3)> faceTrianglesForId(MeshDto mesh, int 
   ];
 }
 
-/// The combined Item 3 hit-test: nearest topology vertex or edge to [ray]
-/// wins (a vertex exactly tied with an edge - e.g. the cursor sitting right
-/// on a corner - resolves to the vertex, since a tie only happens when the
-/// vertex *is* the edge's own closest point); only when neither is within
-/// radius does this fall back to the nearest face [ray] actually
-/// intersects. Returns null if nothing in [mesh] is hit at all (empty mesh,
-/// or cursor over open background). [vertexRadiusPixels] is wider than
-/// [radiusPixels] (the latter applies to edges) - see
-/// [kVertexSelectionHitRadiusPixels]'s doc comment for why a vertex needs
-/// the extra forgiveness.
+/// The combined Item 3 hit-test: any topology vertex within
+/// [vertexRadiusPixels] wins outright over edges/faces - not just when it's
+/// the *closer* of the two. A vertex sits at the shared endpoint of one or
+/// more edges, so comparing raw distance (as this used to) meant an edge's
+/// closest point - which slides along the segment toward wherever the
+/// cursor actually is - would beat the fixed vertex point for almost any
+/// cursor position off its exact projected pixel, defeating the whole point
+/// of giving vertices a wider radius. [vertexRadiusPixels] is wider than
+/// [radiusPixels] (the latter applies to edges) precisely so a corner is a
+/// realistically reachable target - see [kVertexSelectionHitRadiusPixels]'s
+/// doc comment - so being inside it is itself the priority signal; only
+/// when no vertex is in range does the nearer of edge/face apply.
 HoverHit? hitTestMeshEntities({
   required vm.Ray ray,
   required Size viewportSize,
@@ -336,9 +338,7 @@ HoverHit? hitTestMeshEntities({
     radiusPixels: radiusPixels,
   );
 
-  if (vertexHit != null && (edgeHit == null || vertexHit.pixelDistance! <= edgeHit.pixelDistance!)) {
-    return vertexHit;
-  }
+  if (vertexHit != null) return vertexHit;
   if (edgeHit != null) return edgeHit;
 
   return hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
