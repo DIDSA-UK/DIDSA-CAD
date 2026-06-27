@@ -15,44 +15,44 @@ void main() {
 
     test('edges only offers Chamfer and Fillet', () {
       final actions = contextActionsFor({_edge0});
-      expect(actions, [const ContextAction('Chamfer'), const ContextAction('Fillet')]);
+      expect(actions, [const SelectionContextAction('Chamfer'), const SelectionContextAction('Fillet')]);
     });
 
     test('faces only offers Create Plane', () {
       final actions = contextActionsFor({_face0});
-      expect(actions, [const ContextAction('Create Plane')]);
+      expect(actions, [const SelectionContextAction('Create Plane')]);
     });
 
     test('vertices only offers Create Plane', () {
       final actions = contextActionsFor({_vertex0});
-      expect(actions, [const ContextAction('Create Plane')]);
+      expect(actions, [const SelectionContextAction('Create Plane')]);
     });
 
     test('edges + vertices (no faces) offers the normal-to-edge plane option', () {
       final actions = contextActionsFor({_edge0, _vertex0});
-      expect(actions, [const ContextAction('Create Plane (Normal to Edge Through Vertex)')]);
+      expect(actions, [const SelectionContextAction('Create Plane (Normal to Edge Through Vertex)')]);
     });
 
     test('faces + vertices (no edges) offers the parallel-to-face plane option', () {
       final actions = contextActionsFor({_face0, _vertex0});
-      expect(actions, [const ContextAction('Create Plane (Parallel to Face Through Vertex)')]);
+      expect(actions, [const SelectionContextAction('Create Plane (Parallel to Face Through Vertex)')]);
     });
 
     test('edges + faces offers the full operation set', () {
       final actions = contextActionsFor({_edge0, _face0});
       expect(actions, [
-        const ContextAction('Create Plane'),
-        const ContextAction('Chamfer'),
-        const ContextAction('Fillet'),
+        const SelectionContextAction('Create Plane'),
+        const SelectionContextAction('Chamfer'),
+        const SelectionContextAction('Fillet'),
       ]);
     });
 
     test('edges + faces + vertices also offers the full operation set', () {
       final actions = contextActionsFor({_edge0, _face0, _vertex0});
       expect(actions, [
-        const ContextAction('Create Plane'),
-        const ContextAction('Chamfer'),
-        const ContextAction('Fillet'),
+        const SelectionContextAction('Create Plane'),
+        const SelectionContextAction('Chamfer'),
+        const SelectionContextAction('Fillet'),
       ]);
     });
 
