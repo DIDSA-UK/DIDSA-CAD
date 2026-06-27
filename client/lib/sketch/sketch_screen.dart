@@ -47,11 +47,11 @@ class _SketchScreenState extends State<SketchScreen> {
   /// same as PartScreen's `_referencePlanesHidden`. Defaults to shown.
   bool _referenceBodyHidden = false;
 
-  /// Stage 23f: lets the AppBar's menu button open/close [_buildDrawer]'s
-  /// [Drawer] without relying on `Scaffold.of(context)` - the outer `build`
-  /// method's own context sits *above* the Scaffold it returns, not below
-  /// it, so that lookup would fail; a [GlobalKey] sidesteps the question of
-  /// which context is in scope entirely.
+  /// Stage 23f: lets the menu FAB open/close [_buildDrawer]'s [Drawer]
+  /// without relying on `Scaffold.of(context)` - the outer `build` method's
+  /// own context sits *above* the Scaffold it returns, not below it, so
+  /// that lookup would fail; a [GlobalKey] sidesteps the question of which
+  /// context is in scope entirely.
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   /// Stage 23f's View submenu controls - all in-memory only/session-only
@@ -95,17 +95,8 @@ class _SketchScreenState extends State<SketchScreen> {
         centerTitle: false,
         title: const Text('DIDSA-CAD Sketch', textAlign: TextAlign.right),
         actions: [
-          // Stage 23f: opens [_buildDrawer] - the only entry point for it,
-          // since this AppBar's `leading` slot is already the logo button
-          // rather than Flutter's auto-generated hamburger icon.
-          IconButton(
-            icon: const Icon(Icons.menu),
-            tooltip: 'Menu',
-            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-          ),
           // Stage 19b item 4: always visible, disabled once the undo stack
-          // is empty - placed right after the Stage 23f menu button (nearest
-          // the title/back button) per the brief.
+          // is empty.
           AnimatedBuilder(
             animation: _controller,
             builder: (context, _) => IconButton(
@@ -162,16 +153,40 @@ class _SketchScreenState extends State<SketchScreen> {
                   // shrink-wrapped to its own content) - this just gives it
                   // room to do so without forcing a particular size.
                   Positioned.fill(child: SketchRibbon(controller: _controller)),
-                  if (widget.referenceGhostSegments.isNotEmpty)
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: IconButton.filled(
-                        tooltip: _referenceBodyHidden ? 'Show Reference Body' : 'Hide Reference Body',
-                        icon: Icon(_referenceBodyHidden ? Icons.visibility_off : Icons.visibility),
-                        onPressed: () => setState(() => _referenceBodyHidden = !_referenceBodyHidden),
+                  // Matches the 3D viewport's top-left hamburger/feature-
+                  // tree FAB column style: a dedicated small FAB per action,
+                  // stacked rather than buried in the AppBar/drawer. Exit
+                  // Sketch sits on top since it's the most prominent/most
+                  // reached-for of the two.
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FloatingActionButton.small(
+                            heroTag: 'exit-sketch-fab',
+                            tooltip: 'Exit Sketch',
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Icon(Icons.logout),
+                          ),
+                          if (widget.referenceGhostSegments.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            FloatingActionButton.small(
+                              heroTag: 'reference-body-visibility-fab',
+                              tooltip:
+                                  _referenceBodyHidden ? 'Show Reference Body' : 'Hide Reference Body',
+                              onPressed: () => setState(() => _referenceBodyHidden = !_referenceBodyHidden),
+                              child: Icon(_referenceBodyHidden ? Icons.visibility_off : Icons.visibility),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
+                  ),
                   // Tap-outside barrier: while the FAB menu is open, any tap
                   // outside the FAB itself (which sits above this in the
                   // Stack, so remains tappable) closes the menu instead of
@@ -221,10 +236,27 @@ class _SketchScreenState extends State<SketchScreen> {
                       ),
                     ),
                   ),
+                  // Stage 23f: the hamburger - now a FAB above the main
+                  // speed-dial FAB, matching the 3D viewport's
+                  // hamburger-fab-above-feature-tree-fab column style,
+                  // rather than an AppBar icon button.
                   Positioned(
                     right: 16,
                     bottom: 16,
-                    child: SketchSpeedDial(controller: _controller),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        FloatingActionButton.small(
+                          heroTag: 'sketch-menu-fab',
+                          tooltip: 'Menu',
+                          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                          child: const Icon(Icons.menu),
+                        ),
+                        const SizedBox(height: 8),
+                        SketchSpeedDial(controller: _controller),
+                      ],
+                    ),
                   ),
                   // Construction-method/dimension picker: flies up from the
                   // bottom whenever draw or dimension mode is active,
@@ -274,55 +306,37 @@ class _SketchScreenState extends State<SketchScreen> {
     );
   }
 
-  /// Stage 23f: the hamburger drawer - Exit Sketch up top (prominent, per
-  /// the brief), then a View submenu for the constraint-label-visibility
-  /// toggle and the canvas colour/transparency controls.
+  /// Stage 23f: the hamburger drawer - a View submenu for the
+  /// constraint-label-visibility toggle and the canvas colour/transparency
+  /// controls. Exit Sketch lives in its own dedicated FAB (top-right of the
+  /// canvas) rather than as the drawer's first entry now, so it isn't
+  /// repeated here.
   Widget _buildDrawer(BuildContext context) {
     return Drawer(
       child: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: ListView(
           children: [
-            ListTile(
-              leading: const Icon(Icons.logout),
-              title: const Text('Exit Sketch'),
-              onTap: () {
-                // Closing the drawer first (rather than letting the second
-                // pop below do double duty) keeps this independent of
-                // whichever local-history-entry behavior the Drawer happens
-                // to rely on internally.
-                _scaffoldKey.currentState?.closeDrawer();
-                Navigator.of(context).pop();
-              },
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: ListView(
-                children: [
-                  ExpansionTile(
-                    leading: const Icon(Icons.visibility_outlined),
-                    title: const Text('View'),
-                    initiallyExpanded: true,
-                    children: [
-                      SwitchListTile(
-                        title: const Text('Constraint Labels'),
-                        value: _constraintLabelsVisible,
-                        onChanged: (value) => setState(() => _constraintLabelsVisible = value),
-                      ),
-                      ListTile(
-                        leading: Icon(Icons.palette_outlined, color: _canvasColor),
-                        title: const Text('Canvas Colour'),
-                        onTap: () => _pickCanvasColor(context),
-                      ),
-                      ListTile(
-                        leading: const Icon(Icons.opacity_outlined),
-                        title: const Text('Canvas Transparency'),
-                        onTap: () => _pickCanvasOpacity(context),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+            ExpansionTile(
+              leading: const Icon(Icons.visibility_outlined),
+              title: const Text('View'),
+              initiallyExpanded: true,
+              children: [
+                SwitchListTile(
+                  title: const Text('Constraint Labels'),
+                  value: _constraintLabelsVisible,
+                  onChanged: (value) => setState(() => _constraintLabelsVisible = value),
+                ),
+                ListTile(
+                  leading: Icon(Icons.palette_outlined, color: _canvasColor),
+                  title: const Text('Canvas Colour'),
+                  onTap: () => _pickCanvasColor(context),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.opacity_outlined),
+                  title: const Text('Canvas Transparency'),
+                  onTap: () => _pickCanvasOpacity(context),
+                ),
+              ],
             ),
           ],
         ),

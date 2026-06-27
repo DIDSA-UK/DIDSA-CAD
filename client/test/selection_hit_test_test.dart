@@ -193,6 +193,25 @@ void main() {
       expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
     });
 
+    test('a vertex beyond the edge radius but within the wider vertex radius is hit', () {
+      // 12px off-ray at depth 10 is past kSelectionHitRadiusPixels (9px,
+      // what edges use) but still inside kVertexSelectionHitRadiusPixels
+      // (16px) - the wider vertex-only radius that compensates for the
+      // viewport's relative/sensitivity-scaled cursor drag making a single
+      // point much harder to land on than a full edge.
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: const [
+          [0.166, 0, 10],
+        ],
+        topologyVertexIds: const [3],
+      );
+      final hit = hitTestMeshEntities(ray: straightDownZ, viewportSize: viewportSize, mesh: mesh);
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
+    });
+
     test('an in-radius edge wins over a far vertex', () {
       final mesh = MeshDto(
         vertices: const [],

@@ -14,13 +14,24 @@ import 'mesh_geometry.dart' show edgeSegmentsFromMesh;
 /// that exact assumption rather than inventing a second one.
 const double kCameraVerticalFovRadians = math.pi / 4;
 
-/// Hit-test radius (screen dp) for edges/vertices in selection mode (Item 3
-/// of the Stage 23 brief) - deliberately smaller than, and independent of,
-/// the sketcher's own `SketchController.minTapHitRadiusPixels` (22.0): that
-/// is a 2D sketch's primary tap-to-select radius, this is a 3D hover/pick
-/// radius that always has a face fallback when nothing edge/vertex-like is
-/// near enough.
+/// Hit-test radius (screen dp) for edges in selection mode (Item 3 of the
+/// Stage 23 brief; see [kVertexSelectionHitRadiusPixels] for vertices) -
+/// deliberately smaller than, and independent of, the sketcher's own
+/// `SketchController.minTapHitRadiusPixels` (22.0): that is a 2D sketch's
+/// primary tap-to-select radius, this is a 3D hover/pick radius that always
+/// has a face fallback when nothing edge/vertex-like is near enough.
 const double kSelectionHitRadiusPixels = 9.0;
+
+/// A vertex is a single point target, while an edge is a full line segment
+/// and a face is a filled area - the same 9px radius that's comfortably
+/// generous for "near this line"/"inside this triangle" is a much smaller
+/// effective target for "within 9px of this exact point", especially given
+/// the 3D viewport's relative/sensitivity-scaled cursor drag (see
+/// `PartViewport._cursorDragSensitivity`) rather than a precise mouse
+/// pointer. [hitTestMeshEntities] uses this wider radius for the vertex
+/// pass only, so a corner is realistically reachable without needing
+/// pixel-perfect cursor placement.
+const double kVertexSelectionHitRadiusPixels = 16.0;
 
 enum SelectionEntityKind { face, edge, vertex }
 
@@ -294,24 +305,28 @@ List<(vm.Vector3, vm.Vector3, vm.Vector3)> faceTrianglesForId(MeshDto mesh, int 
 }
 
 /// The combined Item 3 hit-test: nearest topology vertex or edge to [ray]
-/// within [radiusPixels] wins (a vertex exactly tied with an edge - e.g. the
-/// cursor sitting right on a corner - resolves to the vertex, since a tie
-/// only happens when the vertex *is* the edge's own closest point); only
-/// when neither is within radius does this fall back to the nearest face
-/// [ray] actually intersects. Returns null if nothing in [mesh] is hit at
-/// all (empty mesh, or cursor over open background).
+/// wins (a vertex exactly tied with an edge - e.g. the cursor sitting right
+/// on a corner - resolves to the vertex, since a tie only happens when the
+/// vertex *is* the edge's own closest point); only when neither is within
+/// radius does this fall back to the nearest face [ray] actually
+/// intersects. Returns null if nothing in [mesh] is hit at all (empty mesh,
+/// or cursor over open background). [vertexRadiusPixels] is wider than
+/// [radiusPixels] (the latter applies to edges) - see
+/// [kVertexSelectionHitRadiusPixels]'s doc comment for why a vertex needs
+/// the extra forgiveness.
 HoverHit? hitTestMeshEntities({
   required vm.Ray ray,
   required Size viewportSize,
   required MeshDto mesh,
   double radiusPixels = kSelectionHitRadiusPixels,
+  double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
 }) {
   final vertexHit = hitTestVertices(
     ray,
     viewportSize,
     topologyVerticesFromMesh(mesh),
     mesh.topologyVertexIds,
-    radiusPixels: radiusPixels,
+    radiusPixels: vertexRadiusPixels,
   );
   final edgeHit = hitTestEdges(
     ray,
