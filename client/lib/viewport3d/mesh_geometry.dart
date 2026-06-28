@@ -191,6 +191,7 @@ Node buildMeshEdgesNode(
   List<(vm.Vector3, vm.Vector3)> segments, {
   required vm.Vector4 color,
   double width = kEdgeStrokeWidth,
+  PolylineCap cap = PolylineCap.butt,
 }) {
   final material = UnlitMaterial()
     ..alphaMode = AlphaMode.opaque
@@ -198,7 +199,10 @@ Node buildMeshEdgesNode(
 
   final primitives = <MeshPrimitive>[
     for (final segment in segments)
-      MeshPrimitive(PolylineGeometry([segment.$1, segment.$2], width: width), material),
+      MeshPrimitive(
+        PolylineGeometry([segment.$1, segment.$2], width: width, cap: cap),
+        material,
+      ),
   ];
 
   return Node(name: 'mesh-edges', mesh: Mesh.primitives(primitives: primitives));
@@ -231,12 +235,25 @@ List<(vm.Vector3, vm.Vector3)> vertexMarkerSegments(List<vm.Vector3> positions) 
 /// [buildMeshEdgesNode]), so cannot be exercised in a headless `flutter
 /// test` run; [vertexMarkerSegments] above is the pure, testable
 /// counterpart for this data's actual content.
+///
+/// Passes [PolylineCap.round] explicitly - [PolylineGeometry]'s own default
+/// is [PolylineCap.butt], which on a near-zero-length segment (as
+/// [vertexMarkerSegments] builds) draws a flat-capped sliver with virtually
+/// no extent along the line's direction rather than a filled circle, since
+/// nothing then extends the geometry past each endpoint. Round caps add a
+/// camera-facing disk at each endpoint, which is what actually makes this
+/// "fake dot" trick render as a dot instead of being invisible.
 Node buildVertexMarkersNode(
   List<vm.Vector3> positions, {
   required vm.Vector4 color,
   double width = kVertexMarkerWidth,
 }) =>
-    buildMeshEdgesNode(vertexMarkerSegments(positions), color: color, width: width);
+    buildMeshEdgesNode(
+      vertexMarkerSegments(positions),
+      color: color,
+      width: width,
+      cap: PolylineCap.round,
+    );
 
 /// Pure vertex/index buffer builder for an ad-hoc triangle list (not a full
 /// [MeshDto]) - the testable counterpart to [buildHighlightFacesNode], the

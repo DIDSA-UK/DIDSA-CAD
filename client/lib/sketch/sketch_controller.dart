@@ -251,6 +251,11 @@ class SketchController extends ChangeNotifier {
   /// entities stay tappable on touch without shrinking precise mouse hover.
   static const double minTapHitRadiusPixels = 22.0;
 
+  /// How much wider than [minTapHitRadiusPixels]/[snapRadius] a Point's own
+  /// hit-test radius is, in [_entityAt] - see that method's doc comment for
+  /// why a single point needs the extra forgiveness a line/circle doesn't.
+  static const double pointHitRadiusMultiplier = 1.6;
+
   /// Converts [minTapHitRadiusPixels] into sketch-space units for the
   /// current zoom level - the canvas passes its [ViewTransform.pixelsPerUnit]
   /// in here before calling [handleCanvasTap].
@@ -747,6 +752,15 @@ class SketchController extends ChangeNotifier {
   /// using the larger of [snapRadius] and the 44px touch target - see
   /// [hitRadiusForPixelsPerUnit]).
   SketchSelection? _entityAt(double x, double y, double radius, {bool includeOrigin = false}) {
+    // A point is a single discrete target, while a line/circle offers its
+    // whole length/circumference to land on - the same radius that's
+    // comfortably generous for "near this line" is a much smaller effective
+    // target for "within this distance of one exact point". Widen just the
+    // points pass by [pointHitRadiusMultiplier] so a point is realistically
+    // tappable without needing pixel-perfect placement (mirrors the 3D
+    // viewport's wider vertex-vs-edge hit radius, see
+    // `kVertexSelectionHitRadiusPixels`).
+    final pointRadius = radius * pointHitRadiusMultiplier;
     for (final point in points.values) {
       // The origin is a sketch fixture (always at (0, 0), pinned by the
       // solver - see Sketch.origin_point/solver.py's _FIXED_GROUP), not
@@ -760,7 +774,7 @@ class SketchController extends ChangeNotifier {
       if (point.id == _originPointId && !includeOrigin) continue;
       final dx = x - point.x;
       final dy = y - point.y;
-      if (dx * dx + dy * dy <= radius * radius) {
+      if (dx * dx + dy * dy <= pointRadius * pointRadius) {
         return SketchSelection(kind: SelectionKind.point, id: point.id);
       }
     }

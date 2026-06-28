@@ -263,3 +263,76 @@ Same standing caveat as elsewhere in this document: no Flutter SDK in this
 sandbox, so this is verified by static reading of the corrected logic
 against the new and existing unit tests' worked-out pixel-distance math,
 not by an actual `flutter test` run.
+
+## Addendum 3 — three follow-up reports after Addendum 2 shipped
+
+A further round of real-device feedback, after Addendum 2's vertex-priority
+fix, surfaced three more issues - one a direct consequence of that fix
+exposing a second, previously-dormant bug, the other two unrelated UI
+requests.
+
+**A. Vertex hover/selection now targets correctly but never renders.**
+`client/lib/viewport3d/mesh_geometry.dart`'s `buildVertexMarkersNode` draws
+each highlighted vertex as a "fake dot": a near-zero-length
+`PolylineGeometry` segment (`vertexMarkerSegments`) given a large pixel
+`width`, relying on the segment's *end caps* alone to produce a visible
+disk. `buildMeshEdgesNode` (which it delegates to) never passed a `cap`
+argument to `PolylineGeometry`, so it always used the package default,
+`PolylineCap.butt` - confirmed against the actual `flutter_scene` v0.18.1
+source (`packages/flutter_scene/lib/src/geometry/polyline_geometry.dart`,
+fetched via WebFetch since no local Flutter SDK/pub cache exists in this
+sandbox), where only `PolylineCap.round` adds the camera-facing disk at
+each endpoint; `butt` leaves a near-zero-length segment with virtually no
+extent in any direction, i.e. invisible. Edges (real, non-degenerate
+segments) never showed this problem since their length alone gives the cap
+choice nothing to matter for.
+
+Fix: added a `cap` parameter (default `PolylineCap.butt`, preserving every
+existing edge-rendering call site's behavior) to `buildMeshEdgesNode`, and
+`buildVertexMarkersNode` now passes `cap: PolylineCap.round` explicitly.
+`client/test/mesh_geometry_test.dart` only exercises
+`vertexMarkerSegments`'s pure data step, not this GPU-bound rendering call,
+so nothing existing could have caught this and nothing existing regresses.
+
+**B. Sketch screen's contextual ribbon should sit in front of the hamburger
+FAB.** `client/lib/sketch/sketch_screen.dart`'s `Stack` built the
+`sketch-menu-fab` `Positioned` block *after* `SketchRibbon`'s
+`Positioned.fill`, so - per Flutter's later-children-paint-on-top `Stack`
+ordering - the FAB sat in front of the ribbon whenever both occupied the
+same top-left corner. Swapped the order so `SketchRibbon` now comes after
+(in front of) the FAB block. No test references `sketch-menu-fab` or
+mounts `SketchRibbon` via this screen's `Stack` (the one test that mounts
+`SketchRibbon`, `sketch_ribbon_set_length_test.dart`, does so standalone),
+so this carried no test-breakage risk.
+
+**C. 2D sketcher's point hit-box is too small.** Same underlying class of
+bug as Addendum 2's 3D fix, reported independently: `_entityAt` in
+`client/lib/sketch/sketch_controller.dart` checked points, lines, and
+circles all against the same `radius` (itself `minTapHitRadiusPixels`
+(22px) converted to sketch units, or `snapRadius`, whichever is larger -
+see `hitRadiusForPixelsPerUnit`). A line/circle offers its entire
+length/circumference as a target; a point is one exact location, so the
+same radius is a much smaller *effective* target for a point. Added
+`pointHitRadiusMultiplier = 1.6` and applied it only to the points pass
+(`radius * pointHitRadiusMultiplier`), leaving the lines/circles passes at
+the original `radius` - mirroring the 3D viewport's
+`kVertexSelectionHitRadiusPixels` (16px) vs `kSelectionHitRadiusPixels`
+(9px) asymmetry that Addendum 2 fixed the priority logic for.
+
+Verified by hand against every `handleCanvasTap` call site in
+`client/test/sketch_controller_test.dart` that selects a Line/Circle: each
+deliberately taps at least ~1.0 sketch unit away from the nearest stored
+Point (several carry an explicit "away from the line's midpoint" comment
+for this reason already), comfortably outside the new 0.8-unit
+(`snapRadius (0.5) * 1.6`) default point radius - so none of them flip from
+a line/circle hit to a point hit under the wider radius. Every tap that
+*was* already within the old radius of a point stays within the new, wider
+one too, so no point-hit test's outcome changes either. No new regression
+test was added for this widening itself, since it only changes a numeric
+threshold the existing tests' worked tap coordinates already clear with
+margin, rather than changing any branch of comparison logic the way
+Addendum 2's fix did.
+
+All three fixes are unverified by an actual `flutter test` run, for the
+same standing reason as everywhere else in this document: no Flutter SDK
+in this sandbox.
