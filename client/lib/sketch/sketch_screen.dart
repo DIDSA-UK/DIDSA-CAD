@@ -149,10 +149,6 @@ class _SketchScreenState extends State<SketchScreen> {
                     canvasColor: _canvasColor,
                     canvasOpacity: _canvasOpacity,
                   ),
-                  // SketchRibbon aligns and sizes itself (top-left,
-                  // shrink-wrapped to its own content) - this just gives it
-                  // room to do so without forcing a particular size.
-                  Positioned.fill(child: SketchRibbon(controller: _controller)),
                   // Top-right: Exit Sketch (most prominent/most reached-for
                   // action) plus the optional reference-body visibility
                   // toggle.
@@ -187,9 +183,11 @@ class _SketchScreenState extends State<SketchScreen> {
                   ),
                   // Top-left: the menu FAB, matching the 3D viewport screen's
                   // hamburger-fab position exactly (rather than just its
-                  // "stacked small FAB" style) - rendered after SketchRibbon
-                  // in this Stack so it stays on top and tappable even while
-                  // the ribbon is showing.
+                  // "stacked small FAB" style) - rendered *before* SketchRibbon
+                  // below, so the ribbon (the contextual selection drawer)
+                  // sits in front of it and covers it whenever the ribbon is
+                  // showing over the same top-left corner, rather than the
+                  // FAB floating on top of the ribbon's content.
                   Positioned(
                     top: 8,
                     left: 8,
@@ -203,6 +201,12 @@ class _SketchScreenState extends State<SketchScreen> {
                       ),
                     ),
                   ),
+                  // SketchRibbon aligns and sizes itself (top-left,
+                  // shrink-wrapped to its own content) - this just gives it
+                  // room to do so without forcing a particular size. Placed
+                  // after (in front of) the menu FAB above so the ribbon is
+                  // the topmost thing in that corner whenever it's visible.
+                  Positioned.fill(child: SketchRibbon(controller: _controller)),
                   // Tap-outside barrier: while the FAB menu is open, any tap
                   // outside the FAB itself (which sits above this in the
                   // Stack, so remains tappable) closes the menu instead of
