@@ -759,6 +759,13 @@ class _PartScreenState extends State<PartScreen> {
   /// 3D viewport - once a Sketch has been consumed by a Feature, its own
   /// profile drawing is visual clutter on top of the resulting solid, and
   /// the user otherwise had to remember to hide it manually from the tree.
+  ///
+  /// Prompt D follow-up: also clears [_selectedFeatureId] when it's the
+  /// just-consumed Sketch, so a later "Add" FAB > Feature > Extrude doesn't
+  /// take [_extrudeSelectedFeature]'s back-compat shortcut straight back to
+  /// this same Sketch (skipping the picker) - including after the resulting
+  /// ExtrudeFeature is later deleted, since deleting it doesn't otherwise
+  /// touch this stale selection.
   Future<void> _confirmExtrude() async {
     _extrudeDebounce?.cancel();
     final sketchFeature = _extrudeSketchFeature;
@@ -774,6 +781,9 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
     });
   }
 
@@ -781,15 +791,24 @@ class _PartScreenState extends State<PartScreen> {
   /// restores the mesh to its pre-extrude state, closing the panel either
   /// way - mirrors [_confirmExtrude]'s structure but undoes rather than
   /// keeps the preview's backend-side effects.
+  ///
+  /// Prompt D follow-up: also clears [_selectedFeatureId] when it's this
+  /// Sketch, for the same reason [_confirmExtrude] does - a cancelled pick
+  /// shouldn't leave behind a stale selection that silently skips the
+  /// picker next time either.
   Future<void> _cancelExtrude() async {
     _extrudeDebounce?.cancel();
     final part = _part;
+    final sketchFeature = _extrudeSketchFeature;
     final previewId = _previewExtrudeFeatureId;
     final meshBefore = _meshBeforeExtrude;
     setState(() {
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
     });
     if (part == null || previewId == null) return;
     await _runGuarded(() async {
