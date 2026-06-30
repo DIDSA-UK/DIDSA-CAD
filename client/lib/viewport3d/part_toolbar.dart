@@ -69,10 +69,6 @@ class PartToolbar extends StatelessWidget {
   final double farClip;
   final void Function(double farClip)? onFarClipChanged;
 
-  /// Selection submenu: true = window (contain-only), false = crossing.
-  final bool containOnly;
-  final void Function(bool containOnly)? onContainOnlyChanged;
-
   const PartToolbar({
     super.key,
     required this.visible,
@@ -91,8 +87,6 @@ class PartToolbar extends StatelessWidget {
     this.onPerspectiveChanged,
     this.farClip = kDefaultFarClip,
     this.onFarClipChanged,
-    this.containOnly = true,
-    this.onContainOnlyChanged,
   });
 
   @override
@@ -128,7 +122,6 @@ class PartToolbar extends StatelessWidget {
                         children: [
                           _buildFileMenu(context),
                           _buildViewMenu(context),
-                          _buildSelectionMenu(context),
                         ],
                       ),
                     ),
@@ -246,28 +239,6 @@ class PartToolbar extends StatelessWidget {
           leading: const Icon(Icons.opacity_outlined),
           title: const Text('Body Transparency'),
           onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSelectionMenu(BuildContext context) {
-    final disabledColor = Theme.of(context).disabledColor;
-    return ExpansionTile(
-      leading: const Icon(Icons.select_all_outlined),
-      title: const Text('Selection'),
-      children: [
-        ListTile(
-          leading: Icon(containOnly ? Icons.check_box : Icons.check_box_outline_blank),
-          title: const Text('Contain Only'),
-          subtitle: const Text('Window: all points must be inside box', style: TextStyle(fontSize: 11)),
-          isThreeLine: true,
-          onTap: onContainOnlyChanged == null ? null : () => onContainOnlyChanged!(!containOnly),
-        ),
-        ListTile(
-          enabled: false,
-          leading: Icon(Icons.filter_list, color: disabledColor),
-          title: Text('Selection Filter', style: TextStyle(color: disabledColor)),
         ),
       ],
     );

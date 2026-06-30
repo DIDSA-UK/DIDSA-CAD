@@ -217,7 +217,7 @@ const double kHighlightEdgeStrokeWidth = kEdgeStrokeWidth * 3;
 /// Stage 23 Item 3: width (screen pixels, same [PolylineGeometry] convention
 /// as [kEdgeStrokeWidth]) of the "small filled circle" vertex highlight
 /// marker [buildVertexMarkersNode] renders.
-const double kVertexMarkerWidth = 14.0;
+const double kVertexMarkerWidth = 8.0;
 
 /// Turns each of [positions] into a near-zero-length segment - the pure,
 /// testable step behind [buildVertexMarkersNode]'s "fake dot" trick: a

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -114,12 +113,6 @@ class PartViewport extends StatefulWidget {
   /// can update its slider to the new value.
   final void Function(double farClip)? onFarClipChanged;
 
-  /// Selection submenu: true = window (contain-only) selection, false =
-  /// crossing selection. Window: every projected point of an entity must be
-  /// inside the box. Crossing: the entity's representative point (midpoint /
-  /// centroid) must be inside the box.
-  final bool containOnly;
-
   const PartViewport({
     super.key,
     required this.mesh,
@@ -140,7 +133,6 @@ class PartViewport extends StatefulWidget {
     this.isPerspective = false,
     this.farClip,
     this.onFarClipChanged,
-    this.containOnly = true,
   });
 
   @override
@@ -228,25 +220,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   static final vm.Vector4 _hoverColor = vector4FromHex('#FFC107', opacity: 0.55);
   static final vm.Vector4 _selectedColor = vector4FromHex('#2196F3', opacity: 0.85);
 
-  // A2: box-selection state. Both null while no box is active. Set by
-  // _onDoubleTapDown (anchor = cursor position), updated by _onPointerMove
-  // during the drag, cleared by _finalizeBoxSelection / _cancelBoxSelection.
-  Offset? _boxAnchor;
-  Offset? _boxCurrent;
-
-  // A2: latched by GestureDetector.onDoubleTapDown when the arena recognises
-  // a double-tap; subsequent pointer-move events build the box instead of
-  // moving the cursor.
-  bool _doubleTapDetected = false;
-
-  // A2: minimum drag (dp) before a double-tap-down becomes a box-select
-  // rather than a no-op cancel.
-  static const double _boxMinDragDistance = 4.0;
-
-  // Bug 2: deferred commit timer — delays _commitSelection() by ~300 ms so
-  // that the first tap-up of a double-tap sequence does not prematurely clear
-  // the selection before _onDoubleTapDown fires and cancels it.
-  Timer? _tapCommitTimer;
+  /// Darker than [_selectedColor] so a selected edge reads as visually
+  /// distinct from a selected face's tint - Material Blue 900.
+  static final vm.Vector4 _selectedEdgeColor = vector4FromHex('#0D47A1', opacity: 0.85);
 
   @override
   void initState() {
@@ -275,12 +251,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (!mounted) return;
       setState(() => _error = error.toString());
     });
-  }
-
-  @override
-  void dispose() {
-    _tapCommitTimer?.cancel();
-    super.dispose();
   }
 
   @override
@@ -643,16 +613,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       return;
     }
     _selectionGestureTravel += event.delta.distance;
-    // A2: if a double-tap-down was recently recognised, subsequent moves
-    // extend the box corner rather than moving the cursor; Bug 3: also move
-    // the cursor crosshair to the dragged corner so it tracks the box edge.
-    if (_doubleTapDetected) {
-      setState(() {
-        _boxCurrent = _clampToViewport((_boxCurrent ?? _boxAnchor ?? _viewportCenter()) + event.delta);
-        _cursorPosition = _boxCurrent;
-      });
-      return;
-    }
     if (event.kind == PointerDeviceKind.mouse) {
       _handleSelectionPointerHover(event.localPosition);
     } else {
@@ -662,24 +622,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _onPointerEnd(PointerEvent event) {
     if (widget.selectionMode) {
-      // A2: if a box drag was in progress, finalise or cancel it.
-      if (_doubleTapDetected) {
-        if (event is PointerUpEvent && _selectionGestureTravel >= _boxMinDragDistance) {
-          _finalizeBoxSelection();
-        } else {
-          _cancelBoxSelection();
-        }
-        return;
-      }
-      // Fix 4 / Bug 2: tap-to-select — schedule _commitSelection() with a
-      // short delay so that the first tap-up of a double-tap does not
-      // prematurely clear the selection before _onDoubleTapDown fires and
-      // cancels the timer.
+      // Fix 4: tap-to-select - a pointer-up that stayed within the tap
+      // travel threshold commits the current hover, the same logic the
+      // removed "Select" button used to call. A drag that moved the cursor
+      // (PointerCancel, or PointerUp past the threshold) commits nothing.
       if (event is PointerUpEvent && _selectionGestureTravel < _tapTravelThreshold) {
-        _tapCommitTimer?.cancel();
-        _tapCommitTimer = Timer(const Duration(milliseconds: 300), () {
-          if (mounted) _commitSelection();
-        });
+        _commitSelection();
       }
       return;
     }
@@ -749,163 +697,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     } else {
       widget.onSelectionToggle?.call(hit.entity);
     }
-  }
-
-  // ---- A2: box-selection helpers ----------------------------------------
-
-  void _onDoubleTapDown(TapDownDetails details) {
-    if (!widget.selectionMode) return;
-    // Bug 2: cancel any pending deferred single-tap commit so the first tap of
-    // the double-tap does not clear the selection before the box starts.
-    _tapCommitTimer?.cancel();
-    _tapCommitTimer = null;
-    // Box origin = cursor position at the moment the double-tap is recognised,
-    // NOT the finger's tap position - the cursor is the selection instrument.
-    setState(() {
-      _doubleTapDetected = true;
-      _selectionGestureTravel = 0;
-      _boxAnchor = _cursorPosition ?? _viewportCenter();
-      _boxCurrent = _boxAnchor;
-    });
-  }
-
-  void _finalizeBoxSelection() {
-    final anchor = _boxAnchor;
-    final current = _boxCurrent;
-    setState(() {
-      _doubleTapDetected = false;
-      _boxAnchor = null;
-      _boxCurrent = null;
-    });
-    if (anchor == null || current == null) return;
-    final box = Rect.fromPoints(anchor, current);
-    final mesh = widget.mesh;
-    if (mesh == null) return;
-    final hits = _hitTestEntitiesInBox(box, mesh);
-    for (final entity in hits) {
-      widget.onSelectionToggle?.call(entity);
-    }
-  }
-
-  void _cancelBoxSelection() {
-    setState(() {
-      _doubleTapDetected = false;
-      _boxAnchor = null;
-      _boxCurrent = null;
-    });
-  }
-
-  /// Returns all mesh entities whose screen-projected position falls within
-  /// [box]. Projects each world-space point using the same 45° vertical FOV
-  /// and camera axes as flutter_scene, then tests the resulting screen pixel
-  /// against [box] directly — no frustum-plane math needed.
-  ///
-  /// When [widget.containOnly] is true (window selection): vertex = point in
-  /// box; edge = ALL segment endpoints in box; face = ALL triangle vertices in
-  /// box. When false (crossing selection): vertex = point in box; edge =
-  /// midpoint of first segment in box; face = centroid of first triangle in
-  /// box.
-  List<SelectionEntityRef> _hitTestEntitiesInBox(Rect box, MeshDto mesh) {
-    if (_viewportSize.isEmpty) return [];
-    final result = <SelectionEntityRef>[];
-    final containOnly = widget.containOnly;
-
-    // Project each world-space point to screen coordinates using the same
-    // perspective formula flutter_scene renders with: 45° vertical FOV
-    // (kCameraVerticalFovRadians), screen Y increases downward (hence the
-    // `1 - ndcY` flip). This avoids relying on screenPointToRay internals
-    // and exactly matches the pixel positions already hit-tested for
-    // individual entity selection.
-    final camPos = _camera.position;
-    final forward = (_camera.target - camPos).normalized();
-    final right = _camera.right;
-    final up = _camera.up;
-    final tanHalfFov = math.tan(kCameraVerticalFovRadians / 2);
-    final aspect = _viewportSize.width / _viewportSize.height;
-
-    Offset? project(vm.Vector3 p) {
-      final v = p - camPos;
-      final depth = v.dot(forward);
-      if (depth <= 0) return null;
-      final ndcX = v.dot(right) / (depth * tanHalfFov * aspect);
-      final ndcY = v.dot(up) / (depth * tanHalfFov);
-      return Offset(
-        (ndcX + 1.0) / 2.0 * _viewportSize.width,
-        (1.0 - ndcY) / 2.0 * _viewportSize.height,
-      );
-    }
-
-    bool inBox(vm.Vector3 p) {
-      final s = project(p);
-      return s != null && box.contains(s);
-    }
-
-    // Vertices: same for both modes — their projected screen point must be
-    // within the selection box.
-    for (var i = 0; i < mesh.topologyVertices.length; i++) {
-      final v = mesh.topologyVertices[i];
-      if (inBox(vm.Vector3(v[0], v[1], v[2]))) {
-        result.add(SelectionEntityRef(kind: SelectionEntityKind.vertex, id: mesh.topologyVertexIds[i]));
-      }
-    }
-
-    // Edges
-    final edgeSegs = edgeSegmentsFromMesh(mesh);
-    if (containOnly) {
-      // Window: ALL segment endpoints of every segment belonging to the edge
-      // must project inside the selection box.
-      final segsByEdgeId = <int, List<(vm.Vector3, vm.Vector3)>>{};
-      for (var i = 0; i < edgeSegs.length && i < mesh.edgeIds.length; i++) {
-        (segsByEdgeId[mesh.edgeIds[i]] ??= []).add(edgeSegs[i]);
-      }
-      for (final entry in segsByEdgeId.entries) {
-        if (entry.value.every((seg) => inBox(seg.$1) && inBox(seg.$2))) {
-          result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: entry.key));
-        }
-      }
-    } else {
-      // Crossing: midpoint of first segment per edge.
-      final seenEdgeIds = <int>{};
-      for (var i = 0; i < edgeSegs.length && i < mesh.edgeIds.length; i++) {
-        final id = mesh.edgeIds[i];
-        if (seenEdgeIds.contains(id)) continue;
-        final (s, e) = edgeSegs[i];
-        if (inBox((s + e) * 0.5)) {
-          result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: id));
-          seenEdgeIds.add(id);
-        }
-      }
-    }
-
-    // Faces
-    final tris = trianglesFromMesh(mesh);
-    if (containOnly) {
-      // Window: ALL vertices of ALL triangles belonging to the face must
-      // project inside the selection box.
-      final trisByFaceId = <int, List<(vm.Vector3, vm.Vector3, vm.Vector3)>>{};
-      for (var i = 0; i < tris.length && i < mesh.faceIds.length; i++) {
-        (trisByFaceId[mesh.faceIds[i]] ??= []).add(tris[i]);
-      }
-      for (final entry in trisByFaceId.entries) {
-        if (entry.value.every((tri) => inBox(tri.$1) && inBox(tri.$2) && inBox(tri.$3))) {
-          result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: entry.key));
-        }
-      }
-    } else {
-      // Crossing: centroid of first triangle per face.
-      final seenFaceIds = <int>{};
-      for (var i = 0; i < tris.length && i < mesh.faceIds.length; i++) {
-        final id = mesh.faceIds[i];
-        if (seenFaceIds.contains(id)) continue;
-        final (v0, v1, v2) = tris[i];
-        if (inBox((v0 + v1 + v2) * (1.0 / 3.0))) {
-          result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: id));
-          seenFaceIds.add(id);
-        }
-      }
-    }
-
-    return result;
   }
 
   // ---- A3: recentre + auto-fit far clip ---------------------------------
@@ -993,7 +784,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (edgeSegments.isNotEmpty) {
       final node = buildMeshEdgesNode(
         edgeSegments,
-        color: _selectedColor,
+        color: _selectedEdgeColor,
         width: kHighlightEdgeStrokeWidth,
       );
       scene.add(node);
@@ -1052,35 +843,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _viewportSize = size;
         return Stack(
           children: [
-            // A2: GestureDetector wraps the Listener to detect double-tap-down
-            // for box selection. The Listener still receives all raw pointer
-            // events unconditionally — the GestureDetector only adds the
-            // double-tap recogniser on top, without blocking Listener events.
-            GestureDetector(
-              onDoubleTapDown: _onDoubleTapDown,
-              child: Listener(
-                onPointerDown: _onPointerDown,
-                onPointerMove: _onPointerMove,
-                onPointerUp: _onPointerEnd,
-                onPointerCancel: _onPointerEnd,
-                onPointerHover: _onPointerHover,
-                onPointerSignal: _onPointerSignal,
-                child: CustomPaint(
+            Listener(
+              onPointerDown: _onPointerDown,
+              onPointerMove: _onPointerMove,
+              onPointerUp: _onPointerEnd,
+              onPointerCancel: _onPointerEnd,
+              onPointerHover: _onPointerHover,
+              onPointerSignal: _onPointerSignal,
+              child: CustomPaint(
+                size: size,
+                painter: _ScenePainter(
+                  scene: scene,
+                  camera: _camera,
                   size: size,
-                  painter: _ScenePainter(
-                    scene: scene,
-                    camera: _camera,
-                    size: size,
-                    backgroundColor: colorFromHex(widget.bgColourHex),
-                    polylineCarryingNodes: [
-                      ..._planeNodes.values,
-                      ..._sketchNodes.values,
-                      if (_edgesNode != null) _edgesNode!,
-                      if (_hoverNode != null) _hoverNode!,
-                      if (_selectedEdgesNode != null) _selectedEdgesNode!,
-                      if (_selectedVerticesNode != null) _selectedVerticesNode!,
-                    ],
-                  ),
+                  backgroundColor: colorFromHex(widget.bgColourHex),
+                  polylineCarryingNodes: [
+                    ..._planeNodes.values,
+                    ..._sketchNodes.values,
+                    if (_edgesNode != null) _edgesNode!,
+                    if (_hoverNode != null) _hoverNode!,
+                    if (_selectedEdgesNode != null) _selectedEdgesNode!,
+                    if (_selectedVerticesNode != null) _selectedVerticesNode!,
+                  ],
                 ),
               ),
             ),
@@ -1102,20 +886,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 child: CustomPaint(
                   size: size,
                   painter: _CursorCrosshairPainter(position: _cursorPosition!, hasHover: _hoverHit != null),
-                ),
-              ),
-            // A2: box-selection overlay - visible only while a double-tap-drag
-            // is in progress, drawn on top of the cursor crosshair so the box
-            // is always clearly legible.
-            if (widget.selectionMode && _boxAnchor != null && _boxCurrent != null)
-              IgnorePointer(
-                child: CustomPaint(
-                  size: size,
-                  painter: _BoxSelectionPainter(
-                    anchor: _boxAnchor!,
-                    current: _boxCurrent!,
-                    color: _selectedColor,
-                  ),
                 ),
               ),
           ],
@@ -1170,50 +940,6 @@ class _CursorCrosshairPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CursorCrosshairPainter oldDelegate) =>
       oldDelegate.position != position || oldDelegate.hasHover != hasHover;
-}
-
-/// A2: thin rectangle overlay drawn while a double-tap-drag box-selection is
-/// in progress. Fill is the selection colour at low alpha; stroke at high
-/// alpha. Identical placement pattern to [_CursorCrosshairPainter]: a sibling
-/// in the build Stack, always wrapped in [IgnorePointer].
-class _BoxSelectionPainter extends CustomPainter {
-  final Offset anchor;
-  final Offset current;
-  final vm.Vector4 color;
-
-  const _BoxSelectionPainter({
-    required this.anchor,
-    required this.current,
-    required this.color,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rect = Rect.fromPoints(anchor, current);
-    final fillPaint = Paint()
-      ..color = Color.fromARGB(
-        (color.a * 0.15 * 255).round(),
-        (color.r * 255).round(),
-        (color.g * 255).round(),
-        (color.b * 255).round(),
-      )
-      ..style = PaintingStyle.fill;
-    final strokePaint = Paint()
-      ..color = Color.fromARGB(
-        (color.a * 0.85 * 255).round(),
-        (color.r * 255).round(),
-        (color.g * 255).round(),
-        (color.b * 255).round(),
-      )
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    canvas.drawRect(rect, fillPaint);
-    canvas.drawRect(rect, strokePaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _BoxSelectionPainter oldDelegate) =>
-      oldDelegate.anchor != anchor || oldDelegate.current != current;
 }
 
 class _ScenePainter extends CustomPainter {
