@@ -795,53 +795,50 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     });
   }
 
-  /// Projects [world] to viewport screen coordinates using the camera's
-  /// geometric frustum. Returns null if the point is behind the near clip
-  /// plane or the viewport size is degenerate.
-  Offset? _worldToScreen(vm.Vector3 world) {
-    if (_viewportSize.isEmpty) return null;
-    final cam = _camera;
-    final camPos = cam.position;
-    final forward = (cam.target - camPos).normalized();
-    final right = cam.right;
-    final up = cam.up;
-
-    final toPoint = world - camPos;
-    final z = toPoint.dot(forward);
-    if (z <= cam.nearClip) return null;
-
-    final aspect = _viewportSize.width / _viewportSize.height;
-    if (aspect <= 0) return null;
-    final tanHalfFovY = math.tan(kCameraVerticalFovRadians / 2);
-
-    // Perspective projection to NDC (-1..+1)
-    final ndcX = toPoint.dot(right) / (z * tanHalfFovY * aspect);
-    final ndcY = toPoint.dot(up) / (z * tanHalfFovY);
-
-    // NDC to screen (Y flipped: NDC +Y is up, screen +Y is down)
-    return Offset(
-      (ndcX + 1) / 2 * _viewportSize.width,
-      (1 - ndcY) / 2 * _viewportSize.height,
-    );
-  }
-
-  /// Returns all mesh entities whose screen-projected geometry falls within
-  /// [box]. Priority order: vertices first, then edges, then faces — matching
-  /// [hitTestMeshEntities].
+  /// Returns all mesh entities whose geometry falls within the view frustum
+  /// subtended by [box] on screen. Uses [PerspectiveCamera.screenPointToRay]
+  /// for the 4 box corners so the frustum exactly matches what flutter_scene
+  /// renders — no hand-rolled projection needed.
   ///
   /// When [widget.containOnly] is true (window selection): vertex = point in
-  /// box; edge = ALL segment endpoints in box; face = ALL triangle vertices in
-  /// box. When false (crossing selection): vertex = point in box; edge =
-  /// midpoint of first segment in box; face = centroid of first triangle in box.
+  /// frustum; edge = ALL segment endpoints in frustum; face = ALL triangle
+  /// vertices in frustum. When false (crossing selection): vertex = point in
+  /// frustum; edge = midpoint of first segment in frustum; face = centroid of
+  /// first triangle in frustum.
   List<SelectionEntityRef> _hitTestEntitiesInBox(Rect box, MeshDto mesh) {
+    if (_viewportSize.isEmpty) return [];
     final result = <SelectionEntityRef>[];
     final containOnly = widget.containOnly;
 
-    // Vertices: same for both modes — their screen point must be inside.
+    // Build a view-frustum from the 4 corner rays of the selection box.
+    // screenPointToRay is the same function used for entity hit-testing, so
+    // the frustum precisely matches flutter_scene's projection.
+    final cam = _camera.cameraFor(_viewportSize);
+    final rTL = cam.screenPointToRay(box.topLeft, _viewportSize);
+    final rTR = cam.screenPointToRay(box.topRight, _viewportSize);
+    final rBR = cam.screenPointToRay(box.bottomRight, _viewportSize);
+    final rBL = cam.screenPointToRay(box.bottomLeft, _viewportSize);
+    final camPos = rTL.origin;
+    final dTL = rTL.direction.normalized();
+    final dTR = rTR.direction.normalized();
+    final dBR = rBR.direction.normalized();
+    final dBL = rBL.direction.normalized();
+    // Inward-pointing normals for each frustum side plane.
+    final leftN   = dBL.cross(dTL);
+    final rightN  = dTR.cross(dBR);
+    final topN    = dTL.cross(dTR);
+    final bottomN = dBR.cross(dBL);
+
+    bool inFrustum(vm.Vector3 p) {
+      final d = p - camPos;
+      return d.dot(leftN) >= 0 && d.dot(rightN) >= 0 &&
+             d.dot(topN) >= 0 && d.dot(bottomN) >= 0;
+    }
+
+    // Vertices: same for both modes — their world point must be inside.
     for (var i = 0; i < mesh.topologyVertices.length; i++) {
       final v = mesh.topologyVertices[i];
-      final screen = _worldToScreen(vm.Vector3(v[0], v[1], v[2]));
-      if (screen != null && box.contains(screen)) {
+      if (inFrustum(vm.Vector3(v[0], v[1], v[2]))) {
         result.add(SelectionEntityRef(kind: SelectionEntityKind.vertex, id: mesh.topologyVertexIds[i]));
       }
     }
@@ -850,17 +847,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final edgeSegs = edgeSegmentsFromMesh(mesh);
     if (containOnly) {
       // Window: ALL segment endpoints of every segment belonging to the edge
-      // must project inside the box.
+      // must be inside the frustum.
       final segsByEdgeId = <int, List<(vm.Vector3, vm.Vector3)>>{};
       for (var i = 0; i < edgeSegs.length && i < mesh.edgeIds.length; i++) {
         (segsByEdgeId[mesh.edgeIds[i]] ??= []).add(edgeSegs[i]);
       }
       for (final entry in segsByEdgeId.entries) {
-        final allIn = entry.value.every((seg) {
-          final s = _worldToScreen(seg.$1);
-          final e = _worldToScreen(seg.$2);
-          return s != null && box.contains(s) && e != null && box.contains(e);
-        });
+        final allIn = entry.value.every(
+          (seg) => inFrustum(seg.$1) && inFrustum(seg.$2),
+        );
         if (allIn) {
           result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: entry.key));
         }
@@ -872,9 +867,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final id = mesh.edgeIds[i];
         if (seenEdgeIds.contains(id)) continue;
         final (s, e) = edgeSegs[i];
-        final midpoint = (s + e) * 0.5;
-        final screen = _worldToScreen(midpoint);
-        if (screen != null && box.contains(screen)) {
+        if (inFrustum((s + e) * 0.5)) {
           result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: id));
           seenEdgeIds.add(id);
         }
@@ -884,21 +877,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // Faces
     final tris = trianglesFromMesh(mesh);
     if (containOnly) {
-      // Window: ALL vertices of ALL triangles belonging to the face must
-      // project inside the box.
+      // Window: ALL vertices of ALL triangles belonging to the face must be
+      // inside the frustum.
       final trisByFaceId = <int, List<(vm.Vector3, vm.Vector3, vm.Vector3)>>{};
       for (var i = 0; i < tris.length && i < mesh.faceIds.length; i++) {
         (trisByFaceId[mesh.faceIds[i]] ??= []).add(tris[i]);
       }
       for (final entry in trisByFaceId.entries) {
-        final allIn = entry.value.every((tri) {
-          final s0 = _worldToScreen(tri.$1);
-          final s1 = _worldToScreen(tri.$2);
-          final s2 = _worldToScreen(tri.$3);
-          return s0 != null && box.contains(s0) &&
-                 s1 != null && box.contains(s1) &&
-                 s2 != null && box.contains(s2);
-        });
+        final allIn = entry.value.every(
+          (tri) => inFrustum(tri.$1) && inFrustum(tri.$2) && inFrustum(tri.$3),
+        );
         if (allIn) {
           result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: entry.key));
         }
@@ -910,9 +898,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final id = mesh.faceIds[i];
         if (seenFaceIds.contains(id)) continue;
         final (v0, v1, v2) = tris[i];
-        final centroid = (v0 + v1 + v2) * (1.0 / 3.0);
-        final screen = _worldToScreen(centroid);
-        if (screen != null && box.contains(screen)) {
+        if (inFrustum((v0 + v1 + v2) * (1.0 / 3.0))) {
           result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: id));
           seenFaceIds.add(id);
         }
