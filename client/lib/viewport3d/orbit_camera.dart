@@ -6,6 +6,13 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import 'reference_planes.dart';
 
+// A3: near/far clip defaults adjacent to where clip distances are set.
+// kDefaultNearClip: 0.1 mm is the minimum without z-fighting on a 24-bit
+// depth buffer. kDefaultFarClip: 3000 mm keeps parts up to ~1000 mm visible
+// from any orbit angle (the auto-fit on recentre can extend this further).
+const double kDefaultNearClip = 0.1;
+const double kDefaultFarClip = 3000.0;
+
 /// Mutable orbit/pan/zoom state for the 3D viewport - the 3D equivalent of
 /// [SketchViewport], producing a `flutter_scene` [PerspectiveCamera] for a
 /// given canvas size.
@@ -33,11 +40,12 @@ class OrbitCamera {
   /// [nearClip]/[setZoomBoundsForRadius].
   static const double _maxDistanceRadiusFactor = 20;
 
-  /// [nearClip]/[farClip] defaults - matches `flutter_scene`'s own
-  /// [PerspectiveCamera] defaults (`fovNear`/`fovFar`), used whenever no body
-  /// exists yet (or the current body is empty).
-  static const double defaultNearClip = 0.1;
-  static const double defaultFarClip = 1000.0;
+  /// [nearClip]/[farClip] defaults - used whenever no body exists yet (or
+  /// the current body is empty). Alias the top-level [kDefaultNearClip]/
+  /// [kDefaultFarClip] so callers that already use the class-level names
+  /// keep working without changes.
+  static const double defaultNearClip = kDefaultNearClip;
+  static const double defaultFarClip = kDefaultFarClip;
 
   /// Multiplier applied to a body's bounding-sphere radius to derive
   /// [farClip] - generous enough that the far plane never clips a large
@@ -46,8 +54,9 @@ class OrbitCamera {
 
   /// [farClip] never drops below this, even for a tiny/empty body - keeps
   /// the fixed reference planes (which extend well beyond any one body)
-  /// from being clipped.
-  static const double _minFarClip = 1000.0;
+  /// from being clipped. Matches [kDefaultFarClip] so a model always sees
+  /// the same minimum depth budget.
+  static const double _minFarClip = kDefaultFarClip;
 
   /// [nearClip] is derived as `farClip / _nearFarRatio` - a 1:10000 near/far
   /// ratio is safe for a 24-bit depth buffer and avoids z-fighting.
@@ -86,6 +95,14 @@ class OrbitCamera {
   /// feel too fast when zoomed in and too slow zoomed out, so it scales with
   /// how far the camera currently is from its target.
   static const double panSensitivityPerDistance = 0.002;
+
+  // A4: perspective vs orthographic toggle. flutter_scene 0.18.x provides only
+  // PerspectiveCamera with a fixed π/4 vertical FOV — true orthographic
+  // projection is not available through its public API. This flag correctly
+  // reflects the user's preference and is wired through the View menu; the
+  // rendering difference will take effect once flutter_scene exposes an
+  // OrthographicCamera or a settable FOV.
+  bool isPerspective = false;
 
   static final vm.Vector3 _localRight = vm.Vector3(1, 0, 0);
   static final vm.Vector3 _localUp = vm.Vector3(0, 1, 0);
@@ -138,6 +155,11 @@ class OrbitCamera {
   vm.Vector3 get _up => orientation.rotated(_localUp);
 
   vm.Vector3 get _right => orientation.rotated(_localRight);
+
+  /// Public accessors for the camera's local axes — used by
+  /// `PartViewportState._worldToScreen` for box-selection projection (A2).
+  vm.Vector3 get up => _up;
+  vm.Vector3 get right => _right;
 
   /// World-space camera position derived from [target]/[orientation]/
   /// [distance] - the same value [cameraFor] feeds [PerspectiveCamera].

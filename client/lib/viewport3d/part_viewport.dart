@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart';
@@ -97,6 +99,20 @@ class PartViewport extends StatefulWidget {
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
 
+  /// A4: true = perspective; false = orthographic (default). Passed to
+  /// [OrbitCamera.isPerspective]; see [OrbitCamera.cameraFor] for the
+  /// flutter_scene limitation note.
+  final bool isPerspective;
+
+  /// A3: far clip override from the View menu slider or the recentre auto-fit
+  /// result - null means "let the camera's own setZoomBoundsForRadius manage
+  /// it" (i.e. on cold start, before the user opens the slider or recentres).
+  final double? farClip;
+
+  /// A3: fired by the recentre button's auto-fit computation so [PartScreen]
+  /// can update its slider to the new value.
+  final void Function(double farClip)? onFarClipChanged;
+
   const PartViewport({
     super.key,
     required this.mesh,
@@ -114,6 +130,9 @@ class PartViewport extends StatefulWidget {
     this.selectedEntities = const {},
     this.onSelectionToggle,
     this.onClearSelection,
+    this.isPerspective = false,
+    this.farClip,
+    this.onFarClipChanged,
   });
 
   @override
@@ -201,9 +220,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   static final vm.Vector4 _hoverColor = vector4FromHex('#FFC107', opacity: 0.55);
   static final vm.Vector4 _selectedColor = vector4FromHex('#2196F3', opacity: 0.85);
 
+  // A2: box-selection state. Both null while no box is active. Set by
+  // _onDoubleTapDown (anchor = cursor position), updated by _onPointerMove
+  // during the drag, cleared by _finalizeBoxSelection / _cancelBoxSelection.
+  Offset? _boxAnchor;
+  Offset? _boxCurrent;
+
+  // A2: latched by GestureDetector.onDoubleTapDown when the arena recognises
+  // a double-tap; subsequent pointer-move events build the box instead of
+  // moving the cursor.
+  bool _doubleTapDetected = false;
+
+  // A2: minimum drag (dp) before a double-tap-down becomes a box-select
+  // rather than a no-op cancel.
+  static const double _boxMinDragDistance = 4.0;
+
   @override
   void initState() {
     super.initState();
+    // A4: set initial projection mode from widget.
+    _camera.isPerspective = widget.isPerspective;
+    // A3: apply any initial far clip override; if null, setZoomBoundsForRadius
+    // will manage it once the first mesh loads.
+    if (widget.farClip != null) {
+      _camera.farClip = widget.farClip!;
+      _camera.nearClip = kDefaultNearClip;
+    }
     debugPrint('[PartViewport] Scene.initializeStaticResources()...');
     Scene.initializeStaticResources().then((_) {
       debugPrint('[PartViewport] Scene.initializeStaticResources() done');
@@ -276,6 +318,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _recomputeHover();
         _syncHoverNode();
         _syncSelectedEntityNodes();
+      });
+    }
+    // A4: sync the perspective flag from the parent.
+    if (widget.isPerspective != oldWidget.isPerspective) {
+      _camera.isPerspective = widget.isPerspective;
+    }
+    // A3: apply a far-clip change from the View menu slider. Near clip stays
+    // at kDefaultNearClip — it is never auto-adjusted by the slider.
+    if (widget.farClip != null && widget.farClip != oldWidget.farClip) {
+      setState(() {
+        _camera.farClip = widget.farClip!;
+        _camera.nearClip = kDefaultNearClip;
       });
     }
   }
@@ -570,6 +624,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       return;
     }
     _selectionGestureTravel += event.delta.distance;
+    // A2: if a double-tap-down was recently recognised, subsequent moves
+    // extend the box corner rather than moving the cursor.
+    if (_doubleTapDetected) {
+      setState(() {
+        _boxCurrent = _clampToViewport((_boxCurrent ?? _boxAnchor ?? _viewportCenter()) + event.delta);
+      });
+      return;
+    }
     if (event.kind == PointerDeviceKind.mouse) {
       _handleSelectionPointerHover(event.localPosition);
     } else {
@@ -579,6 +641,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _onPointerEnd(PointerEvent event) {
     if (widget.selectionMode) {
+      // A2: if a box drag was in progress, finalise or cancel it.
+      if (_doubleTapDetected) {
+        if (event is PointerUpEvent && _selectionGestureTravel >= _boxMinDragDistance) {
+          _finalizeBoxSelection();
+        } else {
+          _cancelBoxSelection();
+        }
+        return;
+      }
       // Fix 4: tap-to-select - a pointer-up that stayed within the tap
       // travel threshold commits the current hover, the same logic the
       // removed "Select" button used to call. A drag that moved the cursor
@@ -655,6 +726,151 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       widget.onSelectionToggle?.call(hit.entity);
     }
   }
+
+  // ---- A2: box-selection helpers ----------------------------------------
+
+  void _onDoubleTapDown(TapDownDetails details) {
+    if (!widget.selectionMode) return;
+    // Box origin = cursor position at the moment the double-tap is recognised,
+    // NOT the finger's tap position - the cursor is the selection instrument.
+    setState(() {
+      _doubleTapDetected = true;
+      _selectionGestureTravel = 0;
+      _boxAnchor = _cursorPosition ?? _viewportCenter();
+      _boxCurrent = _boxAnchor;
+    });
+  }
+
+  void _finalizeBoxSelection() {
+    final anchor = _boxAnchor;
+    final current = _boxCurrent;
+    setState(() {
+      _doubleTapDetected = false;
+      _boxAnchor = null;
+      _boxCurrent = null;
+    });
+    if (anchor == null || current == null) return;
+    final box = Rect.fromPoints(anchor, current);
+    final mesh = widget.mesh;
+    if (mesh == null) return;
+    final hits = _hitTestEntitiesInBox(box, mesh);
+    for (final entity in hits) {
+      widget.onSelectionToggle?.call(entity);
+    }
+  }
+
+  void _cancelBoxSelection() {
+    setState(() {
+      _doubleTapDetected = false;
+      _boxAnchor = null;
+      _boxCurrent = null;
+    });
+  }
+
+  /// Projects [world] to viewport screen coordinates using the camera's
+  /// geometric frustum. Returns null if the point is behind the near clip
+  /// plane or the viewport size is degenerate.
+  Offset? _worldToScreen(vm.Vector3 world) {
+    if (_viewportSize.isEmpty) return null;
+    final cam = _camera;
+    final camPos = cam.position;
+    final forward = (cam.target - camPos).normalized();
+    final right = cam.right;
+    final up = cam.up;
+
+    final toPoint = world - camPos;
+    final z = toPoint.dot(forward);
+    if (z <= cam.nearClip) return null;
+
+    final aspect = _viewportSize.width / _viewportSize.height;
+    if (aspect <= 0) return null;
+    final tanHalfFovY = math.tan(kCameraVerticalFovRadians / 2);
+
+    // Perspective projection to NDC (-1..+1)
+    final ndcX = toPoint.dot(right) / (z * tanHalfFovY * aspect);
+    final ndcY = toPoint.dot(up) / (z * tanHalfFovY);
+
+    // NDC to screen (Y flipped: NDC +Y is up, screen +Y is down)
+    return Offset(
+      (ndcX + 1) / 2 * _viewportSize.width,
+      (1 - ndcY) / 2 * _viewportSize.height,
+    );
+  }
+
+  /// Returns all mesh entities whose screen-projected representative point
+  /// (topology-vertex position, edge-segment midpoint, or triangle centroid)
+  /// falls within [box]. Priority order: vertices first, then edges, then
+  /// faces — matching [hitTestMeshEntities].
+  List<SelectionEntityRef> _hitTestEntitiesInBox(Rect box, MeshDto mesh) {
+    final result = <SelectionEntityRef>[];
+
+    // Vertices
+    for (var i = 0; i < mesh.topologyVertices.length; i++) {
+      final v = mesh.topologyVertices[i];
+      final screen = _worldToScreen(vm.Vector3(v[0], v[1], v[2]));
+      if (screen != null && box.contains(screen)) {
+        result.add(SelectionEntityRef(kind: SelectionEntityKind.vertex, id: mesh.topologyVertexIds[i]));
+      }
+    }
+
+    // Edges: midpoint of each segment, deduplicated by id
+    final edgeSegs = edgeSegmentsFromMesh(mesh);
+    final seenEdgeIds = <int>{};
+    for (var i = 0; i < edgeSegs.length && i < mesh.edgeIds.length; i++) {
+      final id = mesh.edgeIds[i];
+      if (seenEdgeIds.contains(id)) continue;
+      final (s, e) = edgeSegs[i];
+      final midpoint = (s + e) * 0.5;
+      final screen = _worldToScreen(midpoint);
+      if (screen != null && box.contains(screen)) {
+        result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: id));
+        seenEdgeIds.add(id);
+      }
+    }
+
+    // Faces: centroid of each triangle, deduplicated by id
+    final tris = trianglesFromMesh(mesh);
+    final seenFaceIds = <int>{};
+    for (var i = 0; i < tris.length && i < mesh.faceIds.length; i++) {
+      final id = mesh.faceIds[i];
+      if (seenFaceIds.contains(id)) continue;
+      final (v0, v1, v2) = tris[i];
+      final centroid = (v0 + v1 + v2) * (1.0 / 3.0);
+      final screen = _worldToScreen(centroid);
+      if (screen != null && box.contains(screen)) {
+        result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: id));
+        seenFaceIds.add(id);
+      }
+    }
+
+    return result;
+  }
+
+  // ---- A3: recentre + auto-fit far clip ---------------------------------
+
+  /// Called by the "Reset view" button: resets the camera and, if a mesh is
+  /// loaded, auto-fits the far clip to `max(kDefaultFarClip, 2 * diagonal)`.
+  void _doRecentre() {
+    _camera.reset();
+    final mesh = widget.mesh;
+    if (mesh == null || mesh.vertices.isEmpty) return;
+    double minX = double.infinity, maxX = double.negativeInfinity;
+    double minY = double.infinity, maxY = double.negativeInfinity;
+    double minZ = double.infinity, maxZ = double.negativeInfinity;
+    for (final v in mesh.vertices) {
+      if (v[0] < minX) minX = v[0]; if (v[0] > maxX) maxX = v[0];
+      if (v[1] < minY) minY = v[1]; if (v[1] > maxY) maxY = v[1];
+      if (v[2] < minZ) minZ = v[2]; if (v[2] > maxZ) maxZ = v[2];
+    }
+    final dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+    final diagonal = math.sqrt(dx * dx + dy * dy + dz * dz);
+    final newFarClip = math.max(kDefaultFarClip, 2.0 * diagonal);
+    _camera.farClip = newFarClip;
+    _camera.nearClip = kDefaultNearClip;
+    widget.onFarClipChanged?.call(newFarClip);
+  }
+
+  // -----------------------------------------------------------------------
 
   /// Rebuilds [_hoverNode] from [_hoverHit] - one of vertex/edge/face
   /// highlight geometry depending on [_hoverHit]'s kind (Item 3: "hovered
@@ -774,28 +990,35 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _viewportSize = size;
         return Stack(
           children: [
-            Listener(
-              onPointerDown: _onPointerDown,
-              onPointerMove: _onPointerMove,
-              onPointerUp: _onPointerEnd,
-              onPointerCancel: _onPointerEnd,
-              onPointerHover: _onPointerHover,
-              onPointerSignal: _handlePointerSignal,
-              child: CustomPaint(
-                size: size,
-                painter: _ScenePainter(
-                  scene: scene,
-                  camera: _camera,
+            // A2: GestureDetector wraps the Listener to detect double-tap-down
+            // for box selection. The Listener still receives all raw pointer
+            // events unconditionally — the GestureDetector only adds the
+            // double-tap recogniser on top, without blocking Listener events.
+            GestureDetector(
+              onDoubleTapDown: _onDoubleTapDown,
+              child: Listener(
+                onPointerDown: _onPointerDown,
+                onPointerMove: _onPointerMove,
+                onPointerUp: _onPointerEnd,
+                onPointerCancel: _onPointerEnd,
+                onPointerHover: _onPointerHover,
+                onPointerSignal: _onPointerSignal,
+                child: CustomPaint(
                   size: size,
-                  backgroundColor: colorFromHex(widget.bgColourHex),
-                  polylineCarryingNodes: [
-                    ..._planeNodes.values,
-                    ..._sketchNodes.values,
-                    if (_edgesNode != null) _edgesNode!,
-                    if (_hoverNode != null) _hoverNode!,
-                    if (_selectedEdgesNode != null) _selectedEdgesNode!,
-                    if (_selectedVerticesNode != null) _selectedVerticesNode!,
-                  ],
+                  painter: _ScenePainter(
+                    scene: scene,
+                    camera: _camera,
+                    size: size,
+                    backgroundColor: colorFromHex(widget.bgColourHex),
+                    polylineCarryingNodes: [
+                      ..._planeNodes.values,
+                      ..._sketchNodes.values,
+                      if (_edgesNode != null) _edgesNode!,
+                      if (_hoverNode != null) _hoverNode!,
+                      if (_selectedEdgesNode != null) _selectedEdgesNode!,
+                      if (_selectedVerticesNode != null) _selectedVerticesNode!,
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -808,7 +1031,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               child: IconButton.filled(
                 tooltip: 'Reset view',
                 icon: const Icon(Icons.center_focus_strong),
-                onPressed: () => setState(_camera.reset),
+                // A3: also auto-fits farClip to the current mesh's AABB.
+                onPressed: () => setState(_doRecentre),
               ),
             ),
             if (widget.selectionMode && _cursorPosition != null)
@@ -818,10 +1042,34 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   painter: _CursorCrosshairPainter(position: _cursorPosition!, hasHover: _hoverHit != null),
                 ),
               ),
+            // A2: box-selection overlay - visible only while a double-tap-drag
+            // is in progress, drawn on top of the cursor crosshair so the box
+            // is always clearly legible.
+            if (widget.selectionMode && _boxAnchor != null && _boxCurrent != null)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: size,
+                  painter: _BoxSelectionPainter(
+                    anchor: _boxAnchor!,
+                    current: _boxCurrent!,
+                    color: _selectedColor,
+                  ),
+                ),
+              ),
           ],
         );
       },
     );
+  }
+
+  // A4: wrapper for the scroll-wheel signal event. The orbit handler body
+  // (_handlePointerSignal) is unchanged; the wrapper exists so future
+  // orthographic-specific behaviour (e.g. adjusting ortho scale without
+  // moving the camera) can be added here without touching the orbit body.
+  // flutter_scene 0.18.x provides only PerspectiveCamera, so the two modes
+  // are currently identical — see OrbitCamera.isPerspective.
+  void _onPointerSignal(PointerSignalEvent event) {
+    _handlePointerSignal(event);
   }
 }
 
@@ -858,6 +1106,50 @@ class _CursorCrosshairPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CursorCrosshairPainter oldDelegate) =>
       oldDelegate.position != position || oldDelegate.hasHover != hasHover;
+}
+
+/// A2: thin rectangle overlay drawn while a double-tap-drag box-selection is
+/// in progress. Fill is the selection colour at low alpha; stroke at high
+/// alpha. Identical placement pattern to [_CursorCrosshairPainter]: a sibling
+/// in the build Stack, always wrapped in [IgnorePointer].
+class _BoxSelectionPainter extends CustomPainter {
+  final Offset anchor;
+  final Offset current;
+  final vm.Vector4 color;
+
+  const _BoxSelectionPainter({
+    required this.anchor,
+    required this.current,
+    required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromPoints(anchor, current);
+    final fillPaint = Paint()
+      ..color = Color.fromARGB(
+        (color.a * 0.15 * 255).round(),
+        (color.r * 255).round(),
+        (color.g * 255).round(),
+        (color.b * 255).round(),
+      )
+      ..style = PaintingStyle.fill;
+    final strokePaint = Paint()
+      ..color = Color.fromARGB(
+        (color.a * 0.85 * 255).round(),
+        (color.r * 255).round(),
+        (color.g * 255).round(),
+        (color.b * 255).round(),
+      )
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    canvas.drawRect(rect, fillPaint);
+    canvas.drawRect(rect, strokePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _BoxSelectionPainter oldDelegate) =>
+      oldDelegate.anchor != anchor || oldDelegate.current != current;
 }
 
 class _ScenePainter extends CustomPainter {
