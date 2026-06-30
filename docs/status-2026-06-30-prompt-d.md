@@ -7,6 +7,7 @@ Branch: `claude/new-session-up4xx1`.
 | # | Item | Status | Files changed |
 |---|------|--------|---------------|
 | D1 | Feature tree sketch picker after New > Extrude | Done | `feature_tree_panel.dart`, `part_screen.dart`, `part_screen_test.dart` |
+| D1 fix | Stale `_selectedFeatureId` bypassing the picker after confirm/cancel/delete (see Addendum) | Done | `part_screen.dart`, `part_screen_test.dart` |
 
 ---
 
@@ -71,3 +72,25 @@ No Flutter SDK was present in this container. `flutter_scene ^0.18.1` (per `clie
 - The 11 pre-existing test failures (listed above) are not investigated or fixed here — out of scope for this prompt, and none are in files D1 touched. Worth a follow-up pass once there's a pinned/reproducible Flutter `master` snapshot to verify against, rather than "whatever `master` is today".
 - Picker-mode dimming (`_pickableSketchIds`) is a best-effort visual aid computed once per `_startSketchPicker()` call; it does not refresh if a Sketch's profile changes while the picker is already open (e.g. impossible in practice today since nothing else can mutate a Sketch while the Feature tree picker is up and modal-ish, but noting the assumption).
 - No dedicated test exercises the dimmed-row visual styling itself (opacity), since none of the prompt's required test-coverage bullets call for it and the existing `_FakeSketchBackend` only supports one global profile status across all sketches in a test (extending it for a mixed-validity scenario was judged not worth the added fixture complexity for a purely cosmetic property).
+
+---
+
+## Addendum — stale-selection bug report, same day
+
+User report after D1 shipped: confirm an Extrude, delete that ExtrudeFeature, then tap New > Extrude again — it went straight back to extruding the same Sketch instead of offering the picker.
+
+**Root cause.** `_confirmExtrude` and `_cancelExtrude` never cleared `_selectedFeatureId`. `_onSketchPicked` sets it to the picked Sketch's id on a valid pick (so the just-opened `ExtrudePanel` has something to show in the tree as "selected"), but nothing ever unset it afterwards. `_extrudeSelectedFeature`'s back-compat shortcut ("a pre-selected, already-eligible Sketch skips the picker") then fired on every later invocation, since that stale id still resolved to a still-eligible Sketch Feature — including after deleting the resulting ExtrudeFeature, since `_cascadeDeleteFeature`'s own selection-clearing only fires when the *deleted* Feature was selected, not the Sketch it was built from (which survives the delete and stays in `_features`).
+
+**Fix.** Both `_confirmExtrude` and `_cancelExtrude` now clear `_selectedFeatureId` when it equals the Sketch Feature they were just operating on:
+
+```dart
+if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+  _selectedFeatureId = null;
+}
+```
+
+so a later New > Extrude always falls through to the picker again, unless the user has freshly selected a different Sketch row in the tree in the meantime (the genuine back-compat case the prompt asked for).
+
+**Test added.** `'after confirming an Extrude then deleting it, a later New > Extrude offers the picker again rather than reusing the stale selection'` in the same `test/part_screen_test.dart` Prompt D group — reproduces the report exactly (picker → pick Sketch 1 → Confirm → reopen tree → long-press the new ExtrudeFeature → Delete → New > Extrude again → asserts the banner reappears and `Confirm` does not).
+
+**Test/analyze results.** `flutter analyze lib/viewport3d/part_screen.dart test/part_screen_test.dart` — no issues. `flutter test test/part_screen_test.dart` — 21 passed, same 2 pre-existing/unrelated failures as the original D1 run above (`Hide Reference Planes`, render-mode entries) — no new failures, no regressions in any of the now-6 Prompt D tests.
