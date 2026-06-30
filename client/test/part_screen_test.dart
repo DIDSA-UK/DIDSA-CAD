@@ -1084,6 +1084,69 @@ void main() {
       expect(find.text('Confirm'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+      'after confirming an Extrude then deleting it, a later New > Extrude offers the picker again '
+      'rather than reusing the stale selection',
+      (tester) async {
+        final backend = _FakeDocumentBackend(
+          seedFeatures: [
+            {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+          ],
+        );
+        final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        // Picker -> pick Sketch 1 -> confirm, exactly like the "valid pick"
+        // test above - this is what sets _selectedFeatureId to feature-1
+        // along the way.
+        await tapAddFeatureExtrude(tester);
+        await tester.tap(find.text('Sketch 1'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Confirm'));
+        await tester.pump();
+        await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
+
+        // Picking a Sketch closes the Feature tree along with the picker -
+        // reopen it to reach the new ExtrudeFeature's row.
+        await tester.tap(find.byTooltip('Feature tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // Delete the ExtrudeFeature just created - a single Feature, so the
+        // dialog's confirm button reads "Delete" (not "Delete all").
+        await tester.longPress(find.text('Extrude 1'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Delete'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Delete'));
+        await tester.pump();
+        await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
+        expect(backend.features.where((f) => f['type'] == 'extrude'), isEmpty);
+
+        // The regression: without clearing _selectedFeatureId on confirm,
+        // this would silently reopen the panel for the same already-deleted
+        // pairing's Sketch instead of offering the picker.
+        await tapAddFeatureExtrude(tester);
+
+        expect(find.text('Select a sketch to extrude'), findsOneWidget);
+        expect(find.text('Confirm'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
   });
 
   testWidgets('cancelling the Extrude panel after a live-preview update deletes the preview ExtrudeFeature', (
