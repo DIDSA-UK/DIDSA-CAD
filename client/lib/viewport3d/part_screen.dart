@@ -98,6 +98,11 @@ class _PartScreenState extends State<PartScreen> {
   /// slider and reset by the recentre auto-fit action.
   double _farClip = ViewPreferences.defaultFarClip;
 
+  /// Selection submenu: true = window (contain-only) box selection (default),
+  /// false = crossing selection. Owned here, passed to both [PartToolbar] (to
+  /// render the toggle) and [PartViewport] (to apply it during box hits).
+  bool _containOnly = true;
+
   /// Stage 10b: true while the "Add" FAB's flyout's "New Sketch" entry has
   /// been tapped and the user is choosing which reference plane to sketch
   /// on - the three planes are tappable targets in this mode, and a tap on
@@ -256,6 +261,10 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onFarClipChanged(double value) async {
     setState(() => _farClip = value);
     await ViewPreferences.setFarClip(value);
+  }
+
+  void _onContainOnlyChanged(bool value) {
+    setState(() => _containOnly = value);
   }
 
   /// Opens [ConnectionScreen] from the File menu's "Connection Settings"
@@ -882,6 +891,7 @@ class _PartScreenState extends State<PartScreen> {
                   isPerspective: _isPerspective,
                   farClip: _farClip,
                   onFarClipChanged: _onFarClipChanged,
+                  containOnly: _containOnly,
                 ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
@@ -950,6 +960,8 @@ class _PartScreenState extends State<PartScreen> {
                     onPerspectiveChanged: _onPerspectiveChanged,
                     farClip: _farClip,
                     onFarClipChanged: _onFarClipChanged,
+                    containOnly: _containOnly,
+                    onContainOnlyChanged: _onContainOnlyChanged,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)

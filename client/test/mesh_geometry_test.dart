@@ -165,12 +165,14 @@ void main() {
   });
 
   group('triangleHighlightBuffers', () {
-    test('packs each triangle into 3 vertices carrying its face normal', () {
+    test('emits front + back face: 6 vertices per input triangle', () {
       final buffers = triangleHighlightBuffers([
         (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0)),
       ]);
 
-      expect(buffers.vertexCount, 3);
+      // One input triangle → 2 output triangles (front + back) → 6 vertices.
+      expect(buffers.vertexCount, 6);
+      // Front-face vertex 0 is unchanged: position (0,0,0), normal +Z.
       final vertex0 = buffers.vertexData.sublist(0, 12);
       expect(vertex0, [
         0, 0, 0, // position
@@ -186,8 +188,9 @@ void main() {
         (vm.Vector3(0, 0, 0), vm.Vector3(0, 1, 0), vm.Vector3(0, 0, 1)),
       ]);
 
+      // 2 input triangles → 4 output triangles → 12 vertices → 12 indices.
       final indices = Uint16List.sublistView(buffers.indexData);
-      expect(indices, [0, 1, 2, 3, 4, 5]);
+      expect(indices, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     });
 
     test('a degenerate (zero-area) triangle gets the zero normal rather than NaN', () {
