@@ -883,6 +883,209 @@ void main() {
     },
   );
 
+  // Prompt D: the "Add" FAB's Feature > Extrude entry, with no eligible
+  // Sketch already selected, opens the Feature tree as a guided picker
+  // instead of just complaining there's nothing to extrude.
+  group('Prompt D - feature tree sketch picker for Extrude', () {
+    /// Drives the "Add" FAB through its flyout's "Feature" entry to the
+    /// second-level picker's "Extrude" entry - the trigger every test below
+    /// shares.
+    Future<void> tapAddFeatureExtrude(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Feature'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Extrude'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    testWidgets('opens the Feature tree with the picker banner visible', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tapAddFeatureExtrude(tester);
+
+      expect(find.text('Select a sketch to extrude'), findsOneWidget);
+      expect(find.text('Sketch 1'), findsOneWidget);
+      expect(find.text('Confirm'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('tapping a valid sketch populates the extrude sketch reference and closes the picker', (
+      tester,
+    ) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tapAddFeatureExtrude(tester);
+      expect(find.text('Select a sketch to extrude'), findsOneWidget);
+
+      await tester.tap(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Select a sketch to extrude'), findsNothing);
+      expect(find.text('Confirm'), findsOneWidget);
+      expect(find.text('Cancel'), findsOneWidget);
+
+      await tester.tap(find.text('Confirm'));
+      await tester.pump();
+      await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
+
+      expect(backend.features.where((f) => f['type'] == 'extrude' && f['sketch_feature_id'] == 'feature-1'), hasLength(1));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('tapping an invalid sketch shows a SnackBar and leaves the picker open', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend(profileStatus: 'no_loop');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tapAddFeatureExtrude(tester);
+      expect(find.text('Select a sketch to extrude'), findsOneWidget);
+
+      await tester.tap(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(
+        find.text('This sketch has no closed profile — add more lines or close the loop first'),
+        findsOneWidget,
+      );
+      // Still in picker mode - the banner is still up and no Extrude panel
+      // opened.
+      expect(find.text('Select a sketch to extrude'), findsOneWidget);
+      expect(find.text('Confirm'), findsNothing);
+      expect(backend.features.where((f) => f['type'] == 'extrude'), isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('dismissing the Feature tree cancels the pending Extrude creation', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tapAddFeatureExtrude(tester);
+      expect(find.text('Select a sketch to extrude'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Select a sketch to extrude'), findsNothing);
+      expect(find.text('Confirm'), findsNothing);
+      expect(backend.features.where((f) => f['type'] == 'extrude'), isEmpty);
+      expect(tester.takeException(), isNull);
+
+      // The picker is fully exited, not just hidden - the same flow can be
+      // started fresh.
+      await tapAddFeatureExtrude(tester);
+      expect(find.text('Select a sketch to extrude'), findsOneWidget);
+    });
+
+    testWidgets('a pre-selected, already-eligible Sketch skips the picker entirely (back-compat)', (
+      tester,
+    ) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+          {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Sketch 1 is locked, so this tap only selects it - it does not
+      // navigate away to its Sketch screen.
+      await tester.tap(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.text('Part 1'), findsOneWidget);
+
+      await tapAddFeatureExtrude(tester);
+
+      // Straight to the panel - the picker banner never appears.
+      expect(find.text('Select a sketch to extrude'), findsNothing);
+      expect(find.text('Confirm'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   testWidgets('cancelling the Extrude panel after a live-preview update deletes the preview ExtrudeFeature', (
     tester,
   ) async {

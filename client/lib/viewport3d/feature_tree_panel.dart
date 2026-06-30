@@ -46,6 +46,25 @@ class FeatureTreePanel extends StatelessWidget {
   /// its absence in the 3D view.
   final Set<String> hiddenFeatureIds;
 
+  /// Prompt D: true while the tree is acting as a Sketch picker for a
+  /// pending Extrude (entered from the "Add" FAB's Feature > Extrude entry
+  /// when no eligible Sketch is already selected) - shows the picker banner
+  /// below and switches every row's tap from [onFeatureTap] to
+  /// [onSketchPicked].
+  final bool isSketchPickerMode;
+
+  /// While [isSketchPickerMode], the ids of Sketch Features with a closed
+  /// profile - the rest (including every non-Sketch Feature) render dimmed.
+  /// Purely a visual aid: [onSketchPicked] re-validates the tapped Sketch
+  /// itself, so a stale/in-flight value here never lets an ineligible
+  /// Sketch through.
+  final Set<String> pickableSketchIds;
+
+  /// [isSketchPickerMode]'s tap handler - called for a Sketch Feature row
+  /// tap instead of [onFeatureTap]. Unused (and may be left null) outside
+  /// picker mode.
+  final void Function(FeatureDto feature)? onSketchPicked;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -55,6 +74,9 @@ class FeatureTreePanel extends StatelessWidget {
     required this.onFeatureLongPress,
     required this.onClose,
     this.hiddenFeatureIds = const {},
+    this.isSketchPickerMode = false,
+    this.pickableSketchIds = const {},
+    this.onSketchPicked,
   });
 
   @override
@@ -93,6 +115,23 @@ class FeatureTreePanel extends StatelessWidget {
                         ],
                       ),
                     ),
+                    // Prompt D: an inline banner (not a dialog) naming the
+                    // picker mode the user is in - sits below the header so
+                    // the close (X) button stays usable to cancel the
+                    // pending Extrude.
+                    if (isSketchPickerMode)
+                      Container(
+                        width: double.infinity,
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Text(
+                          'Select a sketch to extrude',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
                     Expanded(
                       child: ListView.builder(
                         itemCount: features.length,
@@ -100,8 +139,14 @@ class FeatureTreePanel extends StatelessWidget {
                           final feature = features[index];
                           final selected = feature.id == selectedFeatureId;
                           final hidden = hiddenFeatureIds.contains(feature.id);
+                          final isSketch = feature.type == 'sketch';
+                          // Dimmed (but still tappable - an ineligible tap
+                          // surfaces a SnackBar via onSketchPicked rather
+                          // than being inert) whenever picking and this row
+                          // isn't a Sketch with a known-closed profile.
+                          final pickerDimmed = isSketchPickerMode && (!isSketch || !pickableSketchIds.contains(feature.id));
                           return Opacity(
-                            opacity: hidden ? 0.5 : 1.0,
+                            opacity: hidden || pickerDimmed ? 0.5 : 1.0,
                             child: ListTile(
                               selected: selected,
                               leading: Icon(
@@ -113,8 +158,14 @@ class FeatureTreePanel extends StatelessWidget {
                               title: Text(featureDisplayName(features, index)),
                               subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
                               trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
-                              onTap: () => onFeatureTap(feature),
-                              onLongPress: () => onFeatureLongPress(feature),
+                              onTap: () {
+                                if (isSketchPickerMode) {
+                                  if (isSketch) onSketchPicked?.call(feature);
+                                } else {
+                                  onFeatureTap(feature);
+                                }
+                              },
+                              onLongPress: isSketchPickerMode ? null : () => onFeatureLongPress(feature),
                             ),
                           );
                         },

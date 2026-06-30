@@ -173,6 +173,20 @@ class _PartScreenState extends State<PartScreen> {
   bool _featureTreeVisible = false;
   bool _toolbarOpen = false;
 
+  /// Prompt D: true while the Feature tree is acting as a Sketch picker for
+  /// a pending Extrude - entered by [_extrudeSelectedFeature] when no
+  /// eligible Sketch is already selected, exited by [_onSketchPicked] (a
+  /// valid pick) or [_cancelSketchPicker] (dismissal). Threaded into
+  /// [FeatureTreePanel] as a plain bool rather than mirrored in its own
+  /// state, per the project convention of keeping that widget reusable/dumb.
+  bool _sketchPickerActive = false;
+
+  /// While [_sketchPickerActive], the Sketch Feature ids [_refreshPickableSketchIds]
+  /// most recently found to have a closed profile - drives which rows
+  /// [FeatureTreePanel] dims. Purely a visual aid; [_onSketchPicked]
+  /// re-checks the tapped Sketch itself.
+  Set<String> _pickableSketchIds = {};
+
   /// The SketchFeature currently being extruded via [ExtrudePanel], or null
   /// when the panel is closed - set by the long-press "Extrude" context-menu
   /// action, cleared on Confirm/Cancel.
@@ -430,6 +444,9 @@ class _PartScreenState extends State<PartScreen> {
       _toolbarOpen = false;
       _planeSelectionMode = false;
     });
+    // Prompt D: a background tap is as much a "never mind" gesture for the
+    // Sketch picker as it already is for plane-selection mode above.
+    if (_sketchPickerActive) _cancelSketchPicker();
   }
 
   /// Opens the "Add" FAB's flyout. "New Sketch" enters [_planeSelectionMode]
@@ -466,25 +483,91 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Extrudes the Feature currently selected in the tree, opened from the
-  /// "Add" FAB's Feature picker rather than a Feature's own long-press menu
-  /// - unlike that entry point, there's no Feature already in hand here, so
-  /// this resolves one from [_selectedFeatureId] first and surfaces a snack
-  /// bar instead of silently doing nothing when there's no eligible
-  /// selection.
+  /// "Add" FAB's Feature picker rather than a Feature's own long-press menu.
+  /// Prompt D: when there's no eligible Sketch already selected (the common
+  /// case - there usually isn't a prior selection at all), this opens the
+  /// Feature tree as a guided picker ([_startSketchPicker]) instead of just
+  /// surfacing a snack bar; a pre-selected, already-eligible Sketch skips
+  /// the picker entirely and goes straight to the panel, unchanged from
+  /// before Prompt D.
   Future<void> _extrudeSelectedFeature() async {
     final featureId = _selectedFeatureId;
     final feature = featureId == null ? null : _featureById(featureId);
-    if (feature == null || feature.type != 'sketch') {
-      _showSnack('Select a sketch feature in the tree first');
-      return;
+    if (feature != null && feature.type == 'sketch') {
+      final reason = await _checkExtrudeEligibility(feature);
+      if (!mounted) return;
+      if (reason == null) {
+        _openExtrudePanel(feature);
+        return;
+      }
     }
+    _startSketchPicker();
+  }
+
+  /// Prompt D: opens the Feature tree in Sketch-picker mode for a pending
+  /// Extrude - closes the toolbar/plane-selection overlays it'd otherwise
+  /// collide with, then kicks off [_refreshPickableSketchIds] in the
+  /// background so the tree can start dimming ineligible Sketches once that
+  /// resolves.
+  void _startSketchPicker() {
+    setState(() {
+      _sketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionMode = false;
+      _pickableSketchIds = {};
+    });
+    _refreshPickableSketchIds();
+  }
+
+  /// Checks every Sketch Feature's closed-profile eligibility (in parallel)
+  /// and stores the eligible ids for [FeatureTreePanel]'s dimming - purely a
+  /// visual aid, since [_onSketchPicked] re-checks the tapped Sketch itself
+  /// rather than trusting this set, so a stale or still-in-flight result
+  /// here can never let an ineligible Sketch through.
+  Future<void> _refreshPickableSketchIds() async {
+    final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
+    final results = await Future.wait(sketchFeatures.map((feature) async {
+      final reason = await _checkExtrudeEligibility(feature);
+      return MapEntry(feature.id, reason == null);
+    }));
+    if (!mounted || !_sketchPickerActive) return;
+    setState(() {
+      _pickableSketchIds = {for (final entry in results) if (entry.value) entry.key};
+    });
+  }
+
+  /// [FeatureTreePanel.onSketchPicked] - Prompt D's picker-mode tap handler.
+  /// Re-validates the tapped Sketch's profile itself (rather than trusting
+  /// [_pickableSketchIds], which is only a best-effort visual aid) before
+  /// proceeding; an ineligible Sketch stays in picker mode with an
+  /// explanatory SnackBar instead.
+  Future<void> _onSketchPicked(FeatureDto feature) async {
     final reason = await _checkExtrudeEligibility(feature);
-    if (!mounted) return;
+    if (!mounted || !_sketchPickerActive) return;
     if (reason != null) {
-      _showSnack(reason);
+      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
       return;
     }
+    setState(() {
+      _sketchPickerActive = false;
+      _featureTreeVisible = false;
+      _selectedFeatureId = feature.id;
+      _pickableSketchIds = {};
+    });
     _openExtrudePanel(feature);
+  }
+
+  /// Exits picker mode without creating an Extrude - the Feature tree's own
+  /// close button and the device back gesture (see [build]'s `PopScope`)
+  /// both lead here, per Prompt D's "dismissing the picker cancels the
+  /// pending Extrude" rule.
+  void _cancelSketchPicker() {
+    setState(() {
+      _sketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableSketchIds = {};
+    });
   }
 
   FeatureDto? _featureById(String id) {
@@ -826,14 +909,18 @@ class _PartScreenState extends State<PartScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // While choosing a plane for a new Sketch (Stage 10b), the device
-      // back gesture cancels that mode instead of popping this screen -
-      // canPop: false intercepts it; any other time, popping proceeds
-      // normally.
-      canPop: !_planeSelectionMode,
+      // While choosing a plane for a new Sketch (Stage 10b) or a Sketch to
+      // extrude (Prompt D), the device back gesture cancels that mode
+      // instead of popping this screen - canPop: false intercepts it; any
+      // other time, popping proceeds normally.
+      canPop: !_planeSelectionMode && !_sketchPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        _cancelPlaneSelectionMode();
+        if (_sketchPickerActive) {
+          _cancelSketchPicker();
+        } else {
+          _cancelPlaneSelectionMode();
+        }
       },
       child: _buildScaffold(context),
     );
@@ -929,7 +1016,16 @@ class _PartScreenState extends State<PartScreen> {
                     hiddenFeatureIds: _hiddenFeatureIds,
                     onFeatureTap: _onFeatureTap,
                     onFeatureLongPress: _onFeatureLongPress,
-                    onClose: () => setState(() => _featureTreeVisible = false),
+                    onClose: () {
+                      if (_sketchPickerActive) {
+                        _cancelSketchPicker();
+                      } else {
+                        setState(() => _featureTreeVisible = false);
+                      }
+                    },
+                    isSketchPickerMode: _sketchPickerActive,
+                    pickableSketchIds: _pickableSketchIds,
+                    onSketchPicked: _onSketchPicked,
                   ),
                 ),
                 Positioned.fill(
