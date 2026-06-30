@@ -262,16 +262,24 @@ Node buildVertexMarkersNode(
 /// highlight triangles (unlike a [MeshDto]'s real ones) carry no separate
 /// per-vertex normal data of their own; a degenerate (zero-area) triangle's
 /// normal is left as the zero vector rather than dividing by zero.
+///
+/// Each input triangle is emitted twice — once with original winding (front
+/// face) and once with reversed winding (back face) — so highlights are
+/// visible from either side of a surface, working around flutter_scene/
+/// Impeller's back-face culling.
 MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles) {
-  final vertexCount = triangles.length * 3;
+  // Two passes per input triangle: front-face then back-face.
+  final totalTriCount = triangles.length * 2;
+  final vertexCount = totalTriCount * 3;
   final vertexData = Float32List(vertexCount * 12);
-  for (var t = 0; t < triangles.length; t++) {
-    final corners = [triangles[t].$1, triangles[t].$2, triangles[t].$3];
-    final cross = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+
+  void writeTriangle(int triIdx, vm.Vector3 a, vm.Vector3 b, vm.Vector3 c) {
+    final corners = [a, b, c];
+    final cross = (b - a).cross(c - a);
     final normal = cross.length2 < 1e-12 ? vm.Vector3.zero() : cross.normalized();
     for (var i = 0; i < 3; i++) {
       final position = corners[i];
-      final base = (t * 3 + i) * 12;
+      final base = (triIdx * 3 + i) * 12;
       vertexData[base] = position.x;
       vertexData[base + 1] = position.y;
       vertexData[base + 2] = position.z;
@@ -286,6 +294,13 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
       vertexData[base + 11] = 1; // a
     }
   }
+
+  for (var t = 0; t < triangles.length; t++) {
+    final (a, b, c) = triangles[t];
+    writeTriangle(t, a, b, c);                      // front face
+    writeTriangle(t + triangles.length, a, c, b);   // back face (reversed winding)
+  }
+
   final indices = Uint16List(vertexCount);
   for (var i = 0; i < vertexCount; i++) {
     indices[i] = i;

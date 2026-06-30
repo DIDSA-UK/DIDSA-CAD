@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -113,6 +114,12 @@ class PartViewport extends StatefulWidget {
   /// can update its slider to the new value.
   final void Function(double farClip)? onFarClipChanged;
 
+  /// Selection submenu: true = window (contain-only) selection, false =
+  /// crossing selection. Window: every projected point of an entity must be
+  /// inside the box. Crossing: the entity's representative point (midpoint /
+  /// centroid) must be inside the box.
+  final bool containOnly;
+
   const PartViewport({
     super.key,
     required this.mesh,
@@ -133,6 +140,7 @@ class PartViewport extends StatefulWidget {
     this.isPerspective = false,
     this.farClip,
     this.onFarClipChanged,
+    this.containOnly = true,
   });
 
   @override
@@ -235,6 +243,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   // rather than a no-op cancel.
   static const double _boxMinDragDistance = 4.0;
 
+  // Bug 2: deferred commit timer — delays _commitSelection() by ~300 ms so
+  // that the first tap-up of a double-tap sequence does not prematurely clear
+  // the selection before _onDoubleTapDown fires and cancels it.
+  Timer? _tapCommitTimer;
+
   @override
   void initState() {
     super.initState();
@@ -262,6 +275,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (!mounted) return;
       setState(() => _error = error.toString());
     });
+  }
+
+  @override
+  void dispose() {
+    _tapCommitTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -625,10 +644,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _selectionGestureTravel += event.delta.distance;
     // A2: if a double-tap-down was recently recognised, subsequent moves
-    // extend the box corner rather than moving the cursor.
+    // extend the box corner rather than moving the cursor; Bug 3: also move
+    // the cursor crosshair to the dragged corner so it tracks the box edge.
     if (_doubleTapDetected) {
       setState(() {
         _boxCurrent = _clampToViewport((_boxCurrent ?? _boxAnchor ?? _viewportCenter()) + event.delta);
+        _cursorPosition = _boxCurrent;
       });
       return;
     }
@@ -650,12 +671,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
         return;
       }
-      // Fix 4: tap-to-select - a pointer-up that stayed within the tap
-      // travel threshold commits the current hover, the same logic the
-      // removed "Select" button used to call. A drag that moved the cursor
-      // (PointerCancel, or PointerUp past the threshold) commits nothing.
+      // Fix 4 / Bug 2: tap-to-select — schedule _commitSelection() with a
+      // short delay so that the first tap-up of a double-tap does not
+      // prematurely clear the selection before _onDoubleTapDown fires and
+      // cancels the timer.
       if (event is PointerUpEvent && _selectionGestureTravel < _tapTravelThreshold) {
-        _commitSelection();
+        _tapCommitTimer?.cancel();
+        _tapCommitTimer = Timer(const Duration(milliseconds: 300), () {
+          if (mounted) _commitSelection();
+        });
       }
       return;
     }
@@ -731,6 +755,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _onDoubleTapDown(TapDownDetails details) {
     if (!widget.selectionMode) return;
+    // Bug 2: cancel any pending deferred single-tap commit so the first tap of
+    // the double-tap does not clear the selection before the box starts.
+    _tapCommitTimer?.cancel();
+    _tapCommitTimer = null;
     // Box origin = cursor position at the moment the double-tap is recognised,
     // NOT the finger's tap position - the cursor is the selection instrument.
     setState(() {
@@ -797,14 +825,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     );
   }
 
-  /// Returns all mesh entities whose screen-projected representative point
-  /// (topology-vertex position, edge-segment midpoint, or triangle centroid)
-  /// falls within [box]. Priority order: vertices first, then edges, then
-  /// faces — matching [hitTestMeshEntities].
+  /// Returns all mesh entities whose screen-projected geometry falls within
+  /// [box]. Priority order: vertices first, then edges, then faces — matching
+  /// [hitTestMeshEntities].
+  ///
+  /// When [widget.containOnly] is true (window selection): vertex = point in
+  /// box; edge = ALL segment endpoints in box; face = ALL triangle vertices in
+  /// box. When false (crossing selection): vertex = point in box; edge =
+  /// midpoint of first segment in box; face = centroid of first triangle in box.
   List<SelectionEntityRef> _hitTestEntitiesInBox(Rect box, MeshDto mesh) {
     final result = <SelectionEntityRef>[];
+    final containOnly = widget.containOnly;
 
-    // Vertices
+    // Vertices: same for both modes — their screen point must be inside.
     for (var i = 0; i < mesh.topologyVertices.length; i++) {
       final v = mesh.topologyVertices[i];
       final screen = _worldToScreen(vm.Vector3(v[0], v[1], v[2]));
@@ -813,33 +846,76 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
     }
 
-    // Edges: midpoint of each segment, deduplicated by id
+    // Edges
     final edgeSegs = edgeSegmentsFromMesh(mesh);
-    final seenEdgeIds = <int>{};
-    for (var i = 0; i < edgeSegs.length && i < mesh.edgeIds.length; i++) {
-      final id = mesh.edgeIds[i];
-      if (seenEdgeIds.contains(id)) continue;
-      final (s, e) = edgeSegs[i];
-      final midpoint = (s + e) * 0.5;
-      final screen = _worldToScreen(midpoint);
-      if (screen != null && box.contains(screen)) {
-        result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: id));
-        seenEdgeIds.add(id);
+    if (containOnly) {
+      // Window: ALL segment endpoints of every segment belonging to the edge
+      // must project inside the box.
+      final segsByEdgeId = <int, List<(vm.Vector3, vm.Vector3)>>{};
+      for (var i = 0; i < edgeSegs.length && i < mesh.edgeIds.length; i++) {
+        (segsByEdgeId[mesh.edgeIds[i]] ??= []).add(edgeSegs[i]);
+      }
+      for (final entry in segsByEdgeId.entries) {
+        final allIn = entry.value.every((seg) {
+          final s = _worldToScreen(seg.$1);
+          final e = _worldToScreen(seg.$2);
+          return s != null && box.contains(s) && e != null && box.contains(e);
+        });
+        if (allIn) {
+          result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: entry.key));
+        }
+      }
+    } else {
+      // Crossing: midpoint of first segment per edge.
+      final seenEdgeIds = <int>{};
+      for (var i = 0; i < edgeSegs.length && i < mesh.edgeIds.length; i++) {
+        final id = mesh.edgeIds[i];
+        if (seenEdgeIds.contains(id)) continue;
+        final (s, e) = edgeSegs[i];
+        final midpoint = (s + e) * 0.5;
+        final screen = _worldToScreen(midpoint);
+        if (screen != null && box.contains(screen)) {
+          result.add(SelectionEntityRef(kind: SelectionEntityKind.edge, id: id));
+          seenEdgeIds.add(id);
+        }
       }
     }
 
-    // Faces: centroid of each triangle, deduplicated by id
+    // Faces
     final tris = trianglesFromMesh(mesh);
-    final seenFaceIds = <int>{};
-    for (var i = 0; i < tris.length && i < mesh.faceIds.length; i++) {
-      final id = mesh.faceIds[i];
-      if (seenFaceIds.contains(id)) continue;
-      final (v0, v1, v2) = tris[i];
-      final centroid = (v0 + v1 + v2) * (1.0 / 3.0);
-      final screen = _worldToScreen(centroid);
-      if (screen != null && box.contains(screen)) {
-        result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: id));
-        seenFaceIds.add(id);
+    if (containOnly) {
+      // Window: ALL vertices of ALL triangles belonging to the face must
+      // project inside the box.
+      final trisByFaceId = <int, List<(vm.Vector3, vm.Vector3, vm.Vector3)>>{};
+      for (var i = 0; i < tris.length && i < mesh.faceIds.length; i++) {
+        (trisByFaceId[mesh.faceIds[i]] ??= []).add(tris[i]);
+      }
+      for (final entry in trisByFaceId.entries) {
+        final allIn = entry.value.every((tri) {
+          final s0 = _worldToScreen(tri.$1);
+          final s1 = _worldToScreen(tri.$2);
+          final s2 = _worldToScreen(tri.$3);
+          return s0 != null && box.contains(s0) &&
+                 s1 != null && box.contains(s1) &&
+                 s2 != null && box.contains(s2);
+        });
+        if (allIn) {
+          result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: entry.key));
+        }
+      }
+    } else {
+      // Crossing: centroid of first triangle per face.
+      final seenFaceIds = <int>{};
+      for (var i = 0; i < tris.length && i < mesh.faceIds.length; i++) {
+        final id = mesh.faceIds[i];
+        if (seenFaceIds.contains(id)) continue;
+        final (v0, v1, v2) = tris[i];
+        final centroid = (v0 + v1 + v2) * (1.0 / 3.0);
+        final screen = _worldToScreen(centroid);
+        if (screen != null && box.contains(screen)) {
+          result.add(SelectionEntityRef(kind: SelectionEntityKind.face, id: id));
+          seenFaceIds.add(id);
+        }
       }
     }
 
@@ -1088,19 +1164,21 @@ class _CursorCrosshairPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
+    final h = Offset(_armLength, 0);
+    final v = Offset(0, _armLength);
+    // Dark outline drawn first for visibility on light backgrounds.
+    final outlinePaint = Paint()
+      ..color = const Color(0xCC000000)
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.square;
+    canvas.drawLine(position - h, position + h, outlinePaint);
+    canvas.drawLine(position - v, position + v, outlinePaint);
+    // Coloured inner stroke on top.
+    final innerPaint = Paint()
       ..color = hasHover ? const Color(0xFF2196F3) : const Color(0xFFFFFFFF)
       ..strokeWidth = 2;
-    canvas.drawLine(
-      position - const Offset(_armLength, 0),
-      position + const Offset(_armLength, 0),
-      paint,
-    );
-    canvas.drawLine(
-      position - const Offset(0, _armLength),
-      position + const Offset(0, _armLength),
-      paint,
-    );
+    canvas.drawLine(position - h, position + h, innerPaint);
+    canvas.drawLine(position - v, position + v, innerPaint);
   }
 
   @override
