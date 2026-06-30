@@ -91,6 +91,13 @@ class _PartScreenState extends State<PartScreen> {
   String _bodyColourHex = ViewPreferences.defaultBodyColourHex;
   double _bodyOpacity = ViewPreferences.defaultBodyOpacity;
 
+  /// A4: perspective vs orthographic toggle - false = orthographic default.
+  bool _isPerspective = ViewPreferences.defaultIsPerspective;
+
+  /// A3: manually-overridden far clip distance (mm), driven by the View menu
+  /// slider and reset by the recentre auto-fit action.
+  double _farClip = ViewPreferences.defaultFarClip;
+
   /// Stage 10b: true while the "Add" FAB's flyout's "New Sketch" entry has
   /// been tapped and the user is choosing which reference plane to sketch
   /// on - the three planes are tappable targets in this mode, and a tap on
@@ -218,6 +225,8 @@ class _PartScreenState extends State<PartScreen> {
       _bodyColourHex = ViewPreferences.bodyColourHex;
       _bodyOpacity = ViewPreferences.bodyOpacity;
       _renderMode = ViewPreferences.renderMode;
+      _isPerspective = ViewPreferences.isPerspective;
+      _farClip = ViewPreferences.farClip;
     });
   }
 
@@ -234,6 +243,19 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onBodyOpacityChanged(double opacity) async {
     setState(() => _bodyOpacity = opacity);
     await ViewPreferences.setBodyOpacity(opacity);
+  }
+
+  /// A4: toggles perspective/orthographic projection.
+  Future<void> _onPerspectiveChanged(bool value) async {
+    setState(() => _isPerspective = value);
+    await ViewPreferences.setIsPerspective(value);
+  }
+
+  /// A3: updates far clip from the View menu slider or from the recentre
+  /// auto-fit result - both paths write through to [ViewPreferences].
+  Future<void> _onFarClipChanged(double value) async {
+    setState(() => _farClip = value);
+    await ViewPreferences.setFarClip(value);
   }
 
   /// Opens [ConnectionScreen] from the File menu's "Connection Settings"
@@ -857,6 +879,9 @@ class _PartScreenState extends State<PartScreen> {
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
                   onClearSelection: _clearSelectedEntities,
+                  isPerspective: _isPerspective,
+                  farClip: _farClip,
+                  onFarClipChanged: _onFarClipChanged,
                 ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
@@ -921,6 +946,10 @@ class _PartScreenState extends State<PartScreen> {
                     onBgColourChanged: _onBgColourChanged,
                     onBodyColourChanged: _onBodyColourChanged,
                     onBodyOpacityChanged: _onBodyOpacityChanged,
+                    isPerspective: _isPerspective,
+                    onPerspectiveChanged: _onPerspectiveChanged,
+                    farClip: _farClip,
+                    onFarClipChanged: _onFarClipChanged,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)

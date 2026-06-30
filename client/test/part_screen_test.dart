@@ -931,4 +931,60 @@ void main() {
     expect(find.text('Confirm'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'A4: PartScreen starts with orthographic projection (isPerspective = false) and toggling Perspective in View menu switches it',
+    (tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () =>
+                SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // A4: the viewport starts with orthographic as default - check
+      // isPerspective = false is forwarded to the PartViewport widget.
+      final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.isPerspective, isFalse);
+
+      // Open the toolbar via the hamburger toggle button.
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Expand the View sub-menu.
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Toggle Perspective on.
+      await tester.tap(find.text('Perspective'));
+      await tester.pump();
+
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).isPerspective,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+
+      // Toggle Perspective back off.
+      await tester.tap(find.text('Perspective'));
+      await tester.pump();
+
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).isPerspective,
+        isFalse,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

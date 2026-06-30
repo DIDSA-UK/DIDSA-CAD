@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
 
 /// Single source of truth for the Stage 18/19a 3D-viewport appearance
@@ -15,6 +16,10 @@ class ViewPreferences {
   static const String bodyColourPrefKey = 'view_body_colour';
   static const String bodyOpacityPrefKey = 'view_body_opacity';
   static const String renderModePrefKey = 'view_render_mode';
+  // A4: perspective toggle (false = orthographic default per A4 brief)
+  static const String perspectivePrefKey = 'view_perspective';
+  // A3: manually-overridden far clip distance (mm)
+  static const String farClipPrefKey = 'view_far_clip';
 
   /// Stage 19a Item 4: was `#1E1E2E` (Studio Dark) through Stage 18 - anyone
   /// who already has that stored keeps it (see [load]); this only changes
@@ -27,15 +32,24 @@ class ViewPreferences {
   /// CAD tools (Fusion 360, SolidWorks, Onshape) - was [ViewportRenderMode.shaded].
   static const ViewportRenderMode defaultRenderMode = ViewportRenderMode.shadedWithEdges;
 
+  // A4: orthographic off by default.
+  static const bool defaultIsPerspective = false;
+  // A3: default far clip imported from orbit_camera.dart's constant.
+  static double get defaultFarClip => kDefaultFarClip;
+
   static String _bgColourHex = defaultBgColourHex;
   static String _bodyColourHex = defaultBodyColourHex;
   static double _bodyOpacity = defaultBodyOpacity;
   static ViewportRenderMode _renderMode = defaultRenderMode;
+  static bool _isPerspective = defaultIsPerspective;
+  static double _farClip = kDefaultFarClip;
 
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
   static double get bodyOpacity => _bodyOpacity;
   static ViewportRenderMode get renderMode => _renderMode;
+  static bool get isPerspective => _isPerspective;
+  static double get farClip => _farClip;
 
   /// Populates the in-memory cache from `shared_preferences`, falling back to
   /// the defaults above for any key never [save]d. [renderModePrefKey] is
@@ -52,6 +66,8 @@ class ViewPreferences {
       (mode) => mode.name == storedRenderMode,
       orElse: () => defaultRenderMode,
     );
+    _isPerspective = prefs.getBool(perspectivePrefKey) ?? defaultIsPerspective;
+    _farClip = prefs.getDouble(farClipPrefKey) ?? kDefaultFarClip;
   }
 
   static Future<void> setBgColourHex(String hex) async {
@@ -76,6 +92,18 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(renderModePrefKey, mode.name);
     _renderMode = mode;
+  }
+
+  static Future<void> setIsPerspective(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(perspectivePrefKey, value);
+    _isPerspective = value;
+  }
+
+  static Future<void> setFarClip(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(farClipPrefKey, value);
+    _farClip = value;
   }
 }
 

@@ -1,8 +1,18 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 
+import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
 import 'view_prefs_sheets.dart';
 import 'view_preferences.dart';
+
+// A3: logarithmic mapping for the far-clip slider so the range 500–50000 mm
+// feels linear in perceived depth. Exposed at library level for unit tests.
+double sliderToClip(double t) =>
+    exp(lerpDouble(log(500), log(50000), t)!).roundToDouble();
+double clipToSlider(double farClip) =>
+    (log(farClip) - log(500)) / (log(50000) - log(500));
 
 /// [PartScreen]'s contextual toolbar - styled and animated to match
 /// [SketchRibbon]'s slide-in-from-the-left panel (same [Material] card with
@@ -51,6 +61,14 @@ class PartToolbar extends StatelessWidget {
   final void Function(String hex)? onBodyColourChanged;
   final void Function(double opacity)? onBodyOpacityChanged;
 
+  // A4: perspective toggle (off = orthographic default per A4 brief).
+  final bool isPerspective;
+  final void Function(bool isPerspective)? onPerspectiveChanged;
+
+  // A3: far clip override slider (500–50000 mm, logarithmic).
+  final double farClip;
+  final void Function(double farClip)? onFarClipChanged;
+
   const PartToolbar({
     super.key,
     required this.visible,
@@ -65,6 +83,10 @@ class PartToolbar extends StatelessWidget {
     this.onBgColourChanged,
     this.onBodyColourChanged,
     this.onBodyOpacityChanged,
+    this.isPerspective = ViewPreferences.defaultIsPerspective,
+    this.onPerspectiveChanged,
+    this.farClip = kDefaultFarClip,
+    this.onFarClipChanged,
   });
 
   @override
@@ -148,6 +170,34 @@ class PartToolbar extends StatelessWidget {
       leading: const Icon(Icons.visibility_outlined),
       title: const Text('View'),
       children: [
+        // A4: Perspective toggle (first View entry, off = orthographic default).
+        ListTile(
+          leading: Icon(isPerspective ? Icons.check_box : Icons.check_box_outline_blank),
+          title: const Text('Perspective'),
+          onTap: onPerspectiveChanged == null
+              ? null
+              : () => onPerspectiveChanged!(!isPerspective),
+        ),
+        // A3: Far clip slider (logarithmic 500–50000 mm).
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Far clip: ${farClip.round()} mm',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              Slider(
+                value: clipToSlider(farClip).clamp(0.0, 1.0),
+                onChanged: onFarClipChanged == null
+                    ? null
+                    : (t) => onFarClipChanged!(sliderToClip(t)),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
         ListTile(
           leading: Icon(
             referencePlanesHidden ? Icons.grid_on_outlined : Icons.grid_off_outlined,
