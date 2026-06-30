@@ -94,6 +94,30 @@ def test_sketch_with_only_construction_entities_has_no_profile():
     assert result.status == ProfileStatus.NO_LOOP
 
 
+def test_construction_diagonals_alongside_a_closed_loop_still_detect_the_loop():
+    """Prompt B item B2: a rectangle's 2 construction corner-to-corner
+    diagonals coexist with its 4 regular sides - the diagonals must stay
+    invisible to profile detection while the regular loop they cross is
+    still found, same as the rectangle tool's own output."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(10.0, 10.0)
+    d = sketch.add_point(0.0, 10.0)
+    side1 = sketch.add_line(a.id, b.id)
+    side2 = sketch.add_line(b.id, c.id)
+    side3 = sketch.add_line(c.id, d.id)
+    side4 = sketch.add_line(d.id, a.id)
+    sketch.add_line(a.id, c.id, construction=True)
+    sketch.add_line(b.id, d.id, construction=True)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.CLOSED_LOOP
+    assert result.profile is not None
+    assert set(result.profile.line_ids) == {side1.id, side2.id, side3.id, side4.id}
+
+
 # --- Stage 13: PATCH constraint value -----------------------------------
 
 

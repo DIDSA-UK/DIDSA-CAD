@@ -1,10 +1,27 @@
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart' show Offset, Rect;
+import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
 import '../api/sketch_api_client.dart';
 import 'view_transform.dart';
+
+/// Returns [candidate] unchanged if it is within [canvasSize] bounds.
+/// If [candidate] has escaped bounds in any direction, returns the canvas
+/// centre. Does NOT clamp to edge - escaped means snap to centre, per
+/// Prompt B item B0: edge-clamping makes the cursor visibly "stick" at the
+/// boundary during a fast pan, which feels broken, while snapping to centre
+/// makes the escape obvious and immediately recoverable. A point exactly on
+/// the boundary (dx == 0, dx == canvasSize.width, ...) counts as in-bounds.
+Offset clampCursorToCanvas(Offset candidate, Size canvasSize) {
+  if (candidate.dx < 0 ||
+      candidate.dx > canvasSize.width ||
+      candidate.dy < 0 ||
+      candidate.dy > canvasSize.height) {
+    return Offset(canvasSize.width / 2, canvasSize.height / 2);
+  }
+  return candidate;
+}
 
 class SketchPointView {
   final String id;
@@ -330,6 +347,14 @@ class SketchController extends ChangeNotifier {
   /// dimension-ghost confirm flow consults it (via [_findDistanceConstraint])
   /// to decide whether to PATCH an existing value or POST a new Constraint.
   final Map<String, ConstraintDto> constraints = {};
+
+  /// Prompt B item B4: the id of the Point most recently auto-linked to an
+  /// existing Point by a [CoincidentConstraint] (see [_clickPointTool]), or
+  /// null - a brief, one-shot indicator the canvas highlights, cleared by
+  /// the next [handleCanvasTap] (the next user action after the one that
+  /// set it).
+  String? _autoCoincidentIndicatorPointId;
+  String? get autoCoincidentIndicatorPointId => _autoCoincidentIndicatorPointId;
 
   double cursorX = 0;
   double cursorY = 0;
@@ -1212,6 +1237,10 @@ class SketchController extends ChangeNotifier {
   Future<void> handleCanvasTap(double sketchX, double sketchY, [double? hitRadius]) async {
     cursorX = sketchX;
     cursorY = sketchY;
+    // Prompt B item B4: dismiss the previous tap's auto-coincident
+    // indicator (if any) - _clickPointTool below may set a fresh one for
+    // *this* tap's own result.
+    _autoCoincidentIndicatorPointId = null;
     final radius = hitRadius ?? snapRadius;
     switch (_mode) {
       case SketchMode.select:
@@ -1624,6 +1653,7 @@ class SketchController extends ChangeNotifier {
         mapped(dto.pointAId),
         mapped(dto.pointBId),
         dto.distance,
+        orientation: dto.orientation,
       );
     }
   }
@@ -2314,6 +2344,14 @@ class SketchController extends ChangeNotifier {
     final pointAId = target.pointAId!;
     final pointBId = target.pointBId!;
     final distanceValue = target.kind == GhostKind.diameter ? value / 2 : value;
+    // Prompt B item B3: a horizontal/vertical dimension must keep its H/V
+    // nature after solve, not degrade into a plain linear distance - see
+    // SketchApiClient.createDistanceConstraint's doc comment.
+    final orientation = switch (target.kind) {
+      GhostKind.horizontal => 'horizontal',
+      GhostKind.vertical => 'vertical',
+      _ => 'linear',
+    };
 
     await _runGuarded(() async {
       final existing = _findDistanceConstraint(pointAId, pointBId);
@@ -2322,8 +2360,13 @@ class SketchController extends ChangeNotifier {
         await _api.updateConstraintValue(_sketchId!, existing.id, distanceValue);
         _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
       } else {
-        final constraint =
-            await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, distanceValue);
+        final constraint = await _api.createDistanceConstraint(
+          _sketchId!,
+          pointAId,
+          pointBId,
+          distanceValue,
+          orientation: orientation,
+        );
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         await _solveAndTrackDof();
       }
@@ -2471,17 +2514,42 @@ class SketchController extends ChangeNotifier {
   /// across separate touches - this only ever adds a delta. Trackpad-style:
   /// a tap always commits at wherever this cursor currently sits (see
   /// [SketchController.handleCanvasTap]), not at the tap's own location.
-  void moveCursorRelative(double dxPixels, double dyPixels, double zoom) {
+  void moveCursorRelative(double dxPixels, double dyPixels, double zoom,
+      {Size? canvasSize, ViewTransform? transform}) {
     final scale = touchSensitivity / zoom;
     cursorX += dxPixels * scale;
     cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
+    if (canvasSize != null && transform != null) {
+      clampCursorToBounds(canvasSize, transform);
+    }
     notifyListeners();
   }
 
   /// Mouse input: absolute, 1:1 with device position - drives the crosshair
   /// preview ahead of a click.
-  void moveCursorAbsoluteScreen(Offset screenPosition, ViewTransform transform) {
+  void moveCursorAbsoluteScreen(Offset screenPosition, ViewTransform transform, {Size? canvasSize}) {
     final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
+    cursorX = coord.x;
+    cursorY = coord.y;
+    if (canvasSize != null) {
+      clampCursorToBounds(canvasSize, transform);
+    }
+    notifyListeners();
+  }
+
+  /// Re-centres the cursor (in sketch-space) if its current on-screen
+  /// position - under [transform] - has escaped [canvasSize], per
+  /// [clampCursorToCanvas]. Called both from [moveCursorRelative]/
+  /// [moveCursorAbsoluteScreen] above (after every delta/absolute cursor
+  /// update) and directly by the canvas after any pan/zoom that shifts the
+  /// canvas origin without itself moving the cursor's sketch-space
+  /// coordinates (Prompt B item B0) - a panned-away cursor is exactly the
+  /// "drift outside the visible canvas" case the item describes.
+  void clampCursorToBounds(Size canvasSize, ViewTransform transform) {
+    final screen = transform.sketchToScreen(cursorX, cursorY);
+    final clamped = clampCursorToCanvas(screen, canvasSize);
+    if (clamped == screen) return;
+    final coord = transform.screenToSketch(clamped.dx, clamped.dy);
     cursorX = coord.x;
     cursorY = coord.y;
     notifyListeners();
@@ -2532,19 +2600,48 @@ class SketchController extends ChangeNotifier {
   }
 
   /// [SketchTool.point]: a single, self-terminating tap that places one
-  /// Point - reuses [_pointIdAtCursor] so it shares the same snap-to-existing-
-  /// Point/snap-to-midpoint behaviour every other placement path gets, even
-  /// though here that mostly means "do nothing new" (snapping onto an
-  /// already-existing Point creates nothing).
+  /// Point. Still snaps onto a nearby Line's midpoint via
+  /// [_materializeMidpoint] (same as every other placement path, through
+  /// [_nearestLineMidpointId]) - but unlike [_pointIdAt]'s generic
+  /// existing-Point reuse (appropriate for a Line/Circle/Rectangle's
+  /// endpoint, which genuinely *is* the same geometry as whatever it
+  /// shares), a standalone Point landing within [snapRadius] of an
+  /// already-existing Point is deliberately kept distinct and linked by an
+  /// auto-created [CoincidentConstraint] instead of being merged into the
+  /// same Point id (Prompt B item B4) - this Point tool's whole purpose is
+  /// placing an independently-addressable (and later independently
+  /// draggable, re-constrainable) Point, so silently collapsing it into
+  /// whatever it happens to land on would defeat that. If multiple
+  /// existing Points are within range, the nearest one wins (see
+  /// [_existingPointIdNear]).
   Future<void> _clickPointTool() async {
     _selectionSet.clear();
     _ribbonVisible = false;
     await _runGuarded(() async {
-      await _pointIdAtCursor();
-      // A midpoint-snapped placement (see _materializeMidpoint) adds two new
-      // DistanceConstraints, which a plain new Point never did before - solve
-      // and refresh unconditionally, same as every other entity-placement
-      // tool, so a midpoint Point's constraints are reflected immediately.
+      final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, snapRadius);
+      String pointId;
+      if (midpointLineId != null) {
+        pointId = await _materializeMidpoint(midpointLineId);
+      } else {
+        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        _pushUndo(() async {
+          await _api.deletePoint(_sketchId!, point.id);
+          points.remove(point.id);
+        });
+        pointId = point.id;
+
+        final existingId = _existingPointIdNear(cursorX, cursorY, excludeId: pointId);
+        if (existingId != null) {
+          final constraint = await _api.createCoincidentConstraint(_sketchId!, pointId, existingId);
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+          _autoCoincidentIndicatorPointId = pointId;
+        }
+      }
+      // A midpoint-snapped or auto-coincident placement adds a new
+      // Constraint, which a plain new Point never did before - solve and
+      // refresh unconditionally, same as every other entity-placement
+      // tool, so it's reflected immediately.
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -2804,15 +2901,33 @@ class SketchController extends ChangeNotifier {
   /// Stage 15 item 6: creates the 4 shared corner Points (snapping/reusing
   /// per [_pointIdAt], same as every other entity placement) and the 4
   /// connecting Lines for a Rectangle, going around in order (so each
-  /// consecutive pair of corners shares an edge), then auto-applies 3
-  /// [SketchApiClient.createPerpendicularConstraint] calls between
-  /// consecutive edges and solves once. [corner0Id]/[corner1Id] let a
-  /// caller pass in a Point already placed by an earlier tap (so it isn't
-  /// re-created/re-snapped) - null means "create/snap fresh at this
-  /// coordinate". A quadrilateral's interior angles sum to 360 degrees, so
-  /// constraining 3 of its 4 corners to 90 degrees forces the last corner
-  /// to 90 degrees too - no fourth/redundant perpendicular constraint
-  /// needed.
+  /// consecutive pair of corners shares an edge), then solves once.
+  /// [corner0Id]/[corner1Id] let a caller pass in a Point already placed by
+  /// an earlier tap (so it isn't re-created/re-snapped) - null means
+  /// "create/snap fresh at this coordinate".
+  ///
+  /// [axisAligned] (Prompt B item B1) selects how the 4 sides are
+  /// constrained: true (the default, used by the two-corner and
+  /// centre-corner methods, whose corners are always axis-aligned by
+  /// construction - corner0/corner1 share a Y, corner1/corner2 share an X,
+  /// and so on around the loop) applies Horizontal to line1/line3 and
+  /// Vertical to line2/line4 directly, which pins orientation more directly
+  /// than 3 Perpendicular constraints (the old approach) and degrades
+  /// better as the rectangle is resized. false (the 3-point method, whose
+  /// rectangle can sit at an arbitrary angle) keeps the original 3
+  /// Perpendicular constraints between consecutive edges - a quadrilateral's
+  /// interior angles sum to 360 degrees, so constraining 3 of its 4 corners
+  /// to 90 degrees forces the last corner to 90 degrees too, no fourth/
+  /// redundant constraint needed.
+  ///
+  /// [axisAligned] also gates Prompt B item B2's construction geometry: two
+  /// corner-to-corner construction diagonals (never part of any profile -
+  /// see profile.py's construction filter) plus a real, non-construction
+  /// center Point pinned to both diagonals' midpoints via
+  /// [SketchApiClient.createAtMidpointConstraint] - so the center tracks
+  /// correctly as the rectangle scales, and stays referenceable for future
+  /// constraints. Skipped for the 3-point method: an arbitrary-angle
+  /// rectangle has no axis-aligned "center" concept this item is scoped to.
   Future<void> _buildRectangle({
     String? corner0Id,
     String? corner1Id,
@@ -2820,6 +2935,7 @@ class SketchController extends ChangeNotifier {
     required (double, double) corner1,
     required (double, double) corner2,
     required (double, double) corner3,
+    bool axisAligned = true,
   }) async {
     final p0 = corner0Id ?? await _pointIdAt(corner0.$1, corner0.$2);
     final p1 = corner1Id ?? await _pointIdAt(corner1.$1, corner1.$2);
@@ -2871,12 +2987,60 @@ class SketchController extends ChangeNotifier {
       lines.remove(line4.id);
     });
 
-    final perp1 = await _api.createPerpendicularConstraint(_sketchId!, line1.id, line2.id);
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp1.id));
-    final perp2 = await _api.createPerpendicularConstraint(_sketchId!, line2.id, line3.id);
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp2.id));
-    final perp3 = await _api.createPerpendicularConstraint(_sketchId!, line3.id, line4.id);
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp3.id));
+    if (axisAligned) {
+      final horiz1 = await _api.createHorizontalConstraint(_sketchId!, line1.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, horiz1.id));
+      final vert1 = await _api.createVerticalConstraint(_sketchId!, line2.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, vert1.id));
+      final horiz2 = await _api.createHorizontalConstraint(_sketchId!, line3.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, horiz2.id));
+      final vert2 = await _api.createVerticalConstraint(_sketchId!, line4.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, vert2.id));
+
+      final diagonal1 = await _api.createLine(_sketchId!, p0, p2, construction: true);
+      lines[diagonal1.id] = SketchLineView(
+        id: diagonal1.id,
+        startPointId: diagonal1.startPointId,
+        endPointId: diagonal1.endPointId,
+        construction: diagonal1.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteLine(_sketchId!, diagonal1.id);
+        lines.remove(diagonal1.id);
+      });
+      final diagonal2 = await _api.createLine(_sketchId!, p1, p3, construction: true);
+      lines[diagonal2.id] = SketchLineView(
+        id: diagonal2.id,
+        startPointId: diagonal2.startPointId,
+        endPointId: diagonal2.endPointId,
+        construction: diagonal2.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteLine(_sketchId!, diagonal2.id);
+        lines.remove(diagonal2.id);
+      });
+
+      final centerX = (corner0.$1 + corner1.$1 + corner2.$1 + corner3.$1) / 4;
+      final centerY = (corner0.$2 + corner1.$2 + corner2.$2 + corner3.$2) / 4;
+      final centerPoint = await _api.createPoint(_sketchId!, centerX, centerY);
+      points[centerPoint.id] = SketchPointView(id: centerPoint.id, x: centerPoint.x, y: centerPoint.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, centerPoint.id);
+        points.remove(centerPoint.id);
+      });
+
+      final mid1 = await _api.createAtMidpointConstraint(_sketchId!, centerPoint.id, diagonal1.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, mid1.id));
+      final mid2 = await _api.createAtMidpointConstraint(_sketchId!, centerPoint.id, diagonal2.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, mid2.id));
+    } else {
+      final perp1 = await _api.createPerpendicularConstraint(_sketchId!, line1.id, line2.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp1.id));
+      final perp2 = await _api.createPerpendicularConstraint(_sketchId!, line2.id, line3.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp2.id));
+      final perp3 = await _api.createPerpendicularConstraint(_sketchId!, line3.id, line4.id);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp3.id));
+    }
 
     await _solveAndTrackDof();
     await _refreshAllPoints();
@@ -3024,6 +3188,7 @@ class SketchController extends ChangeNotifier {
         corner1: (bx, by),
         corner2: (bx + height * nx, by + height * ny),
         corner3: (ax + height * nx, ay + height * ny),
+        axisAligned: false,
       );
     });
   }

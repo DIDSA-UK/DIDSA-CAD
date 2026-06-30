@@ -145,6 +145,11 @@ class DistanceConstraintCreate(BaseModel):
     point_a_id: str
     point_b_id: str
     distance: float
+    # "linear" (default) is plain Euclidean distance; "horizontal"/"vertical"
+    # pin only the X/Y separation, leaving the other axis free. Optional
+    # with a default so pre-Prompt-B clients/tests that never send this
+    # field keep working unmodified.
+    orientation: Literal["linear", "horizontal", "vertical"] = "linear"
 
 
 class VerticalConstraintCreate(BaseModel):
@@ -236,6 +241,7 @@ class DistanceConstraintResponse(BaseModel):
     point_a_id: str
     point_b_id: str
     distance: float
+    orientation: Literal["linear", "horizontal", "vertical"] = "linear"
 
 
 class VerticalConstraintResponse(BaseModel):

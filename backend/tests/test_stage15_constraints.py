@@ -344,6 +344,40 @@ def test_at_midpoint_constraint_tracks_midpoint_as_line_length_changes():
     )
 
 
+def test_point_pinned_to_midpoint_of_two_lines_lands_at_their_shared_center():
+    """Prompt B item B2: a rectangle's center Point is pinned to the
+    midpoint of both diagonals via two AtMidpoint constraints on the same
+    Point - both must hold simultaneously after solve. a/b/c/d are
+    themselves unconstrained free Points (same rationale as
+    test_point_line_distance_constraint_pins_point_onto_line_after_solve),
+    so the solver is free to move the whole rectangle too - assert the
+    relative invariant (center matches *both* diagonals' actual solved
+    midpoints) rather than fixed absolute coordinates."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(10.0, 6.0)
+    d = sketch.add_point(0.0, 6.0)
+    diagonal1 = sketch.add_line(a.id, c.id, construction=True)
+    diagonal2 = sketch.add_line(b.id, d.id, construction=True)
+    center = sketch.add_point(1.0, 1.0)  # off-center initial guess
+    sketch.add_at_midpoint_constraint(center.id, diagonal1.id)
+    sketch.add_at_midpoint_constraint(center.id, diagonal2.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    ax, ay = sketch.points[a.id].x, sketch.points[a.id].y
+    bx, by = sketch.points[b.id].x, sketch.points[b.id].y
+    cx, cy = sketch.points[c.id].x, sketch.points[c.id].y
+    dx, dy = sketch.points[d.id].x, sketch.points[d.id].y
+    centerx, centery = sketch.points[center.id].x, sketch.points[center.id].y
+    assert centerx == pytest.approx((ax + cx) / 2, abs=1e-6)
+    assert centery == pytest.approx((ay + cy) / 2, abs=1e-6)
+    assert centerx == pytest.approx((bx + dx) / 2, abs=1e-6)
+    assert centery == pytest.approx((by + dy) / 2, abs=1e-6)
+
+
 def test_line_distance_constraint_moves_lines_apart_without_creating_points():
     """Stage 16 item 9: a line-to-line distance dimension must move the
     Lines themselves (via py-slvs's point-line-distance primitive) rather
@@ -681,3 +715,155 @@ def test_coincident_constraint_solves_correctly_over_the_api():
     solved_b = client.get(f"/sketch/sketches/{sketch['id']}/points/{b['id']}").json()
     assert solved_a["x"] == pytest.approx(solved_b["x"])
     assert solved_a["y"] == pytest.approx(solved_b["y"])
+
+
+# --- Prompt B item B3: DistanceConstraint orientation --------------------
+
+
+def test_add_distance_constraint_defaults_to_linear_orientation():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(3.0, 4.0)
+
+    constraint = sketch.add_distance_constraint(a.id, b.id, 5.0)
+
+    assert constraint.orientation == "linear"
+
+
+def test_horizontal_distance_constraint_pins_only_x_separation_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(3.0, 4.0)
+    sketch.add_distance_constraint(a.id, b.id, 10.0, "horizontal")
+    # Pin `a` in place (coincident, not a zero-distance constraint - py-slvs's
+    # point-distance equation is singular at distance 0) so the solver has a
+    # unique answer to check against.
+    sketch.add_coincident_constraint(a.id, sketch.origin_point().id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    ax, ay = sketch.points[a.id].x, sketch.points[a.id].y
+    bx, by = sketch.points[b.id].x, sketch.points[b.id].y
+    assert abs(ax - bx) == pytest.approx(10.0, abs=1e-6)
+    assert by == pytest.approx(4.0, abs=1e-6)  # y separation left unconstrained
+
+
+def test_vertical_distance_constraint_pins_only_y_separation_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(3.0, 4.0)
+    sketch.add_distance_constraint(a.id, b.id, 10.0, "vertical")
+    sketch.add_coincident_constraint(a.id, sketch.origin_point().id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    ax, ay = sketch.points[a.id].x, sketch.points[a.id].y
+    bx, by = sketch.points[b.id].x, sketch.points[b.id].y
+    assert abs(ay - by) == pytest.approx(10.0, abs=1e-6)
+    assert bx == pytest.approx(3.0, abs=1e-6)  # x separation left unconstrained
+
+
+def test_create_horizontal_orientation_distance_constraint_over_the_api():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 3.0, 4.0)
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={
+            "point_a_id": a["id"],
+            "point_b_id": b["id"],
+            "distance": 10.0,
+            "orientation": "horizontal",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["orientation"] == "horizontal"
+
+
+def test_update_constraint_value_preserves_horizontal_orientation():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 3.0, 4.0)
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={
+            "point_a_id": a["id"],
+            "point_b_id": b["id"],
+            "distance": 10.0,
+            "orientation": "horizontal",
+        },
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}",
+        json={"value": 25.0},
+    )
+
+    assert response.status_code == 200
+    constraints = client.get(f"/sketch/sketches/{sketch['id']}/constraints").json()
+    updated = next(c for c in constraints if c["id"] == constraint["id"])
+    assert updated["orientation"] == "horizontal"
+    assert updated["distance"] == 25.0
+
+
+# --- Prompt B item B5: solve response DOF ---------------------------------
+
+
+def test_a_fully_constrained_sketch_reports_zero_dof():
+    """One Point pinned to the (fixed) origin, the other fully pinned
+    relative to it by a Vertical constraint (equal X) plus a plain
+    DistanceConstraint (fixes the remaining Y up to sign) - 2 independent
+    equations for the second Point's 2 unknowns, 0 degrees of freedom."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(0.0, 5.0)
+    line = sketch.add_line(a.id, b.id)
+    sketch.add_coincident_constraint(a.id, sketch.origin_point().id)
+    sketch.add_vertical_constraint(line.id)
+    sketch.add_distance_constraint(a.id, b.id, 5.0)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.dof == 0
+
+
+def test_an_under_constrained_sketch_reports_nonzero_dof():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    sketch.add_distance_constraint(a.id, b.id, 10.0)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.dof > 0
+
+
+def test_a_fully_constrained_sketch_reports_zero_dof_over_the_api():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 0.0, 5.0)
+    line = _create_line(sketch["id"], a["id"], b["id"])
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "coincident", "point_a_id": a["id"], "point_b_id": sketch["origin_point_id"]},
+    )
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "vertical", "line_id": line["id"]},
+    )
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 5.0},
+    )
+
+    response = client.post(f"/sketch/sketches/{sketch['id']}/solve")
+
+    assert response.status_code == 200
+    assert response.json()["dof"] == 0
