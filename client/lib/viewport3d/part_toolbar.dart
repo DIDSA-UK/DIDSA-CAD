@@ -10,7 +10,7 @@ import 'view_preferences.dart';
 // A3: logarithmic mapping for the far-clip slider so the range 500–50000 mm
 // feels linear in perceived depth. Exposed at library level for unit tests.
 double sliderToClip(double t) =>
-    exp(lerpDouble(log(500), log(50000), t)!).roundToDouble();
+    exp(log(500) + (log(50000) - log(500)) * t).roundToDouble();
 double clipToSlider(double farClip) =>
     (log(farClip) - log(500)) / (log(50000) - log(500));
 
