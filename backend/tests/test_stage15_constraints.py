@@ -378,6 +378,81 @@ def test_point_pinned_to_midpoint_of_two_lines_lands_at_their_shared_center():
     assert centery == pytest.approx((by + dy) / 2, abs=1e-6)
 
 
+def test_two_at_midpoint_constraints_on_the_same_point_is_singular_once_hv_ties_diagonals_together():
+    """Bug-fix round 2 regression test - a real, on-device bug: once
+    Horizontal/Vertical constraints already force a quadrilateral into a
+    rectangle, its two diagonals are *guaranteed* to share the same
+    midpoint - so pinning one Point to *both* diagonals' midpoints via two
+    AtMidpoint constraints is not merely redundant, it makes the whole
+    system singular. py-slvs fails to converge (non-zero result_code) but
+    still reports `dof == 0` in that failure state, which - trusted
+    blindly - made a genuinely under-constrained rectangle (nothing pins
+    its width/height/position) render as "fully constrained". This is
+    exactly why the rectangle tool (`SketchController._buildRectangle`)
+    now only ever creates *one* AtMidpoint constraint per center Point, not
+    two - see that method's doc comment."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    p0 = sketch.add_point(0.0, 0.0)
+    p1 = sketch.add_point(10.0, 0.0)
+    p2 = sketch.add_point(10.0, 20.0)
+    p3 = sketch.add_point(0.0, 20.0)
+    line1 = sketch.add_line(p0.id, p1.id)
+    line2 = sketch.add_line(p1.id, p2.id)
+    line3 = sketch.add_line(p2.id, p3.id)
+    line4 = sketch.add_line(p3.id, p0.id)
+    sketch.add_horizontal_constraint(line1.id)
+    sketch.add_vertical_constraint(line2.id)
+    sketch.add_horizontal_constraint(line3.id)
+    sketch.add_vertical_constraint(line4.id)
+    diagonal1 = sketch.add_line(p0.id, p2.id, construction=True)
+    diagonal2 = sketch.add_line(p1.id, p3.id, construction=True)
+    center = sketch.add_point(5.0, 10.0)
+    sketch.add_at_midpoint_constraint(center.id, diagonal1.id)
+    sketch.add_at_midpoint_constraint(center.id, diagonal2.id)
+
+    result = solve_sketch(sketch)
+
+    assert not result.converged
+    assert result.result_code != 0
+
+
+def test_one_at_midpoint_constraint_is_enough_for_an_hv_constrained_rectangles_centre():
+    """The fix for the regression above: a single AtMidpoint constraint
+    (on just one diagonal) is sufficient - the other diagonal's Points
+    still land at the same midpoint automatically, since the H/V
+    constraints alone already force that - and the whole system converges
+    with the correct, nonzero degrees of freedom (translation X/Y, width,
+    height - nothing pins the rectangle's size or position in this test)."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    p0 = sketch.add_point(0.0, 0.0)
+    p1 = sketch.add_point(10.0, 0.0)
+    p2 = sketch.add_point(10.0, 20.0)
+    p3 = sketch.add_point(0.0, 20.0)
+    line1 = sketch.add_line(p0.id, p1.id)
+    line2 = sketch.add_line(p1.id, p2.id)
+    line3 = sketch.add_line(p2.id, p3.id)
+    line4 = sketch.add_line(p3.id, p0.id)
+    sketch.add_horizontal_constraint(line1.id)
+    sketch.add_vertical_constraint(line2.id)
+    sketch.add_horizontal_constraint(line3.id)
+    sketch.add_vertical_constraint(line4.id)
+    diagonal1 = sketch.add_line(p0.id, p2.id, construction=True)
+    sketch.add_line(p1.id, p3.id, construction=True)  # diagonal2 - no constraint on it
+    center = sketch.add_point(5.0, 10.0)
+    sketch.add_at_midpoint_constraint(center.id, diagonal1.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.dof == 4
+    assert sketch.points[center.id].x == pytest.approx(
+        (sketch.points[p0.id].x + sketch.points[p2.id].x) / 2, abs=1e-6
+    )
+    assert sketch.points[center.id].y == pytest.approx(
+        (sketch.points[p0.id].y + sketch.points[p2.id].y) / 2, abs=1e-6
+    )
+
+
 def test_line_distance_constraint_moves_lines_apart_without_creating_points():
     """Stage 16 item 9: a line-to-line distance dimension must move the
     Lines themselves (via py-slvs's point-line-distance primitive) rather
