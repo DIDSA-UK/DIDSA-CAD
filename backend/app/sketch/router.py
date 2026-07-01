@@ -150,6 +150,7 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             point_a_id=constraint.point_a_id,
             point_b_id=constraint.point_b_id,
             distance=constraint.distance,
+            orientation=constraint.orientation,
         )
     if isinstance(constraint, VerticalConstraint):
         return VerticalConstraintResponse(
@@ -417,7 +418,7 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
     try:
         if isinstance(payload, DistanceConstraintCreate):
             constraint = sketch.add_distance_constraint(
-                payload.point_a_id, payload.point_b_id, payload.distance
+                payload.point_a_id, payload.point_b_id, payload.distance, payload.orientation
             )
         elif isinstance(payload, VerticalConstraintCreate):
             constraint = sketch.add_vertical_constraint(payload.line_id)

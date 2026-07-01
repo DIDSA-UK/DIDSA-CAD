@@ -364,12 +364,12 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     return 0;
   }
 
-  void _handlePointerHover(PointerHoverEvent event, ViewTransform transform) {
+  void _handlePointerHover(PointerHoverEvent event, ViewTransform transform, Size size) {
     // Hover events only fire for a mouse with no buttons pressed - real
     // mouse movement drives the cursor directly, 1:1.
     if (event.kind != PointerDeviceKind.mouse) return;
     _refreshCursorMoveTimeIfMoved(event.localPosition);
-    widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+    widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform, canvasSize: size);
   }
 
   /// Trackpad-style dispatch point for "what does a click do right now":
@@ -439,7 +439,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     return true;
   }
 
-  void _handlePointerDown(PointerDownEvent event, ViewTransform transform) {
+  void _handlePointerDown(PointerDownEvent event, ViewTransform transform, Size size) {
     // Stage 23g: the marquee gesture only ever tracks one pointer - a
     // second finger touching down mid-drag is ignored outright rather than
     // feeding into the pinch/pan handling below, which would otherwise
@@ -454,7 +454,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // and only matters if the button is pressed without a preceding
       // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
-        widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+        widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform, canvasSize: size);
         if (_tryStartEntityDrag(transform)) return;
         _maybeStartLongPress(event.localPosition, transform);
         _dispatchTap(transform);
@@ -508,7 +508,8 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         // screenToSketch of event.localPosition would) applies a far larger,
         // inconsistent scale, which is what made the Point race away from
         // the finger instead of tracking it 1:1 with the cursor.
-        controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
+        controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom,
+            canvasSize: size, transform: transform);
         controller.updatePointDrag(controller.cursorX, controller.cursorY);
       }
       return;
@@ -516,9 +517,14 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     if (event.kind == PointerDeviceKind.mouse) {
       if (event.buttons & kSecondaryMouseButton != 0) {
         setState(() => _viewport.panByScreenDelta(event.delta));
+        // The pan moves the canvas origin underneath the cursor's fixed
+        // sketch-space position without itself updating it - exactly the
+        // "drift outside the visible canvas" case Prompt B item B0
+        // describes, so clamp explicitly here.
+        widget.controller.clampCursorToBounds(size, _viewport.transformFor(size));
       } else {
         _refreshCursorMoveTimeIfMoved(event.localPosition);
-        widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+        widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform, canvasSize: size);
       }
       return;
     }
@@ -530,7 +536,8 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // never the tap's own screen location).
       _singleTouchTravel += event.delta.distance;
       _refreshCursorMoveTimeIfMoved(event.localPosition);
-      widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
+      widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom,
+          canvasSize: size, transform: transform);
       return;
     }
 
@@ -587,6 +594,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // tool conventions.
       final scaleFactor = event.scrollDelta.dy > 0 ? 0.9 : 1 / 0.9;
       setState(() => _viewport.zoomAtScreenPoint(event.localPosition, scaleFactor, size));
+      widget.controller.clampCursorToBounds(size, _viewport.transformFor(size));
     }
   }
 
@@ -605,6 +613,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         size: size,
       );
     });
+    widget.controller.clampCursorToBounds(size, _viewport.transformFor(size));
   }
 
   Offset _centroidOf(Iterable<Offset> points) {
@@ -634,8 +643,8 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         return Stack(
           children: [
             Listener(
-              onPointerDown: (e) => _handlePointerDown(e, transform),
-              onPointerHover: (e) => _handlePointerHover(e, transform),
+              onPointerDown: (e) => _handlePointerDown(e, transform, size),
+              onPointerHover: (e) => _handlePointerHover(e, transform, size),
               onPointerMove: (e) => _handlePointerMove(e, transform, size),
               onPointerUp: (e) => _handlePointerEnd(e, transform),
               onPointerCancel: (e) => _handlePointerEnd(e, transform),
@@ -735,9 +744,53 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                 builder: (context, _) => PlaneIndicator(plane: widget.controller.plane),
               ),
             ),
+            // Prompt B item B5: a simple sketch-wide "fully constrained"
+            // signal once the most recent solve reports dof == 0 - top-right
+            // so it doesn't collide with the zoom-to-fit button (top-left)
+            // or the plane indicator (bottom-left), and is never near the
+            // cursor crosshair painted in the canvas's own centre/working area.
+            Positioned(
+              top: 8,
+              right: 8,
+              child: AnimatedBuilder(
+                animation: widget.controller,
+                builder: (context, _) {
+                  if (widget.controller.isUnderConstrained) return const SizedBox.shrink();
+                  return const _FullyConstrainedBadge();
+                },
+              ),
+            ),
           ],
         );
       },
+    );
+  }
+}
+
+/// Prompt B item B5's fully-constrained indicator - a padlock badge shown
+/// only while [SketchController.isUnderConstrained] is false (the most
+/// recent solve reported dof == 0). Deliberately just an icon + label, no
+/// DOF count - per-entity constrained colouring and a numeric DOF readout
+/// are both deferred to a future stage.
+class _FullyConstrainedBadge extends StatelessWidget {
+  const _FullyConstrainedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black87,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.lock, size: 14, color: Colors.white),
+          SizedBox(width: 4),
+          Text('Fully constrained', style: TextStyle(color: Colors.white, fontSize: 11)),
+        ],
+      ),
     );
   }
 }
@@ -1605,6 +1658,31 @@ class _SketchPainter extends CustomPainter {
     );
   }
 
+  /// Prompt B item B4: a brief highlight at the just-placed Point once it's
+  /// been auto-linked to an existing Point by a CoincidentConstraint (see
+  /// [SketchController.autoCoincidentIndicatorPointId]) - same cyan ring
+  /// styling as [_paintSnapCandidateHighlight] (this sketcher's existing
+  /// snap-feedback visual), reused here as instructed rather than inventing
+  /// a new one. Cleared by the controller on the next tap.
+  void _paintAutoCoincidentIndicator(Canvas canvas) {
+    final pointId = controller.autoCoincidentIndicatorPointId;
+    if (pointId == null) return;
+    final point = controller.points[pointId];
+    if (point == null) return;
+    final screenPos = transform.sketchToScreen(point.x, point.y);
+    const plainPointRadius = 4.0;
+    const highlightRadius = plainPointRadius * 2;
+    canvas.drawCircle(screenPos, highlightRadius, Paint()..color = _snapCandidateColor.withValues(alpha: 0.35));
+    canvas.drawCircle(
+      screenPos,
+      highlightRadius + 4,
+      Paint()
+        ..color = _snapCandidateColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
   void _paintActiveDrawGhost(Canvas canvas) {
     final ghost = controller.activeDrawGhost;
     if (ghost == null) return;
@@ -1695,7 +1773,14 @@ class _SketchPainter extends CustomPainter {
                 ? _hoverColor
                 : line.construction
                     ? _constructionColor
-                    : Colors.blueGrey.shade700
+                    // Prompt B item B5: once the most recent solve reports
+                    // dof == 0, every line renders black (fully
+                    // constrained) instead of the usual grey - simplified,
+                    // sketch-wide signal for this stage; per-entity
+                    // constrained colouring is deferred.
+                    : controller.isUnderConstrained
+                        ? Colors.blueGrey.shade700
+                        : Colors.black
         ..strokeWidth = lineIsSelected || isHovered ? 3 : 2;
       final startScreen = transform.sketchToScreen(start.x, start.y);
       final endScreen = transform.sketchToScreen(end.x, end.y);
@@ -1795,6 +1880,7 @@ class _SketchPainter extends CustomPainter {
     _paintInProgressConstructionPicks(canvas);
     _paintMidpointSnapIndicator(canvas);
     _paintSnapCandidateHighlight(canvas);
+    _paintAutoCoincidentIndicator(canvas);
     _paintActiveDrawGhost(canvas);
 
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);

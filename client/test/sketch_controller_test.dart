@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -147,7 +148,7 @@ class _FakeBackend {
         'start_point_id': body['start_point_id'],
         'end_point_id': body['end_point_id'],
         'length': 1.0,
-        'construction': false,
+        'construction': body['construction'] as bool? ?? false,
       };
       lines[id] = line;
       return _json(line, 201);
@@ -266,12 +267,21 @@ class _FakeBackend {
             'distance': (body['distance'] as num).toDouble(),
           };
           break;
+        case 'at_midpoint':
+          constraint = {
+            'id': id,
+            'type': 'at_midpoint',
+            'point_id': body['point_id'],
+            'line_id': body['line_id'],
+          };
+          break;
         default:
           constraint = {
             'id': id,
             'point_a_id': body['point_a_id'],
             'point_b_id': body['point_b_id'],
             'distance': (body['distance'] as num).toDouble(),
+            'orientation': body['orientation'] as String? ?? 'linear',
           };
       }
       constraints[id] = constraint;
@@ -509,15 +519,44 @@ void main() {
     await controller.handleCanvasTap(10, 8);
 
     expect(controller.rectangleInProgress, isFalse);
-    expect(controller.lines.length, 4);
-    // 5: origin + the two tapped corners (2,2) and (10,8) + the two
-    // computed corners (10,2) and (2,8).
-    expect(controller.points.length, 5);
+    // 6: the 4 sides plus B2's 2 construction diagonals.
+    expect(controller.lines.length, 6);
+    expect(controller.lines.values.where((l) => l.construction).length, 2);
+    // 6: origin + the two tapped corners (2,2) and (10,8) + the two
+    // computed corners (10,2) and (2,8) + B2's new center Point.
+    expect(controller.points.length, 6);
     expect(
       controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
-      3,
+      0,
+    );
+    expect(
+      controller.constraints.values.whereType<HorizontalConstraintDto>().length,
+      2,
+    );
+    expect(
+      controller.constraints.values.whereType<VerticalConstraintDto>().length,
+      2,
+    );
+    expect(
+      controller.constraints.values.whereType<AtMidpointConstraintDto>().length,
+      2,
     );
     expect(controller.errorMessage, isNull);
+  });
+
+  test('a two-corner rectangle\'s new center Point starts at the average of its 4 corners', () async {
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+
+    await controller.handleCanvasTap(2, 2);
+    await controller.handleCanvasTap(10, 8);
+
+    // Corners are (2,2), (10,2), (10,8), (2,8) - average (6, 5). The center
+    // Point is created last (after the 4 corners and 2 diagonals), and
+    // `points` is insertion-ordered, so it's the final entry.
+    final centerPoint = controller.points.values.last;
+    expect(centerPoint.x, closeTo(6.0, 1e-9));
+    expect(centerPoint.y, closeTo(5.0, 1e-9));
   });
 
   test('Centre + Corner rectangle: first tap is a virtual centre, second tap mirrors it into 4 corners', () async {
@@ -534,17 +573,31 @@ void main() {
     await controller.handleCanvasTap(8, 8);
 
     expect(controller.rectangleInProgress, isFalse);
-    expect(controller.lines.length, 4);
-    // 5: origin + the tapped corner (8,8) + the 3 mirrored corners
-    // (2,8), (2,2), (8,2).
-    expect(controller.points.length, 5);
+    // 6: the 4 sides plus B2's 2 construction diagonals.
+    expect(controller.lines.length, 6);
+    expect(controller.lines.values.where((l) => l.construction).length, 2);
+    // 6: origin + the tapped corner (8,8) + the 3 mirrored corners
+    // (2,8), (2,2), (8,2) + B2's new center Point.
+    expect(controller.points.length, 6);
     final xs = controller.points.values.map((p) => p.x).toSet();
     final ys = controller.points.values.map((p) => p.y).toSet();
     expect(xs.containsAll([2, 8]), isTrue);
     expect(ys.containsAll([2, 8]), isTrue);
     expect(
       controller.constraints.values.whereType<PerpendicularConstraintDto>().length,
-      3,
+      0,
+    );
+    expect(
+      controller.constraints.values.whereType<HorizontalConstraintDto>().length,
+      2,
+    );
+    expect(
+      controller.constraints.values.whereType<VerticalConstraintDto>().length,
+      2,
+    );
+    expect(
+      controller.constraints.values.whereType<AtMidpointConstraintDto>().length,
+      2,
     );
     expect(controller.errorMessage, isNull);
   });
@@ -614,8 +667,9 @@ void main() {
     await controller.handleCanvasTap(10, 8);
 
     // The computed corner at (10, 2) should reuse the pre-placed Point
-    // rather than creating a 6th one.
-    expect(controller.points.length, 5);
+    // rather than creating a new one (6: origin + the reused Point + the
+    // two tapped corners + the other computed corner + B2's center Point).
+    expect(controller.points.length, 6);
     expect(controller.points.containsKey(preplacedId), isTrue);
     final reused = controller.points[preplacedId]!;
     expect(reused.x, 10);
@@ -623,7 +677,10 @@ void main() {
     final cornerLines = controller.lines.values
         .where((l) => l.startPointId == preplacedId || l.endPointId == preplacedId)
         .toList();
-    expect(cornerLines.length, 2);
+    // The reused corner's own 2 sides, plus the 1 construction diagonal
+    // (B2) that runs through it (the other diagonal connects the opposite
+    // corner pair).
+    expect(cornerLines.length, 3);
   });
 
   test('snapCandidatePointId is null outside draw mode and when nothing is nearby', () {
@@ -898,6 +955,66 @@ void main() {
     expect(atDoubleZoom, closeTo(atDefaultZoom / 2, 1e-9));
     // Zoomed out (zoom 0.5): same drag covers more sketch-space.
     expect(atHalfZoom, closeTo(atDefaultZoom * 2, 1e-9));
+  });
+
+  group('clampCursorToCanvas', () {
+    const canvasSize = Size(400, 300);
+
+    test('in-bounds input is returned unchanged', () {
+      const candidate = Offset(200, 150);
+      expect(clampCursorToCanvas(candidate, canvasSize), candidate);
+    });
+
+    test('escaping left (dx < 0) snaps to the canvas centre', () {
+      final result = clampCursorToCanvas(const Offset(-1, 150), canvasSize);
+      expect(result, const Offset(200, 150));
+    });
+
+    test('escaping right (dx > width) snaps to the canvas centre', () {
+      final result = clampCursorToCanvas(const Offset(401, 150), canvasSize);
+      expect(result, const Offset(200, 150));
+    });
+
+    test('escaping up (dy < 0) snaps to the canvas centre', () {
+      final result = clampCursorToCanvas(const Offset(200, -1), canvasSize);
+      expect(result, const Offset(200, 150));
+    });
+
+    test('escaping down (dy > height) snaps to the canvas centre', () {
+      final result = clampCursorToCanvas(const Offset(200, 301), canvasSize);
+      expect(result, const Offset(200, 150));
+    });
+
+    test('points exactly on the boundary count as in-bounds', () {
+      expect(clampCursorToCanvas(const Offset(0, 0), canvasSize), const Offset(0, 0));
+      expect(clampCursorToCanvas(const Offset(400, 0), canvasSize), const Offset(400, 0));
+      expect(clampCursorToCanvas(const Offset(0, 300), canvasSize), const Offset(0, 300));
+      expect(clampCursorToCanvas(const Offset(400, 300), canvasSize), const Offset(400, 300));
+    });
+  });
+
+  test('moveCursorRelative snaps the cursor back to canvas centre once it escapes on screen', () {
+    // originScreen at the canvas centre, 10px/unit - a cursor more than 20
+    // sketch-units off in X escapes a 400-wide canvas (200px either side).
+    const transform = ViewTransform(pixelsPerUnit: 10, originScreen: Offset(200, 150));
+    const canvasSize = Size(400, 300);
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+
+    controller.moveCursorRelative(5000, 0, 1, canvasSize: canvasSize, transform: transform);
+
+    final screen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
+    expect(screen.dx, closeTo(200, 1e-9));
+    expect(screen.dy, closeTo(150, 1e-9));
+  });
+
+  test('moveCursorRelative without canvasSize/transform never clamps (back-compat)', () {
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+
+    controller.moveCursorRelative(5000, 0, 1);
+
+    expect(controller.cursorX, greaterThan(1));
   });
 
   test('hitRadiusForPixelsPerUnit grows the hit radius for small/zoomed-out geometry', () {
@@ -1389,6 +1506,49 @@ void main() {
     expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
   });
 
+  test('confirming a vertical/horizontal/linear ghost creates a DistanceConstraint with the '
+      'matching orientation (Prompt B item B3)', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+
+    await controller.confirmGhostValue('v', 4.0);
+
+    final created = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(created.orientation, 'vertical');
+  });
+
+  test('confirming a horizontal ghost sends orientation "horizontal"', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+
+    await controller.confirmGhostValue('h', 3.0);
+
+    final created = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(created.orientation, 'horizontal');
+  });
+
+  test('confirming a linear ghost sends orientation "linear" (the default)', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+
+    await controller.confirmGhostValue('linear', 5.0);
+
+    final created = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(created.orientation, 'linear');
+  });
+
   test(
       'tapping a circle in dimension mode shows radius and diameter ghosts; '
       'confirming diameter halves the stored distance', () async {
@@ -1445,14 +1605,63 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  test('the point tool snaps onto an existing Point instead of creating a duplicate', () async {
+  test('Prompt B item B4: placing a point on top of an existing Point creates a distinct Point '
+      'auto-linked by a CoincidentConstraint, not a silent reuse', () async {
     controller.selectDrawTool(SketchTool.point);
     await controller.handleCanvasTap(3, 4);
+    final firstId = controller.points.values.last.id;
     expect(controller.points.length, 2);
 
     await controller.handleCanvasTap(3.1, 4.1); // within snapRadius of the point just placed
 
-    expect(controller.points.length, 2); // no new point created
+    // 3: origin + the first Point + a genuinely new, distinct second Point.
+    expect(controller.points.length, 3);
+    final secondId = controller.points.values.last.id;
+    expect(secondId, isNot(firstId));
+    final created = controller.constraints.values.whereType<CoincidentConstraintDto>().single;
+    expect({created.pointAId, created.pointBId}, {firstId, secondId});
+    expect(controller.autoCoincidentIndicatorPointId, secondId);
+  });
+
+  test('placing a point well outside the snap threshold of any existing Point creates no '
+      'CoincidentConstraint', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(3, 4);
+
+    await controller.handleCanvasTap(30, 40); // far outside snapRadius
+
+    expect(controller.points.length, 3);
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
+    expect(controller.autoCoincidentIndicatorPointId, isNull);
+  });
+
+  test('undo after an auto-coincident point placement removes the CoincidentConstraint, then '
+      'the Point, in two steps', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(3, 4);
+    await controller.handleCanvasTap(3.1, 4.1);
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>().length, 1);
+    final placedCount = controller.points.length;
+
+    await controller.undo();
+
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
+    expect(controller.points.length, placedCount); // the Point itself is still there
+
+    await controller.undo();
+
+    expect(controller.points.length, placedCount - 1); // now the Point is gone too
+  });
+
+  test('the auto-coincident indicator clears on the next canvas tap', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(3, 4);
+    await controller.handleCanvasTap(3.1, 4.1);
+    expect(controller.autoCoincidentIndicatorPointId, isNotNull);
+
+    await controller.handleCanvasTap(50, 50);
+
+    expect(controller.autoCoincidentIndicatorPointId, isNull);
   });
 
   // --- New work package item 5: line-midpoint snapping ----------------------

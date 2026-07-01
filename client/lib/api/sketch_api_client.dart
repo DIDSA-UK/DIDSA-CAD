@@ -140,11 +140,17 @@ class DistanceConstraintDto extends ConstraintDto {
   final String pointBId;
   final double distance;
 
+  /// "linear" (default), "horizontal", or "vertical" - see
+  /// [SketchApiClient.createDistanceConstraint]'s doc comment (Prompt B
+  /// item B3).
+  final String orientation;
+
   const DistanceConstraintDto({
     required super.id,
     required this.pointAId,
     required this.pointBId,
     required this.distance,
+    this.orientation = 'linear',
   });
 
   factory DistanceConstraintDto.fromJson(Map<String, dynamic> json) => DistanceConstraintDto(
@@ -152,6 +158,7 @@ class DistanceConstraintDto extends ConstraintDto {
         pointAId: json['point_a_id'] as String,
         pointBId: json['point_b_id'] as String,
         distance: (json['distance'] as num).toDouble(),
+        orientation: json['orientation'] as String? ?? 'linear',
       );
 }
 
@@ -659,12 +666,19 @@ class SketchApiClient {
   /// own endpoints) and a V/H distance ghost (two tapped Points) alike, since
   /// the backend has no separate "line length" constraint type (see
   /// Sketch.add_distance_constraint).
+  ///
+  /// [orientation] (Prompt B item B3) is "linear" (default - the plain
+  /// Euclidean distance), "horizontal", or "vertical" - the latter two pin
+  /// only the X or Y separation, leaving the other axis free, so a
+  /// horizontal/vertical dimension keeps its axis-locked nature after a
+  /// solve instead of degrading into a plain linear distance.
   Future<ConstraintDto> createDistanceConstraint(
     String sketchId,
     String pointAId,
     String pointBId,
-    double distance,
-  ) =>
+    double distance, {
+    String orientation = 'linear',
+  }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
@@ -673,6 +687,7 @@ class SketchApiClient {
                 'point_a_id': pointAId,
                 'point_b_id': pointBId,
                 'distance': distance,
+                'orientation': orientation,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

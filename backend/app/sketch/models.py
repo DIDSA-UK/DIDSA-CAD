@@ -3,6 +3,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
 
 from app.sketch.constraints import (
     AngleConstraint,
@@ -322,7 +323,11 @@ class Sketch:
         del self.points[point_id]
 
     def add_distance_constraint(
-        self, point_a_id: str, point_b_id: str, distance: float
+        self,
+        point_a_id: str,
+        point_b_id: str,
+        distance: float,
+        orientation: Literal["linear", "horizontal", "vertical"] = "linear",
     ) -> DistanceConstraint:
         if point_a_id not in self.points:
             raise KeyError(point_a_id)
@@ -336,6 +341,7 @@ class Sketch:
             point_a_id=point_a_id,
             point_b_id=point_b_id,
             distance=distance,
+            orientation=orientation,
         )
         self.constraints[constraint.id] = constraint
         return constraint

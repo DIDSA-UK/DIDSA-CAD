@@ -74,6 +74,8 @@ class _PySlvsBuilder:
         self._points = points
         self._point_handles: dict[str, int] = {}
         self._line_handles: dict[tuple[int, int], int] = {}
+        self._horizontal_ref_line: int | None = None
+        self._vertical_ref_line: int | None = None
         # The Sketch's origin Point (see Sketch.origin_point) is real,
         # addressable geometry - snappable and referenceable like any other
         # Point - but must never drift under the solver. Adding it (and only
@@ -97,6 +99,46 @@ class _PySlvsBuilder:
     def distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
         return self._system.addPointsDistance(
             value, point_a_handle, point_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def _fixed_ref_point(self, u: float, v: float) -> int:
+        pu = self._system.addParamV(u, group=_FIXED_GROUP)
+        pv = self._system.addParamV(v, group=_FIXED_GROUP)
+        return self._system.addPoint2d(self._workplane, pu, pv, group=_FIXED_GROUP)
+
+    def _horizontal_ref_line_handle(self) -> int:
+        """A fixed (never solved) line from (0, 0) to (1, 0) in workplane
+        coordinates, used only as a direction reference for
+        horizontal_distance below. py-slvs 1.0.6 has no
+        addPointsHorizDistance/addPointsVertDistance primitive - the
+        documented way to pin only one axis of separation between two
+        points is addPointsProjectDistance (SLVS_C_PROJ_PT_DISTANCE)
+        against a reference line in the desired direction. Lazily created
+        and cached so at most one such line exists per solve, regardless of
+        how many horizontal DistanceConstraints reference it."""
+        if self._horizontal_ref_line is None:
+            p0 = self._fixed_ref_point(0.0, 0.0)
+            p1 = self._fixed_ref_point(1.0, 0.0)
+            self._horizontal_ref_line = self._system.addLineSegment(p0, p1, group=_FIXED_GROUP)
+        return self._horizontal_ref_line
+
+    def _vertical_ref_line_handle(self) -> int:
+        """Same as `_horizontal_ref_line_handle`, but a (0, 0)-(0, 1)
+        reference line for vertical_distance."""
+        if self._vertical_ref_line is None:
+            p0 = self._fixed_ref_point(0.0, 0.0)
+            p1 = self._fixed_ref_point(0.0, 1.0)
+            self._vertical_ref_line = self._system.addLineSegment(p0, p1, group=_FIXED_GROUP)
+        return self._vertical_ref_line
+
+    def horizontal_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+        return self._system.addPointsProjectDistance(
+            value, point_a_handle, point_b_handle, self._horizontal_ref_line_handle(), group=_SOLVE_GROUP
+        )
+
+    def vertical_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+        return self._system.addPointsProjectDistance(
+            value, point_a_handle, point_b_handle, self._vertical_ref_line_handle(), group=_SOLVE_GROUP
         )
 
     def vertical(self, point_a_handle: int, point_b_handle: int) -> int:

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Literal, Protocol
 
 
 class SolverBuilder(Protocol):
@@ -21,6 +21,19 @@ class SolverBuilder(Protocol):
     def distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
         """Add a distance constraint between two py-slvs point handles,
         returning the resulting py-slvs constraint handle."""
+        ...
+
+    def horizontal_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+        """Pin only the X (workplane U) separation between two point
+        handles to `value`, leaving their Y separation free. py-slvs 1.0.6
+        has no dedicated horizontal-distance primitive - see solver.py for
+        how this is built from addPointsProjectDistance against a fixed
+        horizontal reference line."""
+        ...
+
+    def vertical_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+        """Same as `horizontal_distance`, but pins the Y (workplane V)
+        separation instead, leaving X free."""
         ...
 
     def vertical(self, point_a_handle: int, point_b_handle: int) -> int:
@@ -131,12 +144,20 @@ class Constraint(ABC):
 
 @dataclass
 class DistanceConstraint(Constraint):
-    """Pins the distance between two Points to a fixed value."""
+    """Pins the distance between two Points to a fixed value.
+
+    `orientation` selects what "distance" means: "linear" (default) is the
+    plain Euclidean distance; "horizontal"/"vertical" pin only the X or Y
+    separation respectively, leaving the other axis free - the solver-level
+    counterpart of the sketcher's horizontal/vertical dimension tools (see
+    SolverBuilder.horizontal_distance/vertical_distance).
+    """
 
     id: str
     point_a_id: str
     point_b_id: str
     distance: float
+    orientation: Literal["linear", "horizontal", "vertical"] = field(default="linear")
 
     @property
     def type(self) -> str:
@@ -148,6 +169,10 @@ class DistanceConstraint(Constraint):
     def add_to_solver(self, builder: SolverBuilder) -> int:
         point_a = builder.point2d(self.point_a_id)
         point_b = builder.point2d(self.point_b_id)
+        if self.orientation == "horizontal":
+            return builder.horizontal_distance(point_a, point_b, self.distance)
+        if self.orientation == "vertical":
+            return builder.vertical_distance(point_a, point_b, self.distance)
         return builder.distance(point_a, point_b, self.distance)
 
 
