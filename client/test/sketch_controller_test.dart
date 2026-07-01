@@ -993,7 +993,8 @@ void main() {
     });
   });
 
-  test('moveCursorRelative snaps the cursor back to canvas centre once it escapes on screen', () {
+  test('moveCursorRelative does not force an on-canvas cursor back into bounds, even if this '
+      'delta would push it off-canvas (bug-fix round: it is simply allowed to disappear)', () {
     // originScreen at the canvas centre, 10px/unit - a cursor more than 20
     // sketch-units off in X escapes a 400-wide canvas (200px either side).
     const transform = ViewTransform(pixelsPerUnit: 10, originScreen: Offset(200, 150));
@@ -1003,18 +1004,52 @@ void main() {
 
     controller.moveCursorRelative(5000, 0, 1, canvasSize: canvasSize, transform: transform);
 
+    // touchSensitivity (0.05) * 5000 = 250 sketch units - genuinely off-canvas
+    // now, and that's fine; it isn't yanked back.
+    expect(controller.cursorX, closeTo(250, 1e-9));
+    expect(controller.isCursorVisible(canvasSize, transform), isFalse);
+  });
+
+  test('moveCursorRelative resets to canvas centre (ignoring this delta) once the cursor was '
+      'already off-canvas - the "reappears at centre on the next interaction" rule', () {
+    const transform = ViewTransform(pixelsPerUnit: 10, originScreen: Offset(200, 150));
+    const canvasSize = Size(400, 300);
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    controller.moveCursorRelative(5000, 0, 1, canvasSize: canvasSize, transform: transform);
+    expect(controller.isCursorVisible(canvasSize, transform), isFalse);
+
+    controller.moveCursorRelative(9999, 9999, 1, canvasSize: canvasSize, transform: transform);
+
     final screen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     expect(screen.dx, closeTo(200, 1e-9));
     expect(screen.dy, closeTo(150, 1e-9));
   });
 
-  test('moveCursorRelative without canvasSize/transform never clamps (back-compat)', () {
+  test('moveCursorRelative without canvasSize/transform never clamps or resets (back-compat)', () {
     controller.cursorX = 0;
     controller.cursorY = 0;
 
     controller.moveCursorRelative(5000, 0, 1);
 
     expect(controller.cursorX, greaterThan(1));
+  });
+
+  group('isCursorVisible', () {
+    const transform = ViewTransform(pixelsPerUnit: 10, originScreen: Offset(200, 150));
+    const canvasSize = Size(400, 300);
+
+    test('is true for a cursor within canvas bounds', () {
+      controller.cursorX = 0;
+      controller.cursorY = 0;
+      expect(controller.isCursorVisible(canvasSize, transform), isTrue);
+    });
+
+    test('is false once the cursor has drifted off-canvas', () {
+      controller.cursorX = 1000;
+      controller.cursorY = 0;
+      expect(controller.isCursorVisible(canvasSize, transform), isFalse);
+    });
   });
 
   test('hitRadiusForPixelsPerUnit grows the hit radius for small/zoomed-out geometry', () {
@@ -1547,6 +1582,30 @@ void main() {
 
     final created = controller.constraints.values.whereType<DistanceConstraintDto>().single;
     expect(created.orientation, 'linear');
+  });
+
+  test('bug-fix round: re-confirming a different orientation for the same point pair replaces '
+      'the existing DistanceConstraint instead of just patching its value in place', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('linear', 5.0);
+    final firstId = controller.constraints.values.whereType<DistanceConstraintDto>().single.id;
+
+    // Re-pick the same two points and confirm a *different* orientation.
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('h', 3.0);
+
+    final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>();
+    expect(distanceConstraints.length, 1); // the old linear one was deleted, not left in place
+    final replaced = distanceConstraints.single;
+    expect(replaced.id, isNot(firstId));
+    expect(replaced.orientation, 'horizontal');
+    expect(replaced.distance, 3.0);
   });
 
   test(

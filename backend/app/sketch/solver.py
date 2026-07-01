@@ -210,15 +210,20 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
     """Build the py-slvs problem for `sketch`'s Points + Constraints, solve
     it, and write the resulting positions back onto `sketch.points` (best
     effort even when it doesn't fully converge). Does not mutate
-    `sketch.constraints`."""
+    `sketch.constraints`.
 
-    if not sketch.constraints:
-        return SolveResult(
-            converged=True,
-            dof=0,
-            result_code=0,
-            detail="No constraints to solve.",
-        )
+    Always builds and solves the system - including every Point, even ones
+    no Constraint references - rather than skipping straight to a canned
+    "nothing to solve" result whenever `sketch.constraints` is empty. It
+    used to skip (hardcoding `dof=0`), which was harmless before `dof` had
+    any UI meaning, but is wrong once it does (see Bug-fix round item: the
+    sketcher's "fully constrained" indicator/line colouring): a sketch with
+    free, unconstrained geometry and zero Constraints is exactly the
+    opposite of fully constrained, and must report a nonzero `dof`
+    (verified directly against the installed py-slvs wheel - solving an
+    otherwise-empty constraint set is safe and reports the correct free
+    parameter count, not an error).
+    """
 
     system = slvs.System()
     # The "V" suffix matters: addPoint3d (no V) takes existing param
@@ -236,6 +241,14 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
     for constraint in sketch.constraints.values():
         handle = constraint.add_to_solver(builder)
         constraint_id_by_handle[handle] = constraint.id
+
+    # Register every Point - not just ones a Constraint happens to
+    # reference - so its free parameters are counted toward `dof` below.
+    # `point2d` is idempotent (a no-op for a Point already registered by a
+    # Constraint above), and the Sketch's own origin Point is still pinned
+    # into the fixed group exactly as before (see _PySlvsBuilder.point2d).
+    for point_id in sketch.points:
+        builder.point2d(point_id)
 
     result_code = system.solve(group=_SOLVE_GROUP, reportFailed=True)
     converged = result_code == 0
@@ -259,10 +272,12 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
         newest_constraint = list(sketch.constraints.values())[-1]
         blamed_constraint_ids = [newest_constraint.id]
 
-    detail = (
-        "Solve converged."
-        if converged
-        else (
+    if not sketch.constraints:
+        detail = "No constraints to solve."
+    elif converged:
+        detail = "Solve converged."
+    else:
+        detail = (
             "Solve did not fully converge. blamed_constraint_ids names the "
             "most-recently-added constraint by convention only - it is not "
             "a diagnosed root cause. py-slvs's own failed-constraint report "
@@ -270,7 +285,6 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
             "constraint in an inconsistent system rather than a single "
             "culprit, which is why it isn't used for blame."
         )
-    )
 
     return SolveResult(
         converged=converged,

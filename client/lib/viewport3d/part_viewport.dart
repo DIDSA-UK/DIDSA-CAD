@@ -602,6 +602,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // Fix 4: starts the tap/drag disambiguation for this gesture, mirroring
       // the orbit handler's own _gestureTravel reset in _handlePointerDown.
       _selectionGestureTravel = 0;
+      // Bug-fix round: also feeds this pointer into the same _activeTouches
+      // bookkeeping orbit mode uses, by calling _handlePointerDown itself
+      // (unmodified - it's pure bookkeeping, no camera side effect) rather
+      // than duplicating it - so a second finger touching down while
+      // selecting is recognised for pinch-zoom/two-finger-pan below,
+      // exactly like orbit mode already gets for free.
+      _handlePointerDown(event);
       return;
     }
     _handlePointerDown(event);
@@ -615,9 +622,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _selectionGestureTravel += event.delta.distance;
     if (event.kind == PointerDeviceKind.mouse) {
       _handleSelectionPointerHover(event.localPosition);
-    } else {
-      _handleSelectionPointerMove(event.delta);
+      return;
     }
+    if (_activeTouches.length < 2) {
+      _handleSelectionPointerMove(event.delta);
+      return;
+    }
+    // Bug-fix round: pinch-zoom/two-finger-pan must still work while
+    // selecting - reuses _applyPinchPan (the same method orbit mode's own
+    // _handlePointerMove calls) directly, without editing that method or
+    // _handlePointerMove's body at all.
+    _hadMultiTouch = true;
+    final before = Map<int, Offset>.from(_activeTouches);
+    _activeTouches[event.pointer] = event.localPosition;
+    _applyPinchPan(before, _activeTouches);
   }
 
   void _onPointerEnd(PointerEvent event) {
@@ -625,10 +643,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // Fix 4: tap-to-select - a pointer-up that stayed within the tap
       // travel threshold commits the current hover, the same logic the
       // removed "Select" button used to call. A drag that moved the cursor
-      // (PointerCancel, or PointerUp past the threshold) commits nothing.
-      if (event is PointerUpEvent && _selectionGestureTravel < _tapTravelThreshold) {
-        _commitSelection();
+      // (PointerCancel, or PointerUp past the threshold) commits nothing -
+      // nor does the tail end of a pinch (fingers lifting one at a time),
+      // per [_hadMultiTouch] below, mirroring orbit mode's own
+      // _handlePointerEnd exactly.
+      final wasTap = event is PointerUpEvent &&
+          !_hadMultiTouch &&
+          _selectionGestureTravel < _tapTravelThreshold;
+      if (event.kind != PointerDeviceKind.mouse) {
+        _activeTouches.remove(event.pointer);
+        if (_activeTouches.isEmpty) _hadMultiTouch = false;
       }
+      if (wasTap) _commitSelection();
       return;
     }
     _handlePointerEnd(event);
