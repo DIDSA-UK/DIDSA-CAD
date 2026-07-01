@@ -362,3 +362,128 @@ def test_hidden_feature_ids_un_subtracts_a_hidden_cut_feature():
 
     # With the Cut hidden, the mesh should match the pre-Cut (Boss-only) solid.
     assert cut_hidden_mesh["mesh"]["vertices"] == boss_only_mesh["mesh"]["vertices"]
+
+
+# --- C1: nested profiles (a hole in a plate) --------------------------------
+
+
+def _add_square_hole(sketch_id: str, x0: float, y0: float, size: float) -> None:
+    """Draws a second, smaller closed square inside a Sketch that already
+    has an outer square in it (see `_add_square`) - the closed inner loop
+    `detect_profile` should classify as a hole of the outer one."""
+    _add_square(sketch_id, x0, y0, size)
+
+
+def test_extruding_a_square_with_a_square_hole_produces_a_hollow_prism():
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    _add_square(sketch_feature["sketch_id"], 0.0, 0.0, 20.0)
+    _add_square_hole(sketch_feature["sketch_id"], 5.0, 5.0, 5.0)
+
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"])
+    assert extrude.status_code == 201
+
+    response = client.get(f"/document/parts/{part['id']}/mesh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "computed"
+    # 2 end caps (each with a hole) + 4 outer walls + 4 inner walls.
+    assert len(set(body["mesh"]["face_ids"])) == 10
+
+
+def test_extruding_a_square_with_a_circular_hole_produces_a_hollow_prism():
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    sketch_id = sketch_feature["sketch_id"]
+    _add_square(sketch_id, 0.0, 0.0, 20.0)
+    center = client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": 10.0, "y": 10.0}).json()
+    circle_response = client.post(
+        f"/sketch/sketches/{sketch_id}/circles",
+        json={"center_point_id": center["id"], "radius": 3.0, "angle": 0.0},
+    )
+    assert circle_response.status_code == 201
+
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"])
+    assert extrude.status_code == 201
+
+    response = client.get(f"/document/parts/{part['id']}/mesh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "computed"
+    # 2 end caps (each with a round hole) + 4 outer walls + 1 inner cylindrical wall.
+    assert len(set(body["mesh"]["face_ids"])) == 7
+
+
+# --- C2: multiple disjoint closed profiles (MultiProfile) -------------------
+
+
+def test_extrude_on_sketch_with_two_disjoint_squares_is_accepted():
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    _add_square(sketch_feature["sketch_id"], 0.0, 0.0, 10.0)
+    _add_square(sketch_feature["sketch_id"], 100.0, 0.0, 10.0)
+
+    response = _create_extrude_feature(part["id"], sketch_feature["id"])
+
+    assert response.status_code == 201
+
+
+def test_extruding_two_disjoint_squares_produces_a_compound_of_two_solids():
+    from OCC.Core.TopAbs import TopAbs_SOLID
+    from OCC.Core.TopExp import TopExp_Explorer
+
+    from app.document.extrude import compute_part_solid
+    from app.document.store import get_part_or_404
+
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    _add_square(sketch_feature["sketch_id"], 0.0, 0.0, 10.0)
+    _add_square(sketch_feature["sketch_id"], 100.0, 0.0, 10.0)
+    _create_extrude_feature(part["id"], sketch_feature["id"])
+
+    solid = compute_part_solid(get_part_or_404(part["id"]))
+
+    assert solid is not None
+    explorer = TopExp_Explorer(solid, TopAbs_SOLID)
+    solid_count = 0
+    while explorer.More():
+        solid_count += 1
+        explorer.Next()
+    assert solid_count == 2
+
+
+def test_extruding_two_disjoint_squares_produces_a_non_empty_computed_mesh():
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    _add_square(sketch_feature["sketch_id"], 0.0, 0.0, 10.0)
+    _add_square(sketch_feature["sketch_id"], 100.0, 0.0, 10.0)
+    _create_extrude_feature(part["id"], sketch_feature["id"])
+
+    response = client.get(f"/document/parts/{part['id']}/mesh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "computed"
+    # Two separate 10x10x10 boxes: 12 faces total (6 each), 24 triangles.
+    assert len(set(body["mesh"]["face_ids"])) == 12
+    assert len(body["mesh"]["triangle_indices"]) == 24
+
+
+def test_multi_profile_sub_profile_with_a_hole_produces_a_hollow_solid_for_that_sub_profile():
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    sketch_id = sketch_feature["sketch_id"]
+    _add_square(sketch_id, 0.0, 0.0, 20.0)
+    _add_square_hole(sketch_id, 5.0, 5.0, 5.0)
+    _add_square(sketch_id, 100.0, 0.0, 10.0)
+    _create_extrude_feature(part["id"], sketch_feature["id"])
+
+    response = client.get(f"/document/parts/{part['id']}/mesh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "computed"
+    # Holed square (10 faces, see above) + plain square (6 faces) = 16.
+    assert len(set(body["mesh"]["face_ids"])) == 16

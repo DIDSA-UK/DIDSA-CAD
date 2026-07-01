@@ -83,9 +83,12 @@ def _validate_extrude_distances(start_distance: float, end_distance: float) -> N
 
 def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> SketchFeature:
     """Validates that `sketch_feature_id` resolves to a SketchFeature in
-    `part` whose Sketch has a closed Profile - a single 400 for every way
-    this can fail, per the brief ("Validate ... return a clear 400 error if
-    not")."""
+    `part` whose Sketch has an extrudable Profile - a single 400 for every
+    way this can fail, per the brief ("Validate ... return a clear 400
+    error if not"). CLOSED_LOOP (a single nested profile, C1) and
+    MULTIPLE_LOOPS (a MultiProfile of disjoint outer profiles, C2) are both
+    extrudable - see app.document.extrude._solid_for_extrude_feature, which
+    this must stay in sync with."""
     feature = part.get_feature(sketch_feature_id)
     if not isinstance(feature, SketchFeature):
         raise HTTPException(
@@ -94,7 +97,7 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
         )
     sketch = get_sketch_or_404(feature.sketch_id)
     result = detect_profile(sketch)
-    if result.status != ProfileStatus.CLOSED_LOOP:
+    if result.status not in (ProfileStatus.CLOSED_LOOP, ProfileStatus.MULTIPLE_LOOPS):
         raise HTTPException(
             status_code=400,
             detail=f"Sketch does not contain a closed profile (status: {result.status.value})",

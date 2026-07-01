@@ -128,9 +128,11 @@ class Circle(SketchEntity):
     detection. Sharing a Circle's center or radius Point with a Line is
     still allowed (it's just point-sharing, same as any two entities can
     share a Point), but it does not make the Circle part of a Line chain's
-    connectivity graph - a Circle is either its own standalone closed
-    profile, or (for now) not part of profile detection at all. See
-    `profile.py` for how a standalone Circle is detected separately.
+    connectivity graph - a Circle is always its own standalone closed
+    profile, detected independently of any Line-chain loops in the same
+    Sketch and then nested against them by centroid containment (a Circle
+    fully inside a Line-chain polygon becomes a hole in it, and vice
+    versa). See `profile.py`'s `detect_profile`/`_classify_nesting`.
     """
 
     id: str

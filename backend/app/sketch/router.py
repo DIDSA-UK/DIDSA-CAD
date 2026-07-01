@@ -140,7 +140,11 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
 
 
 def _profile_response(profile: Profile) -> ProfileResponse:
-    return ProfileResponse(point_ids=profile.point_ids, line_ids=profile.line_ids)
+    return ProfileResponse(
+        point_ids=profile.point_ids,
+        line_ids=profile.line_ids,
+        inner_loops=[_profile_response(inner) for inner in profile.inner_loops],
+    )
 
 
 def _constraint_response(constraint: Constraint) -> ConstraintResponse:
