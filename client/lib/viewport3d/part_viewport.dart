@@ -382,10 +382,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [ViewportRenderModeX.showsEdges] is set - independent of whether the
   /// filled-faces Node above is also present, since `wireframe` mode shows
   /// edges with no faces at all. In `shadedWithEdges` mode the segments are
-  /// nudged outward from the mesh's bounding-sphere center (see
-  /// [nudgeSegmentsOutward]), the closest available substitute for a GPU
-  /// depth bias to keep them from z-fighting against the filled faces
-  /// underneath; `wireframe` mode has no faces to fight, so it skips this.
+  /// biased towards the current camera position (see [kEdgeDepthBias]'s doc
+  /// comment for why towards-camera, and C3's status doc for the
+  /// alternatives this replaced/rejected) to keep them from z-fighting
+  /// against the filled faces underneath; `wireframe` mode has no faces to
+  /// fight, so it skips this.
+  ///
+  /// C3: since this bias depends on the *current* camera position, this is
+  /// re-run (not just on mesh/render-mode change, as before) whenever the
+  /// camera itself moves - see the `setState(_syncEdgesNode)` calls in
+  /// `_onPointerEnd`/`_onPointerSignal`/`_doRecentre`/`animateToPlane`. Those
+  /// all resync once a gesture/animation *completes* rather than on every
+  /// intermediate frame, trading a small amount of staleness while
+  /// orbiting for not rebuilding every `PolylineGeometry` primitive on
+  /// every pointer-move delta.
   void _syncEdgesNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -398,8 +408,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     var segments = edgeSegmentsFromMesh(mesh);
     if (segments.isEmpty) return;
     if (widget.renderMode == ViewportRenderMode.shadedWithEdges) {
-      final center = boundsOfMesh(mesh)?.center ?? vm.Vector3.zero();
-      segments = nudgeSegmentsOutward(segments, center, meshEdgeNudgeAmount);
+      final radius = boundsOfMesh(mesh)?.boundingSphereRadius ?? 0;
+      segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias * radius);
     }
     final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
     scene.add(node);
@@ -486,6 +496,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     } finally {
       controller.removeListener(tick);
       controller.dispose();
+      // C3: the camera orientation just changed - resync the edge overlay's
+      // towards-camera bias (see [_syncEdgesNode]) for the new view.
+      if (mounted) setState(_syncEdgesNode);
     }
   }
 
@@ -655,9 +668,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (_activeTouches.isEmpty) _hadMultiTouch = false;
       }
       if (wasTap) _commitSelection();
+      // C3: a two-finger pinch-zoom/pan (_applyPinchPan) can still move the
+      // camera while selecting - resync the edge overlay's towards-camera
+      // bias the same as the orbit-mode path below does.
+      setState(_syncEdgesNode);
       return;
     }
     _handlePointerEnd(event);
+    // C3: the orbit/pan/zoom gesture that just ended may have moved the
+    // camera - resync the edge overlay's towards-camera bias (see
+    // [_syncEdgesNode]) once per completed gesture, not on every
+    // intermediate pointer-move delta.
+    setState(_syncEdgesNode);
   }
 
   void _onPointerHover(PointerHoverEvent event) {
@@ -731,6 +753,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// loaded, auto-fits the far clip to `max(kDefaultFarClip, 2 * diagonal)`.
   void _doRecentre() {
     _camera.reset();
+    // C3: "Reset view" moves the camera - resync the edge overlay's
+    // towards-camera bias (see [_syncEdgesNode]) for the new position.
+    _syncEdgesNode();
     final mesh = widget.mesh;
     if (mesh == null || mesh.vertices.isEmpty) return;
     double minX = double.infinity, maxX = double.negativeInfinity;
@@ -928,6 +953,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   // are currently identical — see OrbitCamera.isPerspective.
   void _onPointerSignal(PointerSignalEvent event) {
     _handlePointerSignal(event);
+    // C3: a scroll-wheel zoom moves the camera - resync the edge overlay's
+    // towards-camera bias (see [_syncEdgesNode]).
+    setState(_syncEdgesNode);
   }
 }
 

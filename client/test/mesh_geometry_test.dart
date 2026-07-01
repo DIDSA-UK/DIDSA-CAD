@@ -129,23 +129,22 @@ void main() {
     expect(edgeSegmentsFromMesh(mesh), isEmpty);
   });
 
-  test('nudgeSegmentsOutward pushes each point away from center by amount', () {
+  test('biasSegmentsTowardCamera pushes each point towards the camera by amount', () {
     final segments = [(vm.Vector3(0, 0, 0), vm.Vector3(10, 0, 0))];
 
-    final nudged = nudgeSegmentsOutward(segments, vm.Vector3(5, 0, 0), 1.0);
+    final biased = biasSegmentsTowardCamera(segments, vm.Vector3(-5, 0, 0), 1.0);
 
-    // The first point is 5 units left of center -> nudged 1 further left.
-    expect(nudged[0].$1, vm.Vector3(-6, 0, 0));
-    // The second point is 5 units right of center -> nudged 1 further right.
-    expect(nudged[0].$2, vm.Vector3(11, 0, 0));
+    // Camera is at x=-5. Both points move 1 unit along -x, towards it.
+    expect(biased[0].$1, vm.Vector3(-1, 0, 0));
+    expect(biased[0].$2, vm.Vector3(9, 0, 0));
   });
 
-  test('nudgeSegmentsOutward leaves a point exactly at center unchanged', () {
+  test('biasSegmentsTowardCamera leaves a point exactly at the camera unchanged', () {
     final segments = [(vm.Vector3(5, 5, 5), vm.Vector3(10, 0, 0))];
 
-    final nudged = nudgeSegmentsOutward(segments, vm.Vector3(5, 5, 5), 1.0);
+    final biased = biasSegmentsTowardCamera(segments, vm.Vector3(5, 5, 5), 1.0);
 
-    expect(nudged[0].$1, vm.Vector3(5, 5, 5));
+    expect(biased[0].$1, vm.Vector3(5, 5, 5));
   });
 
   group('vertexMarkerSegments', () {

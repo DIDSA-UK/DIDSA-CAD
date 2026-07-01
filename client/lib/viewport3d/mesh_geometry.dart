@@ -136,13 +136,52 @@ MeshBounds? boundsOfMesh(MeshDto mesh) {
 /// this from the original `2.0` towards a more typical CAD wireframe weight.
 const double kEdgeStrokeWidth = 1.1;
 
-/// How far [nudgeSegmentsOutward] pushes each edge point away from the
-/// mesh's bounding-sphere center, in world units - flutter_scene 0.18.1 has
-/// no GPU depth-bias control, so this is the closest available substitute
-/// for preventing z-fighting between the filled mesh and its edge overlay
-/// in `shadedWithEdges` mode: a small static geometric offset rather than a
-/// per-pixel depth adjustment.
-const double meshEdgeNudgeAmount = 0.02;
+/// C3: how far [biasSegmentsTowardCamera] pushes each edge point towards
+/// the camera, as a *fraction* of the mesh's bounding-sphere radius - the
+/// closest available substitute for a real GPU depth bias in
+/// `shadedWithEdges` mode, used to stop edges z-fighting/flickering against
+/// the filled faces underneath them at glancing viewing angles.
+///
+/// Three fixes for this were evaluated, in the order the project brief
+/// prefers:
+///  1. Render edges in a separate always-on-top pass with depth test/write
+///     disabled - the standard, fully robust CAD technique. Not
+///     achievable: flutter_scene 0.18.1's public API is just
+///     `Scene.add(Node)` into one implicitly depth-tested pass - no
+///     per-material depth-test/depth-write toggle and no way to declare a
+///     second, later render pass. (This was already established by this
+///     file's previous fix - see the removed `nudgeSegmentsOutward`/
+///     `meshEdgeNudgeAmount`, written when this was first confirmed
+///     against the real package - so it was not re-investigated here.)
+///  2. **Chosen**: push each edge vertex a small amount towards the
+///     camera, approximating a per-pixel NDC/clip-space depth bias in
+///     world space. Implemented as [biasSegmentsTowardCamera] below.
+///  3. Enlarge the offset only on segments nearly parallel to their
+///     face's normal - needs a per-edge-segment "which face(s) is this
+///     edge part of" lookup, which the client doesn't have (`MeshDto`
+///     carries `faceIds`/`edgeIds` as two independent dense id lists with
+///     no adjacency between them) - would require backend changes to
+///     `mesh.py`, out of C3's client-only scope, so not attempted.
+///
+/// The *previous* fix (approach 2 done wrong) pushed every point directly
+/// away from the mesh's bounding-sphere **center** - at a glancing angle,
+/// "away from center" and "towards the camera" can be nearly
+/// perpendicular, so that push barely increased depth-buffer separation
+/// for exactly the edges the bug report was about. [biasSegmentsTowardCamera]
+/// replaces it with a push towards the *camera position*, recomputed per
+/// vertex (see its own doc comment) and re-run whenever the camera moves
+/// (see `PartViewport`'s `_onPointerEnd`/`_onPointerSignal`/`_doRecentre`/
+/// `animateToPlane`), so it stays aligned with the actual view direction
+/// instead of a single fixed geometric point.
+///
+/// Expressed as a fraction of the bounding-sphere radius, not a fixed
+/// world-space distance (the brief's suggested literal `0.001` world
+/// units would be an inch-scale offset on a small bracket and invisible
+/// on a metre-scale frame) - 0.1% of the model's own size scales
+/// correctly across the whole range of real part sizes this tool targets,
+/// mirroring how the auto-fit far clip (Prompt A) is already scaled off
+/// this same bounding-sphere radius rather than a fixed constant.
+const double kEdgeDepthBias = 0.001;
 
 /// Parses [mesh]'s flat `[x1,y1,z1, x2,y2,z2, ...]` edge polyline data (see
 /// backend/app/document/mesh.py's `_extract_edges`) into segment pairs -
@@ -160,22 +199,28 @@ List<(vm.Vector3, vm.Vector3)> edgeSegmentsFromMesh(MeshDto mesh) {
   return segments;
 }
 
-/// Pushes every point in [segments] away from [center] by [amount] world
-/// units - see [meshEdgeNudgeAmount]'s doc comment for why. A point
-/// exactly at [center] (zero-length direction) is left unchanged rather
-/// than divided by zero.
-List<(vm.Vector3, vm.Vector3)> nudgeSegmentsOutward(
+/// Pushes every point in [segments] towards [cameraPosition] by [amount]
+/// world units - see [kEdgeDepthBias]'s doc comment for why towards-camera
+/// rather than away-from-mesh-center. The towards-camera direction is
+/// recomputed independently for each point (rather than one shared
+/// direction for the whole mesh) so it stays reasonably accurate across a
+/// mesh whose extent is a significant fraction of its distance to the
+/// camera, at the same per-point cost the previous center-based version
+/// already paid. A point exactly at [cameraPosition] (zero-length
+/// direction - never happens in practice) is left unchanged rather than
+/// divided by zero.
+List<(vm.Vector3, vm.Vector3)> biasSegmentsTowardCamera(
   List<(vm.Vector3, vm.Vector3)> segments,
-  vm.Vector3 center,
+  vm.Vector3 cameraPosition,
   double amount,
 ) {
-  vm.Vector3 nudged(vm.Vector3 point) {
-    final direction = point - center;
+  vm.Vector3 biased(vm.Vector3 point) {
+    final direction = cameraPosition - point;
     if (direction.length2 < 1e-12) return point.clone();
     return point + direction.normalized() * amount;
   }
 
-  return [for (final segment in segments) (nudged(segment.$1), nudged(segment.$2))];
+  return [for (final segment in segments) (biased(segment.$1), biased(segment.$2))];
 }
 
 /// Builds the [Node] rendering [segments] as [color]d polylines - one
@@ -185,8 +230,8 @@ List<(vm.Vector3, vm.Vector3)> nudgeSegmentsOutward(
 ///
 /// GPU-bound (`PolylineGeometry`'s underlying updatable `MeshGeometry`), so
 /// - like [geometryFromMesh] - this cannot be exercised in a headless
-/// `flutter test` run; [edgeSegmentsFromMesh]/[nudgeSegmentsOutward] above
-/// are the pure, testable counterparts for this data's actual content.
+/// `flutter test` run; [edgeSegmentsFromMesh]/[biasSegmentsTowardCamera]
+/// above are the pure, testable counterparts for this data's actual content.
 Node buildMeshEdgesNode(
   List<(vm.Vector3, vm.Vector3)> segments, {
   required vm.Vector4 color,

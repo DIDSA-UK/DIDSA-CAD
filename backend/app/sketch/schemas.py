@@ -122,6 +122,10 @@ SketchEntityResponse = Union[LineResponse, CircleResponse]
 class ProfileResponse(BaseModel):
     point_ids: list[str]
     line_ids: list[str]
+    # C1: this profile's holes (nested closed loops), each itself a
+    # ProfileResponse. Empty for a simple profile with no holes; only ever
+    # one level deep (see ProfileStatus.INVALID_NESTING).
+    inner_loops: list["ProfileResponse"] = []
 
 
 class ProfileDetectionResponse(BaseModel):
