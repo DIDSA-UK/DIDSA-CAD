@@ -868,6 +868,16 @@ class _PartScreenState extends State<PartScreen> {
         _selectedFeatureId = null;
       }
       _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+      // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
+      // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
+      // _hiddenFeatureIds forever, since it never stopped existing - only
+      // stopped being locked - so the tree kept showing it dimmed/hidden
+      // even once it was editable again. The Sketch was only ever hidden
+      // because something depended on it; once the new last Feature is
+      // unlocked again, there's nothing left to make it redundant clutter.
+      if (_features.isNotEmpty && !_features.last.locked) {
+        _hiddenFeatureIds.remove(_features.last.id);
+      }
       _recomputeVisibleSketchGeometries();
       await _refreshMesh();
     });

@@ -260,13 +260,18 @@ class SketchController extends ChangeNotifier {
   /// a new point".
   static const double snapRadius = 0.5;
 
-  /// Stage 13 item 3's minimum tap hit target, in logical pixels (44x44),
-  /// expressed as a radius. Entity hit-testing for a discrete tap (select,
-  /// dimension-target picking) uses whichever is larger of this - converted
-  /// to sketch units via the canvas's current zoom, see
-  /// [hitRadiusForPixelsPerUnit] - or [snapRadius], so small/zoomed-out
-  /// entities stay tappable on touch without shrinking precise mouse hover.
-  static const double minTapHitRadiusPixels = 22.0;
+  /// The minimum tap hit target, in logical pixels, expressed as a radius.
+  /// Entity hit-testing for a discrete tap (select, dimension-target
+  /// picking) uses whichever is larger of this - converted to sketch units
+  /// via the canvas's current zoom, see [hitRadiusForPixelsPerUnit] - or
+  /// [snapRadius], so small/zoomed-out entities stay tappable on touch
+  /// without shrinking precise mouse hover.
+  ///
+  /// Bug-fix round 3: was 22.0 (44px min touch target) - reduced after
+  /// on-device feedback that the hit box felt too large, the same
+  /// complaint (and roughly the same kind of fix) as the 3D viewport's
+  /// `kSelectionHitRadiusPixels`/`kVertexSelectionHitRadiusPixels` unification.
+  static const double minTapHitRadiusPixels = 14.0;
 
   /// How much wider than [minTapHitRadiusPixels]/[snapRadius] a Point's own
   /// hit-test radius is, in [_entityAt] - see that method's doc comment for
@@ -793,8 +798,8 @@ class SketchController extends ChangeNotifier {
   /// [radius], or null if nothing is close enough. Points are checked
   /// before Lines/Circles so a Point at a Line's endpoint or a Circle's
   /// center/radius always wins over the entity it belongs to. The shared
-  /// core behind both [hoveredEntity] (continuous mouse hover, always
-  /// [snapRadius]) and every discrete-tap hit-test (select/dimension mode,
+  /// core behind both [hoveredEntity] (continuous mouse hover) and every
+  /// discrete-tap hit-test (select/dimension mode,
   /// using the larger of [snapRadius] and the 44px touch target - see
   /// [hitRadiusForPixelsPerUnit]).
   SketchSelection? _entityAt(double x, double y, double radius, {bool includeOrigin = false}) {
@@ -850,12 +855,24 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// The entity nearest the cursor and within [snapRadius], or null while
+  /// The entity nearest the cursor and within hit-test range, or null while
   /// not idle, not in [SketchMode.select]/[SketchMode.dimension], or if
   /// nothing is close enough.
-  SketchSelection? get hoveredEntity {
+  ///
+  /// [pixelsPerUnit], when given, uses the exact same zoom-scaled radius as
+  /// tap-to-select (see [hitRadiusForPixelsPerUnit]) - bug-fix round 3: this
+  /// used to always hard-code [snapRadius] regardless of zoom, while a tap
+  /// used the (usually larger, since it's a 44px/now-28px minimum touch
+  /// target converted to sketch units) zoom-scaled radius - so what
+  /// visually highlighted on hover and what a tap actually selected were
+  /// two different sizes, most noticeably when zoomed out. Omitting
+  /// [pixelsPerUnit] (as every existing unit test does, since none of them
+  /// models a real zoom level) falls back to the flat [snapRadius],
+  /// matching those tests' existing expectations unchanged.
+  SketchSelection? hoveredEntity([double? pixelsPerUnit]) {
     if (_mode == SketchMode.draw || !isIdle) return null;
-    return _entityAt(cursorX, cursorY, snapRadius, includeOrigin: true);
+    final radius = pixelsPerUnit == null ? snapRadius : hitRadiusForPixelsPerUnit(pixelsPerUnit);
+    return _entityAt(cursorX, cursorY, radius, includeOrigin: true);
   }
 
   /// The id of the existing Line whose midpoint is nearest the given
