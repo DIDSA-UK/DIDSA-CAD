@@ -591,7 +591,19 @@ class SketchController extends ChangeNotifier {
   /// is offered whenever *something* in the sketch still has slack, not
   /// verified against the specific Point being dragged.
   int _dof = 0;
-  bool get isUnderConstrained => _dof > 0;
+
+  /// Bug-fix round 2: whether the most recent solve actually converged.
+  /// `dof` is only meaningful when it did - py-slvs can (and does, for a
+  /// genuinely redundant-but-consistent constraint set, e.g. two
+  /// AtMidpoint constraints on the same Point that are only independent
+  /// before a solve resolves them - see the rectangle tool's fix for
+  /// exactly this) fail to converge (`result_code != 0`) while still
+  /// reporting `dof == 0`, which - trusted blindly - showed a visibly
+  /// under-constrained sketch as "fully constrained". [isUnderConstrained]
+  /// treats a non-convergent solve as under-constrained regardless of what
+  /// `dof` says, since a failed solve is never "fully constrained".
+  bool _lastSolveConverged = true;
+  bool get isUnderConstrained => _dof > 0 || !_lastSolveConverged;
 
   /// Whether this Sketch has any drawn entity at all (Lines/Circles) -
   /// bug-fix round: a brand-new, empty Sketch has `dof == 0` too (nothing
@@ -604,6 +616,7 @@ class SketchController extends ChangeNotifier {
   Future<void> _solveAndTrackDof() async {
     final result = await _api.solve(_sketchId!);
     _dof = result.dof;
+    _lastSolveConverged = result.converged;
   }
 
   /// True when the cursor is close enough to the chain's start Point that
@@ -2992,11 +3005,17 @@ class SketchController extends ChangeNotifier {
   /// [axisAligned] also gates Prompt B item B2's construction geometry: two
   /// corner-to-corner construction diagonals (never part of any profile -
   /// see profile.py's construction filter) plus a real, non-construction
-  /// center Point pinned to both diagonals' midpoints via
+  /// center Point pinned to *one* diagonal's midpoint via
   /// [SketchApiClient.createAtMidpointConstraint] - so the center tracks
   /// correctly as the rectangle scales, and stays referenceable for future
-  /// constraints. Skipped for the 3-point method: an arbitrary-angle
-  /// rectangle has no axis-aligned "center" concept this item is scoped to.
+  /// constraints. Bug-fix round 2: a second AtMidpoint pinning the same
+  /// center Point to the *other* diagonal too was removed - both diagonals
+  /// share the same true midpoint once the H/V constraints above hold, so
+  /// the second constraint was redundant, and verified (against the real
+  /// py-slvs wheel) to make the whole solve fail to converge outright
+  /// rather than just being harmlessly ignored. Skipped for the 3-point
+  /// method: an arbitrary-angle rectangle has no axis-aligned "center"
+  /// concept this item is scoped to.
   Future<void> _buildRectangle({
     String? corner0Id,
     String? corner1Id,
@@ -3098,10 +3117,20 @@ class SketchController extends ChangeNotifier {
         points.remove(centerPoint.id);
       });
 
+      // Bug-fix round 2: only one AtMidpoint constraint, not two. Both
+      // diagonals share the same true midpoint once the H/V constraints
+      // above hold (that's what makes it a rectangle), so a second
+      // AtMidpoint pinning the same center Point to diagonal2 is
+      // mathematically redundant, not just harmlessly so - verified
+      // against the real py-slvs wheel that it makes the whole solve fail
+      // to converge outright (a singular system), and py-slvs reports
+      // `dof == 0` in that failure state, which made an under-constrained
+      // rectangle (nothing pins its width/height/position) show as
+      // "fully constrained". One AtMidpoint constraint alone already keeps
+      // the center Point tracking the rectangle's true center correctly as
+      // it's resized/moved - diagonal2 stays purely a construction visual.
       final mid1 = await _api.createAtMidpointConstraint(_sketchId!, centerPoint.id, diagonal1.id);
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, mid1.id));
-      final mid2 = await _api.createAtMidpointConstraint(_sketchId!, centerPoint.id, diagonal2.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, mid2.id));
     } else {
       final perp1 = await _api.createPerpendicularConstraint(_sketchId!, line1.id, line2.id);
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp1.id));

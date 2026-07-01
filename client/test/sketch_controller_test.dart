@@ -537,9 +537,12 @@ void main() {
       controller.constraints.values.whereType<VerticalConstraintDto>().length,
       2,
     );
+    // Bug-fix round 2: only one, not two - see _buildRectangle's doc
+    // comment (a second AtMidpoint on the same centre Point is redundant
+    // once H/V hold, and made the whole solve fail to converge).
     expect(
       controller.constraints.values.whereType<AtMidpointConstraintDto>().length,
-      2,
+      1,
     );
     expect(controller.errorMessage, isNull);
   });
@@ -595,9 +598,12 @@ void main() {
       controller.constraints.values.whereType<VerticalConstraintDto>().length,
       2,
     );
+    // Bug-fix round 2: only one, not two - see _buildRectangle's doc
+    // comment (a second AtMidpoint on the same centre Point is redundant
+    // once H/V hold, and made the whole solve fail to converge).
     expect(
       controller.constraints.values.whereType<AtMidpointConstraintDto>().length,
-      2,
+      1,
     );
     expect(controller.errorMessage, isNull);
   });
