@@ -1721,7 +1721,7 @@ class _SketchPainter extends CustomPainter {
 
     _paintClosedProfileFill(canvas);
 
-    final hovered = controller.hoveredEntity;
+    final hovered = controller.hoveredEntity(transform.pixelsPerUnit);
     final selectionSet = controller.selectionSet;
     bool isSelected(SelectionKind kind, String id) =>
         selectionSet.any((s) => s.kind == kind && s.id == id);

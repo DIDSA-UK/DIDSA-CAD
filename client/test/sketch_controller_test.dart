@@ -1091,7 +1091,7 @@ void main() {
     await controller.handleCanvasTap(0, 0); // starts a chain at the origin
 
     expect(controller.chainInProgress, isTrue);
-    expect(controller.hoveredEntity, isNull);
+    expect(controller.hoveredEntity(), isNull);
   });
 
   test('hoveredEntity is null in draw mode even when idle', () {
@@ -1099,14 +1099,14 @@ void main() {
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;
 
-    expect(controller.hoveredEntity, isNull);
+    expect(controller.hoveredEntity(), isNull);
   });
 
   test('hoveredEntity detects a nearby Point while idle in select mode', () {
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;
 
-    final hovered = controller.hoveredEntity;
+    final hovered = controller.hoveredEntity();
     expect(hovered, isNotNull);
     expect(hovered!.kind, SelectionKind.point);
     expect(hovered.id, controller.originPointId);
@@ -1125,7 +1125,7 @@ void main() {
     controller.cursorX = 2.5;
     controller.cursorY = 0.1;
 
-    final hovered = controller.hoveredEntity;
+    final hovered = controller.hoveredEntity();
     expect(hovered, isNotNull);
     expect(hovered!.kind, SelectionKind.line);
     expect(hovered.id, lineId);
@@ -1143,10 +1143,41 @@ void main() {
     controller.cursorX = 0;
     controller.cursorY = 5;
 
-    final hovered = controller.hoveredEntity;
+    final hovered = controller.hoveredEntity();
     expect(hovered, isNotNull);
     expect(hovered!.kind, SelectionKind.circle);
     expect(hovered.id, circleId);
+  });
+
+  test('bug-fix round 3: hoveredEntity(pixelsPerUnit) uses the exact same zoom-scaled radius as '
+      'tap-to-select, instead of always the flat snapRadius', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final lineId = controller.lines.keys.first;
+
+    // Zoomed out enough that minTapHitRadiusPixels/pixelsPerUnit exceeds
+    // snapRadius - far enough from the line that the old flat-snapRadius
+    // hover would miss it, but still within the zoom-scaled tap radius
+    // (matching what handleCanvasTap would actually select here). The cursor
+    // sits at the line's midpoint, far from either endpoint, so this
+    // exercises the line branch rather than pointHitRadiusMultiplier's
+    // larger endpoint radius snapping to a Point instead.
+    const pixelsPerUnit = 5.0; // 14px / 5 = 2.8 sketch units
+    controller.cursorX = 10;
+    controller.cursorY = 2.0; // 2.0 sketch units off the line - past snapRadius (0.5)
+
+    expect(controller.hoveredEntity(), isNull); // old flat-snapRadius behaviour
+    final hovered = controller.hoveredEntity(pixelsPerUnit);
+    expect(hovered, isNotNull);
+    expect(hovered!.kind, SelectionKind.line);
+    expect(hovered.id, lineId);
+    expect(
+      controller.hitRadiusForPixelsPerUnit(pixelsPerUnit),
+      closeTo(SketchController.minTapHitRadiusPixels / pixelsPerUnit, 1e-9),
+    );
   });
 
   test('handleCanvasTap selects the hovered entity and opens the ribbon while idle', () async {
