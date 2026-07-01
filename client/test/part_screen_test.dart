@@ -1202,6 +1202,60 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
+
+    testWidgets(
+      'bug-fix: deleting the ExtrudeFeature that auto-hid its Sketch un-hides that Sketch again, '
+      'instead of leaving it dimmed forever even once it is editable',
+      (tester) async {
+        final backend = _FakeDocumentBackend(
+          seedFeatures: [
+            {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+          ],
+        );
+        final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tapAddFeatureExtrude(tester);
+        await tester.tap(find.text('Sketch 1'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Confirm'));
+        await tester.pump();
+        await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
+
+        // Confirming the Extrude auto-hides the Sketch it consumed (Stage
+        // 19b) - reopen the tree to see it.
+        await tester.tap(find.byTooltip('Feature tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+
+        // Delete the ExtrudeFeature - Sketch 1 becomes the last (editable)
+        // Feature again, so it should no longer be hidden either.
+        await tester.longPress(find.text('Extrude 1'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Delete'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Delete'));
+        await tester.pump();
+        await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
+
+        expect(find.byIcon(Icons.visibility_off), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
   });
 
   testWidgets('cancelling the Extrude panel after a live-preview update deletes the preview ExtrudeFeature', (
