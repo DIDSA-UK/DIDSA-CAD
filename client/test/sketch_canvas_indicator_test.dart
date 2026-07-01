@@ -6,17 +6,20 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
-import 'package:didsa_cad_client/sketch/sketch_canvas.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
+import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 
-/// Prompt B item B5: a sketch canvas widget test for the fully-constrained
-/// padlock indicator. A trimmed copy of `sketch_canvas_ghost_editor_test.dart`'s
-/// `_FakeBackend` - just the endpoints needed to place a Point and solve
-/// (which is enough to drive [SketchController.isUnderConstrained] off the
-/// fake's controllable `dof` field).
+/// Bug-fix round: a widget test for the "fully constrained" padlock
+/// indicator, now in [SketchScreen]'s AppBar title (moved out of the
+/// canvas overlay, where it used to render behind the Exit Sketch FAB). A
+/// trimmed copy of `sketch_canvas_ghost_editor_test.dart`'s `_FakeBackend` -
+/// just the endpoints needed to place a Line and solve (which is enough to
+/// drive [SketchController.isUnderConstrained]/[SketchController.hasGeometry]
+/// off the fake's controllable `dof` field).
 class _FakeBackend {
   int _nextId = 1;
   final Map<String, Map<String, dynamic>> points = {};
+  final Map<String, Map<String, dynamic>> lines = {};
   final Map<String, Map<String, dynamic>> sketches = {};
   int dof = 0;
 
@@ -48,6 +51,23 @@ class _FakeBackend {
       final point = points[pointGetMatch.group(1)];
       if (point == null) return http.Response('not found', 404);
       return _json(point, 200);
+    }
+
+    final linesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/lines$').hasMatch(path);
+    if (linesCollectionMatch && request.method == 'POST') {
+      final id = _newId('line');
+      final line = {
+        'id': id,
+        'start_point_id': body['start_point_id'],
+        'end_point_id': body['end_point_id'],
+        'length': 1.0,
+        'construction': false,
+      };
+      lines[id] = line;
+      return _json(line, 201);
+    }
+    if (linesCollectionMatch && request.method == 'GET') {
+      return _jsonList(lines.values.toList(), 200);
     }
 
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
@@ -88,48 +108,53 @@ class _FakeBackend {
       http.Response(jsonEncode(body), statusCode);
 }
 
-Future<SketchController> _controllerAfterASolve(int dof) async {
+Future<SketchController> _controllerWithALineAfterASolve(int dof) async {
   final backend = _FakeBackend()..dof = dof;
   final mockClient = MockClient((request) async => backend.handle(request));
   final controller = SketchController(api: SketchApiClient(httpClient: mockClient));
   await controller.ensureSketch();
 
-  controller.selectDrawTool(SketchTool.point);
-  await controller.handleCanvasTap(3, 4); // any placement triggers _solveAndTrackDof
+  controller.selectDrawTool(SketchTool.line);
+  await controller.handleCanvasTap(0, 0);
+  await controller.handleCanvasTap(10, 0);
+  controller.finishChain();
   return controller;
 }
 
-void main() {
-  testWidgets('the fully-constrained padlock badge renders when the last solve reports dof == 0',
-      (tester) async {
-    final controller = await _controllerAfterASolve(0);
+Future<void> _pumpSketchScreen(WidgetTester tester, SketchController controller) async {
+  await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+  await tester.pump();
+}
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SizedBox(width: 400, height: 400, child: SketchCanvas(controller: controller)),
-        ),
-      ),
-    );
-    await tester.pump();
+void main() {
+  testWidgets('the fully-constrained padlock icon renders in the title bar when the sketch has '
+      'geometry and the last solve reports dof == 0', (tester) async {
+    final controller = await _controllerWithALineAfterASolve(0);
+
+    await _pumpSketchScreen(tester, controller);
 
     expect(find.byIcon(Icons.lock), findsOneWidget);
-    expect(find.text('Fully constrained'), findsOneWidget);
   });
 
-  testWidgets('the fully-constrained padlock badge does not render when dof > 0', (tester) async {
-    final controller = await _controllerAfterASolve(1);
+  testWidgets('the padlock icon does not render when dof > 0', (tester) async {
+    final controller = await _controllerWithALineAfterASolve(1);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SizedBox(width: 400, height: 400, child: SketchCanvas(controller: controller)),
-        ),
-      ),
-    );
-    await tester.pump();
+    await _pumpSketchScreen(tester, controller);
 
     expect(find.byIcon(Icons.lock), findsNothing);
-    expect(find.text('Fully constrained'), findsNothing);
+  });
+
+  testWidgets(
+      'the padlock icon does not render for an empty sketch, even though dof == 0 (bug-fix round: '
+      'a brand-new sketch has nothing to be "fully constrained")', (tester) async {
+    final backend = _FakeBackend()..dof = 0;
+    final mockClient = MockClient((request) async => backend.handle(request));
+    final controller = SketchController(api: SketchApiClient(httpClient: mockClient));
+    await controller.ensureSketch();
+
+    await _pumpSketchScreen(tester, controller);
+
+    expect(controller.hasGeometry, isFalse);
+    expect(find.byIcon(Icons.lock), findsNothing);
   });
 }

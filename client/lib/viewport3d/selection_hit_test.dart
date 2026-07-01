@@ -20,18 +20,23 @@ const double kCameraVerticalFovRadians = math.pi / 4;
 /// `SketchController.minTapHitRadiusPixels` (22.0): that is a 2D sketch's
 /// primary tap-to-select radius, this is a 3D hover/pick radius that always
 /// has a face fallback when nothing edge/vertex-like is near enough.
-const double kSelectionHitRadiusPixels = 9.0;
+///
+/// Bug-fix round: this used to be smaller than [kVertexSelectionHitRadiusPixels]
+/// (9px vs. 16px) so a vertex - a single point target vs. an edge's full
+/// line segment - had extra forgiveness. On-device testing found the gap
+/// between the two made hit-testing feel inconsistent (generous near a
+/// corner, tight along an edge) and, worse, meant the actual selectable
+/// area no longer matched the hover highlight it's driven from (both read
+/// off the same [HoverHit] - see [hitTestMeshEntities] - so hover and
+/// selection were never actually different targets, just an oversized one
+/// for vertices specifically). Both constants are now equal, at the
+/// midpoint of the old 9px/16px values.
+const double kSelectionHitRadiusPixels = 12.5;
 
-/// A vertex is a single point target, while an edge is a full line segment
-/// and a face is a filled area - the same 9px radius that's comfortably
-/// generous for "near this line"/"inside this triangle" is a much smaller
-/// effective target for "within 9px of this exact point", especially given
-/// the 3D viewport's relative/sensitivity-scaled cursor drag (see
-/// `PartViewport._cursorDragSensitivity`) rather than a precise mouse
-/// pointer. [hitTestMeshEntities] uses this wider radius for the vertex
-/// pass only, so a corner is realistically reachable without needing
-/// pixel-perfect cursor placement.
-const double kVertexSelectionHitRadiusPixels = 16.0;
+/// See [kSelectionHitRadiusPixels]'s doc comment - equal to it as of the
+/// bug-fix round (previously wider, at 16px, to give a vertex - a single
+/// point target - extra forgiveness over an edge's full line segment).
+const double kVertexSelectionHitRadiusPixels = kSelectionHitRadiusPixels;
 
 enum SelectionEntityKind { face, edge, vertex }
 

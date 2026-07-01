@@ -593,6 +593,14 @@ class SketchController extends ChangeNotifier {
   int _dof = 0;
   bool get isUnderConstrained => _dof > 0;
 
+  /// Whether this Sketch has any drawn entity at all (Lines/Circles) -
+  /// bug-fix round: a brand-new, empty Sketch has `dof == 0` too (nothing
+  /// but the pinned origin Point has any freedom to report), which used to
+  /// make the "fully constrained" indicator light up before the user had
+  /// drawn anything. That indicator should only ever appear once there's
+  /// actually something to be fully constrained.
+  bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty;
+
   Future<void> _solveAndTrackDof() async {
     final result = await _api.solve(_sketchId!);
     _dof = result.dof;
@@ -2246,11 +2254,22 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  DistanceConstraintDto? _findDistanceConstraint(String pointAId, String pointBId) {
+  /// Finds an existing `DistanceConstraint` between [pointAId]/[pointBId]
+  /// (either order). [orientation], when given, additionally requires an
+  /// exact orientation match - bug-fix round: [confirmGhostValue] used to
+  /// call this ignoring orientation entirely, so re-tapping e.g. a
+  /// "horizontal" ghost for a point pair that already had a "linear"
+  /// DistanceConstraint from an earlier placement would silently just PATCH
+  /// that existing linear constraint's *value* (orientation is never part
+  /// of what a PATCH changes - see `update_constraint_value`), never
+  /// actually creating/switching to the horizontal one the user picked -
+  /// the dimension stayed linear ("diagonal") no matter what was tapped.
+  DistanceConstraintDto? _findDistanceConstraint(String pointAId, String pointBId, {String? orientation}) {
     for (final constraint in constraints.values) {
       if (constraint is DistanceConstraintDto &&
           ((constraint.pointAId == pointAId && constraint.pointBId == pointBId) ||
-              (constraint.pointAId == pointBId && constraint.pointBId == pointAId))) {
+              (constraint.pointAId == pointBId && constraint.pointBId == pointAId)) &&
+          (orientation == null || constraint.orientation == orientation)) {
         return constraint;
       }
     }
@@ -2354,12 +2373,32 @@ class SketchController extends ChangeNotifier {
     };
 
     await _runGuarded(() async {
-      final existing = _findDistanceConstraint(pointAId, pointBId);
+      final existing = _findDistanceConstraint(pointAId, pointBId, orientation: orientation);
       if (existing != null) {
         final oldValue = existing.distance;
         await _api.updateConstraintValue(_sketchId!, existing.id, distanceValue);
         _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
       } else {
+        // Bug-fix round: a DistanceConstraint between these two points
+        // *does* already exist, just with a different orientation (e.g. the
+        // user first placed a linear dimension here, and is now placing a
+        // horizontal one instead) - replace it outright rather than
+        // creating a second, conflicting DistanceConstraint alongside it
+        // (having both a linear and a horizontal constraint on the same
+        // pair simultaneously over-constrains them).
+        final mismatched = _findDistanceConstraint(pointAId, pointBId);
+        if (mismatched != null) {
+          await _api.deleteConstraint(_sketchId!, mismatched.id);
+          _pushUndo(() async {
+            await _api.createDistanceConstraint(
+              _sketchId!,
+              mismatched.pointAId,
+              mismatched.pointBId,
+              mismatched.distance,
+              orientation: mismatched.orientation,
+            );
+          });
+        }
         final constraint = await _api.createDistanceConstraint(
           _sketchId!,
           pointAId,
@@ -2514,45 +2553,57 @@ class SketchController extends ChangeNotifier {
   /// across separate touches - this only ever adds a delta. Trackpad-style:
   /// a tap always commits at wherever this cursor currently sits (see
   /// [SketchController.handleCanvasTap]), not at the tap's own location.
+  ///
+  /// [canvasSize]/[transform], when both given, implement the bug-fix
+  /// round's cursor-visibility rule: if the cursor is *already* off-canvas
+  /// (see [isCursorVisible]) - which by design only ever happens because a
+  /// pan/zoom moved the view out from under it, since this method's own
+  /// delta is never itself clamped/snapped - this call instead resets it to
+  /// the canvas centre and applies no delta, so the next drag after the
+  /// cursor reappears starts fresh from the centre rather than resuming
+  /// from wherever it had drifted off to. A cursor that's still visible is
+  /// never forced anywhere, even if this delta would push it off-canvas -
+  /// it's simply allowed to disappear (see [isCursorVisible]/the sketch
+  /// canvas's crosshair painting), matching every other cursor-movement
+  /// path in this class, which stays purely in sketch-space and is
+  /// otherwise unaffected by pan/zoom.
   void moveCursorRelative(double dxPixels, double dyPixels, double zoom,
       {Size? canvasSize, ViewTransform? transform}) {
-    final scale = touchSensitivity / zoom;
-    cursorX += dxPixels * scale;
-    cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
-    if (canvasSize != null && transform != null) {
-      clampCursorToBounds(canvasSize, transform);
+    if (canvasSize != null && transform != null && !isCursorVisible(canvasSize, transform)) {
+      final centre = transform.screenToSketch(canvasSize.width / 2, canvasSize.height / 2);
+      cursorX = centre.x;
+      cursorY = centre.y;
+    } else {
+      final scale = touchSensitivity / zoom;
+      cursorX += dxPixels * scale;
+      cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
     }
     notifyListeners();
   }
 
   /// Mouse input: absolute, 1:1 with device position - drives the crosshair
-  /// preview ahead of a click.
-  void moveCursorAbsoluteScreen(Offset screenPosition, ViewTransform transform, {Size? canvasSize}) {
+  /// preview ahead of a click. Always on-canvas already (pointer events only
+  /// fire within the canvas's own hit-test area), so - unlike
+  /// [moveCursorRelative] - there is never a stale/off-canvas position to
+  /// reconcile here.
+  void moveCursorAbsoluteScreen(Offset screenPosition, ViewTransform transform) {
     final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
     cursorX = coord.x;
     cursorY = coord.y;
-    if (canvasSize != null) {
-      clampCursorToBounds(canvasSize, transform);
-    }
     notifyListeners();
   }
 
-  /// Re-centres the cursor (in sketch-space) if its current on-screen
-  /// position - under [transform] - has escaped [canvasSize], per
-  /// [clampCursorToCanvas]. Called both from [moveCursorRelative]/
-  /// [moveCursorAbsoluteScreen] above (after every delta/absolute cursor
-  /// update) and directly by the canvas after any pan/zoom that shifts the
-  /// canvas origin without itself moving the cursor's sketch-space
-  /// coordinates (Prompt B item B0) - a panned-away cursor is exactly the
-  /// "drift outside the visible canvas" case the item describes.
-  void clampCursorToBounds(Size canvasSize, ViewTransform transform) {
+  /// Whether the cursor's current on-screen position - under [transform] -
+  /// falls within [canvasSize], per [clampCursorToCanvas]. The cursor's own
+  /// sketch-space position is never itself touched by panning or zooming
+  /// (see this class's/[SketchCanvas]'s doc comments), so a pan/zoom that
+  /// moves the view out from under a stationary cursor is exactly what
+  /// makes this false - the sketch canvas's crosshair painting hides the
+  /// cursor entirely in that case, and [moveCursorRelative] uses this to
+  /// reset to centre on the next drag rather than resuming from off-canvas.
+  bool isCursorVisible(Size canvasSize, ViewTransform transform) {
     final screen = transform.sketchToScreen(cursorX, cursorY);
-    final clamped = clampCursorToCanvas(screen, canvasSize);
-    if (clamped == screen) return;
-    final coord = transform.screenToSketch(clamped.dx, clamped.dy);
-    cursorX = coord.x;
-    cursorY = coord.y;
-    notifyListeners();
+    return clampCursorToCanvas(screen, canvasSize) == screen;
   }
 
   /// [SketchMode.draw]'s tap handling - dispatches by [activeTool] and then

@@ -199,15 +199,17 @@ void main() {
       // old logic) meant an edge's closest point - free to slide along the
       // segment toward wherever the cursor actually is - would beat the
       // fixed vertex point for almost any cursor position off its exact
-      // projected pixel. That defeated the entire purpose of
-      // kVertexSelectionHitRadiusPixels being wider than the edge radius:
-      // in practice a vertex could (almost) never win once any edge was
-      // anywhere nearby, no matter how generous its own radius was. Here
-      // the vertex (~10.8px off-ray) is outside the 9px edge radius but
-      // inside its own 16px radius, while an unrelated edge (~1.4px
-      // off-ray) is far closer in raw distance - the vertex must still win
-      // because it's in-radius at all, not because it's nearer than the
-      // edge.
+      // projected pixel. That defeated the whole purpose of vertices having
+      // their own in-radius check at all: in practice a vertex could
+      // (almost) never win once any edge was anywhere nearby, no matter how
+      // generous its own radius was. Here the vertex (~10.8px off-ray) is
+      // within kVertexSelectionHitRadiusPixels, while an unrelated edge
+      // (~1.4px off-ray) is far closer in raw distance - the vertex must
+      // still win because it's in-radius at all, not because it's nearer
+      // than the edge (bug-fix round: kVertexSelectionHitRadiusPixels and
+      // kSelectionHitRadiusPixels are now equal - see their doc comments -
+      // but this priority-over-raw-distance behaviour is independent of
+      // that and still needs covering).
       final mesh = MeshDto(
         vertices: const [],
         normals: const [],
@@ -223,12 +225,9 @@ void main() {
       expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3));
     });
 
-    test('a vertex beyond the edge radius but within the wider vertex radius is hit', () {
-      // 12px off-ray at depth 10 is past kSelectionHitRadiusPixels (9px,
-      // what edges use) but still inside kVertexSelectionHitRadiusPixels
-      // (16px) - the wider vertex-only radius that compensates for the
-      // viewport's relative/sensitivity-scaled cursor drag making a single
-      // point much harder to land on than a full edge.
+    test('a vertex with no competing edge/face nearby is hit on its own radius', () {
+      // 12px off-ray at depth 10, well within kVertexSelectionHitRadiusPixels
+      // (12.5px as of the bug-fix round - see its doc comment).
       final mesh = MeshDto(
         vertices: const [],
         normals: const [],

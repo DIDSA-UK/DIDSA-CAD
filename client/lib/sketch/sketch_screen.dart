@@ -93,7 +93,31 @@ class _SketchScreenState extends State<SketchScreen> {
         leading: const DidsaLogoButton(),
         leadingWidth: 100,
         centerTitle: false,
-        title: const Text('DIDSA-CAD Sketch', textAlign: TextAlign.right),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Bug-fix round: the "fully constrained" indicator - icon only,
+            // no label (moved out of the canvas overlay, where it used to
+            // sit behind the Exit Sketch FAB) - shown only once the most
+            // recent solve reports dof == 0 *and* there's actually some
+            // drawn geometry to be fully constrained (see
+            // SketchController.hasGeometry's doc comment for why the
+            // latter check matters).
+            AnimatedBuilder(
+              animation: _controller,
+              builder: (context, _) {
+                if (_controller.isUnderConstrained || !_controller.hasGeometry) {
+                  return const SizedBox.shrink();
+                }
+                return const Padding(
+                  padding: EdgeInsets.only(right: 8),
+                  child: Icon(Icons.lock, size: 18),
+                );
+              },
+            ),
+            const Text('DIDSA-CAD Sketch', textAlign: TextAlign.right),
+          ],
+        ),
         actions: [
           // Stage 19b item 4: always visible, disabled once the undo stack
           // is empty.

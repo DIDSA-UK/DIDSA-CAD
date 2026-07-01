@@ -616,6 +616,61 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('bug-fix round: deleting the last Feature returns the new-last Feature to its '
+      'unlocked (black icon/"Editable") appearance, not stuck grey/"Locked"', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Before deleting: Sketch 1 locked (grey lock icon), Sketch 2 unlocked
+    // (primary-colour edit icon).
+    Icon iconFor(String label) =>
+        tester.widget<Icon>(find.descendant(of: find.ancestor(of: find.text(label), matching: find.byType(ListTile)), matching: find.byType(Icon)));
+    expect(iconFor('Sketch 1').color, Colors.grey);
+    expect(iconFor('Sketch 1').icon, Icons.lock);
+    expect(iconFor('Sketch 2').color, isNot(Colors.grey));
+
+    // Long-press the last (unlocked) Feature and delete just it - a
+    // "cascade" of one, same as any other delete through this dialog.
+    await tester.longPress(find.text('Sketch 2'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Delete'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Delete all'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await _pumpUntil(tester, () => find.text('Sketch 2').evaluate().isEmpty);
+
+    // Sketch 1 is now the last Feature - it must render unlocked (black/
+    // primary-colour edit icon), not still show the grey lock icon it had
+    // while Sketch 2 existed.
+    expect(find.text('Sketch 1'), findsOneWidget);
+    expect(iconFor('Sketch 1').color, isNot(Colors.grey));
+    expect(iconFor('Sketch 1').icon, isNot(Icons.lock));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'tapping a reference plane opens a fly-up sheet with a New Sketch action, '
     'and confirming it creates a SketchFeature on that plane',

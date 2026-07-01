@@ -845,6 +845,26 @@ def test_an_under_constrained_sketch_reports_nonzero_dof():
     assert result.dof > 0
 
 
+def test_a_sketch_with_free_geometry_and_zero_constraints_reports_nonzero_dof():
+    """Bug-fix round: solve_sketch() used to short-circuit to a canned
+    dof=0 whenever a Sketch had no Constraints at all, regardless of how
+    much free geometry it had - which made the sketcher's "fully
+    constrained" indicator/line colouring light up for *any* freshly drawn,
+    completely unconstrained geometry (every entity-placement tool solves
+    once after creating it). Two free Points (4 unknowns, 0 equations) must
+    report dof == 4, not 0."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    sketch.add_point(10.0, 0.0)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.dof == 4
+    assert result.detail == "No constraints to solve."
+    assert sketch.points[a.id].x == pytest.approx(0.0)  # positions untouched
+
+
 def test_a_fully_constrained_sketch_reports_zero_dof_over_the_api():
     sketch = _create_sketch()
     a = _create_point(sketch["id"], 0.0, 0.0)
