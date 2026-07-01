@@ -471,6 +471,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       _multiTouchOccurred = true;
       return;
     }
+    // Bug-fix round 2: a brand new single-finger touch (not a continuation
+    // of one already in progress) is the one moment the cursor reappears
+    // at canvas centre if a prior pan/zoom left it off-canvas - see
+    // SketchController.resetCursorToCentreIfHidden's doc comment for why
+    // this must never happen mid-drag instead.
+    final size = _lastSize;
+    if (size != null) {
+      widget.controller.resetCursorToCentreIfHidden(size, transform);
+    }
     _singleTouchTravel = 0;
     _multiTouchOccurred = false;
     if (_tryStartEntityDrag(transform)) return;
@@ -508,8 +517,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         // screenToSketch of event.localPosition would) applies a far larger,
         // inconsistent scale, which is what made the Point race away from
         // the finger instead of tracking it 1:1 with the cursor.
-        controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom,
-            canvasSize: size, transform: transform);
+        controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
         controller.updatePointDrag(controller.cursorX, controller.cursorY);
       }
       return;
@@ -536,8 +544,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // never the tap's own screen location).
       _singleTouchTravel += event.delta.distance;
       _refreshCursorMoveTimeIfMoved(event.localPosition);
-      widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom,
-          canvasSize: size, transform: transform);
+      widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       return;
     }
 
