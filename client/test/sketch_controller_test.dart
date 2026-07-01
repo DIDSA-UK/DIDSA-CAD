@@ -993,8 +993,9 @@ void main() {
     });
   });
 
-  test('moveCursorRelative does not force an on-canvas cursor back into bounds, even if this '
-      'delta would push it off-canvas (bug-fix round: it is simply allowed to disappear)', () {
+  test('moveCursorRelative never clamps/resets, even across many consecutive calls (bug-fix '
+      'round 2: doing so here, rather than only at a fresh gesture start, is what caused the '
+      'cursor to visibly teleport to centre mid-drag during active RTS panning)', () {
     // originScreen at the canvas centre, 10px/unit - a cursor more than 20
     // sketch-units off in X escapes a 400-wide canvas (200px either side).
     const transform = ViewTransform(pixelsPerUnit: 10, originScreen: Offset(200, 150));
@@ -1002,37 +1003,43 @@ void main() {
     controller.cursorX = 0;
     controller.cursorY = 0;
 
-    controller.moveCursorRelative(5000, 0, 1, canvasSize: canvasSize, transform: transform);
-
+    controller.moveCursorRelative(5000, 0, 1);
     // touchSensitivity (0.05) * 5000 = 250 sketch units - genuinely off-canvas
     // now, and that's fine; it isn't yanked back.
     expect(controller.cursorX, closeTo(250, 1e-9));
     expect(controller.isCursorVisible(canvasSize, transform), isFalse);
+
+    // A second, further delta - simulating the same continuous drag - must
+    // keep accumulating normally, not snap back to centre just because the
+    // cursor was already off-canvas from the previous call.
+    controller.moveCursorRelative(100, 0, 1);
+    expect(controller.cursorX, closeTo(255, 1e-9));
   });
 
-  test('moveCursorRelative resets to canvas centre (ignoring this delta) once the cursor was '
-      'already off-canvas - the "reappears at centre on the next interaction" rule', () {
+  group('resetCursorToCentreIfHidden', () {
     const transform = ViewTransform(pixelsPerUnit: 10, originScreen: Offset(200, 150));
     const canvasSize = Size(400, 300);
-    controller.cursorX = 0;
-    controller.cursorY = 0;
-    controller.moveCursorRelative(5000, 0, 1, canvasSize: canvasSize, transform: transform);
-    expect(controller.isCursorVisible(canvasSize, transform), isFalse);
 
-    controller.moveCursorRelative(9999, 9999, 1, canvasSize: canvasSize, transform: transform);
+    test('resets an off-canvas cursor to canvas centre', () {
+      controller.cursorX = 1000;
+      controller.cursorY = 0;
 
-    final screen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
-    expect(screen.dx, closeTo(200, 1e-9));
-    expect(screen.dy, closeTo(150, 1e-9));
-  });
+      controller.resetCursorToCentreIfHidden(canvasSize, transform);
 
-  test('moveCursorRelative without canvasSize/transform never clamps or resets (back-compat)', () {
-    controller.cursorX = 0;
-    controller.cursorY = 0;
+      final screen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
+      expect(screen.dx, closeTo(200, 1e-9));
+      expect(screen.dy, closeTo(150, 1e-9));
+    });
 
-    controller.moveCursorRelative(5000, 0, 1);
+    test('leaves an on-canvas cursor untouched', () {
+      controller.cursorX = 5;
+      controller.cursorY = 5;
 
-    expect(controller.cursorX, greaterThan(1));
+      controller.resetCursorToCentreIfHidden(canvasSize, transform);
+
+      expect(controller.cursorX, 5);
+      expect(controller.cursorY, 5);
+    });
   });
 
   group('isCursorVisible', () {

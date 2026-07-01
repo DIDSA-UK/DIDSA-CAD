@@ -1473,7 +1473,6 @@ class SketchController extends ChangeNotifier {
     final toDelete = List<SketchSelection>.from(_selectionSet)
       ..removeWhere((s) => s.kind == SelectionKind.point && s.id == _originPointId);
     if (toDelete.isEmpty) return;
-    final deletedConstraint = toDelete.any((s) => s.kind == SelectionKind.constraint);
 
     // Stage 19b item 4: captured before anything is actually removed, so
     // the undo entry pushed below has the data needed to recreate each one
@@ -1543,14 +1542,18 @@ class SketchController extends ChangeNotifier {
             capturedCircles,
             capturedConstraints,
           ));
-      // Removing a Constraint changes the system's degrees of freedom, so
-      // unlike deleting a Point/Line/Circle (which only ever removes
-      // geometry the solver already accounted for) this needs an explicit
-      // re-solve to reflect the now-looser system.
-      if (deletedConstraint) {
-        await _solveAndTrackDof();
-        await _refreshConstraints();
-      }
+      // Bug-fix round 2: always re-solve/refresh here, not just when a
+      // Constraint was directly in the selection (the old behaviour).
+      // Deleting a Circle also cascades to remove its own radius
+      // DistanceConstraint server-side (see Sketch.delete_circle) - that
+      // changes the system's degrees of freedom exactly as much as an
+      // explicit Constraint deletion does, but the old conditional only
+      // looked at what the user actually selected, so this case fell
+      // through it and left `_dof`/`isUnderConstrained` (and so the "fully
+      // constrained" indicator) stale until some *other* mutation happened
+      // to trigger a fresh solve.
+      await _solveAndTrackDof();
+      await _refreshConstraints();
       await _refreshAllPoints();
       _selectionSet.clear();
       _ribbonVisible = false;
@@ -2554,30 +2557,29 @@ class SketchController extends ChangeNotifier {
   /// a tap always commits at wherever this cursor currently sits (see
   /// [SketchController.handleCanvasTap]), not at the tap's own location.
   ///
-  /// [canvasSize]/[transform], when both given, implement the bug-fix
-  /// round's cursor-visibility rule: if the cursor is *already* off-canvas
-  /// (see [isCursorVisible]) - which by design only ever happens because a
-  /// pan/zoom moved the view out from under it, since this method's own
-  /// delta is never itself clamped/snapped - this call instead resets it to
-  /// the canvas centre and applies no delta, so the next drag after the
-  /// cursor reappears starts fresh from the centre rather than resuming
-  /// from wherever it had drifted off to. A cursor that's still visible is
-  /// never forced anywhere, even if this delta would push it off-canvas -
-  /// it's simply allowed to disappear (see [isCursorVisible]/the sketch
-  /// canvas's crosshair painting), matching every other cursor-movement
-  /// path in this class, which stays purely in sketch-space and is
-  /// otherwise unaffected by pan/zoom.
-  void moveCursorRelative(double dxPixels, double dyPixels, double zoom,
-      {Size? canvasSize, ViewTransform? transform}) {
-    if (canvasSize != null && transform != null && !isCursorVisible(canvasSize, transform)) {
-      final centre = transform.screenToSketch(canvasSize.width / 2, canvasSize.height / 2);
-      cursorX = centre.x;
-      cursorY = centre.y;
-    } else {
-      final scale = touchSensitivity / zoom;
-      cursorX += dxPixels * scale;
-      cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
-    }
+  /// Never itself clamped/snapped/reset - a cursor that drifts off-canvas
+  /// (see [isCursorVisible]) simply keeps going, and simply disappears from
+  /// the crosshair painting, exactly like every other cursor-movement path
+  /// in this class, which stays purely in sketch-space and is otherwise
+  /// unaffected by pan/zoom.
+  ///
+  /// Bug-fix round 2: this used to check [isCursorVisible] itself and, if
+  /// already off-canvas, reset to centre right here - but that ran on
+  /// *every* relative-move event, not just the start of a new gesture. A
+  /// fast drag toward an edge can overshoot past canvas bounds for a single
+  /// frame before RTS edge-pan's own ticker (which runs independently of
+  /// pointer events, see sketch_canvas.dart's `_onEdgePanTick`) has a
+  /// chance to compensate - that was enough to trip the reset on the very
+  /// next move event of the *same* continuing drag, which is what caused
+  /// the reported "keeps jumping to the middle" during active RTS panning.
+  /// The reset-to-centre-if-hidden behaviour now lives in
+  /// [resetCursorToCentreIfHidden] instead, called only once, at the start
+  /// of a brand new touch gesture (see sketch_canvas.dart's
+  /// `_handlePointerDown`) - never mid-drag.
+  void moveCursorRelative(double dxPixels, double dyPixels, double zoom) {
+    final scale = touchSensitivity / zoom;
+    cursorX += dxPixels * scale;
+    cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
     notifyListeners();
   }
 
@@ -2604,6 +2606,22 @@ class SketchController extends ChangeNotifier {
   bool isCursorVisible(Size canvasSize, ViewTransform transform) {
     final screen = transform.sketchToScreen(cursorX, cursorY);
     return clampCursorToCanvas(screen, canvasSize) == screen;
+  }
+
+  /// Bug-fix round 2: resets the cursor to canvas centre if - and only if -
+  /// it's currently off-canvas (see [isCursorVisible]), implementing "the
+  /// cursor reappears at centre the next time you interact with it".
+  /// Deliberately called only once per gesture, from the very start of a
+  /// brand new single-finger touch (see sketch_canvas.dart's
+  /// `_handlePointerDown`) - never from [moveCursorRelative] itself (which
+  /// runs on every move event of an already-in-progress drag) - see that
+  /// method's doc comment for the bug this ordering fixes.
+  void resetCursorToCentreIfHidden(Size canvasSize, ViewTransform transform) {
+    if (isCursorVisible(canvasSize, transform)) return;
+    final centre = transform.screenToSketch(canvasSize.width / 2, canvasSize.height / 2);
+    cursorX = centre.x;
+    cursorY = centre.y;
+    notifyListeners();
   }
 
   /// [SketchMode.draw]'s tap handling - dispatches by [activeTool] and then
