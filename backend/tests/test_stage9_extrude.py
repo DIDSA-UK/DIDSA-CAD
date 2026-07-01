@@ -93,6 +93,23 @@ def test_create_extrude_on_sketch_with_no_closed_profile_is_rejected():
     assert "closed profile" in response.json()["detail"].lower()
 
 
+def test_create_extrude_on_sketch_with_a_hole_flush_against_its_container_is_rejected():
+    """On-device bug: previously this sailed through profile detection (the
+    hole's centroid is inside the outer loop, which is all the original
+    check verified) and produced a malformed partial solid instead of a
+    clean 400 - see test_stage2_profile.py's equivalent detection-level
+    test for the root cause."""
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    _add_square(sketch_feature["sketch_id"], 0.0, 0.0, 20.0)
+    _add_square(sketch_feature["sketch_id"], 5.0, 0.0, 5.0)
+
+    response = _create_extrude_feature(part["id"], sketch_feature["id"])
+
+    assert response.status_code == 400
+    assert "overlapping_loops" in response.json()["detail"].lower()
+
+
 def test_create_extrude_referencing_a_non_sketch_feature_is_rejected():
     part = _create_part()
     sketch_feature = _create_square_sketch_feature(part["id"])

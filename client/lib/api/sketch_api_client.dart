@@ -403,6 +403,7 @@ class SolveResultDto {
 /// needed by either consumer, so they're left unparsed.
 class ProfileDetectionDto {
   static const String closedLoop = 'closed_loop';
+  static const String multipleLoops = 'multiple_loops';
 
   final String status;
   final String detail;
@@ -411,6 +412,17 @@ class ProfileDetectionDto {
   ProfileDetectionDto({required this.status, required this.detail, this.pointIds});
 
   bool get isClosedLoop => status == closedLoop;
+
+  /// Prompt C (C2): whether the backend would accept an Extrude created
+  /// from this Sketch - `closed_loop` (a single nested profile, C1) or
+  /// `multiple_loops` (a MultiProfile of disjoint outer profiles, C2) -
+  /// matching `app.document.router._require_closed_sketch_feature`'s own
+  /// gate exactly. Deliberately broader than [isClosedLoop]: the canvas
+  /// area-fill consumer only knows how to fill *one* profile's area (so it
+  /// stays scoped to [isClosedLoop]), but the Extrude eligibility gate must
+  /// accept both or a MultiProfile Sketch would be dimmed/rejected by the
+  /// picker despite the server actually being willing to extrude it.
+  bool get isExtrudable => status == closedLoop || status == multipleLoops;
 
   factory ProfileDetectionDto.fromJson(Map<String, dynamic> json) {
     final profile = json['profile'] as Map<String, dynamic>?;

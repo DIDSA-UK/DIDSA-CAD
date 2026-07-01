@@ -165,6 +165,31 @@ def test_a_circle_inside_a_square_is_a_hole():
     assert len(result.profile.inner_loops) == 1
 
 
+def test_inner_loop_sharing_a_whole_edge_with_the_outer_loop_is_rejected():
+    """On-device bug: a "hole" flush against one side of its container
+    (sharing that whole edge, not just overlapping) has its centroid
+    clearly inside the outer loop, so the centroid test alone would call
+    it a valid hole - _loop_fully_contains's segment-intersection check is
+    what actually catches this."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    _add_square_loop(sketch, 0.0, 0.0, 20.0)
+    _add_square_loop(sketch, 5.0, 0.0, 5.0)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.OVERLAPPING_LOOPS
+
+
+def test_inner_loop_touching_the_outer_loop_at_a_single_corner_is_rejected():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    _add_square_loop(sketch, 0.0, 0.0, 20.0)
+    _add_square_loop(sketch, 10.0, 10.0, 10.0)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.OVERLAPPING_LOOPS
+
+
 def test_construction_only_inner_loop_is_ignored():
     sketch = Sketch(id="s", plane=Plane.XY)
     _add_square_loop(sketch, 0.0, 0.0, 20.0)
