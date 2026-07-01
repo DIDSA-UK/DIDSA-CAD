@@ -136,11 +136,11 @@ MeshBounds? boundsOfMesh(MeshDto mesh) {
 /// this from the original `2.0` towards a more typical CAD wireframe weight.
 const double kEdgeStrokeWidth = 1.1;
 
-/// C3: how far [biasSegmentsTowardCamera] pushes each edge point towards
-/// the camera, as a *fraction* of the mesh's bounding-sphere radius - the
-/// closest available substitute for a real GPU depth bias in
-/// `shadedWithEdges` mode, used to stop edges z-fighting/flickering against
-/// the filled faces underneath them at glancing viewing angles.
+/// C3: how far (world units) [biasSegmentsTowardCamera] pushes each edge
+/// point towards the camera - the closest available substitute for a real
+/// GPU depth bias in `shadedWithEdges` mode, used to stop edges
+/// z-fighting/flickering against the filled faces underneath them at
+/// glancing viewing angles.
 ///
 /// Three fixes for this were evaluated, in the order the project brief
 /// prefers:
@@ -163,25 +163,35 @@ const double kEdgeStrokeWidth = 1.1;
 ///     no adjacency between them) - would require backend changes to
 ///     `mesh.py`, out of C3's client-only scope, so not attempted.
 ///
-/// The *previous* fix (approach 2 done wrong) pushed every point directly
-/// away from the mesh's bounding-sphere **center** - at a glancing angle,
-/// "away from center" and "towards the camera" can be nearly
-/// perpendicular, so that push barely increased depth-buffer separation
-/// for exactly the edges the bug report was about. [biasSegmentsTowardCamera]
-/// replaces it with a push towards the *camera position*, recomputed per
-/// vertex (see its own doc comment) and re-run whenever the camera moves
-/// (see `PartViewport`'s `_onPointerEnd`/`_onPointerSignal`/`_doRecentre`/
-/// `animateToPlane`), so it stays aligned with the actual view direction
-/// instead of a single fixed geometric point.
+/// The fix that shipped first pushed every point directly away from the
+/// mesh's bounding-sphere **center** - at a glancing angle, "away from
+/// center" and "towards the camera" can be nearly perpendicular, so that
+/// push barely increased depth-buffer separation for exactly the edges
+/// the bug report was about. [biasSegmentsTowardCamera] fixes the
+/// direction: it pushes towards the *camera position* instead, recomputed
+/// per vertex (see its own doc comment) and re-run whenever the camera
+/// moves (see `PartViewport`'s `_onPointerEnd`/`_onPointerSignal`/
+/// `_doRecentre`/`animateToPlane`).
 ///
-/// Expressed as a fraction of the bounding-sphere radius, not a fixed
-/// world-space distance (the brief's suggested literal `0.001` world
-/// units would be an inch-scale offset on a small bracket and invisible
-/// on a metre-scale frame) - 0.1% of the model's own size scales
-/// correctly across the whole range of real part sizes this tool targets,
-/// mirroring how the auto-fit far clip (Prompt A) is already scaled off
-/// this same bounding-sphere radius rather than a fixed constant.
-const double kEdgeDepthBias = 0.001;
+/// This constant's *magnitude* went through one more on-device-tested
+/// iteration: it was briefly expressed as a fraction of the mesh's own
+/// bounding-sphere radius (0.1%, reasoning that a fixed world-space value
+/// would be imperceptible on a metre-scale part and heavy-handed on a
+/// small one). That scaling caused a real regression, confirmed on a
+/// non-convex (stepped/notched) part: a big part's overall bounding
+/// radius says nothing about the depth of its *smaller local features* -
+/// scaling off it pushed edges on a shallow step/notch by more than the
+/// step's own depth, so a far wall's edges ended up biased in *front of*
+/// a nearer wall and rendered through it. Edges are opaque and
+/// depth-write (see [buildMeshEdgesNode]/[kEdgeStrokeWidth]'s material),
+/// so an oversized bias does not just misplace the edge itself - it also
+/// corrupts the depth buffer for anything else tested against it
+/// afterwards (e.g. a translucent face-highlight overlay depth-tested in
+/// the same frame). This constant is back to a fixed world-space amount -
+/// the same value (`0.02`) the pre-existing, already-shipped
+/// `meshEdgeNudgeAmount` used, so it inherits whatever on-device tuning
+/// that had - with only the *direction* changed, not the magnitude.
+const double kEdgeDepthBias = 0.02;
 
 /// Parses [mesh]'s flat `[x1,y1,z1, x2,y2,z2, ...]` edge polyline data (see
 /// backend/app/document/mesh.py's `_extract_edges`) into segment pairs -

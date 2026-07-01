@@ -938,6 +938,43 @@ void main() {
     },
   );
 
+  testWidgets(
+    "long-pressing a SketchFeature with a MultiProfile (C2's disjoint-outer-loops "
+    "'multiple_loops' status) shows Extrude enabled, not disabled",
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend(profileStatus: 'multiple_loops');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final extrudeTile = find.widgetWithText(ListTile, 'Extrude');
+      expect(extrudeTile, findsOneWidget);
+      expect(tester.widget<ListTile>(extrudeTile).enabled, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   // Prompt D: the "Add" FAB's Feature > Extrude entry, with no eligible
   // Sketch already selected, opens the Feature tree as a guided picker
   // instead of just complaining there's nothing to extrude.

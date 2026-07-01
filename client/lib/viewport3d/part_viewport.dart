@@ -408,8 +408,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     var segments = edgeSegmentsFromMesh(mesh);
     if (segments.isEmpty) return;
     if (widget.renderMode == ViewportRenderMode.shadedWithEdges) {
-      final radius = boundsOfMesh(mesh)?.boundingSphereRadius ?? 0;
-      segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias * radius);
+      segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
     }
     final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
     scene.add(node);

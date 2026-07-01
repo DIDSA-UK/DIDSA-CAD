@@ -683,7 +683,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<String?> _checkExtrudeEligibility(FeatureDto feature) async {
     try {
       final profile = await _sketchApi.getProfile(feature.sketchId!);
-      return profile.isClosedLoop ? null : 'Sketch does not contain a closed profile';
+      return profile.isExtrudable ? null : 'Sketch does not contain a closed profile';
     } catch (_) {
       return 'Sketch does not contain a closed profile';
     }
