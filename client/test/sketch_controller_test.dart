@@ -1653,6 +1653,57 @@ void main() {
   });
 
   test(
+      'bug-fix: a confirmed horizontal DistanceConstraint renders/hit-tests at its '
+      'orientation-aware anchor, not the plain diagonal linear-dimension layout '
+      '(this is what made a horizontal dimension look like it "became linear" on-device)',
+      () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('h', 3.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // Points at screen (400, 300) and (460, 220). A horizontal dimension's
+    // anchor sits at their midpoint-x, offset down to the lower of the two
+    // - not the diagonal parallel-offset midpoint a linear dimension uses.
+    const horizontalAnchor = Offset(430, 318);
+    expect(dimensionLabelAt(controller, transform, horizontalAnchor, 5), constraintId);
+
+    // The old (pre-fix) diagonal-layout anchor no longer matches, since the
+    // dimension is no longer rendered there.
+    const oldDiagonalLayoutAnchor = Offset(444.4, 270.8);
+    expect(dimensionLabelAt(controller, transform, oldDiagonalLayoutAnchor, 5), isNull);
+  });
+
+  test(
+      'bug-fix: a confirmed vertical DistanceConstraint renders/hit-tests at its '
+      'orientation-aware anchor, not the plain diagonal linear-dimension layout', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('v', 4.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // A vertical dimension's anchor sits at their midpoint-y, offset right
+    // to whichever Point is further right on screen.
+    const verticalAnchor = Offset(478, 260);
+    expect(dimensionLabelAt(controller, transform, verticalAnchor, 5), constraintId);
+
+    const oldDiagonalLayoutAnchor = Offset(444.4, 270.8);
+    expect(dimensionLabelAt(controller, transform, oldDiagonalLayoutAnchor, 5), isNull);
+  });
+
+  test(
       'tapping a circle in dimension mode shows radius and diameter ghosts; '
       'confirming diameter halves the stored distance', () async {
     controller.selectDrawTool(SketchTool.circle);

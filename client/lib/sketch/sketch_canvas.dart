@@ -1014,13 +1014,26 @@ Offset? _constraintLabelCenter(
       if (a == null || b == null) return null;
       final aScreen = transform.sketchToScreen(a.x, a.y);
       final bScreen = transform.sketchToScreen(b.x, b.y);
-      final delta = bScreen - aScreen;
-      final length = delta.distance;
-      if (length < 1e-6) return null;
-      final normal = Offset(-delta.dy, delta.dx) / length;
-      const offsetDistance = 18.0;
-      final offset = normal * offsetDistance;
-      return (aScreen + offset + bScreen + offset) / 2;
+      // Must mirror _paintDistanceDimension's per-orientation layout exactly,
+      // or dragging/hit-testing a horizontal/vertical dimension's label
+      // would target the old diagonal-layout midpoint instead of where it's
+      // actually drawn.
+      switch (c.orientation) {
+        case 'vertical':
+          final offsetX = math.max(aScreen.dx, bScreen.dx) + 18.0;
+          return Offset(offsetX, (aScreen.dy + bScreen.dy) / 2);
+        case 'horizontal':
+          final offsetY = math.max(aScreen.dy, bScreen.dy) + 18.0;
+          return Offset((aScreen.dx + bScreen.dx) / 2, offsetY);
+        default:
+          final delta = bScreen - aScreen;
+          final length = delta.distance;
+          if (length < 1e-6) return null;
+          final normal = Offset(-delta.dy, delta.dx) / length;
+          const offsetDistance = 18.0;
+          final offset = normal * offsetDistance;
+          return (aScreen + offset + bScreen + offset) / 2;
+      }
     case VerticalConstraintDto c:
       return _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
     case HorizontalConstraintDto c:
@@ -1396,21 +1409,44 @@ class _SketchPainter extends CustomPainter {
     if (a == null || b == null) return;
     final aScreen = transform.sketchToScreen(a.x, a.y);
     final bScreen = transform.sketchToScreen(b.x, b.y);
-    final delta = bScreen - aScreen;
-    final length = delta.distance;
-    if (length < 1e-6) return;
-    final normal = Offset(-delta.dy, delta.dx) / length;
-    const offsetDistance = 18.0;
-    final offset = normal * offsetDistance;
 
     final dimPaint = Paint()
       ..color = color
       ..strokeWidth = 1;
-    canvas.drawLine(aScreen, aScreen + offset, dimPaint);
-    canvas.drawLine(bScreen, bScreen + offset, dimPaint);
-    canvas.drawLine(aScreen + offset, bScreen + offset, dimPaint);
 
-    final midpoint = (aScreen + offset + bScreen + offset) / 2;
+    // Bug-fix: this used to always lay out as a plain linear dimension (an
+    // offset line parallel to a-b), even for horizontal/vertical
+    // constraints - so a horizontal dimension between two points at
+    // different heights rendered as a diagonal line indistinguishable from
+    // a linear one once confirmed, even though the underlying constraint
+    // correctly only pinned the X separation. Mirror [_layoutGhost]'s
+    // vertical/horizontal layout here so the persisted rendering matches
+    // the ghost preview the user placed.
+    final Offset p1;
+    final Offset p2;
+    switch (c.orientation) {
+      case 'vertical':
+        final offsetX = math.max(aScreen.dx, bScreen.dx) + 18.0;
+        p1 = Offset(offsetX, aScreen.dy);
+        p2 = Offset(offsetX, bScreen.dy);
+      case 'horizontal':
+        final offsetY = math.max(aScreen.dy, bScreen.dy) + 18.0;
+        p1 = Offset(aScreen.dx, offsetY);
+        p2 = Offset(bScreen.dx, offsetY);
+      default:
+        final delta = bScreen - aScreen;
+        final length = delta.distance;
+        if (length < 1e-6) return;
+        final normal = Offset(-delta.dy, delta.dx) / length * 18.0;
+        p1 = aScreen + normal;
+        p2 = bScreen + normal;
+    }
+
+    canvas.drawLine(aScreen, p1, dimPaint);
+    canvas.drawLine(bScreen, p2, dimPaint);
+    canvas.drawLine(p1, p2, dimPaint);
+
+    final midpoint = (p1 + p2) / 2;
     _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
   }
