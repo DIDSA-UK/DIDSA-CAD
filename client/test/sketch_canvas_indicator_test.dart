@@ -127,26 +127,30 @@ Future<void> _pumpSketchScreen(WidgetTester tester, SketchController controller)
 }
 
 void main() {
-  testWidgets('the fully-constrained padlock icon renders in the title bar when the sketch has '
-      'geometry and the last solve reports dof == 0', (tester) async {
+  testWidgets('the closed padlock icon renders in the title bar when the sketch has geometry '
+      'and the last solve reports dof == 0', (tester) async {
     final controller = await _controllerWithALineAfterASolve(0);
 
     await _pumpSketchScreen(tester, controller);
 
     expect(find.byIcon(Icons.lock), findsOneWidget);
+    expect(find.byIcon(Icons.lock_open), findsNothing);
   });
 
-  testWidgets('the padlock icon does not render when dof > 0', (tester) async {
+  testWidgets(
+      'bug-fix: the open padlock icon renders (rather than no icon at all) when dof > 0, so '
+      'under-constrained is visibly distinct from "no geometry yet"', (tester) async {
     final controller = await _controllerWithALineAfterASolve(1);
 
     await _pumpSketchScreen(tester, controller);
 
+    expect(find.byIcon(Icons.lock_open), findsOneWidget);
     expect(find.byIcon(Icons.lock), findsNothing);
   });
 
   testWidgets(
-      'the padlock icon does not render for an empty sketch, even though dof == 0 (bug-fix round: '
-      'a brand-new sketch has nothing to be "fully constrained")', (tester) async {
+      'neither padlock icon renders for an empty sketch, even though dof == 0 (bug-fix round: '
+      'a brand-new sketch has nothing to be "fully constrained" or "under-constrained")', (tester) async {
     final backend = _FakeBackend()..dof = 0;
     final mockClient = MockClient((request) async => backend.handle(request));
     final controller = SketchController(api: SketchApiClient(httpClient: mockClient));
@@ -156,5 +160,6 @@ void main() {
 
     expect(controller.hasGeometry, isFalse);
     expect(find.byIcon(Icons.lock), findsNothing);
+    expect(find.byIcon(Icons.lock_open), findsNothing);
   });
 }

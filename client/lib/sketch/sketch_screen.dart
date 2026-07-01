@@ -96,26 +96,41 @@ class _SketchScreenState extends State<SketchScreen> {
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Bug-fix round: the "fully constrained" indicator - icon only,
-            // no label (moved out of the canvas overlay, where it used to
-            // sit behind the Exit Sketch FAB) - shown only once the most
-            // recent solve reports dof == 0 *and* there's actually some
-            // drawn geometry to be fully constrained (see
-            // SketchController.hasGeometry's doc comment for why the
-            // latter check matters).
+            // The constraint-state indicator - icon only, no label (moved
+            // out of the canvas overlay, where it used to sit behind the
+            // Exit Sketch FAB). Shown whenever there's actually some drawn
+            // geometry to have a constraint state at all (see
+            // SketchController.hasGeometry's doc comment for why that check
+            // matters) - open padlock while under-constrained, closed once
+            // the most recent solve reports dof == 0. Bug-fix: this used to
+            // hide entirely while under-constrained, which left no way to
+            // tell "under-constrained" apart from "the indicator hasn't
+            // caught up yet" purely by looking at the title bar.
             AnimatedBuilder(
               animation: _controller,
               builder: (context, _) {
-                if (_controller.isUnderConstrained || !_controller.hasGeometry) {
-                  return const SizedBox.shrink();
-                }
-                return const Padding(
-                  padding: EdgeInsets.only(right: 8),
-                  child: Icon(Icons.lock, size: 18),
+                if (!_controller.hasGeometry) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Icon(
+                    _controller.isUnderConstrained ? Icons.lock_open : Icons.lock,
+                    size: 18,
+                  ),
                 );
               },
             ),
-            const Text('DIDSA-CAD Sketch', textAlign: TextAlign.right),
+            // Bug-fix: plain Text in a mainAxisSize.min Row has no way to
+            // shrink, so on a narrow/large-text-scale device it could push
+            // the whole title past the AppBar's available width and trip a
+            // RenderFlex overflow. Flexible+ellipsis lets it shrink instead.
+            const Flexible(
+              child: Text(
+                'DIDSA-CAD Sketch',
+                textAlign: TextAlign.right,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
           ],
         ),
         actions: [
