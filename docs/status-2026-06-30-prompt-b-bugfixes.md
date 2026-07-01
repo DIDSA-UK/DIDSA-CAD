@@ -1,10 +1,14 @@
-# Prompt B — device-testing bug-fix round — status — 2026-06-30
+# Prompt B — device-testing bug-fix round — status — 2026-06-30 / 2026-07-01
 
 Branch: `claude/new-session-g0yfjn` (same branch as Prompt B itself - these
 fixes follow directly from on-device testing of that work, plus a couple of
-longer-standing 3D-viewport issues raised in the same report).
+longer-standing 3D-viewport issues raised in the same report). This doc now
+covers four consecutive rounds of on-device bug reports and fixes, all on
+the same branch: items 1–8 (2026-06-30), then items 9–14 (2026-07-01),
+found by continuing to test each round's fixes on a real device/server and
+reporting back what still didn't work.
 
-## Items
+## Round 1 (2026-06-30) — items 1–8
 
 | # | Report | Status | Files changed |
 |---|--------|--------|----------------|
@@ -16,6 +20,29 @@ longer-standing 3D-viewport issues raised in the same report).
 | 6 | 3D viewport: pinch-zoom/two-finger-pan broken in selection mode | Fixed | `part_viewport.dart` |
 | 7 | Dimension orientation reverts to linear after solve | Fixed | `sketch_controller.dart`, `sketch_controller_test.dart` |
 | 8 | Feature tree text stays grey after deleting the last Feature | Investigated, no bug found; regression test added | `part_screen_test.dart` |
+
+## Round 2–4 (2026-07-01) — items 9–14
+
+Item 1's cursor fix and item 7's dimension-orientation fix both turned out
+to be incomplete once retested for real - see items 9 and 13 below. Item 8
+turned out to have a real bug after all, just not in the place the first
+investigation looked - see item 14.
+
+| # | Report | Status | Files changed |
+|---|--------|--------|----------------|
+| 9 | Cursor still teleports to centre mid-drag during RTS panning | Fixed | `sketch_controller.dart`, `sketch_canvas.dart` |
+| 10 | Stale DOF after deleting a Circle (its radius constraint cascade-deletes too) | Fixed | `sketch_controller.dart` |
+| 11 | Clearly under-constrained rectangle shown as "fully constrained" | Fixed (real solver bug) | `sketch_controller.dart` (rectangle construction), `test_stage15_constraints.py` |
+| 12 | 2D sketcher hover highlight and tap-select hit boxes mismatched, both too large | Fixed | `sketch_controller.dart`, `sketch_canvas.dart`, `sketch_controller_test.dart` |
+| 13 | Horizontal/vertical dimensions render as a diagonal linear dimension after solving | Fixed (rendering bug, not solver) | `sketch_canvas.dart`, `sketch_controller_test.dart` |
+| 14 | Sketch stays greyed out/hidden after deleting the Extrude that consumed it | Fixed | `part_screen.dart`, `part_screen_test.dart` |
+| 15 | No visual way to tell "under-constrained" apart from "not yet fully constrained" in the title bar; title bar overflow | Fixed | `sketch_screen.dart`, `sketch_canvas_indicator_test.dart` |
+
+Also reported and independently confirmed fixed with no further change
+needed: the Equal Length constraint, which was not behaving correctly
+before item 11's fix - once the rectangle's redundant/singular constraint
+(the actual cause of solve failures being misreported as `dof == 0`) was
+removed, Equal Length reports came back clean on retest.
 
 ---
 
@@ -280,6 +307,193 @@ itself appears broken by inspection.
 
 ---
 
+## 9 — Cursor still teleporting mid-drag during RTS panning
+
+**Root cause.** Item 1's fix moved the "reset to centre" check into the
+right method (`moveCursorRelative`), but left it running on *every* delta
+during a drag, not just once at gesture start - so the instant a fast RTS
+edge-pan pushed the cursor off-canvas for even one frame, the very next
+touch-move event would see it as "already hidden" and snap it back to
+centre, then immediately resume tracking from there. Visually this looked
+exactly like the original bug: a teleport back to centre mid-drag,
+followed by tracking resuming normally.
+
+**Fix.** The reset check now lives in its own method,
+`resetCursorToCentreIfHidden(Size canvasSize, ViewTransform transform)`,
+called exactly once - from `_handlePointerDown`, at the start of a new
+single-finger touch - rather than from inside `moveCursorRelative` on
+every delta. `moveCursorRelative` itself goes back to the simple form: no
+`canvasSize`/`transform` params, no reset logic, just apply the delta.
+
+**Tests**: replaced the old per-delta reset test with one confirming
+`moveCursorRelative` never resets or clamps regardless of how far
+off-canvas the delta pushes the cursor, and a new `resetCursorToCentreIfHidden`
+test group covering "does nothing while the cursor is already visible" and
+"resets to centre once, from `_handlePointerDown`, when it isn't".
+
+---
+
+## 10 — Stale DOF after deleting a Circle
+
+**Root cause.** `deleteSelected()` only called `_solveAndTrackDof()`
+(which updates the client's cached `_dof`/`_lastSolveConverged`, driving
+`isUnderConstrained`) when the thing just deleted was itself a
+`Constraint`. Deleting a Circle cascades server-side to also delete its
+radius `Constraint`, changing the sketch's real DOF - but the client-side
+gate never saw a `Constraint` in the deleted-entity list (it saw a
+`Circle`), so it skipped re-solving and kept showing the pre-delete DOF.
+
+**Fix.** `deleteSelected()` now always calls `_solveAndTrackDof()` and
+`_refreshConstraints()` after any deletion, regardless of what kind of
+entity was deleted - simpler and correct, since every deletion can
+potentially change DOF via cascade, not just a direct Constraint delete.
+
+---
+
+## 11 — Clearly under-constrained rectangle shown as "fully constrained"
+
+**A real, previously-undetected solver bug**, found by testing the
+rectangle's exact constraint set directly against the installed py-slvs
+1.0.6 wheel rather than just re-reading the client code. B2's rectangle
+construction (see Prompt B's own status doc) pins the construction
+diagonals' shared centre Point with **two** `AtMidpoint` constraints - one
+per diagonal. Once the four sides' H/V constraints force the two
+diagonals to already share a midpoint by construction, the second
+`AtMidpoint` constraint becomes redundant - and, worse, its Jacobian
+becomes singular at that configuration. py-slvs then fails to converge
+(`result.converged == False`, `result.result_code == 5`) but still
+reports `result.dof == 0` - `Dof` and convergence are two independent
+fields, and a failed solve does not reset `Dof` to a "not applicable"
+value. The client was reading `dof == 0` alone as "fully constrained",
+so a solve that had actually *failed* was shown as the most-constrained
+state possible - exactly backwards, and exactly what the screenshot showed
+(a draggable, clearly under-constrained rectangle with the padlock
+locked).
+
+**Fix, at both ends:**
+- **Source**: `_buildRectangle` now creates only one `AtMidpoint`
+  constraint (on the first diagonal) - one is sufficient once the H/V
+  constraints already force both diagonals through the same point, so
+  the second was never doing useful work, only introducing a singularity.
+- **Defensive**: `SketchController.isUnderConstrained` no longer trusts
+  `dof` when the last solve didn't converge - `_dof > 0 || !_lastSolveConverged`
+  - so even an *unrelated* future solve failure can never again present
+    itself as "fully constrained".
+
+**Tests**: a new backend test reproduces the exact two-`AtMidpoint`
+rectangle configuration and asserts it fails to converge (`result_code !=
+0`); a second confirms one `AtMidpoint` constraint is sufficient and
+converges cleanly with the expected DOF and centre-point position. Client
+tests updated to expect 1 `AtMidpointConstraintDto` per rectangle instead
+of 2.
+
+---
+
+## 12 — Sketcher hover/tap hit box mismatch, both too large
+
+**Root cause.** `hoveredEntity` (continuous mouse/cursor hover) always
+used the flat, unscaled `snapRadius` constant regardless of zoom, while
+`handleCanvasTap`'s hit-test used a separate, zoom-scaled radius
+(`hitRadiusForPixelsPerUnit`) - so the highlighted-on-hover entity and the
+entity an actual tap would select could disagree, and neither matched what
+felt like the right size on-device.
+
+**Fix.** `hoveredEntity` is now a method taking an optional
+`pixelsPerUnit` - when the canvas passes its current zoom through, it uses
+the exact same `hitRadiusForPixelsPerUnit` calculation `handleCanvasTap`
+already uses, so hover and tap now agree by construction rather than by
+coincidence. Also reduced `minTapHitRadiusPixels` from `22.0` to `14.0` -
+the shared value (now used by both) was too large on-device even once
+unified.
+
+**Tests**: a new test confirms `hoveredEntity(pixelsPerUnit)` finds a Line
+at a distance the old flat-`snapRadius` behaviour would have missed, using
+the identical radius `hitRadiusForPixelsPerUnit`/`handleCanvasTap` compute.
+
+---
+
+## 13 — Horizontal/vertical dimensions render as a diagonal linear dimension
+
+**Not a solver bug - a rendering bug.** The underlying `DistanceConstraint`
+solving was already orientation-aware from Prompt B's B3 item (verified
+again here against real backend tests: pinning only the X or Y separation,
+leaving the other axis free, exactly as designed). The bug was entirely in
+`sketch_canvas.dart`'s rendering: `_paintDistanceDimension` (draws a
+*confirmed* dimension) and `_constraintLabelCenter` (used for its label's
+drag/hit-testing) both ignored `DistanceConstraintDto.orientation`
+entirely and always used the generic "linear" layout - an offset line
+running parallel to the two points, which is diagonal whenever the points
+aren't already level or plumb. The ghost *preview* (`_layoutGhost`, before
+confirming) already laid out horizontal/vertical dimensions correctly with
+a proper offset-perpendicular dimension line - so the user would see a
+correctly-oriented ghost while placing the dimension, then watch it
+"become linear" the instant it was confirmed, even though the solver was
+constraining it correctly the whole time.
+
+**Fix.** Both `_paintDistanceDimension` and `_constraintLabelCenter` now
+switch on `orientation` and lay out a proper horizontal/vertical dimension
+line (extension lines to a fixed offset row/column, per the same math
+`_layoutGhost` already used for the preview), instead of always falling
+through to the diagonal linear layout.
+
+**Tests**: two new tests confirm a confirmed horizontal/vertical
+`DistanceConstraint` renders and hit-tests at its orientation-aware
+anchor position, not the old diagonal-layout midpoint.
+
+---
+
+## 14 — Sketch stays hidden/greyed out after deleting its Extrude
+
+**Root cause.** Confirming an Extrude auto-hides the Sketch it was built
+from (`_confirmExtrude` adds the Sketch Feature's id to
+`_hiddenFeatureIds`, so the consumed profile doesn't clutter the view
+under the resulting solid). Cascade-deleting that Extrude only ever
+cleared hidden ids belonging to Features that **no longer exist**
+(`_hiddenFeatureIds.removeWhere((id) => !_features.any(...))`) - but the
+Sketch still exists, it's just unlocked again - so its id stayed in the
+hidden set forever. On-device this showed up exactly as reported: the
+Feature tree row (and the 3D viewport) kept the Sketch dimmed/hidden even
+once it was editable again.
+
+**Fix.** `_cascadeDeleteFeature` now additionally un-hides the new last
+Feature whenever it comes back unlocked - the Sketch was only ever hidden
+because something depended on it; once nothing does, there's nothing left
+making it redundant clutter.
+
+**Tests**: a new test confirms/extrudes a Sketch (auto-hiding it), deletes
+the resulting Extrude, and asserts the eye-slash "hidden" indicator is
+gone from the tree afterward.
+
+---
+
+## 15 — Padlock indicator gap; title bar overflow
+
+**Report.** A visibly under-constrained rectangle (a shape with 2 real
+free DOF, confirmed by manually counting constraints against the
+screenshot) showed *no* padlock at all - which is actually correct given
+item 3/11's design (padlock only ever showed once fully constrained,
+hidden otherwise), but meant there was no way to tell "genuinely
+under-constrained" apart from "hasn't finished solving yet" just by
+looking at the title bar. Separately, the title bar itself was visibly
+overflowing (Flutter's debug yellow/black overflow banner, cutting through
+the middle of "Sketch").
+
+**Fix.**
+- The indicator now always shows an icon once there's geometry:
+  `Icons.lock_open` while under-constrained, `Icons.lock` once fully
+  constrained - hidden only for a genuinely empty sketch (unchanged from
+  item 3).
+- The title `Text` is now wrapped in `Flexible` with ellipsis overflow -
+  a plain `Text` inside a `mainAxisSize.min` `Row` had no way to shrink,
+  so it could exceed the AppBar's available width by a couple of pixels
+  on some device/text-scale combination and trip a `RenderFlex` overflow.
+
+**Tests**: `sketch_canvas_indicator_test.dart`'s three cases updated -
+closed padlock at `dof == 0`, **open** padlock (not "no icon") at
+`dof > 0`, neither icon for an empty sketch.
+
+---
+
 ## Test/analyze results
 
 Same sandbox limitations as Prompt B's own status doc (no Flutter SDK or
@@ -287,6 +501,7 @@ backend conda toolchain preinstalled - see that doc's "Environment note"
 for how both were bootstrapped locally; nothing from that bootstrapping is
 committed).
 
+**Round 1 (items 1–8):**
 - Backend: `pytest` (whole suite) - 209 passed, 25 failed, same 25
   pre-existing OCC-stub-only failures as before (unrelated files, not
   touched here).
@@ -310,3 +525,55 @@ committed).
   of this round's changes) that this already failed identically before
   today's work; not a regression introduced here, and not investigated
   further as it's unrelated to any of the 8 items above.
+
+**Rounds 2–4 (items 9–15, 2026-07-01):**
+- Backend: item 11's new `test_stage15_constraints.py` tests pass (both
+  the reproduction of the singular two-`AtMidpoint` configuration failing
+  to converge, and the single-`AtMidpoint` fix converging cleanly).
+- Client: `flutter analyze` across every changed file - no issues
+  throughout all four rounds.
+  `flutter test test/sketch_controller_test.dart` - 130/134 passed
+  throughout items 9–13, same 4 pre-existing/unrelated failures as Round 1
+  (not the same 4 by coincidence - confirmed by re-running against a clean
+  checkout of each round's base commit with the round's own changes
+  stashed out, each time reproducing identically).
+  `flutter test test/sketch_canvas_indicator_test.dart` - 3/3 passed
+  (item 15's open/closed/neither padlock cases).
+- `part_screen_test.dart` (items 14's regression test): `flutter analyze`
+  clean; `flutter test` still cannot execute this file at all in this
+  sandbox - confirmed the failure is identical with or without this
+  round's changes (a `flutter_gpu` API mismatch inside `flutter_scene`
+  itself, unrelated to anything in this codebase - see "Known limitations"
+  below), so item 14 could only be verified by `flutter analyze` plus
+  manual trace of `_hiddenFeatureIds`'s full lifecycle, not by execution.
+- `widget_test.dart`'s one test ("SketchScreen collapses to a single main
+  FAB...") fails with a hit-testing error - confirmed via `git stash` to
+  fail identically before item 15's changes; pre-existing, not a
+  regression, not investigated further as out of scope.
+
+## Known limitations - the `flutter_scene`/`flutter_gpu` sandbox mismatch
+
+`flutter_scene ^0.18.1` (the 3D viewport's rendering package) requires
+`flutter_gpu` APIs (`TextureCompressionFamily`, `GpuContext
+.supportsTextureCompression`, several `PixelFormat` members, a
+`vertexLayout` named parameter) that only exist in Flutter **master**
+channel builds from 2026-06-09 or later - stated explicitly in
+`flutter_scene`'s own `pubspec.yaml` (`flutter: ">=3.44.0"` is only there
+so pub.dev, which scores against stable, can resolve the package; the real
+requirement is master post-06-09). `flutter_gpu` ships bundled inside the
+Flutter engine binary itself, not as a separately pinnable pub dependency.
+
+This sandbox's bootstrapped Flutter SDK is a **stable 3.44.4** tarball
+(built to work around this environment's git-history-based engine-version
+detection failing against a synthesized single-commit repo), which
+predates those master-only features - so any file that imports
+`flutter_scene`/`viewport3d` fails to even compile under `flutter test`
+here (11 files: `part_screen_test.dart`, `part_viewport_test.dart`,
+`mesh_geometry_test.dart`, `orbit_camera_test.dart`, and others).
+`flutter analyze` is unaffected, since it's pure static analysis with no
+engine binary involved - every 3D-viewport-adjacent change in this branch
+was verified that way instead, plus manual code review, and confirmed via
+real on-device testing by the user. This is a sandbox-only limitation
+(first documented in Prompt D's status doc), not present in the actual
+build/CI environment, which already targets the Flutter version
+`flutter_scene` requires.
