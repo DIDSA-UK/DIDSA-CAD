@@ -1715,29 +1715,62 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
-  /// A soft green fill over the Sketch's single closed loop (if any), so a
-  /// profile that's ready to Extrude reads as a "solid" before the user
-  /// even opens the context menu. [SketchController.closedProfilePointIds]
-  /// is null whenever there isn't exactly one closed loop, so this is a
-  /// no-op for every sketch that doesn't have one.
+  /// A soft green fill over every one of the Sketch's closed profile loops
+  /// (if any), so a profile that's ready to Extrude reads as a "solid"
+  /// before the user even opens the context menu.
+  /// [SketchController.closedProfileFills] is empty whenever there's no
+  /// usable profile at all, so this is a no-op for every sketch that
+  /// doesn't have one.
+  ///
+  /// Bug fix: this used to only ever handle a single loop with no holes
+  /// (`controller.closedProfilePointIds`, a plain `List<String>?`), so a
+  /// sketch with a MultiProfile (C2, 2+ disjoint outer loops) or a hole
+  /// (C1) never got any area filled at all. Now every outer loop in
+  /// [SketchController.closedProfileFills] is filled independently, each
+  /// with its own holes (`ProfileLoopDto.innerLoops`) punched out via an
+  /// even-odd sub-path - the same convention `Path.combine` and most 2D
+  /// vector tools use for "outer boundary plus holes".
   void _paintClosedProfileFill(Canvas canvas) {
-    final pointIds = controller.closedProfilePointIds;
-    if (pointIds == null || pointIds.length < 3) return;
+    for (final loop in controller.closedProfileFills) {
+      final path = _profileLoopPath(loop);
+      if (path == null) continue;
+      canvas.drawPath(path, Paint()..color = const Color(0xFF4CAF82).withValues(alpha: 0.15));
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = const Color(0xFF4CAF82).withValues(alpha: 0.35)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+    }
+  }
+
+  /// One outer [loop]'s fill path, with a hole punched out for each of its
+  /// `innerLoops` via [PathFillType.evenOdd] - returns null if any of the
+  /// loop's own Points are missing from [SketchController.points] (a
+  /// stale/in-flight profile response racing a local edit).
+  Path? _profileLoopPath(ProfileLoopDto loop) {
+    final outer = _screenPolygon(loop.pointIds);
+    if (outer == null) return null;
+    final path = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addPolygon(outer, true);
+    for (final inner in loop.innerLoops) {
+      final innerPoints = _screenPolygon(inner.pointIds);
+      if (innerPoints == null) continue;
+      path.addPolygon(innerPoints, true);
+    }
+    return path;
+  }
+
+  List<Offset>? _screenPolygon(List<String> pointIds) {
     final points = <Offset>[];
     for (final id in pointIds) {
       final point = controller.points[id];
-      if (point == null) return;
+      if (point == null) return null;
       points.add(transform.sketchToScreen(point.x, point.y));
     }
-    final path = Path()..addPolygon(points, true);
-    canvas.drawPath(path, Paint()..color = const Color(0xFF4CAF82).withValues(alpha: 0.15));
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = const Color(0xFF4CAF82).withValues(alpha: 0.35)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
-    );
+    return points;
   }
 
   @override

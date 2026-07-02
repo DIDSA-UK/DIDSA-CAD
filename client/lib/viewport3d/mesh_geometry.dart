@@ -238,6 +238,26 @@ List<(vm.Vector3, vm.Vector3)> biasSegmentsTowardCamera(
 /// they share one per-frame `updateForCamera` scan (see `PartViewport`'s
 /// `_ScenePainter`), the same pattern [buildSketchGeometryNode] uses.
 ///
+/// Uses [AlphaMode.blend] rather than [AlphaMode.opaque] - confirmed via
+/// `flutter_scene` 0.18.1's own `scene_encoder.dart` (see [kEdgeDepthBias]'s
+/// doc comment for how that source was consulted): the opaque pass writes
+/// depth, but the translucent pass only tests it. An opaque edge, being
+/// [biasSegmentsTowardCamera]-pushed towards the camera, would *write* a
+/// depth value slightly closer than its true position - normally harmless,
+/// but if anything else (another edge, a translucent face-highlight
+/// overlay) is later depth-tested at those same pixels, it now compares
+/// against an artificially-close value instead of the edge's real one.
+/// `AlphaMode.blend` at full alpha (every current edge/highlight caller's
+/// color already carries alpha `1.0`, or an intentionally-partial alpha
+/// for a translucent highlight - see [PartViewport]'s `_selectedEdgeColor`)
+/// renders pixel-identical to opaque while removing that write - edges are
+/// still fully depth-*tested* (so still properly hidden behind opaque
+/// faces), they just can no longer skew what anything drawn afterwards
+/// tests against. This also fixes a latent bug: `AlphaMode.opaque`
+/// "ignores alpha" per [UnlitMaterial]'s own doc comment, so a
+/// partial-alpha edge color (e.g. a selected-edge highlight) was silently
+/// rendered fully opaque instead of translucent as intended.
+///
 /// GPU-bound (`PolylineGeometry`'s underlying updatable `MeshGeometry`), so
 /// - like [geometryFromMesh] - this cannot be exercised in a headless
 /// `flutter test` run; [edgeSegmentsFromMesh]/[biasSegmentsTowardCamera]
@@ -249,7 +269,7 @@ Node buildMeshEdgesNode(
   PolylineCap cap = PolylineCap.butt,
 }) {
   final material = UnlitMaterial()
-    ..alphaMode = AlphaMode.opaque
+    ..alphaMode = AlphaMode.blend
     ..baseColorFactor = color;
 
   final primitives = <MeshPrimitive>[

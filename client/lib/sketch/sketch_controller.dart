@@ -3325,18 +3325,26 @@ class SketchController extends ChangeNotifier {
     await _refreshProfile();
   }
 
-  List<String>? _closedProfilePointIds;
+  List<ProfileLoopDto> _closedProfileFills = const [];
 
-  /// The ordered Point ids of the sketch's single closed loop, or null if
-  /// there isn't exactly one (no loop, an open chain, or multiple loops).
-  /// Refreshed alongside points/constraints on every [_refreshAllPoints]
-  /// call via the existing `GET /sketch/sketches/{id}/profile` endpoint.
-  List<String>? get closedProfilePointIds => _closedProfilePointIds;
+  /// Every outer profile loop the sketch's closed-profile detection found,
+  /// each already carrying its own holes - one entry for a single closed
+  /// loop (C1, may have inner holes), 2+ for a MultiProfile of disjoint
+  /// outer loops (C2, each with its own holes), or empty if there's no
+  /// usable profile at all (no loop, an open chain, a branch, overlapping/
+  /// invalid nesting). Refreshed alongside points/constraints on every
+  /// [_refreshAllPoints] call via the existing
+  /// `GET /sketch/sketches/{id}/profile` endpoint.
+  ///
+  /// Bug fix: previously this only ever held a single loop's Point ids and
+  /// was null whenever `status != closed_loop`, so a sketch with a
+  /// MultiProfile (or a hole) never got its area(s) filled in the 2D
+  /// canvas at all - see [SketchCanvas._paintClosedProfileFill].
+  List<ProfileLoopDto> get closedProfileFills => _closedProfileFills;
 
   Future<void> _refreshProfile() async {
     final profile = await _api.getProfile(_sketchId!);
-    final ids = profile.pointIds;
-    _closedProfilePointIds = profile.isClosedLoop && ids != null && ids.isNotEmpty ? ids : null;
+    _closedProfileFills = profile.fillableLoops.where((loop) => loop.pointIds.length >= 3).toList();
   }
 
   // --- Stage 19b item 4: undo --------------------------------------------

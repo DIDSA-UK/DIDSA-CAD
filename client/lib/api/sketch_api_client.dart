@@ -396,20 +396,45 @@ class SolveResultDto {
       );
 }
 
+/// One outer profile loop's ordered Point ids, plus the Point ids of every
+/// hole (C1's `inner_loops`) nested inside it - recursive to match the
+/// backend's `ProfileResponse` shape, though in practice only one level
+/// deep is ever populated (a hole never itself carries holes - see
+/// `ProfileStatus.INVALID_NESTING`). The sketch canvas's profile-area fill
+/// unit: one filled polygon per [ProfileLoopDto], each hole punched out via
+/// an even-odd sub-path (see `SketchCanvas._paintClosedProfileFill`).
+class ProfileLoopDto {
+  final List<String> pointIds;
+  final List<ProfileLoopDto> innerLoops;
+
+  ProfileLoopDto({required this.pointIds, this.innerLoops = const []});
+
+  factory ProfileLoopDto.fromJson(Map<String, dynamic> json) => ProfileLoopDto(
+        pointIds: (json['point_ids'] as List<dynamic>).cast<String>(),
+        innerLoops: (json['inner_loops'] as List<dynamic>? ?? [])
+            .map((loop) => ProfileLoopDto.fromJson(loop as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
 /// Result of a Sketch's closed-Profile check. [status]/[detail] drive the
-/// Extrude context-menu gate; [pointIds] (the closed loop's ordered Point
-/// ids, when [isClosedLoop]) drives the sketch canvas's profile-area fill.
-/// The backend's `branch_point_ids`/`loops` (multi-loop detail) aren't
-/// needed by either consumer, so they're left unparsed.
+/// Extrude context-menu gate; [fillableLoops] drives the sketch canvas's
+/// profile-area fill. The backend's `branch_point_ids` (multi-loop detail)
+/// isn't needed by either consumer, so it's left unparsed.
 class ProfileDetectionDto {
   static const String closedLoop = 'closed_loop';
   static const String multipleLoops = 'multiple_loops';
 
   final String status;
   final String detail;
-  final List<String>? pointIds;
 
-  ProfileDetectionDto({required this.status, required this.detail, this.pointIds});
+  /// Every outer profile loop this Sketch's closed-profile detection found,
+  /// each already carrying its own holes (`ProfileLoopDto.innerLoops`) -
+  /// one entry for `closed_loop` (C1's single nested profile), 2+ for
+  /// `multiple_loops` (C2's MultiProfile), empty for every other status.
+  final List<ProfileLoopDto> fillableLoops;
+
+  ProfileDetectionDto({required this.status, required this.detail, this.fillableLoops = const []});
 
   bool get isClosedLoop => status == closedLoop;
 
@@ -417,19 +442,18 @@ class ProfileDetectionDto {
   /// from this Sketch - `closed_loop` (a single nested profile, C1) or
   /// `multiple_loops` (a MultiProfile of disjoint outer profiles, C2) -
   /// matching `app.document.router._require_closed_sketch_feature`'s own
-  /// gate exactly. Deliberately broader than [isClosedLoop]: the canvas
-  /// area-fill consumer only knows how to fill *one* profile's area (so it
-  /// stays scoped to [isClosedLoop]), but the Extrude eligibility gate must
-  /// accept both or a MultiProfile Sketch would be dimmed/rejected by the
-  /// picker despite the server actually being willing to extrude it.
+  /// gate exactly.
   bool get isExtrudable => status == closedLoop || status == multipleLoops;
 
   factory ProfileDetectionDto.fromJson(Map<String, dynamic> json) {
     final profile = json['profile'] as Map<String, dynamic>?;
+    final loops = json['loops'] as List<dynamic>?;
     return ProfileDetectionDto(
       status: json['status'] as String,
       detail: json['detail'] as String,
-      pointIds: profile == null ? null : (profile['point_ids'] as List<dynamic>).cast<String>(),
+      fillableLoops: profile != null
+          ? [ProfileLoopDto.fromJson(profile)]
+          : (loops ?? []).map((loop) => ProfileLoopDto.fromJson(loop as Map<String, dynamic>)).toList(),
     );
   }
 }
