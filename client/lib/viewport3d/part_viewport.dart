@@ -259,7 +259,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
       if (!mounted) return;
       setState(() {
-        _scene = Scene();
+        _scene = Scene()
+          // DIAGNOSTIC: on-device testing shows hidden edges/faces bleeding
+          // through opaque bodies even after both were switched to
+          // AlphaMode.opaque (see mesh_geometry.dart's doc comments on
+          // buildMeshEdgesNode/buildHighlightFacesNode) - ruling out
+          // "translucent pass only" as the cause, since opaque-vs-opaque
+          // across separate Nodes is now failing too. MSAA's offscreen
+          // depth-resolve step is a known category of Android GPU driver
+          // bug for exactly this symptom (a resolved/multisampled depth
+          // buffer not correctly available to later draws in the same
+          // pass) - forcing it off here tests that theory directly. Revert
+          // if this doesn't help; `Scene`'s default (`AntiAliasingMode.auto`)
+          // already only enables MSAA when `doesSupportOffscreenMSAA` is
+          // true, which this device does report.
+          ..antiAliasingMode = AntiAliasingMode.none;
+        debugPrint(
+          '[PartViewport][RenderDebug] scene: antiAliasingMode=${_scene!.antiAliasingMode} '
+          'effectiveAntiAliasingMode=${_scene!.effectiveAntiAliasingMode}',
+        );
         _syncMeshNode();
         _syncEdgesNode();
         _syncReferencePlaneNodes();
