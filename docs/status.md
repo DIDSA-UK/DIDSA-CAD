@@ -1,0 +1,934 @@
+# DIDSA-CAD Status (Consolidated)
+
+This is a single chronological consolidation of ~30 dated per-stage status
+reports that accumulated in `docs/` between 2026-06-21 and 2026-07-02. The
+originals are preserved verbatim under `docs/archive/` (moved with `git mv`,
+so their history survives). This document exists so a future reader (or a
+future Claude session) doesn't have to open 30 files to understand where the
+project stands. Entries are ordered oldest-first; the most recent entry
+(the still-open C3 rendering bug) is last. See `docs/roadmap.md` for
+forward-looking open work; see `docs/project-brief.md` for the original
+project spec (not a status log, left in place, not summarized here).
+
+Recurring environment caveat, stated once here rather than in every entry:
+for most of this project's history, sandbox sessions had no Flutter SDK, no
+GPU/display, and no working `pythonocc-core`/`py-slvs` install, so client
+changes were frequently verified only by manual code review (`flutter
+analyze` when an SDK was bootstrapped) rather than `flutter test`/on-device
+runs, and backend OCCT changes were sometimes verified only by `py_compile`/
+`ast.parse` until real CI or a bootstrapped conda toolchain caught real bugs.
+Where this materially affected confidence in a change, it's called out
+per-entry below.
+
+---
+
+## Stage 2b — Wiring the constraint solver into the Sketch model (undated, precedes 2026-06-21)
+
+Connected the Stage 2 Sketch data model (`Point`/`SketchEntity`/`Line`/
+`Plane`/`Sketch`, closed-loop profile detection) to the Stage 2a `py-slvs`
+spike. Added `backend/app/sketch/constraints.py` (`Constraint` ABC +
+`DistanceConstraint`), `solver.py` (`solve_sketch`, returns `converged`/
+`result_code`/`dof`/`blamed_constraint_ids`/`solver_reported_failed_constraint_ids`),
+and `Sketch.constraints`/`add_distance_constraint`. Four new endpoints:
+create/list/delete constraint, `POST .../solve`. Solving is explicit and
+batched — nothing solves automatically on point edits.
+
+Confirmed empirically (deliberately over-constrained triangle) that
+`py-slvs`'s `system.Failed` returns every constraint in an inconsistent
+system, not a single culprit — so "blame the newest constraint" is
+documented as a UX convention, not a diagnosis.
+
+Independent review caught `add_distance_constraint` missing the same-point
+validation `add_line` already had; fixed pre-merge. CI: 59/59 passed on both
+`linux/amd64` and `linux/arm64`. Merged via PR #4.
+
+---
+
+## 2026-06-21 — Stages 1–7 recap
+
+Stages 1–6 (merged, PRs #1–#9): Line entity scaffold; Sketch foundation
+(`Point`/`SketchEntity`/`Plane`/`detect_profile`); `py-slvs` wired in (Stage
+2b, above); `X-API-Key` auth on every route; first Flutter client
+(persistent cursor, click-to-commit lines, snap-to-close, live solve);
+Circle entity + radius constraint + FAB tool switcher + pan/zoom; DELETE
+endpoints (dependency-safe) + client selection/hover/ribbon/delete.
+
+Unreleased-as-of-this-doc: `Document`/`Part`/`Feature` model with
+Feature-locking + placeholder mesh endpoint; first 3D viewport
+(`OrbitCamera`, `flutter_scene` mesh rendering). `flutter_scene` bumped
+`0.5.0-0` → `^0.18.1` this session (Flutter SDK moved to `master` channel;
+old version's Native Assets build hook was incompatible), dropping the old
+`flutter_scene_importer` dependency chain.
+
+Design decisions established here and unchanged since: Points are
+first-class shared entities (no coordinate-matching auto-merge — entities
+connect only by sharing a Point id); Circle's center/radius points don't
+join the Line-chain adjacency graph (mixed Line+Circle profile detection
+was an explicit gap, later closed in Stage 15/Prompt C).
+
+Verified: Backend CI green. Client: `flutter analyze` clean, `flutter test`
+51/51 passed, including the first-ever confirmation that `flutter_scene`
+0.18.1's GPU-bound `uploadVertexData` call runs without throwing headlessly.
+
+Branch state: main green through PR #9; `claude/new-session-ie585q` 3 commits
+ahead (ribbon fix, Document/Part/Feature model, Stage 7 viewport), no PR yet.
+
+---
+
+## 2026-06-22 — Stage 7f: reference planes, triad, plane selection
+
+Closed three gaps from Stage 7 real-device testing: reference planes
+weren't visible, no XYZ orientation triad (3D viewport or 2D sketch
+canvas), no way to see/choose a Sketch's plane.
+
+- `reference_planes.dart`: XY/XZ/YZ as 20×20-unit translucent rectangles,
+  visible by default on an empty Part; analytic per-axis ray-plane hit
+  testing.
+- `triad.dart`: screen-space XYZ triad overlay (bottom-left, always on top)
+  — chosen over world-space specifically so it never rotates out of clear
+  view. Axis-to-screen projection hand-verified against `flutter_scene`'s
+  actual view-matrix convention (`right = up.cross(forward)`).
+- `plane_indicator.dart`: small XY/XZ/YZ label + 2-axis arrows on the 2D
+  sketch canvas.
+- Tapping a plane highlights it and offers "New Sketch on `<plane>`".
+
+Tests: 79/79 passed (+20 new), `flutter analyze` clean. A live
+gesture-through-`PartViewport`/`Scene` test was attempted and abandoned —
+intermittent `Flutter GPU requires Impeller` exceptions from inside `Scene`
+construction, a pre-existing sandbox limitation.
+
+Branch `claude/new-session-ie585q` merged with `claude/reference-planes-triad-plane-select`
+(one real conflict in `part_viewport.dart`, resolved). Pushed, no PR opened.
+
+---
+
+## 2026-06-23 — Stage 9: Extrude (Boss + Cut)
+
+First real OCCT geometry operation, replacing the placeholder box mesh.
+
+- Backend: `ExtrudeFeature` model; `extrude.py` builds a prism via
+  `BRepPrimAPI_MakePrism` then fuses (Boss) or cuts (Cut) against the
+  accumulated solid; `/mesh` endpoint tessellates the real solid, falling
+  back to the placeholder box only when no Extrude Feature exists yet.
+- Client: `extrude_panel.dart` (Boss/Cut, start/end distance, 500ms
+  debounce → create/PATCH → refetch mesh); live preview rendered
+  translucent orange (`AlphaMode.blend`, alpha 0.45); Confirm/Cancel.
+
+Tests: backend 159/159 (via micromamba `cadtest` env — bare pip/venv can't
+import `pythonocc-core`). Client: 93/93, `flutter analyze` clean. Not yet
+verified on a real device.
+
+Branch `claude/didsa-cad-next-stage-dshvd7`, pushed, no PR/merge yet.
+
+---
+
+## 2026-06-23 — Stage 10a: signed distances, Hide/Show affects mesh, zoom bounds
+
+1. **Signed Extrude distances**: `start_distance`/`end_distance` are now
+   both signed offsets along the sketch normal, spanning literally from one
+   to the other (previously `start_distance` was a magnitude used in the
+   wrong direction). Validated server-side (`end_distance > start_distance`).
+2. **Hide/Show now affects the body mesh**: `/mesh` accepts repeated
+   `hidden_feature_ids`; the accumulated solid skips matching
+   `ExtrudeFeature`s. Client-side only state, resent on every fetch.
+3. **Zoom bounds scale to the mesh**: `OrbitCamera.setZoomBoundsForRadius(radius)`
+   derives min/max distance from the mesh's bounding-sphere radius.
+
+Backend: 166/166 passed. Client: **no Flutter SDK available this session**
+— all Dart changes unverified by any test run. One flagged risk: a Python
+quaternion simulation suggested `orbitByScreenDelta`'s upside-down drag
+direction might not satisfy its own test, but this was left unchanged
+(safer than risking a regression against unverified hand-rolled math).
+
+Branch `claude/project-background-next-actions-larhyt`, pushed.
+
+---
+
+## 2026-06-23 — Stage 10b: UX additions
+
+- "Hide Reference Planes" toggle in the flyout toolbar.
+- "Add" FAB → flyout menu → "New Sketch" enters plane-selection mode (tap a
+  plane to create+navigate; Cancel banner or back gesture exits).
+- Add FAB hidden while the Extrude panel is open.
+
+No backend changes. No Flutter SDK available — unverified by any test run
+(new `part_screen_test.dart` tests were never executed). Committed
+`ae0be4a` on `stage-10b-ux-additions`, pushed, PR opened but explicitly
+left unmerged for review.
+
+---
+
+## 2026-06-23 — Stage 11: Edge rendering & wireframe toggle
+
+- Backend: `MeshData.edges` (flat `[x,y,z,...]`), extracted via
+  `TopTools_IndexedMapOfShape` + `topexp.MapShapes` (not a plain
+  `TopExp_Explorer`, which would double-count shared edges), sampled via
+  `BRepAdaptor_Curve` + `GCPnts_TangentialDeflection`. A box always reports
+  exactly 12 edges regardless of triangulation fineness.
+- Client: `ViewportRenderMode` enum (shaded / shaded+edges / wireframe);
+  `nudgeSegmentsOutward` as a z-fighting mitigation (no native GPU depth-bias
+  API in this `flutter_scene` version) — later superseded, see Prompt C/C3
+  below.
+- Geometry audit of reference-plane/sketch/extrude coordinate mapping: no
+  bugs found, but documented a latent risk (`_sample_edge` doesn't apply
+  `TopLoc_Location`, would silently break if a future change stopped baking
+  transforms via `BRepBuilderAPI_Transform(..., True)`).
+
+**Post-merge CI (PR #24) caught two real API bugs** neither manual review
+nor `py_compile` could catch, since this sandbox had no working OCCT
+binding: `OCC.Core.TopExp` has no `TopExp` class (fixed to the lowercase
+`topexp` singleton); `TopTools_IndexedMapOfShape` has no `.Extent()`/
+call-indexing (fixed to `.Size()`/`.FindKey(i)`). Both fixed, CI green,
+171/171 passed, merged to `main`.
+
+---
+
+## 2026-06-23 — Stage 12: Dimensioning, constraints & construction lines
+
+- Backend: `construction: bool` on Line/Circle (excluded from profile
+  detection); `Vertical`/`Horizontal`/`Angle` constraints via native
+  py-slvs primitives. Gap found+closed: no PATCH existed to flip an
+  existing entity's construction flag — added `LineUpdate.construction`,
+  new `CircleUpdate`, new PATCH route for circles. 5/5 + follow-up tests
+  passed.
+- Client (uncommitted as of this doc): dashed rendering for construction
+  geometry; Make Construction/Make Solid ribbon toggle; reference-body
+  ghost projection (`worldPointToSketch`, exact inverse of
+  `sketchPointToWorld` since reference planes are axis-aligned through the
+  origin); dimension overlays for Distance/Angle/V/H via a type-pattern
+  switch.
+- Explicit scope gap: no PATCH for editing a constraint's *value* yet
+  (closed next stage) — dimension overlays were render-only this stage.
+
+No Flutter SDK available — all client work unverified by any test run.
+
+---
+
+## 2026-06-24 — Stage 13: Tap-to-place, dimension workflow, constraint selection
+
+- Backend: `PATCH .../constraints/{id}` (`ConstraintValueUpdate`) — edits
+  Distance/Angle values, re-solves; Vertical/Horizontal get a 422. 178/178
+  backend tests passed.
+- Client: tap-to-place is now the only entity-input method (no more
+  button-driven placement); two-level FAB (Sketch Entities / Dimensions)
+  replacing a flat tool row; full ghost-dimension workflow (length, V/H
+  distance, radius/diameter) confirming into real constraints; multi-entity
+  selection with a `wired`/`unwired` constraint-option table (only
+  Vertical/Horizontal actually create constraints this stage — Parallel/
+  Perpendicular/EqualLength/Concentric/EqualRadius/Tangent/Coincident
+  render as inert placeholders).
+
+`sketch_controller_test.dart` rewritten against the new controller API.
+`flutter analyze` clean, `sketch_controller_test.dart` 52/52 passed. Full
+suite: 4 unrelated pre-existing `flutter_scene`/`flutter_gpu` version
+mismatch failures (first documented here, recurs in every subsequent
+client-side stage until fixed much later).
+
+---
+
+## 2026-06-24 — Stage 14: Point tool, universal snapping, selectable dimensions, drag
+
+Pure client-side, no backend changes.
+
+- `SketchTool.point`: single self-terminating tap, reuses existing snap
+  logic.
+- Universal point/midpoint snapping generalized to every placement path;
+  tapping near a Line's midpoint materializes a real backend Point there
+  (once, on first use).
+- Constraints became selectable (hit-test + ribbon value editor for
+  Distance/Angle).
+- Dimension-mode revamp: multi-select picking with a fly-up bar
+  (`sketch_dimension_bar.dart`) replacing the old at-most-two-taps model;
+  covers line-distance (materializes midpoints) and angle (non-parallel
+  lines) in addition to the earlier cases.
+- Double-click-and-drag on under-constrained Points: whole-sketch
+  `dof > 0` gates dragging (coarse, no per-entity freedom check exists);
+  live-PATCH-without-solving during drag, re-solve on release.
+
+`sketch_controller_test.dart` grew 52 → 72, all passing. `flutter analyze`
+clean.
+
+---
+
+## 2026-06-24 — Stage 15
+
+| Item | Outcome |
+|---|---|
+| Entity placement ghost preview | Done — dashed preview via `activeDrawGhost` |
+| Double-tap-drag dimension/constraint labels | Done — client-side-only `_labelOffsets` |
+| RTS edge-pan only while cursor moving | Done — idle threshold (150ms) |
+| Snap-point hover highlight | Done |
+| Wire Coincident/Parallel/Perpendicular/EqualLength | Done |
+| Rectangle sketch tool | Done — Two Corner / Centre+Corner / Three Point |
+| Closed-profile area fill | Done — translucent green fill + outline |
+
+`sketch_controller_test.dart`: 95/95. Full suite: 106 passed, 7 failed (same
+pre-existing `flutter_scene`/`flutter_gpu` mismatch, no regressions).
+
+---
+
+## 2026-06-24 — Stage 16
+
+| Item | Outcome |
+|---|---|
+| Clip planes scale to model size | `farClip = max(1000, radius*4)`, `nearClip = farClip/10000` |
+| Remove zoom-in restriction | `minDistance = nearClip * 2` |
+| Sketch origin: snappable but fixed | excluded from selection, still resolves for snapping |
+| Point-drag jump on double-tap begin | fixed — delta-from-recorded-origin, no PATCH at drag-begin |
+| Edge-pan firing while stationary | fixed — 1.5px move threshold before refreshing idle timer |
+| Constraint buttons → selection ribbon; add Collinear | done — new `CollinearConstraint` (two `point_on_line` calls, no single SLVS primitive) |
+| Feature tree auto-hides during Extrude | done |
+| Line-to-line distance dimension + leader-line fix | new `LineDistanceConstraint` via `SLVS_C_PT_LINE_DISTANCE` directly on endpoints (no materialized midpoint Points, so it stays correct if a Line moves); leader-line bug (dragged label detached from its dimension line) fixed with a shared `_drawLeaderLine` |
+
+Sandbox had no Flutter/Dart SDK and no `pythonocc-core` — verified by
+manual review; a solver-level claim (`LineDistanceConstraint` converges
+correctly) was independently confirmed via a direct-import script bypassing
+`app.main`/OCC.
+
+---
+
+## 2026-06-24 — Stage 17: device-testing fixups
+
+Real-device (Android/touch) follow-up to Stage 16:
+
+1. Point tool now gets the same fly-up tool bar (with Exit) as other tools.
+2. **Touch point-drag tracking bug**: root cause was a coordinate-space
+   mismatch — the drag branch fed raw absolute screen position through the
+   1:1 mouse mapping (`screenToSketch`) instead of the desensitized
+   "trackpad" `moveCursorRelative` mapping every other touch interaction
+   uses. Fixed by branching on `event.kind`.
+3. **Origin not selectable for constraints**: Stage 16's origin-exclusion
+   in `_entityAt` broke selection entirely (including pre-existing tests)
+   and blocked legitimate Coincident-to-origin constraints. Fixed with an
+   `includeOrigin` parameter — drag targeting still excludes it, selection
+   now includes it; deletion was already independently blocked.
+
+---
+
+## 2026-06-25 — Stage 18: menu restructure, viewport polish, connection screen
+
+- Hamburger menu → File/View `ExpansionTile`s. File: 7 disabled
+  placeholders + enabled "Connection Settings". View: existing entries +
+  Background/Body Colour swatch pickers + Body Transparency slider.
+- Viewport visual polish: new defaults (background `#1E1E2E`, body
+  `#B0B8C1`), applied live and persisted via `shared_preferences`. Body
+  "specular highlight" left as an explicit `// TODO` — `UnlitMaterial` has
+  no roughness/metallic parameter to set, not implementable with the
+  current `flutter_scene` material type.
+- New `ConnectionScreen`: runtime server URL + API key config (previously
+  compile-time constants), `GET /health` check with 15s timeout, persists
+  via `shared_preferences`.
+
+No Flutter SDK — verified by manual reading only.
+
+---
+
+## 2026-06-25 — Stage 19a: edge bleed-through (attempt 1, later reverted), defaults, camera framing
+
+| Item | Outcome |
+|---|---|
+| Edge bleed-through on solid geometry | Implemented `cullBackFacingSegments` (back-face heuristic using bounding-sphere-center-to-midpoint direction as a normal stand-in) — **reverted in 19b**, see below |
+| Body transparency edge visibility | Already correct from Stage 18, no fix needed |
+| Edge line thickness | `kEdgeStrokeWidth` narrowed 2.0 → 1.1px |
+| Default background → Off-white | `#F5F5F0` (only affects fresh installs) |
+| Default render mode → Shaded+Edges, persisted | new `view_render_mode` pref key |
+| Initial camera distance | `_defaultDistance` 30 → 48, so reference planes fill ~25% of screen area (derived from real 45° FOV + 20-unit plane size) |
+| Autofill on Connection Screen | `AutofillGroup` + `AutofillHints.url`/`.password` |
+
+Investigated the render pipeline directly against upstream `flutter_scene`
+source: confirmed the opaque pass already does depth write + `lessEqual`
+test, so no app-level draw-order bug was found. The back-face cull was
+implemented as an *approximation* (not exact for concave bodies), fully
+documented as such.
+
+---
+
+## 2026-06-25 — Stage 19b: revert the cull; feature-tree FAB; undo; select-all; Set Length
+
+- **Item 0**: reverted Stage 19a's back-face edge cull entirely — user
+  feedback: it made edges disappear on faces visible *through* a
+  transparent body, an unacceptable trade-off versus the original
+  bleed-through. (The bleed-through bug itself stayed unresolved here; it
+  resurfaces and is eventually root-caused much later — see Prompt C/C3.)
+- Feature tree got a dedicated small FAB (removed from the View sub-menu).
+- 3D-view/plane context menus moved from the hamburger drawer into a
+  fly-up bottom sheet.
+- Add FAB → Feature entry → second-level picker (Extrude enabled;
+  Revolve/Sweep/Fillet/Chamfer disabled placeholders).
+- **Sketcher undo**: not a full-snapshot stack (doesn't fit this
+  architecture, where the backend is the sole source of truth) — a
+  **command/inverse-action stack** instead: every mutation pushes a closure
+  that performs its literal backend-and-local inverse. Delete recreates
+  full copies with an old-id→new-id remap. No redo (`// TODO`).
+- Select all (excludes origin); Set Length ribbon chip (PATCHes/creates a
+  plain `DistanceConstraint` between a Line's endpoints).
+- Extra: confirming an Extrude now auto-hides the consumed Sketch.
+
+No SDK — manual verification only; Items 4–6 got no test coverage.
+
+---
+
+## 2026-06-26 — Stage 20
+
+| Item | Outcome |
+|---|---|
+| Camera distance | Skipped — already applied manually in a prior commit |
+| Delete-selected dependency order | Fixed — bucket into constraints → lines/circles → points regardless of selection order (backend 400'd otherwise) |
+| Framework assertion crash (`_dependents.isEmpty`) | Inconclusive — full audit of every `GlobalKey`/`showModalBottomSheet`/`mounted` guard found one real gap (`sketch_ribbon.dart`'s `_showSetLengthDialog` had no `context.mounted` guard); fixed defensively, root cause not confirmed (recurs later — see Stage 23-fixes addendum) |
+| AppBar logo + name | Done — **broken by a `Row`-in-`title` layout bug, fixed next stage** |
+| Point tool icon | `Icons.fiber_manual_record` → `Icons.control_point` |
+| Midpoint constraint | v1: two half-length `DistanceConstraint`s from `_materializeMidpoint` — **later found not to constrain collinearity at all, replaced twice (Stage 21, then Stage 22)** |
+| Stale-solve-after-drag | Root cause: an unawaited per-move-event PATCH could resolve after `endPointDrag`'s solve+refresh, clobbering the constrained position with a stale one. Fixed with a `_draggingPointId` staleness guard |
+
+Manual-only verification missed a real compile error in item 6
+(`line.length` doesn't exist) — caught by the user's on-device `flutter
+run`, not this sandbox.
+
+---
+
+## 2026-06-26 — Stage 21
+
+- **AppBar layout fix**: Stage 20's `Row`-with-`spaceBetween` `title`
+  doesn't work — `title` is a narrow centered slot. Fixed by moving the
+  logo into `AppBar.leading` (widened) and right-aligning the title text.
+  New shared `DidsaLogoButton` widget (tap → website).
+- Dark logo asset variant for contrast against the light AppBar.
+- **Midpoint constraint v2**: replaced Stage 20's two-half-length-distances
+  hack with a new backend constraint type, `PointLineDistanceConstraint`
+  (generic point-to-line distance via `addPointLineDistance`/
+  `SLVS_C_PT_LINE_DISTANCE`) — used as perpendicular-distance-0 (point on
+  line) + one half-length distance to an endpoint. This is the first
+  *correct* solver-stable midpoint definition (the v1 pair never
+  constrained collinearity, only distance from each endpoint, letting the
+  point swing freely in an arc).
+- **Select-all → delete still 400ing**: root cause — `selectAll()` never
+  included Constraints, so a Line's leftover `VerticalConstraint` (not
+  auto-deleted with the Line) blocked the subsequent Point delete. Fixed
+  by having `selectAll()` also select every Constraint in the sketch.
+
+**Post-push CI bug**: a new test failed (`y≈0.333` instead of expected
+`0.0`). First hypothesis (wrong): suspected py-slvs needed
+`SLVS_C_AT_MIDPOINT` special-casing at distance-exactly-0 — pushed a fix,
+CI failed identically, proving the primitive wasn't the issue. Real cause:
+the test's own Points were completely unconstrained free points, so the
+system was legitimately underdetermined (4 excess DOF) and the solver was
+free to move the whole line to satisfy the constraints — the test's
+absolute-coordinate assertions were wrong, not the solver. Reverted the
+special-case, rewrote the test to assert relative geometric invariants
+(matching the codebase's existing convention for underdetermined
+solver-integration tests).
+
+No Python backend environment in-sandbox this session — this bug was only
+caught via real GitHub Actions CI.
+
+---
+
+## 2026-06-26 — Stage 22
+
+- **Native `at_midpoint` constraint (`SLVS_C_AT_MIDPOINT`)**: verified
+  directly against the installed `py-slvs==1.0.6` wheel (`addMidPoint`) —
+  a proper per-primitive wrapper matching the existing pattern. Wired
+  through the full 5-layer stack. This is the final, correct midpoint
+  implementation (v3) — unlike v1/v2, it has no fixed baked-in value, so it
+  keeps tracking the true midpoint as the line's length changes
+  independently (regression-tested explicitly against this exact failure
+  mode).
+- Client: `_materializeMidpoint` simplified to one `createAtMidpointConstraint`
+  call. No constraint badge needed for `at_midpoint` (falls through
+  existing default-case switches with zero code change).
+- **FAB z-order fix**: two independent overlap bugs in `part_screen.dart` —
+  the small Feature-tree FAB painted over the open toolbar panel (fixed
+  with a visibility guard); the main Add FAB, being `Scaffold.floatingActionButton`,
+  always painted above the body `Stack` regardless of internal ordering
+  (fixed by nulling it while the toolbar is open, same pattern as the
+  Extrude-panel gating).
+
+---
+
+## 2026-06-26 — Stage 23: sketcher UX polish (23a–23h)
+
+| Item | Outcome |
+|---|---|
+| 23a — Set Length dialog crash | Root cause: `TextField(autofocus: true)` with no explicit `FocusNode` — Flutter's deferred focus-grant could still be in flight when the dialog synchronously popped. Fixed with an explicit `FocusNode` + `.unfocus()` before pop. **Later found insufficient — see Stage 23-fixes below.** |
+| 23b — Reset View → Zoom to Fit | new `geometryBoundingBox`/`zoomToFit`; zoom floor now derived from canvas size instead of a fixed constant |
+| 23c — Shorter constraint labels | Vert./Horiz./Perp./Coinc. |
+| 23d — Remove tap-empty-canvas Exit Sketch | blank-canvas tap while ribbon closed is now a pure no-op |
+| 23e — Labels/tap-select for every constraint type | added Coincident/Parallel/Perpendicular/EqualLength/Collinear/PointLineDistance badges (AtMidpoint deliberately still excluded — no badge, per Stage 22) |
+| 23f — Hamburger drawer: Exit Sketch + View submenu | Constraint Labels toggle, Canvas Colour, Canvas Transparency — session-only, no persistence |
+| 23g — Long-press marquee selection | 500ms timer, hand-rolled (no `GestureDetector`/`LongPressGestureRecognizer` — everything in this file is raw `Listener` pointer dispatch) |
+| 23h — Selected Entities list in the flyout | shown once 2+ entities selected |
+
+New `sketch_controller_test.dart` group for `hasEntityNear`/`selectInRect`/
+`deselect`/`selectionLabel`. No Flutter SDK — verified by manual review +
+a brace/paren-balance script.
+
+Note: `docs/stage23-background.md`, referenced by the brief, never existed
+in this repo.
+
+---
+
+## 2026-06-27 — Stage 23 fixes, and the separate "3D viewport selection mode" feature
+
+Two independently-developed, differently-scoped pieces of work landed
+around the same date and both initially collided on the filename
+`status-2026-06-26-stage23.md` (already taken by the sketcher-UX-polish
+work above). The 3D-viewport selection-mode feature and its fixes used
+non-colliding filenames instead; all of it is consolidated here.
+
+### 3D viewport selection mode (new feature)
+
+Orbit/Selection mode toggle FAB; persistent on-screen cursor while in
+selection mode; hover hit-testing (backend `mesh.py` gained `face_ids`/
+`edge_ids`/`topology_vertices`/`topology_vertex_ids` parallel arrays,
+stable only within one response); toggle/accumulate/clear selection
+semantics; a draggable bottom sheet listing selected entities; a context
+action panel (`contextActionsFor`, composition table for Chamfer/Fillet/
+Create Plane based on what's selected — all permanently disabled
+placeholders this stage). Orbit-mode gesture handler bodies were
+deliberately never edited — all new logic lives in wrapper methods,
+confirmed by re-diffing line-by-line.
+
+### Stage 23 fix-prompt round (targeting both pieces of work)
+
+Of 7 requested items, most were found already correct on inspection; real
+fixes: selected-entity highlight render order (re-add the hover node after
+`_syncSelectedEntityNodes` so "selected then hover on top" ordering holds);
+removed the dedicated "Select" button in favor of tap-to-select (mirroring
+the orbit handlers' existing tap/drag travel-threshold disambiguation);
+`SelectionListDrawer` rebuilt around `DraggableScrollableSheet` with FAB
+clearance padding; hamburger toggle converted to a small FAB positioned
+above the feature-tree FAB. Item 6 (`_dependents.isEmpty`) was marked "not
+applicable" — no `InheritedWidget` exists anywhere in this codebase.
+
+### Addenda — real-device reports falsified two "confirmed correct" verdicts
+
+- **The Set Length crash (23a) still reproduced live.** Real root cause:
+  `FocusNode.unfocus()` only *schedules* a focus change (applied on the
+  next frame's pre-build phase) — both fix sites called it and then
+  immediately, synchronously, removed the focused widget in the same call,
+  racing the deferred change. Fixed by deferring the actual removal
+  (`Navigator.pop`, the controller call) into
+  `WidgetsBinding.instance.addPostFrameCallback`, guaranteeing a full frame
+  elapses first.
+- **Vertex hover/selection almost never won over an edge.** Root cause: the
+  vertex-vs-edge tie-break required the vertex to be *at least as close* as
+  any in-range edge, but an edge's closest-point calculation can always
+  slide toward the cursor while a vertex is fixed — so an edge won for
+  nearly every cursor position except dead-center on the vertex's exact
+  pixel. Fixed: a vertex within its own (wider) radius now wins
+  unconditionally.
+- Two more found afterward: vertex highlight dots use `PolylineCap.butt`
+  (the `flutter_scene` default), which renders literally nothing for a
+  near-zero-length segment — only `PolylineCap.round`'s end-cap disc is
+  visible; fixed by passing `cap: PolylineCap.round` for vertex markers.
+  Sketch screen's menu FAB was bottom-right (inconsistent with the 3D
+  viewport's top-left convention) and painted behind the ribbon — both
+  fixed. 2D sketcher's point hit-box was too small relative to line/circle
+  hit-boxes (a point is one location vs. an entire length/circumference) —
+  added a `pointHitRadiusMultiplier = 1.6`.
+
+None of this round's fixes were verified via `flutter test` (no SDK) —
+manual reasoning against documented `FocusManager` frame-scheduling
+behavior and worked-out pixel-distance math only.
+
+---
+
+## 2026-06-30 — Prompt A: 3D viewport fixes
+
+| Item | Outcome |
+|---|---|
+| A2 — Box selection | Implemented (double-tap-then-drag, geometric frustum projection) — **later fully removed, see Box Selection Report below** |
+| A3 — Clip distance constants, auto-fit, slider | `kDefaultNearClip`/`kDefaultFarClip`, persisted, log-scale View-menu slider, auto-fit on Reset View based on mesh AABB diagonal |
+| A4 — Perspective toggle | State/persistence/UI fully wired; `flutter_scene` 0.18.x has no `OrthographicCamera` and no settable FOV, so the two modes currently render identically (documented `TODO`) |
+
+Constraint maintained throughout: all four orbit gesture handler bodies
+stayed line-for-line unchanged; every new behavior lives in wrapper methods.
+
+---
+
+## 2026-06-30 — Box selection: three attempts, all rejected on-device, feature parked
+
+| # | Approach | On-device result |
+|---|---|---|
+| 1 | Hand-rolled `_worldToScreen` (original A2) | Selected the wrong corner/region — systematic projection bug |
+| 2 | Frustum-plane test via `screenPointToRay` corner rays | Selected nothing at all, any zoom level |
+| 3 | Direct 2D screen-projection (camera-axis dot products) | Selected *something* but unreliably — missed some inside the box, included some outside |
+
+User's verbatim decision: *"Not robust enough to rely on. let's park it for
+now."* Box selection was fully removed (state, gestures, hit-test, toolbar
+UI, tests); the viewport reverted to single-tap-toggle multi-select. No
+local Flutter/Dart toolchain meant each iteration could only be validated
+by the user's on-device testing — a slow loop that produced three
+different failure modes in three attempts. Any future revisit should
+budget for on-device/screenshot verification rather than code-review-only
+iteration.
+
+---
+
+## 2026-06-30 — Viewport bug-fix round (same session as Prompt A)
+
+Seven bugs fixed, two kept as real fixes after box selection's removal:
+
+- **One-sided face highlights**: `triangleHighlightBuffers` now emits each
+  triangle twice (both windings) so hover/selection highlights render
+  regardless of which side the camera views — works around
+  `flutter_scene`/Impeller back-face culling.
+- Cursor crosshair got a dark outline stroke for visibility on any
+  background.
+- Perspective toggle documents its current no-op status inline.
+- Selected-edge highlight given its own darker blue (`#0D47A1`), distinct
+  from selected-face/-vertex; selected-vertex marker diameter reduced
+  14px → 8px.
+- Box-selection-only state/menu items (the "Contain Only" toggle, deferred
+  tap-commit timer, box-drag cursor tracking) all removed along with the
+  feature itself.
+
+---
+
+## 2026-06-30 — Prompt D: Feature tree sketch picker for Extrude
+
+New > Extrude, with no eligible Sketch already selected, now opens the
+Feature tree in a guided picker mode (banner + dimmed-ineligible rows)
+instead of just complaining via SnackBar. Tapping an eligible Sketch closes
+the picker and opens `ExtrudePanel` directly; an ineligible tap shows an
+inline error and stays in picker mode. Canceling (tree close button, back
+gesture, background tap) creates nothing.
+
+**Addendum bug, same day**: confirming or canceling an Extrude never
+cleared `_selectedFeatureId`, so a later New > Extrude re-used the stale
+selection and skipped the picker entirely — including after deleting the
+resulting Extrude. Fixed by clearing `_selectedFeatureId` in both
+`_confirmExtrude`/`_cancelExtrude` when it names the just-operated-on
+Sketch.
+
+Flutter SDK bootstrapped from a `master`-branch tarball this session (the
+in-container git proxy blocks a real `flutter/flutter` clone); 11
+pre-existing failures elsewhere in the suite attributed to this snapshot
+being newer than whatever `master` the rest of the suite was last verified
+against.
+
+---
+
+## 2026-06-30 — Prompt B: Sketcher fixes (B0–B5)
+
+| Item | Outcome |
+|---|---|
+| B0 — Cursor boundary clamping | `clampCursorToCanvas` + wiring through every pan/zoom/drag path — **later found to fight with RTS edge-pan and replaced with a "disappear, don't snap" model, see bugfixes below** |
+| B1 — H/V on center/corner rectangles | 2 Horizontal + 2 Vertical constraints replace 3 Perpendicular (3-point rectangles keep Perpendicular — no fixed axis alignment to assume) |
+| B2 — Construction geometry + center point on rectangles | 2 construction diagonal Lines + a center Point pinned via AtMidpoint constraints |
+| B3 — H/V dimensions preserve orientation after solve | The prompt's assumed py-slvs methods (`addPointsHorizDistance`/`addPointsVertDistance`) don't exist in the installed 1.0.6 wheel — verified by downloading and inspecting it directly. Used `addPointsProjectDistance` against one cached fixed horizontal/vertical reference line instead. New `DistanceConstraint.orientation` field threaded through the full stack |
+| B4 — Auto-Coincident when a point lands on an existing point | The shared placement path already reuses existing-point ids outright (no "two independent coincident points" scenario can occur there) — implemented specifically for the standalone Point tool, whose purpose is placing an independently-addressable point |
+| B5 — Fully-constrained indicator | Backend `dof` field already existed; added missing test coverage + client-side line-color/badge wiring |
+
+Backend: 208 passed, 25 failed — all 25 in OCCT-geometry files hitting this
+sandbox's necessarily-fake OCC stub, none in sketch/constraint files. This
+run also surfaced two *pre-existing* bugs in `sketch_controller_test.dart`
+(a missing `flutter/widgets.dart` import had silently prevented the whole
+file from ever loading in any prior sandbox) — flagged but not fixed, out
+of scope.
+
+---
+
+## 2026-06-30 / 2026-07-01 — Prompt B device-testing bug-fix rounds (15 items)
+
+Four consecutive rounds of real on-device bug reports against Prompt B,
+same branch.
+
+**Round 1 (2026-06-30), items 1–8:**
+
+1. Cursor clamping erratic / RTS edge-pan feel — root cause: B0 snapped the
+   cursor to center on *every* in-flight delta, not just once genuinely
+   off-canvas, fighting the edge-pan compensation. New model: panning never
+   touches the cursor; it's simply left wherever it drifts and disappears
+   (`isCursorVisible`) rather than being forced back; a fresh drag
+   gesture resets to center only if it starts already-hidden.
+2. "Fully constrained" always showing / lines never grey — **real backend
+   bug**: `solve_sketch()` short-circuited to a canned `dof=0` whenever a
+   sketch had zero Constraints, regardless of how much free unconstrained
+   geometry existed. Fixed to always build/solve the full system (every
+   Point registered, not just constraint-referenced ones). Also added a
+   `hasGeometry` gate so a genuinely empty sketch doesn't show "fully
+   constrained" either.
+3. Indicator hidden behind Exit Sketch — moved from a canvas-overlay badge
+   to a plain lock icon in the AppBar title.
+4. Double-tap drag not working — same root cause as #2 (drag was gated on
+   `isUnderConstrained`, which was never truthfully nonzero).
+5. Selection hit box vs. hover highlight sizing inconsistent — unified
+   `kSelectionHitRadiusPixels`/`kVertexSelectionHitRadiusPixels` to the
+   same `12.5px` (midpoint of the old 9/16 split).
+6. 3D viewport pinch-zoom/two-finger-pan broken in selection mode — the
+   selection-mode pointer wrapper had no multi-touch branch at all; fixed
+   by routing 2+ active touches to the existing (unmodified) `_applyPinchPan`.
+7. Dimension orientation reverting to linear after solve — `_findDistanceConstraint`
+   matched by point-pair alone, ignoring orientation, so confirming a new
+   orientation for an existing pair silently PATCHed the wrong constraint's
+   value instead of replacing it. Fixed with an orientation-aware lookup
+   plus a delete-and-recreate fallback.
+8. Feature tree text color after deleting last Feature — investigated at
+   length, no bug found or reproduced; regression test added defensively.
+
+**Rounds 2–4 (2026-07-01), items 9–15** (three of these are items 1/7/8
+above turning out to be incomplete or misdiagnosed on retest):
+
+9. Cursor still teleporting mid-drag — item 1's fix ran its "reset if
+   hidden" check on *every* delta during a drag, not once per gesture.
+   Moved into a dedicated `resetCursorToCentreIfHidden`, called exactly
+   once from `_handlePointerDown`.
+10. Stale DOF after deleting a Circle — deleting a Circle cascades to
+    delete its radius Constraint server-side, but the client only
+    re-solved when the *directly* deleted entity was itself a Constraint.
+    Fixed: always re-solve after any deletion.
+11. **A real, previously-undetected solver bug**: B2's rectangle
+    construction pinned its diagonals' shared center with *two*
+    `AtMidpoint` constraints; once the H/V side constraints already forced
+    both diagonals through the same point, the second constraint became
+    redundant *and* singular — py-slvs failed to converge
+    (`converged == False`) but still reported `dof == 0`, so a solve
+    failure displayed as "most constrained possible," exactly backwards.
+    Fixed at both ends: rectangles now create only one `AtMidpoint`
+    constraint, and `isUnderConstrained` no longer trusts `dof` when the
+    last solve didn't converge.
+12. Sketcher hover/tap hit-box mismatch — `hoveredEntity` used a flat
+    unscaled radius while `handleCanvasTap` used a zoom-scaled one. Unified
+    on the zoom-scaled calculation; also shrank `minTapHitRadiusPixels`
+    22px → 14px.
+13. H/V dimensions rendering as diagonal after solve — **not a solver bug,
+    a rendering bug**: the underlying constraint was already
+    orientation-aware (from B3); `_paintDistanceDimension`/
+    `_constraintLabelCenter` simply never read `orientation` and always
+    used the generic diagonal layout once confirmed (the ghost *preview*
+    got it right; only the confirmed render didn't). Fixed to match.
+14. Sketch stays hidden after deleting its Extrude — `_cascadeDeleteFeature`
+    only ever cleared hidden-feature ids for Features that no longer exist;
+    the auto-hidden Sketch still exists (just unlocked again), so its id
+    stayed hidden forever. Fixed to also un-hide the newly-unlocked Sketch.
+15. No visual distinction between "under-constrained" and "not yet
+    evaluated"; title bar overflow. Fixed: indicator now always shows
+    `lock_open` (under-constrained) or `lock` (fully constrained) once
+    there's geometry; title wrapped in `Flexible` with ellipsis.
+
+Also confirmed: Equal Length constraint reports, previously flaky, came
+back clean once item 11's redundant/singular constraint was removed —
+same root cause, no separate fix needed.
+
+This is also where the recurring `flutter_scene 0.18.1` vs. sandbox-engine
+incompatibility was first fully diagnosed: `flutter_scene` needs
+`flutter_gpu` APIs only present in Flutter **master** channel builds from
+2026-06-09 or later (stated in its own pubspec); every bootstrapped stable
+SDK in this project's sandboxes predates that, so any `flutter_scene`-importing
+test file fails to even compile under `flutter test` here, though
+`flutter analyze` (pure static analysis) is unaffected. Documented as
+sandbox-only — the real CI/build environment already targets a compatible
+Flutter version.
+
+---
+
+## 2026-07-01 — Prompt C: Nested profiles, multi-body extrude, and edge bleed-through (round 1)
+
+### C1/C2 — Nested and multi-profile detection
+
+`detect_profile` rewritten: trace every Line-chain loop *and* every
+standalone Circle into one flat list of closed loops, then classify via
+new `_classify_nesting` (centroid-in-polygon test with an area tie-break —
+needed because a hole centered on its own container makes each loop's
+centroid fall inside the other, so area, not just centroid containment,
+decides which is the container). One outer loop + 0+ holes = `CLOSED_LOOP`
+with `Profile.inner_loops` populated (C1); 2+ outer loops reuses the
+existing `MULTIPLE_LOOPS`/`loops` shape (C2), each entry itself possibly
+carrying its own holes. A loop nested inside 2+ others is rejected as new
+`ProfileStatus.INVALID_NESTING`.
+
+`extrude.py`: `_face_for_profile` builds the face via
+`BRepBuilderAPI_MakeFace(outerWire).Add(innerWire)` per hole, with each
+inner wire's winding checked against the outer's real surface normal
+(`_wire_normal`, via `BRepAdaptor_Surface`) rather than reasoned about
+analytically — necessary because a Circle's fixed winding direction is
+*not* the same handedness relative to the plane normal on all three
+reference planes (XZ mirrors XY/YZ). Multiple outer loops combine into a
+`TopoDS_Compound`. `mesh.py` needed no changes — `TopExp_Explorer`/
+`topexp.MapShapes` already traverse into compounds transparently.
+
+This session had a **real conda/micromamba toolchain working** (a first
+for this project — `conda.anaconda.org`'s package artifacts are reachable
+even though the wider Anaconda API/installer isn't) — so all 13 new tests
+ran against genuine OCCT geometry construction, not a stub. This is how the
+area/centroid tie-break bug was actually caught (a real test failure, not
+inspection). Backend: 249/249 passed.
+
+### C3 — Edge bleed-through (attempt)
+
+Evaluated three approaches from the prompt's own preferred order: (1) a
+separate always-on-top depth-disabled pass — not achievable, `flutter_scene`
+0.18.1 has no per-material depth toggle and no second render pass API; (2)
+**chosen** — bias each edge vertex towards the camera (replacing the old
+"away from mesh center" nudge, which barely helped at grazing angles since
+"away from center" and "towards camera" can be nearly perpendicular); (3)
+enlarge the bias only on near-face-parallel segments — not attempted, no
+edge-to-face adjacency exists in the mesh data to test against.
+
+`kEdgeDepthBias = 0.001` expressed as a *fraction of the mesh's
+bounding-sphere radius* (scaling with model size, mirroring Prompt A's
+auto-fit far clip) — **this specific choice was wrong, see round 1
+bugfixes below**. Re-synced on every completed camera gesture (not every
+frame), so the bias direction can be briefly stale mid-drag (disclosed
+trade-off).
+
+A working Flutter SDK (official stable 3.44.4) was available this session
+for the first time via reachable `storage.googleapis.com`/`pub.dev` —
+`flutter analyze` is a real run, not just reasoning from source. `flutter
+test` still blocked by the same pre-existing `flutter_gpu` mismatch (stable
+channel predates the master-only APIs `flutter_scene` needs).
+
+---
+
+## 2026-07-01 — Prompt C on-device bug-fix round 1
+
+1. **Overlapping/touching inner loop produces a broken solid instead of an
+   error.** Root cause: centroid-only containment isn't sufficient — a
+   loop whose centroid is inside its container can still share/cross the
+   container's own boundary (the reported case: a hole sharing a whole
+   edge with the outer rectangle). A vertex-only containment check didn't
+   catch it either (ray-casting classifies an on-edge point as "inside").
+   Fixed with `_loop_fully_contains`: vertex containment **plus** a
+   segment-intersection check between every candidate/container edge pair.
+   New `ProfileStatus.OVERLAPPING_LOOPS`, reported distinctly from
+   `INVALID_NESTING`.
+2. **MultiProfile sketches never offered for extrude.** The backend gate
+   (`_require_closed_sketch_feature`) already accepted `MULTIPLE_LOOPS`,
+   but the *client's own pre-check* (`_checkExtrudeEligibility`) only ever
+   looked at `isClosedLoop` — so the UI rejected it before the (already
+   correct) backend was ever reached. Fixed with a new
+   `ProfileDetectionDto.isExtrudable` (`closed_loop` OR `multiple_loops`).
+3. **Far-side edges and highlighted faces bleeding through solid
+   geometry.** Root cause: the new `kEdgeDepthBias`, scaled to the *whole
+   mesh's* bounding-sphere radius, ignored that a stepped/notched part's
+   local features can be much shallower than that global radius — so the
+   bias could push a far wall's edges in front of a nearer wall by more
+   than the feature's own depth. Fixed by reverting to a small **fixed**
+   world-space amount (`0.02`, matching the original pre-Prompt-C nudge's
+   magnitude) — the original z-fighting bug was always attributed to
+   *direction*, never magnitude, so this keeps the corrected direction
+   while restoring the known-safe magnitude.
+
+Backend: 252/252 passed (real OCCT/py-slvs environment, not a stub).
+
+---
+
+## 2026-07-01 — Prompt C on-device bug-fix round 2
+
+1. **Sketch canvas doesn't highlight multiple closed profiles.** Root
+   cause: the client DTO only ever parsed the single `profile` field
+   (`null` for `multiple_loops`) — a gap from before C1/C2 existed, never
+   revisited once they landed (same category as round 1 item 2). Fixed:
+   `ProfileDetectionDto.fillableLoops` parses every outer loop (from either
+   `profile` or `loops`) recursively with inner loops; canvas fill now uses
+   an even-odd fill rule so holes render correctly punched out — a genuine
+   new capability, not just a multi-profile fix.
+   - **Follow-up**: a standalone Circle profile's fill still didn't render.
+     Two compounding bugs: a defensive `>= 3` point-count filter silently
+     dropped every Circle "loop" (reported as exactly 2 points: center +
+     radius point), and even past that, the canvas always called
+     `Path.addPolygon` regardless of shape. Fixed: filter loosened to
+     `>= 2`; new `_addLoopBoundary` draws a real circle (`Path.addOval`)
+     for a 2-point loop, a polygon for 3+.
+2. **Internal faces/hidden edges showing through solid bodies — investigated
+   in depth.** Read `flutter_scene`'s actual render pipeline source
+   directly: confirmed the engine's opaque/translucent split *is*
+   architecturally correct (shared depth buffer, proper test/write
+   semantics) — **not an inherent flutter_scene limitation**. Found and
+   fixed one real, confirmed contributor: `buildMeshEdgesNode` used
+   `AlphaMode.opaque`, which depth-*writes* — combined with the
+   towards-camera bias, this could corrupt what a later translucent
+   highlight's depth test saw at the same pixels. Fixed to `AlphaMode.blend`
+   (still depth-tested, no longer depth-written; also fixed a latent bug
+   where `_selectedEdgeColor`'s partial alpha was silently rendered fully
+   opaque under the old mode). **On-device retest: symptom persisted.**
+   Traced one level deeper (`scene_pass.dart`): confirmed the engine builds
+   exactly one `RenderTarget`/one `SceneEncoder` per frame — ruling out a
+   render-graph/pass-structure explanation too. This round's fix was real
+   and worth keeping, but evidently not the only factor; investigation
+   handed off with concrete next-step questions (does it reproduce with no
+   highlight active at all? does nudging transparency off exactly 0% change
+   anything?) since further progress needed a live GPU, unavailable in any
+   sandbox to date.
+
+Backend unaffected this round (252/252, unchanged). Client: 151 passed
+(+3 new), 17 failed (same pre-existing `flutter_scene`/`flutter_gpu` set).
+
+---
+
+## 2026-07-02 — C3 rendering investigation, continued
+
+After the two prior rounds above, on-device testing continued to show
+edges and highlighted/selected faces bleeding through opaque geometry that
+should hide them. Findings this round, in order:
+
+1. Traced `flutter_scene` 0.18.1's `scene_pass.dart` (`ScenePass.execute`)
+   and confirmed it builds exactly one `RenderTarget`/one `SceneEncoder`
+   per frame — ruling out a render-graph/pass-structure explanation
+   entirely (suspected but unproven at the end of round 2).
+2. Pivoted to an MSAA hypothesis: `Scene`'s default `AntiAliasingMode.auto`
+   enables MSAA when the GPU reports `doesSupportOffscreenMSAA=true`
+   (confirmed true on the test device — Samsung Galaxy S23 Ultra /
+   SM-S918B, Adreno 740). Added an explicit `flutter_gpu` dependency to
+   `client/pubspec.yaml` and forced
+   `Scene()..antiAliasingMode = AntiAliasingMode.none` in
+   `part_viewport.dart`'s `initState`. **Confirmed partial improvement**:
+   fixed the "gross/total" bleed-through, leaving a smaller residual —
+   dashed/broken hidden edges visible in a graduated pattern.
+3. Iteratively tuned `kEdgeDepthBias` chasing the residual: 0.02 → 0.1 →
+   0.3 → back to 0.05. At 0.3, a new regression appeared: edges leapfrogging
+   through thin/closely-spaced features (a comb/serrated part, a
+   disc-with-square-hole part) — precisely described as "when the edges
+   are behind 1 face they're visible, behind 2 faces they're visible,
+   behind 3 faces they're no longer visible." Reverted to 0.05
+   (commit `8c29b32`) to avoid the overshoot regression.
+4. **Critical finding**: retested at 0.05 and the *exact same*
+   "1–2 occluding faces insufficient, 3+ sufficient" pattern was still
+   present, completely unchanged from 0.3 — falsifying "bias
+   magnitude/overshoot" as the explanation on its own.
+5. Verified via a debug log line
+   (`[PartViewport][RenderDebug] scene: antiAliasingMode=...
+   effectiveAntiAliasingMode=...`) that `AntiAliasingMode.none` genuinely
+   takes effect at runtime — logcat confirmed
+   `effectiveAntiAliasingMode=AntiAliasingMode.none`. (Getting this log
+   required switching two startup diagnostic lines from `debugPrint` to
+   plain `print`, since Flutter's default `debugPrintThrottled` buffer was
+   burying/delaying them behind this file's high volume of per-frame
+   `debugPrint` calls elsewhere.)
+6. Checked (and later re-confirmed) that Android's system-level "Force 4x
+   MSAA" developer option makes no difference either on or off — ruling
+   out a system-level override of the in-app AA setting.
+7. **Decisive experiment**: a throwaway branch
+   (`claude/diagnostic-extreme-edge-bias`, since deleted) set
+   `kEdgeDepthBias = 2.0` — a 40x increase over the shipped 0.05,
+   deliberately large enough to be an obvious diagnostic. On-device: the
+   *exact same* "1–2 occluding faces visible, 3+ hidden" pattern persisted
+   completely unchanged, confirmed independently on both test parts,
+   viewed statically. This conclusively rules out bias magnitude as the
+   mechanism — a 40x range with zero effect on the qualitative pattern is
+   not consistent with a depth-precision/z-fighting explanation.
+   - Side note: at bias=2.0, orbiting produced a separate, fully-explained
+     artifact — a translucent "preview-like" floating wireframe, caused by
+     the one-frame lag between camera movement and `_syncEdgesNode`
+     recomputing the bias against the new camera position (imperceptible
+     at 0.05, obvious at 2.0). Confirms the bias is genuinely being
+     applied; not the bug under test.
+
+**Current theory (unresolved, not yet fixed)**: with MSAA, bias direction,
+bias magnitude (0.05 through 2.0), and render-graph/depth-buffer-sharing
+all ruled out or verified-correct, the leading explanation is a GPU
+hardware/driver behavior below the level `flutter_gpu`'s public API
+exposes — specifically Adreno GPUs' hierarchical/low-resolution early-Z
+rejection hardware ("LRZ"), which has a documented history of exactly this
+failure signature on Qualcomm hardware: a single occluding depth write
+failing to properly populate/be respected by the coarse Z structure, while
+several occluding writes converge to the correct (occluded) result. There
+is no public API in `flutter_gpu`/`flutter_scene` 0.18.1 to disable or
+influence this. **This is an open, unresolved item — see `docs/roadmap.md`.**
+
+Decision: `kEdgeDepthBias` stays at `0.05` and `AntiAliasingMode.none`
+stays in place on `claude/new-session-s8daac` — both are net improvements
+over earlier states even though neither fixes the residual bug, and
+reverting either would only reintroduce previously-fixed regressions for
+no benefit.
