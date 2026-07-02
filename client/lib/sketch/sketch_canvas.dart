@@ -1746,31 +1746,48 @@ class _SketchPainter extends CustomPainter {
   }
 
   /// One outer [loop]'s fill path, with a hole punched out for each of its
-  /// `innerLoops` via [PathFillType.evenOdd] - returns null if any of the
-  /// loop's own Points are missing from [SketchController.points] (a
-  /// stale/in-flight profile response racing a local edit).
+  /// `innerLoops` via [PathFillType.evenOdd] - returns null if the loop's
+  /// own boundary can't be built (see [_addLoopBoundary]). A hole that
+  /// can't be built is simply skipped (still shows the outer fill, just
+  /// without that one hole) rather than voiding the whole loop's fill.
   Path? _profileLoopPath(ProfileLoopDto loop) {
-    final outer = _screenPolygon(loop.pointIds);
-    if (outer == null) return null;
-    final path = Path()
-      ..fillType = PathFillType.evenOdd
-      ..addPolygon(outer, true);
+    final path = Path()..fillType = PathFillType.evenOdd;
+    if (!_addLoopBoundary(path, loop)) return null;
     for (final inner in loop.innerLoops) {
-      final innerPoints = _screenPolygon(inner.pointIds);
-      if (innerPoints == null) continue;
-      path.addPolygon(innerPoints, true);
+      _addLoopBoundary(path, inner);
     }
     return path;
   }
 
-  List<Offset>? _screenPolygon(List<String> pointIds) {
+  /// Adds [loop]'s boundary to [path] as a closed sub-path, and reports
+  /// whether it could: false if any of the loop's own Points are missing
+  /// from [SketchController.points] (a stale/in-flight profile response
+  /// racing a local edit).
+  ///
+  /// Bug fix: a standalone Circle profile is reported as exactly 2 Points
+  /// (center, radius point - see `app.sketch.profile._circle_profile`),
+  /// not an ordered polygon boundary - treating those 2 points as a
+  /// (degenerate, invisible) 2-point polygon silently drew nothing for
+  /// every Circle profile, both as an outer loop and as a hole. The same
+  /// 2-vs-3+ point count `SketchController._refreshProfile`'s filter uses
+  /// tells the two cases apart here: a real polygon loop always has 3+
+  /// points, so an exact 2 is unambiguously a Circle.
+  bool _addLoopBoundary(Path path, ProfileLoopDto loop) {
     final points = <Offset>[];
-    for (final id in pointIds) {
+    for (final id in loop.pointIds) {
       final point = controller.points[id];
-      if (point == null) return null;
+      if (point == null) return false;
       points.add(transform.sketchToScreen(point.x, point.y));
     }
-    return points;
+    if (points.length == 2) {
+      final center = points[0];
+      final radius = (points[1] - center).distance;
+      path.addOval(Rect.fromCircle(center: center, radius: radius));
+      return true;
+    }
+    if (points.length < 3) return false;
+    path.addPolygon(points, true);
+    return true;
   }
 
   @override

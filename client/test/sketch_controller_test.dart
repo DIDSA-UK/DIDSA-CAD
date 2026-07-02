@@ -325,6 +325,25 @@ class _FakeBackend {
         degree.values.every((d) => d == 2) &&
         lines.length == involved.length;
     if (!isClosedLoop) {
+      // Mirrors the real backend's app.sketch.profile._circle_profile: a
+      // standalone Circle (no Lines at all) is its own closed profile,
+      // reported as exactly 2 Points (center, radius point) rather than an
+      // ordered polygon boundary - needed to test the fix for the client
+      // silently never filling a Circle profile's area (see
+      // SketchController._refreshProfile / SketchCanvas._addLoopBoundary).
+      if (lines.isEmpty && circles.length == 1) {
+        final circle = circles.values.first;
+        return {
+          'status': 'closed_loop',
+          'detail': 'ok',
+          'profile': {
+            'point_ids': [circle['center_point_id'], circle['radius_point_id']],
+            'line_ids': [circle['id']],
+          },
+          'branch_point_ids': <String>[],
+          'loops': <Map<String, dynamic>>[],
+        };
+      }
       return {
         'status': 'open',
         'detail': 'not a closed loop',
@@ -866,6 +885,20 @@ void main() {
     expect(controller.closedProfileFills.single.pointIds, hasLength(3));
     expect(controller.closedProfileFills.single.pointIds.toSet(), controller.points.keys.toSet());
   });
+
+  test(
+    'closedProfileFills is populated for a standalone Circle profile (bug fix: '
+    'a >= 3 point-count filter previously dropped every Circle, which is reported '
+    'as exactly 2 points)',
+    () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+
+      expect(controller.closedProfileFills, hasLength(1));
+      expect(controller.closedProfileFills.single.pointIds, hasLength(2));
+    },
+  );
 
   test('closedProfileFills reverts to empty once the loop is broken by deleting a line', () async {
     controller.selectDrawTool(SketchTool.line);
