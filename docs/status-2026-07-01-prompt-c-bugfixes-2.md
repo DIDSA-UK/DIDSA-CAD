@@ -51,6 +51,35 @@ code written before C1/C2 not being revisited once they landed).
   alongside the pre-existing, already-documented 4 unrelated failures in
   that file.
 
+### 1b - follow-up: a Circle profile's fill still didn't render
+
+On-device retest of the fix above showed one loop shading correctly (a
+rectangle) but not another (a standalone Circle) in the same sketch.
+
+**Root cause**: a standalone Circle profile is reported as exactly 2
+Points (center, radius point - see `app.sketch.profile._circle_profile`),
+not an ordered polygon boundary. Two bugs compounded:
+
+1. `SketchController._refreshProfile`'s own defensive filter,
+   `.where((loop) => loop.pointIds.length >= 3)`, silently dropped every
+   Circle loop before it ever reached the canvas - a real polygon loop
+   always has 3+ points, so this filter (meant to guard against a
+   degenerate/too-short polygon) rejected every Circle unconditionally.
+2. Even past that filter, `SketchCanvas`'s fill code always called
+   `Path.addPolygon` on a loop's raw points - for a 2-point Circle "loop"
+   this draws an invisible zero-area sliver, not a circle.
+
+**Fix**: the point-count filter is now `>= 2`; `SketchCanvas` gained
+`_addLoopBoundary`, which checks the point count first - exactly 2 draws
+a real circle via `Path.addOval` (center = first point, radius = distance
+to the second), 3+ draws a polygon as before. Applied uniformly to both
+outer loops and their holes, so a Circle can now be filled as either.
+
+**Test coverage**: `sketch_controller_test.dart`'s fake `/profile`
+endpoint gained a standalone-Circle branch (mirroring the real backend's
+`_circle_profile`); a new test confirms `closedProfileFills` is populated
+(not filtered away) for a lone Circle. Runs and passes for real.
+
 ---
 
 ## 2 — Internal faces/hidden edges showing through solid bodies
@@ -100,21 +129,45 @@ separate bug: `AlphaMode.opaque` "ignores alpha" per `UnlitMaterial`'s own
 doc comment, so `_selectedEdgeColor`'s intentionally-partial alpha
 (`0.85`) was silently rendered fully opaque instead of translucent.
 
-### Still needs on-device verification
-This closes off one concrete, identified mechanism, but it was not
-possible to confirm in this sandbox that it's the *only* one - there is
-no GPU/display available here, and `flutter test` cannot even load any
-`flutter_scene`-dependent file (the same pre-existing limitation
-documented throughout this project). If internal faces/hidden edges are
-still visible at 0% transparency after this fix, the next useful
-diagnostic (not yet done, would need on-device iteration) is to
-temporarily set `kEdgeDepthBias = 0.0` in `mesh_geometry.dart` and
-retest: if hidden edges are still visible with **zero** bias, edges are
-not the cause at all, and the remaining investigation should focus on the
-selection/hover highlight path (`buildHighlightFacesNode`,
-`_syncHoverNode`, `_syncSelectedEntityNodes` in `part_viewport.dart`) or
-the main mesh material itself - none of which this round's changes
-touched.
+### Still reported after the fix above - traced further
+
+On-device retest reported the symptom persists. Traced one level deeper
+into `flutter_scene`'s actual render-graph construction (`scene_pass.dart`,
+not read in round 1) to check for a structural reason the opaque/
+translucent split might not share one depth buffer in practice:
+`ScenePass.execute` builds exactly **one** `RenderTarget` (one color
+attachment, one depth-stencil attachment) for the whole frame, and
+constructs a single `SceneEncoder` against that one target/pass - the
+same encoder whose `flush()` does the opaque-then-translucent draws
+already traced in round 1's fix. There is no separate target, no separate
+depth buffer, and no code path that skips this for translucent draws
+specifically. This rules out a render-graph/pass-structure explanation:
+the single shared depth buffer this bug would require to be broken is,
+in fact, provably shared, at the level this sandbox's static source
+reading can verify.
+
+This *doesn't* mean the fix above was wrong or unnecessary - it was a
+real, confirmed contributor (a genuine depth-write from a biased opaque
+edge, plus a real latent alpha-ignored bug) - but it means it evidently
+isn't the *only* factor, and further progress from here needs an actual
+repro to look at rather than more source reading, which has now been
+pushed about as far as it usefully can be without a live GPU (still not
+available in this sandbox - see Prompt C's own status doc for why).
+
+**To make further progress, the most useful next inputs are:**
+- A screenshot of the *specific* moment/angle where a face or edge visibly
+  bleeds through - ideally with the render mode and body-transparency
+  value visible (or stated), and whether it's a single-body or multi-body
+  (compound) part.
+- Whether it reproduces with **no** selection/hover active at all (plain
+  shaded/shaded+edges rendering, nothing highlighted) - this would mean
+  the main mesh/edge rendering itself is affected, not the highlight
+  overlay specifically, which points the investigation at a different
+  part of the code than everything looked at so far.
+- Whether setting body transparency away from exactly 0% (e.g. 1-5%)
+  changes anything - if it does, that's a strong signal the bug is
+  specifically in the opaque/`AlphaMode.opaque` <-> translucent/
+  `AlphaMode.blend` switch in `_syncMeshNode`, not in edges or highlights.
 
 ## Test/analyze results
 

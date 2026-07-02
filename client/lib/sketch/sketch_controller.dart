@@ -3344,7 +3344,14 @@ class SketchController extends ChangeNotifier {
 
   Future<void> _refreshProfile() async {
     final profile = await _api.getProfile(_sketchId!);
-    _closedProfileFills = profile.fillableLoops.where((loop) => loop.pointIds.length >= 3).toList();
+    // >= 2, not >= 3: a Line-chain polygon loop needs at least 3 points,
+    // but a standalone Circle profile (see app.sketch.profile._circle_profile)
+    // is reported as exactly 2 points (center, radius point) - the same
+    // 2-vs-3+ distinction SketchCanvas._profileLoopPath uses to tell a
+    // circle loop apart from a polygon one. A >= 3 filter here silently
+    // dropped every Circle profile - bug fix, previously untested since
+    // earlier on-device rounds only exercised Line-chain rectangles.
+    _closedProfileFills = profile.fillableLoops.where((loop) => loop.pointIds.length >= 2).toList();
   }
 
   // --- Stage 19b item 4: undo --------------------------------------------
