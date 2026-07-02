@@ -248,14 +248,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // behind opaque geometry, a fundamentally different bug class from
       // everything investigated in this file's edge/highlight code so far.
       try {
-        debugPrint(
+        // Deliberately `print`, not `debugPrint`: this line fires once at
+        // startup, but the rest of this file fires debugPrint on every
+        // pointer move/frame sync, which floods debugPrint's default
+        // throttled buffer (debugPrintThrottled) and can bury or indefinitely
+        // delay a one-time line behind that backlog. `print` bypasses that
+        // throttling entirely so this can't get lost in logcat capture.
+        print(
           '[PartViewport][RenderDebug] GPU: defaultColorFormat=${gpu.gpuContext.defaultColorFormat} '
           'defaultStencilFormat=${gpu.gpuContext.defaultStencilFormat} '
           'defaultDepthStencilFormat=${gpu.gpuContext.defaultDepthStencilFormat} '
           'doesSupportOffscreenMSAA=${gpu.gpuContext.doesSupportOffscreenMSAA}',
         );
       } catch (error) {
-        debugPrint('[PartViewport][RenderDebug] GPU capability query failed: $error');
+        print('[PartViewport][RenderDebug] GPU capability query failed: $error');
       }
       if (!mounted) return;
       setState(() {
@@ -274,7 +280,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // already only enables MSAA when `doesSupportOffscreenMSAA` is
           // true, which this device does report.
           ..antiAliasingMode = AntiAliasingMode.none;
-        debugPrint(
+        // See the `print` comment above: same reasoning applies here.
+        print(
           '[PartViewport][RenderDebug] scene: antiAliasingMode=${_scene!.antiAliasingMode} '
           'effectiveAntiAliasingMode=${_scene!.effectiveAntiAliasingMode}',
         );
