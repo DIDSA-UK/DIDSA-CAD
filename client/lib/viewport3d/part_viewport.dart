@@ -371,10 +371,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.add(node);
       _meshNode = node;
       debugPrint('[PartViewport] _syncMeshNode: Node added to Scene');
+      debugPrint(
+        '[PartViewport][RenderDebug] mesh: isPreviewMesh=${widget.isPreviewMesh} '
+        'bodyOpacity=${widget.bodyOpacity} alphaMode=${material.alphaMode} '
+        'vertices=${mesh.vertices.length} triangles=${mesh.triangleIndices.length}',
+      );
     }
     final bounds = boundsOfMesh(mesh);
     _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
     _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
+    debugPrint(
+      '[PartViewport][RenderDebug] bounds: center=${bounds?.center} '
+      'boundingSphereRadius=${bounds?.boundingSphereRadius} cameraDistance=${_camera.distance}',
+    );
   }
 
   /// Stage 11: rebuilds [_edgesNode] from [PartViewport.mesh]'s real OCCT
@@ -407,12 +416,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (mesh == null || !widget.renderMode.showsEdges) return;
     var segments = edgeSegmentsFromMesh(mesh);
     if (segments.isEmpty) return;
-    if (widget.renderMode == ViewportRenderMode.shadedWithEdges) {
+    final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+    if (biased) {
       segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
     }
     final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
     scene.add(node);
     _edgesNode = node;
+    debugPrint(
+      '[PartViewport][RenderDebug] edges: renderMode=${widget.renderMode} biased=$biased '
+      'kEdgeDepthBias=$kEdgeDepthBias segments=${segments.length} '
+      'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
+    );
   }
 
   /// Rebuilds all three reference-plane nodes from scratch - cheap enough
@@ -793,6 +808,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (node == null) return;
     scene.add(node);
     _hoverNode = node;
+    debugPrint(
+      '[PartViewport][RenderDebug] hover: ${hit.entity.kind}#${hit.entity.id} '
+      'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
+    );
   }
 
   /// Rebuilds all three selected-entity highlight nodes (one per kind, each
@@ -830,6 +849,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final node = buildHighlightFacesNode(faceTriangles, color: _selectedColor);
       scene.add(node);
       _selectedFacesNode = node;
+      // RenderDebug: per selected face's own centroid distance from the
+      // camera, next to the mesh's overall bounding info - lets a log
+      // capture answer "is the highlighted face actually on the far side"
+      // without needing to see the frame itself.
+      final bounds = boundsOfMesh(mesh);
+      for (final entity in widget.selectedEntities.where((e) => e.kind == SelectionEntityKind.face)) {
+        final triangles = faceTrianglesForId(mesh, entity.id);
+        if (triangles.isEmpty) continue;
+        var sum = vm.Vector3.zero();
+        var count = 0;
+        for (final (a, b, c) in triangles) {
+          sum = sum + a + b + c;
+          count += 3;
+        }
+        final centroid = sum / count.toDouble();
+        debugPrint(
+          '[PartViewport][RenderDebug] selected face #${entity.id}: centroid=$centroid '
+          'distanceFromCamera=${(centroid - _camera.position).length} '
+          'meshBoundsCenter=${bounds?.center} meshBoundingSphereRadius=${bounds?.boundingSphereRadius} '
+          'cameraDistance=${_camera.distance}',
+        );
+      }
     }
     if (edgeSegments.isNotEmpty) {
       final node = buildMeshEdgesNode(
