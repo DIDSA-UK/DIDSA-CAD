@@ -387,12 +387,30 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
   );
 }
 
-/// Builds a [Node] rendering [triangles] as a translucent flat tint - Stage
-/// 23 Item 3's face highlight ("subtle tint"). GPU-bound
-/// (`UnskinnedGeometry.uploadVertexData`, same as [geometryFromMesh]), so
-/// cannot be exercised in a headless `flutter test` run;
-/// [triangleHighlightBuffers] above is the pure, testable counterpart for
-/// this data's actual content.
+/// Builds a [Node] rendering [triangles] as a flat tint - Stage 23 Item 3's
+/// face highlight. GPU-bound (`UnskinnedGeometry.uploadVertexData`, same as
+/// [geometryFromMesh]), so cannot be exercised in a headless `flutter test`
+/// run; [triangleHighlightBuffers] above is the pure, testable counterpart
+/// for this data's actual content.
+///
+/// DIAGNOSTIC (temporary): forced to [AlphaMode.opaque] instead of the
+/// originally-intended [AlphaMode.blend] "subtle translucent tint" look, to
+/// test a real on-device report that a highlighted face on the far side of
+/// a body renders through it (i.e. isn't occluded), reproduced with *no*
+/// edges involved at all - independently confirmed via source that
+/// `flutter_scene` 0.18.1's translucent pass is depth-tested against the
+/// same buffer the opaque pass writes, so this should not have been
+/// necessary; if switching to the already-reliable opaque pass (the same
+/// one edges already use successfully) fixes the occlusion, that isolates
+/// the bug to the translucent-pass depth test specifically on that device,
+/// something no amount of further source-reading here can confirm or rule
+/// out without a live GPU to test against.
+///
+/// `AlphaMode.opaque` "ignores alpha" (per [UnlitMaterial]'s own doc
+/// comment), so [color]'s partial alpha no longer has any visual effect -
+/// the highlight now renders as a fully solid/saturated tint rather than a
+/// translucent one, a real (temporary, pending this test's outcome) visual
+/// regression from the originally-intended look.
 Node buildHighlightFacesNode(
   List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles, {
   required vm.Vector4 color,
@@ -405,7 +423,7 @@ Node buildHighlightFacesNode(
     buffers.indexData,
   );
   final material = UnlitMaterial()
-    ..alphaMode = AlphaMode.blend
+    ..alphaMode = AlphaMode.opaque
     ..baseColorFactor = color;
   return Node(name: 'highlight-faces', mesh: Mesh(geometry, material));
 }
