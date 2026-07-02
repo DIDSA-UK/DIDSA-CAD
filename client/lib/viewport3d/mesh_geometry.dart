@@ -201,7 +201,17 @@ const double kEdgeStrokeWidth = 1.1;
 /// not a wholesale occlusion failure. `0.02` was tuned against a scene
 /// that (unknown at the time) also had the MSAA bug active, so it may
 /// simply have been too small once that confound is removed.
-const double kEdgeDepthBias = 0.1;
+///
+/// `0.1` still wasn't enough for a curved surface's far-side silhouette
+/// (a cylindrical disc's back rim, viewed at a glancing angle) - bumped
+/// again to `0.3`. This is inherently the hardest case for this technique:
+/// right at a curved surface's silhouette, the near and far surfaces
+/// approach zero depth separation *in the real geometry*, independent of
+/// any bias, so some residual dashing exactly at the silhouette may not
+/// be fully eliminable this way (see this file's evaluation of Approaches
+/// 1-3 above `biasSegmentsTowardCamera`) - the goal is shrinking that
+/// region as much as practical, not necessarily zeroing it everywhere.
+const double kEdgeDepthBias = 0.3;
 
 /// Parses [mesh]'s flat `[x1,y1,z1, x2,y2,z2, ...]` edge polyline data (see
 /// backend/app/document/mesh.py's `_extract_edges`) into segment pairs -
