@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
@@ -238,6 +239,24 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     debugPrint('[PartViewport] Scene.initializeStaticResources()...');
     Scene.initializeStaticResources().then((_) {
       debugPrint('[PartViewport] Scene.initializeStaticResources() done');
+      // RenderDebug: if this device's Impeller backend can't report a real
+      // combined depth+stencil format (defaultDepthStencilFormat reads as
+      // PixelFormat.unknown, or MSAA support reads false where the device
+      // should support it), depth testing may not actually be functioning
+      // at all - which would explain a *constant* (not glancing-angle,
+      // not selection-specific) failure to occlude hidden edges/faces
+      // behind opaque geometry, a fundamentally different bug class from
+      // everything investigated in this file's edge/highlight code so far.
+      try {
+        debugPrint(
+          '[PartViewport][RenderDebug] GPU: defaultColorFormat=${gpu.gpuContext.defaultColorFormat} '
+          'defaultStencilFormat=${gpu.gpuContext.defaultStencilFormat} '
+          'defaultDepthStencilFormat=${gpu.gpuContext.defaultDepthStencilFormat} '
+          'doesSupportOffscreenMSAA=${gpu.gpuContext.doesSupportOffscreenMSAA}',
+        );
+      } catch (error) {
+        debugPrint('[PartViewport][RenderDebug] GPU capability query failed: $error');
+      }
       if (!mounted) return;
       setState(() {
         _scene = Scene();
