@@ -203,15 +203,39 @@ const double kEdgeStrokeWidth = 1.1;
 /// simply have been too small once that confound is removed.
 ///
 /// `0.1` still wasn't enough for a curved surface's far-side silhouette
-/// (a cylindrical disc's back rim, viewed at a glancing angle) - bumped
-/// again to `0.3`. This is inherently the hardest case for this technique:
-/// right at a curved surface's silhouette, the near and far surfaces
-/// approach zero depth separation *in the real geometry*, independent of
-/// any bias, so some residual dashing exactly at the silhouette may not
-/// be fully eliminable this way (see this file's evaluation of Approaches
-/// 1-3 above `biasSegmentsTowardCamera`) - the goal is shrinking that
-/// region as much as practical, not necessarily zeroing it everywhere.
-const double kEdgeDepthBias = 0.3;
+/// (a cylindrical disc's back rim, viewed at a glancing angle), which
+/// prompted bumping it to `0.3` - but `0.3` turned out to be a real
+/// regression of the *other* kind, caught by on-device testing against a
+/// part with several thin, closely-spaced features (a serrated/comb
+/// shape, and a part with a thin wall between an inner and outer
+/// boundary): edges hidden behind one or two of those thin layers were
+/// still incorrectly visible, only becoming correctly hidden once three
+/// layers stacked up - a graduated "N layers needed" pattern that a
+/// working depth test should never produce (a truly occluded edge is
+/// binary: hidden or not, regardless of how many surfaces are in front of
+/// it). That pattern is the signature of the bias itself being *larger
+/// than the gap between layers* - biasing an edge 0.3 units towards the
+/// camera happily pushes it in front of one or two thin walls/teeth
+/// whose combined thickness is under 0.3, and only fails once enough of
+/// them stack up to exceed it. This is the same class of regression as
+/// the original stepped-part bias bug from several rounds earlier (a
+/// bias too large for the *local* feature it's near, independent of the
+/// object's overall size) - `0.3` was simply large enough to trigger it
+/// again against different, thinner geometry.
+///
+/// Reverted to `0.05` - a compromise nearer the low end, since incorrectly
+/// reordering real, nearby geometry (this regression) is worse than
+/// residual dashing at a glancing curved silhouette (the problem `0.1`/
+/// `0.3` were chasing). No single fixed bias can fully solve both: a
+/// value large enough to always beat glancing-silhouette z-fighting will
+/// always risk exceeding *some* real feature's thickness, however small.
+/// Approach 3 from this file's evaluation above `biasSegmentsTowardCamera`
+/// (scale the offset to the local geometry - e.g. only enlarging it on
+/// segments nearly parallel to their own face's normal - rather than one
+/// global constant) is the actual fix for wanting both at once, at the
+/// cost of the backend edge/face adjacency data it needs, which does not
+/// currently exist (see that evaluation's item 3).
+const double kEdgeDepthBias = 0.05;
 
 /// Parses [mesh]'s flat `[x1,y1,z1, x2,y2,z2, ...]` edge polyline data (see
 /// backend/app/document/mesh.py's `_extract_edges`) into segment pairs -
