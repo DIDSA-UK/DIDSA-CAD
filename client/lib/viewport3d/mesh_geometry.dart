@@ -238,25 +238,29 @@ List<(vm.Vector3, vm.Vector3)> biasSegmentsTowardCamera(
 /// they share one per-frame `updateForCamera` scan (see `PartViewport`'s
 /// `_ScenePainter`), the same pattern [buildSketchGeometryNode] uses.
 ///
-/// Uses [AlphaMode.blend] rather than [AlphaMode.opaque] - confirmed via
-/// `flutter_scene` 0.18.1's own `scene_encoder.dart` (see [kEdgeDepthBias]'s
-/// doc comment for how that source was consulted): the opaque pass writes
-/// depth, but the translucent pass only tests it. An opaque edge, being
-/// [biasSegmentsTowardCamera]-pushed towards the camera, would *write* a
-/// depth value slightly closer than its true position - normally harmless,
-/// but if anything else (another edge, a translucent face-highlight
-/// overlay) is later depth-tested at those same pixels, it now compares
-/// against an artificially-close value instead of the edge's real one.
-/// `AlphaMode.blend` at full alpha (every current edge/highlight caller's
-/// color already carries alpha `1.0`, or an intentionally-partial alpha
-/// for a translucent highlight - see [PartViewport]'s `_selectedEdgeColor`)
-/// renders pixel-identical to opaque while removing that write - edges are
-/// still fully depth-*tested* (so still properly hidden behind opaque
-/// faces), they just can no longer skew what anything drawn afterwards
-/// tests against. This also fixes a latent bug: `AlphaMode.opaque`
-/// "ignores alpha" per [UnlitMaterial]'s own doc comment, so a
-/// partial-alpha edge color (e.g. a selected-edge highlight) was silently
-/// rendered fully opaque instead of translucent as intended.
+/// Uses [AlphaMode.opaque] - reverted back from a brief [AlphaMode.blend]
+/// experiment (see git history) that turned out to make things worse, not
+/// better: on-device testing after that switch showed edges rendering
+/// through solid bodies *completely* (not the glancing-angle flicker this
+/// file's other fixes target) - the same "renders through the body
+/// regardless of what's in front of it" signature independently confirmed
+/// for [buildHighlightFacesNode]'s face highlights, which have used
+/// `AlphaMode.blend` (the translucent pass) unchanged since Stage 23. The
+/// working theory, backed by both of these independently reproducing the
+/// same failure mode the moment something moved onto the translucent pass:
+/// `flutter_scene` 0.18.1's translucent pass is *supposed to* (per its own
+/// source - see `buildHighlightFacesNode`'s doc comment) depth-test against
+/// the same buffer the opaque pass writes, but does not reliably do so on
+/// at least the on-device hardware this was tested against. The opaque
+/// pass, in contrast, has only ever shown the smaller, separate
+/// glancing-angle flicker these edges already have other fixes for -
+/// never a wholesale occlusion failure - so it's the one worth trusting
+/// for anything that actually needs to be hidden behind other geometry.
+///
+/// `AlphaMode.opaque` "ignores alpha" per [UnlitMaterial]'s own doc
+/// comment, so a partial-alpha edge color (e.g. a selected-edge highlight)
+/// renders fully solid rather than translucent - an accepted, temporary
+/// trade-off for correct occlusion, same as [buildHighlightFacesNode]'s.
 ///
 /// GPU-bound (`PolylineGeometry`'s underlying updatable `MeshGeometry`), so
 /// - like [geometryFromMesh] - this cannot be exercised in a headless
@@ -269,7 +273,7 @@ Node buildMeshEdgesNode(
   PolylineCap cap = PolylineCap.butt,
 }) {
   final material = UnlitMaterial()
-    ..alphaMode = AlphaMode.blend
+    ..alphaMode = AlphaMode.opaque
     ..baseColorFactor = color;
 
   final primitives = <MeshPrimitive>[
@@ -393,24 +397,29 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
 /// run; [triangleHighlightBuffers] above is the pure, testable counterpart
 /// for this data's actual content.
 ///
-/// DIAGNOSTIC (temporary): forced to [AlphaMode.opaque] instead of the
-/// originally-intended [AlphaMode.blend] "subtle translucent tint" look, to
-/// test a real on-device report that a highlighted face on the far side of
-/// a body renders through it (i.e. isn't occluded), reproduced with *no*
-/// edges involved at all - independently confirmed via source that
-/// `flutter_scene` 0.18.1's translucent pass is depth-tested against the
-/// same buffer the opaque pass writes, so this should not have been
-/// necessary; if switching to the already-reliable opaque pass (the same
-/// one edges already use successfully) fixes the occlusion, that isolates
-/// the bug to the translucent-pass depth test specifically on that device,
-/// something no amount of further source-reading here can confirm or rule
-/// out without a live GPU to test against.
+/// Forced to [AlphaMode.opaque] instead of the originally-intended
+/// [AlphaMode.blend] "subtle translucent tint" look, in response to a real
+/// on-device report that a highlighted face on the far side of a body
+/// renders through it (i.e. isn't occluded), reproduced with *no* edges
+/// involved at all. This should not have been necessary per
+/// `flutter_scene` 0.18.1's own source (its translucent pass is documented
+/// to depth-test against the same buffer the opaque pass writes), but
+/// switching this from `AlphaMode.blend` to `AlphaMode.opaque` is
+/// corroborated by an independent, matching on-device regression: routing
+/// [buildMeshEdgesNode]'s edges through the same translucent pass (an
+/// intermediate fix, since reverted - see its own doc comment) made edges
+/// go from "mostly correct, occasional glancing-angle flicker" to
+/// "renders through the body with total disregard for what's in front of
+/// it" - the same failure signature this face-highlight bug has. Working
+/// theory: the translucent pass's depth test is not reliably functioning
+/// on at least the on-device hardware this was tested against, so nothing
+/// that needs real occlusion should use it, regardless of what the engine's
+/// own source says it ought to do.
 ///
 /// `AlphaMode.opaque` "ignores alpha" (per [UnlitMaterial]'s own doc
 /// comment), so [color]'s partial alpha no longer has any visual effect -
-/// the highlight now renders as a fully solid/saturated tint rather than a
-/// translucent one, a real (temporary, pending this test's outcome) visual
-/// regression from the originally-intended look.
+/// the highlight renders as a fully solid/saturated tint rather than a
+/// translucent one, an accepted trade-off for correct occlusion.
 Node buildHighlightFacesNode(
   List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles, {
   required vm.Vector4 color,
