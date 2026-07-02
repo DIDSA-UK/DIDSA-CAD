@@ -849,25 +849,25 @@ void main() {
     expect(controller.labelOffsetFor(constraintId), Offset.zero);
   });
 
-  test('closedProfilePointIds is populated with the ordered loop once a chain closes', () async {
+  test('closedProfileFills is populated with the ordered loop once a chain closes', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
-    expect(controller.closedProfilePointIds, isNull);
+    expect(controller.closedProfileFills, isEmpty);
 
     await controller.handleCanvasTap(5, 0);
     await controller.handleCanvasTap(5, 5);
-    expect(controller.closedProfilePointIds, isNull); // still open
+    expect(controller.closedProfileFills, isEmpty); // still open
 
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;
     await controller.handleCanvasTap(0.1, 0.1); // closes the loop
 
-    expect(controller.closedProfilePointIds, isNotNull);
-    expect(controller.closedProfilePointIds!.length, 3);
-    expect(controller.closedProfilePointIds!.toSet(), controller.points.keys.toSet());
+    expect(controller.closedProfileFills, hasLength(1));
+    expect(controller.closedProfileFills.single.pointIds, hasLength(3));
+    expect(controller.closedProfileFills.single.pointIds.toSet(), controller.points.keys.toSet());
   });
 
-  test('closedProfilePointIds reverts to null once the loop is broken by deleting a line', () async {
+  test('closedProfileFills reverts to empty once the loop is broken by deleting a line', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
@@ -875,7 +875,7 @@ void main() {
     controller.cursorX = 0.1;
     controller.cursorY = 0.1;
     await controller.handleCanvasTap(0.1, 0.1); // closes the loop
-    expect(controller.closedProfilePointIds, isNotNull);
+    expect(controller.closedProfileFills, isNotEmpty);
 
     controller.exitToSelectMode();
     final lineToDelete = controller.lines.keys.first; // the (0, 0)-(5, 0) edge
@@ -887,7 +887,7 @@ void main() {
 
     await controller.deleteSelected();
 
-    expect(controller.closedProfilePointIds, isNull);
+    expect(controller.closedProfileFills, isEmpty);
   });
 
   test('ensureSketch tracks the real backend origin Point at (0, 0)', () {
