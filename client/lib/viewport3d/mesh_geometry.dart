@@ -187,11 +187,21 @@ const double kEdgeStrokeWidth = 1.1;
 /// so an oversized bias does not just misplace the edge itself - it also
 /// corrupts the depth buffer for anything else tested against it
 /// afterwards (e.g. a translucent face-highlight overlay depth-tested in
-/// the same frame). This constant is back to a fixed world-space amount -
+/// the same frame). This constant was reset to a fixed world-space amount -
 /// the same value (`0.02`) the pre-existing, already-shipped
-/// `meshEdgeNudgeAmount` used, so it inherits whatever on-device tuning
+/// `meshEdgeNudgeAmount` used, so it inherited whatever on-device tuning
 /// that had - with only the *direction* changed, not the magnitude.
-const double kEdgeDepthBias = 0.02;
+///
+/// Bumped from `0.02` to `0.1` after a real, much bigger occlusion bug (an
+/// Android MSAA offscreen-depth-resolve issue - see `PartViewport`'s
+/// `antiAliasingMode = AntiAliasingMode.none`) was found and fixed
+/// separately: with that fixed, the only remaining on-device symptom was
+/// specific edges rendering as broken/dashed lines (not solid overlays) at
+/// full body opacity - the textbook signature of borderline z-fighting,
+/// not a wholesale occlusion failure. `0.02` was tuned against a scene
+/// that (unknown at the time) also had the MSAA bug active, so it may
+/// simply have been too small once that confound is removed.
+const double kEdgeDepthBias = 0.1;
 
 /// Parses [mesh]'s flat `[x1,y1,z1, x2,y2,z2, ...]` edge polyline data (see
 /// backend/app/document/mesh.py's `_extract_edges`) into segment pairs -
