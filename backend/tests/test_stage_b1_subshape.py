@@ -90,9 +90,33 @@ def _boss_box(part_id: str) -> dict:
 # --- Success path: resolution is stable/correct across independent recomputes
 
 
+def _vertex_points(shape) -> list[tuple[float, float, float]]:
+    """Every real OCCT topology vertex under `shape`, rounded and sorted so
+    two independently-recomputed-but-geometrically-identical shapes compare
+    equal regardless of `topexp.MapShapes`' internal iteration order. Built
+    entirely from APIs `app.document.mesh._extract_topology_vertices`
+    already exercises for real in this exact CI environment (`BRep_Tool.
+    Pnt`, `topods.Vertex`, `topexp.MapShapes`/`TopTools_IndexedMapOfShape`),
+    rather than `BRepGProp`/`GProp_GProps`, whose exact call surface in this
+    pythonocc-core version this test file got wrong on its first attempt
+    (see this prompt's status doc) - this sticks to APIs already proven
+    rather than risk a second unverified one."""
+    from OCC.Core.BRep import BRep_Tool
+    from OCC.Core.TopAbs import TopAbs_VERTEX
+    from OCC.Core.TopExp import topexp
+    from OCC.Core.TopTools import TopTools_IndexedMapOfShape
+    from OCC.Core.TopoDS import topods
+
+    vertex_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(shape, TopAbs_VERTEX, vertex_map)
+    points = []
+    for i in range(1, vertex_map.Size() + 1):
+        point = BRep_Tool.Pnt(topods.Vertex(vertex_map.FindKey(i)))
+        points.append((round(point.X(), 6), round(point.Y(), 6), round(point.Z(), 6)))
+    return sorted(points)
+
+
 def test_resolve_subshape_face_matches_the_face_captured_at_creation():
-    from OCC.Core.BRepGProp import BRepGProp
-    from OCC.Core.GProp import GProp_GProps
     from OCC.Core.TopAbs import TopAbs_FACE
     from OCC.Core.TopExp import topexp
     from OCC.Core.TopTools import TopTools_IndexedMapOfShape
@@ -103,38 +127,27 @@ def test_resolve_subshape_face_matches_the_face_captured_at_creation():
     boss = _boss_box(part_dict["id"])
     part = get_part_or_404(part_dict["id"])
 
-    # Ground truth: capture face index 0's surface properties directly from
-    # an independent recompute (this is "at creation" - nothing upstream has
+    # Ground truth: capture face index 0's corner vertices directly from an
+    # independent recompute (this is "at creation" - nothing upstream has
     # changed since).
     bodies = compute_part_bodies(part)
     face_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(bodies[boss["id"]], TopAbs_FACE, face_map)
-    expected_props = GProp_GProps()
-    BRepGProp.SurfaceProperties(face_map.FindKey(1), expected_props)
+    expected_points = _vertex_points(face_map.FindKey(1))
 
     ref = SubShapeRef(body_id=boss["id"], shape_type=SubShapeType.FACE, index=0)
     resolved = resolve_subshape(part, ref)
-
-    resolved_props = GProp_GProps()
-    BRepGProp.SurfaceProperties(resolved, resolved_props)
 
     # Same enumeration index, same unchanged topology -> the same face,
     # confirmed via a second, fully independent recompute+re-enumeration
     # (not object identity, since compute_part_bodies rebuilds fresh OCCT
     # shapes on every call).
-    assert resolved_props.Mass() == pytest.approx(expected_props.Mass())
-    com_expected = expected_props.CentreOfMass()
-    com_resolved = resolved_props.CentreOfMass()
-    assert (com_resolved.X(), com_resolved.Y(), com_resolved.Z()) == pytest.approx(
-        (com_expected.X(), com_expected.Y(), com_expected.Z())
-    )
-    # A face of a 10x10x10 box is a 10x10 square, area 100.
-    assert resolved_props.Mass() == pytest.approx(100.0)
+    assert _vertex_points(resolved) == expected_points
+    # A face of a 10x10x10 box is a 10x10 square - exactly 4 corners.
+    assert len(expected_points) == 4
 
 
 def test_resolve_subshape_edge_matches_the_edge_captured_at_creation():
-    from OCC.Core.BRepGProp import BRepGProp
-    from OCC.Core.GProp import GProp_GProps
     from OCC.Core.TopAbs import TopAbs_EDGE
     from OCC.Core.TopExp import topexp
     from OCC.Core.TopTools import TopTools_IndexedMapOfShape
@@ -148,18 +161,14 @@ def test_resolve_subshape_edge_matches_the_edge_captured_at_creation():
     bodies = compute_part_bodies(part)
     edge_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(bodies[boss["id"]], TopAbs_EDGE, edge_map)
-    expected_props = GProp_GProps()
-    BRepGProp.LinearProperties(edge_map.FindKey(1), expected_props)
+    expected_points = _vertex_points(edge_map.FindKey(1))
 
     ref = SubShapeRef(body_id=boss["id"], shape_type=SubShapeType.EDGE, index=0)
     resolved = resolve_subshape(part, ref)
 
-    resolved_props = GProp_GProps()
-    BRepGProp.LinearProperties(resolved, resolved_props)
-
-    # Every edge of a 10x10x10 box is 10 units long.
-    assert resolved_props.Mass() == pytest.approx(expected_props.Mass())
-    assert resolved_props.Mass() == pytest.approx(10.0)
+    # Every edge of a 10x10x10 box runs between exactly 2 corners.
+    assert _vertex_points(resolved) == expected_points
+    assert len(expected_points) == 2
 
 
 def test_resolve_subshape_body_and_solid_counts_are_the_documented_box_shape():
