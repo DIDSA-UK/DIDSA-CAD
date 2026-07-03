@@ -1057,3 +1057,250 @@ Not started/stopped here per A1's own instructions: A2 (client selection
 filter framework) and everything after it. Fillet/Chamfer/Create Plane and
 Prompt B (sub-shape refs, tree categories, cascade delete, earlier-feature
 editing) remain explicitly out of scope, unchanged from before.
+
+**CI follow-up (same day):** `.github/workflows/backend-verify.yml` ran
+against commit `3992055` (both the `push` and `pull_request` triggers) and
+came back green on both `linux/amd64` and `linux/arm64` — confirmed by
+pulling the actual job logs, not just the run's `conclusion` field:
+`278 passed in 4.01s` (amd64) and `278 passed in 60.47s` (arm64, slower
+under QEMU emulation), identical pass count on both. Every new/updated A1
+test (`test_stage_a1_graph.py`'s 13 cases, `test_stage_a1_multibody.py`,
+and the array-response updates across `test_stage9_extrude.py`/
+`test_stage23_mesh_ids.py`/`test_stage11_edges.py`/`test_stage7_document.py`)
+is individually visible as `PASSED` in the log output, executed against
+real `pythonocc-core` inside the Docker image this time (this sandbox
+still can't do that itself). This closes the verification gap flagged
+above — the manual `curl`/Postman API sanity pass is still outstanding,
+but the automated half of A1's stop condition is now genuinely confirmed,
+not just assumed.
+
+---
+
+## 2026-07-03 — Manual curl sanity pass against a live A1 server
+
+Closes the remaining half of A1's stop condition. `docker build` against
+`backend/Dockerfile` was attempted again and genuinely failed on policy
+grounds this time (not "no daemon" as in the original A1 entry) —
+confirmed via the sandbox's egress-proxy status endpoint, which recorded
+explicit `403` policy denials for `production.cloudfront.docker.com`
+(Docker Hub's CDN, needed for the `mambaorg/micromamba` base image) and
+`micro.mamba.pm` (the micromamba installer, tried as a Docker-free
+fallback). A raw `github.com` release-asset download (Miniforge, a third
+fallback) also came back `403`, but from GitHub's own API, not the proxy —
+this session's GitHub scope is `DIDSA-UK/DIDSA-CAD` only, so unrelated
+repos/assets are out of reach. Real `pythonocc-core` is unreachable from
+this sandbox by any path tried.
+
+Given that, and that every new piece of A1 validation logic
+(`target_body_ids` checks, distance checks, locking) runs in pure Python
+*before* any OCCT call — only `/mesh`'s actual tessellation needs real
+geometry — a minimal **fake OCCT shim** (`OCC.Core.*` stub package,
+scratch-space only, never committed) was built with just enough surface
+for `app.main` to import and boot: fixed fake box shapes (6 faces/12
+edges/8 vertices, arbitrary coordinates), `BRepAlgoAPI_Fuse`/`Cut`
+returning fresh fake shapes, `BRepMesh_IncrementalMesh`/`TopExp_Explorer`
+producing structurally-valid (not geometrically accurate) triangulation
+data. This proves the **API contract** — status codes, response shape,
+body-id derivation/merge logic, array-of-bodies wiring — via genuine HTTP
+round-trips against the real, unmodified FastAPI app; it does not and
+cannot prove geometric correctness, which is what the real-OCCT CI run
+above already confirmed.
+
+`pip install fastapi==0.115.*/uvicorn==0.34.*/httpx==0.27.*/py-slvs==1.0.6`
+(all reachable — PyPI is proxy-allowlisted) plus the fake `OCC` package on
+`PYTHONPATH` let `app.main` boot for real. Ran `uvicorn app.main:app` and
+curled it directly (not `TestClient`, not pytest — an actual live HTTP
+server on `127.0.0.1:8123`):
+
+- `/health` without `X-API-Key` → `401`; with it → `200`.
+- `GET /mesh` on a Part with no ExtrudeFeature → array of exactly **one**
+  entry, `body_id="placeholder"`, `source="placeholder"` — confirms the
+  array-wrapping applies even to the placeholder-box path, not just
+  `source="computed"`.
+- Boss with `target_body_ids: []` → `201`; `GET /mesh` afterward returns
+  exactly one Body whose `body_id` **equals the Boss feature's own id** —
+  confirms the "Body id = creating Feature's id" rule end-to-end over
+  real HTTP, not just inside a test process.
+- Cut with `target_body_ids: []` → **`422`**,
+  `{"detail": "Cut requires at least one target_body_ids entry..."}`.
+- Boss/Cut naming an unknown `target_body_ids` entry → **`400`**,
+  `{"detail": "target_body_ids entry 'does-not-exist' does not refer to
+  an ExtrudeFeature in this Part"}`.
+- Cut with a valid target → `201`; `GET /mesh` still shows exactly one
+  Body, same `body_id` as the Boss it targeted (Cut never changes body
+  identity).
+- `PATCH` clearing `target_body_ids` to `[]` on an existing Cut → `422`,
+  same message as create-time.
+- Two independent Bosses (no shared target) on one Part → `GET /mesh`
+  returns exactly **two** array entries with two distinct `body_id`s.
+- A third Boss naming both of those bodies in `target_body_ids` (listed
+  in reverse creation order, `[boss2, boss1]`) → `GET /mesh` afterward
+  shows exactly **one** Body, and its `body_id` is `boss1`'s — confirms
+  the deterministic "earliest-created target survives" merge tie-break is
+  independent of `target_body_ids` argument order, over real HTTP, not
+  just inside `test_boss_merge_survivor_id_is_the_earliest_target_regardless_of_argument_order`.
+- Hiding the Boss feature via `?hidden_feature_ids=<id>` → `GET /mesh`
+  returns `[]`, not a single entry with empty mesh arrays — confirms the
+  documented "nothing computed = empty array, not an empty Body" behavior
+  change end-to-end.
+- `/openapi.json` schema inspection: `BodyMeshResponse` has exactly
+  `body_id`/`source`/`mesh`; `ExtrudeFeatureCreate` has
+  `target_body_ids` alongside the pre-existing fields; the `/mesh` GET
+  response schema is a bare JSON array of `BodyMeshResponse`, not an
+  object wrapping one.
+
+All of the above matched the intended behavior exactly, with no
+surprises relative to what the code review and CI run already implied.
+Every temporary artifact (fake `OCC` package, live server process, the
+`dockerd` instance started to attempt the real build) was torn down
+afterward — nothing from this pass is committed to the repository.
+
+**A1's stop condition is now fully satisfied**: real-OCCT CI is green
+(278/278 across both architectures) and the manual API sanity pass above
+has independently confirmed the same endpoints respond correctly over a
+real HTTP connection. A2 can begin.
+
+---
+
+## 2026-07-03 — Prompt A2: client selection filter framework + push/pop override mechanism
+
+Client-only, no backend changes. Wires up vertex/edge/face/body selection
+filter toggles in the 3D viewport's View submenu and builds a reusable
+push/pop override primitive - no modal flow consumes the override yet
+(that's A4).
+
+**Correction to A2's own premise**: the prompt describes "wiring up the
+existing placeholder selection-type filter toggles... in the 3D viewport
+menu." Investigated first and found this isn't accurate - a disabled
+"Selection Filter" placeholder *did* exist at one point but was removed
+during the box-selection cleanup (see this doc's 2026-06-30 entry,
+"`part_toolbar.dart`: removed... the entire `_buildSelectionMenu`
+ExpansionTile... along with its call site"). Confirmed via grep across
+`part_toolbar.dart`/`part_screen.dart`/`part_viewport.dart`: no vertex/
+edge/face/body toggle UI, no `CheckboxListTile`/similar, anywhere. Built
+the whole thing from scratch rather than wiring up something already
+there - flagging this since the prompt's premise didn't match the
+codebase, not silently treating it as "found and wired" when it wasn't.
+
+**Filter state** (`client/lib/viewport3d/selection_filter.dart`, new):
+`SelectionFilterState` - immutable value class, `vertex`/`edge`/`face`/
+`body` bools, `SelectionFilterState.defaults` (vertex/edge/face on, body
+off, matching hit-testing's pre-A2 behaviour of always considering
+vertex/edge/face). Session-only: lives as a plain field
+(`_PartScreenState._selectionFilterBase`) mutated via `setState`, the same
+convention `SketchScreen`'s Canvas Colour/Transparency toggles use - not
+`ViewPreferences`, which is the *persisted*, `shared_preferences`-backed
+convention and deliberately not what this prompt asked for.
+
+**Push/pop override mechanism** (`client/lib/viewport3d/override_stack.dart`,
+new): `OverrideStack<T>` - generic, zero-Flutter-dependency push/pop stack;
+`current`/`isActive`/`depth`/`push`/`pop`/`clear`. `_PartScreenState` owns
+`_selectionFilterOverrides = OverrideStack<SelectionFilterState>()`;
+`_selectionFilter` (what hit-testing/the View submenu actually use) is
+always `_selectionFilterOverrides.current ?? _selectionFilterBase`. Nothing
+pushes onto this stack yet in A2 (that's A4's Boss/Cut target-body picker) -
+per the prompt's own scope note, this prompt only builds and exercises the
+primitive itself, so no dead "push an override" UI/method was added
+speculatively; A4 will call `.push()`/`.pop()` on this field directly, the
+same way the migration below already does.
+
+**Migrated plane-selection mode to `OverrideStack<bool>`** (Stage 10b's
+`_planeSelectionMode`, `part_screen.dart`): per the prompt's explicit
+invitation ("if migrating plane-selection mode itself to use this new
+primitive is straightforward, do it... a real-world correctness check on
+the mechanism"). Turned out straightforward: this mode only ever had one
+push/one pop, at exactly 5 call sites (1 entry, 4 "exit" sites - confirm-tap,
+background-tap, sketch-picker-entry defensively closing it, and the
+explicit Cancel handler). Replaced the plain `bool` field with
+`final OverrideStack<bool> _planeSelectionModeStack`, kept
+`_planeSelectionMode` as a read-only getter (`.isActive`) so every existing
+*read* site (`if (_planeSelectionMode)`, the `PopScope.canPop` check, the
+banner-visibility check) is untouched, and replaced only the 5 write sites
+(`= true` → `.push(true)`, `= false` → `.pop()`, `.pop()`'s existing
+no-op-on-empty semantics matching the old idempotent-`= false`
+behaviour exactly). No behaviour change intended or expected.
+
+**Hit-test gating** (`client/lib/viewport3d/selection_hit_test.dart`):
+`hitTestMeshEntities` gained a `filter` parameter
+(`SelectionFilterState filter = SelectionFilterState.defaults`) - a kind
+whose flag is off is skipped *entirely* (not merely deprioritized), so
+turning vertices off lets a hover land on an edge/face a nearby vertex
+would otherwise have won outright. `PartViewport` gained a
+`selectionFilter` prop, threaded through `_recomputeHover` (the single
+choke point both hover-highlight and tap-select-commit already read from -
+see `_hoverHit`/`_commitSelection` - so gating it here covers both without
+touching either). `SelectionFilterState.body` has no effect on hit-testing
+at all - there's no body-level hit-test yet (Prompt A3) - so the toggle
+exists and does nothing observable, per the prompt's explicit instruction
+not to stub fake body-selection behaviour early.
+
+**View submenu UI** (`part_toolbar.dart`): four new toggle rows ("Vertices"/
+"Edges"/"Faces"/"Bodies") added to `_buildViewMenu`, right after the
+render-mode picker. Used the checkbox-icon `ListTile` convention this exact
+menu's "Perspective" entry already established (`leading: Icon(value ?
+Icons.check_box : Icons.check_box_outline_blank)`), not the `SwitchListTile`
+`SketchScreen`'s View submenu uses elsewhere - matching the local file's
+own existing convention over the sibling screen's, since they're two
+different menus that happen to share a name.
+
+**Testing.** No Flutter/Dart SDK was present in this sandbox (this
+project's recurring caveat, stated at the top of this doc) - bootstrapped
+one this session: Flutter 3.44.4 stable, downloaded directly from
+`storage.googleapis.com`'s release manifest (reachable through the proxy,
+confirmed via `curl`; SHA256 verified against the manifest before
+extracting), the same version a past session used successfully. This
+allowed **real** `flutter analyze` and `flutter test` runs, not just
+`ast.parse`-equivalent static checks:
+- `flutter analyze`: **zero new issues** anywhere in `lib/` or `test/` -
+  the only findings are 3 pre-existing `avoid_print` infos in
+  `part_viewport.dart` (unrelated debug logging from the C3 investigation)
+  and 2 pre-existing errors in `selection_list_drawer_test.dart` (a
+  `const Set` of `SelectionEntityRef`, a type with custom `==`/`hashCode` -
+  not a file this prompt touched).
+- New file `client/test/override_stack_test.dart` (9 tests) and
+  `client/test/selection_filter_test.dart` (6 tests) - both **pure Dart,
+  zero `flutter_scene`/`flutter_gpu` dependency** - ran for real:
+  **15/15 passed.** Covers empty-stack state, single push/pop, nested
+  push/pop restoring in exact order, no-op pop on empty, `clear`,
+  re-use after fully draining, genericity, `SelectionFilterState.defaults`,
+  `copyWith` (both "changes only the named field" and "omitted fields keep
+  their current value, not a default"), and value equality.
+- New filter-gating cases added to `client/test/selection_hit_test_test.dart`
+  (vertex-off falls through to edge even when nearer; vertex+edge-off falls
+  through to face; everything-off always returns null even where geometry
+  exists; edge-off alone doesn't disturb vertex priority; face-off turns a
+  would-be face fallback into `null`) - **`flutter analyze`-clean but not
+  executed**: this file (like `mesh_geometry_test.dart`,
+  `clip_distance_test.dart`, `orbit_camera_test.dart`, `part_screen_test.dart`,
+  `part_viewport_test.dart`, `reference_planes_test.dart`,
+  `selection_actions_test.dart`, `selection_list_drawer_test.dart`,
+  `sketch_geometry_3d_test.dart`, `triad_test.dart`, and 6 more - 17 files
+  total) fails to *load* under this Flutter 3.44.4 stable SDK because it
+  transitively imports `flutter_scene` (via `mesh_geometry.dart`, itself
+  needed for `edgeSegmentsFromMesh`), and `flutter_scene` 0.18.1 requires
+  `flutter_gpu` APIs that don't exist on the stable channel this SDK
+  ships (`ColorAttachment`/`vertexLayout`/`TextureCompressionFamily`/etc
+  compile errors, all inside `flutter_scene`'s own source, not this
+  project's) - **the exact same pre-existing constraint already documented
+  earlier in this file** ("`flutter test` has been blocked by the same
+  pre-existing `flutter_gpu` mismatch... even when a stable SDK was
+  available"). Confirmed this isn't something A2 introduced: every one of
+  the 17 failing-to-load files either predates this prompt entirely
+  (`mesh_geometry_test.dart`, `triad_test.dart`, etc. - files this prompt
+  never touched) or fails for the identical transitive-import reason
+  (`selection_hit_test_test.dart` imports `selection_hit_test.dart`, which
+  has imported `mesh_geometry.dart` since long before this prompt).
+  Full suite: **167 passed, 17 failed-to-load** (all 17 pre-existing,
+  0 newly broken).
+- Toggle-wiring/on-device behaviour (the View submenu's four entries
+  actually appearing and flipping state, hit-testing visibly respecting
+  them on a real device) could not be exercised here for the same
+  `flutter_scene`/`flutter_gpu` reason - `PartToolbar`/`PartScreen`
+  transitively import `flutter_scene` via `orbit_camera.dart`'s
+  `kDefaultFarClip`, so there's no way to widget-test even the toolbar in
+  isolation without hitting the same compile wall. Per the prompt's own
+  testing section, this is exactly the on-device check that's still
+  outstanding.
+
+Not started/stopped here per A2's own instructions: A3 (body as a
+selectable entity) and everything after it.

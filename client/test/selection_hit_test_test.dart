@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/selection_filter.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
 void main() {
@@ -296,6 +297,103 @@ void main() {
       final missRay = vm.Ray.originDirection(vm.Vector3(50, 50, 0), vm.Vector3(0, 0, 1));
       final hit = hitTestMeshEntities(ray: missRay, viewportSize: viewportSize, mesh: mesh);
       expect(hit, isNull);
+    });
+
+    group('Prompt A2: filter gating', () {
+      // A mesh with a topology vertex, an edge, and a face all reachable
+      // from the same ray - deliberately overlapping (as the pure
+      // vertex/edge priority tests above already exercise) so turning a
+      // filter off is provably the only thing that changes the result
+      // (the underlying geometry never does).
+      MeshDto overlappingMesh() => MeshDto(
+            vertices: const [
+              [-1, -1, 10],
+              [1, -1, 10],
+              [0, 1, 10],
+            ],
+            normals: const [],
+            triangleIndices: const [
+              [0, 1, 2],
+            ],
+            faceIds: const [7],
+            topologyVertices: const [
+              [0.02, 0, 10],
+            ],
+            topologyVertexIds: const [3],
+            edges: const [0.05, -1, 10, 0.05, 1, 10],
+            edgeIds: const [5],
+          );
+
+      test('default filter behaves exactly as before (vertex wins)', () {
+        final hit = hitTestMeshEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          mesh: overlappingMesh(),
+        );
+        expect(hit?.entity.kind, SelectionEntityKind.vertex);
+      });
+
+      test('vertex filter off: falls through to the edge even though the vertex is nearer', () {
+        final hit = hitTestMeshEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          mesh: overlappingMesh(),
+          filter: const SelectionFilterState(vertex: false, edge: true, face: true, body: false),
+        );
+        expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.edge, id: 5));
+      });
+
+      test('vertex and edge filters off: falls through to the face', () {
+        final hit = hitTestMeshEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          mesh: overlappingMesh(),
+          filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
+        );
+        expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.face, id: 7));
+      });
+
+      test('every filter off: nothing is ever hit, even where geometry exists', () {
+        final hit = hitTestMeshEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          mesh: overlappingMesh(),
+          filter: const SelectionFilterState(vertex: false, edge: false, face: false, body: false),
+        );
+        expect(hit, isNull);
+      });
+
+      test('edge filter off alone does not affect vertex priority', () {
+        final hit = hitTestMeshEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          mesh: overlappingMesh(),
+          filter: const SelectionFilterState(vertex: true, edge: false, face: true, body: false),
+        );
+        expect(hit?.entity.kind, SelectionEntityKind.vertex);
+      });
+
+      test('face filter off: a would-be face fallback instead returns null', () {
+        final mesh = MeshDto(
+          vertices: const [
+            [-1, -1, 10],
+            [1, -1, 10],
+            [0, 1, 10],
+          ],
+          normals: const [],
+          triangleIndices: const [
+            [0, 1, 2],
+          ],
+          faceIds: const [7],
+        );
+        final hit = hitTestMeshEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          mesh: mesh,
+          filter: const SelectionFilterState(vertex: true, edge: true, face: false, body: false),
+        );
+        expect(hit, isNull);
+      });
     });
   });
 

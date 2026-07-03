@@ -5,6 +5,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import 'mesh_geometry.dart' show edgeSegmentsFromMesh;
+import 'selection_filter.dart';
 
 /// flutter_scene's `PerspectiveCamera` only exposes `fovNear`/`fovFar` (the
 /// near/far *clip* distances, see `OrbitCamera.cameraFor`) - there's no
@@ -321,30 +322,43 @@ List<(vm.Vector3, vm.Vector3, vm.Vector3)> faceTrianglesForId(MeshDto mesh, int 
 /// realistically reachable target - see [kVertexSelectionHitRadiusPixels]'s
 /// doc comment - so being inside it is itself the priority signal; only
 /// when no vertex is in range does the nearer of edge/face apply.
+///
+/// Prompt A2: [filter] gates which kinds are considered at all - a kind
+/// whose [SelectionFilterState] flag is off is skipped entirely (as if it
+/// weren't in the mesh), not merely deprioritized, so e.g. turning vertices
+/// off lets a hover land on an edge/face that a nearby vertex would
+/// otherwise have won outright. [SelectionFilterState.body] has no effect
+/// here - there is no body-level hit-test yet (Prompt A3).
 HoverHit? hitTestMeshEntities({
   required vm.Ray ray,
   required Size viewportSize,
   required MeshDto mesh,
   double radiusPixels = kSelectionHitRadiusPixels,
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
+  SelectionFilterState filter = SelectionFilterState.defaults,
 }) {
-  final vertexHit = hitTestVertices(
-    ray,
-    viewportSize,
-    topologyVerticesFromMesh(mesh),
-    mesh.topologyVertexIds,
-    radiusPixels: vertexRadiusPixels,
-  );
-  final edgeHit = hitTestEdges(
-    ray,
-    viewportSize,
-    edgeSegmentsFromMesh(mesh),
-    mesh.edgeIds,
-    radiusPixels: radiusPixels,
-  );
+  final vertexHit = filter.vertex
+      ? hitTestVertices(
+          ray,
+          viewportSize,
+          topologyVerticesFromMesh(mesh),
+          mesh.topologyVertexIds,
+          radiusPixels: vertexRadiusPixels,
+        )
+      : null;
+  final edgeHit = filter.edge
+      ? hitTestEdges(
+          ray,
+          viewportSize,
+          edgeSegmentsFromMesh(mesh),
+          mesh.edgeIds,
+          radiusPixels: radiusPixels,
+        )
+      : null;
 
   if (vertexHit != null) return vertexHit;
   if (edgeHit != null) return edgeHit;
 
+  if (!filter.face) return null;
   return hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
 }

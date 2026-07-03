@@ -108,17 +108,33 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   in `docs/status.md` earlier.
 - **DAG refactor / multi-body phase (Prompts A1–A4, distinct from the
   older lettered "Prompts A–D" bullet above).** A1 (backend: Feature
-  dependency graph + multi-body identity) landed — see `docs/status.md`'s
-  2026-07-03 entry. **Waiting on CI + a manual API sanity pass
-  (`curl`/Postman against the new Boss/Cut/`target_body_ids` and
-  array-shaped `/mesh` endpoints) before A2 begins** — this environment has
-  no OCCT/Docker available, so A1 was verified by a real pytest run for the
-  new pure-Python DAG module plus `ast.parse`/manual logic review for every
-  OCCT-touching change; the stop condition explicitly calls for that gap to
-  be closed by CI before client work (A2 onward: selection filter
-  framework, body-as-selectable-entity, Boss/Cut target-body picking) is
-  built on top of it. Prompt B (sub-shape refs, tree categories, cascade
-  delete, earlier-feature editing) starts only after A4.
+  dependency graph + multi-body identity) landed and its stop condition is
+  now fully satisfied — see `docs/status.md`'s 2026-07-03 entries. CI is
+  green on both architectures (`278 passed`, verified from actual job
+  logs) and a manual curl pass against a live server independently
+  confirmed the same endpoints (placeholder/computed `/mesh` array shape,
+  Boss/Cut `target_body_ids` 422/400 validation, body-id derivation and
+  the earliest-target merge tie-break, hidden-body → empty array). Note:
+  the curl pass used a minimal fake-OCCT shim since this sandbox has no
+  path to real `pythonocc-core` (Docker Hub, `micro.mamba.pm`, and
+  out-of-scope GitHub assets are all policy-blocked here) — it proves the
+  API contract, not geometric correctness, which is what CI's real-OCCT
+  run already covers. A2 (client selection filter framework + push/pop
+  override mechanism) landed next — see `docs/status.md`'s 2026-07-03
+  entry. Bootstrapped a real Flutter 3.44.4 stable SDK this session
+  (`storage.googleapis.com` was reachable): `flutter analyze` is clean
+  (zero new issues) and the framework's pure-Dart pieces
+  (`OverrideStack<T>`, `SelectionFilterState`) have real passing tests
+  (15/15). **Still outstanding before A3 begins: the on-device check** —
+  confirming the View submenu's four toggles actually appear and that
+  hit-testing visibly respects them — since `PartToolbar`/`PartScreen`
+  transitively pull in `flutter_scene` (via `orbit_camera.dart`), which
+  can't even load under this stable SDK due to the pre-existing
+  `flutter_gpu` mismatch tracked above ("No Flutter CI job"/the C3 bug) —
+  the same constraint that blocked 17 test files pre-A2 blocks widget-level
+  verification of A2's own UI wiring too, not something A2 introduced.
+  Prompt B (sub-shape refs, tree categories, cascade delete,
+  earlier-feature editing) starts only after A4.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

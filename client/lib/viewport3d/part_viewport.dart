@@ -11,6 +11,7 @@ import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
+import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_geometry_3d.dart';
 import 'triad.dart';
@@ -100,6 +101,12 @@ class PartViewport extends StatefulWidget {
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
 
+  /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
+  /// owns this (its View submenu toggles write it, plus any future
+  /// push/pop override - see `OverrideStack`), same controlled-widget
+  /// pattern [selectionMode] already uses.
+  final SelectionFilterState selectionFilter;
+
   /// A4: true = perspective; false = orthographic (default). Passed to
   /// [OrbitCamera.isPerspective]; see [OrbitCamera.cameraFor] for the
   /// flutter_scene limitation note.
@@ -131,6 +138,7 @@ class PartViewport extends StatefulWidget {
     this.selectedEntities = const {},
     this.onSelectionToggle,
     this.onClearSelection,
+    this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
     this.onFarClipChanged,
@@ -788,7 +796,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       return;
     }
     final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
-    _hoverHit = hitTestMeshEntities(ray: ray, viewportSize: _viewportSize, mesh: mesh);
+    _hoverHit = hitTestMeshEntities(
+      ray: ray,
+      viewportSize: _viewportSize,
+      mesh: mesh,
+      filter: widget.selectionFilter,
+    );
   }
 
   /// Fix 4 (Item 4): fired by a tap (as opposed to a cursor-drag - see

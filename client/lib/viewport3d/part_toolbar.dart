@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
+import 'selection_filter.dart';
 import 'view_prefs_sheets.dart';
 import 'view_preferences.dart';
 
@@ -69,6 +70,16 @@ class PartToolbar extends StatelessWidget {
   final double farClip;
   final void Function(double farClip)? onFarClipChanged;
 
+  /// Prompt A2: which entity kinds the 3D viewport's selection hit-testing
+  /// considers - [PartScreen] owns the state (session-only, no persistence,
+  /// same convention as `SketchScreen`'s Canvas Colour/Transparency toggles),
+  /// this just renders the four toggle entries.
+  final SelectionFilterState selectionFilter;
+  final void Function(bool value)? onVertexFilterChanged;
+  final void Function(bool value)? onEdgeFilterChanged;
+  final void Function(bool value)? onFaceFilterChanged;
+  final void Function(bool value)? onBodyFilterChanged;
+
   const PartToolbar({
     super.key,
     required this.visible,
@@ -87,6 +98,11 @@ class PartToolbar extends StatelessWidget {
     this.onPerspectiveChanged,
     this.farClip = kDefaultFarClip,
     this.onFarClipChanged,
+    this.selectionFilter = SelectionFilterState.defaults,
+    this.onVertexFilterChanged,
+    this.onEdgeFilterChanged,
+    this.onFaceFilterChanged,
+    this.onBodyFilterChanged,
   });
 
   @override
@@ -225,6 +241,30 @@ class PartToolbar extends StatelessWidget {
             onTap: onRenderModeChanged == null ? null : () => onRenderModeChanged!(mode),
           ),
         const Divider(height: 1),
+        // Prompt A2: selection filter toggles - which entity kinds are
+        // hit-testable in Selection mode. Body starts off (and is currently
+        // inert - no body-level hit-test exists yet, lands in Prompt A3).
+        _filterToggle(
+          label: 'Vertices',
+          value: selectionFilter.vertex,
+          onChanged: onVertexFilterChanged,
+        ),
+        _filterToggle(
+          label: 'Edges',
+          value: selectionFilter.edge,
+          onChanged: onEdgeFilterChanged,
+        ),
+        _filterToggle(
+          label: 'Faces',
+          value: selectionFilter.face,
+          onChanged: onFaceFilterChanged,
+        ),
+        _filterToggle(
+          label: 'Bodies',
+          value: selectionFilter.body,
+          onChanged: onBodyFilterChanged,
+        ),
+        const Divider(height: 1),
         ListTile(
           leading: Icon(Icons.palette_outlined, color: colorFromHex(bgColourHex)),
           title: const Text('Background Colour'),
@@ -241,6 +281,21 @@ class PartToolbar extends StatelessWidget {
           onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
         ),
       ],
+    );
+  }
+
+  /// One selection-filter toggle row - same checkbox-icon [ListTile]
+  /// convention as the Perspective entry above, rather than a [SwitchListTile],
+  /// so all boolean toggles in this menu look consistent.
+  Widget _filterToggle({
+    required String label,
+    required bool value,
+    required void Function(bool value)? onChanged,
+  }) {
+    return ListTile(
+      leading: Icon(value ? Icons.check_box : Icons.check_box_outline_blank),
+      title: Text(label),
+      onTap: onChanged == null ? null : () => onChanged(!value),
     );
   }
 
