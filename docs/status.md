@@ -932,3 +932,128 @@ stays in place on `claude/new-session-s8daac` — both are net improvements
 over earlier states even though neither fixes the residual bug, and
 reverting either would only reintroduce previously-fixed regressions for
 no benefit.
+
+---
+
+## 2026-07-03 — Prompt A1: backend Feature dependency graph + multi-body identity
+
+Backend-only. First of a new four-part prompt sequence (A1–A4, distinct
+from the earlier lettered "Prompts A–D" already summarized above) that
+replaces implicit list-order recompute with an explicit dependency graph
+and introduces multi-body identity so Boss/Cut can target specific bodies
+instead of one implicit accumulated solid. A2–A4 (client-side selection
+filter framework, body-as-selectable-entity, Boss/Cut target-body picking)
+are explicitly out of scope for this entry and have not been started.
+
+**Dependency graph** (`backend/app/document/graph.py`, new file, zero
+OCCT/pythonocc-core imports): `GraphNode(id, depends_on)` + Kahn's-algorithm
+`topological_order()`. Ties among simultaneously-ready nodes are broken by
+original input order, which was the deliberate design choice that makes
+the regression requirement hold *by construction*: for any Part whose
+Features have no dependency edge reaching back past the immediately
+preceding Feature (i.e. every pre-A1 single-body scenario), the sort
+reduces to exactly the old list order. `CycleError` is raised for a
+malformed/cyclic graph, though the public API can't currently construct
+one (a Feature can only ever reference ids that already exist by the time
+it's created).
+
+`app/document/extrude.py` gained `build_feature_graph(part)` (edges: every
+`ExtrudeFeature` depends on its `sketch_feature_id` plus every id in
+`target_body_ids`) and `compute_part_bodies(part, hidden_feature_ids)`,
+which replaces the old `compute_part_solid` — walks Features in
+topological order instead of raw list order and returns `dict[body_id,
+TopoDS_Shape]` instead of one accumulated shape.
+
+**Multi-body identity.** A Body's id is **the id of the `ExtrudeFeature`
+that created it** — a Boss with empty `target_body_ids` starts a new Body
+identified by its own feature id. This was the deliberate design choice
+that makes `target_body_ids` entries *already be* Feature ids, so no
+separate Body↔Feature lookup/table was needed anywhere (mesh endpoint,
+graph edges, validation all just deal in Feature ids). **Merge rule**
+(documented in `ExtrudeFeature`'s docstring and `compute_part_bodies`):
+when a Boss's `target_body_ids` names 2+ existing Bodies, they're fused
+with the new solid into one Body, which keeps whichever named id belongs
+to the Feature that appears earliest in `Part.features` — a single,
+deterministic tie-break, not left ad hoc. Covered by
+`test_boss_merge_survivor_id_is_the_earliest_target_regardless_of_argument_order`
+(survivor is independent of `target_body_ids` list order).
+
+`ExtrudeFeature` gained `target_body_ids: list[str]`. Boss: empty → new
+Body; non-empty → fuse into each named Body. Cut: empty is rejected with
+**422** (`_validate_target_body_ids` in `router.py`) — the prompt spec
+named 422 explicitly and also said to reuse "the same shape as the
+`end_distance > start_distance` check"; that existing check is actually a
+**400**, not 422 (confirmed in `test_stage9_extrude.py` before this
+change). Read literally, those two instructions conflict on status code;
+resolved by using 422 (stated twice — once in the prompt, once in the
+on-device testing checklist) and matching only the *body shape* of the
+existing check (`HTTPException(status_code=..., detail="plain string")`,
+no custom error envelope — which is what "same shape" most plausibly
+means, since that's the only convention this codebase has). Flagging this
+explicitly in case 400 was actually intended. Every `target_body_ids`
+entry (Boss or Cut) is also validated at create/update time to resolve to
+an `ExtrudeFeature` already in the Part → 400 if not, mirroring the
+existing `sketch_feature_id` validation pattern.
+
+**`/mesh` endpoint** is now `list[BodyMeshResponse]` (was a single
+`PartMeshResponse` object) — one entry per Body, each with its own
+`body_id`, `source`, and `mesh` (vertices/triangles/`face_ids`/`edge_ids`/
+`topology_vertex_ids`, scoped to that Body's own tessellation only, same
+per-request-only id-stability caveat as before A1). The placeholder-box
+case (`Part.produces_solid_geometry == False`) returns a single-entry
+array (`body_id="placeholder"`). A Part with nothing computed (every
+ExtrudeFeature skipped or hidden away) now returns `[]` — a real,
+intentional behavior change from the old response, which still returned
+one object with `source="computed"` and empty mesh arrays for that case;
+there's no single "the" Body left to attach an empty mesh to once Bodies
+are a real array, so "nothing to show" is now the absence of any array
+entry rather than one empty one. Flagged in both `test_stage23_mesh_ids.py`
+and `test_stage11_edges.py`, which each replace their old
+"`empty_computed_mesh`" test with
+`test_body_with_a_skipped_cut_and_no_other_geometry_is_absent_from_the_array`.
+
+**Test changes** (`backend/tests/`): `test_stage9_extrude.py`,
+`test_stage23_mesh_ids.py`, `test_stage11_edges.py`, and
+`test_stage7_document.py` all updated for the array-wrapped `/mesh`
+response — every direct `client.get(.../mesh).json()` call site now goes
+through a local `_get_bodies`/`_single_body` helper. Cut-creating call
+sites now pass an explicit `target_body_ids`. One premise genuinely
+disappeared: "Cut with no prior Boss is skipped gracefully" is no longer
+expressible, since Cut requires a named target at creation time — replaced
+by `test_cut_with_empty_target_body_ids_is_rejected_with_422` (the new
+required behavior) and `test_cut_targeting_a_hidden_body_is_skipped_gracefully`
+(the new equivalent "nothing to cut from" case: a real target that's
+hidden away at recompute time). New file `test_stage_a1_graph.py` (13
+tests, pure Python, no OCCT) covers `topological_order` directly — chains,
+independent-node order-preservation, far-back dependency edges, diamond
+dependencies, unknown/duplicate/self-referencing dependency ids, direct and
+transitive cycles, and a Boss/Cut-shaped fan-in/fan-out scenario. New file
+`test_stage_a1_multibody.py` covers every A1 testing-checklist scenario:
+Boss new/fuse-one/fuse-multiple, merge-survivor determinism, Cut
+empty→422, Cut only touching its named target(s) (not other bodies), Cut
+against multiple targets at once, unknown-target-id→400 for both Boss and
+Cut, PATCH clearing `target_body_ids` on a Cut→422, two independent bodies
+in one `/mesh` response (confirming `face_ids` are dense/self-contained
+per body, not offset by other bodies), and `target_body_ids` round-tripping
+through create/GET.
+
+**Verification — real OCCT/py-slvs environment not available in this
+sandbox** (`import OCC` fails; no `conda`/`micromamba`; `docker build`
+against `backend/Dockerfile` failed — no Docker daemon reachable, and
+`dockerd` doesn't start in this container). What was actually verified:
+- `test_stage_a1_graph.py` — installed `pytest` directly (no OCCT
+  dependency in `graph.py`) and ran it for real: **13/13 passed.**
+- Every other changed/added file (`models.py`, `extrude.py`, `mesh.py`,
+  `schemas.py`, `router.py`, and all four OCCT-touching test files) —
+  `ast.parse`-verified (syntactically valid) plus manual line-by-line logic
+  review; **not executed**, since that requires real `pythonocc-core`.
+- This is a materially bigger verification gap than most prior entries in
+  this log, precisely because A1's stop condition exists to close it before
+  A2 starts: **CI must run and a manual `curl`/Postman pass against
+  Boss/Cut/`target_body_ids`/`/mesh` must confirm this before any client
+  work (A2+) is built on top of it.** See `docs/roadmap.md`.
+
+Not started/stopped here per A1's own instructions: A2 (client selection
+filter framework) and everything after it. Fillet/Chamfer/Create Plane and
+Prompt B (sub-shape refs, tree categories, cascade delete, earlier-feature
+editing) remain explicitly out of scope, unchanged from before.

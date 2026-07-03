@@ -52,6 +52,7 @@ def _create_extrude_feature(
     extrude_type: str = "boss",
     start_distance: float = 0.0,
     end_distance: float = 10.0,
+    target_body_ids: list[str] | None = None,
 ) -> dict:
     response = client.post(
         f"/document/parts/{part_id}/extrude-features",
@@ -60,9 +61,33 @@ def _create_extrude_feature(
             "extrude_type": extrude_type,
             "start_distance": start_distance,
             "end_distance": end_distance,
+            "target_body_ids": target_body_ids or [],
         },
     )
     return response
+
+
+def _get_bodies(part_id: str, hidden_feature_ids: list[str] | None = None) -> list[dict]:
+    """A1: GET /mesh now returns a JSON array of Bodies (see
+    app.document.schemas.BodyMeshResponse) instead of one combined mesh -
+    every call site that used to do `client.get(...).json()` and read
+    `body["source"]`/`body["mesh"]` directly now goes through this (and
+    `_single_body`/`_max_z`/`_min_z` below) instead."""
+    response = client.get(
+        f"/document/parts/{part_id}/mesh",
+        params={"hidden_feature_ids": hidden_feature_ids} if hidden_feature_ids else None,
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _single_body(part_id: str, hidden_feature_ids: list[str] | None = None) -> dict:
+    """For the many existing tests that only ever produce one Body -
+    asserts there's exactly one and returns it, so the rest of the test
+    reads exactly as it did before A1's array-wrapping."""
+    bodies = _get_bodies(part_id, hidden_feature_ids)
+    assert len(bodies) == 1
+    return bodies[0]
 
 
 # --- Creation validation -------------------------------------------------------
@@ -134,11 +159,10 @@ def test_create_extrude_referencing_unknown_sketch_feature_is_rejected():
 def test_part_with_no_extrude_feature_returns_placeholder_mesh():
     part = _create_part()
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    body = _single_body(part["id"])
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["source"] == "placeholder"
+    assert body["body_id"] == "placeholder"
     assert len(body["mesh"]["vertices"]) > 0
 
 
@@ -148,51 +172,73 @@ def test_boss_extrude_produces_a_non_empty_computed_mesh():
     extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
     assert extrude["type"] == "extrude"
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    body = _single_body(part["id"])
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["source"] == "computed"
+    # A1: a Boss with no target_body_ids starts a brand-new Body, identified
+    # by the Boss ExtrudeFeature's own id (see
+    # app.document.models.ExtrudeFeature's docstring).
+    assert body["body_id"] == extrude["id"]
     assert len(body["mesh"]["vertices"]) > 0
     assert len(body["mesh"]["triangle_indices"]) > 0
 
 
-def test_cut_with_no_prior_boss_is_skipped_gracefully():
+def test_cut_with_empty_target_body_ids_is_rejected_with_422():
+    """A1: replaces the old "cut with no prior boss is skipped gracefully"
+    test - that scenario is no longer expressible, since Cut now requires
+    a named target Body at creation time (there is nothing to name if none
+    exists yet). See test_cut_targeting_a_hidden_body_is_skipped_gracefully
+    below for the new equivalent of "nothing to cut from"."""
     part = _create_part()
     sketch_feature = _create_square_sketch_feature(part["id"])
-    extrude = _create_extrude_feature(part["id"], sketch_feature["id"], extrude_type="cut").json()
-    assert extrude["extrude_type"] == "cut"
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    response = _create_extrude_feature(part["id"], sketch_feature["id"], extrude_type="cut")
 
-    # The mesh request itself must still succeed - just with nothing in it,
-    # since the Cut had no base solid to subtract from.
-    assert response.status_code == 200
-    body = response.json()
-    assert body["source"] == "computed"
-    assert body["mesh"]["vertices"] == []
-    assert body["mesh"]["triangle_indices"] == []
+    assert response.status_code == 422
+    assert "target_body_ids" in response.json()["detail"]
+
+
+def test_cut_targeting_a_hidden_body_is_skipped_gracefully():
+    """A1's equivalent of the old "cut with nothing to cut from" case: the
+    target Body's creating Boss is hidden, so the Body doesn't exist at
+    recompute time - the Cut must be skipped (not raised) and the mesh
+    request must still succeed, with no Body for it in the array."""
+    part = _create_part()
+    boss_sketch = _create_square_sketch_feature(part["id"])
+    boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
+    cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
+    _create_extrude_feature(
+        part["id"], cut_sketch["id"], extrude_type="cut", target_body_ids=[boss["id"]]
+    )
+
+    bodies = _get_bodies(part["id"], hidden_feature_ids=[boss["id"]])
+
+    assert bodies == []
 
 
 def test_boss_followed_by_cut_produces_a_different_accumulated_solid():
     part = _create_part()
 
     boss_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0, size=10.0)
-    _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")
-    boss_only_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
-    assert len(boss_only_mesh["mesh"]["vertices"]) > 0
+    boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
+    boss_only_body = _single_body(part["id"])
+    assert len(boss_only_body["mesh"]["vertices"]) > 0
 
     # A smaller square, fully inside the boss footprint and overlapping its
     # full depth, so the Cut genuinely removes material from the Boss solid.
     cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
-    cut_response = _create_extrude_feature(part["id"], cut_sketch["id"], extrude_type="cut")
+    cut_response = _create_extrude_feature(
+        part["id"], cut_sketch["id"], extrude_type="cut", target_body_ids=[boss["id"]]
+    )
     assert cut_response.status_code == 201
 
-    boss_and_cut_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    boss_and_cut_body = _single_body(part["id"])
 
-    assert boss_and_cut_mesh["source"] == "computed"
-    assert len(boss_and_cut_mesh["mesh"]["vertices"]) > 0
-    assert boss_and_cut_mesh["mesh"]["vertices"] != boss_only_mesh["mesh"]["vertices"]
+    assert boss_and_cut_body["source"] == "computed"
+    # Cut doesn't change which Body it targets - the id stays the Boss's.
+    assert boss_and_cut_body["body_id"] == boss["id"]
+    assert len(boss_and_cut_body["mesh"]["vertices"]) > 0
+    assert boss_and_cut_body["mesh"]["vertices"] != boss_only_body["mesh"]["vertices"]
 
 
 def _max_z(mesh_body: dict) -> float:
@@ -210,7 +256,7 @@ def test_patch_updates_extrude_distances_and_the_mesh_changes_accordingly():
         part["id"], sketch_feature["id"], start_distance=0.0, end_distance=10.0
     ).json()
 
-    mesh_before = client.get(f"/document/parts/{part['id']}/mesh").json()
+    mesh_before = _single_body(part["id"])
     assert _max_z(mesh_before) == pytest.approx(10.0)
 
     response = client.patch(
@@ -220,7 +266,7 @@ def test_patch_updates_extrude_distances_and_the_mesh_changes_accordingly():
     assert response.status_code == 200
     assert response.json()["end_distance"] == pytest.approx(20.0)
 
-    mesh_after = client.get(f"/document/parts/{part['id']}/mesh").json()
+    mesh_after = _single_body(part["id"])
     assert _max_z(mesh_after) == pytest.approx(20.0)
 
 
@@ -278,7 +324,7 @@ def test_boss_extrude_with_a_nonzero_start_distance_spans_from_start_to_end():
     assert extrude["start_distance"] == pytest.approx(5.0)
     assert extrude["end_distance"] == pytest.approx(15.0)
 
-    mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    mesh = _single_body(part["id"])
 
     assert _min_z(mesh) == pytest.approx(5.0)
     assert _max_z(mesh) == pytest.approx(15.0)
@@ -289,7 +335,7 @@ def test_boss_extrude_with_a_negative_start_distance_spans_across_the_sketch_pla
     sketch_feature = _create_square_sketch_feature(part["id"])
     _create_extrude_feature(part["id"], sketch_feature["id"], start_distance=-5.0, end_distance=5.0)
 
-    mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    mesh = _single_body(part["id"])
 
     assert _min_z(mesh) == pytest.approx(-5.0)
     assert _max_z(mesh) == pytest.approx(5.0)
@@ -337,7 +383,7 @@ def test_patch_making_end_distance_not_greater_than_start_distance_is_rejected()
     assert "end_distance must be greater than start_distance" in response.json()["detail"]
 
     # The rejected PATCH must not have mutated the stored feature.
-    mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    mesh = _single_body(part["id"])
     assert _max_z(mesh) == pytest.approx(10.0)
 
 
@@ -349,36 +395,33 @@ def test_hidden_feature_ids_excludes_a_boss_feature_from_the_computed_mesh():
     sketch_feature = _create_square_sketch_feature(part["id"])
     extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
 
-    visible_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
-    assert len(visible_mesh["mesh"]["vertices"]) > 0
+    visible_body = _single_body(part["id"])
+    assert len(visible_body["mesh"]["vertices"]) > 0
 
-    hidden_mesh = client.get(
-        f"/document/parts/{part['id']}/mesh",
-        params={"hidden_feature_ids": [extrude["id"]]},
-    ).json()
+    # A1: hiding the only Boss feature means its Body was never created at
+    # all this recompute, so the array is empty - there is no Body left to
+    # return an empty mesh for.
+    hidden_bodies = _get_bodies(part["id"], hidden_feature_ids=[extrude["id"]])
 
-    assert hidden_mesh["source"] == "computed"
-    assert hidden_mesh["mesh"]["vertices"] == []
-    assert hidden_mesh["mesh"]["triangle_indices"] == []
+    assert hidden_bodies == []
 
 
 def test_hidden_feature_ids_un_subtracts_a_hidden_cut_feature():
     part = _create_part()
 
     boss_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0, size=10.0)
-    _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")
-    boss_only_mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+    boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
+    boss_only_body = _single_body(part["id"])
 
     cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
-    cut = _create_extrude_feature(part["id"], cut_sketch["id"], extrude_type="cut").json()
-
-    cut_hidden_mesh = client.get(
-        f"/document/parts/{part['id']}/mesh",
-        params={"hidden_feature_ids": [cut["id"]]},
+    cut = _create_extrude_feature(
+        part["id"], cut_sketch["id"], extrude_type="cut", target_body_ids=[boss["id"]]
     ).json()
 
+    cut_hidden_body = _single_body(part["id"], hidden_feature_ids=[cut["id"]])
+
     # With the Cut hidden, the mesh should match the pre-Cut (Boss-only) solid.
-    assert cut_hidden_mesh["mesh"]["vertices"] == boss_only_mesh["mesh"]["vertices"]
+    assert cut_hidden_body["mesh"]["vertices"] == boss_only_body["mesh"]["vertices"]
 
 
 # --- C1: nested profiles (a hole in a plate) --------------------------------
@@ -400,10 +443,8 @@ def test_extruding_a_square_with_a_square_hole_produces_a_hollow_prism():
     extrude = _create_extrude_feature(part["id"], sketch_feature["id"])
     assert extrude.status_code == 201
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    body = _single_body(part["id"])
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["source"] == "computed"
     # 2 end caps (each with a hole) + 4 outer walls + 4 inner walls.
     assert len(set(body["mesh"]["face_ids"])) == 10
@@ -424,10 +465,8 @@ def test_extruding_a_square_with_a_circular_hole_produces_a_hollow_prism():
     extrude = _create_extrude_feature(part["id"], sketch_feature["id"])
     assert extrude.status_code == 201
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    body = _single_body(part["id"])
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["source"] == "computed"
     # 2 end caps (each with a round hole) + 4 outer walls + 1 inner cylindrical wall.
     assert len(set(body["mesh"]["face_ids"])) == 7
@@ -451,18 +490,22 @@ def test_extruding_two_disjoint_squares_produces_a_compound_of_two_solids():
     from OCC.Core.TopAbs import TopAbs_SOLID
     from OCC.Core.TopExp import TopExp_Explorer
 
-    from app.document.extrude import compute_part_solid
+    from app.document.extrude import compute_part_bodies
     from app.document.store import get_part_or_404
 
     part = _create_part()
     sketch_feature = _create_sketch_feature(part["id"])
     _add_square(sketch_feature["sketch_id"], 0.0, 0.0, 10.0)
     _add_square(sketch_feature["sketch_id"], 100.0, 0.0, 10.0)
-    _create_extrude_feature(part["id"], sketch_feature["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
 
-    solid = compute_part_solid(get_part_or_404(part["id"]))
+    # A1: a single Boss (even one that produces a multi-solid compound via
+    # C2's MultiProfile) is still exactly one Body, keyed by that Boss
+    # Feature's own id.
+    bodies = compute_part_bodies(get_part_or_404(part["id"]))
 
-    assert solid is not None
+    assert set(bodies.keys()) == {extrude["id"]}
+    solid = bodies[extrude["id"]]
     explorer = TopExp_Explorer(solid, TopAbs_SOLID)
     solid_count = 0
     while explorer.More():
@@ -478,10 +521,8 @@ def test_extruding_two_disjoint_squares_produces_a_non_empty_computed_mesh():
     _add_square(sketch_feature["sketch_id"], 100.0, 0.0, 10.0)
     _create_extrude_feature(part["id"], sketch_feature["id"])
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    body = _single_body(part["id"])
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["source"] == "computed"
     # Two separate 10x10x10 boxes: 12 faces total (6 each), 24 triangles.
     assert len(set(body["mesh"]["face_ids"])) == 12
@@ -497,10 +538,8 @@ def test_multi_profile_sub_profile_with_a_hole_produces_a_hollow_solid_for_that_
     _add_square(sketch_id, 100.0, 0.0, 10.0)
     _create_extrude_feature(part["id"], sketch_feature["id"])
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    body = _single_body(part["id"])
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["source"] == "computed"
     # Holed square (10 faces, see above) + plain square (6 faces) = 16.
     assert len(set(body["mesh"]["face_ids"])) == 16

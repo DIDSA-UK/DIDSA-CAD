@@ -38,21 +38,34 @@ class ExtrudeFeatureCreate(BaseModel):
     """Creates an ExtrudeFeature from an existing SketchFeature's closed
     Profile - the API layer validates `sketch_feature_id` resolves to a
     SketchFeature in this Part with a closed profile before construction
-    (see app.document.router._require_closed_sketch_feature)."""
+    (see app.document.router._require_closed_sketch_feature).
+
+    A1: `target_body_ids` names which Body/Bodies (by id - see
+    app.document.models.ExtrudeFeature's docstring for how Body ids are
+    derived) this Feature combines with. Boss: empty starts a brand-new
+    Body; non-empty fuses into each named Body. Cut: must be non-empty -
+    see app.document.router._validate_target_body_ids, which raises 422 for
+    an empty Cut list."""
 
     sketch_feature_id: str
     extrude_type: ExtrudeType
     start_distance: float
     end_distance: float
+    target_body_ids: list[str] = []
 
 
 class ExtrudeFeatureUpdate(BaseModel):
     """Partial update for live-preview re-solves - any subset of fields may
-    be supplied; omitted fields keep their current value."""
+    be supplied; omitted fields keep their current value. `target_body_ids`
+    follows the same omitted-vs-empty-list distinction as the other
+    fields: omitted (None) leaves the Feature's current targets untouched;
+    an explicit `[]` replaces them with an empty list (rejected for Cut,
+    same as on create)."""
 
     extrude_type: ExtrudeType | None = None
     start_distance: float | None = None
     end_distance: float | None = None
+    target_body_ids: list[str] | None = None
 
 
 class ExtrudeFeatureResponse(BaseModel):
@@ -63,6 +76,7 @@ class ExtrudeFeatureResponse(BaseModel):
     start_distance: float
     end_distance: float
     locked: bool
+    target_body_ids: list[str] = []
 
 
 FeatureResponse = Union[SketchFeatureResponse, ExtrudeFeatureResponse]
@@ -86,13 +100,26 @@ class MeshVertexData(BaseModel):
     topology_vertex_ids: list[int] = []
 
 
-class PartMeshResponse(BaseModel):
-    """`source` is "placeholder" while the Part has no ExtrudeFeature yet
-    (see `Part.produces_solid_geometry`), and "computed" once real
-    Feature-derived geometry is being returned instead - callers can use
-    this to tell a fixed dev-time stand-in apart from the Part's actual
-    modeled geometry."""
+class BodyMeshResponse(BaseModel):
+    """A1: one entry of `GET /parts/{id}/mesh`'s response, which is now an
+    array of these (one per Body) rather than a single combined mesh - see
+    app.document.router.get_part_mesh. `body_id` is the same stable,
+    deterministic id described in app.document.models.ExtrudeFeature's
+    docstring - stable across recomputes as long as the Body itself isn't
+    merged into another. `face_ids`/`edge_ids`/`topology_vertex_ids` inside
+    `mesh` are only unique within this one Body's own tessellation, same
+    per-request-only stability caveat as before A1 (see
+    app.document.mesh.MeshData's field docs) - they do not need to be
+    globally unique across the whole array.
 
+    `source` is "placeholder" while the Part has no ExtrudeFeature yet (see
+    `Part.produces_solid_geometry`), in which case the array has exactly
+    one entry (the fixed dev-time stand-in box) - and "computed" once real
+    Feature-derived geometry is being returned instead, one entry per
+    actual Body (zero entries if every ExtrudeFeature so far has been
+    skipped/hidden)."""
+
+    body_id: str
     source: Literal["placeholder", "computed"]
     mesh: MeshVertexData
 

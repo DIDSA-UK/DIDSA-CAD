@@ -24,6 +24,7 @@ from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TopAbs import TopAbs_REVERSED
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
 
+from app.document.graph import GraphNode, topological_order
 from app.document.models import ExtrudeFeature, ExtrudeType, Part, SketchFeature
 from app.sketch.models import Circle, Plane, Sketch
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
@@ -194,20 +195,65 @@ def _solid_for_extrude_feature(
     return compound
 
 
-def compute_part_solid(
+def build_feature_graph(part: Part) -> list[GraphNode]:
+    """The dependency edges recompute is driven by (A1) - every
+    ExtrudeFeature depends on the SketchFeature it extrudes plus every Body
+    it names in `target_body_ids`. Since a Body's id is always the id of the
+    ExtrudeFeature that created it (see ExtrudeFeature's docstring), a
+    `target_body_ids` entry already *is* a Feature id, so no separate
+    Feature<->Body lookup is needed to build these edges - the graph is
+    entirely over `part.features` ids.
+
+    SketchFeatures have no dependencies (they don't reference any other
+    Feature). Feature ids that don't resolve to anything (already invalid
+    input, rejected at creation time - see
+    app.document.router._validate_target_body_ids) are simply ignored by
+    app.document.graph.topological_order rather than raising here."""
+    nodes = []
+    for feature in part.features:
+        depends_on: tuple[str, ...] = ()
+        if isinstance(feature, ExtrudeFeature):
+            depends_on = (feature.sketch_feature_id, *feature.target_body_ids)
+        nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
+    return nodes
+
+
+def compute_part_bodies(
     part: Part, hidden_feature_ids: frozenset[str] = frozenset()
-) -> TopoDS_Shape | None:
-    """Accumulates every ExtrudeFeature in `part.features`, in order, into a
-    single solid: Boss fuses, Cut subtracts. A Cut with nothing yet
-    accumulated is skipped (logged, not raised) since there is nothing to
-    cut from. Returns None if no ExtrudeFeature contributed any geometry.
+) -> dict[str, TopoDS_Shape]:
+    """Recomputes every Body in `part`, keyed by stable Body id (A1) -
+    replaces the old single-accumulated-solid `compute_part_solid`.
+
+    Processes `part.features` in dependency-graph topological order (see
+    `build_feature_graph`/app.document.graph.topological_order) rather than
+    raw list order, though for every Part with no `target_body_ids` edge
+    reaching back past its immediately preceding Feature this produces
+    exactly the same order list order already did.
+
+    Boss: fuses its new solid into every Body named in
+    `feature.target_body_ids`. If that list is empty, the solid becomes a
+    brand-new Body identified by `feature.id`. If it names 2+ existing
+    Bodies, they are all fused together with the new solid into one Body -
+    the merged Body keeps whichever named id belongs to the Feature that
+    appears earliest in `part.features` (a single, deterministic tie-break;
+    see ExtrudeFeature's docstring).
+
+    Cut: subtracts its solid from every Body named in
+    `feature.target_body_ids` (never empty by the time recompute runs - see
+    app.document.router._validate_target_body_ids). A named Body that
+    doesn't currently exist (e.g. hidden away via `hidden_feature_ids`) is
+    skipped for that Body only (logged, not raised) - mirrors the old
+    "Cut with nothing to cut from" skip behaviour.
 
     An ExtrudeFeature whose id is in `hidden_feature_ids` (client-side
     Hide/Show, see app.document.router.get_part_mesh) is skipped entirely,
-    as if it weren't in the Part's history at all - so hiding a Boss drops
-    its volume and hiding a Cut un-subtracts it, in accumulation order."""
-    accumulated: TopoDS_Shape | None = None
-    for feature in part.features:
+    as if it weren't in the Part's history at all."""
+    feature_index = {feature.id: i for i, feature in enumerate(part.features)}
+    bodies: dict[str, TopoDS_Shape] = {}
+
+    order = topological_order(build_feature_graph(part))
+    for feature_id in order:
+        feature = part.get_feature(feature_id)
         if not isinstance(feature, ExtrudeFeature):
             continue
         if feature.id in hidden_feature_ids:
@@ -227,14 +273,35 @@ def compute_part_solid(
             continue
 
         if feature.extrude_type == ExtrudeType.BOSS:
-            accumulated = solid if accumulated is None else BRepAlgoAPI_Fuse(accumulated, solid).Shape()
-        else:
-            if accumulated is None:
+            target_ids = [tid for tid in feature.target_body_ids if tid in bodies]
+            if feature.target_body_ids and not target_ids:
                 logger.warning(
-                    "Skipping Cut ExtrudeFeature %s: no base solid exists yet to cut from",
+                    "Boss ExtrudeFeature %s: none of its target_body_ids currently exist "
+                    "(likely hidden) - starting a new Body instead",
                     feature.id,
                 )
+            if not target_ids:
+                bodies[feature.id] = solid
                 continue
-            accumulated = BRepAlgoAPI_Cut(accumulated, solid).Shape()
 
-    return accumulated
+            merged = solid
+            for target_id in target_ids:
+                merged = BRepAlgoAPI_Fuse(merged, bodies[target_id]).Shape()
+
+            survivor_id = min(target_ids, key=lambda tid: feature_index[tid])
+            for target_id in target_ids:
+                if target_id != survivor_id:
+                    del bodies[target_id]
+            bodies[survivor_id] = merged
+        else:
+            for target_id in feature.target_body_ids:
+                if target_id not in bodies:
+                    logger.warning(
+                        "Skipping Cut ExtrudeFeature %s: target body %s does not exist",
+                        feature.id,
+                        target_id,
+                    )
+                    continue
+                bodies[target_id] = BRepAlgoAPI_Cut(bodies[target_id], solid).Shape()
+
+    return bodies

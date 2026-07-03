@@ -48,6 +48,7 @@ def _create_extrude_feature(
     extrude_type: str = "boss",
     start_distance: float = 0.0,
     end_distance: float = 10.0,
+    target_body_ids: list[str] | None = None,
 ) -> dict:
     response = client.post(
         f"/document/parts/{part_id}/extrude-features",
@@ -56,16 +57,31 @@ def _create_extrude_feature(
             "extrude_type": extrude_type,
             "start_distance": start_distance,
             "end_distance": end_distance,
+            "target_body_ids": target_body_ids or [],
         },
     )
     assert response.status_code == 201
     return response.json()
 
 
+def _get_bodies(part_id: str, hidden_feature_ids: list[str] | None = None) -> list[dict]:
+    response = client.get(
+        f"/document/parts/{part_id}/mesh",
+        params={"hidden_feature_ids": hidden_feature_ids} if hidden_feature_ids else None,
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def _boss_box_mesh(part_id: str) -> dict:
+    """A1: still returns exactly one Body dict, same as before this stage's
+    array-wrapping - every call site below reads `mesh["mesh"]` from it
+    exactly as it did when GET /mesh returned one combined object."""
     sketch_feature = _create_square_sketch_feature(part_id)
     _create_extrude_feature(part_id, sketch_feature["id"])
-    return client.get(f"/document/parts/{part_id}/mesh").json()
+    bodies = _get_bodies(part_id)
+    assert len(bodies) == 1
+    return bodies[0]
 
 
 # --- face_ids ----------------------------------------------------------------
@@ -91,10 +107,10 @@ def test_box_extrude_has_six_distinct_face_ids():
 def test_placeholder_mesh_also_includes_face_ids():
     part = _create_part()
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    bodies = _get_bodies(part["id"])
 
-    assert response.status_code == 200
-    mesh = response.json()["mesh"]
+    assert len(bodies) == 1
+    mesh = bodies[0]["mesh"]
     assert len(mesh["face_ids"]) == len(mesh["triangle_indices"])
     assert len(mesh["face_ids"]) > 0
 
@@ -145,10 +161,10 @@ def test_box_extrude_topology_vertices_are_a_subset_of_mesh_vertex_positions():
 def test_placeholder_mesh_also_includes_topology_vertices():
     part = _create_part()
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    bodies = _get_bodies(part["id"])
 
-    assert response.status_code == 200
-    mesh = response.json()["mesh"]
+    assert len(bodies) == 1
+    mesh = bodies[0]["mesh"]
     assert len(mesh["topology_vertices"]) == 8
     assert mesh["topology_vertex_ids"] == list(range(8))
 
@@ -156,16 +172,21 @@ def test_placeholder_mesh_also_includes_topology_vertices():
 # --- empty computed mesh -------------------------------------------------------
 
 
-def test_empty_computed_mesh_has_empty_ids():
+def test_body_with_a_skipped_cut_and_no_other_geometry_is_absent_from_the_array():
+    """A1: replaces the old "empty computed mesh has empty ids" test - a
+    Cut can no longer be created with nothing to name in target_body_ids
+    (see test_stage_a1_multibody.py's 422 test), so "nothing computed yet"
+    is represented by an empty array rather than a single Body entry with
+    empty id lists. This reproduces the equivalent "nothing to show" state
+    via a Cut whose target Body is hidden away at recompute time."""
     part = _create_part()
-    sketch_feature = _create_square_sketch_feature(part["id"])
-    _create_extrude_feature(part["id"], sketch_feature["id"], extrude_type="cut")
+    boss_sketch = _create_square_sketch_feature(part["id"])
+    boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")
+    cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
+    _create_extrude_feature(
+        part["id"], cut_sketch["id"], extrude_type="cut", target_body_ids=[boss["id"]]
+    )
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    bodies = _get_bodies(part["id"], hidden_feature_ids=[boss["id"]])
 
-    assert response.status_code == 200
-    mesh = response.json()["mesh"]
-    assert mesh["face_ids"] == []
-    assert mesh["edge_ids"] == []
-    assert mesh["topology_vertices"] == []
-    assert mesh["topology_vertex_ids"] == []
+    assert bodies == []

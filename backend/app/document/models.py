@@ -60,24 +60,37 @@ class ExtrudeType(str, Enum):
 @dataclass
 class ExtrudeFeature(Feature):
     """Extrudes the closed Profile of the SketchFeature referenced by
-    `sketch_feature_id` into a real OCCT solid, accumulated into its Part's
-    overall modeled shape - Boss fuses the new solid into whatever
-    accumulated solid came before it, Cut subtracts it. `start_distance`/
-    `end_distance` are both signed distances from the sketch plane along its
-    normal (positive = in front of the plane, in the normal direction;
-    negative = behind it) - the extrude spans from `start_distance` to
-    `end_distance`, so the sketch plane can sit anywhere within (or outside)
-    the extruded depth. Only `end_distance > start_distance` is enforced
-    (see app.document.router._validate_extrude_distances) - there would
+    `sketch_feature_id` into a real OCCT solid, then combines it with an
+    explicit set of target Bodies - Boss fuses the new solid into each Body
+    named by `target_body_ids` (or starts a brand-new Body if that list is
+    empty), Cut subtracts it from each named Body (`target_body_ids` must be
+    non-empty for a Cut - see app.document.router._validate_target_body_ids).
+    `start_distance`/`end_distance` are both signed distances from the
+    sketch plane along its normal (positive = in front of the plane, in the
+    normal direction; negative = behind it) - the extrude spans from
+    `start_distance` to `end_distance`, so the sketch plane can sit anywhere
+    within (or outside) the extruded depth. Only `end_distance >
+    start_distance` is enforced (see
+    app.document.router._validate_extrude_distances) - there would
     otherwise be no volume. The actual OCCT geometry construction lives in
     app.document.extrude, not here - this is just the Feature-tree record of
-    the operation, same separation SketchFeature keeps from app.sketch."""
+    the operation, same separation SketchFeature keeps from app.sketch.
+
+    A Body's id (A1) is the id of the ExtrudeFeature that first created it
+    (a Boss with empty `target_body_ids`) - deterministic and stable across
+    recomputes, since Feature ids never change once assigned. When a later
+    Boss fuses two or more existing Bodies together via `target_body_ids`,
+    the merged Body keeps whichever of those ids belongs to the Feature
+    that appears earliest in `Part.features` (see
+    app.document.extrude.compute_part_bodies) - a single, deterministic,
+    documented tie-break rather than an ad-hoc one."""
 
     id: str
     sketch_feature_id: str
     extrude_type: ExtrudeType
     start_distance: float
     end_distance: float
+    target_body_ids: list[str] = field(default_factory=list)
 
     @property
     def type(self) -> str:
