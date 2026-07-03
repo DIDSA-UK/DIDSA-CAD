@@ -993,12 +993,12 @@ class _PartScreenState extends State<PartScreen> {
     final count = _selectedEntities.length;
     if (_extrudeType == ExtrudeType.cut) {
       return count == 0
-          ? 'Select at least one target body to cut'
-          : 'Select target body/bodies to cut ($count selected)';
+          ? 'Select at least one body to cut'
+          : 'Select bodies to cut ($count selected)';
     }
     return count == 0
-        ? 'Select target body/bodies to merge into (optional - confirm with none selected to start a new body)'
-        : 'Select target body/bodies to merge into ($count selected)';
+        ? 'Select bodies to merge into (optional)'
+        : 'Select bodies to merge into ($count selected)';
   }
 
   /// Client-side-only Hide/Show for a Feature - [_hiddenFeatureIds] itself
@@ -1299,7 +1299,12 @@ class _PartScreenState extends State<PartScreen> {
                 // back out" modes; unlike that one this doesn't need to
                 // check `!_featureTreeVisible`, since the tree is already
                 // forced hidden while the panel is open (see
-                // `FeatureTreePanel.visible` above).
+                // `FeatureTreePanel.visible` above). Bug fix: the text is
+                // long enough to overflow a plain unconstrained `Row` (the
+                // plane-selection banner's short fixed string never hit
+                // this) - `ConstrainedBox` caps the pill to the available
+                // width and `Flexible` lets the text wrap onto a second
+                // line instead of running off the right edge.
                 if (_extrudeActive)
                   Positioned(
                     top: 8,
@@ -1308,21 +1313,31 @@ class _PartScreenState extends State<PartScreen> {
                     child: SafeArea(
                       bottom: false,
                       child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(_targetBodyPickerBannerText()),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelExtrude,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _targetBodyPickerBannerText(),
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelExtrude,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -1334,9 +1349,13 @@ class _PartScreenState extends State<PartScreen> {
                 // but hidden while the Feature tree is open since it sits
                 // right on top of the tree's header text otherwise; the
                 // tree's own X button is the way to dismiss it instead.
-                // Also hidden during plane-selection mode (Stage 10b), since
-                // its own banner below sits in the same top-left corner.
-                if (!_featureTreeVisible && !_planeSelectionMode)
+                // Also hidden during plane-selection mode (Stage 10b) and
+                // Prompt A4's target-body picking, since each has its own
+                // banner in the same top-left corner - without this, the
+                // feature-tree FAB specifically (unlike the hamburger just
+                // below, which already has its own extrude-aware check) sat
+                // underneath/overlapping A4's banner.
+                if (!_featureTreeVisible && !_planeSelectionMode && !_extrudeActive)
                   Positioned(
                     top: 8,
                     left: 8,
