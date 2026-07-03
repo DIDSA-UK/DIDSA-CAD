@@ -165,11 +165,13 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `TopExp_Explorer(..., TopAbs_SOLID)` doesn't crash, since every
   Boss/Cut result is now exploded through it). The client (A3) needed
   zero changes — body ids were already treated as fully opaque strings.
-  **Still outstanding: CI (real OCCT) confirming a disjoint Cut/Boss
-  actually produces N separate solids** (the fake shim can't organically
-  produce real disjoint geometry, only prove the validation-layer fix and
-  the no-regression single-solid path), plus on-device confirmation that
-  this amendment and A3's own fix both look right together. Prompt A4
+  **CI (real OCCT, both architectures) has since confirmed a disjoint
+  Cut/Boss actually produces N separate solids** — verified from actual
+  job logs (not just the `conclusion` field): amd64 `281 passed in 4.41s`,
+  arm64 `281 passed in 66.66s`, all 6 new/renamed Body-splitting tests
+  individually `PASSED` on both. See `docs/status.md`'s second 2026-07-03
+  entry for the full list. **Still outstanding: on-device confirmation**
+  that this amendment and A3's own fix both look right together. Prompt A4
   (Boss/Cut target-body picking) and Prompt B (sub-shape refs, tree
   categories, cascade delete, earlier-feature editing) both wait on that.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
