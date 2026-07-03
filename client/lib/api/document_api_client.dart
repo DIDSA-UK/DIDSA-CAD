@@ -37,6 +37,13 @@ class FeatureDto {
   final double? startDistance;
   final double? endDistance;
 
+  /// Prompt A4: only present on an `"extrude"` Feature - which existing
+  /// Bodies (by id) this one combines with, per A1's `target_body_ids`.
+  /// Defaults to `[]` (matching the backend's `ExtrudeFeatureResponse`
+  /// default) rather than being nullable, since it's always present on an
+  /// extrude Feature and simply meaningless (never read) on a sketch one.
+  final List<String> targetBodyIds;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -46,6 +53,7 @@ class FeatureDto {
     this.extrudeType,
     this.startDistance,
     this.endDistance,
+    this.targetBodyIds = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -57,6 +65,7 @@ class FeatureDto {
         extrudeType: json['extrude_type'] as String?,
         startDistance: (json['start_distance'] as num?)?.toDouble(),
         endDistance: (json['end_distance'] as num?)?.toDouble(),
+        targetBodyIds: (json['target_body_ids'] as List?)?.cast<String>() ?? const [],
       );
 }
 
@@ -232,12 +241,16 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Prompt A4: [targetBodyIds] names which existing Body/Bodies (by id)
+  /// this Extrude combines with - see A1's `ExtrudeFeatureCreate.target_body_ids`
+  /// docstring (Boss: empty starts a brand-new Body; Cut: must be non-empty).
   Future<FeatureDto> createExtrudeFeature(
     String partId, {
     required String sketchFeatureId,
     required String extrudeType,
     required double startDistance,
     required double endDistance,
+    List<String> targetBodyIds = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -248,21 +261,26 @@ class DocumentApiClient {
                 'extrude_type': extrudeType,
                 'start_distance': startDistance,
                 'end_distance': endDistance,
+                'target_body_ids': targetBodyIds,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing ExtrudeFeature - any subset of
-  /// [extrudeType]/[startDistance]/[endDistance] may be supplied, mirroring
-  /// the backend's `ExtrudeFeatureUpdate` (omitted fields keep their
-  /// current value). Used for the live-preview debounced re-solve.
+  /// [extrudeType]/[startDistance]/[endDistance]/[targetBodyIds] may be
+  /// supplied, mirroring the backend's `ExtrudeFeatureUpdate` (omitted
+  /// fields keep their current value - [targetBodyIds] null omits it,
+  /// matching the others, so a live-preview re-solve that never touched
+  /// target-body picking doesn't accidentally clear it). Used for the
+  /// live-preview debounced re-solve.
   Future<FeatureDto> updateExtrudeFeature(
     String partId,
     String featureId, {
     String? extrudeType,
     double? startDistance,
     double? endDistance,
+    List<String>? targetBodyIds,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -272,6 +290,7 @@ class DocumentApiClient {
                 if (extrudeType != null) 'extrude_type': extrudeType,
                 if (startDistance != null) 'start_distance': startDistance,
                 if (endDistance != null) 'end_distance': endDistance,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

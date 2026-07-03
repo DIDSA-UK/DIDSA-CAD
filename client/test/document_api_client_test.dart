@@ -146,4 +146,118 @@ void main() {
       expect(capturedUri!.queryParametersAll['hidden_feature_ids'], ['f1', 'f2']);
     });
   });
+
+  // Prompt A4: target_body_ids on the create/update calls, and FeatureDto
+  // round-tripping it back - the client-side half of A1's Boss/Cut body
+  // targeting, now actually wired up from the 3D-viewport picker.
+  group('DocumentApiClient createExtrudeFeature/updateExtrudeFeature target_body_ids', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> capturedBody = {};
+
+    test('createExtrudeFeature sends target_body_ids, defaulting to []', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'extrude-1',
+            'sketch_feature_id': 'sketch-1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'locked': false,
+            'target_body_ids': <String>[],
+          });
+        }),
+      );
+
+      await client.createExtrudeFeature(
+        'part-1',
+        sketchFeatureId: 'sketch-1',
+        extrudeType: 'boss',
+        startDistance: 0.0,
+        endDistance: 10.0,
+      );
+
+      expect(capturedBody['target_body_ids'], <String>[]);
+    });
+
+    test('createExtrudeFeature sends explicitly picked target_body_ids', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'extrude-1',
+            'sketch_feature_id': 'sketch-1',
+            'extrude_type': 'cut',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'locked': false,
+            'target_body_ids': ['boss-1', 'boss-2#0'],
+          });
+        }),
+      );
+
+      final feature = await client.createExtrudeFeature(
+        'part-1',
+        sketchFeatureId: 'sketch-1',
+        extrudeType: 'cut',
+        startDistance: 0.0,
+        endDistance: 10.0,
+        targetBodyIds: ['boss-1', 'boss-2#0'],
+      );
+
+      expect(capturedBody['target_body_ids'], ['boss-1', 'boss-2#0']);
+      expect(feature.targetBodyIds, ['boss-1', 'boss-2#0']);
+    });
+
+    test('updateExtrudeFeature omits target_body_ids when not supplied', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'extrude-1',
+            'sketch_feature_id': 'sketch-1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 20.0,
+            'locked': false,
+            'target_body_ids': <String>[],
+          }, status: 200);
+        }),
+      );
+
+      await client.updateExtrudeFeature('part-1', 'extrude-1', endDistance: 20.0);
+
+      expect(capturedBody.containsKey('target_body_ids'), isFalse);
+    });
+
+    test('updateExtrudeFeature sends an explicit empty list distinctly from omitting it',
+        () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'extrude-1',
+            'sketch_feature_id': 'sketch-1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'locked': false,
+            'target_body_ids': <String>[],
+          }, status: 200);
+        }),
+      );
+
+      await client.updateExtrudeFeature('part-1', 'extrude-1', targetBodyIds: const []);
+
+      expect(capturedBody.containsKey('target_body_ids'), isTrue);
+      expect(capturedBody['target_body_ids'], <String>[]);
+    });
+  });
 }
