@@ -9,6 +9,7 @@ import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
+import 'body_naming.dart';
 import 'cascade_delete_dialog.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
@@ -23,7 +24,7 @@ import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
-import 'selection_hit_test.dart' show SelectionEntityRef;
+import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'view_preferences.dart';
@@ -70,6 +71,19 @@ class _PartScreenState extends State<PartScreen> {
   /// or every current Body is hidden - see [_refreshMesh].
   List<BodyMeshDto> _bodies = [];
   String? _selectedFeatureId;
+
+  /// B3 revision: the Part's real, currently-computed Body ids - excludes
+  /// the dev-time placeholder box (`source: "placeholder"`), which is never
+  /// a real Body and shouldn't appear in the Build Tree's Bodies section or
+  /// [SelectionListDrawer]'s naming.
+  List<String> get _computedBodyIds =>
+      _bodies.where((b) => b.source == 'computed').map((b) => b.bodyId).toList();
+
+  /// Stable "Body 1"/"Body 2"... names shared between the Build Tree's
+  /// Bodies section and [SelectionListDrawer] - see `body_naming.dart`.
+  /// Recomputed on every build; cheap (a handful of Bodies/Features at
+  /// most) and always needs to reflect the latest [_features]/[_bodies].
+  Map<String, String> get _bodyNames => bodyDisplayNames(_features, _computedBodyIds);
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -705,6 +719,16 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// B3 revision: tapping a Body row in the Build Tree's Bodies section -
+  /// toggles it in [_selectedEntities] exactly like tapping that Body
+  /// directly in the 3D viewport already does (`_toggleSelectedEntity`),
+  /// rather than a separate one-off "always select" action - the same
+  /// selection set drives [SelectionListDrawer] either way, so the two
+  /// selection paths (tree row, viewport tap) stay fully interchangeable.
+  void _onBodyTap(String bodyId) {
+    _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
+  }
+
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
   /// brief's "camera animation when entering a sketch") before navigating to
   /// its 2D canvas - skips straight to navigation if the plane can't be
@@ -1232,6 +1256,7 @@ class _PartScreenState extends State<PartScreen> {
                       selectedEntities: _selectedEntities,
                       onRemove: _toggleSelectedEntity,
                       header: SelectionContextPanel(selectedEntities: _selectedEntities),
+                      bodyNames: _bodyNames,
                     ),
                   ),
                 Positioned.fill(
@@ -1252,6 +1277,9 @@ class _PartScreenState extends State<PartScreen> {
                     isSketchPickerMode: _sketchPickerActive,
                     pickableSketchIds: _pickableSketchIds,
                     onSketchPicked: _onSketchPicked,
+                    bodyIds: _computedBodyIds,
+                    bodyNames: _bodyNames,
+                    onBodyTap: _onBodyTap,
                   ),
                 ),
                 Positioned.fill(

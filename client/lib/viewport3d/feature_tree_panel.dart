@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
-import 'feature_tree_grouping.dart';
 
 /// The display name for the Feature at [index] in [features] - shared
 /// between the tree's own rows and anything else (e.g. the cascade-delete
@@ -16,16 +15,29 @@ String featureDisplayName(List<FeatureDto> features, int index) {
   return '$label $ordinal';
 }
 
-/// The visible Feature tree for a Part: one row per Feature, in creation
-/// order. Locked Features (every Feature except the last) are shown greyed
-/// out with a lock icon and remain tappable - a tap only selects/highlights
+/// The "Build Tree": a Part's currently-computed Bodies (top, collapsible)
+/// followed by its user-authored Features (Sketch/Extrude/etc, also
+/// collapsible), in creation order. B3 revision, off on-device feedback:
+/// Bodies are real produced objects (`bodyIds`/`bodyNames`), not Feature
+/// rows - a single Feature that splits into multiple Bodies (A1's
+/// multi-solid amendment) now genuinely shows as multiple Body entries
+/// here, which the original B3 pass deliberately (and, per that feedback,
+/// wrongly) avoided doing. Planes/Surfaces sections are meant to sit
+/// alongside Bodies once Create Plane/Fillet (C/D/E) actually produce
+/// something to list - no such data source exists yet, so there is nothing
+/// to render for them today.
+///
+/// Locked Features (every Feature except the last) are shown greyed out
+/// with a lock icon and remain tappable - a tap only selects/highlights
 /// them, per the project brief - while the editable (last) Feature is
 /// tappable to open it for editing. Selection is purely a display concern
 /// here; [onFeatureTap] decides what a tap actually does. A long-press on
 /// any row (locked or not) invokes [onFeatureLongPress] - unlike a tap,
 /// this is available regardless of lock state, since the cascade-delete
 /// action it can lead to also removes everything after a locked Feature
-/// that depends on it.
+/// that depends on it. Tapping a Body row calls [onBodyTap] instead -
+/// Bodies aren't edited directly, only selected/highlighted (the same way
+/// tapping one in the 3D viewport already does).
 ///
 /// Hidden by default so the 3D viewport gets full space - slides in from
 /// the left (same [AnimatedSlide] pattern as [SketchRibbon]) when
@@ -40,6 +52,23 @@ class FeatureTreePanel extends StatelessWidget {
   final void Function(FeatureDto feature) onFeatureTap;
   final void Function(FeatureDto feature) onFeatureLongPress;
   final VoidCallback onClose;
+
+  /// The Part's currently-computed Body ids (from `GET /mesh`, `source:
+  /// "computed"` entries only - the dev-time placeholder box is never a
+  /// real Body and never appears here) - [PartScreen] already fetches
+  /// these for the 3D viewport itself, so no separate network call is
+  /// needed just to populate this section.
+  final List<String> bodyIds;
+
+  /// Stable "Body 1"/"Body 2"... display names for [bodyIds] - see
+  /// `body_naming.dart`'s `bodyDisplayNames`, the same map
+  /// [SelectionListDrawer] uses so a Body is called the same thing
+  /// everywhere.
+  final Map<String, String> bodyNames;
+
+  /// Tapping a row in the Bodies section - selects/highlights that Body,
+  /// mirroring what tapping it directly in the 3D viewport already does.
+  final void Function(String bodyId) onBodyTap;
 
   /// Feature ids hidden from the 3D viewport (see [PartScreen]'s Hide/Show
   /// context-menu action) - shown here as a dimmed row with an eye-slash
@@ -74,6 +103,9 @@ class FeatureTreePanel extends StatelessWidget {
     required this.onFeatureTap,
     required this.onFeatureLongPress,
     required this.onClose,
+    required this.onBodyTap,
+    this.bodyIds = const [],
+    this.bodyNames = const {},
     this.hiddenFeatureIds = const {},
     this.isSketchPickerMode = false,
     this.pickableSketchIds = const {},
@@ -106,7 +138,7 @@ class FeatureTreePanel extends StatelessWidget {
                       child: Row(
                         children: [
                           const Expanded(
-                            child: Text('Features', style: TextStyle(fontWeight: FontWeight.bold)),
+                            child: Text('Build Tree', style: TextStyle(fontWeight: FontWeight.bold)),
                           ),
                           IconButton(
                             tooltip: 'Close',
@@ -144,60 +176,62 @@ class FeatureTreePanel extends StatelessWidget {
     );
   }
 
-  /// B3: groups [features] by `produces` (`groupFeaturesByProduces`) into
-  /// Bodies/Planes/Surfaces sections plus the pre-existing sequential
-  /// "everything else" list - a display grouping only, per this prompt's
-  /// own requirement: it never reorders [features] itself or the
-  /// underlying dependency graph, and ordering *within* each group/the
-  /// `other` list still follows [features]' own creation/graph order.
+  /// B3 revision: Bodies (real produced objects) at the top, Features
+  /// (Sketch/Extrude/etc, the full unfiltered creation-order list) below -
+  /// both collapsible, mirroring [PartToolbar]'s File/View/Selection-
+  /// Filters [ExpansionTile] convention rather than inventing a new
+  /// grouping widget. Neither section reorders anything - Bodies are
+  /// ordered by `bodyDisplayNames` (Feature-creation order, then split
+  /// index), and Features keep [features]' own creation/graph order
+  /// exactly as before this prompt.
   Widget _buildGroupedTree(BuildContext context) {
-    final grouped = groupFeaturesByProduces(features);
     return ListView(
       children: [
-        if (grouped.bodies.isNotEmpty)
-          _buildGroupSection(context, 'Bodies', Icons.view_in_ar, grouped.bodies),
-        if (grouped.planes.isNotEmpty)
-          _buildGroupSection(context, 'Planes', Icons.crop_din, grouped.planes),
-        if (grouped.surfaces.isNotEmpty)
-          _buildGroupSection(context, 'Surfaces', Icons.layers_outlined, grouped.surfaces),
-        for (final feature in grouped.other) _buildFeatureTile(context, feature),
+        if (bodyIds.isNotEmpty) _buildBodiesSection(context),
+        _buildFeaturesSection(context),
       ],
     );
   }
 
-  /// B3: one of the tree's new `produces`-grouped sections (Bodies/Planes/
-  /// Surfaces) - reuses the same [ExpansionTile] leading-icon/title
-  /// convention [PartToolbar]'s File/View/Selection-Filters menus already
-  /// establish, rather than inventing a new grouping widget. Starts
-  /// expanded so the on-device behaviour at a glance is unchanged from
-  /// before this prompt (every Feature still visible by default) - B3 adds
-  /// a collapsible boundary around existing Boss/Cut rows, it doesn't hide
-  /// them. Only ever built for a non-empty group (see the `isNotEmpty`
-  /// guards above) - an empty group is omitted entirely rather than shown
-  /// as an empty/error section, per this prompt's own requirement.
-  Widget _buildGroupSection(
-    BuildContext context,
-    String title,
-    IconData icon,
-    List<FeatureDto> groupFeatures,
-  ) {
+  /// The Bodies section - omitted entirely when [bodyIds] is empty (e.g. a
+  /// Part with no real geometry yet), rather than shown as an empty/error
+  /// section. Row order follows [bodyNames]' own iteration order (a
+  /// `LinkedHashMap`, so it preserves `bodyDisplayNames`' already-correct
+  /// "Body 1", "Body 2", ... insertion order) rather than re-sorting
+  /// [bodyIds] here by the display name *string* - "Body 10" would
+  /// otherwise sort before "Body 2".
+  Widget _buildBodiesSection(BuildContext context) {
+    final orderedIds = bodyNames.keys.where(bodyIds.contains).toList();
     return ExpansionTile(
       initiallyExpanded: true,
-      leading: Icon(icon),
-      title: Text(title),
-      children: [for (final feature in groupFeatures) _buildFeatureTile(context, feature)],
+      leading: const Icon(Icons.view_in_ar),
+      title: const Text('Bodies'),
+      children: [
+        for (final bodyId in orderedIds)
+          ListTile(
+            leading: const Icon(Icons.view_in_ar_outlined),
+            title: Text(bodyNames[bodyId] ?? bodyId),
+            onTap: () => onBodyTap(bodyId),
+          ),
+      ],
     );
   }
 
-  /// One Feature's row - unchanged in behaviour/appearance from before B3,
-  /// just factored out so both a grouped section and the plain "everything
-  /// else" (`other`) list below it share the exact same tile. [features]
-  /// (the full, ungrouped list - not whichever group [feature] happens to
-  /// be rendered under) is what [featureDisplayName]'s per-type ordinal
-  /// numbering ("Extrude 2") is computed against, so numbering is
-  /// unaffected by which display group a Feature lands in - B3 is a
-  /// display grouping only, per this prompt's own requirement, and must
-  /// not change what a Feature is *called*.
+  /// The Features section - always shown (even if empty, which can only
+  /// happen for a brand-new Part with nothing in it yet - an
+  /// [ExpansionTile] with no children is a normal, sane empty state, not an
+  /// error one).
+  Widget _buildFeaturesSection(BuildContext context) {
+    return ExpansionTile(
+      initiallyExpanded: true,
+      leading: const Icon(Icons.list_alt),
+      title: const Text('Features'),
+      children: [for (final feature in features) _buildFeatureTile(context, feature)],
+    );
+  }
+
+  /// One Feature's row inside the Features section - unchanged in
+  /// behaviour/appearance from before B3's revision.
   Widget _buildFeatureTile(BuildContext context, FeatureDto feature) {
     final index = features.indexWhere((f) => f.id == feature.id);
     final selected = feature.id == selectedFeatureId;
