@@ -15,12 +15,14 @@ import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'mesh_geometry.dart';
+import 'override_stack.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'selection_context_panel.dart';
+import 'selection_filter.dart';
 import 'selection_hit_test.dart' show SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
@@ -106,7 +108,52 @@ class _PartScreenState extends State<PartScreen> {
   /// below which instead shows a toolbar confirmation step. Exited without
   /// creating anything by the Cancel button, a background tap, or the
   /// device back gesture (see [_cancelPlaneSelectionMode]).
-  bool _planeSelectionMode = false;
+  ///
+  /// Prompt A2: backed by [OverrideStack] rather than a plain field - this
+  /// mode has always only ever had one level (push once on entry, pop once
+  /// on exit), so migrating it is a real-world correctness check on the new
+  /// primitive (see `OverrideStack`'s doc comment) with no behaviour change:
+  /// [_planeSelectionMode] itself stays a read-only `bool` getter, so every
+  /// existing read site (`if (_planeSelectionMode)` etc.) is untouched.
+  final OverrideStack<bool> _planeSelectionModeStack = OverrideStack<bool>();
+  bool get _planeSelectionMode => _planeSelectionModeStack.isActive;
+
+  /// Prompt A2: which entity kinds the 3D viewport's Selection mode
+  /// hit-testing considers - the View submenu's four toggles write this.
+  /// Session-only, no persistence - same convention as [SketchScreen]'s
+  /// Canvas Colour/Transparency toggles, not [ViewPreferences]'s
+  /// `shared_preferences`-backed one.
+  SelectionFilterState _selectionFilterBase = SelectionFilterState.defaults;
+
+  /// Prompt A2: a stack of temporary [SelectionFilterState] overrides any
+  /// modal flow can push directly via `.push(state)`/`.pop()` (e.g. a future
+  /// Boss/Cut target-body picker in Prompt A4 pushing "bodies only,
+  /// everything else off"), the same way [_planeSelectionModeStack] above is
+  /// driven - nothing pushes onto this yet in this prompt, which only builds
+  /// and exercises the primitive itself (see `override_stack_test.dart`).
+  /// [_selectionFilter] is always what hit-testing/the View submenu should
+  /// actually show: the top of this stack if active, else
+  /// [_selectionFilterBase].
+  final OverrideStack<SelectionFilterState> _selectionFilterOverrides =
+      OverrideStack<SelectionFilterState>();
+  SelectionFilterState get _selectionFilter =>
+      _selectionFilterOverrides.current ?? _selectionFilterBase;
+
+  void _setVertexFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(vertex: value));
+  }
+
+  void _setEdgeFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(edge: value));
+  }
+
+  void _setFaceFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(face: value));
+  }
+
+  void _setBodyFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(body: value));
+  }
 
   /// Feature ids hidden from the 3D viewport via the long-press
   /// Hide/Show action - client-side only, never sent to the backend.
@@ -409,7 +456,7 @@ class _PartScreenState extends State<PartScreen> {
   /// drawer, which must no longer open on a selection tap.
   void _onPlaneTap(ReferencePlaneKind plane) {
     if (_planeSelectionMode) {
-      setState(() => _planeSelectionMode = false);
+      setState(() => _planeSelectionModeStack.pop());
       _addSketchFeature(plane: plane);
       return;
     }
@@ -442,7 +489,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _selectedPlane = null;
       _toolbarOpen = false;
-      _planeSelectionMode = false;
+      _planeSelectionModeStack.pop();
     });
     // Prompt D: a background tap is as much a "never mind" gesture for the
     // Sketch picker as it already is for plane-selection mode above.
@@ -459,7 +506,7 @@ class _PartScreenState extends State<PartScreen> {
     switch (action) {
       case AddButtonMenuAction.newSketch:
         setState(() {
-          _planeSelectionMode = true;
+          _planeSelectionModeStack.push(true);
           _selectedPlane = null;
           _toolbarOpen = false;
           _featureTreeVisible = false;
@@ -514,7 +561,7 @@ class _PartScreenState extends State<PartScreen> {
       _sketchPickerActive = true;
       _featureTreeVisible = true;
       _toolbarOpen = false;
-      _planeSelectionMode = false;
+      _planeSelectionModeStack.pop();
       _pickableSketchIds = {};
     });
     _refreshPickableSketchIds();
@@ -585,7 +632,7 @@ class _PartScreenState extends State<PartScreen> {
   /// the mode's Cancel button and the device back gesture (see [build]'s
   /// `PopScope`).
   void _cancelPlaneSelectionMode() {
-    setState(() => _planeSelectionMode = false);
+    setState(() => _planeSelectionModeStack.pop());
   }
 
   /// Toggles [_referencePlanesHidden] (Stage 10b) - the toolbar's
@@ -995,6 +1042,7 @@ class _PartScreenState extends State<PartScreen> {
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
                   onClearSelection: _clearSelectedEntities,
+                  selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,
                   onFarClipChanged: _onFarClipChanged,
@@ -1075,6 +1123,11 @@ class _PartScreenState extends State<PartScreen> {
                     onPerspectiveChanged: _onPerspectiveChanged,
                     farClip: _farClip,
                     onFarClipChanged: _onFarClipChanged,
+                    selectionFilter: _selectionFilter,
+                    onVertexFilterChanged: _setVertexFilter,
+                    onEdgeFilterChanged: _setEdgeFilter,
+                    onFaceFilterChanged: _setFaceFilter,
+                    onBodyFilterChanged: _setBodyFilter,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)

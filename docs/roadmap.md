@@ -119,7 +119,20 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   path to real `pythonocc-core` (Docker Hub, `micro.mamba.pm`, and
   out-of-scope GitHub assets are all policy-blocked here) — it proves the
   API contract, not geometric correctness, which is what CI's real-OCCT
-  run already covers. A2 (client selection filter framework) is next.
+  run already covers. A2 (client selection filter framework + push/pop
+  override mechanism) landed next — see `docs/status.md`'s 2026-07-03
+  entry. Bootstrapped a real Flutter 3.44.4 stable SDK this session
+  (`storage.googleapis.com` was reachable): `flutter analyze` is clean
+  (zero new issues) and the framework's pure-Dart pieces
+  (`OverrideStack<T>`, `SelectionFilterState`) have real passing tests
+  (15/15). **Still outstanding before A3 begins: the on-device check** —
+  confirming the View submenu's four toggles actually appear and that
+  hit-testing visibly respects them — since `PartToolbar`/`PartScreen`
+  transitively pull in `flutter_scene` (via `orbit_camera.dart`), which
+  can't even load under this stable SDK due to the pre-existing
+  `flutter_gpu` mismatch tracked above ("No Flutter CI job"/the C3 bug) —
+  the same constraint that blocked 17 test files pre-A2 blocks widget-level
+  verification of A2's own UI wiring too, not something A2 introduced.
   Prompt B (sub-shape refs, tree categories, cascade delete,
   earlier-feature editing) starts only after A4.
 - **Pre-existing, unrelated test failures flagged but not fixed** across

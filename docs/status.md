@@ -1159,3 +1159,148 @@ afterward — nothing from this pass is committed to the repository.
 (278/278 across both architectures) and the manual API sanity pass above
 has independently confirmed the same endpoints respond correctly over a
 real HTTP connection. A2 can begin.
+
+---
+
+## 2026-07-03 — Prompt A2: client selection filter framework + push/pop override mechanism
+
+Client-only, no backend changes. Wires up vertex/edge/face/body selection
+filter toggles in the 3D viewport's View submenu and builds a reusable
+push/pop override primitive - no modal flow consumes the override yet
+(that's A4).
+
+**Correction to A2's own premise**: the prompt describes "wiring up the
+existing placeholder selection-type filter toggles... in the 3D viewport
+menu." Investigated first and found this isn't accurate - a disabled
+"Selection Filter" placeholder *did* exist at one point but was removed
+during the box-selection cleanup (see this doc's 2026-06-30 entry,
+"`part_toolbar.dart`: removed... the entire `_buildSelectionMenu`
+ExpansionTile... along with its call site"). Confirmed via grep across
+`part_toolbar.dart`/`part_screen.dart`/`part_viewport.dart`: no vertex/
+edge/face/body toggle UI, no `CheckboxListTile`/similar, anywhere. Built
+the whole thing from scratch rather than wiring up something already
+there - flagging this since the prompt's premise didn't match the
+codebase, not silently treating it as "found and wired" when it wasn't.
+
+**Filter state** (`client/lib/viewport3d/selection_filter.dart`, new):
+`SelectionFilterState` - immutable value class, `vertex`/`edge`/`face`/
+`body` bools, `SelectionFilterState.defaults` (vertex/edge/face on, body
+off, matching hit-testing's pre-A2 behaviour of always considering
+vertex/edge/face). Session-only: lives as a plain field
+(`_PartScreenState._selectionFilterBase`) mutated via `setState`, the same
+convention `SketchScreen`'s Canvas Colour/Transparency toggles use - not
+`ViewPreferences`, which is the *persisted*, `shared_preferences`-backed
+convention and deliberately not what this prompt asked for.
+
+**Push/pop override mechanism** (`client/lib/viewport3d/override_stack.dart`,
+new): `OverrideStack<T>` - generic, zero-Flutter-dependency push/pop stack;
+`current`/`isActive`/`depth`/`push`/`pop`/`clear`. `_PartScreenState` owns
+`_selectionFilterOverrides = OverrideStack<SelectionFilterState>()`;
+`_selectionFilter` (what hit-testing/the View submenu actually use) is
+always `_selectionFilterOverrides.current ?? _selectionFilterBase`. Nothing
+pushes onto this stack yet in A2 (that's A4's Boss/Cut target-body picker) -
+per the prompt's own scope note, this prompt only builds and exercises the
+primitive itself, so no dead "push an override" UI/method was added
+speculatively; A4 will call `.push()`/`.pop()` on this field directly, the
+same way the migration below already does.
+
+**Migrated plane-selection mode to `OverrideStack<bool>`** (Stage 10b's
+`_planeSelectionMode`, `part_screen.dart`): per the prompt's explicit
+invitation ("if migrating plane-selection mode itself to use this new
+primitive is straightforward, do it... a real-world correctness check on
+the mechanism"). Turned out straightforward: this mode only ever had one
+push/one pop, at exactly 5 call sites (1 entry, 4 "exit" sites - confirm-tap,
+background-tap, sketch-picker-entry defensively closing it, and the
+explicit Cancel handler). Replaced the plain `bool` field with
+`final OverrideStack<bool> _planeSelectionModeStack`, kept
+`_planeSelectionMode` as a read-only getter (`.isActive`) so every existing
+*read* site (`if (_planeSelectionMode)`, the `PopScope.canPop` check, the
+banner-visibility check) is untouched, and replaced only the 5 write sites
+(`= true` → `.push(true)`, `= false` → `.pop()`, `.pop()`'s existing
+no-op-on-empty semantics matching the old idempotent-`= false`
+behaviour exactly). No behaviour change intended or expected.
+
+**Hit-test gating** (`client/lib/viewport3d/selection_hit_test.dart`):
+`hitTestMeshEntities` gained a `filter` parameter
+(`SelectionFilterState filter = SelectionFilterState.defaults`) - a kind
+whose flag is off is skipped *entirely* (not merely deprioritized), so
+turning vertices off lets a hover land on an edge/face a nearby vertex
+would otherwise have won outright. `PartViewport` gained a
+`selectionFilter` prop, threaded through `_recomputeHover` (the single
+choke point both hover-highlight and tap-select-commit already read from -
+see `_hoverHit`/`_commitSelection` - so gating it here covers both without
+touching either). `SelectionFilterState.body` has no effect on hit-testing
+at all - there's no body-level hit-test yet (Prompt A3) - so the toggle
+exists and does nothing observable, per the prompt's explicit instruction
+not to stub fake body-selection behaviour early.
+
+**View submenu UI** (`part_toolbar.dart`): four new toggle rows ("Vertices"/
+"Edges"/"Faces"/"Bodies") added to `_buildViewMenu`, right after the
+render-mode picker. Used the checkbox-icon `ListTile` convention this exact
+menu's "Perspective" entry already established (`leading: Icon(value ?
+Icons.check_box : Icons.check_box_outline_blank)`), not the `SwitchListTile`
+`SketchScreen`'s View submenu uses elsewhere - matching the local file's
+own existing convention over the sibling screen's, since they're two
+different menus that happen to share a name.
+
+**Testing.** No Flutter/Dart SDK was present in this sandbox (this
+project's recurring caveat, stated at the top of this doc) - bootstrapped
+one this session: Flutter 3.44.4 stable, downloaded directly from
+`storage.googleapis.com`'s release manifest (reachable through the proxy,
+confirmed via `curl`; SHA256 verified against the manifest before
+extracting), the same version a past session used successfully. This
+allowed **real** `flutter analyze` and `flutter test` runs, not just
+`ast.parse`-equivalent static checks:
+- `flutter analyze`: **zero new issues** anywhere in `lib/` or `test/` -
+  the only findings are 3 pre-existing `avoid_print` infos in
+  `part_viewport.dart` (unrelated debug logging from the C3 investigation)
+  and 2 pre-existing errors in `selection_list_drawer_test.dart` (a
+  `const Set` of `SelectionEntityRef`, a type with custom `==`/`hashCode` -
+  not a file this prompt touched).
+- New file `client/test/override_stack_test.dart` (9 tests) and
+  `client/test/selection_filter_test.dart` (6 tests) - both **pure Dart,
+  zero `flutter_scene`/`flutter_gpu` dependency** - ran for real:
+  **15/15 passed.** Covers empty-stack state, single push/pop, nested
+  push/pop restoring in exact order, no-op pop on empty, `clear`,
+  re-use after fully draining, genericity, `SelectionFilterState.defaults`,
+  `copyWith` (both "changes only the named field" and "omitted fields keep
+  their current value, not a default"), and value equality.
+- New filter-gating cases added to `client/test/selection_hit_test_test.dart`
+  (vertex-off falls through to edge even when nearer; vertex+edge-off falls
+  through to face; everything-off always returns null even where geometry
+  exists; edge-off alone doesn't disturb vertex priority; face-off turns a
+  would-be face fallback into `null`) - **`flutter analyze`-clean but not
+  executed**: this file (like `mesh_geometry_test.dart`,
+  `clip_distance_test.dart`, `orbit_camera_test.dart`, `part_screen_test.dart`,
+  `part_viewport_test.dart`, `reference_planes_test.dart`,
+  `selection_actions_test.dart`, `selection_list_drawer_test.dart`,
+  `sketch_geometry_3d_test.dart`, `triad_test.dart`, and 6 more - 17 files
+  total) fails to *load* under this Flutter 3.44.4 stable SDK because it
+  transitively imports `flutter_scene` (via `mesh_geometry.dart`, itself
+  needed for `edgeSegmentsFromMesh`), and `flutter_scene` 0.18.1 requires
+  `flutter_gpu` APIs that don't exist on the stable channel this SDK
+  ships (`ColorAttachment`/`vertexLayout`/`TextureCompressionFamily`/etc
+  compile errors, all inside `flutter_scene`'s own source, not this
+  project's) - **the exact same pre-existing constraint already documented
+  earlier in this file** ("`flutter test` has been blocked by the same
+  pre-existing `flutter_gpu` mismatch... even when a stable SDK was
+  available"). Confirmed this isn't something A2 introduced: every one of
+  the 17 failing-to-load files either predates this prompt entirely
+  (`mesh_geometry_test.dart`, `triad_test.dart`, etc. - files this prompt
+  never touched) or fails for the identical transitive-import reason
+  (`selection_hit_test_test.dart` imports `selection_hit_test.dart`, which
+  has imported `mesh_geometry.dart` since long before this prompt).
+  Full suite: **167 passed, 17 failed-to-load** (all 17 pre-existing,
+  0 newly broken).
+- Toggle-wiring/on-device behaviour (the View submenu's four entries
+  actually appearing and flipping state, hit-testing visibly respecting
+  them on a real device) could not be exercised here for the same
+  `flutter_scene`/`flutter_gpu` reason - `PartToolbar`/`PartScreen`
+  transitively import `flutter_scene` via `orbit_camera.dart`'s
+  `kDefaultFarClip`, so there's no way to widget-test even the toolbar in
+  isolation without hitting the same compile wall. Per the prompt's own
+  testing section, this is exactly the on-device check that's still
+  outstanding.
+
+Not started/stopped here per A2's own instructions: A3 (body as a
+selectable entity) and everything after it.
