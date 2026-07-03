@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
-from app.document.extrude import compute_part_bodies
+from app.document.extrude import base_feature_id, compute_part_bodies
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.models import ExtrudeFeature, ExtrudeType, Feature, Part, SketchFeature
 from app.document.schemas import (
@@ -96,8 +96,12 @@ def _validate_target_body_ids(
     every other validation error in this API uses, e.g.
     `_validate_extrude_distances`'s 400). Every named id (Boss or Cut) must
     resolve to an ExtrudeFeature already in this Part - a Body's id is
-    always the id of the ExtrudeFeature that created (or, after a merge,
-    still identifies) it, see app.document.models.ExtrudeFeature."""
+    always derived from the id of the ExtrudeFeature that created (or,
+    after a merge, still identifies) it, possibly with a `#N` split-index
+    suffix (see app.document.extrude.base_feature_id) if that operation
+    produced more than one disconnected solid - `base_feature_id` strips
+    that suffix before the lookup, so a composite id round-tripped from a
+    prior `/mesh` response validates the same way a plain one does."""
     if extrude_type == ExtrudeType.CUT and not target_body_ids:
         raise HTTPException(
             status_code=422,
@@ -105,7 +109,7 @@ def _validate_target_body_ids(
             "from an empty list",
         )
     for target_id in target_body_ids:
-        target_feature = part.get_feature(target_id)
+        target_feature = part.get_feature(base_feature_id(target_id))
         if not isinstance(target_feature, ExtrudeFeature):
             raise HTTPException(
                 status_code=400,

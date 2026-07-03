@@ -486,7 +486,7 @@ def test_extrude_on_sketch_with_two_disjoint_squares_is_accepted():
     assert response.status_code == 201
 
 
-def test_extruding_two_disjoint_squares_produces_a_compound_of_two_solids():
+def test_extruding_two_disjoint_squares_produces_two_separate_single_solid_bodies():
     from OCC.Core.TopAbs import TopAbs_SOLID
     from OCC.Core.TopExp import TopExp_Explorer
 
@@ -499,47 +499,55 @@ def test_extruding_two_disjoint_squares_produces_a_compound_of_two_solids():
     _add_square(sketch_feature["sketch_id"], 100.0, 0.0, 10.0)
     extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
 
-    # A1: a single Boss (even one that produces a multi-solid compound via
-    # C2's MultiProfile) is still exactly one Body, keyed by that Boss
-    # Feature's own id.
+    # Amendment to A1: a Body is always one maximally-connected solid - a
+    # single Boss that produces a multi-solid compound via C2's
+    # MultiProfile (two disjoint squares) now splits into two separate
+    # Bodies, `#0`/`#1` split-index suffixes on the Boss Feature's own id,
+    # each containing exactly one solid.
     bodies = compute_part_bodies(get_part_or_404(part["id"]))
 
-    assert set(bodies.keys()) == {extrude["id"]}
-    solid = bodies[extrude["id"]]
-    explorer = TopExp_Explorer(solid, TopAbs_SOLID)
-    solid_count = 0
-    while explorer.More():
-        solid_count += 1
-        explorer.Next()
-    assert solid_count == 2
+    assert set(bodies.keys()) == {f"{extrude['id']}#0", f"{extrude['id']}#1"}
+    for solid in bodies.values():
+        explorer = TopExp_Explorer(solid, TopAbs_SOLID)
+        solid_count = 0
+        while explorer.More():
+            solid_count += 1
+            explorer.Next()
+        assert solid_count == 1
 
 
-def test_extruding_two_disjoint_squares_produces_a_non_empty_computed_mesh():
+def test_extruding_two_disjoint_squares_produces_two_separate_computed_meshes():
     part = _create_part()
     sketch_feature = _create_sketch_feature(part["id"])
     _add_square(sketch_feature["sketch_id"], 0.0, 0.0, 10.0)
     _add_square(sketch_feature["sketch_id"], 100.0, 0.0, 10.0)
-    _create_extrude_feature(part["id"], sketch_feature["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
 
-    body = _single_body(part["id"])
+    bodies = _get_bodies(part["id"])
 
-    assert body["source"] == "computed"
-    # Two separate 10x10x10 boxes: 12 faces total (6 each), 24 triangles.
-    assert len(set(body["mesh"]["face_ids"])) == 12
-    assert len(body["mesh"]["triangle_indices"]) == 24
+    assert len(bodies) == 2
+    assert {b["body_id"] for b in bodies} == {f"{extrude['id']}#0", f"{extrude['id']}#1"}
+    for body in bodies:
+        assert body["source"] == "computed"
+        # A single 10x10x10 box: 6 faces, 12 triangles.
+        assert len(set(body["mesh"]["face_ids"])) == 6
+        assert len(body["mesh"]["triangle_indices"]) == 12
 
 
-def test_multi_profile_sub_profile_with_a_hole_produces_a_hollow_solid_for_that_sub_profile():
+def test_multi_profile_sub_profile_with_a_hole_produces_two_separate_bodies():
     part = _create_part()
     sketch_feature = _create_sketch_feature(part["id"])
     sketch_id = sketch_feature["sketch_id"]
     _add_square(sketch_id, 0.0, 0.0, 20.0)
     _add_square_hole(sketch_id, 5.0, 5.0, 5.0)
     _add_square(sketch_id, 100.0, 0.0, 10.0)
-    _create_extrude_feature(part["id"], sketch_feature["id"])
+    extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
 
-    body = _single_body(part["id"])
+    bodies = _get_bodies(part["id"])
 
-    assert body["source"] == "computed"
-    # Holed square (10 faces, see above) + plain square (6 faces) = 16.
-    assert len(set(body["mesh"]["face_ids"])) == 16
+    assert len(bodies) == 2
+    face_counts = sorted(len(set(b["mesh"]["face_ids"])) for b in bodies)
+    # Holed square (10 faces, see above) and plain square (6 faces) are now
+    # two separate Bodies rather than one compound's combined 16.
+    assert face_counts == [6, 10]
+    assert {b["body_id"] for b in bodies} == {f"{extrude['id']}#0", f"{extrude['id']}#1"}

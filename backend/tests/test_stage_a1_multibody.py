@@ -89,6 +89,22 @@ def _boss(part_id: str, *, x0: float, y0: float, size: float = 10.0) -> dict:
     return response.json()
 
 
+def _add_rect(sketch_id: str, x0: float, y0: float, w: float, h: float) -> None:
+    """Like `_add_square` but supports a non-square width/height - needed
+    for a full-through slot cut wide/tall enough to guarantee it severs a
+    Body clean in two (see the split-on-Cut tests below)."""
+    corners = [
+        client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": x, "y": y}).json()
+        for x, y in [(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)]
+    ]
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        response = client.post(
+            f"/sketch/sketches/{sketch_id}/lines",
+            json={"start_point_id": a["id"], "end_point_id": b["id"]},
+        )
+        assert response.status_code == 201
+
+
 # --- Boss: new body vs fuse-into-one vs fuse-into-multiple ------------------
 
 
@@ -293,3 +309,87 @@ def test_response_target_body_ids_round_trips_on_the_extrude_feature():
 
     fetched = client.get(f"/document/parts/{part['id']}/features/{response.json()['id']}").json()
     assert fetched["target_body_ids"] == [boss["id"]]
+
+
+# --- Amendment: a Body is always one maximally-connected solid -------------
+
+
+def test_cut_that_severs_a_body_produces_two_separate_bodies():
+    part = _create_part()
+    # A 20x10x10 box (x:0-20, y:0-10, z:0-10).
+    boss_sketch = _create_sketch_feature(part["id"])
+    _add_rect(boss_sketch["sketch_id"], 0.0, 0.0, 20.0, 10.0)
+    boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
+
+    # A full-through slot (x:8-12, generously overshooting y and z) severs
+    # the box into two disconnected halves.
+    cut_sketch = _create_sketch_feature(part["id"])
+    _add_rect(cut_sketch["sketch_id"], 8.0, -5.0, 4.0, 20.0)
+    cut_response = _create_extrude_feature(
+        part["id"],
+        cut_sketch["id"],
+        extrude_type="cut",
+        start_distance=-5.0,
+        end_distance=15.0,
+        target_body_ids=[boss["id"]],
+    )
+    assert cut_response.status_code == 201
+
+    bodies = _get_bodies(part["id"])
+
+    assert len(bodies) == 2
+    assert {b["body_id"] for b in bodies} == {f"{boss['id']}#0", f"{boss['id']}#1"}
+    for body in bodies:
+        assert body["source"] == "computed"
+        # Each half is still a simple rectangular box - 6 faces.
+        assert len(set(body["mesh"]["face_ids"])) == 6
+
+
+def test_composite_body_id_from_a_split_can_be_targeted_by_a_later_cut():
+    """A2A3-adjacent regression check: target_body_ids must accept a
+    composite `#N` id round-tripped from a prior /mesh response, not just
+    a plain Feature id - _validate_target_body_ids strips the suffix
+    before resolving the owning Feature."""
+    part = _create_part()
+    boss_sketch = _create_sketch_feature(part["id"])
+    _add_rect(boss_sketch["sketch_id"], 0.0, 0.0, 20.0, 10.0)
+    boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
+
+    slot_sketch = _create_sketch_feature(part["id"])
+    _add_rect(slot_sketch["sketch_id"], 8.0, -5.0, 4.0, 20.0)
+    _create_extrude_feature(
+        part["id"],
+        slot_sketch["id"],
+        extrude_type="cut",
+        start_distance=-5.0,
+        end_distance=15.0,
+        target_body_ids=[boss["id"]],
+    )
+    left_id = f"{boss['id']}#0"
+    right_id = f"{boss['id']}#1"
+    before = {b["body_id"]: b["mesh"]["vertices"] for b in _get_bodies(part["id"])}
+
+    # A second Cut, targeting only the left half's composite id.
+    notch_sketch = _create_square_sketch_feature(part["id"], x0=1.0, y0=1.0, size=2.0)
+    notch_response = _create_extrude_feature(
+        part["id"], notch_sketch["id"], extrude_type="cut", target_body_ids=[left_id]
+    )
+    assert notch_response.status_code == 201
+
+    after = {b["body_id"]: b["mesh"]["vertices"] for b in _get_bodies(part["id"])}
+
+    assert set(after.keys()) == {left_id, right_id}
+    assert after[left_id] != before[left_id]
+    # The untargeted right half is completely unaffected.
+    assert after[right_id] == before[right_id]
+
+
+def test_boss_naming_a_composite_id_whose_base_feature_does_not_exist_is_rejected():
+    part = _create_part()
+    sketch = _create_square_sketch_feature(part["id"])
+
+    response = _create_extrude_feature(
+        part["id"], sketch["id"], extrude_type="boss", target_body_ids=["does-not-exist#0"]
+    )
+
+    assert response.status_code == 400
