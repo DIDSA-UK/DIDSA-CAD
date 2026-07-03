@@ -9,6 +9,7 @@ brief's "Knows nothing about Sketch internals" requirement for Extrude.
 
 import logging
 
+from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
@@ -21,12 +22,20 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
-from OCC.Core.TopAbs import TopAbs_REVERSED, TopAbs_SOLID
-from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
+from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
+from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import GraphNode, topological_order
-from app.document.models import ExtrudeFeature, ExtrudeType, Part, SketchFeature
+from app.document.models import (
+    ExtrudeFeature,
+    ExtrudeType,
+    Part,
+    SketchFeature,
+    SubShapeRef,
+    SubShapeType,
+)
 from app.sketch.models import Circle, Plane, Sketch
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404
@@ -379,3 +388,64 @@ def compute_part_bodies(
                 _register_solids(bodies, target_id, cut_result)
 
     return bodies
+
+
+_TOPABS_FOR_SUBSHAPE_TYPE = {
+    SubShapeType.EDGE: TopAbs_EDGE,
+    SubShapeType.FACE: TopAbs_FACE,
+}
+
+
+def _missing_reference(ref: SubShapeRef) -> HTTPException:
+    """B1: the structured `missing_reference` validation error `resolve_
+    subshape` raises whenever `ref` can no longer be resolved - matches
+    app.document.router._validate_target_body_ids's established envelope
+    (a plain `HTTPException(status_code=..., detail=...)`, no custom wrapper
+    type), just with a structured `detail` dict instead of a plain string,
+    per B1's own testing checklist (the failure is specific enough - which
+    body, which shape kind, which index - that a client can offer "please
+    reselect" instead of a generic message). 422, matching Cut's own
+    already-established "structurally invalid, not just malformed" use of
+    422 in `_validate_target_body_ids`."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "type": "missing_reference",
+            "body_id": ref.body_id,
+            "shape_type": ref.shape_type.value,
+            "index": ref.index,
+        },
+    )
+
+
+def resolve_subshape(
+    part: Part, ref: SubShapeRef, hidden_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """B1: resolves `ref` against `part`'s *current* recomputed bodies (via
+    `compute_part_bodies`, not a cached shape from whenever `ref` was first
+    captured) - re-walks the same `topexp.MapShapes` traversal used to
+    capture `ref.index` in the first place, over whichever Body currently
+    has that id. Works against any body_id in the Part's history, not just
+    the most recently computed one, since `compute_part_bodies` already
+    recomputes every Body regardless of how far upstream it sits.
+
+    Fails closed - raises the structured `missing_reference` HTTPException
+    above (see `_missing_reference`) rather than falling back to some
+    "closest" sub-shape - whenever `ref.body_id` no longer exists among the
+    Part's current Bodies (deleted, or hidden via `hidden_feature_ids`), or
+    `ref.index` is out of range for that Body's current sub-shape count of
+    `ref.shape_type` (its upstream topology changed since `ref` was
+    captured). This is a deliberate product choice, not a placeholder - a
+    cheap, deterministic enumeration index is cheap to ship and cheap to
+    fall back from later if it proves too fragile in practice."""
+    bodies = compute_part_bodies(part, hidden_feature_ids)
+    body = bodies.get(ref.body_id)
+    if body is None:
+        raise _missing_reference(ref)
+
+    shape_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(body, _TOPABS_FOR_SUBSHAPE_TYPE[ref.shape_type], shape_map)
+    if not (0 <= ref.index < shape_map.Size()):
+        raise _missing_reference(ref)
+
+    return shape_map.FindKey(ref.index + 1)

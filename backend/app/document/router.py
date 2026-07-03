@@ -48,6 +48,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             id=feature.id,
             sketch_id=feature.sketch_id,
             locked=part.is_locked(feature.id),
+            produces=feature.produces,
         )
     if isinstance(feature, ExtrudeFeature):
         return ExtrudeFeatureResponse(
@@ -58,6 +59,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             end_distance=feature.end_distance,
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
+            produces=feature.produces,
         )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
