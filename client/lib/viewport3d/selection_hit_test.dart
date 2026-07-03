@@ -39,27 +39,41 @@ const double kSelectionHitRadiusPixels = 12.5;
 /// point target - extra forgiveness over an edge's full line segment).
 const double kVertexSelectionHitRadiusPixels = kSelectionHitRadiusPixels;
 
-enum SelectionEntityKind { face, edge, vertex }
+/// Prompt A3 added `body` - a whole Body (Prompt A1), selected as a unit
+/// rather than one of its individual faces/edges/vertices.
+enum SelectionEntityKind { face, edge, vertex, body }
 
 /// Identifies one selectable mesh entity - a [SelectionEntityKind] plus the
 /// stable id `MeshDto.faceIds`/`edgeIds`/`topologyVertexIds` assigns it.
 /// Equality/hashCode are value-based so this can be used as a `Set` element
 /// (the selection set) or a `Map` key.
+///
+/// Prompt A3: [bodyId] identifies which Body this entity belongs to -
+/// required because those `MeshDto` ids are only unique *within* one
+/// Body's own tessellation (Prompt A1), not globally across a Part's whole
+/// `/mesh` response. Defaults to `''` for the single-mesh-scoped functions
+/// below ([hitTestVertices]/[hitTestEdges]/[hitTestFaces]/
+/// [hitTestMeshEntities]), which predate A3 and have no Body concept of
+/// their own - only [hitTestBodies] (the real multi-body entry point
+/// [PartViewport] uses) ever produces a meaningful, non-empty [bodyId].
+/// For a [SelectionEntityKind.body] entity, [bodyId] alone is the whole
+/// identity - [id] is always `0` and carries no meaning.
 class SelectionEntityRef {
   final SelectionEntityKind kind;
+  final String bodyId;
   final int id;
 
-  const SelectionEntityRef({required this.kind, required this.id});
+  const SelectionEntityRef({required this.kind, this.bodyId = '', this.id = 0});
 
   @override
   bool operator ==(Object other) =>
-      other is SelectionEntityRef && other.kind == kind && other.id == id;
+      other is SelectionEntityRef && other.kind == kind && other.bodyId == bodyId && other.id == id;
 
   @override
-  int get hashCode => Object.hash(kind, id);
+  int get hashCode => Object.hash(kind, bodyId, id);
 
   @override
-  String toString() => 'SelectionEntityRef($kind, $id)';
+  String toString() => 'SelectionEntityRef($kind, bodyId: $bodyId, $id)';
 }
 
 /// A hit-test result: which entity, how far along the ray it was found (for
@@ -328,7 +342,9 @@ List<(vm.Vector3, vm.Vector3, vm.Vector3)> faceTrianglesForId(MeshDto mesh, int 
 /// weren't in the mesh), not merely deprioritized, so e.g. turning vertices
 /// off lets a hover land on an edge/face that a nearby vertex would
 /// otherwise have won outright. [SelectionFilterState.body] has no effect
-/// here - there is no body-level hit-test yet (Prompt A3).
+/// here - this function has no Body concept at all (it only ever sees one
+/// mesh at a time); see [hitTestBodies] for the real multi-body entry
+/// point (Prompt A3) that does honor it.
 HoverHit? hitTestMeshEntities({
   required vm.Ray ray,
   required Size viewportSize,
@@ -361,4 +377,93 @@ HoverHit? hitTestMeshEntities({
 
   if (!filter.face) return null;
   return hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
+}
+
+/// Prompt A3: the real multi-body hit-test entry point [PartViewport]
+/// uses - generalizes [hitTestMeshEntities] across every currently-visible
+/// Body (Prompt A1's `/mesh` array), tagging the winning entity with which
+/// Body it came from (see [SelectionEntityRef.bodyId]) since ids are only
+/// body-local.
+///
+/// Vertex/edge priority is unchanged (nearest in-range vertex always wins;
+/// then nearest in-range edge) - just extended from "nearest within one
+/// mesh" to "nearest across every Body". Face-vs-Body resolution is new:
+/// [SelectionFilterState.body] is not an independent fourth hit-test tier
+/// alongside vertex/edge/face - toggling it on changes what a face
+/// intersection *means*, rather than adding a competing kind of its own. A
+/// face-ray-intersection test runs whenever either [SelectionFilterState.face]
+/// or [SelectionFilterState.body] is on (so a future picking mode that
+/// forces "bodies only, everything else off" - see Prompt A4 - still gets
+/// a working ray-vs-geometry test even with `face` itself off), and if
+/// [SelectionFilterState.body] is on, the winning triangle's owning Body is
+/// resolved and returned as a [SelectionEntityKind.body] entity instead of
+/// the tapped [SelectionEntityKind.face] - Body deliberately takes
+/// precedence over a plain face pick whenever both are enabled, since
+/// toggling Body on is specifically a request for the coarser granularity.
+HoverHit? hitTestBodies({
+  required vm.Ray ray,
+  required Size viewportSize,
+  required List<BodyMeshDto> bodies,
+  double radiusPixels = kSelectionHitRadiusPixels,
+  double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
+  SelectionFilterState filter = SelectionFilterState.defaults,
+}) {
+  HoverHit taggedWithBody(HoverHit hit, String bodyId) => HoverHit(
+        entity: SelectionEntityRef(kind: hit.entity.kind, bodyId: bodyId, id: hit.entity.id),
+        rayT: hit.rayT,
+        pixelDistance: hit.pixelDistance,
+      );
+
+  HoverHit? bestVertex;
+  HoverHit? bestEdge;
+  HoverHit? bestFace;
+  String? bestFaceBodyId;
+
+  for (final body in bodies) {
+    final mesh = body.mesh;
+    if (filter.vertex) {
+      final hit = hitTestVertices(
+        ray,
+        viewportSize,
+        topologyVerticesFromMesh(mesh),
+        mesh.topologyVertexIds,
+        radiusPixels: vertexRadiusPixels,
+      );
+      if (hit != null && (bestVertex == null || hit.pixelDistance! < bestVertex.pixelDistance!)) {
+        bestVertex = taggedWithBody(hit, body.bodyId);
+      }
+    }
+    if (filter.edge) {
+      final hit = hitTestEdges(
+        ray,
+        viewportSize,
+        edgeSegmentsFromMesh(mesh),
+        mesh.edgeIds,
+        radiusPixels: radiusPixels,
+      );
+      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+        bestEdge = taggedWithBody(hit, body.bodyId);
+      }
+    }
+    if (filter.face || filter.body) {
+      final hit = hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
+      if (hit != null && (bestFace == null || hit.rayT < bestFace.rayT)) {
+        bestFace = hit;
+        bestFaceBodyId = body.bodyId;
+      }
+    }
+  }
+
+  if (bestVertex != null) return bestVertex;
+  if (bestEdge != null) return bestEdge;
+  if (bestFace == null) return null;
+
+  if (filter.body) {
+    return HoverHit(
+      entity: SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bestFaceBodyId!),
+      rayT: bestFace.rayT,
+    );
+  }
+  if (!filter.face) return null;
+  return taggedWithBody(bestFace, bestFaceBodyId!);
 }

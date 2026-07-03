@@ -63,7 +63,12 @@ class _PartScreenState extends State<PartScreen> {
 
   PartDto? _part;
   List<FeatureDto> _features = [];
-  MeshDto? _mesh;
+
+  /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
+  /// `/mesh` array) - was a single `MeshDto? _mesh` before this. Empty
+  /// (not the placeholder box) whenever the Part has no ExtrudeFeature yet
+  /// or every current Body is hidden - see [_refreshMesh].
+  List<BodyMeshDto> _bodies = [];
   String? _selectedFeatureId;
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
@@ -244,8 +249,11 @@ class _PartScreenState extends State<PartScreen> {
   /// Cancel knows what to delete. Null until the first preview update lands.
   String? _previewExtrudeFeatureId;
 
-  /// [_mesh]'s value from just before the panel opened, restored by Cancel.
-  MeshDto? _meshBeforeExtrude;
+  /// [_bodies]' value from just before the panel opened, restored by
+  /// Cancel. Null (as opposed to empty) means "never captured yet" -
+  /// [_cancelExtrude] falls back to [_refreshMesh] in that case, the same
+  /// distinction it made when this was a single nullable `MeshDto?`.
+  List<BodyMeshDto>? _meshBeforeExtrude;
 
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
@@ -347,7 +355,7 @@ class _PartScreenState extends State<PartScreen> {
       _part = part;
       debugPrint('[PartScreen] getPartMesh...');
       await _refreshMesh();
-      debugPrint('[PartScreen] getPartMesh done: ${_mesh?.vertices.length ?? 0} vertices');
+      debugPrint('[PartScreen] getPartMesh done: ${_bodies.length} body/bodies');
       await _refreshFeatures();
       await _refreshSketchGeometries();
       debugPrint('[PartScreen] refreshFeatures done');
@@ -367,18 +375,20 @@ class _PartScreenState extends State<PartScreen> {
   /// Part's geometry (extrude preview/confirm/cancel, cascade delete) or
   /// [_hiddenFeatureIds] itself (Hide/Show).
   ///
-  /// Discards the response entirely when its `source` is `"placeholder"`
-  /// (see `backend/app/document/router.py`'s `BRepPrimAPI_MakeBox(10,10,10)`
-  /// fallback for a Part with no ExtrudeFeature yet) rather than rendering
-  /// it - that placeholder box is a backend implementation detail to keep
-  /// the mesh endpoint's response shape uniform, not real geometry the user
-  /// created, and showing it as a stray cube in an otherwise-empty viewport
-  /// was confusing on-device.
+  /// Discards the response entirely when it's the placeholder box (Prompt
+  /// A1: a single-entry array, `body_id: "placeholder"`, `source:
+  /// "placeholder"` - see `backend/app/document/router.py`'s
+  /// `BRepPrimAPI_MakeBox(10,10,10)` fallback for a Part with no
+  /// ExtrudeFeature yet) rather than rendering it - that placeholder box is
+  /// a backend implementation detail to keep the mesh endpoint's response
+  /// shape uniform, not real geometry the user created, and showing it as a
+  /// stray cube in an otherwise-empty viewport was confusing on-device.
   Future<void> _refreshMesh() async {
     final part = _part;
     if (part == null) return;
     final response = await _api.getPartMesh(part.id, hiddenFeatureIds: _hiddenFeatureIds.toList());
-    _mesh = response.source == 'placeholder' ? null : response.mesh;
+    final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
+    _bodies = isPlaceholder ? [] : response;
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -743,7 +753,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _extrudeSketchFeature = sketchFeature;
       _previewExtrudeFeatureId = null;
-      _meshBeforeExtrude = _mesh;
+      _meshBeforeExtrude = _bodies;
       _extrudeType = ExtrudeType.boss;
       _extrudeStartDistance = 0.0;
       _extrudeEndDistance = 10.0;
@@ -861,7 +871,7 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(() async {
       await _api.deleteFeature(part.id, previewId);
       if (meshBefore != null) {
-        _mesh = meshBefore;
+        _bodies = meshBefore;
       } else {
         await _refreshMesh();
       }
@@ -947,9 +957,12 @@ class _PartScreenState extends State<PartScreen> {
   /// visit must show up back in the 3D viewport, not only on the next
   /// unrelated Feature-creation refresh.
   Future<void> _openSketch(FeatureDto feature, {ReferencePlaneKind? plane}) async {
-    final mesh = _mesh;
-    final ghostSegments = (plane != null && mesh != null)
-        ? projectMeshEdgesOntoPlane(plane, edgeSegmentsFromMesh(mesh))
+    // Prompt A3: merges every Body's edges into one flat list - the ghost
+    // outline doesn't care which Body an edge came from, only where it
+    // projects onto the new Sketch's plane.
+    final allEdgeSegments = [for (final body in _bodies) ...edgeSegmentsFromMesh(body.mesh)];
+    final ghostSegments = plane != null
+        ? projectMeshEdgesOntoPlane(plane, allEdgeSegments)
         : const <((double, double), (double, double))>[];
 
     await Navigator.of(context).push(
@@ -1027,7 +1040,7 @@ class _PartScreenState extends State<PartScreen> {
                 // loses space to a hidden panel.
                 PartViewport(
                   key: _viewportKey,
-                  mesh: _mesh,
+                  bodies: _bodies,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   onPlaneTap: _onPlaneTap,

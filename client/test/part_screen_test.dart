@@ -58,7 +58,12 @@ class _FakeDocumentBackend {
     }
 
     if (path == '/document/parts/part-1/mesh' && method == 'GET') {
-      return _json({'source': 'placeholder', 'mesh': _placeholderMesh}, 200);
+      // Prompt A3: the backend (Prompt A1) now returns an array of Bodies -
+      // this fake always returns the single-entry placeholder-box shape,
+      // since none of these tests actually exercise real Extrude geometry.
+      return _json([
+        {'body_id': 'placeholder', 'source': 'placeholder', 'mesh': _placeholderMesh},
+      ], 200);
     }
 
     if (path == '/document/parts/part-1/features' && method == 'GET') {

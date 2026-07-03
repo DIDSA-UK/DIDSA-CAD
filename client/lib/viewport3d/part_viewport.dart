@@ -33,7 +33,12 @@ import 'view_preferences.dart';
 /// controlled-widget pattern [FeatureTreePanel] already uses for
 /// [selectedFeatureId].
 class PartViewport extends StatefulWidget {
-  final MeshDto? mesh;
+  /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
+  /// `/mesh` array) - was a single `MeshDto? mesh` before this. Callers
+  /// (see [PartScreen]) should only build a new `List` instance when the
+  /// content actually changes (see [didUpdateWidget]), the same contract
+  /// [sketchGeometries] below already documents for its own `Map`.
+  final List<BodyMeshDto> bodies;
   final ReferencePlaneKind? selectedPlane;
   final void Function(ReferencePlaneKind plane) onPlaneTap;
   final VoidCallback onBackgroundTap;
@@ -46,7 +51,7 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
-  /// True while [mesh] is an Extrude live preview (see [PartScreen]'s
+  /// True while [bodies] is an Extrude live preview (see [PartScreen]'s
   /// debounced create/update-then-refetch flow) rather than confirmed
   /// geometry - renders the mesh translucent and tinted so a preview solid
   /// is never mistaken for the Part's actual, saved shape.
@@ -61,9 +66,9 @@ class PartViewport extends StatefulWidget {
   final bool referencePlanesHidden;
 
   /// Stage 11: which of [ViewportRenderMode]'s three display modes is
-  /// currently active - controls whether [mesh]'s filled faces are drawn at
-  /// all ([ViewportRenderMode.showsFilledFaces]) and whether its real OCCT
-  /// edge polylines are drawn on top ([ViewportRenderMode.showsEdges]).
+  /// currently active - controls whether [bodies]' filled faces are drawn
+  /// at all ([ViewportRenderMode.showsFilledFaces]) and whether their real
+  /// OCCT edge polylines are drawn on top ([ViewportRenderMode.showsEdges]).
   /// [PartScreen] owns this, the same controlled-widget pattern
   /// [referencePlanesHidden] already uses.
   final ViewportRenderMode renderMode;
@@ -73,7 +78,7 @@ class PartViewport extends StatefulWidget {
   /// widget pattern [renderMode] already uses. [bgColourHex] repaints the
   /// canvas background every frame (see [_ScenePainter.paint]); [bodyColourHex]/
   /// [bodyOpacity] only take effect on the next [_syncMeshNode] rebuild
-  /// (see [didUpdateWidget]), since they're baked into [_meshNode]'s
+  /// (see [didUpdateWidget]), since they're baked into each Body's [Node]
   /// material rather than read per-frame.
   final String bgColourHex;
   final String bodyColourHex;
@@ -123,7 +128,7 @@ class PartViewport extends StatefulWidget {
 
   const PartViewport({
     super.key,
-    required this.mesh,
+    this.bodies = const [],
     required this.selectedPlane,
     required this.onPlaneTap,
     required this.onBackgroundTap,
@@ -155,13 +160,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// textures) finish loading - [Scene.render] silently skips frames before
   /// that, so nothing is built until this is non-null.
   Scene? _scene;
-  Node? _meshNode;
 
-  /// Stage 11: the Part mesh's real OCCT edge polylines, rendered separately
-  /// from [_meshNode]'s filled faces - present whenever
-  /// [PartViewport.renderMode] has [ViewportRenderModeX.showsEdges] set,
-  /// regardless of whether the faces themselves are also showing.
-  Node? _edgesNode;
+  /// Prompt A3: one filled-faces [Node] per Body, keyed by
+  /// [BodyMeshDto.bodyId] - was a single `Node? _meshNode` before A3's
+  /// multi-body `/mesh` response, rebuilt wholesale on every
+  /// [_syncMeshNode] call the same way [_planeNodes]/[_sketchNodes] already
+  /// rebuild wholesale from their own source maps.
+  Map<String, Node> _meshNodes = {};
+
+  /// Stage 11: the Part's real OCCT edge polylines, one [Node] per Body
+  /// (Prompt A3), rendered separately from [_meshNodes]' filled faces -
+  /// present whenever [PartViewport.renderMode] has
+  /// [ViewportRenderModeX.showsEdges] set, regardless of whether the faces
+  /// themselves are also showing.
+  Map<String, Node> _edgesNodes = {};
   Map<ReferencePlaneKind, Node> _planeNodes = {};
   Map<String, Node> _sketchNodes = {};
 
@@ -308,14 +320,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @override
   void didUpdateWidget(covariant PartViewport oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.mesh != oldWidget.mesh ||
+    if (widget.bodies != oldWidget.bodies ||
         widget.isPreviewMesh != oldWidget.isPreviewMesh ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodyColourHex != oldWidget.bodyColourHex ||
         widget.bodyOpacity != oldWidget.bodyOpacity) {
       setState(_syncMeshNode);
     }
-    if (widget.mesh != oldWidget.mesh || widget.renderMode != oldWidget.renderMode) {
+    if (widget.bodies != oldWidget.bodies || widget.renderMode != oldWidget.renderMode) {
       setState(_syncEdgesNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane ||
@@ -350,7 +362,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncHoverNode();
       });
     }
-    if (widget.mesh != oldWidget.mesh && widget.selectionMode) {
+    if (widget.bodies != oldWidget.bodies && widget.selectionMode) {
       // The mesh's entity ids are only stable within one response (see
       // MeshDto's doc comments) - a hover/selection computed against the
       // old mesh could point at ids that no longer exist, so both are
@@ -378,58 +390,64 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _syncMeshNode() {
     final scene = _scene;
     if (scene == null) return;
-    if (_meshNode != null) {
-      scene.remove(_meshNode!);
-      _meshNode = null;
+    for (final node in _meshNodes.values) {
+      scene.remove(node);
     }
-    final mesh = widget.mesh;
-    if (mesh == null) {
-      debugPrint('[PartViewport] _syncMeshNode: no mesh yet');
-      return;
-    }
-    if (mesh.vertices.isEmpty) {
-      // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a GPU
-      // device buffer sized off the vertex/index data - a zero-length
-      // buffer (e.g. every body hidden, or a Cut with nothing to cut from)
-      // throws "DeviceBuffer creation failed" rather than just rendering
-      // nothing, so skip building a Node entirely in that case (mirrors
-      // what boundsOfMesh returning null would feed the camera below, were
-      // there a Node to compute bounds from).
-      debugPrint('[PartViewport] _syncMeshNode: mesh has no vertices, skipping geometry');
+    _meshNodes = {};
+    final bodies = widget.bodies;
+    if (bodies.isEmpty) {
+      debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
       _camera.setTarget(vm.Vector3.zero());
       _camera.setZoomBoundsForRadius(0);
       return;
     }
-    // Stage 11: in wireframe mode, the filled-faces Node is skipped
-    // entirely (only the edges Node built by _syncEdgesNode is shown) - but
-    // the camera target/zoom bounds below are still derived from the real
-    // mesh data either way, so switching modes never moves the camera.
+    // Stage 11: in wireframe mode, the filled-faces Nodes are skipped
+    // entirely (only the edges Nodes built by _syncEdgesNode are shown) -
+    // but the camera target/zoom bounds below are still derived from the
+    // real mesh data either way, so switching modes never moves the camera.
     if (widget.renderMode.showsFilledFaces) {
-      debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh(${mesh.vertices.length} verts)...');
-      final geometry = geometryFromMesh(mesh);
-      debugPrint('[PartViewport] _syncMeshNode: geometryFromMesh done, adding Node to Scene...');
-      final material = widget.isPreviewMesh
-          ? (UnlitMaterial()
-            ..alphaMode = AlphaMode.blend
-            ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
-          // TODO: flutter_scene's UnlitMaterial has no roughness/metallic (or
-          // any other lit-shading) parameter to give the body a "subtle
-          // specular highlight"/matte-metallic finish per the brief -
-          // revisit if/when a PBR material type ships.
-          : (UnlitMaterial()
-            ..alphaMode = widget.bodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
-            ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: widget.bodyOpacity));
-      final node = Node(mesh: Mesh(geometry, material));
-      scene.add(node);
-      _meshNode = node;
-      debugPrint('[PartViewport] _syncMeshNode: Node added to Scene');
+      for (final body in bodies) {
+        final mesh = body.mesh;
+        if (mesh.vertices.isEmpty) {
+          // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
+          // GPU device buffer sized off the vertex/index data - a
+          // zero-length buffer throws "DeviceBuffer creation failed"
+          // rather than just rendering nothing, so skip this Body's Node
+          // entirely rather than risk that (shouldn't happen in practice -
+          // the backend only ever includes a Body in the array once it has
+          // real geometry - but stays defensive, matching the pre-A3 check
+          // this replaces).
+          debugPrint(
+            '[PartViewport] _syncMeshNode: body ${body.bodyId} has no vertices, skipping geometry',
+          );
+          continue;
+        }
+        debugPrint(
+          '[PartViewport] _syncMeshNode: geometryFromMesh(${body.bodyId}, '
+          '${mesh.vertices.length} verts)...',
+        );
+        final geometry = geometryFromMesh(mesh);
+        final material = widget.isPreviewMesh
+            ? (UnlitMaterial()
+              ..alphaMode = AlphaMode.blend
+              ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
+            // TODO: flutter_scene's UnlitMaterial has no roughness/metallic
+            // (or any other lit-shading) parameter to give the body a
+            // "subtle specular highlight"/matte-metallic finish per the
+            // brief - revisit if/when a PBR material type ships.
+            : (UnlitMaterial()
+              ..alphaMode = widget.bodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
+              ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: widget.bodyOpacity));
+        final node = Node(mesh: Mesh(geometry, material));
+        scene.add(node);
+        _meshNodes[body.bodyId] = node;
+      }
       debugPrint(
-        '[PartViewport][RenderDebug] mesh: isPreviewMesh=${widget.isPreviewMesh} '
-        'bodyOpacity=${widget.bodyOpacity} alphaMode=${material.alphaMode} '
-        'vertices=${mesh.vertices.length} triangles=${mesh.triangleIndices.length}',
+        '[PartViewport] _syncMeshNode: ${_meshNodes.length}/${bodies.length} body Node(s) '
+        'added to Scene (isPreviewMesh=${widget.isPreviewMesh} bodyOpacity=${widget.bodyOpacity})',
       );
     }
-    final bounds = boundsOfMesh(mesh);
+    final bounds = boundsOfBodies(bodies);
     _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
     _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
     debugPrint(
@@ -438,10 +456,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     );
   }
 
-  /// Stage 11: rebuilds [_edgesNode] from [PartViewport.mesh]'s real OCCT
+  /// Stage 11: rebuilds [_edgesNodes] from [PartViewport.bodies]' real OCCT
   /// edge polylines (see [edgeSegmentsFromMesh]) whenever
   /// [ViewportRenderModeX.showsEdges] is set - independent of whether the
-  /// filled-faces Node above is also present, since `wireframe` mode shows
+  /// filled-faces Nodes above are also present, since `wireframe` mode shows
   /// edges with no faces at all. In `shadedWithEdges` mode the segments are
   /// biased towards the current camera position (see [kEdgeDepthBias]'s doc
   /// comment for why towards-camera, and C3's status doc for the
@@ -460,24 +478,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _syncEdgesNode() {
     final scene = _scene;
     if (scene == null) return;
-    if (_edgesNode != null) {
-      scene.remove(_edgesNode!);
-      _edgesNode = null;
+    for (final node in _edgesNodes.values) {
+      scene.remove(node);
     }
-    final mesh = widget.mesh;
-    if (mesh == null || !widget.renderMode.showsEdges) return;
-    var segments = edgeSegmentsFromMesh(mesh);
-    if (segments.isEmpty) return;
+    _edgesNodes = {};
+    if (!widget.renderMode.showsEdges) return;
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
-    if (biased) {
-      segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
+    var totalSegments = 0;
+    for (final body in widget.bodies) {
+      var segments = edgeSegmentsFromMesh(body.mesh);
+      if (segments.isEmpty) continue;
+      if (biased) {
+        segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
+      }
+      final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
+      scene.add(node);
+      _edgesNodes[body.bodyId] = node;
+      totalSegments += segments.length;
     }
-    final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
-    scene.add(node);
-    _edgesNode = node;
     debugPrint(
       '[PartViewport][RenderDebug] edges: renderMode=${widget.renderMode} biased=$biased '
-      'kEdgeDepthBias=$kEdgeDepthBias segments=${segments.length} '
+      'kEdgeDepthBias=$kEdgeDepthBias segments=$totalSegments bodies=${_edgesNodes.length} '
       'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
     );
   }
@@ -789,17 +810,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Item 3's hover hit-test, run from [_cursorPosition] - null result
   /// clears any prior hover (cursor moved over empty background).
   void _recomputeHover() {
-    final mesh = widget.mesh;
     final cursor = _cursorPosition;
-    if (mesh == null || cursor == null) {
+    if (widget.bodies.isEmpty || cursor == null) {
       _hoverHit = null;
       return;
     }
     final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
-    _hoverHit = hitTestMeshEntities(
+    _hoverHit = hitTestBodies(
       ray: ray,
       viewportSize: _viewportSize,
-      mesh: mesh,
+      bodies: widget.bodies,
       filter: widget.selectionFilter,
     );
   }
@@ -827,16 +847,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // C3: "Reset view" moves the camera - resync the edge overlay's
     // towards-camera bias (see [_syncEdgesNode]) for the new position.
     _syncEdgesNode();
-    final mesh = widget.mesh;
-    if (mesh == null || mesh.vertices.isEmpty) return;
     double minX = double.infinity, maxX = double.negativeInfinity;
     double minY = double.infinity, maxY = double.negativeInfinity;
     double minZ = double.infinity, maxZ = double.negativeInfinity;
-    for (final v in mesh.vertices) {
-      if (v[0] < minX) minX = v[0]; if (v[0] > maxX) maxX = v[0];
-      if (v[1] < minY) minY = v[1]; if (v[1] > maxY) maxY = v[1];
-      if (v[2] < minZ) minZ = v[2]; if (v[2] > maxZ) maxZ = v[2];
+    var hasVertex = false;
+    for (final body in widget.bodies) {
+      for (final v in body.mesh.vertices) {
+        hasVertex = true;
+        if (v[0] < minX) minX = v[0]; if (v[0] > maxX) maxX = v[0];
+        if (v[1] < minY) minY = v[1]; if (v[1] > maxY) maxY = v[1];
+        if (v[2] < minZ) minZ = v[2]; if (v[2] > maxZ) maxZ = v[2];
+      }
     }
+    if (!hasVertex) return;
     final dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
     final diagonal = math.sqrt(dx * dx + dy * dy + dz * dz);
     final newFarClip = math.max(kDefaultFarClip, 2.0 * diagonal);
@@ -858,17 +881,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(_hoverNode!);
       _hoverNode = null;
     }
-    final mesh = widget.mesh;
     final hit = _hoverHit;
-    if (mesh == null || hit == null) return;
-    final node = _buildEntityHighlightNode(mesh, hit.entity, _hoverColor);
+    if (hit == null) return;
+    final node = _buildEntityHighlightNode(hit.entity, _hoverColor);
     if (node == null) return;
     scene.add(node);
     _hoverNode = node;
     debugPrint(
       '[PartViewport][RenderDebug] hover: ${hit.entity.kind}#${hit.entity.id} '
-      'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
+      'body=${hit.entity.bodyId} cameraPosition=${_camera.position} '
+      'cameraDistance=${_camera.distance}',
     );
+  }
+
+  /// Prompt A3: looks up which [BodyMeshDto] in [PartViewport.bodies] owns
+  /// [bodyId] - null if it no longer exists (e.g. a stale hover/selection
+  /// against a Body a recompute just removed).
+  BodyMeshDto? _bodyFor(String bodyId) {
+    for (final body in widget.bodies) {
+      if (body.bodyId == bodyId) return body;
+    }
+    return null;
   }
 
   /// Rebuilds all three selected-entity highlight nodes (one per kind, each
@@ -884,13 +917,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _selectedFacesNode = null;
     _selectedEdgesNode = null;
     _selectedVerticesNode = null;
-    final mesh = widget.mesh;
-    if (mesh == null) return;
 
     final faceTriangles = <(vm.Vector3, vm.Vector3, vm.Vector3)>[];
     final edgeSegments = <(vm.Vector3, vm.Vector3)>[];
     final vertexPositions = <vm.Vector3>[];
     for (final entity in widget.selectedEntities) {
+      final body = _bodyFor(entity.bodyId);
+      if (body == null) continue;
+      final mesh = body.mesh;
       switch (entity.kind) {
         case SelectionEntityKind.face:
           faceTriangles.addAll(faceTrianglesForId(mesh, entity.id));
@@ -899,6 +933,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         case SelectionEntityKind.vertex:
           final position = vertexPositionForId(mesh, entity.id);
           if (position != null) vertexPositions.add(position);
+        case SelectionEntityKind.body:
+          // Prompt A3: a Body selection highlights every one of its faces,
+          // not just one - reuses the same "selected faces" Node/colour
+          // rather than introducing a fourth highlight Node type.
+          faceTriangles.addAll(trianglesFromMesh(mesh));
       }
     }
 
@@ -906,28 +945,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final node = buildHighlightFacesNode(faceTriangles, color: _selectedColor);
       scene.add(node);
       _selectedFacesNode = node;
-      // RenderDebug: per selected face's own centroid distance from the
-      // camera, next to the mesh's overall bounding info - lets a log
-      // capture answer "is the highlighted face actually on the far side"
-      // without needing to see the frame itself.
-      final bounds = boundsOfMesh(mesh);
-      for (final entity in widget.selectedEntities.where((e) => e.kind == SelectionEntityKind.face)) {
-        final triangles = faceTrianglesForId(mesh, entity.id);
-        if (triangles.isEmpty) continue;
-        var sum = vm.Vector3.zero();
-        var count = 0;
-        for (final (a, b, c) in triangles) {
-          sum = sum + a + b + c;
-          count += 3;
-        }
-        final centroid = sum / count.toDouble();
-        debugPrint(
-          '[PartViewport][RenderDebug] selected face #${entity.id}: centroid=$centroid '
-          'distanceFromCamera=${(centroid - _camera.position).length} '
-          'meshBoundsCenter=${bounds?.center} meshBoundingSphereRadius=${bounds?.boundingSphereRadius} '
-          'cameraDistance=${_camera.distance}',
-        );
-      }
+      debugPrint(
+        '[PartViewport][RenderDebug] selected faces: triangles=${faceTriangles.length} '
+        'cameraDistance=${_camera.distance}',
+      );
     }
     if (edgeSegments.isNotEmpty) {
       final node = buildMeshEdgesNode(
@@ -948,8 +969,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Resolves one [SelectionEntityRef] (any kind) into its highlight [Node],
   /// shared by [_syncHoverNode] - a single entity's worth of whichever of
   /// [buildHighlightFacesNode]/[buildMeshEdgesNode]/[buildVertexMarkersNode]
-  /// matches its kind, or null if that id no longer exists in [mesh].
-  Node? _buildEntityHighlightNode(MeshDto mesh, SelectionEntityRef entity, vm.Vector4 color) {
+  /// matches its kind, or null if [entity]'s Body/id no longer exists.
+  Node? _buildEntityHighlightNode(SelectionEntityRef entity, vm.Vector4 color) {
+    final body = _bodyFor(entity.bodyId);
+    if (body == null) return null;
+    final mesh = body.mesh;
     switch (entity.kind) {
       case SelectionEntityKind.face:
         final triangles = faceTrianglesForId(mesh, entity.id);
@@ -963,6 +987,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final position = vertexPositionForId(mesh, entity.id);
         if (position == null) return null;
         return buildVertexMarkersNode([position], color: color);
+      case SelectionEntityKind.body:
+        // Prompt A3: whole-Body highlight - same as a Body-kind selection
+        // (see _syncSelectedEntityNodes), just for the hover case.
+        final triangles = trianglesFromMesh(mesh);
+        if (triangles.isEmpty) return null;
+        return buildHighlightFacesNode(triangles, color: color);
     }
   }
 
@@ -1008,7 +1038,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
                     ..._sketchNodes.values,
-                    if (_edgesNode != null) _edgesNode!,
+                    ..._edgesNodes.values,
                     if (_hoverNode != null) _hoverNode!,
                     if (_selectedEdgesNode != null) _selectedEdgesNode!,
                     if (_selectedVerticesNode != null) _selectedVerticesNode!,

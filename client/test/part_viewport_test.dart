@@ -34,6 +34,11 @@ final _boxMesh = MeshDto(
   topologyVertexIds: [1],
 );
 
+/// Prompt A3: [PartViewport] now takes `bodies` (a list) rather than a
+/// single `mesh` - one [BodyMeshDto] wrapping [_boxMesh] is the standard
+/// fixture these tests pass wherever the old suite passed `mesh: _boxMesh`.
+final _boxBody = BodyMeshDto(bodyId: 'body-1', source: 'computed', mesh: _boxMesh);
+
 Future<void> _pumpUntil(WidgetTester tester, bool Function() done, {int maxPumps = 100}) async {
   for (var i = 0; i < maxPumps; i++) {
     if (done()) return;
@@ -55,7 +60,7 @@ void main() {
               width: 400,
               height: 400,
               child: PartViewport(
-                mesh: _boxMesh,
+                bodies: [_boxBody],
                 selectedPlane: null,
                 onPlaneTap: (_) {},
                 onBackgroundTap: () {},
@@ -94,7 +99,7 @@ void main() {
               width: 400,
               height: 400,
               child: PartViewport(
-                mesh: _boxMesh,
+                bodies: [_boxBody],
                 selectedPlane: null,
                 onPlaneTap: (_) {},
                 onBackgroundTap: () {},
@@ -129,7 +134,7 @@ void main() {
               width: 400,
               height: 400,
               child: PartViewport(
-                mesh: null,
+                bodies: const [],
                 selectedPlane: null,
                 onPlaneTap: (_) {},
                 onBackgroundTap: () {},
@@ -169,7 +174,7 @@ void main() {
               width: 400,
               height: 400,
               child: PartViewport(
-                mesh: _boxMesh,
+                bodies: [_boxBody],
                 selectedPlane: null,
                 onPlaneTap: (_) {},
                 onBackgroundTap: () {},

@@ -125,16 +125,32 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   (`storage.googleapis.com` was reachable): `flutter analyze` is clean
   (zero new issues) and the framework's pure-Dart pieces
   (`OverrideStack<T>`, `SelectionFilterState`) have real passing tests
-  (15/15). **Still outstanding before A3 begins: the on-device check** —
-  confirming the View submenu's four toggles actually appear and that
-  hit-testing visibly respects them — since `PartToolbar`/`PartScreen`
+  (15/15). **The on-device check** — confirming the View submenu's four
+  toggles actually appear and that hit-testing visibly respects them (this
+  was originally the gate before A3 could start, but on-device testing
+  surfaced a blocking bug that made A3 the more urgent next step - see
+  below - so this check is now folded into A3's own still-outstanding
+  on-device confirmation) — since `PartToolbar`/`PartScreen`
   transitively pull in `flutter_scene` (via `orbit_camera.dart`), which
   can't even load under this stable SDK due to the pre-existing
   `flutter_gpu` mismatch tracked above ("No Flutter CI job"/the C3 bug) —
   the same constraint that blocked 17 test files pre-A2 blocks widget-level
   verification of A2's own UI wiring too, not something A2 introduced.
-  Prompt B (sub-shape refs, tree categories, cascade delete,
-  earlier-feature editing) starts only after A4.
+  **A3 (client body-as-selectable-entity) landed next**, started early
+  (before A2's on-device check came back) because on-device testing
+  surfaced a real bug — "can't create a body, Extrude Confirm does
+  nothing" — that turned out to be exactly A1's deferred `/mesh`
+  array-parsing gap; A3 was the actual fix, not a patch on the side. See
+  `docs/status.md`'s 2026-07-03 A3 entry for the root-cause trace. `flutter
+  analyze` is clean (zero new issues); a new `document_api_client_test.dart`
+  (7 tests, no `flutter_scene` dependency) exercises the actual array
+  parsing for real. **Still outstanding before A4 begins: on-device
+  confirmation that the original bug is fixed** (Extrude Confirm works
+  again), that multi-body rendering looks correct, and that tapping a face
+  in body-filter mode selects/highlights the whole body — none of this is
+  verifiable in this sandbox for the same pre-existing `flutter_scene`
+  reason as A2's toggle check above. Prompt B (sub-shape refs, tree
+  categories, cascade delete, earlier-feature editing) starts only after A4.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

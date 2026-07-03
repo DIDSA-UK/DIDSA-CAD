@@ -505,4 +505,157 @@ void main() {
       expect(faceTrianglesForId(mesh, 99), isEmpty);
     });
   });
+
+  group('Prompt A3: hitTestBodies', () {
+    // Two independent boxes at different depths along the same ray, each
+    // with a topology vertex, an edge, and a face - lets every priority
+    // rule be exercised across bodies, not just within one.
+    //
+    // `nearBody`'s vertex/edge offset (0.01) is deliberately much smaller
+    // than `farBody`'s (0.06) so `nearBody` unambiguously wins the
+    // *pixel*-distance comparison `hitTestVertices`/`hitTestEdges` actually
+    // use - depth alone does NOT decide this: `_worldUnitsPerPixelAtDepth`
+    // scales with depth, so the *same* world-space offset maps to a
+    // *larger* pixel distance at `nearBody`'s closer depth (a fixed-size
+    // offset looks bigger the closer it is to the camera - the reason two
+    // equal offsets would actually have made `farBody` win here, not
+    // `nearBody`).
+    BodyMeshDto nearBody() => BodyMeshDto(
+          bodyId: 'near',
+          source: 'computed',
+          mesh: MeshDto(
+            vertices: const [
+              [-1, -1, 5],
+              [1, -1, 5],
+              [0, 1, 5],
+            ],
+            normals: const [],
+            triangleIndices: const [
+              [0, 1, 2],
+            ],
+            faceIds: const [7],
+            topologyVertices: const [
+              [0.01, 0, 5],
+            ],
+            topologyVertexIds: const [3],
+            edges: const [0.01, -1, 5, 0.01, 1, 5],
+            edgeIds: const [5],
+          ),
+        );
+
+    BodyMeshDto farBody() => BodyMeshDto(
+          bodyId: 'far',
+          source: 'computed',
+          mesh: MeshDto(
+            vertices: const [
+              [-1, -1, 10],
+              [1, -1, 10],
+              [0, 1, 10],
+            ],
+            normals: const [],
+            triangleIndices: const [
+              [0, 1, 2],
+            ],
+            faceIds: const [7],
+            topologyVertices: const [
+              [0.06, 0, 10],
+            ],
+            topologyVertexIds: const [3],
+            edges: const [0.06, -1, 10, 0.06, 1, 10],
+            edgeIds: const [5],
+          ),
+        );
+
+    test('a vertex hit is tagged with its owning body id', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [nearBody(), farBody()],
+      );
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.vertex, bodyId: 'near', id: 3));
+    });
+
+    test('same local id (3) on two different bodies does not collide - order in the list is irrelevant', () {
+      // Both bodies' vertex is id 3 - exactly the "ids are only body-local"
+      // scenario SelectionEntityRef.bodyId exists to disambiguate. Listing
+      // farBody first proves the winner is genuinely decided by the
+      // pixel-distance comparison, not by list position.
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [farBody(), nearBody()],
+      );
+      expect(hit?.entity.bodyId, 'near');
+      expect(hit?.entity.id, 3);
+    });
+
+    test('an edge hit (vertex filtered off) is tagged with its owning body id', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [nearBody(), farBody()],
+        filter: const SelectionFilterState(vertex: false, edge: true, face: true, body: false),
+      );
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: 'near', id: 5));
+    });
+
+    test('a plain face hit (vertex/edge off, body off) is tagged with its owning body id', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [nearBody(), farBody()],
+        filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
+      );
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'near', id: 7));
+    });
+
+    test('body filter on: a face hit resolves to the owning body, not the face', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [nearBody(), farBody()],
+        filter: const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+      );
+      expect(hit?.entity, const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'near'));
+    });
+
+    test('body filter takes precedence over face filter when both are on', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [nearBody(), farBody()],
+        filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: true),
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.body);
+    });
+
+    test('body filter on but nothing intersected returns null', () {
+      final missRay = vm.Ray.originDirection(vm.Vector3(50, 50, 0), vm.Vector3(0, 0, 1));
+      final hit = hitTestBodies(
+        ray: missRay,
+        viewportSize: viewportSize,
+        bodies: [nearBody(), farBody()],
+        filter: const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+      );
+      expect(hit, isNull);
+    });
+
+    test('vertex priority still applies across bodies even with body filter on', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [nearBody(), farBody()],
+        filter: const SelectionFilterState(vertex: true, edge: true, face: true, body: true),
+      );
+      // The near body's vertex is in range and wins outright, same
+      // vertex-over-everything priority hitTestMeshEntities already has.
+      expect(hit?.entity.kind, SelectionEntityKind.vertex);
+      expect(hit?.entity.bodyId, 'near');
+    });
+
+    test('empty bodies list returns null', () {
+      final hit = hitTestBodies(ray: straightDownZ, viewportSize: viewportSize, bodies: const []);
+      expect(hit, isNull);
+    });
+  });
 }

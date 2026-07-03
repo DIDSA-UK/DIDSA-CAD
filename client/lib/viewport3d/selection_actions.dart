@@ -30,6 +30,14 @@ class SelectionContextAction {
 List<SelectionContextAction> contextActionsFor(Set<SelectionEntityRef> selection) {
   if (selection.isEmpty) return const [];
 
+  // Prompt A3: none of Create Plane/Chamfer/Fillet make sense against a
+  // whole-Body selection - without this guard, a Body-only selection would
+  // fall through every branch below to the final "alone" case and
+  // nonsensically offer "Create Plane". Body selections don't compose with
+  // vertex/edge/face ones in the same table below; this deliberately
+  // suppresses every action rather than picking one arbitrarily.
+  if (selection.any((s) => s.kind == SelectionEntityKind.body)) return const [];
+
   final hasFace = selection.any((s) => s.kind == SelectionEntityKind.face);
   final hasEdge = selection.any((s) => s.kind == SelectionEntityKind.edge);
   final hasVertex = selection.any((s) => s.kind == SelectionEntityKind.vertex);

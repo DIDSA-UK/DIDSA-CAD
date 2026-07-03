@@ -113,13 +113,26 @@ class MeshDto {
       raw.map((t) => (t as List).map((v) => (v as num).toDouble()).toList()).toList();
 }
 
-class PartMeshDto {
+/// Prompt A3: one entry of `GET /mesh`'s response, which the backend
+/// (Prompt A1) changed from a single combined `{source, mesh}` object to a
+/// JSON array of these - one per independently-tessellated Body, or a
+/// single `source: "placeholder"` entry while the Part has no
+/// ExtrudeFeature yet. [bodyId] is the stable, deterministic Body id (see
+/// the backend's `ExtrudeFeature` docstring) - stable across recomputes as
+/// long as the Body isn't merged into another. [mesh]'s `faceIds`/
+/// `edgeIds`/`topologyVertexIds` are only unique *within* this one Body's
+/// own tessellation, not globally across the array - see
+/// `SelectionEntityRef.bodyId` for how the client keeps hit-test entities
+/// globally unique despite that.
+class BodyMeshDto {
+  final String bodyId;
   final String source;
   final MeshDto mesh;
 
-  PartMeshDto({required this.source, required this.mesh});
+  BodyMeshDto({required this.bodyId, required this.source, required this.mesh});
 
-  factory PartMeshDto.fromJson(Map<String, dynamic> json) => PartMeshDto(
+  factory BodyMeshDto.fromJson(Map<String, dynamic> json) => BodyMeshDto(
+        bodyId: json['body_id'] as String,
         source: json['source'] as String,
         mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
       );
@@ -287,7 +300,11 @@ class DocumentApiClient {
   /// never persisted on the backend - and is encoded as a repeated query
   /// parameter (`?hidden_feature_ids=a&hidden_feature_ids=b`) matching
   /// FastAPI's `Query(default=[])` parsing on the other end.
-  Future<PartMeshDto> getPartMesh(String partId, {List<String> hiddenFeatureIds = const []}) => _send(
+  ///
+  /// Prompt A3: parses the array-of-Bodies response Prompt A1 introduced -
+  /// the top-level JSON is now a `List`, not a single object.
+  Future<List<BodyMeshDto>> getPartMesh(String partId, {List<String> hiddenFeatureIds = const []}) =>
+      _send(
         () => _httpClient.get(
               _uri('/document/parts/$partId/mesh').replace(
                 queryParameters:
@@ -295,7 +312,8 @@ class DocumentApiClient {
               ),
               headers: _headers,
             ),
-        (body) => PartMeshDto.fromJson(body as Map<String, dynamic>),
+        (body) =>
+            (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
       );
 
   void close() => _httpClient.close();
