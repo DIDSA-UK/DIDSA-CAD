@@ -1582,4 +1582,6 @@ User confirmed the B3-revision entry above ("ok, looking good") and asked to mov
 
 Not verified here, needs on-device confirmation (this prompt's actual stop-condition gate): tapping an earlier Extrude with 1+ downstream dependents actually rolls the viewport back, opens the panel prefilled correctly, and rolls forward with the downstream dependents visibly recomputed on Confirm; Cancel truly leaves the graph unchanged (including a live-preview edit made before cancelling); tapping an earlier Sketch behind a downstream Extrude opens the 2D canvas with everything after it suppressed, and returns/recomputes correctly.
 
-This closes out Prompt B (B1-B4) pending that on-device confirmation of the full set, per B4's own stop condition, before starting Prompt C (Create Plane).
+**CI confirmed green on both architectures** (job logs pulled directly via `mcp__github__get_job_logs`, not just the `conclusion` field, run `28685835689`): `linux/amd64` - **320 passed in 5.60s**; `linux/arm64` - **320 passed in 80.61s** (slower under QEMU emulation, identical pass count). All 3 new `test_stage_b4_earlier_feature_editing.py` tests and both updated `test_patch_on_a_locked_extrude_feature_is_now_allowed`/`test_mutating_a_sketch_behind_a_locked_feature_is_allowed_over_the_api` cases are confirmed `PASSED` by name in both architectures' logs - no CI failures on this push, unlike B1/B2's first attempts.
+
+This closes out Prompt B (B1-B4) pending on-device confirmation of the full set, per B4's own stop condition, before starting Prompt C (Create Plane).
