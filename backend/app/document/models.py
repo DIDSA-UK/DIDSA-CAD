@@ -115,7 +115,7 @@ class ExtrudeFeature(Feature):
     assigned. When a later Boss fuses two or more existing Bodies together
     via `target_body_ids`, the merge keeps whichever of those ids belongs
     to the Feature that appears earliest in `Part.features` (see
-    app.document.extrude.base_feature_id) - a single, deterministic,
+    app.document.graph.base_feature_id) - a single, deterministic,
     documented tie-break rather than an ad-hoc one.
 
     Amendment: a Body is always exactly one maximally-connected solid, not
@@ -233,18 +233,31 @@ class Part:
             raise ValueError("Only the last Feature in a Part can be deleted")
         self.features.pop()
 
-    def delete_feature_cascade(self, feature_id: str) -> list[Feature]:
-        """Deletes `feature_id` and every Feature after it in order - the
-        only way to remove a locked Feature, since doing so always also
-        removes every later Feature that depends on it being in the
-        history. Returns the deleted Features (in their original order) so
-        callers can clean up anything each one owns - e.g. each
-        SketchFeature's underlying Sketch."""
-        index = next((i for i, f in enumerate(self.features) if f.id == feature_id), None)
-        if index is None:
-            raise ValueError(f"Feature not found: {feature_id}")
-        deleted = self.features[index:]
-        self.features = self.features[:index]
+    def delete_features(self, feature_ids: set[str]) -> list[Feature]:
+        """B2: deletes exactly the Features named in `feature_ids` (in their
+        original relative order), leaving every other Feature untouched in
+        its original relative order too - the only way to remove a locked
+        Feature, since removing it always also requires removing every
+        Feature that actually depends on it being in the history.
+
+        `feature_ids` is expected to already be a real dependency-graph
+        transitive-dependents closure (see
+        `app.document.graph.transitive_dependents`, called by
+        `app.document.router.delete_feature_cascade` before this) - this
+        method itself has no graph knowledge and does no closure
+        computation of its own, it just partitions `self.features` by
+        membership in the given id set. Replaces the pre-B2
+        `delete_feature_cascade`, which deleted `feature_id` and everything
+        *after it in the list* - correct only by coincidence for every
+        pre-A1 scenario where list order and dependency order happened to
+        coincide, and wrong as soon as a Feature could depend on something
+        other than its immediate predecessor (A1's `target_body_ids`).
+
+        Returns the deleted Features (in their original order) so callers
+        can clean up anything each one owns - e.g. each SketchFeature's
+        underlying Sketch."""
+        deleted = [f for f in self.features if f.id in feature_ids]
+        self.features = [f for f in self.features if f.id not in feature_ids]
         return deleted
 
 

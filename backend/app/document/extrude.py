@@ -27,7 +27,7 @@ from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
-from app.document.graph import GraphNode, topological_order
+from app.document.graph import base_feature_id, build_feature_graph, topological_order
 from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
@@ -203,49 +203,6 @@ def _solid_for_extrude_feature(
     for solid in solids:
         builder.Add(compound, solid)
     return compound
-
-
-def base_feature_id(body_id: str) -> str:
-    """The original creating ExtrudeFeature's id for `body_id` - strips the
-    `#N` split-index suffix `_register_solids` appends when a single
-    operation produces more than one maximally-connected solid (a
-    multi-profile Boss, or a Cut that severs a Body into disconnected
-    pieces - see `_register_solids`'s own docstring). A plain, unsuffixed
-    `body_id` (the common single-solid case) is returned unchanged.
-
-    Used anywhere a composite Body id needs to be resolved back to "which
-    Feature does this ultimately trace back to" - the merge-survivor
-    tie-break below, `build_feature_graph`'s dependency edges, and
-    `app.document.router._validate_target_body_ids`, which all only care
-    about the owning Feature, not the exact (possibly split) Body id."""
-    return body_id.split("#", 1)[0]
-
-
-def build_feature_graph(part: Part) -> list[GraphNode]:
-    """The dependency edges recompute is driven by (A1) - every
-    ExtrudeFeature depends on the SketchFeature it extrudes plus every Body
-    it names in `target_body_ids`. A Body's id is always derived from the
-    id of the ExtrudeFeature that created it (see `base_feature_id`), so a
-    `target_body_ids` entry always resolves to a real Feature id once split
-    suffixes are stripped - no separate Feature<->Body lookup table is
-    needed to build these edges, the graph is entirely over `part.features`
-    ids.
-
-    SketchFeatures have no dependencies (they don't reference any other
-    Feature). Feature ids that don't resolve to anything (already invalid
-    input, rejected at creation time - see
-    app.document.router._validate_target_body_ids) are simply ignored by
-    app.document.graph.topological_order rather than raising here."""
-    nodes = []
-    for feature in part.features:
-        depends_on: tuple[str, ...] = ()
-        if isinstance(feature, ExtrudeFeature):
-            depends_on = (
-                feature.sketch_feature_id,
-                *(base_feature_id(tid) for tid in feature.target_body_ids),
-            )
-        nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
-    return nodes
 
 
 def _explode_solids(shape: TopoDS_Shape) -> list[TopoDS_Shape]:
