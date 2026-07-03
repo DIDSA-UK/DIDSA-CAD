@@ -131,6 +131,32 @@ MeshBounds? boundsOfMesh(MeshDto mesh) {
   );
 }
 
+/// Prompt A3: [boundsOfMesh] extended across every Body (Prompt A1's
+/// `/mesh` array) - the true AABB of every Body's vertices combined, not an
+/// approximation from unioning each Body's own bounding sphere. Returns
+/// `null` only when every Body is empty (or [bodies] itself is), same
+/// null-when-empty contract as [boundsOfMesh].
+MeshBounds? boundsOfBodies(List<BodyMeshDto> bodies) {
+  vm.Vector3? min;
+  vm.Vector3? max;
+  for (final body in bodies) {
+    for (final vertex in body.mesh.vertices) {
+      final p = vm.Vector3(vertex[0], vertex[1], vertex[2]);
+      min = min == null
+          ? p
+          : vm.Vector3(math.min(min.x, p.x), math.min(min.y, p.y), math.min(min.z, p.z));
+      max = max == null
+          ? p
+          : vm.Vector3(math.max(max.x, p.x), math.max(max.y, p.y), math.max(max.z, p.z));
+    }
+  }
+  if (min == null || max == null) return null;
+  return MeshBounds(
+    center: (min + max) * 0.5,
+    boundingSphereRadius: (max - min).length * 0.5,
+  );
+}
+
 /// Line width (screen pixels, per [PolylineGeometry]'s default
 /// `widthMode`) for both edge-rendering modes - Stage 19a Item 3 narrowed
 /// this from the original `2.0` towards a more typical CAD wireframe weight.

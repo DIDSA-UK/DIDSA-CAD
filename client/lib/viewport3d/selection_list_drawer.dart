@@ -41,7 +41,15 @@ class SelectionListDrawer extends StatelessWidget {
     final entries = selectedEntities.toList()
       ..sort((a, b) {
         final kindOrder = a.kind.index.compareTo(b.kind.index);
-        return kindOrder != 0 ? kindOrder : a.id.compareTo(b.id);
+        if (kindOrder != 0) return kindOrder;
+        // Prompt A3: face/edge/vertex ids are only unique within one Body
+        // (see SelectionEntityRef's doc comment), so bodyId is a required
+        // tiebreak, not just id alone - otherwise two different Bodies'
+        // "Face #3" entries would sort nondeterministically against each
+        // other. For a Body-kind entry, id is always 0 (meaningless) and
+        // bodyId alone already fully orders them.
+        final bodyOrder = a.bodyId.compareTo(b.bodyId);
+        return bodyOrder != 0 ? bodyOrder : a.id.compareTo(b.id);
       });
     return DraggableScrollableSheet(
       initialChildSize: 0.18,
@@ -82,7 +90,7 @@ class SelectionListDrawer extends StatelessWidget {
                       return ListTile(
                         dense: true,
                         leading: Icon(_iconFor(entity.kind)),
-                        title: Text('${_labelFor(entity.kind)} #${entity.id}'),
+                        title: Text(_titleFor(entity)),
                         trailing: IconButton(
                           tooltip: 'Remove from selection',
                           icon: const Icon(Icons.close, size: 18),
@@ -108,6 +116,8 @@ class SelectionListDrawer extends StatelessWidget {
         return Icons.show_chart;
       case SelectionEntityKind.vertex:
         return Icons.circle;
+      case SelectionEntityKind.body:
+        return Icons.view_in_ar_outlined;
     }
   }
 
@@ -119,7 +129,22 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Edge';
       case SelectionEntityKind.vertex:
         return 'Vertex';
+      case SelectionEntityKind.body:
+        return 'Body';
     }
+  }
+
+  /// Prompt A3: a Body entry has no meaningful [SelectionEntityRef.id] (see
+  /// its doc comment) - shows a shortened [SelectionEntityRef.bodyId]
+  /// instead of `#<id>`, the same "first 8 characters" convention short
+  /// git hashes use, since a full backend UUID is too long to read at a
+  /// glance in a list row.
+  String _titleFor(SelectionEntityRef entity) {
+    if (entity.kind == SelectionEntityKind.body) {
+      final id = entity.bodyId;
+      return 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    return '${_labelFor(entity.kind)} #${entity.id}';
   }
 }
 
