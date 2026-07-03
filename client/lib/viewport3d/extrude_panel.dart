@@ -30,6 +30,15 @@ class ExtrudePanel extends StatefulWidget {
   final ExtrudeType initialType;
   final double initialStartDistance;
   final double initialEndDistance;
+
+  /// Prompt A4: how many target bodies are currently picked in the 3D
+  /// viewport (see [PartScreen]'s body-picking flow, driven independently
+  /// of this panel's own fields) - read live on every build, unlike
+  /// [initialType]/[initialStartDistance]/[initialEndDistance], which this
+  /// widget only consults once to seed its own editable local state.
+  /// Drives Cut's "requires 1+" rule below.
+  final int targetBodyCount;
+
   final void Function(ExtrudeType type, double startDistance, double endDistance) onChanged;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
@@ -39,6 +48,7 @@ class ExtrudePanel extends StatefulWidget {
     this.initialType = ExtrudeType.boss,
     this.initialStartDistance = 0.0,
     this.initialEndDistance = 10.0,
+    required this.targetBodyCount,
     required this.onChanged,
     required this.onConfirm,
     required this.onCancel,
@@ -80,6 +90,12 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
 
   static String _formatDistance(double value) =>
       value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
+
+  /// Confirm is disabled for an invalid depth (pre-existing rule) or, new in
+  /// Prompt A4, for a Cut with nothing picked yet - Boss has no such
+  /// requirement, 0 selected is exactly how a Boss starts a brand-new Body.
+  bool get _canConfirm =>
+      _depth != null && _depth! > 0 && !(_type == ExtrudeType.cut && widget.targetBodyCount == 0);
 
   void _emitChange() {
     final start = double.tryParse(_startController.text);
@@ -159,13 +175,35 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
                     fontSize: 12,
                   ),
                 ),
+                // Prompt A4: Cut requires 1+ target bodies (Boss doesn't -
+                // zero is a valid "start a new body" pick) - picking itself
+                // happens in the 3D viewport behind this panel, driven by
+                // [PartScreen], not by any field in here.
+                if (_type == ExtrudeType.cut)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      widget.targetBodyCount == 0
+                          ? 'Select at least one target body in the viewport'
+                          : '${widget.targetBodyCount} target body/bodies selected',
+                      style: TextStyle(
+                        color: widget.targetBodyCount == 0
+                            ? Theme.of(context).colorScheme.error
+                            : Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 12),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
                     const SizedBox(width: 8),
-                    FilledButton(onPressed: widget.onConfirm, child: const Text('Confirm')),
+                    FilledButton(
+                      onPressed: _canConfirm ? widget.onConfirm : null,
+                      child: const Text('Confirm'),
+                    ),
                   ],
                 ),
               ],

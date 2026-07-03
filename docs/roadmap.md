@@ -170,10 +170,28 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   job logs (not just the `conclusion` field): amd64 `281 passed in 4.41s`,
   arm64 `281 passed in 66.66s`, all 6 new/renamed Body-splitting tests
   individually `PASSED` on both. See `docs/status.md`'s second 2026-07-03
-  entry for the full list. **Still outstanding: on-device confirmation**
-  that this amendment and A3's own fix both look right together. Prompt A4
-  (Boss/Cut target-body picking) and Prompt B (sub-shape refs, tree
-  categories, cascade delete, earlier-feature editing) both wait on that.
+  entry for the full list. **On-device confirmation has since landed**:
+  the user confirmed the Body-exclusivity behaviour works — which led to
+  two more small client changes, both `docs/status.md`-documented: the
+  four selection-filter toggles were split out of the View sub-menu into
+  their own "Selection Filters" top-level menu, and then **Prompt A4
+  (client Boss/Cut target-body picking) itself landed**, wiring A2's
+  filter override and A3's body selection into actually populating
+  `target_body_ids` on Boss/Cut create/PATCH calls — until this, the
+  client never sent that field at all, so every Boss silently started a
+  brand-new Body and every Cut unconditionally 400'd. See
+  `docs/status.md`'s A4 entry for the full design (`_selectedEntities` is
+  reused directly as the picker's own selection while the Extrude panel
+  is open, rather than a parallel field) and for two genuinely real
+  (non-`flutter_scene`) test suites: `extrude_panel_test.dart` (6/6,
+  Confirm-enablement) and new `document_api_client_test.dart` cases (4/4,
+  `target_body_ids` wire format including the None-vs-`[]` distinction).
+  **This closes out the DAG/multi-body phase (A1–A4) pending on-device
+  confirmation of the full picking flow** (enter picking mode, multi-select
+  accumulate, Cancel mid-pick, a zero-pick Boss, a real multi-body Cut) —
+  see `docs/status.md`'s A4 entry for the exact on-device checklist.
+  Prompt B (sub-shape refs, tree categories, cascade delete, earlier-feature
+  editing) waits on that.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

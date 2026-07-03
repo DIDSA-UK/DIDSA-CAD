@@ -208,19 +208,27 @@ class _PartScreenState extends State<PartScreen> {
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
   /// (Fix 4) when the cursor's hover hit is non-null.
+  ///
+  /// Prompt A4: while [_extrudeActive], [_selectedEntities] *is* the
+  /// target-body picker's selection (see [_openExtrudePanel]), so a tap here
+  /// is a body pick - reschedules the debounced live-preview re-solve so it
+  /// picks up the new `target_body_ids`, same as any other field change.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
       _selectedEntities = next;
     });
+    if (_extrudeActive) _scheduleExtrudePreview();
   }
 
   /// Item 4: "Empty space tap -> clears entire selection set" - passed to
   /// [PartViewport.onClearSelection], fired by a tap (Fix 4) when the
-  /// cursor's hover hit is null.
+  /// cursor's hover hit is null. See [_toggleSelectedEntity]'s doc comment
+  /// for why this also reschedules the preview during [_extrudeActive].
   void _clearSelectedEntities() {
     setState(() => _selectedEntities = {});
+    if (_extrudeActive) _scheduleExtrudePreview();
   }
 
   /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
@@ -266,6 +274,17 @@ class _PartScreenState extends State<PartScreen> {
   /// [_cancelExtrude] falls back to [_refreshMesh] in that case, the same
   /// distinction it made when this was a single nullable `MeshDto?`.
   List<BodyMeshDto>? _meshBeforeExtrude;
+
+  /// Prompt A4: [_selectedEntities]' value from just before the panel
+  /// opened. While the panel is open, [_selectedEntities] is dedicated
+  /// entirely to target-body picking (see [_openExtrudePanel], which also
+  /// forces [_selectionFilterOverrides] to bodies-only) rather than the
+  /// general Stage 23 selection it normally holds, so whatever the user had
+  /// already selected there isn't silently lost. Restored by both
+  /// [_confirmExtrude] and [_cancelExtrude]. Null (as opposed to empty)
+  /// means "never captured yet" - same distinction [_meshBeforeExtrude]
+  /// makes just above.
+  Set<SelectionEntityRef>? _entitiesBeforeExtrude;
 
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
@@ -761,6 +780,14 @@ class _PartScreenState extends State<PartScreen> {
   /// Opens [ExtrudePanel] for [sketchFeature], resetting every preview-flow
   /// field back to its default - in particular [_meshBeforeExtrude], which
   /// Cancel restores to.
+  ///
+  /// Prompt A4: also enters target-body picking mode for the duration of the
+  /// panel - stashes whatever was already in [_selectedEntities] (restored
+  /// by [_confirmExtrude]/[_cancelExtrude]) so it can be reused directly as
+  /// the picker's own selection, and pushes a bodies-only
+  /// [_selectionFilterOverrides] override so every viewport tap while the
+  /// panel is open can only ever produce a [SelectionEntityKind.body] hit
+  /// (see `selection_hit_test.dart`'s `hitTestBodies`).
   void _openExtrudePanel(FeatureDto sketchFeature) {
     setState(() {
       _extrudeSketchFeature = sketchFeature;
@@ -769,6 +796,11 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeType = ExtrudeType.boss;
       _extrudeStartDistance = 0.0;
       _extrudeEndDistance = 10.0;
+      _entitiesBeforeExtrude = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(
+        const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+      );
     });
   }
 
@@ -777,7 +809,17 @@ class _PartScreenState extends State<PartScreen> {
   /// shared by the debounced live-preview path and [_confirmExtrude] (which
   /// calls this directly, bypassing the debounce, if the user confirms
   /// before any field change ever fired one).
-  Future<void> _ensureExtrudeFeatureExists(ExtrudeType type, double start, double end) async {
+  ///
+  /// Prompt A4: [targetBodyIds] is always the *current* picks (see
+  /// [_currentTargetBodyIds]) at the moment this actually runs, not a
+  /// snapshot from when it was scheduled - both callers pass a freshly
+  /// computed value right before calling this.
+  Future<void> _ensureExtrudeFeatureExists(
+    ExtrudeType type,
+    double start,
+    double end,
+    List<String> targetBodyIds,
+  ) async {
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
     if (part == null || sketchFeature == null) return;
@@ -790,6 +832,7 @@ class _PartScreenState extends State<PartScreen> {
         extrudeType: type.apiValue,
         startDistance: start,
         endDistance: end,
+        targetBodyIds: targetBodyIds,
       );
       _previewExtrudeFeatureId = created.id;
     } else {
@@ -799,10 +842,21 @@ class _PartScreenState extends State<PartScreen> {
         extrudeType: type.apiValue,
         startDistance: start,
         endDistance: end,
+        targetBodyIds: targetBodyIds,
       );
     }
     await _refreshMesh();
   }
+
+  /// Prompt A4: [_selectedEntities]' bodyIds while [_extrudeActive] - always
+  /// [SelectionEntityKind.body] entries only, since [_openExtrudePanel]
+  /// forces the bodies-only filter override for the panel's whole lifetime.
+  /// A `Set` first (not just `.toList()`) since a single Body can appear
+  /// more than once in [_selectedEntities] in principle - `hitTestBodies`
+  /// only ever adds one [SelectionEntityRef] per body id, but de-duplicating
+  /// here costs nothing and guards against ever sending a repeated id.
+  List<String> _currentTargetBodyIds() =>
+      _selectedEntities.map((e) => e.bodyId).toSet().toList();
 
   /// [ExtrudePanel.onChanged] - records the latest values immediately (so
   /// [_confirmExtrude] always has them, even mid-debounce) and (re)starts
@@ -811,9 +865,24 @@ class _PartScreenState extends State<PartScreen> {
     _extrudeType = type;
     _extrudeStartDistance = start;
     _extrudeEndDistance = end;
+    _scheduleExtrudePreview();
+  }
+
+  /// Prompt A4: shared by [_onExtrudeValuesChanged] (a distance/type field
+  /// changed) and [_toggleSelectedEntity]/[_clearSelectedEntities] (a
+  /// target-body pick changed) - either kind of change should debounce the
+  /// same live-preview re-solve, using whatever the *other* kind's latest
+  /// value currently is (e.g. picking a body re-solves with the panel's
+  /// current distances, and vice versa).
+  void _scheduleExtrudePreview() {
     _extrudeDebounce?.cancel();
     _extrudeDebounce = Timer(const Duration(milliseconds: 500), () {
-      _runGuarded(() => _ensureExtrudeFeatureExists(type, start, end));
+      _runGuarded(() => _ensureExtrudeFeatureExists(
+            _extrudeType,
+            _extrudeStartDistance,
+            _extrudeEndDistance,
+            _currentTargetBodyIds(),
+          ));
     });
   }
 
@@ -835,11 +904,25 @@ class _PartScreenState extends State<PartScreen> {
   /// this same Sketch (skipping the picker) - including after the resulting
   /// ExtrudeFeature is later deleted, since deleting it doesn't otherwise
   /// touch this stale selection.
+  ///
+  /// Prompt A4: also exits target-body picking mode - restores
+  /// [_selectedEntities] to whatever it held before the panel opened (see
+  /// [_openExtrudePanel]) and pops the bodies-only filter override, both
+  /// unconditionally (not gated on whether any bodies were actually picked),
+  /// so this can never leave stale picker state behind for the *next*
+  /// Extrude - the same class of bug the Prompt D follow-up above guards
+  /// against for [_selectedFeatureId].
   Future<void> _confirmExtrude() async {
     _extrudeDebounce?.cancel();
     final sketchFeature = _extrudeSketchFeature;
+    final targetBodyIds = _currentTargetBodyIds();
     await _runGuarded(() async {
-      await _ensureExtrudeFeatureExists(_extrudeType, _extrudeStartDistance, _extrudeEndDistance);
+      await _ensureExtrudeFeatureExists(
+        _extrudeType,
+        _extrudeStartDistance,
+        _extrudeEndDistance,
+        targetBodyIds,
+      );
       await _refreshFeatures();
       await _refreshSketchGeometries();
     });
@@ -850,6 +933,9 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
+      _selectedEntities = _entitiesBeforeExtrude ?? {};
+      _entitiesBeforeExtrude = null;
+      _selectionFilterOverrides.pop();
       if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
         _selectedFeatureId = null;
       }
@@ -865,6 +951,11 @@ class _PartScreenState extends State<PartScreen> {
   /// Sketch, for the same reason [_confirmExtrude] does - a cancelled pick
   /// shouldn't leave behind a stale selection that silently skips the
   /// picker next time either.
+  ///
+  /// Prompt A4: also unconditionally restores [_selectedEntities]/pops the
+  /// filter override, same as [_confirmExtrude] - see that method's doc
+  /// comment for why this must happen regardless of whether anything was
+  /// actually picked.
   Future<void> _cancelExtrude() async {
     _extrudeDebounce?.cancel();
     final part = _part;
@@ -875,6 +966,9 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
+      _selectedEntities = _entitiesBeforeExtrude ?? {};
+      _entitiesBeforeExtrude = null;
+      _selectionFilterOverrides.pop();
       if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
         _selectedFeatureId = null;
       }
@@ -889,6 +983,22 @@ class _PartScreenState extends State<PartScreen> {
       }
       await _refreshFeatures();
     });
+  }
+
+  /// Prompt A4: the top banner's text while [_extrudeActive] - Cut's wording
+  /// differs from Boss's since Cut requires 1+ picks (mirrors
+  /// [ExtrudePanel]'s own Confirm-disable rule, `_canConfirm`) while Boss
+  /// explicitly allows confirming with nothing picked to start a new Body.
+  String _targetBodyPickerBannerText() {
+    final count = _selectedEntities.length;
+    if (_extrudeType == ExtrudeType.cut) {
+      return count == 0
+          ? 'Select at least one target body to cut'
+          : 'Select target body/bodies to cut ($count selected)';
+    }
+    return count == 0
+        ? 'Select target body/bodies to merge into (optional - confirm with none selected to start a new body)'
+        : 'Select target body/bodies to merge into ($count selected)';
   }
 
   /// Client-side-only Hide/Show for a Feature - [_hiddenFeatureIds] itself
@@ -1063,7 +1173,13 @@ class _PartScreenState extends State<PartScreen> {
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
                   bodyOpacity: _bodyOpacity,
-                  selectionMode: _selectionMode,
+                  // Prompt A4: forced on for the duration of the Extrude
+                  // panel regardless of the Stage 23 mode-toggle FAB's own
+                  // state (hidden while the panel is open anyway - see
+                  // floatingActionButton below) - target-body picking always
+                  // needs live hit-testing/cursor, the same as the general
+                  // Selection mode does.
+                  selectionMode: _extrudeActive ? true : _selectionMode,
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
                   onClearSelection: _clearSelectedEntities,
@@ -1103,13 +1219,21 @@ class _PartScreenState extends State<PartScreen> {
                 // Scaffold's own floatingActionButton slot, which Flutter
                 // always paints above this body Stack, so this never needs
                 // special-cased margin to avoid obscuring it.
-                Positioned.fill(
-                  child: SelectionListDrawer(
-                    selectedEntities: _selectedEntities,
-                    onRemove: _toggleSelectedEntity,
-                    header: SelectionContextPanel(selectedEntities: _selectedEntities),
+                // Prompt A4: hidden while the Extrude panel is open -
+                // [_selectedEntities] is the target-body picker's selection
+                // then (see [_openExtrudePanel]), already surfaced by the
+                // top banner's count and the viewport's own highlights, and
+                // this drawer is bottom-docked (a DraggableScrollableSheet)
+                // exactly where [ExtrudePanel]'s own Confirm/Cancel controls
+                // live - showing both at once would visually collide.
+                if (!_extrudeActive)
+                  Positioned.fill(
+                    child: SelectionListDrawer(
+                      selectedEntities: _selectedEntities,
+                      onRemove: _toggleSelectedEntity,
+                      header: SelectionContextPanel(selectedEntities: _selectedEntities),
+                    ),
                   ),
-                ),
                 Positioned.fill(
                   child: FeatureTreePanel(
                     visible: _featureTreeVisible && !_extrudeActive,
@@ -1162,9 +1286,47 @@ class _PartScreenState extends State<PartScreen> {
                       initialType: _extrudeType,
                       initialStartDistance: _extrudeStartDistance,
                       initialEndDistance: _extrudeEndDistance,
+                      targetBodyCount: _selectedEntities.length,
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,
                       onCancel: _cancelExtrude,
+                    ),
+                  ),
+                // Prompt A4: names the target-body picking mode live for the
+                // whole time the Extrude panel is open - same top-center
+                // pill convention as the plane-selection-mode banner below,
+                // since both are "pick something in the viewport, Cancel to
+                // back out" modes; unlike that one this doesn't need to
+                // check `!_featureTreeVisible`, since the tree is already
+                // forced hidden while the panel is open (see
+                // `FeatureTreePanel.visible` above).
+                if (_extrudeActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(_targetBodyPickerBannerText()),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelExtrude,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 // Always on top (last in the Stack) so it stays tappable
