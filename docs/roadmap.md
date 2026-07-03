@@ -106,6 +106,19 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   automated gate. Setting one up (pinned to a `flutter_scene`-compatible
   Flutter version) would have caught several of the regressions documented
   in `docs/status.md` earlier.
+- **DAG refactor / multi-body phase (Prompts A1–A4, distinct from the
+  older lettered "Prompts A–D" bullet above).** A1 (backend: Feature
+  dependency graph + multi-body identity) landed — see `docs/status.md`'s
+  2026-07-03 entry. **Waiting on CI + a manual API sanity pass
+  (`curl`/Postman against the new Boss/Cut/`target_body_ids` and
+  array-shaped `/mesh` endpoints) before A2 begins** — this environment has
+  no OCCT/Docker available, so A1 was verified by a real pytest run for the
+  new pure-Python DAG module plus `ast.parse`/manual logic review for every
+  OCCT-touching change; the stop condition explicitly calls for that gap to
+  be closed by CI before client work (A2 onward: selection filter
+  framework, body-as-selectable-entity, Boss/Cut target-body picking) is
+  built on top of it. Prompt B (sub-shape refs, tree categories, cascade
+  delete, earlier-feature editing) starts only after A4.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

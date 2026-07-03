@@ -340,12 +340,16 @@ def test_cascade_delete_of_an_unknown_feature_is_404_over_the_api():
 
 
 def test_get_part_mesh_returns_placeholder_geometry_over_the_api():
+    """A1: GET /mesh now returns an array of Bodies - a Part with no
+    ExtrudeFeature still gets exactly one (the placeholder box)."""
     part = _create_part()
 
     response = client.get(f"/document/parts/{part['id']}/mesh")
 
     assert response.status_code == 200
-    body = response.json()
+    bodies = response.json()
+    assert len(bodies) == 1
+    body = bodies[0]
     assert body["source"] == "placeholder"
     assert len(body["mesh"]["vertices"]) > 0
     assert len(body["mesh"]["triangle_indices"]) > 0

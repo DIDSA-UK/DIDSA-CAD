@@ -48,6 +48,7 @@ def _create_extrude_feature(
     extrude_type: str = "boss",
     start_distance: float = 0.0,
     end_distance: float = 10.0,
+    target_body_ids: list[str] | None = None,
 ) -> dict:
     response = client.post(
         f"/document/parts/{part_id}/extrude-features",
@@ -56,16 +57,30 @@ def _create_extrude_feature(
             "extrude_type": extrude_type,
             "start_distance": start_distance,
             "end_distance": end_distance,
+            "target_body_ids": target_body_ids or [],
         },
     )
     assert response.status_code == 201
     return response.json()
 
 
+def _get_bodies(part_id: str, hidden_feature_ids: list[str] | None = None) -> list[dict]:
+    response = client.get(
+        f"/document/parts/{part_id}/mesh",
+        params={"hidden_feature_ids": hidden_feature_ids} if hidden_feature_ids else None,
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def _boss_box_mesh(part_id: str) -> dict:
+    """A1: still returns exactly one Body dict - see
+    test_stage23_mesh_ids.py's identical helper docstring."""
     sketch_feature = _create_square_sketch_feature(part_id)
     _create_extrude_feature(part_id, sketch_feature["id"])
-    return client.get(f"/document/parts/{part_id}/mesh").json()
+    bodies = _get_bodies(part_id)
+    assert len(bodies) == 1
+    return bodies[0]
 
 
 # --- edges field -----------------------------------------------------------------
@@ -109,22 +124,26 @@ def test_edge_endpoints_are_consistent_with_mesh_vertex_positions():
 def test_placeholder_mesh_also_includes_edges():
     part = _create_part()
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    bodies = _get_bodies(part["id"])
 
-    assert response.status_code == 200
-    body = response.json()
+    assert len(bodies) == 1
+    body = bodies[0]
     assert body["source"] == "placeholder"
     assert len(body["mesh"]["edges"]) > 0
 
 
-def test_empty_computed_mesh_has_empty_edges():
+def test_body_with_a_skipped_cut_and_no_other_geometry_is_absent_from_the_array():
+    """A1: replaces the old "empty computed mesh has empty edges" test -
+    see test_stage23_mesh_ids.py's identically-named/reasoned replacement
+    for why a Cut can no longer be created with nothing to target."""
     part = _create_part()
-    sketch_feature = _create_square_sketch_feature(part["id"])
-    _create_extrude_feature(part["id"], sketch_feature["id"], extrude_type="cut")
+    boss_sketch = _create_square_sketch_feature(part["id"])
+    boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")
+    cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
+    _create_extrude_feature(
+        part["id"], cut_sketch["id"], extrude_type="cut", target_body_ids=[boss["id"]]
+    )
 
-    response = client.get(f"/document/parts/{part['id']}/mesh")
+    bodies = _get_bodies(part["id"], hidden_feature_ids=[boss["id"]])
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["source"] == "computed"
-    assert body["mesh"]["edges"] == []
+    assert bodies == []

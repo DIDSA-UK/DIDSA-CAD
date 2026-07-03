@@ -3,10 +3,11 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
-from app.document.extrude import compute_part_solid
+from app.document.extrude import compute_part_bodies
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
-from app.document.models import ExtrudeFeature, Feature, Part, SketchFeature
+from app.document.models import ExtrudeFeature, ExtrudeType, Feature, Part, SketchFeature
 from app.document.schemas import (
+    BodyMeshResponse,
     CascadeDeleteResponse,
     ExtrudeFeatureCreate,
     ExtrudeFeatureResponse,
@@ -14,7 +15,6 @@ from app.document.schemas import (
     FeatureResponse,
     MeshVertexData,
     PartCreate,
-    PartMeshResponse,
     PartResponse,
     SketchFeatureCreate,
     SketchFeatureResponse,
@@ -24,6 +24,11 @@ from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
 
 router = APIRouter(prefix="/document", tags=["document"])
+
+# A1: body id used for the fixed placeholder box returned while a Part has
+# no ExtrudeFeature yet (see `Part.produces_solid_geometry`) - never a real
+# Feature id, so it can't collide with one.
+_PLACEHOLDER_BODY_ID = "placeholder"
 
 
 def _get_feature_or_404(part: Part, feature_id: str) -> Feature:
@@ -52,6 +57,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             start_distance=feature.start_distance,
             end_distance=feature.end_distance,
             locked=part.is_locked(feature.id),
+            target_body_ids=feature.target_body_ids,
         )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
@@ -79,6 +85,33 @@ def _validate_extrude_distances(start_distance: float, end_distance: float) -> N
             status_code=400,
             detail="end_distance must be greater than start_distance",
         )
+
+
+def _validate_target_body_ids(
+    part: Part, extrude_type: ExtrudeType, target_body_ids: list[str]
+) -> None:
+    """A1: Cut must name at least one target Body - there is nothing to
+    subtract from an empty list, so this is a structured-validation-error
+    case (422, `{"detail": "..."}` - the same plain-HTTPException shape
+    every other validation error in this API uses, e.g.
+    `_validate_extrude_distances`'s 400). Every named id (Boss or Cut) must
+    resolve to an ExtrudeFeature already in this Part - a Body's id is
+    always the id of the ExtrudeFeature that created (or, after a merge,
+    still identifies) it, see app.document.models.ExtrudeFeature."""
+    if extrude_type == ExtrudeType.CUT and not target_body_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="Cut requires at least one target_body_ids entry - there is nothing to cut "
+            "from an empty list",
+        )
+    for target_id in target_body_ids:
+        target_feature = part.get_feature(target_id)
+        if not isinstance(target_feature, ExtrudeFeature):
+            raise HTTPException(
+                status_code=400,
+                detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature "
+                "in this Part",
+            )
 
 
 def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> SketchFeature:
@@ -146,12 +179,14 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
     part = get_part_or_404(part_id)
     _require_closed_sketch_feature(part, payload.sketch_feature_id)
     _validate_extrude_distances(payload.start_distance, payload.end_distance)
+    _validate_target_body_ids(part, payload.extrude_type, payload.target_body_ids)
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
         extrude_type=payload.extrude_type,
         start_distance=payload.start_distance,
         end_distance=payload.end_distance,
+        target_body_ids=list(payload.target_body_ids),
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -179,11 +214,16 @@ def update_extrude_feature(
     new_start = payload.start_distance if payload.start_distance is not None else feature.start_distance
     new_end = payload.end_distance if payload.end_distance is not None else feature.end_distance
     _validate_extrude_distances(new_start, new_end)
+    new_extrude_type = payload.extrude_type if payload.extrude_type is not None else feature.extrude_type
+    new_target_body_ids = (
+        payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
+    )
+    _validate_target_body_ids(part, new_extrude_type, new_target_body_ids)
 
-    if payload.extrude_type is not None:
-        feature.extrude_type = payload.extrude_type
+    feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
     feature.end_distance = new_end
+    feature.target_body_ids = list(new_target_body_ids)
     return _feature_response(part, feature)
 
 
@@ -236,18 +276,26 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
     )
 
 
-@router.get("/parts/{part_id}/mesh", response_model=PartMeshResponse)
+@router.get("/parts/{part_id}/mesh", response_model=list[BodyMeshResponse])
 def get_part_mesh(
     part_id: str, hidden_feature_ids: list[str] = Query(default=[])
-) -> PartMeshResponse:
-    """Placeholder mesh (a fixed box) while the Part has no ExtrudeFeature
-    yet, per `Part.produces_solid_geometry`. Once it does, this instead
-    accumulates every non-hidden ExtrudeFeature's real OCCT solid (Boss/Cut,
-    in order - see app.document.extrude.compute_part_solid) and tessellates
-    that. A Part whose only ExtrudeFeature(s) all skipped (e.g. a Cut with no
-    prior Boss, or every ExtrudeFeature hidden) still gets
-    `source="computed"`, just with an empty mesh - it has "real" geometry in
-    intent, there's just nothing to show yet.
+) -> list[BodyMeshResponse]:
+    """A1: returns an array of Bodies rather than one combined mesh - each
+    entry is one independently-tessellated Body, carrying its own stable
+    `body_id` (see app.document.models.ExtrudeFeature's docstring) and its
+    own `face_ids`/`edge_ids`/`topology_vertex_ids`, scoped to that Body's
+    own tessellation only (not globally unique across the array).
+
+    Placeholder mesh (a fixed box, `body_id="placeholder"`) while the Part
+    has no ExtrudeFeature yet, per `Part.produces_solid_geometry` - always
+    exactly one entry in that case. Once it does, this instead recomputes
+    every non-hidden ExtrudeFeature's real OCCT geometry (Boss/Cut, in
+    dependency-graph order - see app.document.extrude.compute_part_bodies)
+    and tessellates each resulting Body independently. A Part whose
+    ExtrudeFeature(s) all skipped or whose Bodies were all hidden away
+    returns an empty array - there is no "real" geometry to show at all,
+    unlike the old single-mesh response which still returned an empty mesh
+    tagged `source="computed"` for this case.
 
     `hidden_feature_ids` is the client's Hide/Show state (see
     PartScreen._hiddenFeatureIds) - purely client-side, never persisted here;
@@ -259,14 +307,18 @@ def get_part_mesh(
     if not part.produces_solid_geometry:
         box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
         mesh_data = tessellate_shape(box, DEFAULT_MESH_QUALITY)
-        return PartMeshResponse(source="placeholder", mesh=_mesh_vertex_data(mesh_data))
+        return [
+            BodyMeshResponse(
+                body_id=_PLACEHOLDER_BODY_ID, source="placeholder", mesh=_mesh_vertex_data(mesh_data)
+            )
+        ]
 
-    solid = compute_part_solid(part, frozenset(hidden_feature_ids))
-    if solid is None:
-        return PartMeshResponse(
+    bodies = compute_part_bodies(part, frozenset(hidden_feature_ids))
+    return [
+        BodyMeshResponse(
+            body_id=body_id,
             source="computed",
-            mesh=MeshVertexData(vertices=[], normals=[], triangle_indices=[], edges=[]),
+            mesh=_mesh_vertex_data(tessellate_shape(shape, DEFAULT_MESH_QUALITY)),
         )
-
-    mesh_data = tessellate_shape(solid, DEFAULT_MESH_QUALITY)
-    return PartMeshResponse(source="computed", mesh=_mesh_vertex_data(mesh_data))
+        for body_id, shape in bodies.items()
+    ]
