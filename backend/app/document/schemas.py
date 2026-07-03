@@ -2,7 +2,7 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
-from app.document.models import ExtrudeType
+from app.document.models import ExtrudeType, Produces
 from app.sketch.models import Plane
 
 
@@ -32,6 +32,9 @@ class SketchFeatureResponse(BaseModel):
     id: str
     sketch_id: str
     locked: bool
+    # B1: what this Feature contributes, for the client tree's grouping
+    # (B3) - see app.document.models.Feature.produces.
+    produces: Produces
 
 
 class ExtrudeFeatureCreate(BaseModel):
@@ -77,6 +80,9 @@ class ExtrudeFeatureResponse(BaseModel):
     end_distance: float
     locked: bool
     target_body_ids: list[str] = []
+    # B1: see SketchFeatureResponse.produces above - always BODY for an
+    # ExtrudeFeature today (Boss and Cut alike).
+    produces: Produces
 
 
 FeatureResponse = Union[SketchFeatureResponse, ExtrudeFeatureResponse]

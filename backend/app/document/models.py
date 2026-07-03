@@ -4,6 +4,21 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+class Produces(str, Enum):
+    """B1: what a Feature contributes to the Part, for the client's feature-
+    tree categorization (B3) - independent of `produces_solid_geometry`
+    below, which only drives whether `get_part_mesh` returns real geometry
+    or its placeholder box. A Feature that doesn't fit any group (nothing
+    exists yet that would) reports NONE rather than a client having to infer
+    grouping from `type` strings."""
+
+    BODY = "body"
+    PLANE = "plane"
+    SURFACE = "surface"
+    SKETCH = "sketch"
+    NONE = "none"
+
+
 class Feature(ABC):
     """Base type for anything that can live in a Part's ordered Feature
     list.
@@ -30,6 +45,15 @@ class Feature(ABC):
         stop returning its placeholder box once a Part has one."""
         return False
 
+    @property
+    def produces(self) -> Produces:
+        """B1: the client-tree-categorization tag (see `Produces` above) -
+        defaults to NONE, overridden by SketchFeature (SKETCH) and
+        ExtrudeFeature (BODY). Create Plane/Fillet/Chamfer will set their
+        own PLANE/BODY/SURFACE value once they exist (C/D/E) rather than
+        this prompt inventing a placeholder for them."""
+        return Produces.NONE
+
 
 @dataclass
 class SketchFeature(Feature):
@@ -45,6 +69,15 @@ class SketchFeature(Feature):
     @property
     def type(self) -> str:
         return "sketch"
+
+    @property
+    def produces(self) -> Produces:
+        """A SketchFeature is already a node in `build_feature_graph` (A1) -
+        it just has no dependencies of its own - so it is a real
+        Feature-graph node in its own right, not merely an upstream
+        reference from Extrude. Reports SKETCH accordingly (see B1's status
+        doc for the reasoning B3 needs to match this)."""
+        return Produces.SKETCH
 
 
 class ExtrudeType(str, Enum):
@@ -109,6 +142,48 @@ class ExtrudeFeature(Feature):
     @property
     def produces_solid_geometry(self) -> bool:
         return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class SubShapeType(str, Enum):
+    """Which kind of sub-shape a `SubShapeRef` (below) points at. Mirrors
+    `ExtrudeType`'s str-Enum pattern so it round-trips through pydantic the
+    same way once a future Feature (Fillet's `edge_refs`, Create Plane's
+    `face_ref`) embeds one in its own payload schema."""
+
+    EDGE = "edge"
+    FACE = "face"
+
+
+@dataclass(frozen=True)
+class SubShapeRef:
+    """B1: a body-scoped reference to one specific edge or face, so a future
+    Feature can persist "this specific edge/face" across recomputes the same
+    way Boss/Cut already persists "this specific body" (`target_body_ids`,
+    A1). Not a Feature itself - a value type meant to be embedded inside a
+    future Feature's own parameter payload (Fillet's `edge_refs: list[
+    SubShapeRef]`, Create Plane's `face_ref: SubShapeRef`); no such consumer
+    exists yet (that's C/D/E), so this prompt builds and tests the type and
+    its resolver (`app.document.extrude.resolve_subshape`) in isolation.
+
+    `body_id` is required (unlike a bare shape reference) because bodies are
+    plural since A1/A3 - a sub-shape reference without a body would be
+    ambiguous as to which Body's tessellation `index` counts into. `index`
+    is an enumeration index captured at creation time via OCCT
+    `topexp.MapShapes` over that body's current (single-solid, see the
+    Body-splitting amendment) shape - deterministic given identical upstream
+    topology, but not guaranteed stable if the body's own face/edge topology
+    changes shape (fewer/more sub-shapes, or the same count in a different
+    order) - see `resolve_subshape`'s fail-closed behaviour for that case.
+    Frozen/hashable like `app.document.graph.GraphNode`, since this is a
+    plain value type, not a Feature with its own identity."""
+
+    body_id: str
+    shape_type: SubShapeType
+    index: int
 
 
 @dataclass
