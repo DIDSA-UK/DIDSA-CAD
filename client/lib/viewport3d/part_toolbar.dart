@@ -25,6 +25,10 @@ double clipToSlider(double farClip) =>
 /// contextual action this used to show ("New Sketch on [plane]") out into
 /// its own fly-up bottom sheet (see [showPlaneContextSheet]), so this is now
 /// purely the static File/View menu structure with no contextual entries.
+/// A third top-level menu, Selection Filters, was split out of View
+/// afterwards (see [_buildSelectionFilterMenu]'s doc comment) - it gates
+/// what a viewport tap selects, a distinct concern from View's display
+/// settings.
 class PartToolbar extends StatelessWidget {
   final bool visible;
 
@@ -138,6 +142,7 @@ class PartToolbar extends StatelessWidget {
                         children: [
                           _buildFileMenu(context),
                           _buildViewMenu(context),
+                          _buildSelectionFilterMenu(context),
                         ],
                       ),
                     ),
@@ -241,12 +246,39 @@ class PartToolbar extends StatelessWidget {
             onTap: onRenderModeChanged == null ? null : () => onRenderModeChanged!(mode),
           ),
         const Divider(height: 1),
-        // Prompt A2: selection filter toggles - which entity kinds are
-        // hit-testable in Selection mode. Body is exclusive against the
-        // other three (see `PartScreen._setBodyFilter`'s doc comment for
-        // why): there's no click target that's "body but not vertex/edge/
-        // face", so whenever Body is on, Vertices/Edges/Faces are forced off
-        // and greyed out here rather than left independently toggleable.
+        ListTile(
+          leading: Icon(Icons.palette_outlined, color: colorFromHex(bgColourHex)),
+          title: const Text('Background Colour'),
+          onTap: onBgColourChanged == null ? null : () => _pickBgColour(context),
+        ),
+        ListTile(
+          leading: Icon(Icons.circle, color: colorFromHex(bodyColourHex)),
+          title: const Text('Body Colour'),
+          onTap: onBodyColourChanged == null ? null : () => _pickBodyColour(context),
+        ),
+        ListTile(
+          leading: const Icon(Icons.opacity_outlined),
+          title: const Text('Body Transparency'),
+          onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
+        ),
+      ],
+    );
+  }
+
+  /// Prompt A2's selection filter toggles - which entity kinds are
+  /// hit-testable in Selection mode. Split out of the View sub-menu into its
+  /// own top-level one: these gate *what a tap in the viewport selects*,
+  /// a distinct concern from View's display/appearance settings. Body is
+  /// exclusive against the other three (see `PartScreen._setBodyFilter`'s
+  /// doc comment for why): there's no click target that's "body but not
+  /// vertex/edge/face", so whenever Body is on, Vertices/Edges/Faces are
+  /// forced off and greyed out here rather than left independently
+  /// toggleable.
+  Widget _buildSelectionFilterMenu(BuildContext context) {
+    return ExpansionTile(
+      leading: const Icon(Icons.filter_alt_outlined),
+      title: const Text('Selection Filters'),
+      children: [
         _filterToggle(
           label: 'Vertices',
           value: selectionFilter.vertex,
@@ -266,22 +298,6 @@ class PartToolbar extends StatelessWidget {
           label: 'Bodies',
           value: selectionFilter.body,
           onChanged: onBodyFilterChanged,
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: Icon(Icons.palette_outlined, color: colorFromHex(bgColourHex)),
-          title: const Text('Background Colour'),
-          onTap: onBgColourChanged == null ? null : () => _pickBgColour(context),
-        ),
-        ListTile(
-          leading: Icon(Icons.circle, color: colorFromHex(bodyColourHex)),
-          title: const Text('Body Colour'),
-          onTap: onBodyColourChanged == null ? null : () => _pickBodyColour(context),
-        ),
-        ListTile(
-          leading: const Icon(Icons.opacity_outlined),
-          title: const Text('Body Transparency'),
-          onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
         ),
       ],
     );
