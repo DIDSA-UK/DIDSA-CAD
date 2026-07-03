@@ -156,8 +156,20 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(face: value));
   }
 
+  /// Body is exclusive against vertex/edge/face, not merely additive: there
+  /// is no click that lands "on the body" without also landing on one of its
+  /// faces/edges/vertices, and [hitTestBodies] tries vertex/edge before body
+  /// (see `selection_hit_test.dart`), so with all four enabled a body could
+  /// never actually be picked wherever a vertex/edge is in range - precisely
+  /// where users naturally click. Turning Body on therefore forces the other
+  /// three off (and the toolbar greys them out, see [PartToolbar]); turning
+  /// it back off restores them to their default on-state.
   void _setBodyFilter(bool value) {
-    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(body: value));
+    setState(() {
+      _selectionFilterBase = value
+          ? const SelectionFilterState(vertex: false, edge: false, face: false, body: true)
+          : _selectionFilterBase.copyWith(vertex: true, edge: true, face: true, body: false);
+    });
   }
 
   /// Feature ids hidden from the 3D viewport via the long-press

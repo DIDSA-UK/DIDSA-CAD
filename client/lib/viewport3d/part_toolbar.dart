@@ -242,22 +242,25 @@ class PartToolbar extends StatelessWidget {
           ),
         const Divider(height: 1),
         // Prompt A2: selection filter toggles - which entity kinds are
-        // hit-testable in Selection mode. Body starts off (and is currently
-        // inert - no body-level hit-test exists yet, lands in Prompt A3).
+        // hit-testable in Selection mode. Body is exclusive against the
+        // other three (see `PartScreen._setBodyFilter`'s doc comment for
+        // why): there's no click target that's "body but not vertex/edge/
+        // face", so whenever Body is on, Vertices/Edges/Faces are forced off
+        // and greyed out here rather than left independently toggleable.
         _filterToggle(
           label: 'Vertices',
           value: selectionFilter.vertex,
-          onChanged: onVertexFilterChanged,
+          onChanged: selectionFilter.body ? null : onVertexFilterChanged,
         ),
         _filterToggle(
           label: 'Edges',
           value: selectionFilter.edge,
-          onChanged: onEdgeFilterChanged,
+          onChanged: selectionFilter.body ? null : onEdgeFilterChanged,
         ),
         _filterToggle(
           label: 'Faces',
           value: selectionFilter.face,
-          onChanged: onFaceFilterChanged,
+          onChanged: selectionFilter.body ? null : onFaceFilterChanged,
         ),
         _filterToggle(
           label: 'Bodies',
@@ -286,13 +289,16 @@ class PartToolbar extends StatelessWidget {
 
   /// One selection-filter toggle row - same checkbox-icon [ListTile]
   /// convention as the Perspective entry above, rather than a [SwitchListTile],
-  /// so all boolean toggles in this menu look consistent.
+  /// so all boolean toggles in this menu look consistent. `enabled:` (not
+  /// just a null `onTap`) is what actually greys out the icon/label -
+  /// `onTap: null` alone only disables the tap, it doesn't restyle the row.
   Widget _filterToggle({
     required String label,
     required bool value,
     required void Function(bool value)? onChanged,
   }) {
     return ListTile(
+      enabled: onChanged != null,
       leading: Icon(value ? Icons.check_box : Icons.check_box_outline_blank),
       title: Text(label),
       onTap: onChanged == null ? null : () => onChanged(!value),
