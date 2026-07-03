@@ -27,6 +27,12 @@ enum ExtrudeType {
 /// [PartScreen]'s job, not this widget's, so this stays a dumb, easily
 /// tested input panel.
 class ExtrudePanel extends StatefulWidget {
+  /// B4: 'Extrude' when creating a brand-new Feature (default, unchanged
+  /// from before this prompt), 'Edit Extrude' when [PartScreen] opened this
+  /// to edit an already-existing one instead - purely a label, doesn't
+  /// affect any other behaviour of this panel.
+  final String title;
+
   final ExtrudeType initialType;
   final double initialStartDistance;
   final double initialEndDistance;
@@ -45,6 +51,7 @@ class ExtrudePanel extends StatefulWidget {
 
   const ExtrudePanel({
     super.key,
+    this.title = 'Extrude',
     this.initialType = ExtrudeType.boss,
     this.initialStartDistance = 0.0,
     this.initialEndDistance = 10.0,
@@ -125,7 +132,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Extrude', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 const SizedBox(height: 12),
                 SegmentedButton<ExtrudeType>(
                   segments: const [

@@ -115,4 +115,43 @@ void main() {
       );
     });
   });
+
+  group('ExtrudePanel title (B4)', () {
+    testWidgets('defaults to "Extrude"', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ExtrudePanel(
+              targetBodyCount: 0,
+              onChanged: (_, __, ___) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Extrude'), findsOneWidget);
+      expect(find.text('Edit Extrude'), findsNothing);
+    });
+
+    testWidgets('shows "Edit Extrude" when editing an existing Feature', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ExtrudePanel(
+              title: 'Edit Extrude',
+              initialType: ExtrudeType.boss,
+              initialStartDistance: 0,
+              initialEndDistance: 10,
+              targetBodyCount: 0,
+              onChanged: (_, __, ___) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Edit Extrude'), findsOneWidget);
+    });
+  });
 }

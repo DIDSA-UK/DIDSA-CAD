@@ -251,11 +251,14 @@ def test_deleting_the_last_feature_succeeds_over_the_api():
     assert client.get(f"/document/parts/{part['id']}/features/{second['id']}").status_code == 404
 
 
-def test_mutating_a_sketch_behind_a_locked_feature_is_rejected_over_the_api():
-    """The cross-module enforcement: app.sketch.router checks
-    app.document.store.is_sketch_locked, so adding a Point to a Sketch
-    wrapped by a non-last Feature is rejected at the sketch endpoint
-    itself, not just at the feature endpoint."""
+def test_mutating_a_sketch_behind_a_locked_feature_is_allowed_over_the_api():
+    """B4: earlier-Feature editing needs this to actually work - a Sketch
+    wrapped by a non-last Feature is no longer rejected at the sketch
+    endpoint (the pre-B4 cross-module enforcement via app.sketch.router's
+    `_ensure_sketch_editable`/`app.document.store.is_sketch_locked` was
+    removed for this exact reason). `locked` (see `Part.is_locked`/the
+    Feature response field) still reflects Feature *deletion*-eligibility
+    (single-DELETE vs. cascade-delete) - it just no longer gates editing."""
     part = _create_part()
     first = _create_sketch_feature(part["id"])
     _create_sketch_feature(part["id"])
@@ -264,8 +267,7 @@ def test_mutating_a_sketch_behind_a_locked_feature_is_rejected_over_the_api():
         f"/sketch/sketches/{first['sketch_id']}/points", json={"x": 1.0, "y": 1.0}
     )
 
-    assert response.status_code == 400
-    assert "locked" in response.json()["detail"].lower()
+    assert response.status_code == 201
 
 
 def test_mutating_a_sketch_behind_the_last_feature_is_allowed_over_the_api():

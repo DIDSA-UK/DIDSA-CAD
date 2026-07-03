@@ -210,14 +210,21 @@ def _get_extrude_feature_or_404(part: Part, feature_id: str) -> ExtrudeFeature:
 def update_extrude_feature(
     part_id: str, feature_id: str, payload: ExtrudeFeatureUpdate
 ) -> ExtrudeFeatureResponse:
+    """B4: any ExtrudeFeature can be edited now, not just the last one in its
+    Part - the pre-B4 "only the last Feature is editable" lock only ever
+    gated this endpoint and `app.sketch.router`'s Sketch-mutation endpoints
+    (see `_ensure_sketch_editable`, removed there for the same reason); it
+    never applied to reading a Feature, and `Part.is_locked`/the `locked`
+    response field are otherwise untouched (single-`DELETE` still requires
+    cascade-delete for anything but the last Feature - B4 is about editing,
+    not deleting). Editing a Feature with downstream dependents still
+    triggers a normal full recompute of all of them the next time `/mesh` is
+    fetched, via A1's existing graph-based recompute path, unchanged by
+    this prompt - there is no separate "rollback" concept on this side at
+    all, since suppressing downstream Features during an edit is purely a
+    client-side concern (`hidden_feature_ids`, already existed before B4)."""
     part = get_part_or_404(part_id)
     feature = _get_extrude_feature_or_404(part, feature_id)
-    if part.is_locked(feature_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Only the last Feature in a Part can be edited - it is locked because a "
-            "later Feature exists.",
-        )
     new_start = payload.start_distance if payload.start_distance is not None else feature.start_distance
     new_end = payload.end_distance if payload.end_distance is not None else feature.end_distance
     _validate_extrude_distances(new_start, new_end)

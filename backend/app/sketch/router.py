@@ -67,26 +67,6 @@ from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
 router = APIRouter(prefix="/sketch", tags=["sketch"])
 
 
-def _ensure_sketch_editable(sketch_id: str) -> None:
-    """Stage 7's Feature-locking rule, enforced here rather than only in
-    client UI: a Sketch wrapped by a SketchFeature can only be mutated while
-    that Feature is the last one in its Part. Sketches not (yet) wrapped by
-    any Feature - e.g. created directly via this router rather than through
-    the document API - are unrestricted. Imported lazily inside the function
-    (not at module level) to avoid a hard import-time dependency from this
-    lower-level module onto app.document, which itself depends on this
-    module's store - see app/document/store.py's is_sketch_locked.
-    """
-    from app.document.store import is_sketch_locked
-
-    if is_sketch_locked(sketch_id):
-        raise HTTPException(
-            status_code=400,
-            detail="This sketch belongs to a locked Feature - only the most recent "
-            "Feature in a Part can be edited. Add a new Feature instead of editing this one.",
-        )
-
-
 def _get_point_or_404(sketch: Sketch, point_id: str) -> Point:
     point = sketch.points.get(point_id)
     if point is None:
@@ -256,7 +236,6 @@ def get_sketch(sketch_id: str) -> SketchResponse:
 @router.post("/sketches/{sketch_id}/points", response_model=PointResponse, status_code=201)
 def create_point(sketch_id: str, payload: PointCreate) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     point = sketch.add_point(payload.x, payload.y)
     return _point_response(point)
 
@@ -279,7 +258,6 @@ def get_point(sketch_id: str, point_id: str) -> PointResponse:
 @router.patch("/sketches/{sketch_id}/points/{point_id}", response_model=PointResponse)
 def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     point = _get_point_or_404(sketch, point_id)
     if point_id == sketch.origin_point_id:
         raise HTTPException(status_code=400, detail="Cannot move the sketch's origin point")
@@ -291,7 +269,6 @@ def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointRe
 @router.delete("/sketches/{sketch_id}/points/{point_id}", status_code=204)
 def delete_point(sketch_id: str, point_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     _get_point_or_404(sketch, point_id)
     try:
         sketch.delete_point(point_id)
@@ -302,7 +279,6 @@ def delete_point(sketch_id: str, point_id: str) -> None:
 @router.post("/sketches/{sketch_id}/lines", response_model=LineResponse, status_code=201)
 def create_line(sketch_id: str, payload: LineCreate) -> LineResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     try:
         line = sketch.add_line(
             payload.start_point_id,
@@ -333,7 +309,6 @@ def get_line(sketch_id: str, line_id: str) -> LineResponse:
 @router.delete("/sketches/{sketch_id}/lines/{line_id}", status_code=204)
 def delete_line(sketch_id: str, line_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     _get_line_or_404(sketch, line_id)
     sketch.delete_line(line_id)
 
@@ -341,7 +316,6 @@ def delete_line(sketch_id: str, line_id: str) -> None:
 @router.patch("/sketches/{sketch_id}/lines/{line_id}", response_model=LineResponse)
 def update_line(sketch_id: str, line_id: str, payload: LineUpdate) -> LineResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     line = _get_line_or_404(sketch, line_id)
     if payload.length is not None:
         try:
@@ -356,7 +330,6 @@ def update_line(sketch_id: str, line_id: str, payload: LineUpdate) -> LineRespon
 @router.post("/sketches/{sketch_id}/circles", response_model=CircleResponse, status_code=201)
 def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     try:
         circle = sketch.add_circle(
             payload.center_point_id,
@@ -387,7 +360,6 @@ def get_circle(sketch_id: str, circle_id: str) -> CircleResponse:
 @router.patch("/sketches/{sketch_id}/circles/{circle_id}", response_model=CircleResponse)
 def update_circle(sketch_id: str, circle_id: str, payload: CircleUpdate) -> CircleResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     circle = _get_circle_or_404(sketch, circle_id)
     if payload.construction is not None:
         circle.construction = payload.construction
@@ -397,7 +369,6 @@ def update_circle(sketch_id: str, circle_id: str, payload: CircleUpdate) -> Circ
 @router.delete("/sketches/{sketch_id}/circles/{circle_id}", status_code=204)
 def delete_circle(sketch_id: str, circle_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     _get_circle_or_404(sketch, circle_id)
     sketch.delete_circle(circle_id)
 
@@ -418,7 +389,6 @@ def get_profile(sketch_id: str) -> ProfileDetectionResponse:
 @router.post("/sketches/{sketch_id}/constraints", response_model=ConstraintResponse, status_code=201)
 def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     try:
         if isinstance(payload, DistanceConstraintCreate):
             constraint = sketch.add_distance_constraint(
@@ -470,7 +440,6 @@ def list_constraints(sketch_id: str) -> list[ConstraintResponse]:
 @router.delete("/sketches/{sketch_id}/constraints/{constraint_id}", status_code=204)
 def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     _get_constraint_or_404(sketch, constraint_id)
     del sketch.constraints[constraint_id]
 
@@ -480,7 +449,6 @@ def update_constraint_value(
     sketch_id: str, constraint_id: str, payload: ConstraintValueUpdate
 ) -> SolveResultResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    _ensure_sketch_editable(sketch_id)
     constraint = _get_constraint_or_404(sketch, constraint_id)
     if isinstance(constraint, DistanceConstraint):
         constraint.distance = payload.value
