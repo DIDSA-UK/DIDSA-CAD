@@ -1073,3 +1073,89 @@ still can't do that itself). This closes the verification gap flagged
 above — the manual `curl`/Postman API sanity pass is still outstanding,
 but the automated half of A1's stop condition is now genuinely confirmed,
 not just assumed.
+
+---
+
+## 2026-07-03 — Manual curl sanity pass against a live A1 server
+
+Closes the remaining half of A1's stop condition. `docker build` against
+`backend/Dockerfile` was attempted again and genuinely failed on policy
+grounds this time (not "no daemon" as in the original A1 entry) —
+confirmed via the sandbox's egress-proxy status endpoint, which recorded
+explicit `403` policy denials for `production.cloudfront.docker.com`
+(Docker Hub's CDN, needed for the `mambaorg/micromamba` base image) and
+`micro.mamba.pm` (the micromamba installer, tried as a Docker-free
+fallback). A raw `github.com` release-asset download (Miniforge, a third
+fallback) also came back `403`, but from GitHub's own API, not the proxy —
+this session's GitHub scope is `DIDSA-UK/DIDSA-CAD` only, so unrelated
+repos/assets are out of reach. Real `pythonocc-core` is unreachable from
+this sandbox by any path tried.
+
+Given that, and that every new piece of A1 validation logic
+(`target_body_ids` checks, distance checks, locking) runs in pure Python
+*before* any OCCT call — only `/mesh`'s actual tessellation needs real
+geometry — a minimal **fake OCCT shim** (`OCC.Core.*` stub package,
+scratch-space only, never committed) was built with just enough surface
+for `app.main` to import and boot: fixed fake box shapes (6 faces/12
+edges/8 vertices, arbitrary coordinates), `BRepAlgoAPI_Fuse`/`Cut`
+returning fresh fake shapes, `BRepMesh_IncrementalMesh`/`TopExp_Explorer`
+producing structurally-valid (not geometrically accurate) triangulation
+data. This proves the **API contract** — status codes, response shape,
+body-id derivation/merge logic, array-of-bodies wiring — via genuine HTTP
+round-trips against the real, unmodified FastAPI app; it does not and
+cannot prove geometric correctness, which is what the real-OCCT CI run
+above already confirmed.
+
+`pip install fastapi==0.115.*/uvicorn==0.34.*/httpx==0.27.*/py-slvs==1.0.6`
+(all reachable — PyPI is proxy-allowlisted) plus the fake `OCC` package on
+`PYTHONPATH` let `app.main` boot for real. Ran `uvicorn app.main:app` and
+curled it directly (not `TestClient`, not pytest — an actual live HTTP
+server on `127.0.0.1:8123`):
+
+- `/health` without `X-API-Key` → `401`; with it → `200`.
+- `GET /mesh` on a Part with no ExtrudeFeature → array of exactly **one**
+  entry, `body_id="placeholder"`, `source="placeholder"` — confirms the
+  array-wrapping applies even to the placeholder-box path, not just
+  `source="computed"`.
+- Boss with `target_body_ids: []` → `201`; `GET /mesh` afterward returns
+  exactly one Body whose `body_id` **equals the Boss feature's own id** —
+  confirms the "Body id = creating Feature's id" rule end-to-end over
+  real HTTP, not just inside a test process.
+- Cut with `target_body_ids: []` → **`422`**,
+  `{"detail": "Cut requires at least one target_body_ids entry..."}`.
+- Boss/Cut naming an unknown `target_body_ids` entry → **`400`**,
+  `{"detail": "target_body_ids entry 'does-not-exist' does not refer to
+  an ExtrudeFeature in this Part"}`.
+- Cut with a valid target → `201`; `GET /mesh` still shows exactly one
+  Body, same `body_id` as the Boss it targeted (Cut never changes body
+  identity).
+- `PATCH` clearing `target_body_ids` to `[]` on an existing Cut → `422`,
+  same message as create-time.
+- Two independent Bosses (no shared target) on one Part → `GET /mesh`
+  returns exactly **two** array entries with two distinct `body_id`s.
+- A third Boss naming both of those bodies in `target_body_ids` (listed
+  in reverse creation order, `[boss2, boss1]`) → `GET /mesh` afterward
+  shows exactly **one** Body, and its `body_id` is `boss1`'s — confirms
+  the deterministic "earliest-created target survives" merge tie-break is
+  independent of `target_body_ids` argument order, over real HTTP, not
+  just inside `test_boss_merge_survivor_id_is_the_earliest_target_regardless_of_argument_order`.
+- Hiding the Boss feature via `?hidden_feature_ids=<id>` → `GET /mesh`
+  returns `[]`, not a single entry with empty mesh arrays — confirms the
+  documented "nothing computed = empty array, not an empty Body" behavior
+  change end-to-end.
+- `/openapi.json` schema inspection: `BodyMeshResponse` has exactly
+  `body_id`/`source`/`mesh`; `ExtrudeFeatureCreate` has
+  `target_body_ids` alongside the pre-existing fields; the `/mesh` GET
+  response schema is a bare JSON array of `BodyMeshResponse`, not an
+  object wrapping one.
+
+All of the above matched the intended behavior exactly, with no
+surprises relative to what the code review and CI run already implied.
+Every temporary artifact (fake `OCC` package, live server process, the
+`dockerd` instance started to attempt the real build) was torn down
+afterward — nothing from this pass is committed to the repository.
+
+**A1's stop condition is now fully satisfied**: real-OCCT CI is green
+(278/278 across both architectures) and the manual API sanity pass above
+has independently confirmed the same endpoints respond correctly over a
+real HTTP connection. A2 can begin.

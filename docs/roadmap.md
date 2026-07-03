@@ -108,16 +108,20 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   in `docs/status.md` earlier.
 - **DAG refactor / multi-body phase (Prompts A1–A4, distinct from the
   older lettered "Prompts A–D" bullet above).** A1 (backend: Feature
-  dependency graph + multi-body identity) landed — see `docs/status.md`'s
-  2026-07-03 entries. CI (`.github/workflows/backend-verify.yml`) has since
-  confirmed green on both `linux/amd64` and `linux/arm64` for commit
-  `3992055` — `278 passed`, verified from the actual job logs, not just the
-  run conclusion. **Still outstanding before A2 begins: a manual
-  `curl`/Postman API sanity pass** against the new Boss/Cut/
-  `target_body_ids` and array-shaped `/mesh` endpoints — CI only proves the
-  automated test suite is internally consistent, not that a human has
-  poked the live API. Prompt B (sub-shape refs, tree categories, cascade
-  delete, earlier-feature editing) starts only after A4.
+  dependency graph + multi-body identity) landed and its stop condition is
+  now fully satisfied — see `docs/status.md`'s 2026-07-03 entries. CI is
+  green on both architectures (`278 passed`, verified from actual job
+  logs) and a manual curl pass against a live server independently
+  confirmed the same endpoints (placeholder/computed `/mesh` array shape,
+  Boss/Cut `target_body_ids` 422/400 validation, body-id derivation and
+  the earliest-target merge tie-break, hidden-body → empty array). Note:
+  the curl pass used a minimal fake-OCCT shim since this sandbox has no
+  path to real `pythonocc-core` (Docker Hub, `micro.mamba.pm`, and
+  out-of-scope GitHub assets are all policy-blocked here) — it proves the
+  API contract, not geometric correctness, which is what CI's real-OCCT
+  run already covers. A2 (client selection filter framework) is next.
+  Prompt B (sub-shape refs, tree categories, cascade delete,
+  earlier-feature editing) starts only after A4.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not
