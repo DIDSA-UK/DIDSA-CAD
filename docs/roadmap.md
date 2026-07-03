@@ -149,8 +149,29 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   again), that multi-body rendering looks correct, and that tapping a face
   in body-filter mode selects/highlights the whole body — none of this is
   verifiable in this sandbox for the same pre-existing `flutter_scene`
-  reason as A2's toggle check above. Prompt B (sub-shape refs, tree
-  categories, cascade delete, earlier-feature editing) starts only after A4.
+  reason as A2's toggle check above. **A backend amendment landed next**
+  (still 2026-07-03): on-device A3 testing showed two disjoint solids from
+  one multi-profile Boss rendering/selecting as a single Body, which
+  turned out to be exactly what A1 shipped and tested — asked the user
+  directly, who chose to match mainstream CAD tools instead (each
+  disjoint solid is its own Body, even from one Extrude operation). See
+  `docs/status.md`'s second 2026-07-03 entry. Also caught and fixed, by
+  design review rather than a bug report, a real validation bug this
+  change would otherwise have introduced: a composite split-body id
+  (`"featid#0"`) round-tripped from `/mesh` would have 400'd against
+  `_validate_target_body_ids`'s plain `part.get_feature(target_id)`
+  lookup — fixed via `base_feature_id()`, confirmed over live HTTP with
+  the same fake-OCCT-shim technique as A1 (extended this round so
+  `TopExp_Explorer(..., TopAbs_SOLID)` doesn't crash, since every
+  Boss/Cut result is now exploded through it). The client (A3) needed
+  zero changes — body ids were already treated as fully opaque strings.
+  **Still outstanding: CI (real OCCT) confirming a disjoint Cut/Boss
+  actually produces N separate solids** (the fake shim can't organically
+  produce real disjoint geometry, only prove the validation-layer fix and
+  the no-regression single-solid path), plus on-device confirmation that
+  this amendment and A3's own fix both look right together. Prompt A4
+  (Boss/Cut target-body picking) and Prompt B (sub-shape refs, tree
+  categories, cascade delete, earlier-feature editing) both wait on that.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

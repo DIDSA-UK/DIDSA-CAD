@@ -76,14 +76,24 @@ class ExtrudeFeature(Feature):
     app.document.extrude, not here - this is just the Feature-tree record of
     the operation, same separation SketchFeature keeps from app.sketch.
 
-    A Body's id (A1) is the id of the ExtrudeFeature that first created it
-    (a Boss with empty `target_body_ids`) - deterministic and stable across
-    recomputes, since Feature ids never change once assigned. When a later
-    Boss fuses two or more existing Bodies together via `target_body_ids`,
-    the merged Body keeps whichever of those ids belongs to the Feature
-    that appears earliest in `Part.features` (see
-    app.document.extrude.compute_part_bodies) - a single, deterministic,
-    documented tie-break rather than an ad-hoc one."""
+    A Body's id (A1) is derived from the id of the ExtrudeFeature that
+    first created it (a Boss with empty `target_body_ids`) - deterministic
+    and stable across recomputes, since Feature ids never change once
+    assigned. When a later Boss fuses two or more existing Bodies together
+    via `target_body_ids`, the merge keeps whichever of those ids belongs
+    to the Feature that appears earliest in `Part.features` (see
+    app.document.extrude.base_feature_id) - a single, deterministic,
+    documented tie-break rather than an ad-hoc one.
+
+    Amendment: a Body is always exactly one maximally-connected solid, not
+    "whatever one ExtrudeFeature produced" - a Boss over a multi-profile
+    Sketch with disjoint outer loops, or a Cut that severs a Body into
+    disconnected pieces, produces multiple Bodies from that one operation.
+    The extra Bodies get a `#N` split-index suffix appended to the base id
+    above (see app.document.extrude._register_solids) - a plain,
+    unsuffixed id is used whenever an operation produces exactly one
+    connected solid, which is the common case and keeps every
+    single-solid Body's id unchanged from before this amendment."""
 
     id: str
     sketch_feature_id: str

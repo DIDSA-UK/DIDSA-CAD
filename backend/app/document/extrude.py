@@ -21,7 +21,8 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
-from OCC.Core.TopAbs import TopAbs_REVERSED
+from OCC.Core.TopAbs import TopAbs_REVERSED, TopAbs_SOLID
+from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
 
 from app.document.graph import GraphNode, topological_order
@@ -195,14 +196,31 @@ def _solid_for_extrude_feature(
     return compound
 
 
+def base_feature_id(body_id: str) -> str:
+    """The original creating ExtrudeFeature's id for `body_id` - strips the
+    `#N` split-index suffix `_register_solids` appends when a single
+    operation produces more than one maximally-connected solid (a
+    multi-profile Boss, or a Cut that severs a Body into disconnected
+    pieces - see `_register_solids`'s own docstring). A plain, unsuffixed
+    `body_id` (the common single-solid case) is returned unchanged.
+
+    Used anywhere a composite Body id needs to be resolved back to "which
+    Feature does this ultimately trace back to" - the merge-survivor
+    tie-break below, `build_feature_graph`'s dependency edges, and
+    `app.document.router._validate_target_body_ids`, which all only care
+    about the owning Feature, not the exact (possibly split) Body id."""
+    return body_id.split("#", 1)[0]
+
+
 def build_feature_graph(part: Part) -> list[GraphNode]:
     """The dependency edges recompute is driven by (A1) - every
     ExtrudeFeature depends on the SketchFeature it extrudes plus every Body
-    it names in `target_body_ids`. Since a Body's id is always the id of the
-    ExtrudeFeature that created it (see ExtrudeFeature's docstring), a
-    `target_body_ids` entry already *is* a Feature id, so no separate
-    Feature<->Body lookup is needed to build these edges - the graph is
-    entirely over `part.features` ids.
+    it names in `target_body_ids`. A Body's id is always derived from the
+    id of the ExtrudeFeature that created it (see `base_feature_id`), so a
+    `target_body_ids` entry always resolves to a real Feature id once split
+    suffixes are stripped - no separate Feature<->Body lookup table is
+    needed to build these edges, the graph is entirely over `part.features`
+    ids.
 
     SketchFeatures have no dependencies (they don't reference any other
     Feature). Feature ids that don't resolve to anything (already invalid
@@ -213,9 +231,55 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     for feature in part.features:
         depends_on: tuple[str, ...] = ()
         if isinstance(feature, ExtrudeFeature):
-            depends_on = (feature.sketch_feature_id, *feature.target_body_ids)
+            depends_on = (
+                feature.sketch_feature_id,
+                *(base_feature_id(tid) for tid in feature.target_body_ids),
+            )
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
+
+
+def _explode_solids(shape: TopoDS_Shape) -> list[TopoDS_Shape]:
+    """Every maximally-connected `TopoDS_SOLID` inside `shape`, in
+    `TopExp_Explorer`'s deterministic visitation order - a bare solid
+    (not wrapped in a compound) is returned as its own single-element
+    list, same as the existing `test_extruding_two_disjoint_squares_
+    produces_a_compound_of_two_solids` test already relies on
+    `TopExp_Explorer(shape, TopAbs_SOLID)` to count."""
+    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+    solids: list[TopoDS_Shape] = []
+    while explorer.More():
+        solids.append(explorer.Current())
+        explorer.Next()
+    return solids
+
+
+def _register_solids(bodies: dict[str, TopoDS_Shape], base_id: str, shape: TopoDS_Shape) -> None:
+    """Splits `shape` into its maximally-connected solid components and
+    (re)registers each as its own Body in `bodies`, keyed off `base_id` -
+    a Body is always exactly one connected piece of material (this is an
+    amendment to A1's original "one Feature = one Body" rule, made after
+    on-device testing showed a single Boss over a multi-profile sketch
+    with disjoint outer loops rendering/selecting as one Body spanning two
+    unrelated-looking solids, which doesn't match mainstream CAD tool
+    behaviour): a multi-profile Boss, or a Cut that severs a Body into
+    disconnected pieces, now produces multiple Bodies from one operation,
+    not one compound Body.
+
+    `base_id` alone is used when there's exactly one connected solid (the
+    common case) - this keeps every existing single-solid Body id exactly
+    as it was before this amendment, no client-visible change for the
+    vast majority of parts. N>1 pieces get `f"{base_id}#{i}"` suffixes, in
+    `_explode_solids`'s deterministic order - see `base_feature_id` for
+    how a composite id is resolved back to its owning Feature. Zero
+    solids (e.g. a Cut that consumes a Body entirely) registers nothing -
+    the Body simply stops existing, same as before this amendment."""
+    solids = _explode_solids(shape)
+    if len(solids) == 1:
+        bodies[base_id] = solids[0]
+    else:
+        for i, solid in enumerate(solids):
+            bodies[f"{base_id}#{i}"] = solid
 
 
 def compute_part_bodies(
@@ -232,11 +296,11 @@ def compute_part_bodies(
 
     Boss: fuses its new solid into every Body named in
     `feature.target_body_ids`. If that list is empty, the solid becomes a
-    brand-new Body identified by `feature.id`. If it names 2+ existing
-    Bodies, they are all fused together with the new solid into one Body -
-    the merged Body keeps whichever named id belongs to the Feature that
-    appears earliest in `part.features` (a single, deterministic tie-break;
-    see ExtrudeFeature's docstring).
+    brand-new Body (or Bodies - see `_register_solids`) identified by
+    `feature.id`. If it names 2+ existing Bodies, they are all fused
+    together with the new solid - the merge result keeps whichever named
+    id belongs to the Feature that appears earliest in `part.features` (a
+    single, deterministic tie-break; see `base_feature_id`).
 
     Cut: subtracts its solid from every Body named in
     `feature.target_body_ids` (never empty by the time recompute runs - see
@@ -244,6 +308,15 @@ def compute_part_bodies(
     doesn't currently exist (e.g. hidden away via `hidden_feature_ids`) is
     skipped for that Body only (logged, not raised) - mirrors the old
     "Cut with nothing to cut from" skip behaviour.
+
+    Amendment to A1's original rule: every Boss/Cut result (new, fused, or
+    cut) is decomposed into its maximally-connected solid components (see
+    `_register_solids`) before being (re)registered - a Body is always one
+    connected piece of material, so a multi-profile Boss with disjoint
+    outer loops, or a Cut that severs a Body into disconnected pieces,
+    produces multiple Bodies from that one operation, not one compound
+    Body. The common single-solid case is entirely unaffected (same ids as
+    before this amendment).
 
     An ExtrudeFeature whose id is in `hidden_feature_ids` (client-side
     Hide/Show, see app.document.router.get_part_mesh) is skipped entirely,
@@ -281,18 +354,17 @@ def compute_part_bodies(
                     feature.id,
                 )
             if not target_ids:
-                bodies[feature.id] = solid
+                _register_solids(bodies, feature.id, solid)
                 continue
 
             merged = solid
             for target_id in target_ids:
                 merged = BRepAlgoAPI_Fuse(merged, bodies[target_id]).Shape()
 
-            survivor_id = min(target_ids, key=lambda tid: feature_index[tid])
+            survivor_id = min(target_ids, key=lambda tid: feature_index[base_feature_id(tid)])
             for target_id in target_ids:
-                if target_id != survivor_id:
-                    del bodies[target_id]
-            bodies[survivor_id] = merged
+                del bodies[target_id]
+            _register_solids(bodies, survivor_id, merged)
         else:
             for target_id in feature.target_body_ids:
                 if target_id not in bodies:
@@ -302,6 +374,8 @@ def compute_part_bodies(
                         target_id,
                     )
                     continue
-                bodies[target_id] = BRepAlgoAPI_Cut(bodies[target_id], solid).Shape()
+                cut_result = BRepAlgoAPI_Cut(bodies[target_id], solid).Shape()
+                del bodies[target_id]
+                _register_solids(bodies, target_id, cut_result)
 
     return bodies
