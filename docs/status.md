@@ -1057,3 +1057,19 @@ Not started/stopped here per A1's own instructions: A2 (client selection
 filter framework) and everything after it. Fillet/Chamfer/Create Plane and
 Prompt B (sub-shape refs, tree categories, cascade delete, earlier-feature
 editing) remain explicitly out of scope, unchanged from before.
+
+**CI follow-up (same day):** `.github/workflows/backend-verify.yml` ran
+against commit `3992055` (both the `push` and `pull_request` triggers) and
+came back green on both `linux/amd64` and `linux/arm64` — confirmed by
+pulling the actual job logs, not just the run's `conclusion` field:
+`278 passed in 4.01s` (amd64) and `278 passed in 60.47s` (arm64, slower
+under QEMU emulation), identical pass count on both. Every new/updated A1
+test (`test_stage_a1_graph.py`'s 13 cases, `test_stage_a1_multibody.py`,
+and the array-response updates across `test_stage9_extrude.py`/
+`test_stage23_mesh_ids.py`/`test_stage11_edges.py`/`test_stage7_document.py`)
+is individually visible as `PASSED` in the log output, executed against
+real `pythonocc-core` inside the Docker image this time (this sandbox
+still can't do that itself). This closes the verification gap flagged
+above — the manual `curl`/Postman API sanity pass is still outstanding,
+but the automated half of A1's stop condition is now genuinely confirmed,
+not just assumed.

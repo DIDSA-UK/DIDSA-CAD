@@ -109,15 +109,14 @@ bug; reverting either would only reintroduce previously-fixed regressions.
 - **DAG refactor / multi-body phase (Prompts A1–A4, distinct from the
   older lettered "Prompts A–D" bullet above).** A1 (backend: Feature
   dependency graph + multi-body identity) landed — see `docs/status.md`'s
-  2026-07-03 entry. **Waiting on CI + a manual API sanity pass
-  (`curl`/Postman against the new Boss/Cut/`target_body_ids` and
-  array-shaped `/mesh` endpoints) before A2 begins** — this environment has
-  no OCCT/Docker available, so A1 was verified by a real pytest run for the
-  new pure-Python DAG module plus `ast.parse`/manual logic review for every
-  OCCT-touching change; the stop condition explicitly calls for that gap to
-  be closed by CI before client work (A2 onward: selection filter
-  framework, body-as-selectable-entity, Boss/Cut target-body picking) is
-  built on top of it. Prompt B (sub-shape refs, tree categories, cascade
+  2026-07-03 entries. CI (`.github/workflows/backend-verify.yml`) has since
+  confirmed green on both `linux/amd64` and `linux/arm64` for commit
+  `3992055` — `278 passed`, verified from the actual job logs, not just the
+  run conclusion. **Still outstanding before A2 begins: a manual
+  `curl`/Postman API sanity pass** against the new Boss/Cut/
+  `target_body_ids` and array-shaped `/mesh` endpoints — CI only proves the
+  automated test suite is internally consistent, not that a human has
+  poked the live API. Prompt B (sub-shape refs, tree categories, cascade
   delete, earlier-feature editing) starts only after A4.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
