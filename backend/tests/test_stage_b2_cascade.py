@@ -180,8 +180,14 @@ def test_deleting_an_upstream_boss_cascades_through_a_target_body_ids_chain():
     # have its Sketch removed, and none of these Sketches were the target.
     assert set(_remaining_feature_ids(part["id"])) == {sketch["id"], cut_sketch["id"], later_sketch["id"]}
 
+    # No ExtrudeFeature survives this cascade (only three bare Sketches do),
+    # so the Part no longer produces_solid_geometry and /mesh falls back to
+    # the placeholder box - a single entry, not an empty array (that's the
+    # "nothing computed and no ExtrudeFeature exists at all" case; an empty
+    # array is reserved for "ExtrudeFeatures exist but all skipped/hidden").
     bodies = _get_bodies(part["id"])
-    assert bodies == []
+    assert len(bodies) == 1
+    assert bodies[0]["source"] == "placeholder"
 
 
 def test_deleting_a_feature_with_no_dependents_leaves_an_unrelated_independent_branch_alone():

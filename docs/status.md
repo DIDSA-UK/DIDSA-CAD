@@ -1480,3 +1480,13 @@ Backend-only. Replaces `/parts/{id}/features/{id}/cascade`'s cascade-delete beha
 - CI (`.github/workflows/backend-verify.yml`) will run on push, real OCCT, both architectures - the actual proof for the OCCT-touching half, per every prior backend prompt's own standard.
 
 Not proceeding to B3 in this session, per B2's explicit stop condition: waiting for CI confirmation (actual job logs, both `linux/amd64` and `linux/arm64`) before starting B3's client work.
+
+## 2026-07-03 — B2 CI follow-up: one test bug, real logic unaffected
+
+First push (`f0a4a56`) came back **red** on `linux/amd64` (`linux/arm64` cancelled as a fail-fast consequence, same pattern as B1's first attempt) - pulled the actual job logs: **316 passed, 1 failed**. Every graph-walk test (`test_stage_b2_graph.py`'s 14, fully pure-Python) and 4 of `test_stage_b2_cascade.py`'s 5 OCCT-touching tests passed; only `test_deleting_an_upstream_boss_cascades_through_a_target_body_ids_chain` failed.
+
+**Root cause**: my own test asserted `GET /mesh` returns `[]` after cascade-deleting every `ExtrudeFeature` in the Part (only three bare `SketchFeature`s survive) - wrong. Per `Part.produces_solid_geometry` (`any(f.produces_solid_geometry for f in self.features)`), a Part with **no** `ExtrudeFeature` at all falls back to the placeholder box (one entry, `source: "placeholder"`) - `[]` is reserved for the different case of "`ExtrudeFeature`(s) exist but every one is currently skipped/hidden" (see A1's own status doc entry on this exact distinction). The very next test up in the same file (`test_deleting_a_sketch_feeding_two_independent_extrudes_removes_both`) already asserted the placeholder case correctly - this one test just didn't follow its own file's established pattern. Not a `resolve_subshape`/`transitive_dependents`/`delete_features`/router bug - the cascade-delete logic itself was already correct (`deleted_feature_ids` and the surviving Feature set both asserted correctly and passed).
+
+**Fix**: corrected the assertion to expect the single placeholder entry, matching the sibling test above it. Pushed as `<pending>`.
+
+Answering directly: not every B2 test passed on the first CI attempt - 1 of 317 failed, due to an assertion bug in this prompt's own test code (a wrong expectation about the placeholder-mesh fallback, not a cascade-delete defect). Now fixed; re-running CI to confirm actual green logs on both architectures before B2's stop condition is satisfied.
