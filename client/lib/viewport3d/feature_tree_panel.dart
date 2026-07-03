@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
+import 'feature_tree_grouping.dart';
 
 /// The display name for the Feature at [index] in [features] - shared
 /// between the tree's own rows and anything else (e.g. the cascade-delete
@@ -132,51 +133,99 @@ class FeatureTreePanel extends StatelessWidget {
                           ),
                         ),
                       ),
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: features.length,
-                        itemBuilder: (context, index) {
-                          final feature = features[index];
-                          final selected = feature.id == selectedFeatureId;
-                          final hidden = hiddenFeatureIds.contains(feature.id);
-                          final isSketch = feature.type == 'sketch';
-                          // Dimmed (but still tappable - an ineligible tap
-                          // surfaces a SnackBar via onSketchPicked rather
-                          // than being inert) whenever picking and this row
-                          // isn't a Sketch with a known-closed profile.
-                          final pickerDimmed = isSketchPickerMode && (!isSketch || !pickableSketchIds.contains(feature.id));
-                          return Opacity(
-                            opacity: hidden || pickerDimmed ? 0.5 : 1.0,
-                            child: ListTile(
-                              selected: selected,
-                              leading: Icon(
-                                feature.locked
-                                    ? Icons.lock
-                                    : (feature.type == 'extrude' ? Icons.view_in_ar : Icons.edit),
-                                color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
-                              ),
-                              title: Text(featureDisplayName(features, index)),
-                              subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
-                              trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
-                              onTap: () {
-                                if (isSketchPickerMode) {
-                                  if (isSketch) onSketchPicked?.call(feature);
-                                } else {
-                                  onFeatureTap(feature);
-                                }
-                              },
-                              onLongPress: isSketchPickerMode ? null : () => onFeatureLongPress(feature),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
+                    Expanded(child: _buildGroupedTree(context)),
                   ],
                 ),
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  /// B3: groups [features] by `produces` (`groupFeaturesByProduces`) into
+  /// Bodies/Planes/Surfaces sections plus the pre-existing sequential
+  /// "everything else" list - a display grouping only, per this prompt's
+  /// own requirement: it never reorders [features] itself or the
+  /// underlying dependency graph, and ordering *within* each group/the
+  /// `other` list still follows [features]' own creation/graph order.
+  Widget _buildGroupedTree(BuildContext context) {
+    final grouped = groupFeaturesByProduces(features);
+    return ListView(
+      children: [
+        if (grouped.bodies.isNotEmpty)
+          _buildGroupSection(context, 'Bodies', Icons.view_in_ar, grouped.bodies),
+        if (grouped.planes.isNotEmpty)
+          _buildGroupSection(context, 'Planes', Icons.crop_din, grouped.planes),
+        if (grouped.surfaces.isNotEmpty)
+          _buildGroupSection(context, 'Surfaces', Icons.layers_outlined, grouped.surfaces),
+        for (final feature in grouped.other) _buildFeatureTile(context, feature),
+      ],
+    );
+  }
+
+  /// B3: one of the tree's new `produces`-grouped sections (Bodies/Planes/
+  /// Surfaces) - reuses the same [ExpansionTile] leading-icon/title
+  /// convention [PartToolbar]'s File/View/Selection-Filters menus already
+  /// establish, rather than inventing a new grouping widget. Starts
+  /// expanded so the on-device behaviour at a glance is unchanged from
+  /// before this prompt (every Feature still visible by default) - B3 adds
+  /// a collapsible boundary around existing Boss/Cut rows, it doesn't hide
+  /// them. Only ever built for a non-empty group (see the `isNotEmpty`
+  /// guards above) - an empty group is omitted entirely rather than shown
+  /// as an empty/error section, per this prompt's own requirement.
+  Widget _buildGroupSection(
+    BuildContext context,
+    String title,
+    IconData icon,
+    List<FeatureDto> groupFeatures,
+  ) {
+    return ExpansionTile(
+      initiallyExpanded: true,
+      leading: Icon(icon),
+      title: Text(title),
+      children: [for (final feature in groupFeatures) _buildFeatureTile(context, feature)],
+    );
+  }
+
+  /// One Feature's row - unchanged in behaviour/appearance from before B3,
+  /// just factored out so both a grouped section and the plain "everything
+  /// else" (`other`) list below it share the exact same tile. [features]
+  /// (the full, ungrouped list - not whichever group [feature] happens to
+  /// be rendered under) is what [featureDisplayName]'s per-type ordinal
+  /// numbering ("Extrude 2") is computed against, so numbering is
+  /// unaffected by which display group a Feature lands in - B3 is a
+  /// display grouping only, per this prompt's own requirement, and must
+  /// not change what a Feature is *called*.
+  Widget _buildFeatureTile(BuildContext context, FeatureDto feature) {
+    final index = features.indexWhere((f) => f.id == feature.id);
+    final selected = feature.id == selectedFeatureId;
+    final hidden = hiddenFeatureIds.contains(feature.id);
+    final isSketch = feature.type == 'sketch';
+    // Dimmed (but still tappable - an ineligible tap surfaces a SnackBar via
+    // onSketchPicked rather than being inert) whenever picking and this row
+    // isn't a Sketch with a known-closed profile.
+    final pickerDimmed = isSketchPickerMode && (!isSketch || !pickableSketchIds.contains(feature.id));
+    return Opacity(
+      opacity: hidden || pickerDimmed ? 0.5 : 1.0,
+      child: ListTile(
+        selected: selected,
+        leading: Icon(
+          feature.locked ? Icons.lock : (feature.type == 'extrude' ? Icons.view_in_ar : Icons.edit),
+          color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
+        ),
+        title: Text(featureDisplayName(features, index)),
+        subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
+        trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+        onTap: () {
+          if (isSketchPickerMode) {
+            if (isSketch) onSketchPicked?.call(feature);
+          } else {
+            onFeatureTap(feature);
+          }
+        },
+        onLongPress: isSketchPickerMode ? null : () => onFeatureLongPress(feature),
       ),
     );
   }

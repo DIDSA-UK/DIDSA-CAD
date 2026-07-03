@@ -44,6 +44,15 @@ class FeatureDto {
   /// extrude Feature and simply meaningless (never read) on a sketch one.
   final List<String> targetBodyIds;
 
+  /// B1: what this Feature contributes - `"body"`/`"plane"`/`"surface"`/
+  /// `"sketch"`/`"none"` (see backend `app.document.models.Produces`) -
+  /// used by B3's feature-tree grouping (`groupFeaturesByProduces`). Kept as
+  /// the raw backend string (like [type]/[extrudeType] already are) rather
+  /// than a Dart enum, matching this DTO's existing convention. Defaults to
+  /// `"none"` for any fixture/fake response built before B1 that omits the
+  /// key entirely.
+  final String produces;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -54,6 +63,7 @@ class FeatureDto {
     this.startDistance,
     this.endDistance,
     this.targetBodyIds = const [],
+    this.produces = 'none',
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -66,6 +76,7 @@ class FeatureDto {
         startDistance: (json['start_distance'] as num?)?.toDouble(),
         endDistance: (json['end_distance'] as num?)?.toDouble(),
         targetBodyIds: (json['target_body_ids'] as List?)?.cast<String>() ?? const [],
+        produces: json['produces'] as String? ?? 'none',
       );
 }
 
