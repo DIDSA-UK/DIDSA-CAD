@@ -67,21 +67,26 @@ def _normalized(v: Vector3) -> Vector3:
     return tuple(c / length for c in v)
 
 
-def _arbitrary_perpendicular_basis(normal: Vector3) -> tuple[Vector3, Vector3]:
+def arbitrary_perpendicular_basis(normal: Vector3) -> tuple[Vector3, Vector3]:
     """C3: an arbitrary (but deterministic) orthonormal (x_axis, y_axis) pair
     perpendicular to `normal`, for the plane types that have no natural
     in-plane reference direction of their own (`NORMAL_TO_LINE_AT_POINT`,
-    `MIDPLANE`) - unlike `_PLANE_BASIS` above, there is no pre-existing
-    convention such a plane needs to match, so any valid right-handed
-    (x_axis, y_axis, normal) triple is equally correct; this just needs to
-    be deterministic (the same `normal` always yields the same basis) so a
-    live-recomputed plane doesn't visually "spin" between requests.
+    `MIDPLANE`, and - C4 - `NORMAL_TO_EDGE_THROUGH_VERTEX`) - unlike
+    `_PLANE_BASIS` above, there is no pre-existing convention such a plane
+    needs to match, so any valid right-handed (x_axis, y_axis, normal)
+    triple is equally correct; this just needs to be deterministic (the
+    same `normal` always yields the same basis) so a live-recomputed plane
+    doesn't visually "spin" between requests.
 
     Picks whichever of world +Z or +Y is *less* parallel to `normal` as a
     reference vector (avoiding the degenerate near-parallel case that would
     otherwise blow up the cross product's normalization), then derives
     `x_axis = normalize(reference x normal)` and `y_axis = normal x x_axis`
-    (already unit length, since `normal`/`x_axis` are orthonormal)."""
+    (already unit length, since `normal`/`x_axis` are orthonormal).
+
+    C4: public (no leading underscore) since `app.document.create_plane`'s
+    `resolve_normal_to_edge_through_vertex_from_bodies` now also needs it,
+    for exactly the same "no natural in-plane reference" reason."""
     _, _, nz = normal
     reference: Vector3 = (0.0, 0.0, 1.0) if abs(nz) < 0.9 else (0.0, 1.0, 0.0)
     x_axis = _normalized(_cross(reference, normal))
@@ -89,9 +94,14 @@ def _arbitrary_perpendicular_basis(normal: Vector3) -> tuple[Vector3, Vector3]:
     return x_axis, y_axis
 
 
-def _basis_point(basis: ResolvedPlane, x: float, y: float) -> Vector3:
+def basis_point(basis: ResolvedPlane, x: float, y: float) -> Vector3:
     """`basis`'s own local (x, y) -> world-space point mapping:
-    `origin + x * x_axis + y * y_axis`."""
+    `origin + x * x_axis + y * y_axis`.
+
+    C4: public (no leading underscore) since `app.document.create_plane`'s
+    `_resolve_point_ref_position` now also needs it, to map a `THREE_POINTS`
+    Sketch-Point `PointRef`'s local coordinates into world space through its
+    own Sketch's resolved basis."""
     ox, oy, oz = basis.origin
     xx, xy, xz = basis.x_axis
     yx, yy, yz = basis.y_axis
@@ -100,13 +110,58 @@ def _basis_point(basis: ResolvedPlane, x: float, y: float) -> Vector3:
 
 def _basis_vector(basis: ResolvedPlane, dx: float, dy: float) -> Vector3:
     """The world-space *direction* (not position - no `origin` offset) for a
-    local-space delta `(dx, dy)` in `basis` - correct because `_basis_point`
+    local-space delta `(dx, dy)` in `basis` - correct because `basis_point`
     is linear in (x, y) (an origin-preserving affine map once the origin
     offset is set aside), so mapping a delta gives exactly the same result
     as mapping the two endpoints and subtracting."""
     xx, xy, xz = basis.x_axis
     yx, yy, yz = basis.y_axis
     return (dx * xx + dy * yx, dx * xy + dy * yy, dx * xz + dy * yz)
+
+
+def _sub(a: Vector3, b: Vector3) -> Vector3:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _collinear_points() -> HTTPException:
+    """C4: structured 422, same envelope every other Create Plane validation
+    error uses, for a `THREE_POINTS` CreatePlaneFeature whose three points
+    are collinear (or coincident) - there is no single well-defined plane
+    through a straight line (or a single point) alone."""
+    return HTTPException(status_code=422, detail={"type": "collinear_points"})
+
+
+def resolve_three_points(p0: Vector3, p1: Vector3, p2: Vector3) -> ResolvedPlane:
+    """C4: resolves a THREE_POINTS CreatePlaneFeature from three already-
+    resolved world-space positions (see `app.document.create_plane.
+    resolve_three_points_from_bodies`, which resolves each `PointRef` - a
+    Body vertex or a Sketch Point - into the `Vector3` this function actually
+    consumes, keeping this function itself OCCT-free).
+
+    `origin` is `p0` (it necessarily lies in the plane by construction);
+    `x_axis` is the normalized `p0 -> p1` direction (a natural, deterministic
+    in-plane reference - the plane doesn't "spin" between requests as long as
+    which point is `p0`/`p1`/`p2` stays stable, which it does: `PointRef`
+    order is preserved end to end from the client's selection through to
+    here); `normal` is the normalized cross product of `p0 -> p1` and
+    `p0 -> p2`; `y_axis = normal x x_axis` completes a right-handed
+    orthonormal basis. Fails closed with `collinear_points` (see
+    `_collinear_points`) when the three points don't actually span a plane -
+    an exact zero-length-cross-product check, not a tolerance-based "nearly
+    collinear" one, consistent with this project's no-implicit-inference
+    principle."""
+    v1 = _sub(p1, p0)
+    v2 = _sub(p2, p0)
+    raw_normal = _cross(v1, v2)
+    raw_normal_length = math.sqrt(sum(c * c for c in raw_normal))
+    if raw_normal_length == 0.0:
+        raise _collinear_points()
+
+    normal = tuple(c / raw_normal_length for c in raw_normal)
+    v1_length = math.sqrt(sum(c * c for c in v1))
+    x_axis = tuple(c / v1_length for c in v1)
+    y_axis = _cross(normal, x_axis)
+    return ResolvedPlane(origin=p0, normal=normal, x_axis=x_axis, y_axis=y_axis)
 
 
 # Deliberately duplicates (does not import) app.document.extrude's own
@@ -187,6 +242,6 @@ def resolve_normal_to_line_at_point(
     length = math.sqrt(sum(c * c for c in direction))
     normal = tuple(c / length for c in direction)
 
-    origin = _basis_point(basis, point.x, point.y)
-    x_axis, y_axis = _arbitrary_perpendicular_basis(normal)
+    origin = basis_point(basis, point.x, point.y)
+    x_axis, y_axis = arbitrary_perpendicular_basis(normal)
     return ResolvedPlane(origin=origin, normal=normal, x_axis=x_axis, y_axis=y_axis)

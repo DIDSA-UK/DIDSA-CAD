@@ -162,16 +162,14 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     app.document.router._validate_target_body_ids) are simply ignored by
     `topological_order`/`transitive_dependents` rather than raising here.
 
-    C2/C3: a `CreatePlaneFeature` depends on whatever it references too -
-    the owning ExtrudeFeature(s) of its `face_refs`' `body_id`s
-    (`OFFSET_FACE`: one; `MIDPLANE`, C3: two), or the SketchFeature wrapping
-    its `line_ref`/`point_ref`'s `sketch_id` (`NORMAL_TO_LINE_AT_POINT`,
-    both refs always share one Sketch by construction - see
-    `app.document.router._validate_create_plane_payload`) - without this,
-    cascade-deleting the Feature a Plane references would silently leave it
-    dangling instead of taking it down too, the exact "everything after it
-    in the list" bug class B2 fixed for Boss/Cut's `target_body_ids`, just
-    for a new reference kind.
+    C2/C3/C4: a `CreatePlaneFeature` depends on whatever it references too -
+    the owning ExtrudeFeature(s) of any Body face/edge/vertex it names, or
+    the SketchFeature wrapping any Sketch entity it names (see
+    `_create_plane_dependencies` for the full per-`plane_type` breakdown) -
+    without this, cascade-deleting the Feature a Plane references would
+    silently leave it dangling instead of taking it down too, the exact
+    "everything after it in the list" bug class B2 fixed for Boss/Cut's
+    `target_body_ids`, just for a new reference kind.
 
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
@@ -187,13 +185,57 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
                 *(base_feature_id(tid) for tid in feature.target_body_ids),
             )
         elif isinstance(feature, CreatePlaneFeature):
-            if feature.plane_type in (PlaneType.OFFSET_FACE, PlaneType.MIDPLANE) and feature.face_refs:
-                depends_on = tuple(base_feature_id(ref.body_id) for ref in feature.face_refs)
-            elif feature.line_ref is not None:
-                sketch_feature_id = sketch_feature_id_for_sketch(part, feature.line_ref.sketch_id)
-                depends_on = (sketch_feature_id,) if sketch_feature_id is not None else ()
+            depends_on = _create_plane_dependencies(part, feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
+
+
+def _create_plane_dependencies(part: Part, feature: CreatePlaneFeature) -> tuple[str, ...]:
+    """C2/C3/C4: `build_feature_graph`'s per-`plane_type` dependency-edge
+    logic for a `CreatePlaneFeature`, split out since C4 added three more
+    types (each with their own reference shape) to C2/C3's original two:
+    - `OFFSET_FACE`/`MIDPLANE`: the owning ExtrudeFeature(s) of `face_refs`'
+      `body_id`s (one entry for `OFFSET_FACE`, two for `MIDPLANE`).
+    - `NORMAL_TO_EDGE_THROUGH_VERTEX`: the owning ExtrudeFeature(s) of
+      `edge_ref`'s and `vertex_ref`'s `body_id`s (deduplicated - normally
+      the same Body, but not required to be).
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: the owning ExtrudeFeature(s) of
+      `face_refs[0]`'s and `vertex_ref`'s `body_id`s (same dedup).
+    - `THREE_POINTS`: for each of `point_refs`' three entries, either the
+      owning ExtrudeFeature of its `vertex_ref`'s `body_id`, or the
+      SketchFeature wrapping its `sketch_point_ref`'s `sketch_id`.
+    - `NORMAL_TO_LINE_AT_POINT`: the SketchFeature wrapping `line_ref`'s
+      `sketch_id` (`line_ref`/`point_ref` always share one Sketch by
+      construction - see `app.document.router._validate_create_plane_payload`).
+    """
+    if feature.plane_type in (PlaneType.OFFSET_FACE, PlaneType.MIDPLANE) and feature.face_refs:
+        return tuple(base_feature_id(ref.body_id) for ref in feature.face_refs)
+    if feature.plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
+        if feature.edge_ref is None or feature.vertex_ref is None:
+            return ()
+        return tuple({base_feature_id(feature.edge_ref.body_id), base_feature_id(feature.vertex_ref.body_id)})
+    if feature.plane_type == PlaneType.PARALLEL_TO_FACE_THROUGH_VERTEX:
+        if not feature.face_refs or feature.vertex_ref is None:
+            return ()
+        return tuple(
+            {base_feature_id(feature.face_refs[0].body_id), base_feature_id(feature.vertex_ref.body_id)}
+        )
+    if feature.plane_type == PlaneType.THREE_POINTS:
+        deps: set[str] = set()
+        for point_ref in feature.point_refs:
+            if point_ref.vertex_ref is not None:
+                deps.add(base_feature_id(point_ref.vertex_ref.body_id))
+            elif point_ref.sketch_point_ref is not None:
+                sketch_feature_id = sketch_feature_id_for_sketch(
+                    part, point_ref.sketch_point_ref.sketch_id
+                )
+                if sketch_feature_id is not None:
+                    deps.add(sketch_feature_id)
+        return tuple(deps)
+    if feature.line_ref is not None:
+        sketch_feature_id = sketch_feature_id_for_sketch(part, feature.line_ref.sketch_id)
+        return (sketch_feature_id,) if sketch_feature_id is not None else ()
+    return ()
 
 
 def transitive_dependents(nodes: list[GraphNode], feature_id: str) -> set[str]:

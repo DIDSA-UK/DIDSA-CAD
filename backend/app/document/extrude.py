@@ -22,7 +22,7 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
-from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
@@ -367,6 +367,10 @@ def compute_part_bodies(
 _TOPABS_FOR_SUBSHAPE_TYPE = {
     SubShapeType.EDGE: TopAbs_EDGE,
     SubShapeType.FACE: TopAbs_FACE,
+    # C4: same 0-based topexp.MapShapes(body, TopAbs_VERTEX, ...) index
+    # scheme app.document.mesh._extract_topology_vertices already assigns
+    # the client's topology_vertex_ids from.
+    SubShapeType.VERTEX: TopAbs_VERTEX,
 }
 
 

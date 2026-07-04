@@ -119,22 +119,43 @@ class SketchEntityRefSchema(BaseModel):
     entity_id: str
 
 
+class PointRefSchema(BaseModel):
+    """C4: the wire counterpart to `app.document.models.PointRef` - exactly
+    one of `vertex_ref`/`sketch_point_ref` should be supplied, matching
+    `PointRef`'s own "one of two optional fields" convention (see its
+    docstring); not enforced here, checked by
+    `app.document.router._validate_create_plane_payload`."""
+
+    vertex_ref: SubShapeRefSchema | None = None
+    sketch_point_ref: SketchEntityRefSchema | None = None
+
+
 class CreatePlaneFeatureCreate(BaseModel):
-    """Creates a CreatePlaneFeature (C2/C3) - exactly one of (`face_refs`,
-    `offset`) [OFFSET_FACE: one entry; MIDPLANE, C3: two], or (`line_ref`,
-    `point_ref`) [NORMAL_TO_LINE_AT_POINT] must be supplied, matching
-    `plane_type`; see `app.document.router._validate_create_plane_payload`
-    for the exact combination check (not encoded here, mirroring
-    `ExtrudeFeatureCreate`'s own Boss-vs-Cut `target_body_ids` split).
+    """Creates a CreatePlaneFeature (C2/C3/C4) - exactly one combination of
+    fields should be supplied, matching `plane_type`:
+    - `OFFSET_FACE`: `face_refs` (one entry), `offset`.
+    - `MIDPLANE`: `face_refs` (two entries).
+    - `NORMAL_TO_LINE_AT_POINT`: `line_ref`, `point_ref`.
+    - `NORMAL_TO_EDGE_THROUGH_VERTEX`: `edge_ref`, `vertex_ref`.
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: `face_refs` (one entry), `vertex_ref`.
+    - `THREE_POINTS`: `point_refs` (three entries).
+    See `app.document.router._validate_create_plane_payload` for the exact
+    combination check (not encoded here, mirroring `ExtrudeFeatureCreate`'s
+    own Boss-vs-Cut `target_body_ids` split).
 
     `face_ref` (C2, singular) became `face_refs` (C3, a list) so MIDPLANE
-    can reuse the same field as OFFSET_FACE."""
+    (and, C4, PARALLEL_TO_FACE_THROUGH_VERTEX) can reuse the same field as
+    OFFSET_FACE. `vertex_ref` (C4) is likewise shared between
+    NORMAL_TO_EDGE_THROUGH_VERTEX and PARALLEL_TO_FACE_THROUGH_VERTEX."""
 
     plane_type: PlaneType
     face_refs: list[SubShapeRefSchema] = []
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
+    edge_ref: SubShapeRefSchema | None = None
+    vertex_ref: SubShapeRefSchema | None = None
+    point_refs: list[PointRefSchema] = []
 
 
 class CreatePlaneFeatureUpdate(BaseModel):
@@ -152,6 +173,9 @@ class CreatePlaneFeatureUpdate(BaseModel):
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
+    edge_ref: SubShapeRefSchema | None = None
+    vertex_ref: SubShapeRefSchema | None = None
+    point_refs: list[PointRefSchema] | None = None
 
 
 class CreatePlaneFeatureResponse(BaseModel):
@@ -164,6 +188,9 @@ class CreatePlaneFeatureResponse(BaseModel):
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
+    edge_ref: SubShapeRefSchema | None = None
+    vertex_ref: SubShapeRefSchema | None = None
+    point_refs: list[PointRefSchema] = []
     # Resolved world-space geometry (see app.document.models.ResolvedPlane)
     # for rendering - null when it can't currently be resolved (e.g. a
     # referenced Body/Sketch was deleted out from under it), rather than

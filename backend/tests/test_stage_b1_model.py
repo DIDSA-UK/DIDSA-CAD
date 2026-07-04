@@ -46,8 +46,10 @@ def test_produces_enum_has_exactly_the_five_documented_values():
     assert {p.value for p in Produces} == {"body", "plane", "surface", "sketch", "none"}
 
 
-def test_subshape_type_enum_has_exactly_edge_and_face():
-    assert {t.value for t in SubShapeType} == {"edge", "face"}
+def test_subshape_type_enum_has_exactly_edge_face_and_vertex():
+    # C4: VERTEX added for NORMAL_TO_EDGE_THROUGH_VERTEX/PARALLEL_TO_FACE_
+    # THROUGH_VERTEX/THREE_POINTS' own vertex-referencing PlaneType variants.
+    assert {t.value for t in SubShapeType} == {"edge", "face", "vertex"}
 
 
 def test_subshape_ref_is_a_value_type_with_structural_equality():

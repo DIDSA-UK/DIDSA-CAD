@@ -1,6 +1,6 @@
 """C3: pure-Python tests for the new full-basis plumbing in
 app.document.plane_geometry - `sketch_basis_for_plane` (the fixed-plane
-lookup table) and `_arbitrary_perpendicular_basis` (the no-natural-reference
+lookup table) and `arbitrary_perpendicular_basis` (the no-natural-reference
 case, exercised indirectly through `resolve_normal_to_line_at_point`'s own
 returned `x_axis`/`y_axis`) - both have zero OCCT dependency, so unlike the
 OFFSET_FACE/MIDPLANE/custom-plane-Sketch/custom-plane-Extrude cases (see
@@ -13,7 +13,7 @@ import math
 import pytest
 
 from app.document.plane_geometry import (
-    _arbitrary_perpendicular_basis,
+    arbitrary_perpendicular_basis,
     resolve_normal_to_line_at_point,
     sketch_basis_for_plane,
 )
@@ -75,7 +75,7 @@ def test_yz_basis_reproduces_the_existing_sketch_point_to_world_convention():
         assert world == pytest.approx((0.0, x, y))
 
 
-# --- _arbitrary_perpendicular_basis -------------------------------------------
+# --- arbitrary_perpendicular_basis -------------------------------------------
 
 
 def test_arbitrary_basis_is_orthonormal_for_a_variety_of_normals():
@@ -88,14 +88,14 @@ def test_arbitrary_basis_is_orthonormal_for_a_variety_of_normals():
     ]:
         length = math.sqrt(sum(c * c for c in normal))
         unit_normal = tuple(c / length for c in normal)
-        x_axis, y_axis = _arbitrary_perpendicular_basis(unit_normal)
+        x_axis, y_axis = arbitrary_perpendicular_basis(unit_normal)
         assert _is_orthonormal_right_handed(x_axis, y_axis, unit_normal), f"normal={unit_normal}"
 
 
 def test_arbitrary_basis_is_deterministic():
     normal = (0.0, 0.6, 0.8)
-    first = _arbitrary_perpendicular_basis(normal)
-    second = _arbitrary_perpendicular_basis(normal)
+    first = arbitrary_perpendicular_basis(normal)
+    second = arbitrary_perpendicular_basis(normal)
     assert first == second
 
 

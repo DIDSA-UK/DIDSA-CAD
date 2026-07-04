@@ -21,8 +21,9 @@ there would recurse forever.
 """
 
 from fastapi import HTTPException
-from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
-from OCC.Core.GeomAbs import GeomAbs_Plane
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCC.Core.GeomAbs import GeomAbs_Line, GeomAbs_Plane
 from OCC.Core.gp import gp_Pnt, gp_Vec
 from OCC.Core.TopAbs import TopAbs_REVERSED
 from OCC.Core.TopoDS import TopoDS_Shape, topods
@@ -33,13 +34,20 @@ from app.document.models import (
     CreatePlaneFeature,
     Part,
     PlaneType,
+    PointRef,
     ResolvedPlane,
     SketchFeature,
     SubShapeRef,
 )
-from app.document.plane_geometry import resolve_normal_to_line_at_point, sketch_basis_for_plane
-from app.sketch.models import Sketch
-from app.sketch.store import get_sketch_or_404
+from app.document.plane_geometry import (
+    arbitrary_perpendicular_basis,
+    basis_point,
+    resolve_normal_to_line_at_point,
+    resolve_three_points,
+    sketch_basis_for_plane,
+)
+from app.sketch.models import Point, Sketch
+from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
 
 def _non_planar_reference(ref: SubShapeRef) -> HTTPException:
@@ -70,6 +78,28 @@ def _faces_not_parallel(ref_a: SubShapeRef, ref_b: SubShapeRef) -> HTTPException
             "index_b": ref_b.index,
         },
     )
+
+
+def _non_linear_edge(ref: SubShapeRef) -> HTTPException:
+    """C4: structured 422, same envelope as `_non_planar_reference`, for a
+    `NORMAL_TO_EDGE_THROUGH_VERTEX` `edge_ref` that resolves to a real edge
+    but not a straight one - a curved edge has no single well-defined
+    direction to be normal to."""
+    return HTTPException(
+        status_code=422,
+        detail={"type": "non_linear_edge", "body_id": ref.body_id, "index": ref.index},
+    )
+
+
+def _resolve_vertex_position(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> gp_Pnt:
+    """C4: `ref`'s world-space position - shared by every plane-construction
+    method that references a Body vertex (`NORMAL_TO_EDGE_THROUGH_VERTEX`,
+    `PARALLEL_TO_FACE_THROUGH_VERTEX`, `THREE_POINTS`'s own `PointRef.
+    vertex_ref`). Fails closed with `missing_reference` via `resolve_
+    subshape_from_bodies`, same as every other `SubShapeRef` resolution."""
+    shape = resolve_subshape_from_bodies(bodies, ref)
+    vertex = topods.Vertex(shape)
+    return BRep_Tool.Pnt(vertex)
 
 
 def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef):
@@ -189,6 +219,81 @@ def resolve_midplane(
     return resolve_midplane_from_bodies(bodies, face_ref_a, face_ref_b)
 
 
+def resolve_normal_to_edge_through_vertex_from_bodies(
+    bodies: dict[str, TopoDS_Shape], edge_ref: SubShapeRef, vertex_ref: SubShapeRef
+) -> ResolvedPlane:
+    """C4: the `_from_bodies` core of `resolve_normal_to_edge_through_vertex`
+    - a plane normal to `edge_ref`'s direction, through `vertex_ref`'s
+    position. Fails closed with `non_linear_edge` (see `_non_linear_edge`)
+    unless the edge's own underlying curve is a straight line
+    (`BRepAdaptor_Curve.GetType() == GeomAbs_Line`) - a curved edge has no
+    single direction to be normal to. Has no natural in-plane reference of
+    its own (unlike `OFFSET_FACE`/`MIDPLANE`, which inherit one from their
+    referenced face's own OCCT frame), so its basis comes from
+    `arbitrary_perpendicular_basis`, same as `NORMAL_TO_LINE_AT_POINT`."""
+    shape = resolve_subshape_from_bodies(bodies, edge_ref)
+    edge = topods.Edge(shape)
+    curve = BRepAdaptor_Curve(edge)
+    if curve.GetType() != GeomAbs_Line:
+        raise _non_linear_edge(edge_ref)
+
+    direction = curve.Line().Direction()
+    normal = (direction.X(), direction.Y(), direction.Z())
+    vertex_point = _resolve_vertex_position(bodies, vertex_ref)
+    origin = (vertex_point.X(), vertex_point.Y(), vertex_point.Z())
+    x_axis, y_axis = arbitrary_perpendicular_basis(normal)
+    return ResolvedPlane(origin=origin, normal=normal, x_axis=x_axis, y_axis=y_axis)
+
+
+def resolve_normal_to_edge_through_vertex(
+    part: Part,
+    edge_ref: SubShapeRef,
+    vertex_ref: SubShapeRef,
+    hidden_feature_ids: frozenset[str] = frozenset(),
+) -> ResolvedPlane:
+    """C4: resolves a NORMAL_TO_EDGE_THROUGH_VERTEX CreatePlaneFeature -
+    fresh wrapper around `resolve_normal_to_edge_through_vertex_from_bodies`,
+    mirroring `resolve_offset_face`'s own fresh-vs-`_from_bodies` split."""
+    bodies = compute_part_bodies(part, hidden_feature_ids)
+    return resolve_normal_to_edge_through_vertex_from_bodies(bodies, edge_ref, vertex_ref)
+
+
+def resolve_parallel_face_through_vertex_from_bodies(
+    bodies: dict[str, TopoDS_Shape], face_ref: SubShapeRef, vertex_ref: SubShapeRef
+) -> ResolvedPlane:
+    """C4: the `_from_bodies` core of `resolve_parallel_face_through_vertex`
+    - a plane parallel to `face_ref`'s own plane, passing through
+    `vertex_ref`'s position instead of `OFFSET_FACE`'s numeric offset.
+    `vertex_ref`'s own position becomes `origin` directly (rather than, say,
+    the face's own location projected along its normal) - the vertex
+    necessarily lies on the resulting plane by construction, so using its
+    own position as the plane's origin is both correct and the simplest
+    option, and renders the plane's quad naturally centered on the point
+    the user actually picked."""
+    _location, normal, x_axis, y_axis = _resolve_planar_face(bodies, face_ref)
+    vertex_point = _resolve_vertex_position(bodies, vertex_ref)
+    origin = (vertex_point.X(), vertex_point.Y(), vertex_point.Z())
+    return ResolvedPlane(
+        origin=origin,
+        normal=(normal.X(), normal.Y(), normal.Z()),
+        x_axis=(x_axis.X(), x_axis.Y(), x_axis.Z()),
+        y_axis=(y_axis.X(), y_axis.Y(), y_axis.Z()),
+    )
+
+
+def resolve_parallel_face_through_vertex(
+    part: Part,
+    face_ref: SubShapeRef,
+    vertex_ref: SubShapeRef,
+    hidden_feature_ids: frozenset[str] = frozenset(),
+) -> ResolvedPlane:
+    """C4: resolves a PARALLEL_TO_FACE_THROUGH_VERTEX CreatePlaneFeature -
+    fresh wrapper around `resolve_parallel_face_through_vertex_from_bodies`,
+    mirroring `resolve_offset_face`'s own fresh-vs-`_from_bodies` split."""
+    bodies = compute_part_bodies(part, hidden_feature_ids)
+    return resolve_parallel_face_through_vertex_from_bodies(bodies, face_ref, vertex_ref)
+
+
 def _basis_for_sketch(
     part: Part,
     sketch: Sketch,
@@ -234,21 +339,90 @@ def resolve_sketch_basis(
     return _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)
 
 
+def _resolve_point_ref_position(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    point_ref: PointRef,
+    hidden_feature_ids: frozenset[str],
+) -> tuple[float, float, float]:
+    """C4: `point_ref`'s own world-space position - a Body vertex's directly
+    (see `_resolve_vertex_position`), or a Sketch Point's local (x, y)
+    mapped through its own Sketch's resolved basis (fixed or custom, via
+    `_basis_for_sketch` - the same recursive resolution `resolve_create_
+    plane_from_bodies`'s own `NORMAL_TO_LINE_AT_POINT` branch already uses)."""
+    if point_ref.vertex_ref is not None:
+        point = _resolve_vertex_position(bodies, point_ref.vertex_ref)
+        return (point.X(), point.Y(), point.Z())
+    assert point_ref.sketch_point_ref is not None
+    ref = point_ref.sketch_point_ref
+    sketch_point = resolve_sketch_entity(ref)
+    assert isinstance(sketch_point, Point)  # entity_type already validated POINT by resolve_sketch_entity
+    sketch = get_sketch_or_404(ref.sketch_id)
+    basis = _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)
+    return basis_point(basis, sketch_point.x, sketch_point.y)
+
+
+def resolve_three_points_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    point_refs: list[PointRef],
+    hidden_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """C4: the `_from_bodies` core of `resolve_three_points_feature` -
+    resolves each of `point_refs`' three entries to a world position (see
+    `_resolve_point_ref_position`) and delegates the actual plane math to
+    `app.document.plane_geometry.resolve_three_points`, which needs no OCCT
+    of its own once given three plain positions."""
+    p0, p1, p2 = (
+        _resolve_point_ref_position(part, bodies, point_ref, hidden_feature_ids)
+        for point_ref in point_refs
+    )
+    return resolve_three_points(p0, p1, p2)
+
+
+def resolve_three_points_feature(
+    part: Part,
+    point_refs: list[PointRef],
+    hidden_feature_ids: frozenset[str] = frozenset(),
+) -> ResolvedPlane:
+    """C4: resolves a THREE_POINTS CreatePlaneFeature - fresh wrapper around
+    `resolve_three_points_from_bodies`, mirroring `resolve_offset_face`'s own
+    fresh-vs-`_from_bodies` split. Named with a `_feature` suffix (unlike
+    every other `resolve_<type>` fresh wrapper here) only to avoid shadowing
+    `app.document.plane_geometry.resolve_three_points`, which this calls
+    (via `resolve_three_points_from_bodies`) rather than duplicates."""
+    bodies = compute_part_bodies(part, hidden_feature_ids)
+    return resolve_three_points_from_bodies(part, bodies, point_refs, hidden_feature_ids)
+
+
 def resolve_create_plane_from_bodies(
     part: Part,
     feature: CreatePlaneFeature,
     bodies: dict[str, TopoDS_Shape],
     hidden_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
-    """C2/C3: the `_from_bodies` core of `resolve_create_plane` - the single
-    dispatch point for all three `PlaneType`s that never triggers its own
-    top-level `compute_part_bodies` call (see module docstring)."""
+    """C2/C3/C4: the `_from_bodies` core of `resolve_create_plane` - the
+    single dispatch point for all six `PlaneType`s that never triggers its
+    own top-level `compute_part_bodies` call (see module docstring)."""
     if feature.plane_type == PlaneType.OFFSET_FACE:
         assert len(feature.face_refs) == 1 and feature.offset is not None
         return resolve_offset_face_from_bodies(bodies, feature.face_refs[0], feature.offset)
     if feature.plane_type == PlaneType.MIDPLANE:
         assert len(feature.face_refs) == 2
         return resolve_midplane_from_bodies(bodies, feature.face_refs[0], feature.face_refs[1])
+    if feature.plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
+        assert feature.edge_ref is not None and feature.vertex_ref is not None
+        return resolve_normal_to_edge_through_vertex_from_bodies(
+            bodies, feature.edge_ref, feature.vertex_ref
+        )
+    if feature.plane_type == PlaneType.PARALLEL_TO_FACE_THROUGH_VERTEX:
+        assert len(feature.face_refs) == 1 and feature.vertex_ref is not None
+        return resolve_parallel_face_through_vertex_from_bodies(
+            bodies, feature.face_refs[0], feature.vertex_ref
+        )
+    if feature.plane_type == PlaneType.THREE_POINTS:
+        assert len(feature.point_refs) == 3
+        return resolve_three_points_from_bodies(part, bodies, feature.point_refs, hidden_feature_ids)
     assert feature.line_ref is not None and feature.point_ref is not None
     sketch = get_sketch_or_404(feature.line_ref.sketch_id)
     basis = _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)

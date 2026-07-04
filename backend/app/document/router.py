@@ -15,6 +15,7 @@ from app.document.models import (
     Feature,
     Part,
     PlaneType,
+    PointRef,
     SketchFeature,
     SubShapeRef,
     SubShapeType,
@@ -32,6 +33,7 @@ from app.document.schemas import (
     MeshVertexData,
     PartCreate,
     PartResponse,
+    PointRefSchema,
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
@@ -83,6 +85,24 @@ def _sketch_entity_ref_to_schema(ref: SketchEntityRef) -> SketchEntityRefSchema:
     )
 
 
+def _point_ref_to_domain(schema: PointRefSchema) -> PointRef:
+    return PointRef(
+        vertex_ref=_subshape_ref_to_domain(schema.vertex_ref) if schema.vertex_ref else None,
+        sketch_point_ref=_sketch_entity_ref_to_domain(schema.sketch_point_ref)
+        if schema.sketch_point_ref
+        else None,
+    )
+
+
+def _point_ref_to_schema(ref: PointRef) -> PointRefSchema:
+    return PointRefSchema(
+        vertex_ref=_subshape_ref_to_schema(ref.vertex_ref) if ref.vertex_ref else None,
+        sketch_point_ref=_sketch_entity_ref_to_schema(ref.sketch_point_ref)
+        if ref.sketch_point_ref
+        else None,
+    )
+
+
 def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> CreatePlaneFeatureResponse:
     """C2: unlike every other `_feature_response` branch, this resolves live
     geometry (`origin`/`normal`) on every read - soft-fails to `None` rather
@@ -114,6 +134,9 @@ def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> C
         offset=feature.offset,
         line_ref=_sketch_entity_ref_to_schema(feature.line_ref) if feature.line_ref else None,
         point_ref=_sketch_entity_ref_to_schema(feature.point_ref) if feature.point_ref else None,
+        edge_ref=_subshape_ref_to_schema(feature.edge_ref) if feature.edge_ref else None,
+        vertex_ref=_subshape_ref_to_schema(feature.vertex_ref) if feature.vertex_ref else None,
+        point_refs=[_point_ref_to_schema(ref) for ref in feature.point_refs],
         origin=origin,
         normal=normal,
         x_axis=x_axis,
@@ -228,79 +251,159 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
     return feature
 
 
+def _all_other_create_plane_fields_empty(
+    exclude: set[str],
+    *,
+    face_refs: list[SubShapeRef],
+    offset: float | None,
+    line_ref: SketchEntityRef | None,
+    point_ref: SketchEntityRef | None,
+    edge_ref: SubShapeRef | None,
+    vertex_ref: SubShapeRef | None,
+    point_refs: list[PointRef],
+) -> bool:
+    """C4: every `CreatePlaneFeature` field not named in `exclude` is empty
+    (`None` for a single optional ref/`offset`, `[]` for a list) - the
+    "and nothing else" half of `_validate_create_plane_payload`'s per-
+    `plane_type` check, split out since C4 grew the field count from four to
+    seven and repeating a seven-field emptiness check inline for each of six
+    `plane_type` branches would be far more error-prone than one shared
+    helper. `offset` is checked via `is None` (not falsiness) so a
+    legitimate `offset=0.0` is correctly treated as "set", not "empty"."""
+    empty = {
+        "face_refs": not face_refs,
+        "offset": offset is None,
+        "line_ref": line_ref is None,
+        "point_ref": point_ref is None,
+        "edge_ref": edge_ref is None,
+        "vertex_ref": vertex_ref is None,
+        "point_refs": not point_refs,
+    }
+    return all(is_empty for name, is_empty in empty.items() if name not in exclude)
+
+
 def _validate_create_plane_payload(
     plane_type: PlaneType,
     face_refs: list[SubShapeRef],
     offset: float | None,
     line_ref: SketchEntityRef | None,
     point_ref: SketchEntityRef | None,
+    edge_ref: SubShapeRef | None = None,
+    vertex_ref: SubShapeRef | None = None,
+    point_refs: list[PointRef] | None = None,
 ) -> None:
-    """C2/C3: enforces exactly one of (`face_refs`, `offset`) [OFFSET_FACE:
-    one entry; MIDPLANE, C3: two] or (`line_ref`, `point_ref`)
-    [NORMAL_TO_LINE_AT_POINT] is supplied, matching `plane_type` - a
-    plain-string 422, same convention as `_validate_target_body_ids`'s
-    Cut-empty-list case, since (unlike `missing_reference`/`non_planar_
-    reference`/`point_not_on_line`/`faces_not_parallel`) this prompt doesn't
+    """C2/C3/C4: enforces exactly one combination of fields is supplied,
+    matching `plane_type` (see `app.document.schemas.CreatePlaneFeatureCreate`
+    for the full per-type field list) - a plain-string 422, same convention
+    as `_validate_target_body_ids`'s Cut-empty-list case, since (unlike
+    `missing_reference`/`non_planar_reference`/`point_not_on_line`/
+    `faces_not_parallel`/`non_linear_edge`/`collinear_points`) this doesn't
     name a structured error type for a malformed combination of fields, only
     for a resolvable-but-wrong reference. Also checks each ref's own
-    `shape_type`/`entity_type` tag matches its named role (`face_refs`
-    entries must be FACE, `line_ref` must be LINE, `point_ref` must be
-    POINT) - these are typed slots, not a generic reference, so a client
-    sending e.g. a POINT ref as `line_ref` is already malformed input, not
-    merely an unresolvable-later reference.
+    `shape_type`/`entity_type` tag matches its named role - these are typed
+    slots, not a generic reference, so a client sending e.g. a POINT ref as
+    `line_ref` is already malformed input, not merely an unresolvable-later
+    reference.
 
-    Takes the domain (`SubShapeRef`/`SketchEntityRef`) types rather than
-    their pydantic (`...Schema`) counterparts, even though the create route
-    below has schema instances on hand - both share the same `shape_type`/
-    `entity_type` attribute names, this function only ever reads those, and
-    accepting the domain type lets the update route reuse this same
-    function against a merged existing-plus-payload value without a
-    pointless schema round-trip."""
+    Takes the domain (`SubShapeRef`/`SketchEntityRef`/`PointRef`) types
+    rather than their pydantic (`...Schema`) counterparts, even though the
+    create route below has schema instances on hand - both share the same
+    `shape_type`/`entity_type` attribute names, this function only ever
+    reads those, and accepting the domain type lets the update route reuse
+    this same function against a merged existing-plus-payload value without
+    a pointless schema round-trip."""
+    point_refs = point_refs or []
+
+    def other_fields_empty(exclude: set[str]) -> bool:
+        return _all_other_create_plane_fields_empty(
+            exclude,
+            face_refs=face_refs,
+            offset=offset,
+            line_ref=line_ref,
+            point_ref=point_ref,
+            edge_ref=edge_ref,
+            vertex_ref=vertex_ref,
+            point_refs=point_refs,
+        )
+
     if plane_type == PlaneType.OFFSET_FACE:
-        if len(face_refs) != 1 or offset is None:
+        if len(face_refs) != 1 or offset is None or not other_fields_empty({"face_refs", "offset"}):
             raise HTTPException(
                 status_code=422,
-                detail="OFFSET_FACE requires exactly one face_refs entry and an offset, and no "
-                "line_ref/point_ref",
-            )
-        if line_ref is not None or point_ref is not None:
-            raise HTTPException(
-                status_code=422,
-                detail="OFFSET_FACE requires exactly one face_refs entry and an offset, and no "
-                "line_ref/point_ref",
+                detail="OFFSET_FACE requires exactly one face_refs entry and an offset, and nothing else",
             )
         if face_refs[0].shape_type != SubShapeType.FACE:
             raise HTTPException(status_code=422, detail="face_refs entries must have shape_type=FACE")
     elif plane_type == PlaneType.MIDPLANE:
-        if len(face_refs) != 2:
+        if len(face_refs) != 2 or not other_fields_empty({"face_refs"}):
             raise HTTPException(
                 status_code=422,
-                detail="MIDPLANE requires exactly two face_refs entries, and no offset/line_ref/point_ref",
-            )
-        if offset is not None or line_ref is not None or point_ref is not None:
-            raise HTTPException(
-                status_code=422,
-                detail="MIDPLANE requires exactly two face_refs entries, and no offset/line_ref/point_ref",
+                detail="MIDPLANE requires exactly two face_refs entries, and nothing else",
             )
         if any(ref.shape_type != SubShapeType.FACE for ref in face_refs):
             raise HTTPException(status_code=422, detail="face_refs entries must have shape_type=FACE")
-    else:
-        if line_ref is None or point_ref is None:
+    elif plane_type == PlaneType.NORMAL_TO_LINE_AT_POINT:
+        if line_ref is None or point_ref is None or not other_fields_empty({"line_ref", "point_ref"}):
             raise HTTPException(
                 status_code=422,
-                detail="NORMAL_TO_LINE_AT_POINT requires both line_ref and point_ref, and no "
-                "face_refs/offset",
-            )
-        if face_refs or offset is not None:
-            raise HTTPException(
-                status_code=422,
-                detail="NORMAL_TO_LINE_AT_POINT requires both line_ref and point_ref, and no "
-                "face_refs/offset",
+                detail="NORMAL_TO_LINE_AT_POINT requires both line_ref and point_ref, and nothing else",
             )
         if line_ref.entity_type != SketchEntityType.LINE:
             raise HTTPException(status_code=422, detail="line_ref must have entity_type=LINE")
         if point_ref.entity_type != SketchEntityType.POINT:
             raise HTTPException(status_code=422, detail="point_ref must have entity_type=POINT")
+    elif plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
+        if edge_ref is None or vertex_ref is None or not other_fields_empty({"edge_ref", "vertex_ref"}):
+            raise HTTPException(
+                status_code=422,
+                detail="NORMAL_TO_EDGE_THROUGH_VERTEX requires both edge_ref and vertex_ref, and "
+                "nothing else",
+            )
+        if edge_ref.shape_type != SubShapeType.EDGE:
+            raise HTTPException(status_code=422, detail="edge_ref must have shape_type=EDGE")
+        if vertex_ref.shape_type != SubShapeType.VERTEX:
+            raise HTTPException(status_code=422, detail="vertex_ref must have shape_type=VERTEX")
+    elif plane_type == PlaneType.PARALLEL_TO_FACE_THROUGH_VERTEX:
+        if (
+            len(face_refs) != 1
+            or vertex_ref is None
+            or not other_fields_empty({"face_refs", "vertex_ref"})
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="PARALLEL_TO_FACE_THROUGH_VERTEX requires exactly one face_refs entry and a "
+                "vertex_ref, and nothing else",
+            )
+        if face_refs[0].shape_type != SubShapeType.FACE:
+            raise HTTPException(status_code=422, detail="face_refs entries must have shape_type=FACE")
+        if vertex_ref.shape_type != SubShapeType.VERTEX:
+            raise HTTPException(status_code=422, detail="vertex_ref must have shape_type=VERTEX")
+    else:
+        assert plane_type == PlaneType.THREE_POINTS
+        if len(point_refs) != 3 or not other_fields_empty({"point_refs"}):
+            raise HTTPException(
+                status_code=422,
+                detail="THREE_POINTS requires exactly three point_refs entries, and nothing else",
+            )
+        for entry in point_refs:
+            if (entry.vertex_ref is None) == (entry.sketch_point_ref is None):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Each point_refs entry must have exactly one of vertex_ref or "
+                    "sketch_point_ref",
+                )
+            if entry.vertex_ref is not None and entry.vertex_ref.shape_type != SubShapeType.VERTEX:
+                raise HTTPException(
+                    status_code=422, detail="point_refs vertex_ref entries must have shape_type=VERTEX"
+                )
+            if (
+                entry.sketch_point_ref is not None
+                and entry.sketch_point_ref.entity_type != SketchEntityType.POINT
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="point_refs sketch_point_ref entries must have entity_type=POINT",
+                )
 
 
 def _validate_sketch_feature_payload(
@@ -454,7 +557,12 @@ def create_create_plane_feature(
     face_refs = [_subshape_ref_to_domain(ref) for ref in payload.face_refs]
     line_ref = _sketch_entity_ref_to_domain(payload.line_ref) if payload.line_ref else None
     point_ref = _sketch_entity_ref_to_domain(payload.point_ref) if payload.point_ref else None
-    _validate_create_plane_payload(payload.plane_type, face_refs, payload.offset, line_ref, point_ref)
+    edge_ref = _subshape_ref_to_domain(payload.edge_ref) if payload.edge_ref else None
+    vertex_ref = _subshape_ref_to_domain(payload.vertex_ref) if payload.vertex_ref else None
+    point_refs = [_point_ref_to_domain(ref) for ref in payload.point_refs]
+    _validate_create_plane_payload(
+        payload.plane_type, face_refs, payload.offset, line_ref, point_ref, edge_ref, vertex_ref, point_refs
+    )
     feature = CreatePlaneFeature(
         id=str(uuid.uuid4()),
         plane_type=payload.plane_type,
@@ -462,6 +570,9 @@ def create_create_plane_feature(
         offset=payload.offset,
         line_ref=line_ref,
         point_ref=point_ref,
+        edge_ref=edge_ref,
+        vertex_ref=vertex_ref,
+        point_refs=point_refs,
     )
     resolve_create_plane(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -509,9 +620,29 @@ def update_create_plane_feature(
         if payload.point_ref is not None
         else feature.point_ref
     )
+    new_edge_ref = (
+        _subshape_ref_to_domain(payload.edge_ref) if payload.edge_ref is not None else feature.edge_ref
+    )
+    new_vertex_ref = (
+        _subshape_ref_to_domain(payload.vertex_ref)
+        if payload.vertex_ref is not None
+        else feature.vertex_ref
+    )
+    new_point_refs = (
+        [_point_ref_to_domain(ref) for ref in payload.point_refs]
+        if payload.point_refs is not None
+        else feature.point_refs
+    )
 
     _validate_create_plane_payload(
-        feature.plane_type, new_face_refs, new_offset, new_line_ref, new_point_ref
+        feature.plane_type,
+        new_face_refs,
+        new_offset,
+        new_line_ref,
+        new_point_ref,
+        new_edge_ref,
+        new_vertex_ref,
+        new_point_refs,
     )
     candidate = CreatePlaneFeature(
         id=feature.id,
@@ -520,6 +651,9 @@ def update_create_plane_feature(
         offset=new_offset,
         line_ref=new_line_ref,
         point_ref=new_point_ref,
+        edge_ref=new_edge_ref,
+        vertex_ref=new_vertex_ref,
+        point_refs=new_point_refs,
     )
     resolve_create_plane(part, candidate)  # raises on an unresolvable reference
 
@@ -527,6 +661,9 @@ def update_create_plane_feature(
     feature.offset = candidate.offset
     feature.line_ref = candidate.line_ref
     feature.point_ref = candidate.point_ref
+    feature.edge_ref = candidate.edge_ref
+    feature.vertex_ref = candidate.vertex_ref
+    feature.point_refs = candidate.point_refs
     return _feature_response(part, feature)
 
 
