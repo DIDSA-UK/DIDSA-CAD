@@ -171,6 +171,14 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(face: value));
   }
 
+  void _setSketchPointFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(sketchPoint: value));
+  }
+
+  void _setSketchLineFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(sketchLine: value));
+  }
+
   /// Body is exclusive against vertex/edge/face, not merely additive: there
   /// is no click that lands "on the body" without also landing on one of its
   /// faces/edges/vertices, and [hitTestBodies] tries vertex/edge before body
@@ -178,18 +186,52 @@ class _PartScreenState extends State<PartScreen> {
   /// never actually be picked wherever a vertex/edge is in range - precisely
   /// where users naturally click. Turning Body on therefore forces the other
   /// three off (and the toolbar greys them out, see [PartToolbar]); turning
-  /// it back off restores them to their default on-state.
+  /// it back off restores them to their default on-state. Prompt C1: also
+  /// excludes Sketch Point/Line, which tie with Body Vertex/Edge at the top
+  /// of the hit-test priority order - without this, "Body only" would still
+  /// let a Sketch entity win the pick.
   void _setBodyFilter(bool value) {
     setState(() {
       _selectionFilterBase = value
-          ? const SelectionFilterState(vertex: false, edge: false, face: false, body: true)
-          : _selectionFilterBase.copyWith(vertex: true, edge: true, face: true, body: false);
+          ? const SelectionFilterState(
+              vertex: false,
+              edge: false,
+              face: false,
+              body: true,
+              sketchPoint: false,
+              sketchLine: false,
+            )
+          : _selectionFilterBase.copyWith(
+              vertex: true,
+              edge: true,
+              face: true,
+              body: false,
+              sketchPoint: true,
+              sketchLine: true,
+            );
     });
   }
 
   /// Feature ids hidden from the 3D viewport via the long-press
   /// Hide/Show action - client-side only, never sent to the backend.
   final Set<String> _hiddenFeatureIds = {};
+
+  /// Prompt C1: the subset of [_hiddenFeatureIds] hidden purely because
+  /// [_confirmExtrude]'s auto-hide-the-consumed-Sketch bookkeeping put them
+  /// there - never because the user explicitly hid them, and never one of
+  /// B4's rollback-suppressed later Features (see [_beginRollback], which
+  /// deliberately does not add to this set). [_recomputeVisibleSketchGeometries]
+  /// uses this to keep a merely-auto-hidden Sketch's geometry rendered and
+  /// pickable (dimmed - see `sketch_geometry_3d.dart`'s `sketchLineDimmedColor`)
+  /// even though it's still "hidden" for every other purpose (the feature
+  /// tree's greyed display, `_refreshMesh`'s `hidden_feature_ids`, which is
+  /// a no-op for a Sketch anyway since it never contributes solid geometry) -
+  /// this is exactly Prompt C1's own motivating case, Create Plane
+  /// referencing the profile Sketch of an already-built Boss. A real user
+  /// Hide (via [_toggleFeatureVisibility]) or a rollback suppression both
+  /// leave a Feature out of this set, so both still fully exclude its
+  /// Sketch geometry from the 3D viewport, same as before this prompt.
+  final Set<String> _autoHiddenSketchFeatureIds = {};
 
   /// Stage 23 Item 1: whether the viewport is in Selection mode (vs the
   /// default Orbit mode) - toggled by the second FAB added below. Per Item
@@ -251,6 +293,11 @@ class _PartScreenState extends State<PartScreen> {
   /// hidden-filtered view of this actually passed to [PartViewport].
   Map<String, SketchGeometry3D> _allSketchGeometries = {};
   Map<String, SketchGeometry3D> _visibleSketchGeometries = {};
+
+  /// Prompt C1: which entries of [_visibleSketchGeometries] should render
+  /// dimmed (see [_recomputeVisibleSketchGeometries]) - always a subset of
+  /// [_visibleSketchGeometries]'s keys.
+  Set<String> _dimmedSketchFeatureIds = {};
 
   bool _busy = false;
   String? _errorMessage;
@@ -489,13 +536,41 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Filters [_allSketchGeometries] down to [_visibleSketchGeometries] by
-  /// [_hiddenFeatureIds] - the only place that builds a new Map instance for
-  /// [PartViewport.sketchGeometries], so its `didUpdateWidget` `!=` check
-  /// only fires on a genuine content/visibility change.
+  /// [_hiddenFeatureIds] - the only place that builds a new Map/Set instance
+  /// for [PartViewport.sketchGeometries]/[PartViewport.dimmedSketchFeatureIds],
+  /// so their `didUpdateWidget` `!=` checks only fire on a genuine
+  /// content/visibility change.
+  ///
+  /// Prompt C1: a Feature hidden *only* via [_autoHiddenSketchFeatureIds]
+  /// (auto-hidden because it's consumed, not a real user Hide - see that
+  /// field's own doc comment) stays in [_visibleSketchGeometries] rather
+  /// than being excluded, and is also added to [_dimmedSketchFeatureIds] so
+  /// [PartViewport] renders it with `sketch_geometry_3d.dart`'s dimmed
+  /// style - visually distinct from an active Sketch, but still pickable,
+  /// which is this prompt's whole point.
+  ///
+  /// This exception is suspended entirely while [_hiddenFeatureIdsBeforeRollback]
+  /// is non-null (a B4 rollback edit is in progress): [_beginRollback] never
+  /// touches [_autoHiddenSketchFeatureIds], so a Sketch that was already
+  /// auto-hidden *before* the rollback session began (its own Extrude sits
+  /// somewhere in the range now being suppressed) would otherwise wrongly
+  /// stay visible/pickable during the edit, defeating B4's "suppress
+  /// everything after the Feature being edited" invariant. Outside of an
+  /// active rollback, this gate is always true and has no effect.
   void _recomputeVisibleSketchGeometries() {
+    final rollbackActive = _hiddenFeatureIdsBeforeRollback != null;
     _visibleSketchGeometries = {
       for (final entry in _allSketchGeometries.entries)
-        if (!_hiddenFeatureIds.contains(entry.key)) entry.key: entry.value,
+        if (!_hiddenFeatureIds.contains(entry.key) ||
+            (!rollbackActive && _autoHiddenSketchFeatureIds.contains(entry.key)))
+          entry.key: entry.value,
+    };
+    _dimmedSketchFeatureIds = {
+      for (final entry in _allSketchGeometries.entries)
+        if (!rollbackActive &&
+            _hiddenFeatureIds.contains(entry.key) &&
+            _autoHiddenSketchFeatureIds.contains(entry.key))
+          entry.key,
     };
   }
 
@@ -794,8 +869,14 @@ class _PartScreenState extends State<PartScreen> {
       _hiddenFeatureIds
         ..clear()
         ..addAll(before);
+      // Prompt C1: without this, [_visibleSketchGeometries]/
+      // [_dimmedSketchFeatureIds] would stay computed against the
+      // mid-rollback hidden set (and its rollback-active auto-hidden
+      // suspension) until some unrelated later refresh happened to
+      // recompute them.
+      _hiddenFeatureIdsBeforeRollback = null;
+      _recomputeVisibleSketchGeometries();
     });
-    _hiddenFeatureIdsBeforeRollback = null;
     await _runGuarded(_refreshMesh);
   }
 
@@ -903,7 +984,14 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
       _selectionFilterOverrides.push(
-        const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+        const SelectionFilterState(
+          vertex: false,
+          edge: false,
+          face: false,
+          body: true,
+          sketchPoint: false,
+          sketchLine: false,
+        ),
       );
     });
   }
@@ -946,7 +1034,14 @@ class _PartScreenState extends State<PartScreen> {
           SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
       };
       _selectionFilterOverrides.push(
-        const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+        const SelectionFilterState(
+          vertex: false,
+          edge: false,
+          face: false,
+          body: true,
+          sketchPoint: false,
+          sketchLine: false,
+        ),
       );
     });
     return true;
@@ -1086,7 +1181,13 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (!mounted) return;
     setState(() {
-      if (sketchFeature != null && !wasEditing) _hiddenFeatureIds.add(sketchFeature.id);
+      if (sketchFeature != null && !wasEditing) {
+        _hiddenFeatureIds.add(sketchFeature.id);
+        // Prompt C1: this is *the* auto-hide-on-consume case
+        // [_autoHiddenSketchFeatureIds] exists for - mark it so its Sketch
+        // geometry stays visible/pickable (dimmed) in the 3D viewport.
+        _autoHiddenSketchFeatureIds.add(sketchFeature.id);
+      }
       _recomputeVisibleSketchGeometries();
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
@@ -1198,6 +1299,13 @@ class _PartScreenState extends State<PartScreen> {
   /// hiding an ExtrudeFeature also drops its volume from the displayed
   /// solid, not just its own Sketch geometry from [_visibleSketchGeometries]
   /// (a SketchFeature has no solid of its own to drop).
+  ///
+  /// Prompt C1: an explicit Hide here always removes [feature.id] from
+  /// [_autoHiddenSketchFeatureIds] too (a no-op unless it was already
+  /// auto-hidden) - once the user has explicitly acted on a Feature's
+  /// visibility, its hidden state means what it says for every purpose,
+  /// including 3D-viewport pickability, not just the auto-hide-on-consume
+  /// exception.
   Future<void> _toggleFeatureVisibility(FeatureDto feature) async {
     setState(() {
       if (_hiddenFeatureIds.contains(feature.id)) {
@@ -1205,6 +1313,7 @@ class _PartScreenState extends State<PartScreen> {
       } else {
         _hiddenFeatureIds.add(feature.id);
       }
+      _autoHiddenSketchFeatureIds.remove(feature.id);
       _recomputeVisibleSketchGeometries();
     });
     await _runGuarded(_refreshMesh);
@@ -1238,6 +1347,7 @@ class _PartScreenState extends State<PartScreen> {
         _selectedFeatureId = null;
       }
       _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+      _autoHiddenSketchFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
       // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
       // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
       // _hiddenFeatureIds forever, since it never stopped existing - only
@@ -1247,6 +1357,7 @@ class _PartScreenState extends State<PartScreen> {
       // unlocked again, there's nothing left to make it redundant clutter.
       if (_features.isNotEmpty && !_features.last.locked) {
         _hiddenFeatureIds.remove(_features.last.id);
+        _autoHiddenSketchFeatureIds.remove(_features.last.id);
       }
       _recomputeVisibleSketchGeometries();
       await _refreshMesh();
@@ -1368,6 +1479,7 @@ class _PartScreenState extends State<PartScreen> {
                   bodies: _bodies,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
+                  dimmedSketchFeatureIds: _dimmedSketchFeatureIds,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,
@@ -1484,6 +1596,8 @@ class _PartScreenState extends State<PartScreen> {
                     onEdgeFilterChanged: _setEdgeFilter,
                     onFaceFilterChanged: _setFaceFilter,
                     onBodyFilterChanged: _setBodyFilter,
+                    onSketchPointFilterChanged: _setSketchPointFilter,
+                    onSketchLineFilterChanged: _setSketchLineFilter,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)

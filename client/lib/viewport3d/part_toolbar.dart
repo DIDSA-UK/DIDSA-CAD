@@ -84,6 +84,11 @@ class PartToolbar extends StatelessWidget {
   final void Function(bool value)? onFaceFilterChanged;
   final void Function(bool value)? onBodyFilterChanged;
 
+  /// Prompt C1: toggles for the two new Sketch entity kinds, same
+  /// Body-exclusive convention as the other four (see [_buildSelectionFilterMenu]).
+  final void Function(bool value)? onSketchPointFilterChanged;
+  final void Function(bool value)? onSketchLineFilterChanged;
+
   const PartToolbar({
     super.key,
     required this.visible,
@@ -107,6 +112,8 @@ class PartToolbar extends StatelessWidget {
     this.onEdgeFilterChanged,
     this.onFaceFilterChanged,
     this.onBodyFilterChanged,
+    this.onSketchPointFilterChanged,
+    this.onSketchLineFilterChanged,
   });
 
   @override
@@ -298,6 +305,16 @@ class PartToolbar extends StatelessWidget {
           label: 'Bodies',
           value: selectionFilter.body,
           onChanged: onBodyFilterChanged,
+        ),
+        _filterToggle(
+          label: 'Sketch Points',
+          value: selectionFilter.sketchPoint,
+          onChanged: selectionFilter.body ? null : onSketchPointFilterChanged,
+        ),
+        _filterToggle(
+          label: 'Sketch Lines',
+          value: selectionFilter.sketchLine,
+          onChanged: selectionFilter.body ? null : onSketchLineFilterChanged,
         ),
       ],
     );

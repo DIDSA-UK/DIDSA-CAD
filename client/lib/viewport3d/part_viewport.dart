@@ -51,6 +51,14 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
+  /// Prompt C1: the subset of [sketchGeometries]' keys to render dimmed
+  /// (see `sketch_geometry_3d.dart`'s `sketchLineDimmedColor`) - a Sketch
+  /// that's only rendered/pickable here because it's consumed by a
+  /// downstream Extrude (see `PartScreen`'s `_autoHiddenSketchFeatureIds`),
+  /// not one the user is actively editing. Same "only build a new instance
+  /// on genuine change" contract as [sketchGeometries].
+  final Set<String> dimmedSketchFeatureIds;
+
   /// True while [bodies] is an Extrude live preview (see [PartScreen]'s
   /// debounced create/update-then-refetch flow) rather than confirmed
   /// geometry - renders the mesh translucent and tinted so a preview solid
@@ -133,6 +141,7 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
+    this.dimmedSketchFeatureIds = const {},
     this.isPreviewMesh = false,
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
@@ -334,7 +343,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.referencePlanesHidden != oldWidget.referencePlanesHidden) {
       setState(_syncReferencePlaneNodes);
     }
-    if (widget.sketchGeometries != oldWidget.sketchGeometries) {
+    if (widget.sketchGeometries != oldWidget.sketchGeometries ||
+        widget.dimmedSketchFeatureIds != oldWidget.dimmedSketchFeatureIds) {
       setState(_syncSketchNodes);
     }
     if (widget.selectionMode != oldWidget.selectionMode) {
@@ -539,7 +549,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _sketchNodes = {
       for (final entry in widget.sketchGeometries.entries)
-        if (!entry.value.isEmpty) entry.key: buildSketchGeometryNode(entry.key, entry.value),
+        if (!entry.value.isEmpty)
+          entry.key: buildSketchGeometryNode(
+            entry.key,
+            entry.value,
+            dimmed: widget.dimmedSketchFeatureIds.contains(entry.key),
+          ),
     };
     for (final node in _sketchNodes.values) {
       scene.add(node);
@@ -811,7 +826,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// clears any prior hover (cursor moved over empty background).
   void _recomputeHover() {
     final cursor = _cursorPosition;
-    if (widget.bodies.isEmpty || cursor == null) {
+    // Prompt C1: previously gated on `widget.bodies.isEmpty` alone, which
+    // skipped hit-testing entirely for a Part with no Bodies yet (e.g. a
+    // bare Sketch with no Extrude) - now also runs whenever there's Sketch
+    // geometry to test, since that's real pickable content on its own.
+    if ((widget.bodies.isEmpty && widget.sketchGeometries.isEmpty) || cursor == null) {
       _hoverHit = null;
       return;
     }
@@ -820,6 +839,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       ray: ray,
       viewportSize: _viewportSize,
       bodies: widget.bodies,
+      sketchGeometries: widget.sketchGeometries,
       filter: widget.selectionFilter,
     );
   }
@@ -921,23 +941,41 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final faceTriangles = <(vm.Vector3, vm.Vector3, vm.Vector3)>[];
     final edgeSegments = <(vm.Vector3, vm.Vector3)>[];
     final vertexPositions = <vm.Vector3>[];
+    // Prompt C1: sketchPoint/sketchLine entities feed the same
+    // vertexPositions/edgeSegments accumulators as Body vertices/edges -
+    // the final highlight [Node]s (buildVertexMarkersNode/buildMeshEdgesNode)
+    // don't care whether a point/segment came from mesh or Sketch geometry.
     for (final entity in widget.selectedEntities) {
-      final body = _bodyFor(entity.bodyId);
-      if (body == null) continue;
-      final mesh = body.mesh;
       switch (entity.kind) {
         case SelectionEntityKind.face:
-          faceTriangles.addAll(faceTrianglesForId(mesh, entity.id));
+          final body = _bodyFor(entity.bodyId);
+          if (body != null) faceTriangles.addAll(faceTrianglesForId(body.mesh, entity.id));
         case SelectionEntityKind.edge:
-          edgeSegments.addAll(edgeSegmentsForId(mesh, entity.id));
+          final body = _bodyFor(entity.bodyId);
+          if (body != null) edgeSegments.addAll(edgeSegmentsForId(body.mesh, entity.id));
         case SelectionEntityKind.vertex:
-          final position = vertexPositionForId(mesh, entity.id);
+          final body = _bodyFor(entity.bodyId);
+          final position = body == null ? null : vertexPositionForId(body.mesh, entity.id);
           if (position != null) vertexPositions.add(position);
         case SelectionEntityKind.body:
           // Prompt A3: a Body selection highlights every one of its faces,
           // not just one - reuses the same "selected faces" Node/colour
           // rather than introducing a fourth highlight Node type.
-          faceTriangles.addAll(trianglesFromMesh(mesh));
+          final body = _bodyFor(entity.bodyId);
+          if (body != null) faceTriangles.addAll(trianglesFromMesh(body.mesh));
+        case SelectionEntityKind.sketchPoint:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          final index = geometry?.pointIds.indexOf(entity.sketchEntityId) ?? -1;
+          if (geometry != null && index != -1) vertexPositions.add(geometry.points[index]);
+        case SelectionEntityKind.sketchLine:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.lineIds.length; i++) {
+              if (geometry.lineIds[i] == entity.sketchEntityId) {
+                edgeSegments.add(geometry.lineSegments[i]);
+              }
+            }
+          }
       }
     }
 
@@ -969,30 +1007,55 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Resolves one [SelectionEntityRef] (any kind) into its highlight [Node],
   /// shared by [_syncHoverNode] - a single entity's worth of whichever of
   /// [buildHighlightFacesNode]/[buildMeshEdgesNode]/[buildVertexMarkersNode]
-  /// matches its kind, or null if [entity]'s Body/id no longer exists.
+  /// matches its kind, or null if [entity]'s Body/Sketch/id no longer exists.
+  ///
+  /// Prompt C1: sketchPoint/sketchLine entities resolve against
+  /// [PartViewport.sketchGeometries] (keyed by Feature id via
+  /// [SelectionEntityRef.sketchFeatureId]) instead of [_bodyFor] - mirrors
+  /// [_syncSelectedEntityNodes]'s own per-case lookup.
   Node? _buildEntityHighlightNode(SelectionEntityRef entity, vm.Vector4 color) {
-    final body = _bodyFor(entity.bodyId);
-    if (body == null) return null;
-    final mesh = body.mesh;
     switch (entity.kind) {
       case SelectionEntityKind.face:
-        final triangles = faceTrianglesForId(mesh, entity.id);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final triangles = faceTrianglesForId(body.mesh, entity.id);
         if (triangles.isEmpty) return null;
         return buildHighlightFacesNode(triangles, color: color);
       case SelectionEntityKind.edge:
-        final segments = edgeSegmentsForId(mesh, entity.id);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final segments = edgeSegmentsForId(body.mesh, entity.id);
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
       case SelectionEntityKind.vertex:
-        final position = vertexPositionForId(mesh, entity.id);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final position = vertexPositionForId(body.mesh, entity.id);
         if (position == null) return null;
         return buildVertexMarkersNode([position], color: color);
       case SelectionEntityKind.body:
         // Prompt A3: whole-Body highlight - same as a Body-kind selection
         // (see _syncSelectedEntityNodes), just for the hover case.
-        final triangles = trianglesFromMesh(mesh);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final triangles = trianglesFromMesh(body.mesh);
         if (triangles.isEmpty) return null;
         return buildHighlightFacesNode(triangles, color: color);
+      case SelectionEntityKind.sketchPoint:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final index = geometry.pointIds.indexOf(entity.sketchEntityId);
+        if (index == -1) return null;
+        return buildVertexMarkersNode([geometry.points[index]], color: color);
+      case SelectionEntityKind.sketchLine:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final segments = [
+          for (var i = 0; i < geometry.lineIds.length; i++)
+            if (geometry.lineIds[i] == entity.sketchEntityId) geometry.lineSegments[i],
+        ];
+        if (segments.isEmpty) return null;
+        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
     }
   }
 

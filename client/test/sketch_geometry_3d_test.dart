@@ -27,7 +27,7 @@ void main() {
       PointDto(id: 'p3', x: 0, y: 10),
     ];
 
-    test('resolves a Line into one world-space segment on its plane', () {
+    test('resolves a Line into one world-space segment on its plane, with a parallel id', () {
       final line = LineDto(id: 'l1', startPointId: 'p1', endPointId: 'p2', length: 10);
       final geometry = sketchGeometry3DFrom(
         plane: ReferencePlaneKind.xz,
@@ -39,6 +39,7 @@ void main() {
       expect(geometry.lineSegments, hasLength(1));
       expect(geometry.lineSegments.single.$1, vm.Vector3(0, 0, 0));
       expect(geometry.lineSegments.single.$2, vm.Vector3(10, 0, 0));
+      expect(geometry.lineIds, ['l1']);
       expect(geometry.circlePolygons, isEmpty);
       expect(geometry.isEmpty, isFalse);
     });
@@ -52,7 +53,13 @@ void main() {
         circles: const [],
       );
 
-      expect(geometry.isEmpty, isTrue);
+      expect(geometry.lineSegments, isEmpty);
+      expect(geometry.lineIds, isEmpty);
+      // C1: the Sketch's real Points are still rendered/pickable on their
+      // own, independent of whether any Line successfully resolved - not
+      // "empty" just because this one Line couldn't be drawn.
+      expect(geometry.points, hasLength(points.length));
+      expect(geometry.isEmpty, isFalse);
     });
 
     test('resolves a Circle into a closed polygon centered on its center point, on its plane', () {
@@ -88,7 +95,37 @@ void main() {
         circles: [circle],
       );
 
+      expect(geometry.circlePolygons, isEmpty);
+      // Same reasoning as the missing-point Line test above.
+      expect(geometry.points, hasLength(points.length));
+      expect(geometry.isEmpty, isFalse);
+    });
+
+    test('every given Point is projected into points/pointIds, regardless of Line/Circle use', () {
+      final geometry = sketchGeometry3DFrom(
+        plane: ReferencePlaneKind.xy,
+        points: points,
+        lines: const [],
+        circles: const [],
+      );
+
+      expect(geometry.pointIds, ['p1', 'p2', 'p3']);
+      expect(geometry.points, [vm.Vector3(0, 0, 0), vm.Vector3(10, 0, 0), vm.Vector3(0, 10, 0)]);
+      expect(geometry.isEmpty, isFalse);
+    });
+
+    test('no points, lines, or circles at all is genuinely empty', () {
+      final geometry = sketchGeometry3DFrom(
+        plane: ReferencePlaneKind.xy,
+        points: const [],
+        lines: const [],
+        circles: const [],
+      );
+
       expect(geometry.isEmpty, isTrue);
+      expect(geometry.points, isEmpty);
+      expect(geometry.lineSegments, isEmpty);
+      expect(geometry.circlePolygons, isEmpty);
     });
   });
 }

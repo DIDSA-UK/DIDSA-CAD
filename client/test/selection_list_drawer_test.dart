@@ -31,7 +31,7 @@ void main() {
     await tester.pumpWidget(
       _hostedDrawer(
         SelectionListDrawer(
-          selectedEntities: const {entity},
+          selectedEntities: {entity},
           onRemove: (e) => removed = e,
           header: const Text('header-marker'),
         ),
@@ -57,7 +57,7 @@ void main() {
     const entity = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 2);
     await tester.pumpWidget(
       _hostedDrawer(
-        SelectionListDrawer(selectedEntities: const {entity}, onRemove: (_) {}),
+        SelectionListDrawer(selectedEntities: {entity}, onRemove: (_) {}),
       ),
     );
     await tester.pump();

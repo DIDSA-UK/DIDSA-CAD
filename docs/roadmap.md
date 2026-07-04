@@ -226,9 +226,39 @@ bug; reverting either would only reintroduce previously-fixed regressions.
     deletion-gating (`locked` field, single-`DELETE` vs. cascade-delete)
     is untouched. CI-confirmed green on both architectures on the first
     push (no fix-up round needed, unlike B1/B2).
-  - **Current gate**: on-device confirmation of the full B1–B4 set (B3's
-    revision plus B4's actual rollback/Confirm/Cancel flow, neither
-    exercisable in a sandbox) is what Prompt C (Create Plane) now waits on.
+  - **Superseded gate**: this bullet's own on-device confirmation of B1–B4
+    was still pending when Prompt C1 (below) started, on the user's
+    explicit instruction to proceed - if that confirmation is still
+    outstanding, fold it into C1's own on-device pass rather than treating
+    it as a separate blocking step.
+- **Prompt C1 (sketch Point/Line selection in the 3D viewport) — built,
+  pending on-device confirmation.** Inserted ahead of the original Prompt C
+  (renamed C2, content unaffected) since Create Plane's "Normal to Line at
+  Point" reference type needs the user to pick a Sketch's Line/Point
+  directly in the 3D viewport. See `docs/status.md`'s 2026-07-04 entry for
+  full detail. Backend: `SketchEntityRef`/`SketchEntityType` (Point/Line/
+  Circle) + `resolve_sketch_entity`, mirroring B1's `SubShapeRef` pattern -
+  6/6 new pure-Python tests genuinely passed (no OCCT needed at all, a
+  first for this project's backend prompts). Client: Sketch Lines/Circles
+  turned out to already render in the 3D viewport pre-this-prompt (a stale
+  assumption in the prompt's own scope doc) - the real gaps closed were
+  Point rendering (new marker primitives), keeping a just-consumed Sketch
+  visible-but-dimmed rather than fully hidden (`_autoHiddenSketchFeatureIds`,
+  correctly suspended during an active B4 rollback), hit-testing (Sketch
+  Point ties with Body Vertex, Sketch Line ties with Body Edge, both new
+  `SelectionFilterState`/`SelectionEntityKind` values), and the Selection
+  Filters menu/drawer/context-actions wiring. `flutter analyze` clean;
+  207/224 client tests passed for real (the 17 loading-failures are the
+  same pre-existing `flutter_scene`/`flutter_gpu` mismatch set as every
+  prior client prompt, confirmed unchanged via `git stash` against the
+  pre-C1 tree). **Current gate**: on-device confirmation (Sketch Points/
+  Lines actually render and are pickable, including a dimmed-but-pickable
+  consumed Sketch; the two new priority ties feel right; the two new
+  Selection Filters toggles work) is what Prompt C2 (Create Plane) now
+  waits on - same gating discipline as every prior client-facing prompt.
+  Left out of scope, per the prompt's own boundary: Circle picking (backend
+  ref type supports it, no client wiring), any specific Point+Line
+  picking-mode combination (C2's job), custom/arbitrary sketch planes.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

@@ -38,6 +38,19 @@ List<SelectionContextAction> contextActionsFor(Set<SelectionEntityRef> selection
   // suppresses every action rather than picking one arbitrarily.
   if (selection.any((s) => s.kind == SelectionEntityKind.body)) return const [];
 
+  // Prompt C1: a selection made up of Sketch Point/Line entities doesn't
+  // compose with this table's vertex/edge/face-based rules either - without
+  // this guard, a lone sketchPoint (say) would fall through every branch
+  // below to the final "alone" case and nonsensically offer "Create Plane",
+  // since hasFace/hasEdge/hasVertex would all be false. Wiring the real
+  // sketch-entity combos (e.g. Create Plane's "Normal to Line at Point") is
+  // explicitly C2's job, not this prompt's - see its own scope doc.
+  if (selection.any(
+    (s) => s.kind == SelectionEntityKind.sketchPoint || s.kind == SelectionEntityKind.sketchLine,
+  )) {
+    return const [];
+  }
+
   final hasFace = selection.any((s) => s.kind == SelectionEntityKind.face);
   final hasEdge = selection.any((s) => s.kind == SelectionEntityKind.edge);
   final hasVertex = selection.any((s) => s.kind == SelectionEntityKind.vertex);

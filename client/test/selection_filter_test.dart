@@ -11,6 +11,12 @@ void main() {
       expect(state.face, isTrue);
       expect(state.body, isFalse);
     });
+
+    test('C1: sketchPoint and sketchLine default on, mirroring vertex/edge/face', () {
+      const state = SelectionFilterState.defaults;
+      expect(state.sketchPoint, isTrue);
+      expect(state.sketchLine, isTrue);
+    });
   });
 
   group('SelectionFilterState.copyWith', () {
@@ -37,6 +43,17 @@ void main() {
       final next = state.copyWith(vertex: false, edge: false, face: false, body: true);
       expect(next, const SelectionFilterState(vertex: false, edge: false, face: false, body: true));
     });
+
+    test('C1: sketchPoint/sketchLine can be set independently, leaving the rest untouched', () {
+      const state = SelectionFilterState.defaults;
+      final next = state.copyWith(sketchPoint: false, sketchLine: false);
+      expect(next.sketchPoint, isFalse);
+      expect(next.sketchLine, isFalse);
+      expect(next.vertex, isTrue);
+      expect(next.edge, isTrue);
+      expect(next.face, isTrue);
+      expect(next.body, isFalse);
+    });
   });
 
   group('SelectionFilterState equality', () {
@@ -53,6 +70,8 @@ void main() {
       expect(base, isNot(base.copyWith(edge: false)));
       expect(base, isNot(base.copyWith(face: false)));
       expect(base, isNot(base.copyWith(body: true)));
+      expect(base, isNot(base.copyWith(sketchPoint: false)));
+      expect(base, isNot(base.copyWith(sketchLine: false)));
     });
   });
 }
