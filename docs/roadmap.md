@@ -186,12 +186,49 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   (non-`flutter_scene`) test suites: `extrude_panel_test.dart` (6/6,
   Confirm-enablement) and new `document_api_client_test.dart` cases (4/4,
   `target_body_ids` wire format including the None-vs-`[]` distinction).
-  **This closes out the DAG/multi-body phase (A1–A4) pending on-device
-  confirmation of the full picking flow** (enter picking mode, multi-select
-  accumulate, Cancel mid-pick, a zero-pick Boss, a real multi-body Cut) —
-  see `docs/status.md`'s A4 entry for the exact on-device checklist.
-  Prompt B (sub-shape refs, tree categories, cascade delete, earlier-feature
-  editing) waits on that.
+  **This closes out the DAG/multi-body phase (A1–A4)** - on-device
+  confirmation of the full picking flow (enter picking mode, multi-select
+  accumulate, Cancel mid-pick, a zero-pick Boss, a real multi-body Cut) came
+  back positive, which is what let Prompt B begin.
+- **Prompt B (sub-shape refs, tree categories, cascade delete,
+  earlier-feature editing) — B1–B4 all landed, in order.** See
+  `docs/status.md`'s dated 2026-07-03 entries for full detail; summary here:
+  - **B1** (backend `SubShapeRef`/`resolve_subshape` + the `produces` tag):
+    landed, CI-confirmed green on both architectures after one fix-up round
+    (a wrong OCCT import in the test file itself, not production code).
+  - **B2** (backend graph-aware cascade delete): landed, replacing a real
+    bug — cascade delete was still walking list position rather than the
+    actual dependency graph, so an unrelated sibling Feature could get
+    deleted alongside a targeted one. CI-confirmed green on both
+    architectures after one fix-up round (a wrong test assertion, not a
+    cascade-delete defect).
+  - **B3** (client feature-tree categorization) **shipped, then revised
+    off real on-device feedback** (two screenshots): the original "group
+    Feature rows by `produces`" design was replaced with a "Build Tree"
+    panel — a top-level **Bodies** section listing real produced Body
+    objects (one row per Body, not per Feature — a split Extrude now shows
+    multiple Body rows) plus a **Features** section (the full, unfiltered
+    Sketch/Extrude history). Also fixed a genuine duplicate-naming bug in
+    `SelectionListDrawer` (two split Bodies both read "Body 8adb4187") by
+    sharing one naming scheme (`bodyDisplayNames`) everywhere. User
+    confirmed this revision on-device ("ok, looking good").
+  - **B4** (earlier-feature editing) **implemented as true SolidWorks-style
+    rollback**, not the original prompt text's "in-place edit, no
+    rollback" — an explicit reversal, confirmed directly with the user
+    rather than assumed. Tapping any Feature (locked or not) now opens it
+    for editing, suppressing everything after it in the viewport for the
+    edit's duration (reusing the existing `hidden_feature_ids` mechanism)
+    and rolling forward on Confirm/Cancel. **Required a real backend
+    change B4's own "Client" framing didn't anticipate**: the "only the
+    last Feature is editable" lock was actively enforced server-side
+    (`PATCH .../extrude-features`, every Sketch-mutation endpoint) and had
+    to be removed for tapping an earlier Feature to do anything but 400 —
+    deletion-gating (`locked` field, single-`DELETE` vs. cascade-delete)
+    is untouched. CI-confirmed green on both architectures on the first
+    push (no fix-up round needed, unlike B1/B2).
+  - **Current gate**: on-device confirmation of the full B1–B4 set (B3's
+    revision plus B4's actual rollback/Confirm/Cancel flow, neither
+    exercisable in a sandbox) is what Prompt C (Create Plane) now waits on.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

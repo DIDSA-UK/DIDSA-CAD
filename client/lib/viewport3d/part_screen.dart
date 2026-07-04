@@ -9,6 +9,7 @@ import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
+import 'body_naming.dart';
 import 'cascade_delete_dialog.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
@@ -21,9 +22,10 @@ import 'part_viewport.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
+import 'rollback.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
-import 'selection_hit_test.dart' show SelectionEntityRef;
+import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'view_preferences.dart';
@@ -70,6 +72,19 @@ class _PartScreenState extends State<PartScreen> {
   /// or every current Body is hidden - see [_refreshMesh].
   List<BodyMeshDto> _bodies = [];
   String? _selectedFeatureId;
+
+  /// B3 revision: the Part's real, currently-computed Body ids - excludes
+  /// the dev-time placeholder box (`source: "placeholder"`), which is never
+  /// a real Body and shouldn't appear in the Build Tree's Bodies section or
+  /// [SelectionListDrawer]'s naming.
+  List<String> get _computedBodyIds =>
+      _bodies.where((b) => b.source == 'computed').map((b) => b.bodyId).toList();
+
+  /// Stable "Body 1"/"Body 2"... names shared between the Build Tree's
+  /// Bodies section and [SelectionListDrawer] - see `body_naming.dart`.
+  /// Recomputed on every build; cheap (a handful of Bodies/Features at
+  /// most) and always needs to reflect the latest [_features]/[_bodies].
+  Map<String, String> get _bodyNames => bodyDisplayNames(_features, _computedBodyIds);
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -285,6 +300,28 @@ class _PartScreenState extends State<PartScreen> {
   /// means "never captured yet" - same distinction [_meshBeforeExtrude]
   /// makes just above.
   Set<SelectionEntityRef>? _entitiesBeforeExtrude;
+
+  /// B4: non-null while [ExtrudePanel] is editing an *existing*
+  /// ExtrudeFeature (as opposed to [_openExtrudePanel]'s "create a brand-new
+  /// one from a Sketch" flow) - set upfront to that Feature's own id in
+  /// [_openExtrudePanelForEdit], which is what makes every subsequent
+  /// [_ensureExtrudeFeatureExists] call (the live-preview debounce
+  /// included) PATCH it directly rather than ever creating a new Feature.
+  String? _editingExtrudeFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelExtrude] PATCHes these back verbatim when
+  /// [_editingExtrudeFeatureId] is set, since (unlike the "create new"
+  /// flow, where Cancel deletes the just-created preview Feature) an
+  /// already-existing Feature must never be deleted just because its edit
+  /// was cancelled.
+  ({ExtrudeType type, double start, double end, List<String> targetBodyIds})? _extrudeEditSnapshot;
+
+  /// B4: [_hiddenFeatureIds]' value from just before true-rollback editing
+  /// began (see [_beginRollback]/[_endRollback]) - null whenever rollback
+  /// isn't currently active (e.g. editing the last Feature, which has
+  /// nothing after it to suppress in the first place).
+  Set<String>? _hiddenFeatureIdsBeforeRollback;
 
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
@@ -695,14 +732,81 @@ class _PartScreenState extends State<PartScreen> {
     await ViewPreferences.setRenderMode(mode);
   }
 
-  /// A tap always selects/highlights the Feature; only an editable (not
-  /// locked) Feature also opens its Sketch - tapping a locked Feature to
-  /// re-edit it is explicitly out of scope for this stage.
-  void _onFeatureTap(FeatureDto feature) {
+  /// B4: a tap always selects/highlights the Feature and now opens it for
+  /// editing regardless of lock state - true SolidWorks-style rollback
+  /// (see [_beginRollback]) engages first whenever the tapped Feature isn't
+  /// already the last one, so its edit panel/Sketch never shows stale
+  /// downstream geometry behind it. A Sketch opens the 2D canvas (as
+  /// before B4, just no longer gated on `!feature.locked`); an Extrude
+  /// reopens [ExtrudePanel] prefilled with its own current stored values
+  /// (see [_openExtrudePanelForEdit]) rather than doing nothing, which is
+  /// what an Extrude-Feature tap did pre-B4.
+  Future<void> _onFeatureTap(FeatureDto feature) async {
     setState(() => _selectedFeatureId = feature.id);
-    if (!feature.locked && feature.type == 'sketch') {
-      _openSketchWithAnimation(feature);
+    final rollbackIds = featureIdsAfter(_features, feature.id);
+    if (rollbackIds.isNotEmpty) await _beginRollback(rollbackIds);
+    if (!mounted) return;
+    if (feature.type == 'sketch') {
+      await _openSketchWithAnimation(feature);
+      if (!mounted) return;
+      await _endRollback();
+    } else if (feature.type == 'extrude') {
+      // Rollback is ended by _confirmExtrude/_cancelExtrude instead, once
+      // the panel actually closes - it must stay engaged for the panel's
+      // whole lifetime, not just until it opens. If the panel couldn't
+      // actually open (defensive only - a real ExtrudeFeature always
+      // resolves its own Sketch), roll forward immediately rather than
+      // leaving rollback stuck engaged with nothing to end it.
+      final opened = _openExtrudePanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else {
+      // Defensive: no known editable panel for this Feature type yet
+      // (every type today is handled above) - never leave rollback
+      // engaged with nothing that will ever end it.
+      await _endRollback();
     }
+  }
+
+  /// B4: engages true rollback - hides [rollbackIds] on top of whatever the
+  /// user already had hidden manually (Hide/Show, unrelated to this),
+  /// stashing the pre-rollback set so [_endRollback] can restore it
+  /// exactly. Reuses the pre-existing [_hiddenFeatureIds]/
+  /// `hidden_feature_ids` mechanism (A1) - a Feature named there is already
+  /// excluded entirely from backend recompute, not just hidden visually -
+  /// rather than inventing a second, parallel suppression concept.
+  Future<void> _beginRollback(Set<String> rollbackIds) async {
+    _hiddenFeatureIdsBeforeRollback = Set.of(_hiddenFeatureIds);
+    setState(() => _hiddenFeatureIds.addAll(rollbackIds));
+    await _runGuarded(_refreshMesh);
+  }
+
+  /// B4: undoes [_beginRollback] - restores exactly the hidden set from
+  /// before rollback began, discarding the rollback-only additions (a real
+  /// manual Hide/Show made *during* the edit is also discarded here, same
+  /// as every other "restore to before this flow started" stash in this
+  /// file, e.g. [_meshBeforeExtrude]/[_entitiesBeforeExtrude]). A safe no-op
+  /// if rollback was never engaged for this edit (editing the last
+  /// Feature).
+  Future<void> _endRollback() async {
+    final before = _hiddenFeatureIdsBeforeRollback;
+    if (before == null) return;
+    setState(() {
+      _hiddenFeatureIds
+        ..clear()
+        ..addAll(before);
+    });
+    _hiddenFeatureIdsBeforeRollback = null;
+    await _runGuarded(_refreshMesh);
+  }
+
+  /// B3 revision: tapping a Body row in the Build Tree's Bodies section -
+  /// toggles it in [_selectedEntities] exactly like tapping that Body
+  /// directly in the 3D viewport already does (`_toggleSelectedEntity`),
+  /// rather than a separate one-off "always select" action - the same
+  /// selection set drives [SelectionListDrawer] either way, so the two
+  /// selection paths (tree row, viewport tap) stay fully interchangeable.
+  void _onBodyTap(String bodyId) {
+    _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
   }
 
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
@@ -802,6 +906,50 @@ class _PartScreenState extends State<PartScreen> {
         const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
       );
     });
+  }
+
+  /// B4: opens [ExtrudePanel] to edit an *already-existing* ExtrudeFeature -
+  /// unlike [_openExtrudePanel] (always a brand-new Feature from a Sketch),
+  /// every field (including `target_body_ids`, via [_selectedEntities]) is
+  /// prefilled from [feature]'s own current stored values, and
+  /// [_previewExtrudeFeatureId] is set to [feature]'s own id upfront - this
+  /// is what makes every [_ensureExtrudeFeatureExists] call (the
+  /// live-preview debounce included) PATCH it directly, so Confirm "PATCHes
+  /// the existing feature, never creates a new one" by construction rather
+  /// than a special Confirm-time branch. Returns false (and does nothing
+  /// else) if [feature]'s own Sketch can't be resolved (defensive only -
+  /// every real Extrude Feature always names a real SketchFeature, enforced
+  /// at create time) - the caller ends true-rollback immediately in that
+  /// case, since nothing will otherwise ever do so.
+  bool _openExtrudePanelForEdit(FeatureDto feature) {
+    final sketchFeatureId = feature.sketchFeatureId;
+    final sketchFeature = sketchFeatureId == null ? null : _featureById(sketchFeatureId);
+    if (sketchFeature == null) return false;
+
+    final type = ExtrudeType.fromApiValue(feature.extrudeType ?? 'boss');
+    final start = feature.startDistance ?? 0.0;
+    final end = feature.endDistance ?? 10.0;
+    final targetBodyIds = feature.targetBodyIds;
+
+    setState(() {
+      _extrudeSketchFeature = sketchFeature;
+      _editingExtrudeFeatureId = feature.id;
+      _previewExtrudeFeatureId = feature.id;
+      _extrudeEditSnapshot = (type: type, start: start, end: end, targetBodyIds: targetBodyIds);
+      _meshBeforeExtrude = _bodies;
+      _extrudeType = type;
+      _extrudeStartDistance = start;
+      _extrudeEndDistance = end;
+      _entitiesBeforeExtrude = _selectedEntities;
+      _selectedEntities = {
+        for (final bodyId in targetBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionFilterOverrides.push(
+        const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+      );
+    });
+    return true;
   }
 
   /// Creates the preview ExtrudeFeature on the first call, or PATCHes the
@@ -912,9 +1060,19 @@ class _PartScreenState extends State<PartScreen> {
   /// so this can never leave stale picker state behind for the *next*
   /// Extrude - the same class of bug the Prompt D follow-up above guards
   /// against for [_selectedFeatureId].
+  ///
+  /// B4: when [_editingExtrudeFeatureId] is set (editing an already-existing
+  /// Feature rather than creating one), the auto-hide-the-Sketch behaviour
+  /// above is skipped - that only makes sense the *first* time a Sketch is
+  /// consumed by a brand-new Extrude, not every time an already-consumed one
+  /// is re-edited - and true rollback is rolled forward ([_endRollback])
+  /// once the panel's own state has been torn down, so the now-current
+  /// downstream Features are visible again with this edit's changes
+  /// actually reflected in them.
   Future<void> _confirmExtrude() async {
     _extrudeDebounce?.cancel();
     final sketchFeature = _extrudeSketchFeature;
+    final wasEditing = _editingExtrudeFeatureId != null;
     final targetBodyIds = _currentTargetBodyIds();
     await _runGuarded(() async {
       await _ensureExtrudeFeatureExists(
@@ -928,11 +1086,13 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (!mounted) return;
     setState(() {
-      if (sketchFeature != null) _hiddenFeatureIds.add(sketchFeature.id);
+      if (sketchFeature != null && !wasEditing) _hiddenFeatureIds.add(sketchFeature.id);
       _recomputeVisibleSketchGeometries();
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
+      _editingExtrudeFeatureId = null;
+      _extrudeEditSnapshot = null;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -940,6 +1100,7 @@ class _PartScreenState extends State<PartScreen> {
         _selectedFeatureId = null;
       }
     });
+    await _endRollback();
   }
 
   /// Deletes the preview ExtrudeFeature (if one was ever created) and
@@ -956,16 +1117,30 @@ class _PartScreenState extends State<PartScreen> {
   /// filter override, same as [_confirmExtrude] - see that method's doc
   /// comment for why this must happen regardless of whether anything was
   /// actually picked.
+  ///
+  /// B4: when [_editingExtrudeFeatureId] is set, [previewId] refers to a
+  /// Feature that already existed *before* this edit session - deleting it
+  /// (the "create new" flow's undo) would destroy real, pre-existing work
+  /// just because an edit was cancelled. Instead this PATCHes
+  /// [_extrudeEditSnapshot]'s stashed original values back, undoing
+  /// whatever the live-preview debounce may have already written, then
+  /// rolls true rollback forward ([_endRollback]) - "no changes" (per this
+  /// prompt's own Confirm/Cancel requirement) for an edit session means the
+  /// Feature ends up exactly as it was, not merely "not deleted".
   Future<void> _cancelExtrude() async {
     _extrudeDebounce?.cancel();
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
     final previewId = _previewExtrudeFeatureId;
     final meshBefore = _meshBeforeExtrude;
+    final wasEditing = _editingExtrudeFeatureId != null;
+    final editSnapshot = _extrudeEditSnapshot;
     setState(() {
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
+      _editingExtrudeFeatureId = null;
+      _extrudeEditSnapshot = null;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -973,16 +1148,32 @@ class _PartScreenState extends State<PartScreen> {
         _selectedFeatureId = null;
       }
     });
-    if (part == null || previewId == null) return;
-    await _runGuarded(() async {
-      await _api.deleteFeature(part.id, previewId);
-      if (meshBefore != null) {
-        _bodies = meshBefore;
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateExtrudeFeature(
+            part.id,
+            previewId,
+            extrudeType: editSnapshot.type.apiValue,
+            startDistance: editSnapshot.start,
+            endDistance: editSnapshot.end,
+            targetBodyIds: editSnapshot.targetBodyIds,
+          );
+          await _refreshFeatures();
+        });
       } else {
-        await _refreshMesh();
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
       }
-      await _refreshFeatures();
-    });
+    }
+    await _endRollback();
   }
 
   /// Prompt A4: the top banner's text while [_extrudeActive] - Cut's wording
@@ -1078,6 +1269,17 @@ class _PartScreenState extends State<PartScreen> {
   /// Features and their Sketch content: whatever was drawn during this
   /// visit must show up back in the 3D viewport, not only on the next
   /// unrelated Feature-creation refresh.
+  ///
+  /// B4: also re-fetches the mesh - pre-B4, a Sketch could only ever be
+  /// opened here while it was still the last Feature in its Part (nothing
+  /// downstream yet to recompute), so this was never needed before.
+  /// Editing an *earlier* Sketch with a downstream Extrude (B4's own new
+  /// capability, reached via true rollback - see [_onFeatureTap]) makes
+  /// this reachable for the first time: the Extrude that consumes this
+  /// Sketch's profile needs to recompute against whatever changed, and
+  /// still-hidden rollback siblings correctly stay excluded from this
+  /// refresh regardless (the caller only calls [_endRollback], which
+  /// refreshes again, once *this* method has already returned).
   Future<void> _openSketch(FeatureDto feature, {ReferencePlaneKind? plane}) async {
     // Prompt A3: merges every Body's edges into one flat list - the ghost
     // outline doesn't care which Body an edge came from, only where it
@@ -1100,6 +1302,7 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(() async {
       await _refreshFeatures();
       await _refreshSketchGeometries();
+      await _refreshMesh();
     });
   }
 
@@ -1232,6 +1435,7 @@ class _PartScreenState extends State<PartScreen> {
                       selectedEntities: _selectedEntities,
                       onRemove: _toggleSelectedEntity,
                       header: SelectionContextPanel(selectedEntities: _selectedEntities),
+                      bodyNames: _bodyNames,
                     ),
                   ),
                 Positioned.fill(
@@ -1252,6 +1456,9 @@ class _PartScreenState extends State<PartScreen> {
                     isSketchPickerMode: _sketchPickerActive,
                     pickableSketchIds: _pickableSketchIds,
                     onSketchPicked: _onSketchPicked,
+                    bodyIds: _computedBodyIds,
+                    bodyNames: _bodyNames,
+                    onBodyTap: _onBodyTap,
                   ),
                 ),
                 Positioned.fill(
@@ -1282,7 +1489,8 @@ class _PartScreenState extends State<PartScreen> {
                 if (_extrudeSketchFeature != null)
                   Positioned.fill(
                     child: ExtrudePanel(
-                      key: ValueKey(_extrudeSketchFeature!.id),
+                      key: ValueKey(_editingExtrudeFeatureId ?? _extrudeSketchFeature!.id),
+                      title: _editingExtrudeFeatureId != null ? 'Edit Extrude' : 'Extrude',
                       initialType: _extrudeType,
                       initialStartDistance: _extrudeStartDistance,
                       initialEndDistance: _extrudeEndDistance,

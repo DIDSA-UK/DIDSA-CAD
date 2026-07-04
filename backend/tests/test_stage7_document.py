@@ -55,7 +55,15 @@ def test_delete_feature_succeeds_when_last():
     assert part.features == []
 
 
-def test_delete_feature_cascade_removes_the_feature_and_everything_after_it():
+def test_delete_features_removes_exactly_the_given_ids_in_original_order():
+    """B2: `Part.delete_features` itself has no graph knowledge - it just
+    partitions `self.features` by membership in the given id set (the real
+    dependency-graph closure computation is `app.document.graph.
+    transitive_dependents`, tested directly in test_stage_b2_graph.py). This
+    replaces the old `delete_feature_cascade`, which took a single
+    `feature_id` and deleted it plus everything positionally after it in
+    the list - wrong as soon as list order and dependency order can
+    diverge (A1's `target_body_ids`), which is exactly why B2 exists."""
     part = Part(id="p", name="Part 1")
     first = SketchFeature(id="f1", sketch_id="s1")
     second = SketchFeature(id="f2", sketch_id="s2")
@@ -64,31 +72,40 @@ def test_delete_feature_cascade_removes_the_feature_and_everything_after_it():
     part.add_feature(second)
     part.add_feature(third)
 
-    deleted = part.delete_feature_cascade(second.id)
+    deleted = part.delete_features({second.id, third.id})
 
     assert deleted == [second, third]
     assert part.features == [first]
 
 
-def test_delete_feature_cascade_from_the_first_feature_deletes_all_of_them():
+def test_delete_features_deletes_a_non_contiguous_subset_leaving_the_rest_untouched():
+    """The key behaviour change from the old list-position cascade: an id
+    set doesn't have to be a contiguous "everything after X" tail - B2's
+    whole point is that the real dependent set for a deleted Feature can
+    skip over untouched siblings in between."""
     part = Part(id="p", name="Part 1")
     first = SketchFeature(id="f1", sketch_id="s1")
     second = SketchFeature(id="f2", sketch_id="s2")
+    third = SketchFeature(id="f3", sketch_id="s3")
     part.add_feature(first)
     part.add_feature(second)
+    part.add_feature(third)
 
-    deleted = part.delete_feature_cascade(first.id)
+    deleted = part.delete_features({first.id, third.id})
 
-    assert deleted == [first, second]
-    assert part.features == []
+    assert deleted == [first, third]
+    assert part.features == [second]
 
 
-def test_delete_feature_cascade_raises_for_an_unknown_feature_id():
+def test_delete_features_with_an_unknown_id_deletes_nothing_for_that_id():
     part = Part(id="p", name="Part 1")
-    part.add_feature(SketchFeature(id="f1", sketch_id="s1"))
+    first = SketchFeature(id="f1", sketch_id="s1")
+    part.add_feature(first)
 
-    with pytest.raises(ValueError):
-        part.delete_feature_cascade("does-not-exist")
+    deleted = part.delete_features({"does-not-exist"})
+
+    assert deleted == []
+    assert part.features == [first]
 
 
 def test_document_add_part_creates_independent_parts():
@@ -234,11 +251,14 @@ def test_deleting_the_last_feature_succeeds_over_the_api():
     assert client.get(f"/document/parts/{part['id']}/features/{second['id']}").status_code == 404
 
 
-def test_mutating_a_sketch_behind_a_locked_feature_is_rejected_over_the_api():
-    """The cross-module enforcement: app.sketch.router checks
-    app.document.store.is_sketch_locked, so adding a Point to a Sketch
-    wrapped by a non-last Feature is rejected at the sketch endpoint
-    itself, not just at the feature endpoint."""
+def test_mutating_a_sketch_behind_a_locked_feature_is_allowed_over_the_api():
+    """B4: earlier-Feature editing needs this to actually work - a Sketch
+    wrapped by a non-last Feature is no longer rejected at the sketch
+    endpoint (the pre-B4 cross-module enforcement via app.sketch.router's
+    `_ensure_sketch_editable`/`app.document.store.is_sketch_locked` was
+    removed for this exact reason). `locked` (see `Part.is_locked`/the
+    Feature response field) still reflects Feature *deletion*-eligibility
+    (single-DELETE vs. cascade-delete) - it just no longer gates editing."""
     part = _create_part()
     first = _create_sketch_feature(part["id"])
     _create_sketch_feature(part["id"])
@@ -247,8 +267,7 @@ def test_mutating_a_sketch_behind_a_locked_feature_is_rejected_over_the_api():
         f"/sketch/sketches/{first['sketch_id']}/points", json={"x": 1.0, "y": 1.0}
     )
 
-    assert response.status_code == 400
-    assert "locked" in response.json()["detail"].lower()
+    assert response.status_code == 201
 
 
 def test_mutating_a_sketch_behind_the_last_feature_is_allowed_over_the_api():
@@ -293,7 +312,14 @@ def test_cascade_delete_from_the_last_feature_deletes_only_that_one_over_the_api
     assert client.get(f"/sketch/sketches/{first['sketch_id']}").status_code == 200
 
 
-def test_cascade_delete_from_the_first_feature_deletes_everything_over_the_api():
+def test_cascade_delete_of_an_independent_earlier_feature_deletes_only_itself_over_the_api():
+    """B2: three separate SketchFeatures share no dependency edges at all
+    (each Sketch is its own graph node with no `depends_on`, per
+    `app.document.graph.build_feature_graph`) - cascade-deleting the first
+    one now removes only itself, not "everything after it in the list" as
+    the pre-B2 position-based cascade delete did. See test_stage_b2_
+    cascade.py for the genuine multi-branch-DAG cases (a shared Sketch
+    feeding two Extrudes, etc.) that actually exercise a real cascade."""
     part = _create_part()
     first = _create_sketch_feature(part["id"])
     second = _create_sketch_feature(part["id"])
@@ -303,32 +329,36 @@ def test_cascade_delete_from_the_first_feature_deletes_everything_over_the_api()
 
     assert response.status_code == 200
     body = response.json()
-    assert body["deleted_feature_ids"] == [first["id"], second["id"], third["id"]]
-    assert set(body["deleted_sketch_ids"]) == {
-        first["sketch_id"],
-        second["sketch_id"],
-        third["sketch_id"],
-    }
+    assert body["deleted_feature_ids"] == [first["id"]]
+    assert body["deleted_sketch_ids"] == [first["sketch_id"]]
 
     remaining = client.get(f"/document/parts/{part['id']}/features").json()
-    assert remaining == []
+    assert [f["id"] for f in remaining] == [second["id"], third["id"]]
 
-    for sketch_id in body["deleted_sketch_ids"]:
-        assert client.get(f"/sketch/sketches/{sketch_id}").status_code == 404
+    assert client.get(f"/sketch/sketches/{first['sketch_id']}").status_code == 404
+    assert client.get(f"/sketch/sketches/{second['sketch_id']}").status_code == 200
+    assert client.get(f"/sketch/sketches/{third['sketch_id']}").status_code == 200
 
 
 def test_cascade_delete_of_a_locked_feature_is_allowed_unlike_single_delete():
     part = _create_part()
     first = _create_sketch_feature(part["id"])
-    _create_sketch_feature(part["id"])
+    second = _create_sketch_feature(part["id"])
 
     # The single-delete endpoint rejects a locked Feature...
     assert client.delete(f"/document/parts/{part['id']}/features/{first['id']}").status_code == 400
 
-    # ...but cascade-delete is exactly the way to remove one anyway.
+    # ...but cascade-delete is exactly the way to remove one anyway. `first`
+    # and `second` are independent Sketches (no dependency edge between
+    # them), so only `first` is actually removed - B2's whole point, unlike
+    # the pre-B2 behaviour that would have taken `second` down with it
+    # purely because of list position.
     response = client.delete(f"/document/parts/{part['id']}/features/{first['id']}/cascade")
     assert response.status_code == 200
-    assert client.get(f"/document/parts/{part['id']}/features").json() == []
+    assert response.json()["deleted_feature_ids"] == [first["id"]]
+    assert [f["id"] for f in client.get(f"/document/parts/{part['id']}/features").json()] == [
+        second["id"]
+    ]
 
 
 def test_cascade_delete_of_an_unknown_feature_is_404_over_the_api():

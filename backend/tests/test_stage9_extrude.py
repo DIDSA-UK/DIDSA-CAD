@@ -270,11 +270,16 @@ def test_patch_updates_extrude_distances_and_the_mesh_changes_accordingly():
     assert _max_z(mesh_after) == pytest.approx(20.0)
 
 
-def test_patch_on_a_locked_extrude_feature_is_rejected():
+def test_patch_on_a_locked_extrude_feature_is_now_allowed():
+    """B4: editing an earlier ExtrudeFeature (one with Features after it in
+    the Part) is exactly the capability B4 adds - PATCH no longer rejects
+    it. `locked` in the response still reflects deletion-eligibility only
+    (single-DELETE vs. cascade-delete), unaffected by this."""
     part = _create_part()
     sketch_feature = _create_square_sketch_feature(part["id"])
     extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
-    # Add a second SketchFeature after it, locking the extrude feature.
+    # A second SketchFeature after it - extrude is no longer the last
+    # Feature in the Part, but that no longer blocks editing it.
     _create_sketch_feature(part["id"])
 
     response = client.patch(
@@ -282,7 +287,8 @@ def test_patch_on_a_locked_extrude_feature_is_rejected():
         json={"end_distance": 20.0},
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.json()["end_distance"] == 20.0
 
 
 def test_patch_unknown_extrude_feature_is_404():

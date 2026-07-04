@@ -24,6 +24,16 @@ class SelectionListDrawer extends StatelessWidget {
   final void Function(SelectionEntityRef entity) onRemove;
   final Widget? header;
 
+  /// B3 revision: stable "Body 1"/"Body 2"... names shared with the feature
+  /// tree's "Bodies" section (see `body_naming.dart`'s `bodyDisplayNames`) -
+  /// replaces the previous "first 8 characters of body_id" truncation,
+  /// which produced two identically-labelled rows for a split Body's two
+  /// halves on-device (they share the same base id, only the `#N` suffix
+  /// a truncation that short never reaches differs). Falls back to the old
+  /// truncation for a bodyId this map doesn't cover (defensive only - every
+  /// real call site now always supplies a complete map).
+  final Map<String, String> bodyNames;
+
   /// Clears the bottom-right FAB column (each FAB is 56dp wide with 16dp of
   /// margin from the Scaffold edge) - matches the brief's example value.
   static const double _fabColumnClearance = 72;
@@ -33,6 +43,7 @@ class SelectionListDrawer extends StatelessWidget {
     required this.selectedEntities,
     required this.onRemove,
     this.header,
+    this.bodyNames = const {},
   });
 
   @override
@@ -135,14 +146,14 @@ class SelectionListDrawer extends StatelessWidget {
   }
 
   /// Prompt A3: a Body entry has no meaningful [SelectionEntityRef.id] (see
-  /// its doc comment) - shows a shortened [SelectionEntityRef.bodyId]
-  /// instead of `#<id>`, the same "first 8 characters" convention short
-  /// git hashes use, since a full backend UUID is too long to read at a
-  /// glance in a list row.
+  /// its doc comment). B3 revision: names come from [bodyNames] (shared
+  /// with the feature tree's "Bodies" section) rather than a raw id
+  /// truncation, so e.g. a split Body's two halves read as "Body 1"/
+  /// "Body 2" instead of two identical truncated-id rows.
   String _titleFor(SelectionEntityRef entity) {
     if (entity.kind == SelectionEntityKind.body) {
       final id = entity.bodyId;
-      return 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
+      return bodyNames[id] ?? 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
     }
     return '${_labelFor(entity.kind)} #${entity.id}';
   }

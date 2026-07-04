@@ -3,7 +3,8 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
-from app.document.extrude import base_feature_id, compute_part_bodies
+from app.document.extrude import compute_part_bodies
+from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.models import ExtrudeFeature, ExtrudeType, Feature, Part, SketchFeature
 from app.document.schemas import (
@@ -100,7 +101,7 @@ def _validate_target_body_ids(
     resolve to an ExtrudeFeature already in this Part - a Body's id is
     always derived from the id of the ExtrudeFeature that created (or,
     after a merge, still identifies) it, possibly with a `#N` split-index
-    suffix (see app.document.extrude.base_feature_id) if that operation
+    suffix (see app.document.graph.base_feature_id) if that operation
     produced more than one disconnected solid - `base_feature_id` strips
     that suffix before the lookup, so a composite id round-tripped from a
     prior `/mesh` response validates the same way a plain one does."""
@@ -209,14 +210,21 @@ def _get_extrude_feature_or_404(part: Part, feature_id: str) -> ExtrudeFeature:
 def update_extrude_feature(
     part_id: str, feature_id: str, payload: ExtrudeFeatureUpdate
 ) -> ExtrudeFeatureResponse:
+    """B4: any ExtrudeFeature can be edited now, not just the last one in its
+    Part - the pre-B4 "only the last Feature is editable" lock only ever
+    gated this endpoint and `app.sketch.router`'s Sketch-mutation endpoints
+    (see `_ensure_sketch_editable`, removed there for the same reason); it
+    never applied to reading a Feature, and `Part.is_locked`/the `locked`
+    response field are otherwise untouched (single-`DELETE` still requires
+    cascade-delete for anything but the last Feature - B4 is about editing,
+    not deleting). Editing a Feature with downstream dependents still
+    triggers a normal full recompute of all of them the next time `/mesh` is
+    fetched, via A1's existing graph-based recompute path, unchanged by
+    this prompt - there is no separate "rollback" concept on this side at
+    all, since suppressing downstream Features during an edit is purely a
+    client-side concern (`hidden_feature_ids`, already existed before B4)."""
     part = get_part_or_404(part_id)
     feature = _get_extrude_feature_or_404(part, feature_id)
-    if part.is_locked(feature_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Only the last Feature in a Part can be edited - it is locked because a "
-            "later Feature exists.",
-        )
     new_start = payload.start_distance if payload.start_distance is not None else feature.start_distance
     new_end = payload.end_distance if payload.end_distance is not None else feature.end_distance
     _validate_extrude_distances(new_start, new_end)
@@ -250,13 +258,25 @@ def delete_feature(part_id: str, feature_id: str) -> None:
     "/parts/{part_id}/features/{feature_id}/cascade", response_model=CascadeDeleteResponse
 )
 def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteResponse:
-    """Deletes `feature_id` and every Feature after it, regardless of
+    """B2: deletes `feature_id` and every Feature that *actually transitively
+    depends on it* per the real dependency graph (A1) - not "every Feature
+    after it in the list", which is what this endpoint did before B2 and
+    which only happened to match for every scenario where list order and
+    dependency order coincide (every pre-A1 single-body Part). Regardless of
     locking - this is the only way to remove a locked Feature, since
-    removing it always also removes everything later that depends on it
-    being in the history. Distinct from `delete_feature` above (which
-    only ever removes a single, unlocked, last Feature) precisely so a
-    client can't trigger a multi-Feature deletion by accident through the
-    single-delete endpoint.
+    removing it always also removes everything that depends on it being in
+    the history. Distinct from `delete_feature` above (which only ever
+    removes a single, unlocked, last Feature) precisely so a client can't
+    trigger a multi-Feature deletion by accident through the single-delete
+    endpoint.
+
+    A Feature with no dependents deletes alone. A Sketch feeding two
+    independent Extrudes, deleting only one of them, never touches the
+    Sketch or the untouched sibling Extrude - neither is a dependent of the
+    deleted one. Deleting the Sketch itself takes both Extrudes (and
+    anything downstream of either) with it, since each names the Sketch in
+    its own dependency edge (see `app.document.graph.build_feature_graph`/
+    `transitive_dependents`).
 
     Each deleted SketchFeature's underlying Sketch is deleted too, since
     a Sketch created via this Document/Part/Feature flow is owned solely
@@ -268,7 +288,8 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
     """
     part = get_part_or_404(part_id)
     _get_feature_or_404(part, feature_id)
-    deleted_features = part.delete_feature_cascade(feature_id)
+    to_delete = transitive_dependents(build_feature_graph(part), feature_id)
+    deleted_features = part.delete_features(to_delete)
 
     deleted_sketch_ids = []
     for feature in deleted_features:
