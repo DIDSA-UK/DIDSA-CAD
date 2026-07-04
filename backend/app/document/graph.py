@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.document.models import ExtrudeFeature, Part
+from app.document.models import CreatePlaneFeature, ExtrudeFeature, Part, PlaneType, SketchFeature
 
 
 class CycleError(ValueError):
@@ -118,6 +118,23 @@ def base_feature_id(body_id: str) -> str:
     return body_id.split("#", 1)[0]
 
 
+def _sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
+    """C2: resolves a `SketchEntityRef.sketch_id` (an `app.sketch.models.
+    Sketch` id) back to the `SketchFeature` id that wraps it in `part` - the
+    two are different ids (a Feature's own id vs. the Sketch it wraps, see
+    `SketchFeature`'s own docstring), so a `CreatePlaneFeature`'s
+    `NORMAL_TO_LINE_AT_POINT` dependency edge (below) can't just reuse
+    `sketch_id` directly the way an ExtrudeFeature's `sketch_feature_id`
+    already is a Feature id. Returns None (never raises) if no such
+    SketchFeature exists - `build_feature_graph`'s caller already tolerates
+    unresolvable dependency ids, same as `target_body_ids` entries that
+    don't resolve to a real ExtrudeFeature."""
+    for feature in part.features:
+        if isinstance(feature, SketchFeature) and feature.sketch_id == sketch_id:
+            return feature.id
+    return None
+
+
 def build_feature_graph(part: Part) -> list[GraphNode]:
     """The dependency edges recompute is driven by (A1) - every
     ExtrudeFeature depends on the SketchFeature it extrudes plus every Body
@@ -134,6 +151,16 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     app.document.router._validate_target_body_ids) are simply ignored by
     `topological_order`/`transitive_dependents` rather than raising here.
 
+    C2: a `CreatePlaneFeature` depends on whatever it references too -
+    the owning ExtrudeFeature of its `face_ref.body_id` (`OFFSET_FACE`), or
+    the SketchFeature wrapping its `line_ref`/`point_ref`'s `sketch_id`
+    (`NORMAL_TO_LINE_AT_POINT`, both refs always share one Sketch by
+    construction - see `app.document.router._validate_create_plane_payload`)
+    - without this, cascade-deleting the Feature a Plane references would
+    silently leave it dangling instead of taking it down too, the exact
+    "everything after it in the list" bug class B2 fixed for Boss/Cut's
+    `target_body_ids`, just for a new reference kind.
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -145,6 +172,12 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
                 feature.sketch_feature_id,
                 *(base_feature_id(tid) for tid in feature.target_body_ids),
             )
+        elif isinstance(feature, CreatePlaneFeature):
+            if feature.plane_type == PlaneType.OFFSET_FACE and feature.face_ref is not None:
+                depends_on = (base_feature_id(feature.face_ref.body_id),)
+            elif feature.line_ref is not None:
+                sketch_feature_id = _sketch_feature_id_for_sketch(part, feature.line_ref.sketch_id)
+                depends_on = (sketch_feature_id,) if sketch_feature_id is not None else ()
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 

@@ -1,9 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
+import '../api/sketch_api_client.dart' show ApiException, LineDto, SketchApiClient;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
@@ -11,6 +12,8 @@ import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
 import 'body_naming.dart';
 import 'cascade_delete_dialog.dart';
+import 'create_plane_geometry_3d.dart';
+import 'create_plane_panel.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
@@ -294,6 +297,14 @@ class _PartScreenState extends State<PartScreen> {
   Map<String, SketchGeometry3D> _allSketchGeometries = {};
   Map<String, SketchGeometry3D> _visibleSketchGeometries = {};
 
+  /// C2: raw `LineDto`s per Sketch Feature, populated alongside
+  /// [_allSketchGeometries] (see [_refreshSketchGeometries]) - unlike
+  /// [SketchGeometry3D] (world-space render geometry only), this keeps each
+  /// Line's own `startPointId`/`endPointId`, which [_isPointOnLine] needs to
+  /// tell a Line's real endpoint apart from an unrelated Point elsewhere in
+  /// the same Sketch.
+  Map<String, List<LineDto>> _linesByFeatureId = {};
+
   /// Prompt C1: which entries of [_visibleSketchGeometries] should render
   /// dimmed (see [_recomputeVisibleSketchGeometries]) - always a subset of
   /// [_visibleSketchGeometries]'s keys.
@@ -388,6 +399,97 @@ class _PartScreenState extends State<PartScreen> {
   /// [_extrudeSketchFeature] without otherwise touching [_featureTreeVisible].
   bool get _extrudeActive => _extrudeSketchFeature != null;
 
+  // --- C2: Create Plane -----------------------------------------------------
+
+  /// Non-null while [CreatePlanePanel] is open - which of the two v1 flows
+  /// (see `create_plane_panel.dart`'s `CreatePlaneMode`) is showing. Set by
+  /// [_onCreatePlaneTapped]/[_openCreatePlanePanelForEdit], cleared by
+  /// [_confirmCreatePlane]/[_cancelCreatePlane].
+  CreatePlaneMode? _createPlaneMode;
+
+  /// The CreatePlaneFeature created (or, in edit mode, already existing) for
+  /// the panel session - mirrors [_previewExtrudeFeatureId]'s "create
+  /// eagerly on open, PATCH on every field edit, Confirm just closes,
+  /// Cancel deletes-or-reverts" pattern, since unlike Extrude there is no
+  /// separate "not yet a real Feature" preview state to speak of: Create
+  /// Plane produces no mesh, so there's no expensive-to-discard geometry
+  /// riding on the distinction. Null only while creation is still in
+  /// flight, or if it failed outright (see [_openCreatePlanePanel]'s own
+  /// handling of that case).
+  String? _previewCreatePlaneFeatureId;
+
+  /// B4: non-null while [CreatePlanePanel] is editing an *existing*
+  /// CreatePlaneFeature (as opposed to [_onCreatePlaneTapped]'s "create a
+  /// brand-new one from the current selection" flow) - same purpose as
+  /// [_editingExtrudeFeatureId].
+  String? _editingCreatePlaneFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelCreatePlane] PATCHes these back verbatim when
+  /// [_editingCreatePlaneFeatureId] is set, same reason
+  /// [_extrudeEditSnapshot] exists.
+  ({SubShapeRefDto? faceRef, double? offset, SketchEntityRefDto? lineRef, SketchEntityRefDto? pointRef})?
+      _createPlaneEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmCreatePlane] and [_cancelCreatePlane], same purpose
+  /// [_entitiesBeforeExtrude] serves for target-body picking.
+  Set<SelectionEntityRef>? _entitiesBeforeCreatePlane;
+
+  /// Only meaningful (and only ever read) while [_createPlaneMode] is
+  /// [CreatePlaneMode.offsetFace] - the panel's live offset field value,
+  /// debounced into a PATCH the same way [_extrudeStartDistance] etc. are.
+  double _createPlaneOffset = 0.0;
+
+  Timer? _createPlaneDebounce;
+
+  bool get _createPlaneActive => _createPlaneMode != null;
+
+  /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
+  /// recomputed from [_features] directly (no extra network call - the
+  /// resolved `origin`/`normal` already ride along on every
+  /// `GET .../features` response, see `_create_plane_feature_response`),
+  /// so this is refreshed unconditionally at the end of every
+  /// [_refreshFeatures] call rather than needing its own explicit refresh
+  /// call threaded through every call site the way [_refreshSketchGeometries]
+  /// needs (that one needs its own separate network calls per Sketch).
+  Map<String, ResolvedPlaneGeometry> _createPlaneGeometries = {};
+
+  void _recomputeCreatePlaneGeometries() {
+    _createPlaneGeometries = {
+      for (final feature in _features)
+        if (feature.type == 'create_plane' && feature.origin != null && feature.normal != null)
+          feature.id: ResolvedPlaneGeometry(
+            origin: vm.Vector3(feature.origin![0], feature.origin![1], feature.origin![2]),
+            normal: vm.Vector3(feature.normal![0], feature.normal![1], feature.normal![2]),
+          ),
+    };
+  }
+
+  /// C2: resolves a `SelectionEntityRef.sketchFeatureId` (a Feature id) back
+  /// to the real `app.sketch.models.Sketch` id the backend's
+  /// `SketchEntityRef.sketch_id` needs - see `SketchEntityRefDto`'s own doc
+  /// comment for why those two ids differ. Null if no such Feature exists
+  /// (defensive only - every sketchLine/sketchPoint selection is always
+  /// tagged with a real, currently-loaded Feature id).
+  String? _sketchIdForFeatureId(String featureId) => _featureById(featureId)?.sketchId;
+
+  /// C2: whether [pointEntityId] is one of [lineEntityId]'s own two endpoint
+  /// ids, within the Sketch Feature [sketchFeatureId] - the real lookup
+  /// `selection_actions.dart`'s `PointOnLineChecker` needs, backed by
+  /// [_linesByFeatureId] (populated alongside [_allSketchGeometries] - see
+  /// [_refreshSketchGeometries]).
+  bool _isPointOnLine(String sketchFeatureId, String lineEntityId, String pointEntityId) {
+    final lines = _linesByFeatureId[sketchFeatureId];
+    if (lines == null) return false;
+    for (final line in lines) {
+      if (line.id == lineEntityId) {
+        return line.startPointId == pointEntityId || line.endPointId == pointEntityId;
+      }
+    }
+    return false;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -481,6 +583,7 @@ class _PartScreenState extends State<PartScreen> {
     final part = _part;
     if (part == null) return;
     _features = await _api.listFeatures(part.id);
+    _recomputeCreatePlaneGeometries();
   }
 
   /// Re-fetches the Part's mesh with [_hiddenFeatureIds] sent along, so a
@@ -514,6 +617,7 @@ class _PartScreenState extends State<PartScreen> {
   /// issue) only drops that Feature's geometry, not the whole viewport.
   Future<void> _refreshSketchGeometries() async {
     final updated = <String, SketchGeometry3D>{};
+    final updatedLines = <String, List<LineDto>>{};
     for (final feature in _features) {
       final sketchId = feature.sketchId;
       if (sketchId == null) continue; // An ExtrudeFeature - no Sketch of its own.
@@ -524,6 +628,7 @@ class _PartScreenState extends State<PartScreen> {
         final points = await _sketchApi.listPoints(sketchId);
         final lines = await _sketchApi.listLines(sketchId);
         final circles = await _sketchApi.listCircles(sketchId);
+        updatedLines[feature.id] = lines;
         final geometry =
             sketchGeometry3DFrom(plane: plane, points: points, lines: lines, circles: circles);
         if (!geometry.isEmpty) updated[feature.id] = geometry;
@@ -532,6 +637,7 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     _allSketchGeometries = updated;
+    _linesByFeatureId = updatedLines;
     _recomputeVisibleSketchGeometries();
   }
 
@@ -834,6 +940,11 @@ class _PartScreenState extends State<PartScreen> {
       // leaving rollback stuck engaged with nothing to end it.
       final opened = _openExtrudePanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'create_plane') {
+      // C2: rollback is ended by _confirmCreatePlane/_cancelCreatePlane
+      // instead, same "stays engaged for the panel's whole lifetime"
+      // reasoning as the extrude branch above.
+      _openCreatePlanePanelForEdit(feature);
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -1277,6 +1388,196 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- C2: Create Plane -----------------------------------------------------
+
+  /// [SelectionContextPanel.onCreatePlane]'s callback - re-derives which of
+  /// the two flows applies from [_selectedEntities]' current shape, the same
+  /// check `selection_actions.dart`'s `contextActionsFor` already used to
+  /// decide the button should be enabled in the first place (so this is
+  /// never reached for any other selection shape).
+  void _onCreatePlaneTapped() {
+    final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+    if (faces.length == 1 && _selectedEntities.length == 1) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.offsetFace, faceEntity: faces.single);
+      return;
+    }
+    final points = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchPoint).toList();
+    final lines = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchLine).toList();
+    if (points.length == 1 && lines.length == 1) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.normalToLineAtPoint,
+        lineEntity: lines.single,
+        pointEntity: points.single,
+      );
+    }
+  }
+
+  /// Creates the CreatePlaneFeature eagerly (mirrors [_ensureExtrudeFeatureExists]'s
+  /// "create on open" pattern) from whichever refs [_onCreatePlaneTapped]
+  /// resolved. Stashes/clears [_selectedEntities] the same way
+  /// [_openExtrudePanel] does for target-body picking, since the
+  /// face/line/point that triggered this is baked into the created Feature,
+  /// not something the user keeps adjusting in the viewport afterward.
+  Future<void> _openCreatePlanePanel({
+    required CreatePlaneMode mode,
+    SelectionEntityRef? faceEntity,
+    SelectionEntityRef? lineEntity,
+    SelectionEntityRef? pointEntity,
+  }) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _createPlaneMode = mode;
+      _entitiesBeforeCreatePlane = _selectedEntities;
+      _selectedEntities = {};
+      if (mode == CreatePlaneMode.offsetFace) _createPlaneOffset = 0.0;
+    });
+    await _runGuarded(() async {
+      final FeatureDto feature;
+      if (mode == CreatePlaneMode.offsetFace) {
+        final faceRef = SubShapeRefDto(bodyId: faceEntity!.bodyId, shapeType: 'face', index: faceEntity.id);
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'offset_face',
+          faceRef: faceRef,
+          offset: _createPlaneOffset,
+        );
+      } else {
+        final sketchId = _sketchIdForFeatureId(lineEntity!.sketchFeatureId);
+        if (sketchId == null) return; // Defensive - see _sketchIdForFeatureId's own doc comment.
+        final lineRef = SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'line',
+          entityId: lineEntity.sketchEntityId,
+        );
+        final pointRef = SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'point',
+          entityId: pointEntity!.sketchEntityId,
+        );
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'normal_to_line_at_point',
+          lineRef: lineRef,
+          pointRef: pointRef,
+        );
+      }
+      _previewCreatePlaneFeatureId = feature.id;
+      await _refreshFeatures();
+    });
+    if (_previewCreatePlaneFeatureId == null && mounted) {
+      // Creation failed (e.g. non_planar_reference/point_not_on_line -
+      // _errorMessage is already set by _runGuarded) - nothing to edit, so
+      // close the panel back out rather than leaving it stuck open with no
+      // real Feature behind it.
+      setState(() {
+        _createPlaneMode = null;
+        _selectedEntities = _entitiesBeforeCreatePlane ?? {};
+        _entitiesBeforeCreatePlane = null;
+      });
+    }
+  }
+
+  /// B4: opens [CreatePlanePanel] to edit an *already-existing*
+  /// CreatePlaneFeature - mirrors [_openExtrudePanelForEdit] exactly,
+  /// including the "no zero-argument reconstruction" snapshot stash for
+  /// [_cancelCreatePlane] to PATCH back verbatim.
+  void _openCreatePlanePanelForEdit(FeatureDto feature) {
+    final mode =
+        feature.planeType == 'offset_face' ? CreatePlaneMode.offsetFace : CreatePlaneMode.normalToLineAtPoint;
+    setState(() {
+      _createPlaneMode = mode;
+      _editingCreatePlaneFeatureId = feature.id;
+      _previewCreatePlaneFeatureId = feature.id;
+      _createPlaneOffset = feature.offset ?? 0.0;
+      _createPlaneEditSnapshot = (
+        faceRef: feature.faceRef,
+        offset: feature.offset,
+        lineRef: feature.lineRef,
+        pointRef: feature.pointRef,
+      );
+      _entitiesBeforeCreatePlane = _selectedEntities;
+      _selectedEntities = {};
+    });
+  }
+
+  /// Debounces the panel's offset-field edits into a PATCH + Feature refresh,
+  /// same 500ms-after-last-change pattern [_scheduleExtrudePreview] uses.
+  /// Only ever called while [_createPlaneMode] is [CreatePlaneMode.offsetFace] -
+  /// [CreatePlaneMode.normalToLineAtPoint] has no field to debounce.
+  void _onCreatePlaneOffsetChanged(double offset) {
+    _createPlaneOffset = offset;
+    _createPlaneDebounce?.cancel();
+    _createPlaneDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(_ensureCreatePlaneOffsetUpdated);
+    });
+  }
+
+  Future<void> _ensureCreatePlaneOffsetUpdated() async {
+    final part = _part;
+    final featureId = _previewCreatePlaneFeatureId;
+    if (part == null || featureId == null) return;
+    await _api.updateCreatePlaneFeature(part.id, featureId, offset: _createPlaneOffset);
+    await _refreshFeatures();
+  }
+
+  /// Keeps the just-created/edited Feature (it's already fully persisted -
+  /// unlike Extrude, there's no separate "not yet real" preview state to
+  /// promote), restores whatever was selected before the panel opened, and
+  /// rolls B4 rollback forward.
+  Future<void> _confirmCreatePlane() async {
+    _createPlaneDebounce?.cancel();
+    setState(() {
+      _createPlaneMode = null;
+      _selectedEntities = _entitiesBeforeCreatePlane ?? {};
+      _entitiesBeforeCreatePlane = null;
+      _previewCreatePlaneFeatureId = null;
+      _editingCreatePlaneFeatureId = null;
+      _createPlaneEditSnapshot = null;
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview Feature (new-Plane flow) or PATCHes
+  /// [_createPlaneEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelExtrude]'s structure exactly.
+  Future<void> _cancelCreatePlane() async {
+    _createPlaneDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewCreatePlaneFeatureId;
+    final wasEditing = _editingCreatePlaneFeatureId != null;
+    final editSnapshot = _createPlaneEditSnapshot;
+    setState(() {
+      _createPlaneMode = null;
+      _selectedEntities = _entitiesBeforeCreatePlane ?? {};
+      _entitiesBeforeCreatePlane = null;
+      _previewCreatePlaneFeatureId = null;
+      _editingCreatePlaneFeatureId = null;
+      _createPlaneEditSnapshot = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateCreatePlaneFeature(
+            part.id,
+            previewId,
+            faceRef: editSnapshot.faceRef,
+            offset: editSnapshot.offset,
+            lineRef: editSnapshot.lineRef,
+            pointRef: editSnapshot.pointRef,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   /// Prompt A4: the top banner's text while [_extrudeActive] - Cut's wording
   /// differs from Boss's since Cut requires 1+ picks (mirrors
   /// [ExtrudePanel]'s own Confirm-disable rule, `_canConfirm`) while Boss
@@ -1480,6 +1781,7 @@ class _PartScreenState extends State<PartScreen> {
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   dimmedSketchFeatureIds: _dimmedSketchFeatureIds,
+                  createPlanes: _createPlaneGeometries,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,
@@ -1541,18 +1843,30 @@ class _PartScreenState extends State<PartScreen> {
                 // this drawer is bottom-docked (a DraggableScrollableSheet)
                 // exactly where [ExtrudePanel]'s own Confirm/Cancel controls
                 // live - showing both at once would visually collide.
-                if (!_extrudeActive)
+                // C2: also hidden while CreatePlanePanel is open - same
+                // bottom-docked-panel visual-collision reasoning as the
+                // Extrude case above (in practice [_selectedEntities] is
+                // already empty for the panel's whole session - see
+                // [_openCreatePlanePanel] - so [SelectionListDrawer]'s own
+                // empty-selection gate would already hide this too, but this
+                // stays explicit rather than relying on that as an implicit
+                // side effect).
+                if (!_extrudeActive && !_createPlaneActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
                       onRemove: _toggleSelectedEntity,
-                      header: SelectionContextPanel(selectedEntities: _selectedEntities),
+                      header: SelectionContextPanel(
+                        selectedEntities: _selectedEntities,
+                        isPointOnLine: _isPointOnLine,
+                        onCreatePlane: _onCreatePlaneTapped,
+                      ),
                       bodyNames: _bodyNames,
                     ),
                   ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: _featureTreeVisible && !_extrudeActive,
+                    visible: _featureTreeVisible && !_extrudeActive && !_createPlaneActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _hiddenFeatureIds,
@@ -1612,6 +1926,18 @@ class _PartScreenState extends State<PartScreen> {
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,
                       onCancel: _cancelExtrude,
+                    ),
+                  ),
+                if (_createPlaneMode != null)
+                  Positioned.fill(
+                    child: CreatePlanePanel(
+                      key: ValueKey(_editingCreatePlaneFeatureId ?? _previewCreatePlaneFeatureId),
+                      title: _editingCreatePlaneFeatureId != null ? 'Edit Plane' : 'Create Plane',
+                      mode: _createPlaneMode!,
+                      initialOffset: _createPlaneOffset,
+                      onOffsetChanged: _onCreatePlaneOffsetChanged,
+                      onConfirm: _confirmCreatePlane,
+                      onCancel: _cancelCreatePlane,
                     ),
                   ),
                 // Prompt A4: names the target-body picking mode live for the
@@ -1677,7 +2003,7 @@ class _PartScreenState extends State<PartScreen> {
                 // feature-tree FAB specifically (unlike the hamburger just
                 // below, which already has its own extrude-aware check) sat
                 // underneath/overlapping A4's banner.
-                if (!_featureTreeVisible && !_planeSelectionMode && !_extrudeActive)
+                if (!_featureTreeVisible && !_planeSelectionMode && !_extrudeActive && !_createPlaneActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -1774,7 +2100,7 @@ class _PartScreenState extends State<PartScreen> {
       // Stage 23 Item 1: the mode-toggle FAB sits above the "Add" FAB,
       // hidden under the exact same conditions - it follows the same Stage
       // 22 z-order rules as every other FAB here.
-      floatingActionButton: (_extrudeSketchFeature != null || _toolbarOpen)
+      floatingActionButton: (_extrudeSketchFeature != null || _createPlaneActive || _toolbarOpen)
           ? null
           : Column(
               mainAxisSize: MainAxisSize.min,

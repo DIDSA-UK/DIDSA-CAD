@@ -6,11 +6,15 @@ import '../api/document_api_client.dart';
 /// between the tree's own rows and anything else (e.g. the cascade-delete
 /// confirmation dialog) that needs to name a Feature the same way the tree
 /// does, so the two never drift out of sync. Named per Feature type (e.g.
-/// "Sketch 2", "Extrude 1") rather than by overall position, counting only
-/// same-type Features up to and including [index].
+/// "Sketch 2", "Extrude 1", "Plane 1") rather than by overall position,
+/// counting only same-type Features up to and including [index].
 String featureDisplayName(List<FeatureDto> features, int index) {
   final feature = features[index];
-  final label = feature.type == 'extrude' ? 'Extrude' : 'Sketch';
+  final label = switch (feature.type) {
+    'extrude' => 'Extrude',
+    'create_plane' => 'Plane',
+    _ => 'Sketch',
+  };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
   return '$label $ordinal';
 }
@@ -188,6 +192,7 @@ class FeatureTreePanel extends StatelessWidget {
     return ListView(
       children: [
         if (bodyIds.isNotEmpty) _buildBodiesSection(context),
+        if (features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
         _buildFeaturesSection(context),
       ],
     );
@@ -212,6 +217,32 @@ class FeatureTreePanel extends StatelessWidget {
             leading: const Icon(Icons.view_in_ar_outlined),
             title: Text(bodyNames[bodyId] ?? bodyId),
             onTap: () => onBodyTap(bodyId),
+          ),
+      ],
+    );
+  }
+
+  /// C2: the Planes section - real produced Plane objects, one row per
+  /// CreatePlaneFeature (always 1:1, unlike Bodies' potential Feature-to-
+  /// multiple-Bodies split, so this needs no separate id/name map the way
+  /// [_buildBodiesSection] does). Omitted entirely when there are none yet
+  /// (see [_buildGroupedTree]'s own check), same "no empty section" rule
+  /// [_buildBodiesSection] follows. Tapping a row reuses [onFeatureTap] -
+  /// same B4 rollback/edit flow a Features-section row already opens for
+  /// this same Feature, not a separate select-only action the way tapping a
+  /// Body row is.
+  Widget _buildPlanesSection(BuildContext context) {
+    final planeFeatures = features.where((f) => f.type == 'create_plane').toList();
+    return ExpansionTile(
+      initiallyExpanded: true,
+      leading: const Icon(Icons.crop_din),
+      title: const Text('Planes'),
+      children: [
+        for (final feature in planeFeatures)
+          ListTile(
+            leading: const Icon(Icons.crop_din_outlined),
+            title: Text(featureDisplayName(features, features.indexOf(feature))),
+            onTap: () => onFeatureTap(feature),
           ),
       ],
     );
@@ -246,7 +277,13 @@ class FeatureTreePanel extends StatelessWidget {
       child: ListTile(
         selected: selected,
         leading: Icon(
-          feature.locked ? Icons.lock : (feature.type == 'extrude' ? Icons.view_in_ar : Icons.edit),
+          feature.locked
+              ? Icons.lock
+              : switch (feature.type) {
+                  'extrude' => Icons.view_in_ar,
+                  'create_plane' => Icons.crop_din,
+                  _ => Icons.edit,
+                },
           color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
         ),
         title: Text(featureDisplayName(features, index)),

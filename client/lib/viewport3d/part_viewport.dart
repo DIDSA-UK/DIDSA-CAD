@@ -7,6 +7,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
@@ -58,6 +59,14 @@ class PartViewport extends StatefulWidget {
   /// not one the user is actively editing. Same "only build a new instance
   /// on genuine change" contract as [sketchGeometries].
   final Set<String> dimmedSketchFeatureIds;
+
+  /// C2: per-Feature resolved Create Plane geometry (null values omitted by
+  /// callers - a Plane whose reference is currently unresolvable has
+  /// nothing to render, same convention [sketchGeometries] uses for a
+  /// Feature with no geometry at all), keyed by Feature id. Same "only
+  /// build a new Map instance on genuine change" contract as
+  /// [sketchGeometries].
+  final Map<String, ResolvedPlaneGeometry> createPlanes;
 
   /// True while [bodies] is an Extrude live preview (see [PartScreen]'s
   /// debounced create/update-then-refetch flow) rather than confirmed
@@ -142,6 +151,7 @@ class PartViewport extends StatefulWidget {
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
     this.dimmedSketchFeatureIds = const {},
+    this.createPlanes = const {},
     this.isPreviewMesh = false,
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
@@ -185,6 +195,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Map<String, Node> _edgesNodes = {};
   Map<ReferencePlaneKind, Node> _planeNodes = {};
   Map<String, Node> _sketchNodes = {};
+  Map<String, Node> _createPlaneNodes = {};
 
   /// Set if GPU/scene setup throws - without this, that failure would only
   /// ever reach the console (it happens inside an unawaited Future), leaving
@@ -318,6 +329,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncEdgesNode();
         _syncReferencePlaneNodes();
         _syncSketchNodes();
+        _syncCreatePlaneNodes();
       });
     }).catchError((Object error) {
       debugPrint('[PartViewport] GPU/scene setup failed: $error');
@@ -346,6 +358,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.sketchGeometries != oldWidget.sketchGeometries ||
         widget.dimmedSketchFeatureIds != oldWidget.dimmedSketchFeatureIds) {
       setState(_syncSketchNodes);
+    }
+    if (widget.createPlanes != oldWidget.createPlanes) {
+      setState(_syncCreatePlaneNodes);
     }
     if (widget.selectionMode != oldWidget.selectionMode) {
       setState(() {
@@ -557,6 +572,24 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           ),
     };
     for (final node in _sketchNodes.values) {
+      scene.add(node);
+    }
+  }
+
+  /// C2: mirrors [_syncSketchNodes] for [PartViewport.createPlanes] - one
+  /// [Node] per resolvable CreatePlaneFeature, rebuilt wholesale on every
+  /// genuine content change per the widget's own contract.
+  void _syncCreatePlaneNodes() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _createPlaneNodes.values) {
+      scene.remove(node);
+    }
+    _createPlaneNodes = {
+      for (final entry in widget.createPlanes.entries)
+        entry.key: buildCreatePlaneNode(entry.key, entry.value.origin, entry.value.normal),
+    };
+    for (final node in _createPlaneNodes.values) {
       scene.add(node);
     }
   }
@@ -1101,6 +1134,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
                     ..._sketchNodes.values,
+                    ..._createPlaneNodes.values,
                     ..._edgesNodes.values,
                     if (_hoverNode != null) _hoverNode!,
                     if (_selectedEdgesNode != null) _selectedEdgesNode!,

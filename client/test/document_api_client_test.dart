@@ -260,4 +260,180 @@ void main() {
       expect(capturedBody['target_body_ids'], <String>[]);
     });
   });
+
+  group('SubShapeRefDto / SketchEntityRefDto round-trip', () {
+    test('SubShapeRefDto toJson/fromJson round-trips exactly', () {
+      const ref = SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 3);
+      final roundTripped = SubShapeRefDto.fromJson(ref.toJson());
+      expect(roundTripped.bodyId, ref.bodyId);
+      expect(roundTripped.shapeType, ref.shapeType);
+      expect(roundTripped.index, ref.index);
+    });
+
+    test('SketchEntityRefDto toJson/fromJson round-trips exactly', () {
+      const ref = SketchEntityRefDto(sketchId: 'sketch-1', entityType: 'line', entityId: 'line-1');
+      final roundTripped = SketchEntityRefDto.fromJson(ref.toJson());
+      expect(roundTripped.sketchId, ref.sketchId);
+      expect(roundTripped.entityType, ref.entityType);
+      expect(roundTripped.entityId, ref.entityId);
+    });
+  });
+
+  group('FeatureDto.fromJson for a create_plane Feature', () {
+    test('parses an offset_face Feature with resolved origin/normal', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'plane-1',
+        'locked': false,
+        'produces': 'plane',
+        'plane_type': 'offset_face',
+        'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 2},
+        'offset': 5.0,
+        'origin': [1.0, 2.0, 3.0],
+        'normal': [0.0, 0.0, 1.0],
+      });
+
+      expect(dto.type, 'create_plane');
+      expect(dto.planeType, 'offset_face');
+      expect(dto.faceRef?.bodyId, 'body-1');
+      expect(dto.faceRef?.index, 2);
+      expect(dto.offset, 5.0);
+      expect(dto.lineRef, isNull);
+      expect(dto.pointRef, isNull);
+      expect(dto.origin, [1.0, 2.0, 3.0]);
+      expect(dto.normal, [0.0, 0.0, 1.0]);
+    });
+
+    test('parses a normal_to_line_at_point Feature', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'plane-2',
+        'locked': false,
+        'produces': 'plane',
+        'plane_type': 'normal_to_line_at_point',
+        'line_ref': {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'line-1'},
+        'point_ref': {'sketch_id': 'sketch-1', 'entity_type': 'point', 'entity_id': 'point-1'},
+        'origin': [0.0, 0.0, 0.0],
+        'normal': [1.0, 0.0, 0.0],
+      });
+
+      expect(dto.planeType, 'normal_to_line_at_point');
+      expect(dto.faceRef, isNull);
+      expect(dto.offset, isNull);
+      expect(dto.lineRef?.entityId, 'line-1');
+      expect(dto.pointRef?.entityId, 'point-1');
+    });
+
+    test('a Feature whose Plane could not be resolved has null origin/normal', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'plane-3',
+        'locked': false,
+        'produces': 'plane',
+        'plane_type': 'offset_face',
+        'face_ref': {'body_id': 'gone', 'shape_type': 'face', 'index': 0},
+        'offset': 1.0,
+        'origin': null,
+        'normal': null,
+      });
+
+      expect(dto.origin, isNull);
+      expect(dto.normal, isNull);
+    });
+  });
+
+  group('DocumentApiClient createCreatePlaneFeature/updateCreatePlaneFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('createCreatePlaneFeature sends only the offset_face fields', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'create_plane',
+            'id': 'plane-1',
+            'locked': false,
+            'produces': 'plane',
+            'plane_type': 'offset_face',
+            'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 0},
+            'offset': 5.0,
+            'origin': [0.0, 0.0, 5.0],
+            'normal': [0.0, 0.0, 1.0],
+          });
+        }),
+      );
+
+      final feature = await client.createCreatePlaneFeature(
+        'part-1',
+        planeType: 'offset_face',
+        faceRef: const SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 0),
+        offset: 5.0,
+      );
+
+      expect(capturedBody['plane_type'], 'offset_face');
+      expect(capturedBody['face_ref'], {'body_id': 'body-1', 'shape_type': 'face', 'index': 0});
+      expect(capturedBody['offset'], 5.0);
+      expect(capturedBody.containsKey('line_ref'), isFalse);
+      expect(capturedBody.containsKey('point_ref'), isFalse);
+      expect(feature.origin, [0.0, 0.0, 5.0]);
+    });
+
+    test('createCreatePlaneFeature sends only the normal_to_line_at_point fields', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'create_plane',
+            'id': 'plane-2',
+            'locked': false,
+            'produces': 'plane',
+            'plane_type': 'normal_to_line_at_point',
+            'line_ref': {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'line-1'},
+            'point_ref': {'sketch_id': 'sketch-1', 'entity_type': 'point', 'entity_id': 'point-1'},
+            'origin': [0.0, 0.0, 0.0],
+            'normal': [1.0, 0.0, 0.0],
+          });
+        }),
+      );
+
+      await client.createCreatePlaneFeature(
+        'part-1',
+        planeType: 'normal_to_line_at_point',
+        lineRef: const SketchEntityRefDto(sketchId: 'sketch-1', entityType: 'line', entityId: 'line-1'),
+        pointRef: const SketchEntityRefDto(sketchId: 'sketch-1', entityType: 'point', entityId: 'point-1'),
+      );
+
+      expect(capturedBody['plane_type'], 'normal_to_line_at_point');
+      expect(capturedBody.containsKey('face_ref'), isFalse);
+      expect(capturedBody.containsKey('offset'), isFalse);
+      expect(capturedBody['line_ref'], {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'line-1'});
+    });
+
+    test('updateCreatePlaneFeature only sends the fields supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'create_plane',
+            'id': 'plane-1',
+            'locked': false,
+            'produces': 'plane',
+            'plane_type': 'offset_face',
+            'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 0},
+            'offset': 20.0,
+            'origin': [0.0, 0.0, 20.0],
+            'normal': [0.0, 0.0, 1.0],
+          }, status: 200);
+        }),
+      );
+
+      await client.updateCreatePlaneFeature('part-1', 'plane-1', offset: 20.0);
+
+      expect(capturedBody, {'offset': 20.0});
+    });
+  });
 }

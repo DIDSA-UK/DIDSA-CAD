@@ -251,14 +251,61 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   207/224 client tests passed for real (the 17 loading-failures are the
   same pre-existing `flutter_scene`/`flutter_gpu` mismatch set as every
   prior client prompt, confirmed unchanged via `git stash` against the
-  pre-C1 tree). **Current gate**: on-device confirmation (Sketch Points/
-  Lines actually render and are pickable, including a dimmed-but-pickable
-  consumed Sketch; the two new priority ties feel right; the two new
-  Selection Filters toggles work) is what Prompt C2 (Create Plane) now
-  waits on - same gating discipline as every prior client-facing prompt.
-  Left out of scope, per the prompt's own boundary: Circle picking (backend
-  ref type supports it, no client wiring), any specific Point+Line
-  picking-mode combination (C2's job), custom/arbitrary sketch planes.
+  pre-C1 tree). Left out of scope, per the prompt's own boundary: Circle
+  picking (backend ref type supports it, no client wiring), any specific
+  Point+Line picking-mode combination (C2's job), custom/arbitrary sketch
+  planes. **C1's on-device confirmation came back positive** (user-confirmed
+  directly) - this closed C1 out and let Prompt C2 begin next.
+- **Prompt C2 (Create Plane) — built, pending on-device confirmation.** See
+  `docs/status.md`'s second 2026-07-04 entry for full detail. Two v1 plane
+  types: OFFSET_FACE (one planar Body face + a signed offset) and
+  NORMAL_TO_LINE_AT_POINT (a Sketch Line + the Point that's its own
+  endpoint) - both reference-only, matching the brief's custom-plane
+  deferral. Backend split by OCCT dependency same as B1/C1:
+  `app/document/plane_geometry.py` (new, OCCT-free) resolves the line/point
+  case via pure 2D vector math; `app/document/create_plane.py` (new, real
+  OCCT) resolves the offset-face case via a `BRepAdaptor_Surface` planarity
+  check. **Caught and closed a real gap before it could bite**:
+  `build_feature_graph` only built dependency edges for `ExtrudeFeature` -
+  extended it for `CreatePlaneFeature` too (a new
+  `_sketch_feature_id_for_sketch` helper resolves a Sketch id back to its
+  wrapping SketchFeature id), otherwise cascade-deleting a Plane's
+  referenced Body/Sketch would have silently left it dangling, the exact
+  bug class B2 fixed for `target_body_ids` - verified directly with a real
+  `transitive_dependents` test, not just by inspection. 11/11 new
+  pure-Python tests (`test_stage_c2_plane_geometry.py`) genuinely passed, no
+  OCCT needed; 14 new real-OCCT tests (`test_stage_c2_create_plane.py`,
+  full HTTP surface) need real CI to confirm, same constraint every
+  OCCT-touching backend prompt hits in this sandbox. Client: new
+  `create_plane_geometry_3d.dart` (arbitrary-orientation quad rendering,
+  reusing `reference_planes.dart`'s existing local geometry with a
+  `Quaternion.fromTwoVectors`-based transform) and `create_plane_panel.dart`
+  (`CreatePlanePanel`, mirrors `ExtrudePanel`'s session shape);
+  `selection_actions.dart`'s `contextActionsFor` gained its two real
+  enabling rules (a lone Body Face; a Sketch Line + its own endpoint Point,
+  via a new `PointOnLineChecker` callback `part_screen.dart` backs with a
+  new `_linesByFeatureId` map) alongside its still-scaffolded Chamfer/Fillet
+  ones. `part_screen.dart`'s flow mirrors Extrude's "create eagerly, PATCH
+  live, Confirm closes, Cancel deletes-or-reverts" pattern, including B4
+  rollback wiring, and closes the panel back out automatically if creation
+  fails (the one thing client-side selection-shape validation can't catch
+  ahead of time - a lone face turning out to be curved). `feature_tree_panel.dart`
+  gained a **Planes** section, shown only when non-empty. `flutter analyze`
+  clean; new pure-Dart/widget test files pass 100% standalone
+  (`create_plane_panel_test.dart` 8/8, `document_api_client_test.dart`'s new
+  cases 8/8, `selection_actions_test.dart`'s new cases) - flagged honestly
+  that a full-suite batch run intermittently (twice, reproducibly) reports
+  `create_plane_panel_test.dart` as failing to load with a generic "Dart
+  compiler exited unexpectedly" error while the same file passes cleanly
+  every time it's run in isolation, read as this sandbox's compiler
+  struggling under the full ~30-file batch's resource pressure rather than
+  a real defect - confirmed via a fresh `git worktree` diff against the
+  pre-C2 tree that no previously-passing file was newly broken. **Current
+  gate**: on-device confirmation (both plane types create/render correctly,
+  including offset direction; a curved-face attempt is cleanly rejected,
+  not a crash; the Planes tree section works; edit-via-rollback and Cancel
+  both behave correctly) is what Prompt D (Fillet) now waits on - same
+  gating discipline as every prior prompt group.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

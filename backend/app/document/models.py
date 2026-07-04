@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.sketch.models import SketchEntityRef
+
 
 class Produces(str, Enum):
     """B1: what a Feature contributes to the Part, for the client's feature-
@@ -184,6 +186,72 @@ class SubShapeRef:
     body_id: str
     shape_type: SubShapeType
     index: int
+
+
+class PlaneType(str, Enum):
+    """Which of C2's two v1 plane-construction methods a `CreatePlaneFeature`
+    uses - mirrors `ExtrudeType`/`SubShapeType`'s str-Enum pattern."""
+
+    OFFSET_FACE = "offset_face"
+    NORMAL_TO_LINE_AT_POINT = "normal_to_line_at_point"
+
+
+@dataclass(frozen=True)
+class ResolvedPlane:
+    """C2: the world-space geometry a `CreatePlaneFeature` resolves to - a
+    plain origin point plus unit normal, everything a client needs to render
+    the plane (a bounded quad centered at `origin`, oriented by `normal`) or
+    a future consumer needs to build an OCCT plane from. Not persisted -
+    recomputed on every read the same way `/mesh` recomputes Bodies, so it
+    always reflects the Part's *current* state rather than whatever it was
+    at creation time (consistent with `resolve_subshape`'s own "re-derive,
+    don't cache" philosophy)."""
+
+    origin: tuple[float, float, float]
+    normal: tuple[float, float, float]
+
+
+@dataclass
+class CreatePlaneFeature(Feature):
+    """C2: a reference-only Plane, fully determined by either an offset from
+    an existing planar Body face (`OFFSET_FACE`) or a Sketch Line's direction
+    through one of its own endpoints (`NORMAL_TO_LINE_AT_POINT`) - never both
+    at once. Produces no mesh/solid and is not sketchable in v1, matching the
+    original project brief's custom-plane deferral - this is a pure
+    reference object other features could target later (v1 has no such
+    consumer), not a place to build new geometry yet.
+
+    Exactly one of (`face_ref`, `offset`) or (`line_ref`, `point_ref`) is
+    populated, matching `plane_type` - enforced by the router at construction
+    time (`app.document.router._validate_create_plane_payload`), not by this
+    dataclass itself, the same "payload shape validated by the API layer,
+    not encoded in the domain type" split `ExtrudeFeature`'s Boss-vs-Cut
+    `target_body_ids` rules already use. All four fields are optional here
+    (rather than two mutually-exclusive dataclasses) so one concrete type
+    can flow through `Part.features`/`Feature.get_feature` uniformly, same
+    reason `ExtrudeFeature` doesn't split into `BossFeature`/`CutFeature`.
+
+    The actual OCCT/plane-geometry resolution lives in
+    `app.document.create_plane` (`OFFSET_FACE`, needs OCCT for the
+    planarity check) and `app.document.plane_geometry` (`NORMAL_TO_LINE_AT_
+    POINT`, pure 2D vector math - no OCCT needed at all), mirroring the
+    existing app.document.extrude / app.sketch.store split by OCCT
+    dependency."""
+
+    id: str
+    plane_type: PlaneType
+    face_ref: SubShapeRef | None = None
+    offset: float | None = None
+    line_ref: SketchEntityRef | None = None
+    point_ref: SketchEntityRef | None = None
+
+    @property
+    def type(self) -> str:
+        return "create_plane"
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.PLANE
 
 
 @dataclass

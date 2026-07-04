@@ -2,8 +2,8 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
-from app.document.models import ExtrudeType, Produces
-from app.sketch.models import Plane
+from app.document.models import ExtrudeType, PlaneType, Produces, SubShapeType
+from app.sketch.models import Plane, SketchEntityType
 
 
 class PartCreate(BaseModel):
@@ -85,7 +85,85 @@ class ExtrudeFeatureResponse(BaseModel):
     produces: Produces
 
 
-FeatureResponse = Union[SketchFeatureResponse, ExtrudeFeatureResponse]
+class SubShapeRefSchema(BaseModel):
+    """C2: the wire (pydantic) counterpart to `app.document.models.
+    SubShapeRef` - B1 built that dataclass and its resolver with no consumer
+    yet, so no pydantic schema existed for it either; this is the first
+    Feature payload to embed one (`CreatePlaneFeatureCreate.face_ref`).
+    Converted to/from the domain dataclass in `app.document.router`, the
+    same plain-BaseModel-vs-dataclass split every other schema/model pair
+    in this file already keeps."""
+
+    body_id: str
+    shape_type: SubShapeType
+    index: int
+
+
+class SketchEntityRefSchema(BaseModel):
+    """C2: the wire counterpart to `app.sketch.models.SketchEntityRef` (C1)
+    - same "no schema until a real consumer exists" story as
+    `SubShapeRefSchema` above."""
+
+    sketch_id: str
+    entity_type: SketchEntityType
+    entity_id: str
+
+
+class CreatePlaneFeatureCreate(BaseModel):
+    """Creates a CreatePlaneFeature (C2) - exactly one of (`face_ref`,
+    `offset`) or (`line_ref`, `point_ref`) must be supplied, matching
+    `plane_type`; see `app.document.router._validate_create_plane_payload`
+    for the exact combination check (not encoded here, mirroring
+    `ExtrudeFeatureCreate`'s own Boss-vs-Cut `target_body_ids` split)."""
+
+    plane_type: PlaneType
+    face_ref: SubShapeRefSchema | None = None
+    offset: float | None = None
+    line_ref: SketchEntityRefSchema | None = None
+    point_ref: SketchEntityRefSchema | None = None
+
+
+class CreatePlaneFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ExtrudeFeatureUpdate` - `plane_type` itself is never changed by an
+    update (switching plane-construction method is a delete+recreate, not
+    an edit); only the refs/offset for whichever type the Feature already
+    is can be revised. Unlike `ExtrudeFeatureUpdate.target_body_ids`, there
+    is no "omitted vs. explicit empty" distinction to make here - a
+    CreatePlaneFeature's refs are never legitimately cleared to nothing
+    while staying valid, so `None` unambiguously means "not provided,
+    keep the current value" for every field below."""
+
+    face_ref: SubShapeRefSchema | None = None
+    offset: float | None = None
+    line_ref: SketchEntityRefSchema | None = None
+    point_ref: SketchEntityRefSchema | None = None
+
+
+class CreatePlaneFeatureResponse(BaseModel):
+    type: Literal["create_plane"] = "create_plane"
+    id: str
+    plane_type: PlaneType
+    # Echo of whichever refs/values were supplied - for edit-mode prefill,
+    # same purpose B4's Extrude edit-prefill serves.
+    face_ref: SubShapeRefSchema | None = None
+    offset: float | None = None
+    line_ref: SketchEntityRefSchema | None = None
+    point_ref: SketchEntityRefSchema | None = None
+    # Resolved world-space geometry (see app.document.models.ResolvedPlane)
+    # for rendering - null when it can't currently be resolved (e.g. a
+    # referenced Body/Sketch was deleted out from under it), rather than
+    # failing the whole list/get response over one bad Feature. Always
+    # non-null right after a successful create/update, since those
+    # endpoints validate resolvability before ever constructing the
+    # Feature - see app.document.router._validate_create_plane_payload.
+    origin: tuple[float, float, float] | None = None
+    normal: tuple[float, float, float] | None = None
+    locked: bool
+    produces: Produces
+
+
+FeatureResponse = Union[SketchFeatureResponse, ExtrudeFeatureResponse, CreatePlaneFeatureResponse]
 
 
 class MeshVertexData(BaseModel):
