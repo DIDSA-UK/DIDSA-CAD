@@ -52,14 +52,6 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
-  /// Prompt C1: the subset of [sketchGeometries]' keys to render dimmed
-  /// (see `sketch_geometry_3d.dart`'s `sketchLineDimmedColor`) - a Sketch
-  /// that's only rendered/pickable here because it's consumed by a
-  /// downstream Extrude (see `PartScreen`'s `_autoHiddenSketchFeatureIds`),
-  /// not one the user is actively editing. Same "only build a new instance
-  /// on genuine change" contract as [sketchGeometries].
-  final Set<String> dimmedSketchFeatureIds;
-
   /// C2: per-Feature resolved Create Plane geometry (null values omitted by
   /// callers - a Plane whose reference is currently unresolvable has
   /// nothing to render, same convention [sketchGeometries] uses for a
@@ -163,7 +155,6 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
-    this.dimmedSketchFeatureIds = const {},
     this.createPlanes = const {},
     this.onCreatePlaneTap,
     this.selectedCreatePlaneFeatureId,
@@ -370,8 +361,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.referencePlanesHidden != oldWidget.referencePlanesHidden) {
       setState(_syncReferencePlaneNodes);
     }
-    if (widget.sketchGeometries != oldWidget.sketchGeometries ||
-        widget.dimmedSketchFeatureIds != oldWidget.dimmedSketchFeatureIds) {
+    if (widget.sketchGeometries != oldWidget.sketchGeometries) {
       setState(_syncSketchNodes);
     }
     if (widget.createPlanes != oldWidget.createPlanes ||
@@ -580,12 +570,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _sketchNodes = {
       for (final entry in widget.sketchGeometries.entries)
-        if (!entry.value.isEmpty)
-          entry.key: buildSketchGeometryNode(
-            entry.key,
-            entry.value,
-            dimmed: widget.dimmedSketchFeatureIds.contains(entry.key),
-          ),
+        if (!entry.value.isEmpty) entry.key: buildSketchGeometryNode(entry.key, entry.value),
     };
     for (final node in _sketchNodes.values) {
       scene.add(node);

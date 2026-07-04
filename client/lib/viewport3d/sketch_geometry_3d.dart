@@ -187,28 +187,11 @@ SketchGeometry3D sketchGeometry3DFrom({
 final vm.Vector4 sketchLineColor = vm.Vector4(0.85, 0.85, 0.85, 1.0);
 const double sketchLineWidth = 2.0;
 
-/// Prompt C1: alpha for a Sketch whose Feature is only rendered/pickable
-/// because of the auto-hidden-when-consumed exception (see `PartScreen`'s
-/// `_autoHiddenSketchFeatureIds`) rather than genuinely visible - dimmer
-/// than [sketchLineColor]'s fully-opaque look so a consumed Sketch's profile
-/// still reads visually as "not the active/driving one" while remaining
-/// exactly as pickable. Uses [AlphaMode.blend] rather than a darker opaque
-/// color: this geometry is thin polylines with no fill to occlude, so this
-/// doesn't risk the translucent-pass occlusion bug documented on
-/// `buildHighlightFacesNode`/`buildMeshEdgesNode` (that bug is about solid
-/// geometry being wrongly seen *through*, not about a polyline's own alpha).
-final vm.Vector4 sketchLineDimmedColor = vm.Vector4(0.85, 0.85, 0.85, 0.35);
-
 /// Builds the [Node] rendering one Feature's [geometry] - one
 /// [MeshPrimitive] per Line segment, Circle outline, and Point marker,
 /// combined into a single [Mesh] so they share one [Node]/transform and so a
 /// single per-frame primitive scan (see `PartViewport`'s `_ScenePainter`)
 /// reaches every `PolylineGeometry` needing `updateForCamera`.
-///
-/// Prompt C1: [dimmed] switches to [sketchLineDimmedColor]/[AlphaMode.blend]
-/// for a Sketch that's only shown because it's consumed (see
-/// [sketchLineDimmedColor]'s own doc comment) - `PartScreen` decides which
-/// Features qualify.
 ///
 /// Point markers reuse [vertexMarkerSegments]' "near-zero segment + round
 /// cap" trick (see `mesh_geometry.dart`) rather than calling
@@ -219,10 +202,10 @@ final vm.Vector4 sketchLineDimmedColor = vm.Vector4(0.85, 0.85, 0.85, 0.35);
 /// so - like [buildReferencePlaneNode] - this cannot be exercised in a
 /// headless `flutter test` run. [sketchGeometry3DFrom] above is the pure,
 /// testable counterpart for the coordinate-mapping/geometry-layout logic.
-Node buildSketchGeometryNode(String featureId, SketchGeometry3D geometry, {bool dimmed = false}) {
+Node buildSketchGeometryNode(String featureId, SketchGeometry3D geometry) {
   final material = UnlitMaterial()
-    ..alphaMode = dimmed ? AlphaMode.blend : AlphaMode.opaque
-    ..baseColorFactor = dimmed ? sketchLineDimmedColor : sketchLineColor;
+    ..alphaMode = AlphaMode.opaque
+    ..baseColorFactor = sketchLineColor;
 
   final primitives = <MeshPrimitive>[
     for (final segment in geometry.lineSegments)

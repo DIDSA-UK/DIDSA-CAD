@@ -1247,7 +1247,7 @@ void main() {
 
     testWidgets(
       'bug-fix: deleting the ExtrudeFeature that auto-hid its Sketch un-hides that Sketch again, '
-      'instead of leaving it dimmed forever even once it is editable',
+      'instead of leaving it hidden forever even once it is editable',
       (tester) async {
         final backend = _FakeDocumentBackend(
           seedFeatures: [

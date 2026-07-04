@@ -226,21 +226,19 @@ class _PartScreenState extends State<PartScreen> {
   /// Hide/Show action - client-side only, never sent to the backend.
   final Set<String> _hiddenFeatureIds = {};
 
-  /// Prompt C1: the subset of [_hiddenFeatureIds] hidden purely because
+  /// The subset of [_hiddenFeatureIds] hidden purely because
   /// [_confirmExtrude]'s auto-hide-the-consumed-Sketch bookkeeping put them
   /// there - never because the user explicitly hid them, and never one of
   /// B4's rollback-suppressed later Features (see [_beginRollback], which
-  /// deliberately does not add to this set). [_recomputeVisibleSketchGeometries]
-  /// uses this to keep a merely-auto-hidden Sketch's geometry rendered and
-  /// pickable (dimmed - see `sketch_geometry_3d.dart`'s `sketchLineDimmedColor`)
-  /// even though it's still "hidden" for every other purpose (the feature
-  /// tree's greyed display, `_refreshMesh`'s `hidden_feature_ids`, which is
-  /// a no-op for a Sketch anyway since it never contributes solid geometry) -
-  /// this is exactly Prompt C1's own motivating case, Create Plane
-  /// referencing the profile Sketch of an already-built Boss. A real user
-  /// Hide (via [_toggleFeatureVisibility]) or a rollback suppression both
-  /// leave a Feature out of this set, so both still fully exclude its
-  /// Sketch geometry from the 3D viewport, same as before this prompt.
+  /// deliberately does not add to this set). A consumed Sketch is fully
+  /// excluded from the 3D viewport (rendering and pickability alike) exactly
+  /// like a manually-hidden Feature - this set exists purely so a later
+  /// event that makes the Sketch stop being consumed (deleting its
+  /// ExtrudeFeature - see the cascade-delete cleanup in
+  /// [_cascadeDeleteFeature] - or explicitly toggling visibility, see
+  /// [_toggleFeatureVisibility]) can tell "hidden because auto-consumed,
+  /// safe to auto-restore" apart from "hidden because the user explicitly
+  /// hid it, leave it alone".
   final Set<String> _autoHiddenSketchFeatureIds = {};
 
   /// Stage 23 Item 1: whether the viewport is in Selection mode (vs the
@@ -311,11 +309,6 @@ class _PartScreenState extends State<PartScreen> {
   /// tell a Line's real endpoint apart from an unrelated Point elsewhere in
   /// the same Sketch.
   Map<String, List<LineDto>> _linesByFeatureId = {};
-
-  /// Prompt C1: which entries of [_visibleSketchGeometries] should render
-  /// dimmed (see [_recomputeVisibleSketchGeometries]) - always a subset of
-  /// [_visibleSketchGeometries]'s keys.
-  Set<String> _dimmedSketchFeatureIds = {};
 
   bool _busy = false;
   String? _errorMessage;
@@ -686,41 +679,20 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Filters [_allSketchGeometries] down to [_visibleSketchGeometries] by
-  /// [_hiddenFeatureIds] - the only place that builds a new Map/Set instance
-  /// for [PartViewport.sketchGeometries]/[PartViewport.dimmedSketchFeatureIds],
-  /// so their `didUpdateWidget` `!=` checks only fire on a genuine
-  /// content/visibility change.
+  /// [_hiddenFeatureIds] - the only place that builds a new `Map` instance
+  /// for [PartViewport.sketchGeometries], so its `didUpdateWidget` `!=`
+  /// check only fires on a genuine content/visibility change.
   ///
-  /// Prompt C1: a Feature hidden *only* via [_autoHiddenSketchFeatureIds]
-  /// (auto-hidden because it's consumed, not a real user Hide - see that
-  /// field's own doc comment) stays in [_visibleSketchGeometries] rather
-  /// than being excluded, and is also added to [_dimmedSketchFeatureIds] so
-  /// [PartViewport] renders it with `sketch_geometry_3d.dart`'s dimmed
-  /// style - visually distinct from an active Sketch, but still pickable,
-  /// which is this prompt's whole point.
-  ///
-  /// This exception is suspended entirely while [_hiddenFeatureIdsBeforeRollback]
-  /// is non-null (a B4 rollback edit is in progress): [_beginRollback] never
-  /// touches [_autoHiddenSketchFeatureIds], so a Sketch that was already
-  /// auto-hidden *before* the rollback session began (its own Extrude sits
-  /// somewhere in the range now being suppressed) would otherwise wrongly
-  /// stay visible/pickable during the edit, defeating B4's "suppress
-  /// everything after the Feature being edited" invariant. Outside of an
-  /// active rollback, this gate is always true and has no effect.
+  /// A Feature auto-hidden because it's consumed by a downstream Extrude
+  /// (see [_autoHiddenSketchFeatureIds]) is excluded here exactly like a
+  /// manually-hidden one - fully invisible and unpickable in the 3D
+  /// viewport, not merely dimmed. Referencing a consumed Sketch's own
+  /// geometry (e.g. for Create Plane's "normal to line at point") requires
+  /// explicitly un-hiding it first via [_toggleFeatureVisibility].
   void _recomputeVisibleSketchGeometries() {
-    final rollbackActive = _hiddenFeatureIdsBeforeRollback != null;
     _visibleSketchGeometries = {
       for (final entry in _allSketchGeometries.entries)
-        if (!_hiddenFeatureIds.contains(entry.key) ||
-            (!rollbackActive && _autoHiddenSketchFeatureIds.contains(entry.key)))
-          entry.key: entry.value,
-    };
-    _dimmedSketchFeatureIds = {
-      for (final entry in _allSketchGeometries.entries)
-        if (!rollbackActive &&
-            _hiddenFeatureIds.contains(entry.key) &&
-            _autoHiddenSketchFeatureIds.contains(entry.key))
-          entry.key,
+        if (!_hiddenFeatureIds.contains(entry.key)) entry.key: entry.value,
     };
   }
 
@@ -1096,11 +1068,9 @@ class _PartScreenState extends State<PartScreen> {
       _hiddenFeatureIds
         ..clear()
         ..addAll(before);
-      // Prompt C1: without this, [_visibleSketchGeometries]/
-      // [_dimmedSketchFeatureIds] would stay computed against the
-      // mid-rollback hidden set (and its rollback-active auto-hidden
-      // suspension) until some unrelated later refresh happened to
-      // recompute them.
+      // Without this, [_visibleSketchGeometries] would stay computed
+      // against the mid-rollback hidden set until some unrelated later
+      // refresh happened to recompute it.
       _hiddenFeatureIdsBeforeRollback = null;
       _recomputeVisibleSketchGeometries();
     });
@@ -1421,9 +1391,9 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       if (sketchFeature != null && !wasEditing) {
         _hiddenFeatureIds.add(sketchFeature.id);
-        // Prompt C1: this is *the* auto-hide-on-consume case
-        // [_autoHiddenSketchFeatureIds] exists for - mark it so its Sketch
-        // geometry stays visible/pickable (dimmed) in the 3D viewport.
+        // This is *the* auto-hide-on-consume case [_autoHiddenSketchFeatureIds]
+        // exists for - mark it so a later event that un-consumes this
+        // Sketch (deleting its Extrude) can auto-restore its visibility.
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -1791,10 +1761,10 @@ class _PartScreenState extends State<PartScreen> {
       // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
       // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
       // _hiddenFeatureIds forever, since it never stopped existing - only
-      // stopped being locked - so the tree kept showing it dimmed/hidden
-      // even once it was editable again. The Sketch was only ever hidden
-      // because something depended on it; once the new last Feature is
-      // unlocked again, there's nothing left to make it redundant clutter.
+      // stopped being locked - so the tree/viewport kept treating it as
+      // hidden even once it was editable again. The Sketch was only ever
+      // hidden because something depended on it; once the new last Feature
+      // is unlocked again, there's nothing left to make it redundant clutter.
       if (_features.isNotEmpty && !_features.last.locked) {
         _hiddenFeatureIds.remove(_features.last.id);
         _autoHiddenSketchFeatureIds.remove(_features.last.id);
@@ -1919,7 +1889,6 @@ class _PartScreenState extends State<PartScreen> {
                   bodies: _bodies,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
-                  dimmedSketchFeatureIds: _dimmedSketchFeatureIds,
                   createPlanes: _createPlaneGeometries,
                   onCreatePlaneTap: _onCreatePlaneFeatureTap,
                   selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
