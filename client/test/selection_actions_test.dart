@@ -42,14 +42,47 @@ void main() {
       expect(actions, [const SelectionContextAction('Create Plane')]);
     });
 
-    test('edges + vertices (no faces) offers the normal-to-edge plane option', () {
-      final actions = contextActionsFor({_edge0, _vertex0});
+    test(
+      'C4: exactly one edge and one vertex offers a real, enabled Create Plane '
+      '(Normal to Edge Through Vertex)',
+      () {
+        final actions = contextActionsFor({_edge0, _vertex0});
+        expect(actions, [
+          const SelectionContextAction('Create Plane (Normal to Edge Through Vertex)', enabled: true),
+        ]);
+      },
+    );
+
+    test(
+      'C4: exactly one face and one vertex offers a real, enabled Create Plane '
+      '(Parallel to Face Through Vertex)',
+      () {
+        final actions = contextActionsFor({_face0, _vertex0});
+        expect(actions, [
+          const SelectionContextAction('Create Plane (Parallel to Face Through Vertex)', enabled: true),
+        ]);
+      },
+    );
+
+    test('two edges + one vertex still offers only the disabled scaffolded normal-to-edge option', () {
+      const edge1 = SelectionEntityRef(kind: SelectionEntityKind.edge, id: 1);
+      final actions = contextActionsFor({_edge0, edge1, _vertex0});
       expect(actions, [const SelectionContextAction('Create Plane (Normal to Edge Through Vertex)')]);
+      expect(actions.single.enabled, isFalse);
     });
 
-    test('faces + vertices (no edges) offers the parallel-to-face plane option', () {
-      final actions = contextActionsFor({_face0, _vertex0});
+    test('one edge + two vertices still offers only the disabled scaffolded normal-to-edge option', () {
+      const vertex1 = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 1);
+      final actions = contextActionsFor({_edge0, _vertex0, vertex1});
+      expect(actions, [const SelectionContextAction('Create Plane (Normal to Edge Through Vertex)')]);
+      expect(actions.single.enabled, isFalse);
+    });
+
+    test('two faces + one vertex still offers only the disabled scaffolded parallel-to-face option', () {
+      const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
+      final actions = contextActionsFor({_face0, face1, _vertex0});
       expect(actions, [const SelectionContextAction('Create Plane (Parallel to Face Through Vertex)')]);
+      expect(actions.single.enabled, isFalse);
     });
 
     test('edges + faces offers the full operation set', () {
@@ -142,6 +175,59 @@ void main() {
     test('a Body-only selection still suppresses everything even with sketch entities elsewhere unselected', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       expect(contextActionsFor({body}, isPointOnLine: alwaysTrue), isEmpty);
+    });
+  });
+
+  group('C4: contextActionsFor Three Points', () {
+    const vertex1 = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 1);
+    const vertex2 = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 2);
+    const point1 = SelectionEntityRef(
+      kind: SelectionEntityKind.sketchPoint,
+      sketchFeatureId: 'f1',
+      sketchEntityId: 'point-1',
+    );
+    const point2 = SelectionEntityRef(
+      kind: SelectionEntityKind.sketchPoint,
+      sketchFeatureId: 'f1',
+      sketchEntityId: 'point-2',
+    );
+
+    test('three Body Vertices offers a real, enabled Create Plane (Three Points)', () {
+      final actions = contextActionsFor({_vertex0, vertex1, vertex2});
+      expect(actions, [const SelectionContextAction('Create Plane (Three Points)', enabled: true)]);
+    });
+
+    test('three Sketch Points offers a real, enabled Create Plane (Three Points)', () {
+      const point3 = SelectionEntityRef(
+        kind: SelectionEntityKind.sketchPoint,
+        sketchFeatureId: 'f1',
+        sketchEntityId: 'point-3',
+      );
+      final actions = contextActionsFor({point1, point2, point3});
+      expect(actions, [const SelectionContextAction('Create Plane (Three Points)', enabled: true)]);
+    });
+
+    test('a mix of Body Vertices and Sketch Points (still exactly three) offers Three Points too', () {
+      final actions = contextActionsFor({_vertex0, vertex1, point1});
+      expect(actions, [const SelectionContextAction('Create Plane (Three Points)', enabled: true)]);
+    });
+
+    test('two points (not three) offers nothing for the vertex case', () {
+      final actions = contextActionsFor({_vertex0, vertex1});
+      expect(actions, [const SelectionContextAction('Create Plane')]);
+      expect(actions.single.enabled, isFalse);
+    });
+
+    test('four points (not exactly three) offers nothing for the all-vertex case', () {
+      const vertex3 = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 3);
+      final actions = contextActionsFor({_vertex0, vertex1, vertex2, vertex3});
+      expect(actions, [const SelectionContextAction('Create Plane')]);
+      expect(actions.single.enabled, isFalse);
+    });
+
+    test('three points plus an unrelated face offers nothing', () {
+      final actions = contextActionsFor({_vertex0, vertex1, point1, _face0});
+      expect(actions, isEmpty);
     });
   });
 }

@@ -277,6 +277,27 @@ void main() {
       expect(roundTripped.entityType, ref.entityType);
       expect(roundTripped.entityId, ref.entityId);
     });
+
+    test('C4: PointRefDto toJson/fromJson round-trips a vertexRef entry', () {
+      const ref = PointRefDto(
+        vertexRef: SubShapeRefDto(bodyId: 'body-1', shapeType: 'vertex', index: 2),
+      );
+      final roundTripped = PointRefDto.fromJson(ref.toJson());
+      expect(roundTripped.vertexRef?.bodyId, 'body-1');
+      expect(roundTripped.vertexRef?.index, 2);
+      expect(roundTripped.sketchPointRef, isNull);
+      expect(ref.toJson().containsKey('sketch_point_ref'), isFalse);
+    });
+
+    test('C4: PointRefDto toJson/fromJson round-trips a sketchPointRef entry', () {
+      const ref = PointRefDto(
+        sketchPointRef: SketchEntityRefDto(sketchId: 'sketch-1', entityType: 'point', entityId: 'point-1'),
+      );
+      final roundTripped = PointRefDto.fromJson(ref.toJson());
+      expect(roundTripped.sketchPointRef?.entityId, 'point-1');
+      expect(roundTripped.vertexRef, isNull);
+      expect(ref.toJson().containsKey('vertex_ref'), isFalse);
+    });
   });
 
   group('FeatureDto.fromJson for a create_plane Feature', () {
@@ -348,6 +369,72 @@ void main() {
       expect(dto.offset, isNull);
       expect(dto.lineRef?.entityId, 'line-1');
       expect(dto.pointRef?.entityId, 'point-1');
+    });
+
+    test('C4: parses a normal_to_edge_through_vertex Feature', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'plane-6',
+        'locked': false,
+        'produces': 'plane',
+        'plane_type': 'normal_to_edge_through_vertex',
+        'edge_ref': {'body_id': 'body-1', 'shape_type': 'edge', 'index': 4},
+        'vertex_ref': {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 0},
+        'origin': [0.0, 0.0, 0.0],
+        'normal': [1.0, 0.0, 0.0],
+      });
+
+      expect(dto.planeType, 'normal_to_edge_through_vertex');
+      expect(dto.edgeRef?.index, 4);
+      expect(dto.vertexRef?.index, 0);
+      expect(dto.pointRefs, isEmpty);
+    });
+
+    test('C4: parses a parallel_to_face_through_vertex Feature', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'plane-7',
+        'locked': false,
+        'produces': 'plane',
+        'plane_type': 'parallel_to_face_through_vertex',
+        'face_refs': [{'body_id': 'body-1', 'shape_type': 'face', 'index': 2}],
+        'vertex_ref': {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 1},
+        'origin': [1.0, 1.0, 1.0],
+        'normal': [0.0, 0.0, 1.0],
+      });
+
+      expect(dto.planeType, 'parallel_to_face_through_vertex');
+      expect(dto.faceRefs.single.index, 2);
+      expect(dto.vertexRef?.index, 1);
+    });
+
+    test('C4: parses a three_points Feature mixing a vertexRef and sketchPointRefs', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'plane-8',
+        'locked': false,
+        'produces': 'plane',
+        'plane_type': 'three_points',
+        'point_refs': [
+          {
+            'vertex_ref': {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 0},
+          },
+          {
+            'sketch_point_ref': {'sketch_id': 'sketch-1', 'entity_type': 'point', 'entity_id': 'point-1'},
+          },
+          {
+            'sketch_point_ref': {'sketch_id': 'sketch-1', 'entity_type': 'point', 'entity_id': 'point-2'},
+          },
+        ],
+        'origin': [0.0, 0.0, 0.0],
+        'normal': [0.0, 0.0, 1.0],
+      });
+
+      expect(dto.planeType, 'three_points');
+      expect(dto.pointRefs, hasLength(3));
+      expect(dto.pointRefs[0].vertexRef?.index, 0);
+      expect(dto.pointRefs[1].sketchPointRef?.entityId, 'point-1');
+      expect(dto.pointRefs[2].sketchPointRef?.entityId, 'point-2');
     });
 
     test('a Feature whose Plane could not be resolved has null origin/normal', () {
@@ -498,6 +585,117 @@ void main() {
         {'body_id': 'body-1', 'shape_type': 'face', 'index': 3},
       ]);
       expect(capturedBody.containsKey('offset'), isFalse);
+    });
+
+    test('C4: createCreatePlaneFeature sends only the normal_to_edge_through_vertex fields', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'create_plane',
+            'id': 'plane-6',
+            'locked': false,
+            'produces': 'plane',
+            'plane_type': 'normal_to_edge_through_vertex',
+            'edge_ref': {'body_id': 'body-1', 'shape_type': 'edge', 'index': 4},
+            'vertex_ref': {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 0},
+            'origin': [0.0, 0.0, 0.0],
+            'normal': [1.0, 0.0, 0.0],
+          });
+        }),
+      );
+
+      await client.createCreatePlaneFeature(
+        'part-1',
+        planeType: 'normal_to_edge_through_vertex',
+        edgeRef: const SubShapeRefDto(bodyId: 'body-1', shapeType: 'edge', index: 4),
+        vertexRef: const SubShapeRefDto(bodyId: 'body-1', shapeType: 'vertex', index: 0),
+      );
+
+      expect(capturedBody['plane_type'], 'normal_to_edge_through_vertex');
+      expect(capturedBody['edge_ref'], {'body_id': 'body-1', 'shape_type': 'edge', 'index': 4});
+      expect(capturedBody['vertex_ref'], {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 0});
+      expect(capturedBody.containsKey('face_refs'), isFalse);
+    });
+
+    test('C4: createCreatePlaneFeature sends only the parallel_to_face_through_vertex fields', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'create_plane',
+            'id': 'plane-7',
+            'locked': false,
+            'produces': 'plane',
+            'plane_type': 'parallel_to_face_through_vertex',
+            'face_refs': [{'body_id': 'body-1', 'shape_type': 'face', 'index': 2}],
+            'vertex_ref': {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 1},
+            'origin': [1.0, 1.0, 1.0],
+            'normal': [0.0, 0.0, 1.0],
+          });
+        }),
+      );
+
+      await client.createCreatePlaneFeature(
+        'part-1',
+        planeType: 'parallel_to_face_through_vertex',
+        faceRefs: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 2)],
+        vertexRef: const SubShapeRefDto(bodyId: 'body-1', shapeType: 'vertex', index: 1),
+      );
+
+      expect(capturedBody['plane_type'], 'parallel_to_face_through_vertex');
+      expect(capturedBody['face_refs'], [{'body_id': 'body-1', 'shape_type': 'face', 'index': 2}]);
+      expect(capturedBody['vertex_ref'], {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 1});
+      expect(capturedBody.containsKey('edge_ref'), isFalse);
+    });
+
+    test('C4: createCreatePlaneFeature sends point_refs mixing vertexRef and sketchPointRef', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'create_plane',
+            'id': 'plane-8',
+            'locked': false,
+            'produces': 'plane',
+            'plane_type': 'three_points',
+            'point_refs': [],
+            'origin': [0.0, 0.0, 0.0],
+            'normal': [0.0, 0.0, 1.0],
+          });
+        }),
+      );
+
+      await client.createCreatePlaneFeature(
+        'part-1',
+        planeType: 'three_points',
+        pointRefs: const [
+          PointRefDto(vertexRef: SubShapeRefDto(bodyId: 'body-1', shapeType: 'vertex', index: 0)),
+          PointRefDto(
+            sketchPointRef: SketchEntityRefDto(sketchId: 'sketch-1', entityType: 'point', entityId: 'point-1'),
+          ),
+          PointRefDto(
+            sketchPointRef: SketchEntityRefDto(sketchId: 'sketch-1', entityType: 'point', entityId: 'point-2'),
+          ),
+        ],
+      );
+
+      expect(capturedBody['plane_type'], 'three_points');
+      expect(capturedBody['point_refs'], [
+        {
+          'vertex_ref': {'body_id': 'body-1', 'shape_type': 'vertex', 'index': 0},
+        },
+        {
+          'sketch_point_ref': {'sketch_id': 'sketch-1', 'entity_type': 'point', 'entity_id': 'point-1'},
+        },
+        {
+          'sketch_point_ref': {'sketch_id': 'sketch-1', 'entity_type': 'point', 'entity_id': 'point-2'},
+        },
+      ]);
+      expect(capturedBody.containsKey('face_refs'), isFalse);
     });
   });
 

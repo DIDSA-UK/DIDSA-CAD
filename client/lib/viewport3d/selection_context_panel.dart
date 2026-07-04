@@ -24,11 +24,11 @@ class SelectionContextPanel extends StatelessWidget {
   /// [SelectionEntityRef] alone.
   final PointOnLineChecker? isPointOnLine;
 
-  /// C2: fired when the user taps an *enabled* Create Plane button - never
-  /// called for a disabled/placeholder one. [PartScreen] inspects
-  /// [selectedEntities] itself to decide which of the two flows
-  /// (offset-from-face vs. normal-to-line-at-point) to open, rather than
-  /// this panel trying to encode that choice in the callback's signature.
+  /// C2/C3/C4: fired when the user taps an *enabled* Create Plane button -
+  /// never called for a disabled/placeholder one. [PartScreen] inspects
+  /// [selectedEntities] itself to decide which of the six flows to open,
+  /// rather than this panel trying to encode that choice in the callback's
+  /// signature.
   final VoidCallback? onCreatePlane;
 
   const SelectionContextPanel({
@@ -70,13 +70,11 @@ class SelectionContextPanel extends StatelessWidget {
     );
   }
 
-  /// C2: 'Create Plane' only ever gets a real callback when
-  /// [SelectionContextAction.enabled] is true (the two flows
-  /// [contextActionsFor] now actually wires) - its still-scaffolded
-  /// placeholder variants ("... Through Vertex)") and every other action
-  /// stay null, kept as a per-action switch so each future CAD operation
-  /// gets its own `// TODO: wire up <action>` comment at its own callback
-  /// site.
+  /// C2/C3/C4: 'Create Plane' only ever gets a real callback when
+  /// [SelectionContextAction.enabled] is true (all six flows
+  /// [contextActionsFor] now wires) - every other action stays null, kept
+  /// as a per-action switch so each future CAD operation gets its own
+  /// `// TODO: wire up <action>` comment at its own callback site.
   VoidCallback? _callbackFor(SelectionContextAction action) {
     switch (action.label) {
       case 'Chamfer':
@@ -87,12 +85,10 @@ class SelectionContextPanel extends StatelessWidget {
         return null;
       case 'Create Plane':
       case 'Create Plane (Midplane)':
-        return action.enabled ? onCreatePlane : null;
       case 'Create Plane (Normal to Edge Through Vertex)':
       case 'Create Plane (Parallel to Face Through Vertex)':
-        // TODO: wire up once these two plane types are ever built - out of
-        // C2's own two-plane-type v1 scope.
-        return null;
+      case 'Create Plane (Three Points)':
+        return action.enabled ? onCreatePlane : null;
       default:
         return null;
     }

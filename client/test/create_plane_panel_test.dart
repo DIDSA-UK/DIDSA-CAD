@@ -44,6 +44,24 @@ void main() {
       expect(find.textContaining('equidistant'), findsOneWidget);
     });
 
+    testWidgets('C4: normalToEdgeThroughVertex has no numeric field and is always enabled', (tester) async {
+      expect(await confirmEnabled(tester, CreatePlaneMode.normalToEdgeThroughVertex), isTrue);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.textContaining('normal to the selected edge'), findsOneWidget);
+    });
+
+    testWidgets('C4: parallelToFaceThroughVertex has no numeric field and is always enabled', (tester) async {
+      expect(await confirmEnabled(tester, CreatePlaneMode.parallelToFaceThroughVertex), isTrue);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.textContaining('parallel to the selected face'), findsOneWidget);
+    });
+
+    testWidgets('C4: threePoints has no numeric field and is always enabled', (tester) async {
+      expect(await confirmEnabled(tester, CreatePlaneMode.threePoints), isTrue);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.textContaining('through the three selected points'), findsOneWidget);
+    });
+
     testWidgets('offsetFace shows a numeric offset field', (tester) async {
       await confirmEnabled(tester, CreatePlaneMode.offsetFace);
       expect(find.byType(TextField), findsOneWidget);

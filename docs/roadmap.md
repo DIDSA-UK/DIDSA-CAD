@@ -333,6 +333,38 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   regression-free via `git worktree` diff against the pre-C3 commit. **Not
   yet on-device confirmed** - same gating discipline before Prompt D
   (Fillet) starts.
+- **Prompt C4 (user feedback: "wire up other common methods of creating
+  planes", scoped via explicit choice to "the two scaffolded ones + 3-point
+  plane")**: three more `PlaneType`s - `NORMAL_TO_EDGE_THROUGH_VERTEX` (a
+  plane normal to a selected straight Body edge, through a selected Vertex),
+  `PARALLEL_TO_FACE_THROUGH_VERTEX` (parallel to a selected planar Body face,
+  through a selected Vertex), and `THREE_POINTS` (through three selected
+  points, each independently a Body Vertex or a Sketch Point). Backend:
+  `SubShapeType` gained `VERTEX` (resolved via the same 0-based
+  `topexp.MapShapes` scheme the mesh's own `topology_vertex_ids` already
+  uses); new `PointRef` value type holds *either* a `vertex_ref` or a
+  `sketch_point_ref` (never both), letting a single `THREE_POINTS` Feature
+  mix Body vertices and Sketch points freely; `plane_geometry.
+  resolve_three_points` is pure-Python (origin = first point, `x_axis` =
+  first-to-second direction, normal = cross product, rejecting collinear/
+  coincident points with a new `collinear_points` 422) while the edge/face+
+  vertex resolvers live in `create_plane.py` (need OCCT for the linearity/
+  planarity checks); `_validate_create_plane_payload`'s per-type "every
+  other field must be empty" check factored into one shared
+  `_all_other_create_plane_fields_empty` helper as the field count grew from
+  four to seven. Client: `CreatePlaneMode` gained the three new cases (no
+  numeric field, same as `normalToLineAtPoint`); `contextActionsFor` gained
+  real enabled rules for exactly-1-edge+1-vertex, exactly-1-face+1-vertex,
+  and exactly-3-points (mixed vertex/sketch-point pool), each checked before
+  their own pre-existing disabled-placeholder buckets; `part_screen.dart`
+  wired end-to-end (create/edit/cancel-restore) for all three. 86/86 OCCT-
+  free backend tests (new `test_stage_c4_plane_basis.py`/
+  `test_stage_c4_create_plane.py`, the latter `ast.parse`-only per the usual
+  OCCT-in-sandbox caveat), 242 client tests passed, both confirmed
+  regression-free via `git worktree` diff against the pre-C4 commit (same
+  18/13-file OCCT/GPU-blocked sets, respectively, as before). **Not yet
+  on-device confirmed** - same gating discipline before Prompt D (Fillet)
+  starts.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

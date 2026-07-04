@@ -428,8 +428,15 @@ class _PartScreenState extends State<PartScreen> {
   /// started - [_cancelCreatePlane] PATCHes these back verbatim when
   /// [_editingCreatePlaneFeatureId] is set, same reason
   /// [_extrudeEditSnapshot] exists.
-  ({List<SubShapeRefDto> faceRefs, double? offset, SketchEntityRefDto? lineRef, SketchEntityRefDto? pointRef})?
-      _createPlaneEditSnapshot;
+  ({
+    List<SubShapeRefDto> faceRefs,
+    double? offset,
+    SketchEntityRefDto? lineRef,
+    SketchEntityRefDto? pointRef,
+    SubShapeRefDto? edgeRef,
+    SubShapeRefDto? vertexRef,
+    List<PointRefDto> pointRefs,
+  })? _createPlaneEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - restored
   /// by both [_confirmCreatePlane] and [_cancelCreatePlane], same purpose
@@ -1494,6 +1501,19 @@ class _PartScreenState extends State<PartScreen> {
   /// never reached for any other selection shape).
   void _onCreatePlaneTapped() {
     final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+    final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    final vertices = _selectedEntities.where((e) => e.kind == SelectionEntityKind.vertex).toList();
+    final points = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchPoint).toList();
+    final lines = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchLine).toList();
+
+    // C4: exactly three points total (any mix of Body Vertices and Sketch
+    // Points) - checked first, same precedence `selection_actions.dart`'s
+    // `contextActionsFor` already gives this combo over the single-line-
+    // plus-point/single-face checks below.
+    if (vertices.length + points.length == 3 && _selectedEntities.length == 3) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.threePoints, pointEntities: [...vertices, ...points]);
+      return;
+    }
     if (faces.length == 1 && _selectedEntities.length == 1) {
       _openCreatePlanePanel(mode: CreatePlaneMode.offsetFace, faceEntities: faces);
       return;
@@ -1502,8 +1522,24 @@ class _PartScreenState extends State<PartScreen> {
       _openCreatePlanePanel(mode: CreatePlaneMode.midplane, faceEntities: faces);
       return;
     }
-    final points = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchPoint).toList();
-    final lines = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchLine).toList();
+    // C4: exactly one Edge and one Vertex - Normal to Edge Through Vertex.
+    if (edges.length == 1 && vertices.length == 1 && _selectedEntities.length == 2) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.normalToEdgeThroughVertex,
+        edgeEntity: edges.single,
+        vertexEntity: vertices.single,
+      );
+      return;
+    }
+    // C4: exactly one Face and one Vertex - Parallel to Face Through Vertex.
+    if (faces.length == 1 && vertices.length == 1 && _selectedEntities.length == 2) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.parallelToFaceThroughVertex,
+        faceEntities: faces,
+        vertexEntity: vertices.single,
+      );
+      return;
+    }
     if (points.length == 1 && lines.length == 1) {
       _openCreatePlanePanel(
         mode: CreatePlaneMode.normalToLineAtPoint,
@@ -1513,6 +1549,33 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// C4: converts a selected [SelectionEntityRef] into a [PointRefDto] for
+  /// [CreatePlaneMode.threePoints] - a Body Vertex ([SelectionEntityKind.
+  /// vertex], identified by [SelectionEntityRef.bodyId]/[SelectionEntityRef.id])
+  /// or a Sketch Point ([SelectionEntityKind.sketchPoint], identified by
+  /// [SelectionEntityRef.sketchFeatureId]/[SelectionEntityRef.sketchEntityId],
+  /// resolved to a real Sketch id via [_sketchIdForFeatureId] the same way
+  /// the normal-to-line-at-point flow already does) - never anything else,
+  /// since [_onCreatePlaneTapped]'s own pool for this mode is exactly those
+  /// two kinds.
+  PointRefDto? _pointRefDtoFor(SelectionEntityRef entity) {
+    if (entity.kind == SelectionEntityKind.vertex) {
+      return PointRefDto(
+        vertexRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'vertex', index: entity.id),
+      );
+    }
+    assert(entity.kind == SelectionEntityKind.sketchPoint);
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return null; // Defensive - see _sketchIdForFeatureId's own doc comment.
+    return PointRefDto(
+      sketchPointRef: SketchEntityRefDto(
+        sketchId: sketchId,
+        entityType: 'point',
+        entityId: entity.sketchEntityId,
+      ),
+    );
+  }
+
   /// Creates the CreatePlaneFeature eagerly (mirrors [_ensureExtrudeFeatureExists]'s
   /// "create on open" pattern) from whichever refs [_onCreatePlaneTapped]
   /// resolved. Stashes/clears [_selectedEntities] the same way
@@ -1520,12 +1583,20 @@ class _PartScreenState extends State<PartScreen> {
   /// face(s)/line/point that triggered this is baked into the created
   /// Feature, not something the user keeps adjusting in the viewport
   /// afterward. [faceEntities] has exactly one entry for [CreatePlaneMode.
-  /// offsetFace] or exactly two for [CreatePlaneMode.midplane] (C3).
+  /// offsetFace]/[CreatePlaneMode.parallelToFaceThroughVertex] or exactly two
+  /// for [CreatePlaneMode.midplane] (C3). C4: [edgeEntity]/[vertexEntity] are
+  /// only meaningful for [CreatePlaneMode.normalToEdgeThroughVertex]/
+  /// [CreatePlaneMode.parallelToFaceThroughVertex]; [pointEntities] (exactly
+  /// three, each a Vertex or a Sketch Point) only for [CreatePlaneMode.
+  /// threePoints].
   Future<void> _openCreatePlanePanel({
     required CreatePlaneMode mode,
     List<SelectionEntityRef> faceEntities = const [],
     SelectionEntityRef? lineEntity,
     SelectionEntityRef? pointEntity,
+    SelectionEntityRef? edgeEntity,
+    SelectionEntityRef? vertexEntity,
+    List<SelectionEntityRef> pointEntities = const [],
   }) async {
     final part = _part;
     if (part == null) return;
@@ -1547,6 +1618,32 @@ class _PartScreenState extends State<PartScreen> {
           planeType: mode == CreatePlaneMode.offsetFace ? 'offset_face' : 'midplane',
           faceRefs: faceRefs,
           offset: mode == CreatePlaneMode.offsetFace ? _createPlaneOffset : null,
+        );
+      } else if (mode == CreatePlaneMode.normalToEdgeThroughVertex) {
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'normal_to_edge_through_vertex',
+          edgeRef: SubShapeRefDto(bodyId: edgeEntity!.bodyId, shapeType: 'edge', index: edgeEntity.id),
+          vertexRef: SubShapeRefDto(bodyId: vertexEntity!.bodyId, shapeType: 'vertex', index: vertexEntity.id),
+        );
+      } else if (mode == CreatePlaneMode.parallelToFaceThroughVertex) {
+        final faceRefs = [
+          for (final faceEntity in faceEntities)
+            SubShapeRefDto(bodyId: faceEntity.bodyId, shapeType: 'face', index: faceEntity.id),
+        ];
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'parallel_to_face_through_vertex',
+          faceRefs: faceRefs,
+          vertexRef: SubShapeRefDto(bodyId: vertexEntity!.bodyId, shapeType: 'vertex', index: vertexEntity.id),
+        );
+      } else if (mode == CreatePlaneMode.threePoints) {
+        final pointRefs = pointEntities.map(_pointRefDtoFor).toList();
+        if (pointRefs.any((ref) => ref == null)) return; // Defensive - see _pointRefDtoFor's own doc comment.
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'three_points',
+          pointRefs: pointRefs.cast<PointRefDto>(),
         );
       } else {
         final sketchId = _sketchIdForFeatureId(lineEntity!.sketchFeatureId);
@@ -1592,6 +1689,9 @@ class _PartScreenState extends State<PartScreen> {
     final mode = switch (feature.planeType) {
       'offset_face' => CreatePlaneMode.offsetFace,
       'midplane' => CreatePlaneMode.midplane,
+      'normal_to_edge_through_vertex' => CreatePlaneMode.normalToEdgeThroughVertex,
+      'parallel_to_face_through_vertex' => CreatePlaneMode.parallelToFaceThroughVertex,
+      'three_points' => CreatePlaneMode.threePoints,
       _ => CreatePlaneMode.normalToLineAtPoint,
     };
     setState(() {
@@ -1604,6 +1704,9 @@ class _PartScreenState extends State<PartScreen> {
         offset: feature.offset,
         lineRef: feature.lineRef,
         pointRef: feature.pointRef,
+        edgeRef: feature.edgeRef,
+        vertexRef: feature.vertexRef,
+        pointRefs: feature.pointRefs,
       );
       _entitiesBeforeCreatePlane = _selectedEntities;
       _selectedEntities = {};
@@ -1674,6 +1777,9 @@ class _PartScreenState extends State<PartScreen> {
             offset: editSnapshot.offset,
             lineRef: editSnapshot.lineRef,
             pointRef: editSnapshot.pointRef,
+            edgeRef: editSnapshot.edgeRef,
+            vertexRef: editSnapshot.vertexRef,
+            pointRefs: editSnapshot.pointRefs,
           );
           await _refreshFeatures();
         });

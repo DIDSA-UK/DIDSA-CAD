@@ -64,6 +64,20 @@ List<SelectionContextAction> contextActionsFor(
 
   final sketchPoints = selection.where((s) => s.kind == SelectionEntityKind.sketchPoint).toList();
   final sketchLines = selection.where((s) => s.kind == SelectionEntityKind.sketchLine).toList();
+  final vertices = selection.where((s) => s.kind == SelectionEntityKind.vertex).toList();
+
+  // C4: exactly three points total, nothing else - Three Points, mixing Body
+  // Vertices and Sketch Points freely (any split between the two, including
+  // all-vertex or all-sketch-point). Checked before the sketch-entity-only
+  // branch just below, which would otherwise incorrectly swallow a selection
+  // like 2 Sketch Points + 1 Vertex as "not exactly 1 line + 1 point, so
+  // offers nothing" - and before the generic hasVertex-alone bucket further
+  // down, for the same reason the single/two-face checks below take
+  // precedence over their own generic buckets.
+  if (sketchPoints.length + vertices.length == 3 && selection.length == 3) {
+    return const [SelectionContextAction('Create Plane (Three Points)', enabled: true)];
+  }
+
   if (sketchPoints.isNotEmpty || sketchLines.isNotEmpty) {
     // C2: the one sketch-entity combo this prompt wires (normal-to-line-at-
     // point) - everything else involving a Sketch Point/Line (a lone Point,
@@ -91,9 +105,10 @@ List<SelectionContextAction> contextActionsFor(
   }
 
   final faces = selection.where((s) => s.kind == SelectionEntityKind.face).toList();
+  final edges = selection.where((s) => s.kind == SelectionEntityKind.edge).toList();
   final hasFace = faces.isNotEmpty;
-  final hasEdge = selection.any((s) => s.kind == SelectionEntityKind.edge);
-  final hasVertex = selection.any((s) => s.kind == SelectionEntityKind.vertex);
+  final hasEdge = edges.isNotEmpty;
+  final hasVertex = vertices.isNotEmpty;
 
   // C2: exactly one Body Face, nothing else - the other real Create Plane
   // flow this prompt wires (offset-from-face). Checked before the generic
@@ -121,6 +136,23 @@ List<SelectionContextAction> contextActionsFor(
       SelectionContextAction('Create Plane'),
       SelectionContextAction('Chamfer'),
       SelectionContextAction('Fillet'),
+    ];
+  }
+  // C4: exactly one Edge and one Vertex, nothing else - Normal to Edge
+  // Through Vertex. Checked before the generic "hasEdge && hasVertex" bucket
+  // just below (still a scaffolded placeholder for any other edge/vertex
+  // mix, e.g. 2+ of either), same precedence pattern the single/two-face
+  // checks above use against their own generic buckets.
+  if (edges.length == 1 && vertices.length == 1 && selection.length == 2) {
+    return const [
+      SelectionContextAction('Create Plane (Normal to Edge Through Vertex)', enabled: true),
+    ];
+  }
+  // C4: exactly one Face and one Vertex, nothing else - Parallel to Face
+  // Through Vertex, same precedence pattern.
+  if (faces.length == 1 && vertices.length == 1 && selection.length == 2) {
+    return const [
+      SelectionContextAction('Create Plane (Parallel to Face Through Vertex)', enabled: true),
     ];
   }
   if (hasEdge && hasVertex) {

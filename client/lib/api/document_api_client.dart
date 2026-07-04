@@ -64,6 +64,32 @@ class SketchEntityRefDto {
       };
 }
 
+/// C4: the wire counterpart to the backend's `PointRefSchema` - exactly one
+/// of [vertexRef]/[sketchPointRef] should be supplied (a Body vertex or a
+/// Sketch Point), matching the backend `PointRef`'s own "one of two optional
+/// fields" convention. Used by THREE_POINTS' `point_refs`, letting a single
+/// Feature mix Body vertices and Sketch Points freely.
+class PointRefDto {
+  final SubShapeRefDto? vertexRef;
+  final SketchEntityRefDto? sketchPointRef;
+
+  const PointRefDto({this.vertexRef, this.sketchPointRef});
+
+  factory PointRefDto.fromJson(Map<String, dynamic> json) => PointRefDto(
+        vertexRef: json['vertex_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['vertex_ref'] as Map<String, dynamic>),
+        sketchPointRef: json['sketch_point_ref'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['sketch_point_ref'] as Map<String, dynamic>),
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (vertexRef != null) 'vertex_ref': vertexRef!.toJson(),
+        if (sketchPointRef != null) 'sketch_point_ref': sketchPointRef!.toJson(),
+      };
+}
+
 /// A Feature in a Part's history - a SketchFeature, an ExtrudeFeature, or
 /// (C2) a CreatePlaneFeature, distinguished by [type] (the same
 /// discriminator the backend's `FeatureResponse` union uses). [sketchId] is
@@ -118,6 +144,16 @@ class FeatureDto {
   final SketchEntityRefDto? lineRef;
   final SketchEntityRefDto? pointRef;
 
+  /// C4: only present on a `"create_plane"` Feature whose [planeType] is
+  /// `"normal_to_edge_through_vertex"` ([edgeRef] + [vertexRef]) or
+  /// `"parallel_to_face_through_vertex"` ([faceRefs] one entry + [vertexRef]).
+  final SubShapeRefDto? edgeRef;
+  final SubShapeRefDto? vertexRef;
+
+  /// C4: only present (with exactly three entries) on a `"create_plane"`
+  /// Feature whose [planeType] is `"three_points"`.
+  final List<PointRefDto> pointRefs;
+
   /// C2: the resolved world-space plane geometry (see the backend's
   /// `ResolvedPlane`) - `[x, y, z]` triples, null whenever the backend
   /// couldn't currently resolve this Plane (e.g. its reference went stale -
@@ -151,6 +187,9 @@ class FeatureDto {
     this.offset,
     this.lineRef,
     this.pointRef,
+    this.edgeRef,
+    this.vertexRef,
+    this.pointRefs = const [],
     this.origin,
     this.normal,
     this.xAxis,
@@ -181,6 +220,16 @@ class FeatureDto {
         pointRef: json['point_ref'] == null
             ? null
             : SketchEntityRefDto.fromJson(json['point_ref'] as Map<String, dynamic>),
+        edgeRef: json['edge_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['edge_ref'] as Map<String, dynamic>),
+        vertexRef: json['vertex_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['vertex_ref'] as Map<String, dynamic>),
+        pointRefs: (json['point_refs'] as List?)
+                ?.map((r) => PointRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
         origin: (json['origin'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         normal: (json['normal'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         xAxis: (json['x_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
@@ -425,13 +474,14 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// C2/C3: creates an OFFSET_FACE, MIDPLANE, or NORMAL_TO_LINE_AT_POINT
-  /// CreatePlaneFeature - exactly one of ([faceRefs], [offset])
-  /// [OFFSET_FACE: one entry; MIDPLANE, C3: two] or ([lineRef], [pointRef])
-  /// should be supplied, matching [planeType] ("offset_face"/"midplane"/
-  /// "normal_to_line_at_point"); the backend validates this combination and
-  /// rejects a malformed one (see `_validate_create_plane_payload`), this
-  /// method just serializes whatever it's given.
+  /// C2/C3/C4: creates a CreatePlaneFeature of any of the six `planeType`s -
+  /// exactly one combination of ([faceRefs], [offset]) [OFFSET_FACE: one
+  /// entry; MIDPLANE: two], ([lineRef], [pointRef]), ([edgeRef], [vertexRef]),
+  /// ([faceRefs] one entry, [vertexRef]), or ([pointRefs], three entries)
+  /// should be supplied, matching [planeType]; the backend validates this
+  /// combination and rejects a malformed one (see
+  /// `_validate_create_plane_payload`), this method just serializes whatever
+  /// it's given.
   Future<FeatureDto> createCreatePlaneFeature(
     String partId, {
     required String planeType,
@@ -439,6 +489,9 @@ class DocumentApiClient {
     double? offset,
     SketchEntityRefDto? lineRef,
     SketchEntityRefDto? pointRef,
+    SubShapeRefDto? edgeRef,
+    SubShapeRefDto? vertexRef,
+    List<PointRefDto> pointRefs = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -450,6 +503,9 @@ class DocumentApiClient {
                 if (offset != null) 'offset': offset,
                 if (lineRef != null) 'line_ref': lineRef.toJson(),
                 if (pointRef != null) 'point_ref': pointRef.toJson(),
+                if (edgeRef != null) 'edge_ref': edgeRef.toJson(),
+                if (vertexRef != null) 'vertex_ref': vertexRef.toJson(),
+                if (pointRefs.isNotEmpty) 'point_refs': pointRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -465,6 +521,9 @@ class DocumentApiClient {
     double? offset,
     SketchEntityRefDto? lineRef,
     SketchEntityRefDto? pointRef,
+    SubShapeRefDto? edgeRef,
+    SubShapeRefDto? vertexRef,
+    List<PointRefDto>? pointRefs,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -475,6 +534,9 @@ class DocumentApiClient {
                 if (offset != null) 'offset': offset,
                 if (lineRef != null) 'line_ref': lineRef.toJson(),
                 if (pointRef != null) 'point_ref': pointRef.toJson(),
+                if (edgeRef != null) 'edge_ref': edgeRef.toJson(),
+                if (vertexRef != null) 'vertex_ref': vertexRef.toJson(),
+                if (pointRefs != null) 'point_refs': pointRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

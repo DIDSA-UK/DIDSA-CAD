@@ -6,8 +6,19 @@ import 'package:flutter/material.dart';
 /// `contextActionsFor`), not by anything this panel picks itself.
 ///
 /// C3 adds [midplane] (equidistant between two selected Faces) alongside
-/// C2's original [offsetFace]/[normalToLineAtPoint].
-enum CreatePlaneMode { offsetFace, normalToLineAtPoint, midplane }
+/// C2's original [offsetFace]/[normalToLineAtPoint]. C4 adds
+/// [normalToEdgeThroughVertex] (normal to a selected straight Edge, through
+/// a selected Vertex), [parallelToFaceThroughVertex] (parallel to a selected
+/// planar Face, through a selected Vertex), and [threePoints] (through three
+/// selected points, each a Body Vertex or a Sketch Point).
+enum CreatePlaneMode {
+  offsetFace,
+  normalToLineAtPoint,
+  midplane,
+  normalToEdgeThroughVertex,
+  parallelToFaceThroughVertex,
+  threePoints,
+}
 
 /// The bottom-sheet-style panel [PartScreen] opens once Create Plane is
 /// enabled (a single planar Body Face selected, two Faces selected, or a
@@ -15,12 +26,14 @@ enum CreatePlaneMode { offsetFace, normalToLineAtPoint, midplane }
 /// [ExtrudePanel]'s Confirm/Cancel session shape and slide-up presentation.
 ///
 /// [CreatePlaneMode.offsetFace] shows a numeric offset field (Confirm
-/// enabled once it parses); [CreatePlaneMode.normalToLineAtPoint]/
-/// [CreatePlaneMode.midplane] have no numeric input at all - both are fully
-/// determined by the references alone, so Confirm is enabled
-/// unconditionally (those refs are already guaranteed selected by the time
-/// this panel is even open - `contextActionsFor` only enables the button
-/// once they are).
+/// enabled once it parses); every other mode ([CreatePlaneMode.
+/// normalToLineAtPoint], [CreatePlaneMode.midplane], and C4's
+/// [CreatePlaneMode.normalToEdgeThroughVertex]/
+/// [CreatePlaneMode.parallelToFaceThroughVertex]/[CreatePlaneMode.threePoints])
+/// has no numeric input at all - all are fully determined by the references
+/// alone, so Confirm is enabled unconditionally (those refs are already
+/// guaranteed selected by the time this panel is even open -
+/// `contextActionsFor` only enables the button once they are).
 class CreatePlanePanel extends StatefulWidget {
   /// 'Create Plane' when creating a brand-new Feature (default),
   /// 'Edit Plane' when [PartScreen] opened this to edit an already-existing
@@ -79,6 +92,23 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
   static String _formatDistance(double value) =>
       value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
 
+  static String _descriptionFor(CreatePlaneMode mode) {
+    switch (mode) {
+      case CreatePlaneMode.midplane:
+        return 'Plane equidistant between the two selected faces';
+      case CreatePlaneMode.normalToLineAtPoint:
+        return 'Plane normal to the selected line, through the selected point';
+      case CreatePlaneMode.normalToEdgeThroughVertex:
+        return 'Plane normal to the selected edge, through the selected vertex';
+      case CreatePlaneMode.parallelToFaceThroughVertex:
+        return 'Plane parallel to the selected face, through the selected vertex';
+      case CreatePlaneMode.threePoints:
+        return 'Plane through the three selected points';
+      case CreatePlaneMode.offsetFace:
+        throw StateError('offsetFace has its own numeric-field branch, not this description');
+    }
+  }
+
   bool get _canConfirm => widget.mode != CreatePlaneMode.offsetFace || _offset != null;
 
   void _emitOffsetChange() {
@@ -123,9 +153,7 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
                   ),
                 ] else
                   Text(
-                    widget.mode == CreatePlaneMode.midplane
-                        ? 'Plane equidistant between the two selected faces'
-                        : 'Plane normal to the selected line, through the selected point',
+                    _descriptionFor(widget.mode),
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 12,
