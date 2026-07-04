@@ -32,11 +32,12 @@ from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
     Part,
+    ResolvedPlane,
     SketchFeature,
     SubShapeRef,
     SubShapeType,
 )
-from app.sketch.models import Circle, Plane, Sketch
+from app.sketch.models import Circle, Sketch
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404
 
@@ -49,32 +50,29 @@ logger = logging.getLogger(__name__)
 # nothing extrudable to offer.
 _EXTRUDABLE_STATUSES = frozenset({ProfileStatus.CLOSED_LOOP, ProfileStatus.MULTIPLE_LOOPS})
 
-# Maps each fixed reference plane to its outward normal and to the
-# Sketch-local-(x, y) -> world-(x, y, z) embedding - the same convention
-# client/lib/viewport3d/sketch_geometry_3d.dart's `sketchPointToWorld` uses
-# for rendering a Sketch's own geometry in 3D, kept identical here so a
-# Sketch's solid lines up with where its own Lines/Circles are already drawn.
-_PLANE_NORMAL: dict[Plane, tuple[float, float, float]] = {
-    Plane.XY: (0.0, 0.0, 1.0),
-    Plane.XZ: (0.0, 1.0, 0.0),
-    Plane.YZ: (1.0, 0.0, 0.0),
-}
 
-
-def plane_normal(plane: Plane) -> gp_Dir:
-    x, y, z = _PLANE_NORMAL[plane]
+def basis_normal(basis: ResolvedPlane) -> gp_Dir:
+    x, y, z = basis.normal
     return gp_Dir(x, y, z)
 
 
-def sketch_point_to_world(plane: Plane, x: float, y: float) -> gp_Pnt:
-    return {
-        Plane.XY: gp_Pnt(x, y, 0.0),
-        Plane.XZ: gp_Pnt(x, 0.0, y),
-        Plane.YZ: gp_Pnt(0.0, x, y),
-    }[plane]
+def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
+    """C3: `basis`'s local (x, y) -> world-space embedding - generalizes the
+    fixed-plane-only `sketch_point_to_world` this replaces (see
+    app.document.plane_geometry.sketch_basis_for_plane/_basis_point, the
+    pure-Python twin of this function, which this must stay in sync with)
+    to any `ResolvedPlane`, fixed or (C3) custom. A fixed plane's own
+    `ResolvedPlane` (from `sketch_basis_for_plane`) reproduces the exact
+    same world point the old per-`Plane`-enum dict lookup did, so every
+    existing fixed-plane Sketch/Extrude is unaffected by this
+    generalization."""
+    ox, oy, oz = basis.origin
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    return gp_Pnt(ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
 
 
-def _wire_for_profile(sketch: Sketch, profile: Profile, plane: Plane):
+def _wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
     """A Profile is either a Line-chain polygon (the common case) or a
     standalone Circle (see app.sketch.profile._circle_profile, which packs
     the Circle's own entity id into `line_ids` rather than a Line chain) -
@@ -83,14 +81,14 @@ def _wire_for_profile(sketch: Sketch, profile: Profile, plane: Plane):
         circle = sketch.entities[profile.line_ids[0]]
         center = sketch.points[circle.center_point_id]
         radius = circle.radius(sketch.points)
-        axis = gp_Ax2(sketch_point_to_world(plane, center.x, center.y), plane_normal(plane))
+        axis = gp_Ax2(basis_point_to_world(basis, center.x, center.y), basis_normal(basis))
         edge = BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
 
     polygon = BRepBuilderAPI_MakePolygon()
     for point_id in profile.point_ids:
         point = sketch.points[point_id]
-        polygon.Add(sketch_point_to_world(plane, point.x, point.y))
+        polygon.Add(basis_point_to_world(basis, point.x, point.y))
     polygon.Close()
     return polygon.Wire()
 
@@ -119,7 +117,7 @@ def _wire_normal(wire: TopoDS_Wire) -> gp_Dir:
     return normal
 
 
-def _face_for_profile(sketch: Sketch, profile: Profile, plane: Plane):
+def _face_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
     """Builds `profile`'s face, punching a hole for each of its
     `inner_loops` (C1) via `BRepBuilderAPI_MakeFace.Add` - the standard
     OCCT idiom for a face-with-holes (BRepBuilderAPI_MakeFace(outerWire)
@@ -128,25 +126,25 @@ def _face_for_profile(sketch: Sketch, profile: Profile, plane: Plane):
     outer one first (see `_wire_normal`) since `.Add` does not do this
     itself and Add-ing a hole wire with the same winding as the outer
     produces an invalid/doubled face instead of a hole."""
-    outer_wire = _wire_for_profile(sketch, profile, plane)
+    outer_wire = _wire_for_profile(sketch, profile, basis)
     face_maker = BRepBuilderAPI_MakeFace(outer_wire)
     if profile.inner_loops:
         outer_normal = _wire_normal(outer_wire)
         for inner_loop in profile.inner_loops:
-            inner_wire = _wire_for_profile(sketch, inner_loop, plane)
+            inner_wire = _wire_for_profile(sketch, inner_loop, basis)
             if _wire_normal(inner_wire).Dot(outer_normal) > 0:
                 inner_wire = inner_wire.Reversed()
             face_maker.Add(inner_wire)
     return face_maker.Face()
 
 
-def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature, plane: Plane):
+def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature, basis: ResolvedPlane):
     """One profile's face, moved to `feature.start_distance` along the
     Sketch plane's normal and swept the remaining span to
     `feature.end_distance` - the single-profile half of what used to be
     `_solid_for_extrude_feature` before C2 split it out so it can be
     called once per sub-profile of a MultiProfile."""
-    normal = plane_normal(plane)
+    normal = basis_normal(basis)
     direction = gp_Vec(normal.X(), normal.Y(), normal.Z())
 
     # start_distance/end_distance are both signed offsets along `direction`
@@ -155,7 +153,7 @@ def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature
     # then covers the remaining (end_distance - start_distance) span.
     start_transform = gp_Trsf()
     start_transform.SetTranslation(direction.Multiplied(feature.start_distance))
-    face = _face_for_profile(sketch, profile, plane)
+    face = _face_for_profile(sketch, profile, basis)
     moved_face = BRepBuilderAPI_Transform(face, start_transform, True).Shape()
 
     prism_vector = direction.Multiplied(feature.end_distance - feature.start_distance)
@@ -163,7 +161,11 @@ def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature
 
 
 def _solid_for_extrude_feature(
-    feature: ExtrudeFeature, sketch_feature: SketchFeature
+    feature: ExtrudeFeature,
+    sketch_feature: SketchFeature,
+    part: Part,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    hidden_feature_ids: frozenset[str],
 ) -> TopoDS_Shape | None:
     """The real OCCT solid for one ExtrudeFeature, or None if its backing
     Sketch no longer has an extrudable profile - callers skip rather than
@@ -174,7 +176,22 @@ def _solid_for_extrude_feature(
     outer loop, each already carrying its own C1 holes) produces one prism
     per sub-profile, combined into a single TopoDS_Compound - transparent
     to every caller of this function, which already only cares that it
-    gets back one TopoDS_Shape."""
+    gets back one TopoDS_Shape.
+
+    C3: `sketch_feature`'s own anchor plane (fixed, or a custom Plane via
+    `sketch_feature.plane_feature_id`) is resolved via `app.document.
+    create_plane.resolve_sketch_basis` - imported here, function-local
+    rather than at module level, to break the circular import that would
+    otherwise result (`create_plane.py` already imports `resolve_subshape`
+    from this module at module level for its own OFFSET_FACE/MIDPLANE
+    resolution). `bodies_so_far` is `compute_part_bodies`'s in-progress
+    accumulator, not a fresh recompute - passed through so resolving a
+    custom plane that itself depends on an earlier ExtrudeFeature's face
+    (already processed by the time `compute_part_bodies`'s topological-order
+    loop reaches this Feature) never triggers another top-level `compute_
+    part_bodies` call, which would recurse forever."""
+    from app.document.create_plane import resolve_sketch_basis
+
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
     if result.status not in _EXTRUDABLE_STATUSES:
@@ -186,13 +203,13 @@ def _solid_for_extrude_feature(
         )
         return None
 
-    plane = sketch.plane
+    basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, hidden_feature_ids)
     if result.status == ProfileStatus.CLOSED_LOOP:
         assert result.profile is not None
         profiles = [result.profile]
     else:
         profiles = result.loops
-    solids = [_prism_for_profile(sketch, profile, feature, plane) for profile in profiles]
+    solids = [_prism_for_profile(sketch, profile, feature, basis) for profile in profiles]
 
     if len(solids) == 1:
         return solids[0]
@@ -307,7 +324,7 @@ def compute_part_bodies(
             )
             continue
 
-        solid = _solid_for_extrude_feature(feature, sketch_feature)
+        solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, hidden_feature_ids)
         if solid is None:
             continue
 
@@ -375,6 +392,27 @@ def _missing_reference(ref: SubShapeRef) -> HTTPException:
     )
 
 
+def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> TopoDS_Shape:
+    """B1/C3: the core of `resolve_subshape` below, split out so a caller
+    that already has an in-progress `bodies` dict on hand (C3: `app.document.
+    create_plane`'s `_from_bodies` resolvers, called from inside `compute_
+    part_bodies`'s own topological-order loop while resolving a custom
+    plane's basis - see `_solid_for_extrude_feature`) can resolve a
+    `SubShapeRef` without triggering another top-level `compute_part_bodies`
+    call, which would recurse forever. `resolve_subshape` itself is now a
+    thin "compute bodies, then look up" wrapper around this."""
+    body = bodies.get(ref.body_id)
+    if body is None:
+        raise _missing_reference(ref)
+
+    shape_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(body, _TOPABS_FOR_SUBSHAPE_TYPE[ref.shape_type], shape_map)
+    if not (0 <= ref.index < shape_map.Size()):
+        raise _missing_reference(ref)
+
+    return shape_map.FindKey(ref.index + 1)
+
+
 def resolve_subshape(
     part: Part, ref: SubShapeRef, hidden_feature_ids: frozenset[str] = frozenset()
 ) -> TopoDS_Shape:
@@ -396,13 +434,4 @@ def resolve_subshape(
     cheap, deterministic enumeration index is cheap to ship and cheap to
     fall back from later if it proves too fragile in practice."""
     bodies = compute_part_bodies(part, hidden_feature_ids)
-    body = bodies.get(ref.body_id)
-    if body is None:
-        raise _missing_reference(ref)
-
-    shape_map = TopTools_IndexedMapOfShape()
-    topexp.MapShapes(body, _TOPABS_FOR_SUBSHAPE_TYPE[ref.shape_type], shape_map)
-    if not (0 <= ref.index < shape_map.Size()):
-        raise _missing_reference(ref)
-
-    return shape_map.FindKey(ref.index + 1)
+    return resolve_subshape_from_bodies(bodies, ref)

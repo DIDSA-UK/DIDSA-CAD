@@ -103,6 +103,18 @@ List<SelectionContextAction> contextActionsFor(
     return const [SelectionContextAction('Create Plane', enabled: true)];
   }
 
+  // C3: exactly two Body Faces, nothing else - Midplane, equidistant between
+  // them. Checked before the generic "hasFace (2+)" bucket below (still a
+  // scaffolded placeholder for 3+ faces, or 2 faces mixed with an edge/
+  // vertex) so it takes precedence for exactly this shape, the same way the
+  // single-face OFFSET_FACE check above takes precedence over that bucket
+  // for exactly one face. Whether the two faces are actually parallel is a
+  // backend-only check (see `_faces_not_parallel`) - this only gates on
+  // selection *shape*, not on any geometric property the client can't see.
+  if (faces.length == 2 && selection.length == 2) {
+    return const [SelectionContextAction('Create Plane (Midplane)', enabled: true)];
+  }
+
   if (hasEdge && hasFace) {
     // Mixed edges+faces (any vertices too) - the full operation set.
     return const [

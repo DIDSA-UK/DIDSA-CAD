@@ -22,7 +22,7 @@ from app.document.models import (
     SubShapeRef,
     SubShapeType,
 )
-from app.document.plane_geometry import resolve_normal_to_line_at_point
+from app.document.plane_geometry import resolve_normal_to_line_at_point, sketch_basis_for_plane
 from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
 from app.sketch.store import create_sketch
 
@@ -43,7 +43,7 @@ def test_resolves_a_horizontal_line_normal_along_x_at_its_start_point():
     line = sketch.add_line(start.id, length=10.0, angle=0.0)
     line_ref, point_ref = _line_and_point_refs(sketch, line, start.id)
 
-    resolved = resolve_normal_to_line_at_point(line_ref, point_ref)
+    resolved = resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XY))
 
     assert resolved.origin == (0.0, 0.0, 0.0)
     assert resolved.normal == pytest.approx((1.0, 0.0, 0.0))
@@ -56,7 +56,7 @@ def test_resolves_at_the_lines_end_point_too_not_just_the_start():
     end_id = line.end_point_id
     line_ref, point_ref = _line_and_point_refs(sketch, line, end_id)
 
-    resolved = resolve_normal_to_line_at_point(line_ref, point_ref)
+    resolved = resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XY))
 
     assert resolved.origin == pytest.approx((10.0, 0.0, 0.0))
     assert resolved.normal == pytest.approx((1.0, 0.0, 0.0))
@@ -68,7 +68,7 @@ def test_the_normal_is_unit_length_regardless_of_the_lines_own_length():
     line = sketch.add_line(start.id, length=123.456, angle=math.pi / 5)
     line_ref, point_ref = _line_and_point_refs(sketch, line, start.id)
 
-    resolved = resolve_normal_to_line_at_point(line_ref, point_ref)
+    resolved = resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XY))
 
     length = math.sqrt(sum(c * c for c in resolved.normal))
     assert length == pytest.approx(1.0)
@@ -79,7 +79,7 @@ def test_maps_correctly_on_the_xz_and_yz_planes_too():
     start_xz = sketch_xz.add_point(0.0, 0.0)
     line_xz = sketch_xz.add_line(start_xz.id, length=5.0, angle=0.0)
     line_ref, point_ref = _line_and_point_refs(sketch_xz, line_xz, start_xz.id)
-    resolved_xz = resolve_normal_to_line_at_point(line_ref, point_ref)
+    resolved_xz = resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XZ))
     # XZ: local (x, y) -> world (x, 0, y) - a local-x-direction line's world
     # direction is still along world X.
     assert resolved_xz.normal == pytest.approx((1.0, 0.0, 0.0))
@@ -88,7 +88,7 @@ def test_maps_correctly_on_the_xz_and_yz_planes_too():
     start_yz = sketch_yz.add_point(0.0, 0.0)
     line_yz = sketch_yz.add_line(start_yz.id, length=5.0, angle=math.pi / 2)  # local +y
     line_ref2, point_ref2 = _line_and_point_refs(sketch_yz, line_yz, start_yz.id)
-    resolved_yz = resolve_normal_to_line_at_point(line_ref2, point_ref2)
+    resolved_yz = resolve_normal_to_line_at_point(line_ref2, point_ref2, sketch_basis_for_plane(Plane.YZ))
     # YZ: local (x, y) -> world (0, x, y) - a local-+y-direction line's world
     # direction is along world Z.
     assert resolved_yz.normal == pytest.approx((0.0, 0.0, 1.0))
@@ -102,7 +102,7 @@ def test_raises_point_not_on_line_for_a_point_that_is_not_the_lines_endpoint():
     line_ref, point_ref = _line_and_point_refs(sketch, line, off_line_point.id)
 
     with pytest.raises(HTTPException) as exc_info:
-        resolve_normal_to_line_at_point(line_ref, point_ref)
+        resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XY))
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == {
@@ -120,7 +120,7 @@ def test_raises_missing_reference_for_an_unknown_line_id():
     point_ref = SketchEntityRef(sketch_id=sketch.id, entity_type=SketchEntityType.POINT, entity_id=start.id)
 
     with pytest.raises(HTTPException) as exc_info:
-        resolve_normal_to_line_at_point(line_ref, point_ref)
+        resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XY))
 
     assert exc_info.value.detail["type"] == "missing_reference"
 
@@ -133,7 +133,7 @@ def test_raises_missing_reference_for_an_unknown_point_id():
     point_ref = SketchEntityRef(sketch_id=sketch.id, entity_type=SketchEntityType.POINT, entity_id="nope")
 
     with pytest.raises(HTTPException) as exc_info:
-        resolve_normal_to_line_at_point(line_ref, point_ref)
+        resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XY))
 
     assert exc_info.value.detail["type"] == "missing_reference"
 
@@ -157,7 +157,7 @@ def test_offset_face_plane_depends_on_the_owning_extrude_feature():
     plane = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0),
+        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
         offset=5.0,
     )
     part.add_feature(plane)
@@ -195,7 +195,7 @@ def test_cascade_deleting_the_sketch_feature_takes_both_kinds_of_plane_with_it()
     plane1 = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0),
+        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
         offset=5.0,
     )
     plane2 = CreatePlaneFeature(
@@ -218,7 +218,7 @@ def test_deleting_only_the_extrude_leaves_the_sketch_referencing_plane_alone():
     plane1 = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0),
+        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
         offset=5.0,
     )
     plane2 = CreatePlaneFeature(

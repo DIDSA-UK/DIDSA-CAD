@@ -1,32 +1,128 @@
-"""OCCT geometry for CreatePlaneFeature's OFFSET_FACE case (C2) - the only
-half of Create Plane that needs a real OCCT environment, since checking a
-face is planar (BRepAdaptor_Surface(face).GetType() == GeomAbs_Plane) has no
-pure-Python equivalent. See app.document.plane_geometry for the
-NORMAL_TO_LINE_AT_POINT case, which needs no OCCT at all - kept in a
-separate module for exactly that reason, mirroring the existing
-app.document.extrude / app.sketch.store split by OCCT dependency.
+"""OCCT geometry for CreatePlaneFeature's OFFSET_FACE/MIDPLANE cases (C2/C3)
+- the only plane-construction methods that need a real OCCT environment,
+since checking a face is planar (BRepAdaptor_Surface(face).GetType() ==
+GeomAbs_Plane) has no pure-Python equivalent. See app.document.plane_geometry
+for the NORMAL_TO_LINE_AT_POINT case, which needs no OCCT of its own (though,
+since C3, resolving *this* module's `resolve_sketch_basis` for a Sketch
+anchored to a custom plane does) - kept in a separate module for exactly that
+reason, mirroring the existing app.document.extrude / app.sketch.store split
+by OCCT dependency.
+
+C3 also splits every resolver here into a `_from_bodies` core (accepts an
+already-computed `bodies` dict, never recomputes) plus a "fresh" wrapper
+(computes `bodies` once via `compute_part_bodies`) - needed because `app.
+document.extrude._solid_for_extrude_feature` now calls into this module
+(via `resolve_sketch_basis`, function-local import to break the circular
+import this module's own module-level `from app.document.extrude import
+resolve_subshape` would otherwise create) *from inside* `compute_part_
+bodies`'s own topological-order loop, using its in-progress `bodies`
+accumulator - calling back into a fresh top-level `compute_part_bodies`
+there would recurse forever.
 """
 
 from fastapi import HTTPException
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.GeomAbs import GeomAbs_Plane
-from OCC.Core.gp import gp_Vec
+from OCC.Core.gp import gp_Pnt, gp_Vec
 from OCC.Core.TopAbs import TopAbs_REVERSED
-from OCC.Core.TopoDS import topods
+from OCC.Core.TopoDS import TopoDS_Shape, topods
 
-from app.document.extrude import resolve_subshape
-from app.document.models import CreatePlaneFeature, Part, PlaneType, ResolvedPlane, SubShapeRef
-from app.document.plane_geometry import resolve_normal_to_line_at_point
+from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
+from app.document.graph import sketch_feature_id_for_sketch
+from app.document.models import (
+    CreatePlaneFeature,
+    Part,
+    PlaneType,
+    ResolvedPlane,
+    SketchFeature,
+    SubShapeRef,
+)
+from app.document.plane_geometry import resolve_normal_to_line_at_point, sketch_basis_for_plane
+from app.sketch.models import Sketch
+from app.sketch.store import get_sketch_or_404
 
 
 def _non_planar_reference(ref: SubShapeRef) -> HTTPException:
     """C2: structured 422, same envelope B1/C1 already established for
-    `missing_reference`, for an OFFSET_FACE `face_ref` that resolves to a
-    real face but not a planar one - rejecting rather than silently taking
-    a tangent plane at some arbitrary point on a curved surface."""
+    `missing_reference`, for an OFFSET_FACE/MIDPLANE `face_refs` entry that
+    resolves to a real face but not a planar one - rejecting rather than
+    silently taking a tangent plane at some arbitrary point on a curved
+    surface."""
     return HTTPException(
         status_code=422,
         detail={"type": "non_planar_reference", "body_id": ref.body_id, "index": ref.index},
+    )
+
+
+def _faces_not_parallel(ref_a: SubShapeRef, ref_b: SubShapeRef) -> HTTPException:
+    """C3: structured 422 for a MIDPLANE whose two `face_refs` do not
+    resolve to parallel planar faces - a midplane is only meaningful between
+    two faces that face each other (or away from each other) along a shared
+    normal direction; anything else has no single well-defined equidistant
+    plane."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "type": "faces_not_parallel",
+            "body_id_a": ref_a.body_id,
+            "index_a": ref_a.index,
+            "body_id_b": ref_b.body_id,
+            "index_b": ref_b.index,
+        },
+    )
+
+
+def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef):
+    """The full natural frame (location, normal, x_axis, y_axis) OCCT's own
+    `gp_Ax3` already derives for a planar face's underlying surface -
+    corrected for `TopAbs_REVERSED` (a face's `Orientation()` can flip its
+    effective normal without changing the underlying surface, same quirk
+    `app.document.extrude._wire_normal` already handles). When `normal` is
+    flipped, `y_axis` is flipped too (not `x_axis`) to keep `normal ==
+    x_axis cross y_axis` - a genuinely arbitrary, brand-new plane derived
+    fresh from real OCCT geometry has no pre-existing in-plane convention to
+    preserve (unlike the fixed XY/XZ/YZ planes - see `app.document.plane_
+    geometry`'s own docstring for why *those* use an explicit lookup table
+    instead of trusting a formula), so trusting `gp_Ax3`'s own XDirection/
+    YDirection here, with this one sign correction, is both correct and the
+    simplest option."""
+    shape = resolve_subshape_from_bodies(bodies, ref)
+    face = topods.Face(shape)
+    surface = BRepAdaptor_Surface(face, True)
+    if surface.GetType() != GeomAbs_Plane:
+        raise _non_planar_reference(ref)
+
+    plane = surface.Plane()
+    position = plane.Position()
+    location = position.Location()
+    normal = position.Direction()
+    x_axis = position.XDirection()
+    y_axis = position.YDirection()
+    if face.Orientation() == TopAbs_REVERSED:
+        normal = normal.Reversed()
+        y_axis = y_axis.Reversed()
+    return location, normal, x_axis, y_axis
+
+
+def resolve_offset_face_from_bodies(
+    bodies: dict[str, TopoDS_Shape], face_ref: SubShapeRef, offset: float
+) -> ResolvedPlane:
+    """C2/C3: the `_from_bodies` core of `resolve_offset_face` - a plane
+    parallel to the referenced face, translated `offset` along the face's
+    own outward normal (positive = along the normal direction, matching
+    `ExtrudeFeature`'s own signed-distance convention)."""
+    location, normal, x_axis, y_axis = _resolve_planar_face(bodies, face_ref)
+    offset_vector = gp_Vec(normal.X(), normal.Y(), normal.Z()).Multiplied(offset)
+    origin = (
+        location.X() + offset_vector.X(),
+        location.Y() + offset_vector.Y(),
+        location.Z() + offset_vector.Z(),
+    )
+    return ResolvedPlane(
+        origin=origin,
+        normal=(normal.X(), normal.Y(), normal.Z()),
+        x_axis=(x_axis.X(), x_axis.Y(), x_axis.Z()),
+        y_axis=(y_axis.X(), y_axis.Y(), y_axis.Z()),
     )
 
 
@@ -36,39 +132,127 @@ def resolve_offset_face(
     offset: float,
     hidden_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
-    """C2: resolves an OFFSET_FACE CreatePlaneFeature - a plane parallel to
-    the referenced face, translated `offset` along the face's own outward
-    normal (positive = along the normal direction, matching
-    `ExtrudeFeature`'s own signed-distance convention). Resolves `face_ref`
-    via B1's `resolve_subshape` (fails closed with `missing_reference` for
-    an unknown body/index, same as every other consumer), then requires the
-    resolved face to be planar - fails closed with `non_planar_reference`
-    otherwise (see `_non_planar_reference`).
+    """C2: resolves an OFFSET_FACE CreatePlaneFeature - fresh wrapper around
+    `resolve_offset_face_from_bodies` that computes `bodies` itself via
+    `compute_part_bodies`, for callers (the router) that don't already have
+    one on hand. Fails closed with `missing_reference` (via `resolve_
+    subshape_from_bodies`) or `non_planar_reference` (see `_resolve_planar_
+    face`)."""
+    bodies = compute_part_bodies(part, hidden_feature_ids)
+    return resolve_offset_face_from_bodies(bodies, face_ref, offset)
 
-    Orientation correction (`TopAbs_REVERSED`) mirrors
-    `app.document.extrude._wire_normal`'s own handling of the same OCCT
-    quirk: a face's `Orientation()` can flip its effective normal without
-    changing the underlying surface, so the raw `BRepAdaptor_Surface`
-    normal must be corrected before use."""
-    shape = resolve_subshape(part, face_ref, hidden_feature_ids)
-    face = topods.Face(shape)
-    surface = BRepAdaptor_Surface(face, True)
-    if surface.GetType() != GeomAbs_Plane:
-        raise _non_planar_reference(face_ref)
 
-    plane = surface.Plane()
-    location = plane.Location()
-    normal = plane.Axis().Direction()
-    if face.Orientation() == TopAbs_REVERSED:
-        normal = normal.Reversed()
+def resolve_midplane_from_bodies(
+    bodies: dict[str, TopoDS_Shape], face_ref_a: SubShapeRef, face_ref_b: SubShapeRef
+) -> ResolvedPlane:
+    """C3: the `_from_bodies` core of `resolve_midplane` - a plane
+    equidistant between two parallel planar Body faces, oriented along the
+    first face's own (corrected) normal. Fails closed with `faces_not_
+    parallel` (see `_faces_not_parallel`) unless the two faces' normals are
+    parallel or anti-parallel (`abs(dot) ~= 1`) - anything else has no
+    single well-defined midplane."""
+    location_a, normal_a, x_axis, y_axis = _resolve_planar_face(bodies, face_ref_a)
+    location_b, normal_b, _x_axis_b, _y_axis_b = _resolve_planar_face(bodies, face_ref_b)
 
-    offset_vector = gp_Vec(normal.X(), normal.Y(), normal.Z()).Multiplied(offset)
+    if abs(abs(normal_a.Dot(normal_b)) - 1.0) > 1e-6:
+        raise _faces_not_parallel(face_ref_a, face_ref_b)
+
+    normal_vec = gp_Vec(normal_a.X(), normal_a.Y(), normal_a.Z())
+    separation = gp_Vec(
+        gp_Pnt(location_a.X(), location_a.Y(), location_a.Z()),
+        gp_Pnt(location_b.X(), location_b.Y(), location_b.Z()),
+    ).Dot(normal_vec)
+    midpoint_offset = normal_vec.Multiplied(separation / 2.0)
     origin = (
-        location.X() + offset_vector.X(),
-        location.Y() + offset_vector.Y(),
-        location.Z() + offset_vector.Z(),
+        location_a.X() + midpoint_offset.X(),
+        location_a.Y() + midpoint_offset.Y(),
+        location_a.Z() + midpoint_offset.Z(),
     )
-    return ResolvedPlane(origin=origin, normal=(normal.X(), normal.Y(), normal.Z()))
+    return ResolvedPlane(
+        origin=origin,
+        normal=(normal_a.X(), normal_a.Y(), normal_a.Z()),
+        x_axis=(x_axis.X(), x_axis.Y(), x_axis.Z()),
+        y_axis=(y_axis.X(), y_axis.Y(), y_axis.Z()),
+    )
+
+
+def resolve_midplane(
+    part: Part,
+    face_ref_a: SubShapeRef,
+    face_ref_b: SubShapeRef,
+    hidden_feature_ids: frozenset[str] = frozenset(),
+) -> ResolvedPlane:
+    """C3: resolves a MIDPLANE CreatePlaneFeature - fresh wrapper around
+    `resolve_midplane_from_bodies`, mirroring `resolve_offset_face`'s own
+    fresh-vs-`_from_bodies` split."""
+    bodies = compute_part_bodies(part, hidden_feature_ids)
+    return resolve_midplane_from_bodies(bodies, face_ref_a, face_ref_b)
+
+
+def _basis_for_sketch(
+    part: Part,
+    sketch: Sketch,
+    bodies: dict[str, TopoDS_Shape],
+    hidden_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """C3: `sketch`'s own resolved anchor plane - a fixed plane's `sketch_
+    basis_for_plane(sketch.plane)`, or (new in C3) the `ResolvedPlane` of
+    the `CreatePlaneFeature` its owning `SketchFeature.plane_feature_id`
+    names, resolved recursively against the *same* `bodies` accumulator
+    (never a fresh `compute_part_bodies` call - see this module's own
+    docstring for why that would recurse forever from inside `app.document.
+    extrude._solid_for_extrude_feature`).
+
+    Falls back to `sketch.plane` when no owning `SketchFeature` exists at
+    all (a bare `Sketch` created directly via the standalone `/sketch` API,
+    bypassing the Document/Part/Feature layer entirely, or a hand-built
+    `Part` in a unit test) - such a Sketch is never anchored to a custom
+    plane (there is no `SketchFeature.plane_feature_id` to read), so it must
+    already carry a fixed `plane`."""
+    sketch_feature_id = sketch_feature_id_for_sketch(part, sketch.id)
+    sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id else None
+    if isinstance(sketch_feature, SketchFeature) and sketch_feature.plane_feature_id is not None:
+        plane_feature = part.get_feature(sketch_feature.plane_feature_id)
+        assert isinstance(plane_feature, CreatePlaneFeature)
+        return resolve_create_plane_from_bodies(part, plane_feature, bodies, hidden_feature_ids)
+    assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
+    return sketch_basis_for_plane(sketch.plane)
+
+
+def resolve_sketch_basis(
+    part: Part,
+    sketch_feature: SketchFeature,
+    bodies: dict[str, TopoDS_Shape],
+    hidden_feature_ids: frozenset[str] = frozenset(),
+) -> ResolvedPlane:
+    """C3: `sketch_feature`'s own resolved anchor plane - the public entry
+    point `app.document.extrude._solid_for_extrude_feature` calls (function-
+    local import, see this module's docstring) to embed its Sketch's local
+    2D geometry into world space regardless of whether that Sketch sits on
+    a fixed plane or a custom one."""
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    return _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)
+
+
+def resolve_create_plane_from_bodies(
+    part: Part,
+    feature: CreatePlaneFeature,
+    bodies: dict[str, TopoDS_Shape],
+    hidden_feature_ids: frozenset[str] = frozenset(),
+) -> ResolvedPlane:
+    """C2/C3: the `_from_bodies` core of `resolve_create_plane` - the single
+    dispatch point for all three `PlaneType`s that never triggers its own
+    top-level `compute_part_bodies` call (see module docstring)."""
+    if feature.plane_type == PlaneType.OFFSET_FACE:
+        assert len(feature.face_refs) == 1 and feature.offset is not None
+        return resolve_offset_face_from_bodies(bodies, feature.face_refs[0], feature.offset)
+    if feature.plane_type == PlaneType.MIDPLANE:
+        assert len(feature.face_refs) == 2
+        return resolve_midplane_from_bodies(bodies, feature.face_refs[0], feature.face_refs[1])
+    assert feature.line_ref is not None and feature.point_ref is not None
+    sketch = get_sketch_or_404(feature.line_ref.sketch_id)
+    basis = _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)
+    return resolve_normal_to_line_at_point(feature.line_ref, feature.point_ref, basis)
 
 
 def resolve_create_plane(
@@ -76,16 +260,10 @@ def resolve_create_plane(
 ) -> ResolvedPlane:
     """C2: the single dispatch point `app.document.router` uses regardless
     of `feature.plane_type` - callers never need to branch on `plane_type`
-    themselves. Delegates to `resolve_offset_face` above (OCCT) or
-    `app.document.plane_geometry.resolve_normal_to_line_at_point` (pure
-    Python) - both raise their own structured 422 on failure; this function
-    adds no behavior of its own beyond the dispatch. The `assert`s document
-    the invariant `app.document.router._validate_create_plane_payload`
-    already enforces at construction time (the right ref/offset fields are
-    always populated for `feature.plane_type`) rather than re-validating it
-    here."""
-    if feature.plane_type == PlaneType.OFFSET_FACE:
-        assert feature.face_ref is not None and feature.offset is not None
-        return resolve_offset_face(part, feature.face_ref, feature.offset, hidden_feature_ids)
-    assert feature.line_ref is not None and feature.point_ref is not None
-    return resolve_normal_to_line_at_point(feature.line_ref, feature.point_ref)
+    themselves. Fresh wrapper around `resolve_create_plane_from_bodies`,
+    mirroring `resolve_offset_face`/`resolve_midplane`'s own fresh-vs-
+    `_from_bodies` split. Every branch raises its own structured 422 on
+    failure; this function adds no behavior of its own beyond the dispatch
+    and the one-time `bodies` computation."""
+    bodies = compute_part_bodies(part, hidden_feature_ids)
+    return resolve_create_plane_from_bodies(part, feature, bodies, hidden_feature_ids)

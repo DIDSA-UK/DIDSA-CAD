@@ -17,12 +17,18 @@ class PartResponse(BaseModel):
 
 
 class SketchFeatureCreate(BaseModel):
-    """Creates a SketchFeature wrapping a brand-new, empty Sketch on the
-    given plane - there is no "wrap an existing Sketch" mode, since the
-    out-of-scope "tap a locked Feature to re-edit its sketch" flow is the
-    only case that would need one."""
+    """Creates a SketchFeature wrapping a brand-new, empty Sketch, either on
+    one of the three fixed reference planes (`plane`) or (C3) anchored to an
+    existing `CreatePlaneFeature` (`plane_feature_id`) - exactly one of the
+    two must be supplied (see
+    `app.document.router._validate_sketch_feature_payload`, same "payload
+    shape validated by the API layer" split every other mutually-exclusive
+    Feature field already uses). There is no "wrap an existing Sketch" mode,
+    since the out-of-scope "tap a locked Feature to re-edit its sketch" flow
+    is the only case that would need one."""
 
-    plane: Plane
+    plane: Plane | None = None
+    plane_feature_id: str | None = None
 
 
 # `type` is a discriminator, same pattern as app.sketch.schemas'
@@ -31,6 +37,10 @@ class SketchFeatureResponse(BaseModel):
     type: Literal["sketch"] = "sketch"
     id: str
     sketch_id: str
+    # C3: echoes SketchFeature.plane_feature_id - null for a Sketch on one of
+    # the three fixed reference planes (the common case, unchanged from
+    # before C3), set for one anchored to a custom plane instead.
+    plane_feature_id: str | None = None
     locked: bool
     # B1: what this Feature contributes, for the client tree's grouping
     # (B3) - see app.document.models.Feature.produces.
@@ -110,14 +120,18 @@ class SketchEntityRefSchema(BaseModel):
 
 
 class CreatePlaneFeatureCreate(BaseModel):
-    """Creates a CreatePlaneFeature (C2) - exactly one of (`face_ref`,
-    `offset`) or (`line_ref`, `point_ref`) must be supplied, matching
+    """Creates a CreatePlaneFeature (C2/C3) - exactly one of (`face_refs`,
+    `offset`) [OFFSET_FACE: one entry; MIDPLANE, C3: two], or (`line_ref`,
+    `point_ref`) [NORMAL_TO_LINE_AT_POINT] must be supplied, matching
     `plane_type`; see `app.document.router._validate_create_plane_payload`
     for the exact combination check (not encoded here, mirroring
-    `ExtrudeFeatureCreate`'s own Boss-vs-Cut `target_body_ids` split)."""
+    `ExtrudeFeatureCreate`'s own Boss-vs-Cut `target_body_ids` split).
+
+    `face_ref` (C2, singular) became `face_refs` (C3, a list) so MIDPLANE
+    can reuse the same field as OFFSET_FACE."""
 
     plane_type: PlaneType
-    face_ref: SubShapeRefSchema | None = None
+    face_refs: list[SubShapeRefSchema] = []
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
@@ -134,7 +148,7 @@ class CreatePlaneFeatureUpdate(BaseModel):
     while staying valid, so `None` unambiguously means "not provided,
     keep the current value" for every field below."""
 
-    face_ref: SubShapeRefSchema | None = None
+    face_refs: list[SubShapeRefSchema] | None = None
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
@@ -146,7 +160,7 @@ class CreatePlaneFeatureResponse(BaseModel):
     plane_type: PlaneType
     # Echo of whichever refs/values were supplied - for edit-mode prefill,
     # same purpose B4's Extrude edit-prefill serves.
-    face_ref: SubShapeRefSchema | None = None
+    face_refs: list[SubShapeRefSchema] = []
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
@@ -159,6 +173,13 @@ class CreatePlaneFeatureResponse(BaseModel):
     # Feature - see app.document.router._validate_create_plane_payload.
     origin: tuple[float, float, float] | None = None
     normal: tuple[float, float, float] | None = None
+    # C3: the plane's own in-plane basis, for a Sketch anchored to it (see
+    # app.document.models.ResolvedPlane) to embed its local geometry, and
+    # for the client to orient its rendered quad consistently with that
+    # embedding rather than deriving its own (possibly different)
+    # arbitrary in-plane orientation. Null exactly when origin/normal are.
+    x_axis: tuple[float, float, float] | None = None
+    y_axis: tuple[float, float, float] | None = None
     locked: bool
     produces: Produces
 

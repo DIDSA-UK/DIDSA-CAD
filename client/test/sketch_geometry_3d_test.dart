@@ -8,15 +8,15 @@ import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
 void main() {
   group('sketchPointToWorld', () {
     test('XY keeps (x, y) and zeroes Z', () {
-      expect(sketchPointToWorld(ReferencePlaneKind.xy, 3, 4), vm.Vector3(3, 4, 0));
+      expect(sketchPointToWorld(SketchPlaneBasis.fixed(ReferencePlaneKind.xy), 3, 4), vm.Vector3(3, 4, 0));
     });
 
     test('XZ maps local y onto world Z and zeroes Y', () {
-      expect(sketchPointToWorld(ReferencePlaneKind.xz, 3, 4), vm.Vector3(3, 0, 4));
+      expect(sketchPointToWorld(SketchPlaneBasis.fixed(ReferencePlaneKind.xz), 3, 4), vm.Vector3(3, 0, 4));
     });
 
     test('YZ maps local x onto world Y and zeroes X', () {
-      expect(sketchPointToWorld(ReferencePlaneKind.yz, 3, 4), vm.Vector3(0, 3, 4));
+      expect(sketchPointToWorld(SketchPlaneBasis.fixed(ReferencePlaneKind.yz), 3, 4), vm.Vector3(0, 3, 4));
     });
   });
 
@@ -30,7 +30,7 @@ void main() {
     test('resolves a Line into one world-space segment on its plane, with a parallel id', () {
       final line = LineDto(id: 'l1', startPointId: 'p1', endPointId: 'p2', length: 10);
       final geometry = sketchGeometry3DFrom(
-        plane: ReferencePlaneKind.xz,
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xz),
         points: points,
         lines: [line],
         circles: const [],
@@ -47,7 +47,7 @@ void main() {
     test('a Line referencing a missing point is skipped, not thrown', () {
       final line = LineDto(id: 'l1', startPointId: 'p1', endPointId: 'missing', length: 10);
       final geometry = sketchGeometry3DFrom(
-        plane: ReferencePlaneKind.xy,
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
         points: points,
         lines: [line],
         circles: const [],
@@ -65,7 +65,7 @@ void main() {
     test('resolves a Circle into a closed polygon centered on its center point, on its plane', () {
       final circle = CircleDto(id: 'c1', centerPointId: 'p1', radiusPointId: 'p2', radius: 10);
       final geometry = sketchGeometry3DFrom(
-        plane: ReferencePlaneKind.yz,
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.yz),
         points: points,
         lines: const [],
         circles: [circle],
@@ -89,7 +89,7 @@ void main() {
     test('a Circle referencing a missing center point is skipped, not thrown', () {
       final circle = CircleDto(id: 'c1', centerPointId: 'missing', radiusPointId: 'p2', radius: 10);
       final geometry = sketchGeometry3DFrom(
-        plane: ReferencePlaneKind.xy,
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
         points: points,
         lines: const [],
         circles: [circle],
@@ -103,7 +103,7 @@ void main() {
 
     test('every given Point is projected into points/pointIds, regardless of Line/Circle use', () {
       final geometry = sketchGeometry3DFrom(
-        plane: ReferencePlaneKind.xy,
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
         points: points,
         lines: const [],
         circles: const [],
@@ -116,7 +116,7 @@ void main() {
 
     test('no points, lines, or circles at all is genuinely empty', () {
       final geometry = sketchGeometry3DFrom(
-        plane: ReferencePlaneKind.xy,
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
         points: const [],
         lines: const [],
         circles: const [],

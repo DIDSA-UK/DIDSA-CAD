@@ -23,9 +23,16 @@ void main() {
       expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
     });
 
-    test('two faces alone still offers only the disabled scaffolded Create Plane', () {
+    test('C3: exactly two faces alone offers a real, enabled Create Plane (Midplane)', () {
       const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
       final actions = contextActionsFor({_face0, face1});
+      expect(actions, [const SelectionContextAction('Create Plane (Midplane)', enabled: true)]);
+    });
+
+    test('three faces alone still offers only the disabled scaffolded Create Plane', () {
+      const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
+      const face2 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 2);
+      final actions = contextActionsFor({_face0, face1, face2});
       expect(actions, [const SelectionContextAction('Create Plane')]);
       expect(actions.single.enabled, isFalse);
     });

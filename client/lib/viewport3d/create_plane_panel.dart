@@ -1,23 +1,26 @@
 import 'package:flutter/material.dart';
 
-/// Which of C2's two v1 plane-construction flows [CreatePlanePanel] is
+/// Which of the three v1 plane-construction flows [CreatePlanePanel] is
 /// currently showing - decided by [PartScreen] from the selection that
 /// enabled the Create Plane button (see `selection_actions.dart`'s
 /// `contextActionsFor`), not by anything this panel picks itself.
-enum CreatePlaneMode { offsetFace, normalToLineAtPoint }
+///
+/// C3 adds [midplane] (equidistant between two selected Faces) alongside
+/// C2's original [offsetFace]/[normalToLineAtPoint].
+enum CreatePlaneMode { offsetFace, normalToLineAtPoint, midplane }
 
 /// The bottom-sheet-style panel [PartScreen] opens once Create Plane is
-/// enabled (a single planar Body Face selected, or a Sketch Line plus the
-/// Point that's its own endpoint) - mirrors [ExtrudePanel]'s Confirm/Cancel
-/// session shape and slide-up presentation.
+/// enabled (a single planar Body Face selected, two Faces selected, or a
+/// Sketch Line plus the Point that's its own endpoint) - mirrors
+/// [ExtrudePanel]'s Confirm/Cancel session shape and slide-up presentation.
 ///
 /// [CreatePlaneMode.offsetFace] shows a numeric offset field (Confirm
-/// enabled once it parses); [CreatePlaneMode.normalToLineAtPoint] has no
-/// numeric input at all - per this prompt's own scope, it's "fully
-/// determined by the two references alone", so Confirm is enabled
-/// unconditionally (the two real refs it needs are already guaranteed
-/// selected by the time this panel is even open - `contextActionsFor` only
-/// enables the button once they are).
+/// enabled once it parses); [CreatePlaneMode.normalToLineAtPoint]/
+/// [CreatePlaneMode.midplane] have no numeric input at all - both are fully
+/// determined by the references alone, so Confirm is enabled
+/// unconditionally (those refs are already guaranteed selected by the time
+/// this panel is even open - `contextActionsFor` only enables the button
+/// once they are).
 class CreatePlanePanel extends StatefulWidget {
   /// 'Create Plane' when creating a brand-new Feature (default),
   /// 'Edit Plane' when [PartScreen] opened this to edit an already-existing
@@ -76,7 +79,7 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
   static String _formatDistance(double value) =>
       value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
 
-  bool get _canConfirm => widget.mode == CreatePlaneMode.normalToLineAtPoint || _offset != null;
+  bool get _canConfirm => widget.mode != CreatePlaneMode.offsetFace || _offset != null;
 
   void _emitOffsetChange() {
     final value = double.tryParse(_offsetController.text);
@@ -120,7 +123,9 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
                   ),
                 ] else
                   Text(
-                    'Plane normal to the selected line, through the selected point',
+                    widget.mode == CreatePlaneMode.midplane
+                        ? 'Plane equidistant between the two selected faces'
+                        : 'Plane normal to the selected line, through the selected point',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 12,

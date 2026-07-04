@@ -11,7 +11,12 @@ from app.sketch.models import Circle, Line, Point, Plane, Sketch, SketchEntityRe
 _sketches: dict[str, Sketch] = {}
 
 
-def create_sketch(plane: Plane) -> Sketch:
+def create_sketch(plane: Plane | None) -> Sketch:
+    """C3: `plane` is `None` only for a Sketch created via the Document
+    layer's custom-plane-anchor path (see `app.document.router.
+    create_sketch_feature`/`Sketch`'s own docstring) - the standalone
+    `/sketch` API's `SketchCreate.plane` stays a required `Plane`, so every
+    caller reachable from there still always passes a real one."""
     sketch = Sketch(id=str(uuid.uuid4()), plane=plane)
     _sketches[sketch.id] = sketch
     return sketch

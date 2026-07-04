@@ -68,6 +68,19 @@ class PartViewport extends StatefulWidget {
   /// [sketchGeometries].
   final Map<String, ResolvedPlaneGeometry> createPlanes;
 
+  /// C3: fired for a tap that lands on a rendered created-Plane quad (see
+  /// [createPlanes]/[hitTestCreatePlanes]) - checked after [onPlaneTap]'s
+  /// fixed reference planes in [_handleTap], so a created Plane that happens
+  /// to overlap one of the three fixed planes never shadows it (reference
+  /// planes keep first claim on a tap, same precedence they already had
+  /// before created Planes existed).
+  final void Function(String featureId)? onCreatePlaneTap;
+
+  /// C3: which created Plane (if any) renders with [ResolvedPlaneGeometry]'s
+  /// brighter "selected" tint - mirrors [selectedPlane]'s own
+  /// controlled-widget pattern for the three fixed planes.
+  final String? selectedCreatePlaneFeatureId;
+
   /// True while [bodies] is an Extrude live preview (see [PartScreen]'s
   /// debounced create/update-then-refetch flow) rather than confirmed
   /// geometry - renders the mesh translucent and tinted so a preview solid
@@ -152,6 +165,8 @@ class PartViewport extends StatefulWidget {
     this.sketchGeometries = const {},
     this.dimmedSketchFeatureIds = const {},
     this.createPlanes = const {},
+    this.onCreatePlaneTap,
+    this.selectedCreatePlaneFeatureId,
     this.isPreviewMesh = false,
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
@@ -359,7 +374,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.dimmedSketchFeatureIds != oldWidget.dimmedSketchFeatureIds) {
       setState(_syncSketchNodes);
     }
-    if (widget.createPlanes != oldWidget.createPlanes) {
+    if (widget.createPlanes != oldWidget.createPlanes ||
+        widget.selectedCreatePlaneFeatureId != oldWidget.selectedCreatePlaneFeatureId) {
       setState(_syncCreatePlaneNodes);
     }
     if (widget.selectionMode != oldWidget.selectionMode) {
@@ -587,7 +603,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _createPlaneNodes = {
       for (final entry in widget.createPlanes.entries)
-        entry.key: buildCreatePlaneNode(entry.key, entry.value.origin, entry.value.normal),
+        entry.key: buildCreatePlaneNode(
+          entry.key,
+          entry.value.origin,
+          entry.value.xAxis,
+          entry.value.yAxis,
+          entry.value.normal,
+          selected: entry.key == widget.selectedCreatePlaneFeatureId,
+        ),
     };
     for (final node in _createPlaneNodes.values) {
       scene.add(node);
@@ -686,9 +709,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final hit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
     if (hit != null) {
       widget.onPlaneTap(hit.plane);
-    } else {
-      widget.onBackgroundTap();
+      return;
     }
+    // C3: checked after the three fixed reference planes so those keep
+    // first claim on a tap (see [PartViewport.onCreatePlaneTap]'s own doc
+    // comment).
+    final createPlaneHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    if (createPlaneHit != null) {
+      widget.onCreatePlaneTap?.call(createPlaneHit.featureId);
+      return;
+    }
+    widget.onBackgroundTap();
   }
 
   void _handlePointerSignal(PointerSignalEvent event) {

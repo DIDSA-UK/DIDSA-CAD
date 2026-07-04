@@ -306,6 +306,33 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   not a crash; the Planes tree section works; edit-via-rollback and Cancel
   both behave correctly) is what Prompt D (Fillet) now waits on - same
   gating discipline as every prior prompt group.
+- **Prompt C3 (informal, user feedback expanding C2's scope before its own
+  on-device confirmation came back)**: "Plane" added as a Feature-picker
+  entry; a third plane type, `PlaneType.MIDPLANE` (equidistant between two
+  parallel Body faces); created Planes made tappable/selectable with a
+  context menu ("Create Sketch on Plane"/"Delete Plane"); and, per the
+  user's explicit "Full support now" answer to how far to take the last
+  item, **full generalized Sketch-on-custom-plane support** - a
+  `CreatePlaneFeature` is now a real anchor a Sketch can embed onto and an
+  Extrude can build solid geometry on top of, not just a reference-only
+  rendered object. Backend: `ResolvedPlane` gained a full orthonormal basis
+  (`x_axis`/`y_axis`, hand-verified against - not formula-derived from - the
+  three fixed planes' already-shipped conventions); `SketchFeature.
+  plane_feature_id` anchors a Sketch to a custom Plane (mutually exclusive
+  with a fixed `Plane`); `app.document.extrude`/`app.document.create_plane`
+  generalized to build on any resolved basis via a `_from_bodies`-core/
+  fresh-wrapper split (needed to avoid a circular-import/infinite-recursion
+  trap resolving a custom plane's own basis from inside `compute_part_
+  bodies`'s topological-order loop). Client: `sketchPointToWorld` generalized
+  from a fixed `ReferencePlaneKind` to a new `SketchPlaneBasis` (closing a
+  real gap - without it a custom-plane Sketch would render/pick as nothing);
+  `createPlaneTransform` rebuilt on the backend's real basis instead of a
+  `Quaternion.fromTwoVectors` guess; new `hitTestCreatePlanes`/
+  `create_plane_context_sheet.dart` for the tap/context-menu flow. 80/80
+  OCCT-free backend tests, 231 client tests passed, both confirmed
+  regression-free via `git worktree` diff against the pre-C3 commit. **Not
+  yet on-device confirmed** - same gating discipline before Prompt D
+  (Fillet) starts.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

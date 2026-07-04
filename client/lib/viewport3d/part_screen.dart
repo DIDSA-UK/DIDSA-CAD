@@ -12,6 +12,7 @@ import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
 import 'body_naming.dart';
 import 'cascade_delete_dialog.dart';
+import 'create_plane_context_sheet.dart';
 import 'create_plane_geometry_3d.dart';
 import 'create_plane_panel.dart';
 import 'extrude_panel.dart';
@@ -94,6 +95,12 @@ class _PartScreenState extends State<PartScreen> {
   /// "New Sketch on..." entry. Controlled-widget state, same pattern as
   /// [_selectedFeatureId]/[FeatureTreePanel].
   ReferencePlaneKind? _selectedPlane;
+
+  /// C3: the created Plane (by Feature id) currently tap-selected in the 3D
+  /// viewport, if any - mirrors [_selectedPlane]'s own controlled-widget
+  /// pattern for [PartViewport]'s brighter highlight, just for a
+  /// `CreatePlaneFeature` instead of one of the three fixed planes.
+  String? _selectedCreatePlaneFeatureId;
 
   /// Stage 10b: whether all three reference planes are globally hidden -
   /// toggled from [PartToolbar]'s "Hide/Show Reference Planes" entry,
@@ -428,7 +435,7 @@ class _PartScreenState extends State<PartScreen> {
   /// started - [_cancelCreatePlane] PATCHes these back verbatim when
   /// [_editingCreatePlaneFeatureId] is set, same reason
   /// [_extrudeEditSnapshot] exists.
-  ({SubShapeRefDto? faceRef, double? offset, SketchEntityRefDto? lineRef, SketchEntityRefDto? pointRef})?
+  ({List<SubShapeRefDto> faceRefs, double? offset, SketchEntityRefDto? lineRef, SketchEntityRefDto? pointRef})?
       _createPlaneEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - restored
@@ -458,12 +465,50 @@ class _PartScreenState extends State<PartScreen> {
   void _recomputeCreatePlaneGeometries() {
     _createPlaneGeometries = {
       for (final feature in _features)
-        if (feature.type == 'create_plane' && feature.origin != null && feature.normal != null)
+        if (feature.type == 'create_plane' &&
+            feature.origin != null &&
+            feature.normal != null &&
+            feature.xAxis != null &&
+            feature.yAxis != null)
           feature.id: ResolvedPlaneGeometry(
             origin: vm.Vector3(feature.origin![0], feature.origin![1], feature.origin![2]),
             normal: vm.Vector3(feature.normal![0], feature.normal![1], feature.normal![2]),
+            xAxis: vm.Vector3(feature.xAxis![0], feature.xAxis![1], feature.xAxis![2]),
+            yAxis: vm.Vector3(feature.yAxis![0], feature.yAxis![1], feature.yAxis![2]),
           ),
     };
+  }
+
+  /// C3: [feature]'s own resolved basis, converted to [SketchPlaneBasis] for
+  /// a Sketch anchored to it (see `sketch_geometry_3d.dart`) - null if
+  /// [feature] isn't a currently-resolvable `create_plane` Feature (a stale
+  /// reference, or [_recomputeCreatePlaneGeometries] hasn't run yet).
+  SketchPlaneBasis? _customPlaneBasis(String planeFeatureId) {
+    final geometry = _createPlaneGeometries[planeFeatureId];
+    if (geometry == null) return null;
+    return SketchPlaneBasis(
+      origin: geometry.origin,
+      xAxis: geometry.xAxis,
+      yAxis: geometry.yAxis,
+      normal: geometry.normal,
+    );
+  }
+
+  /// C3: [feature]'s own Sketch-embedding basis - a custom plane's (via
+  /// [feature.planeFeatureId]) or one of the three fixed reference planes'
+  /// (via [ReferencePlaneKind], fetched from the standalone Sketch API the
+  /// same way this always worked before C3). Returns null when neither
+  /// resolves (a stale/broken reference, or a fetch failure) - callers treat
+  /// that the same way an unresolvable [ReferencePlaneKind] already was
+  /// (skip rendering/animation, never crash).
+  Future<SketchPlaneBasis?> _sketchPlaneBasisFor(FeatureDto feature) async {
+    final planeFeatureId = feature.planeFeatureId;
+    if (planeFeatureId != null) return _customPlaneBasis(planeFeatureId);
+    final sketchId = feature.sketchId;
+    if (sketchId == null) return null;
+    final sketch = await _sketchApi.getSketch(sketchId);
+    final plane = referencePlaneKindFromApiValue(sketch.plane);
+    return plane == null ? null : SketchPlaneBasis.fixed(plane);
   }
 
   /// C2: resolves a `SelectionEntityRef.sketchFeatureId` (a Feature id) back
@@ -622,15 +667,14 @@ class _PartScreenState extends State<PartScreen> {
       final sketchId = feature.sketchId;
       if (sketchId == null) continue; // An ExtrudeFeature - no Sketch of its own.
       try {
-        final sketch = await _sketchApi.getSketch(sketchId);
-        final plane = referencePlaneKindFromApiValue(sketch.plane);
-        if (plane == null) continue;
+        final basis = await _sketchPlaneBasisFor(feature);
+        if (basis == null) continue;
         final points = await _sketchApi.listPoints(sketchId);
         final lines = await _sketchApi.listLines(sketchId);
         final circles = await _sketchApi.listCircles(sketchId);
         updatedLines[feature.id] = lines;
         final geometry =
-            sketchGeometry3DFrom(plane: plane, points: points, lines: lines, circles: circles);
+            sketchGeometry3DFrom(basis: basis, points: points, lines: lines, circles: circles);
         if (!geometry.isEmpty) updated[feature.id] = geometry;
       } catch (_) {
         // Swallow - see doc comment above.
@@ -680,26 +724,43 @@ class _PartScreenState extends State<PartScreen> {
     };
   }
 
-  /// Creates a SketchFeature on [plane] and navigates straight to its
-  /// SketchScreen - called from both the free-tap fly-up sheet flow
-  /// ([_showPlaneContextSheet]) and the FAB's flyout-driven
-  /// plane-selection mode ([_onPlaneTap]).
-  Future<void> _addSketchFeature({ReferencePlaneKind plane = ReferencePlaneKind.xy}) async {
+  /// Creates a SketchFeature on [plane] (default) or, since C3, anchored to
+  /// an existing created Plane ([planeFeatureId] - never both) and navigates
+  /// straight to its SketchScreen - called from the free-tap fly-up sheet
+  /// flow ([_showPlaneContextSheet]), the FAB's flyout-driven plane-selection
+  /// mode ([_onPlaneTap]), and (C3) a created Plane's own context sheet's
+  /// "Create Sketch on Plane" action ([_onCreatePlaneContextAction]).
+  ///
+  /// C3: a custom-plane Sketch has no [ReferencePlaneKind] to animate the
+  /// camera toward (see [_openSketchWithAnimation]'s own doc comment) - skips
+  /// the animation for that case, same graceful degradation.
+  Future<void> _addSketchFeature({ReferencePlaneKind? plane, String? planeFeatureId}) async {
     final part = _part;
     if (part == null || _busy) return;
+    final fixedPlane = planeFeatureId == null ? (plane ?? ReferencePlaneKind.xy) : null;
 
     FeatureDto? created;
     await _runGuarded(() async {
-      created = await _api.createSketchFeature(part.id, plane: plane.apiValue);
+      created = await _api.createSketchFeature(
+        part.id,
+        plane: fixedPlane?.apiValue,
+        planeFeatureId: planeFeatureId,
+      );
       await _refreshFeatures();
       await _refreshSketchGeometries();
     });
 
     final feature = created;
     if (feature != null && mounted) {
-      await _viewportKey.currentState?.animateToPlane(plane);
-      if (!mounted) return;
-      await _openSketch(feature, plane: plane);
+      SketchPlaneBasis? basis;
+      if (fixedPlane != null) {
+        await _viewportKey.currentState?.animateToPlane(fixedPlane);
+        if (!mounted) return;
+        basis = SketchPlaneBasis.fixed(fixedPlane);
+      } else if (planeFeatureId != null) {
+        basis = _customPlaneBasis(planeFeatureId);
+      }
+      await _openSketch(feature, basis: basis);
     }
   }
 
@@ -739,6 +800,37 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// C3: a tap that landed on a created Plane's rendered quad - selects it
+  /// (brighter highlight, mirroring [_onPlaneTap]'s own for the three fixed
+  /// planes) and opens [showCreatePlaneContextSheet]'s fly-up.
+  void _onCreatePlaneFeatureTap(String featureId) {
+    setState(() {
+      _selectedCreatePlaneFeatureId = featureId;
+      _featureTreeVisible = false;
+    });
+    _showCreatePlaneContextSheet(featureId);
+  }
+
+  /// Awaits [showCreatePlaneContextSheet] and acts on whatever it returns,
+  /// clearing the highlight once it's dismissed either way - mirrors
+  /// [_showPlaneContextSheet] exactly. "Create Sketch on Plane" reuses
+  /// [_addSketchFeature]'s [planeFeatureId] path; "Delete Plane" reuses the
+  /// same cascade-delete flow ([_cascadeDeleteFeature]) every other Feature's
+  /// long-press menu already offers, since a created Plane is just another
+  /// Feature that may have Sketches (and their own downstream Extrudes)
+  /// depending on it.
+  Future<void> _showCreatePlaneContextSheet(String featureId) async {
+    final action = await showCreatePlaneContextSheet(context, featureId: featureId);
+    if (!mounted) return;
+    setState(() => _selectedCreatePlaneFeatureId = null);
+    if (action == CreatePlaneContextSheetAction.newSketch) {
+      await _addSketchFeature(planeFeatureId: featureId);
+    } else if (action == CreatePlaneContextSheetAction.delete) {
+      final feature = _featureById(featureId);
+      if (feature != null) await _cascadeDeleteFeature(feature);
+    }
+  }
+
   /// A tap that missed every reference plane - dismisses the toolbar and
   /// clears the selection, mirroring a tap on empty space elsewhere in the
   /// app deselecting whatever was selected; also exits [_planeSelectionMode]
@@ -747,6 +839,7 @@ class _PartScreenState extends State<PartScreen> {
   void _onViewportBackgroundTap() {
     setState(() {
       _selectedPlane = null;
+      _selectedCreatePlaneFeatureId = null;
       _toolbarOpen = false;
       _planeSelectionModeStack.pop();
     });
@@ -776,16 +869,39 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
-  /// acts on whichever (enabled) entry was tapped. Only Extrude is wired up
-  /// per the Stage 19b brief; the rest render disabled in the sheet itself
-  /// and so never produce an action here.
+  /// acts on whichever (enabled) entry was tapped. Extrude and (C3) Plane
+  /// are wired up; the rest render disabled in the sheet itself and so
+  /// never produce an action here.
   Future<void> _onFeaturePressed() async {
     final action = await showFeaturePickerSheet(context);
     if (!mounted || action == null) return;
     switch (action) {
       case FeaturePickerAction.extrude:
         await _extrudeSelectedFeature();
+      case FeaturePickerAction.plane:
+        _startPlanePicker();
     }
+  }
+
+  /// C3: the "Add" FAB's Feature picker's "Plane" entry - clears the current
+  /// selection and hints what to pick next, then relies entirely on the
+  /// pre-existing ambient selection machinery ([SelectionContextPanel]/
+  /// `contextActionsFor`/[_onCreatePlaneTapped]) to actually open
+  /// [CreatePlanePanel] once a valid combo (one Face, two Faces, or a Line
+  /// plus the Point that's its own endpoint) is selected. Unlike
+  /// [_startSketchPicker], there is no separate guided-picker mode to enter -
+  /// Create Plane's selection flow already worked this way for every other
+  /// entry point (a free tap on a Face/Line/Point in the viewport already
+  /// offered "Create Plane" before this menu entry existed), so this just
+  /// clears the deck and points the user at it.
+  void _startPlanePicker() {
+    setState(() {
+      _selectedEntities = {};
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _planeSelectionModeStack.pop();
+    });
+    _showSnack('Select a face, two faces, or a line and its endpoint to create a plane');
   }
 
   /// Extrudes the Feature currently selected in the tree, opened from the
@@ -1006,13 +1122,24 @@ class _PartScreenState extends State<PartScreen> {
   /// its 2D canvas - skips straight to navigation if the plane can't be
   /// resolved (e.g. a fetch failure), rather than blocking the open.
   Future<void> _openSketchWithAnimation(FeatureDto feature) async {
+    final planeFeatureId = feature.planeFeatureId;
+    if (planeFeatureId != null) {
+      // C3: a custom-plane Sketch has no ReferencePlaneKind to animate the
+      // camera to (orientationFacingPlane only covers the three fixed
+      // planes) - skips the animation, the same graceful "can't resolve,
+      // just navigate" fallback this method already used for a fetch
+      // failure, and still passes along the real basis for the ghost
+      // overlay below.
+      await _openSketch(feature, basis: _customPlaneBasis(planeFeatureId));
+      return;
+    }
     final plane = await _planeOfFeature(feature);
     if (!mounted) return;
     if (plane != null) {
       await _viewportKey.currentState?.animateToPlane(plane);
       if (!mounted) return;
     }
-    await _openSketch(feature, plane: plane);
+    await _openSketch(feature, basis: plane == null ? null : SketchPlaneBasis.fixed(plane));
   }
 
   Future<ReferencePlaneKind?> _planeOfFeature(FeatureDto feature) async {
@@ -1391,14 +1518,18 @@ class _PartScreenState extends State<PartScreen> {
   // --- C2: Create Plane -----------------------------------------------------
 
   /// [SelectionContextPanel.onCreatePlane]'s callback - re-derives which of
-  /// the two flows applies from [_selectedEntities]' current shape, the same
-  /// check `selection_actions.dart`'s `contextActionsFor` already used to
-  /// decide the button should be enabled in the first place (so this is
+  /// the three flows applies from [_selectedEntities]' current shape, the
+  /// same check `selection_actions.dart`'s `contextActionsFor` already used
+  /// to decide the button should be enabled in the first place (so this is
   /// never reached for any other selection shape).
   void _onCreatePlaneTapped() {
     final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
     if (faces.length == 1 && _selectedEntities.length == 1) {
-      _openCreatePlanePanel(mode: CreatePlaneMode.offsetFace, faceEntity: faces.single);
+      _openCreatePlanePanel(mode: CreatePlaneMode.offsetFace, faceEntities: faces);
+      return;
+    }
+    if (faces.length == 2 && _selectedEntities.length == 2) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.midplane, faceEntities: faces);
       return;
     }
     final points = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchPoint).toList();
@@ -1416,11 +1547,13 @@ class _PartScreenState extends State<PartScreen> {
   /// "create on open" pattern) from whichever refs [_onCreatePlaneTapped]
   /// resolved. Stashes/clears [_selectedEntities] the same way
   /// [_openExtrudePanel] does for target-body picking, since the
-  /// face/line/point that triggered this is baked into the created Feature,
-  /// not something the user keeps adjusting in the viewport afterward.
+  /// face(s)/line/point that triggered this is baked into the created
+  /// Feature, not something the user keeps adjusting in the viewport
+  /// afterward. [faceEntities] has exactly one entry for [CreatePlaneMode.
+  /// offsetFace] or exactly two for [CreatePlaneMode.midplane] (C3).
   Future<void> _openCreatePlanePanel({
     required CreatePlaneMode mode,
-    SelectionEntityRef? faceEntity,
+    List<SelectionEntityRef> faceEntities = const [],
     SelectionEntityRef? lineEntity,
     SelectionEntityRef? pointEntity,
   }) async {
@@ -1434,13 +1567,16 @@ class _PartScreenState extends State<PartScreen> {
     });
     await _runGuarded(() async {
       final FeatureDto feature;
-      if (mode == CreatePlaneMode.offsetFace) {
-        final faceRef = SubShapeRefDto(bodyId: faceEntity!.bodyId, shapeType: 'face', index: faceEntity.id);
+      if (mode == CreatePlaneMode.offsetFace || mode == CreatePlaneMode.midplane) {
+        final faceRefs = [
+          for (final faceEntity in faceEntities)
+            SubShapeRefDto(bodyId: faceEntity.bodyId, shapeType: 'face', index: faceEntity.id),
+        ];
         feature = await _api.createCreatePlaneFeature(
           part.id,
-          planeType: 'offset_face',
-          faceRef: faceRef,
-          offset: _createPlaneOffset,
+          planeType: mode == CreatePlaneMode.offsetFace ? 'offset_face' : 'midplane',
+          faceRefs: faceRefs,
+          offset: mode == CreatePlaneMode.offsetFace ? _createPlaneOffset : null,
         );
       } else {
         final sketchId = _sketchIdForFeatureId(lineEntity!.sketchFeatureId);
@@ -1466,10 +1602,10 @@ class _PartScreenState extends State<PartScreen> {
       await _refreshFeatures();
     });
     if (_previewCreatePlaneFeatureId == null && mounted) {
-      // Creation failed (e.g. non_planar_reference/point_not_on_line -
-      // _errorMessage is already set by _runGuarded) - nothing to edit, so
-      // close the panel back out rather than leaving it stuck open with no
-      // real Feature behind it.
+      // Creation failed (e.g. non_planar_reference/point_not_on_line/
+      // faces_not_parallel - _errorMessage is already set by _runGuarded) -
+      // nothing to edit, so close the panel back out rather than leaving it
+      // stuck open with no real Feature behind it.
       setState(() {
         _createPlaneMode = null;
         _selectedEntities = _entitiesBeforeCreatePlane ?? {};
@@ -1483,15 +1619,18 @@ class _PartScreenState extends State<PartScreen> {
   /// including the "no zero-argument reconstruction" snapshot stash for
   /// [_cancelCreatePlane] to PATCH back verbatim.
   void _openCreatePlanePanelForEdit(FeatureDto feature) {
-    final mode =
-        feature.planeType == 'offset_face' ? CreatePlaneMode.offsetFace : CreatePlaneMode.normalToLineAtPoint;
+    final mode = switch (feature.planeType) {
+      'offset_face' => CreatePlaneMode.offsetFace,
+      'midplane' => CreatePlaneMode.midplane,
+      _ => CreatePlaneMode.normalToLineAtPoint,
+    };
     setState(() {
       _createPlaneMode = mode;
       _editingCreatePlaneFeatureId = feature.id;
       _previewCreatePlaneFeatureId = feature.id;
       _createPlaneOffset = feature.offset ?? 0.0;
       _createPlaneEditSnapshot = (
-        faceRef: feature.faceRef,
+        faceRefs: feature.faceRefs,
         offset: feature.offset,
         lineRef: feature.lineRef,
         pointRef: feature.pointRef,
@@ -1561,7 +1700,7 @@ class _PartScreenState extends State<PartScreen> {
           await _api.updateCreatePlaneFeature(
             part.id,
             previewId,
-            faceRef: editSnapshot.faceRef,
+            faceRefs: editSnapshot.faceRefs,
             offset: editSnapshot.offset,
             lineRef: editSnapshot.lineRef,
             pointRef: editSnapshot.pointRef,
@@ -1692,13 +1831,13 @@ class _PartScreenState extends State<PartScreen> {
   /// still-hidden rollback siblings correctly stay excluded from this
   /// refresh regardless (the caller only calls [_endRollback], which
   /// refreshes again, once *this* method has already returned).
-  Future<void> _openSketch(FeatureDto feature, {ReferencePlaneKind? plane}) async {
+  Future<void> _openSketch(FeatureDto feature, {SketchPlaneBasis? basis}) async {
     // Prompt A3: merges every Body's edges into one flat list - the ghost
     // outline doesn't care which Body an edge came from, only where it
     // projects onto the new Sketch's plane.
     final allEdgeSegments = [for (final body in _bodies) ...edgeSegmentsFromMesh(body.mesh)];
-    final ghostSegments = plane != null
-        ? projectMeshEdgesOntoPlane(plane, allEdgeSegments)
+    final ghostSegments = basis != null
+        ? projectMeshEdgesOntoPlane(basis, allEdgeSegments)
         : const <((double, double), (double, double))>[];
 
     await Navigator.of(context).push(
@@ -1782,6 +1921,8 @@ class _PartScreenState extends State<PartScreen> {
                   sketchGeometries: _visibleSketchGeometries,
                   dimmedSketchFeatureIds: _dimmedSketchFeatureIds,
                   createPlanes: _createPlaneGeometries,
+                  onCreatePlaneTap: _onCreatePlaneFeatureTap,
+                  selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,

@@ -186,16 +186,26 @@ class SketchEntityRef:
 
 @dataclass
 class Sketch:
-    """An independent 2D sketch on one of the three fixed reference planes.
+    """An independent 2D sketch, on one of the three fixed reference planes
+    or (C3) anchored to a custom `CreatePlaneFeature` instead.
 
     Each Sketch owns its own Points and entities - nothing is shared
-    between Sketches. The plane is stored but not yet used for any 3D
-    transform/embedding (that becomes relevant once there's a 3D viewport
-    and/or Extrude needs it).
+    between Sketches.
+
+    C3: `plane` is `None` for a Sketch created via the Document/Part/Feature
+    layer's `SketchFeatureCreate.plane_feature_id` path (see
+    `app.document.router.create_sketch_feature`) - its real anchor plane is
+    instead resolved live from the owning `SketchFeature.plane_feature_id`
+    (see `app.document.create_plane.resolve_sketch_basis`), the same
+    "re-derive, don't cache" philosophy `ResolvedPlane` itself already
+    follows. Every Sketch created via the standalone `/sketch` API (which
+    has no notion of a Part/Feature/CreatePlaneFeature at all) always has a
+    real `plane` - `None` only ever appears for a custom-plane-anchored
+    Sketch created through the Document layer.
     """
 
     id: str
-    plane: Plane
+    plane: Plane | None
     points: dict[str, Point] = field(default_factory=dict)
     entities: dict[str, SketchEntity] = field(default_factory=dict)
     constraints: dict[str, Constraint] = field(default_factory=dict)

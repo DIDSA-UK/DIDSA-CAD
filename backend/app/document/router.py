@@ -38,7 +38,7 @@ from app.document.schemas import (
     SubShapeRefSchema,
 )
 from app.document.store import get_document, get_part_or_404
-from app.sketch.models import SketchEntityRef, SketchEntityType
+from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
 
@@ -98,19 +98,26 @@ def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> C
     the fallback."""
     try:
         resolved = resolve_create_plane(part, feature)
-        origin, normal = resolved.origin, resolved.normal
+        origin, normal, x_axis, y_axis = (
+            resolved.origin,
+            resolved.normal,
+            resolved.x_axis,
+            resolved.y_axis,
+        )
     except HTTPException:
         logger.warning("CreatePlaneFeature %s could not be resolved for its response", feature.id)
-        origin, normal = None, None
+        origin, normal, x_axis, y_axis = None, None, None, None
     return CreatePlaneFeatureResponse(
         id=feature.id,
         plane_type=feature.plane_type,
-        face_ref=_subshape_ref_to_schema(feature.face_ref) if feature.face_ref else None,
+        face_refs=[_subshape_ref_to_schema(ref) for ref in feature.face_refs],
         offset=feature.offset,
         line_ref=_sketch_entity_ref_to_schema(feature.line_ref) if feature.line_ref else None,
         point_ref=_sketch_entity_ref_to_schema(feature.point_ref) if feature.point_ref else None,
         origin=origin,
         normal=normal,
+        x_axis=x_axis,
+        y_axis=y_axis,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
     )
@@ -121,6 +128,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return SketchFeatureResponse(
             id=feature.id,
             sketch_id=feature.sketch_id,
+            plane_feature_id=feature.plane_feature_id,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -222,22 +230,24 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
 
 def _validate_create_plane_payload(
     plane_type: PlaneType,
-    face_ref: SubShapeRef | None,
+    face_refs: list[SubShapeRef],
     offset: float | None,
     line_ref: SketchEntityRef | None,
     point_ref: SketchEntityRef | None,
 ) -> None:
-    """C2: enforces exactly one of (`face_ref`, `offset`) or (`line_ref`,
-    `point_ref`) is supplied, matching `plane_type` - a plain-string 422,
-    same convention as `_validate_target_body_ids`'s Cut-empty-list case,
-    since (unlike `missing_reference`/`non_planar_reference`/
-    `point_not_on_line`) this prompt doesn't name a structured error type
-    for a malformed combination of fields, only for a resolvable-but-wrong
-    reference. Also checks each ref's own `shape_type`/`entity_type` tag
-    matches its named role (`face_ref` must be FACE, `line_ref` must be
-    LINE, `point_ref` must be POINT) - these are typed slots, not a generic
-    reference, so a client sending e.g. a POINT ref as `line_ref` is
-    already malformed input, not merely an unresolvable-later reference.
+    """C2/C3: enforces exactly one of (`face_refs`, `offset`) [OFFSET_FACE:
+    one entry; MIDPLANE, C3: two] or (`line_ref`, `point_ref`)
+    [NORMAL_TO_LINE_AT_POINT] is supplied, matching `plane_type` - a
+    plain-string 422, same convention as `_validate_target_body_ids`'s
+    Cut-empty-list case, since (unlike `missing_reference`/`non_planar_
+    reference`/`point_not_on_line`/`faces_not_parallel`) this prompt doesn't
+    name a structured error type for a malformed combination of fields, only
+    for a resolvable-but-wrong reference. Also checks each ref's own
+    `shape_type`/`entity_type` tag matches its named role (`face_refs`
+    entries must be FACE, `line_ref` must be LINE, `point_ref` must be
+    POINT) - these are typed slots, not a generic reference, so a client
+    sending e.g. a POINT ref as `line_ref` is already malformed input, not
+    merely an unresolvable-later reference.
 
     Takes the domain (`SubShapeRef`/`SketchEntityRef`) types rather than
     their pydantic (`...Schema`) counterparts, even though the create route
@@ -247,35 +257,76 @@ def _validate_create_plane_payload(
     function against a merged existing-plus-payload value without a
     pointless schema round-trip."""
     if plane_type == PlaneType.OFFSET_FACE:
-        if face_ref is None or offset is None:
+        if len(face_refs) != 1 or offset is None:
             raise HTTPException(
                 status_code=422,
-                detail="OFFSET_FACE requires both face_ref and offset, and no line_ref/point_ref",
+                detail="OFFSET_FACE requires exactly one face_refs entry and an offset, and no "
+                "line_ref/point_ref",
             )
         if line_ref is not None or point_ref is not None:
             raise HTTPException(
                 status_code=422,
-                detail="OFFSET_FACE requires both face_ref and offset, and no line_ref/point_ref",
+                detail="OFFSET_FACE requires exactly one face_refs entry and an offset, and no "
+                "line_ref/point_ref",
             )
-        if face_ref.shape_type != SubShapeType.FACE:
-            raise HTTPException(status_code=422, detail="face_ref must have shape_type=FACE")
+        if face_refs[0].shape_type != SubShapeType.FACE:
+            raise HTTPException(status_code=422, detail="face_refs entries must have shape_type=FACE")
+    elif plane_type == PlaneType.MIDPLANE:
+        if len(face_refs) != 2:
+            raise HTTPException(
+                status_code=422,
+                detail="MIDPLANE requires exactly two face_refs entries, and no offset/line_ref/point_ref",
+            )
+        if offset is not None or line_ref is not None or point_ref is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="MIDPLANE requires exactly two face_refs entries, and no offset/line_ref/point_ref",
+            )
+        if any(ref.shape_type != SubShapeType.FACE for ref in face_refs):
+            raise HTTPException(status_code=422, detail="face_refs entries must have shape_type=FACE")
     else:
         if line_ref is None or point_ref is None:
             raise HTTPException(
                 status_code=422,
                 detail="NORMAL_TO_LINE_AT_POINT requires both line_ref and point_ref, and no "
-                "face_ref/offset",
+                "face_refs/offset",
             )
-        if face_ref is not None or offset is not None:
+        if face_refs or offset is not None:
             raise HTTPException(
                 status_code=422,
                 detail="NORMAL_TO_LINE_AT_POINT requires both line_ref and point_ref, and no "
-                "face_ref/offset",
+                "face_refs/offset",
             )
         if line_ref.entity_type != SketchEntityType.LINE:
             raise HTTPException(status_code=422, detail="line_ref must have entity_type=LINE")
         if point_ref.entity_type != SketchEntityType.POINT:
             raise HTTPException(status_code=422, detail="point_ref must have entity_type=POINT")
+
+
+def _validate_sketch_feature_payload(
+    part: Part, plane: Plane | None, plane_feature_id: str | None
+) -> None:
+    """C3: enforces exactly one of `plane` (one of the three fixed reference
+    planes) or `plane_feature_id` (an existing `CreatePlaneFeature` in this
+    Part) is supplied. When `plane_feature_id` is given, it must resolve to
+    a real `CreatePlaneFeature` in this Part, and that Plane must currently
+    be resolvable (`resolve_create_plane`, discarding its result here - see
+    `create_create_plane_feature`'s own docstring for why re-resolving for
+    the response afterwards is simpler than threading a resolved value
+    through) - a Sketch can never anchor to a since-broken or otherwise
+    unresolvable Plane."""
+    if (plane is None) == (plane_feature_id is None):
+        raise HTTPException(
+            status_code=422, detail="Provide exactly one of plane or plane_feature_id"
+        )
+    if plane_feature_id is not None:
+        plane_feature = part.get_feature(plane_feature_id)
+        if not isinstance(plane_feature, CreatePlaneFeature):
+            raise HTTPException(
+                status_code=400,
+                detail="plane_feature_id does not refer to a CreatePlaneFeature in this Part",
+            )
+        resolve_create_plane(part, plane_feature)  # raises on an unresolvable reference
 
 
 @router.post("/parts", response_model=PartResponse, status_code=201)
@@ -306,8 +357,11 @@ def get_feature(part_id: str, feature_id: str) -> FeatureResponse:
 )
 def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchFeatureResponse:
     part = get_part_or_404(part_id)
+    _validate_sketch_feature_payload(part, payload.plane, payload.plane_feature_id)
     sketch = create_sketch(payload.plane)
-    feature = SketchFeature(id=str(uuid.uuid4()), sketch_id=sketch.id)
+    feature = SketchFeature(
+        id=str(uuid.uuid4()), sketch_id=sketch.id, plane_feature_id=payload.plane_feature_id
+    )
     part.add_feature(feature)
     return _feature_response(part, feature)
 
@@ -397,14 +451,14 @@ def create_create_plane_feature(
     reference`/`non_planar_reference`/`point_not_on_line` rather than ever
     persisting an unresolvable Plane."""
     part = get_part_or_404(part_id)
-    face_ref = _subshape_ref_to_domain(payload.face_ref) if payload.face_ref else None
+    face_refs = [_subshape_ref_to_domain(ref) for ref in payload.face_refs]
     line_ref = _sketch_entity_ref_to_domain(payload.line_ref) if payload.line_ref else None
     point_ref = _sketch_entity_ref_to_domain(payload.point_ref) if payload.point_ref else None
-    _validate_create_plane_payload(payload.plane_type, face_ref, payload.offset, line_ref, point_ref)
+    _validate_create_plane_payload(payload.plane_type, face_refs, payload.offset, line_ref, point_ref)
     feature = CreatePlaneFeature(
         id=str(uuid.uuid4()),
         plane_type=payload.plane_type,
-        face_ref=face_ref,
+        face_refs=face_refs,
         offset=payload.offset,
         line_ref=line_ref,
         point_ref=point_ref,
@@ -439,8 +493,10 @@ def update_create_plane_feature(
     part = get_part_or_404(part_id)
     feature = _get_create_plane_feature_or_404(part, feature_id)
 
-    new_face_ref = (
-        _subshape_ref_to_domain(payload.face_ref) if payload.face_ref is not None else feature.face_ref
+    new_face_refs = (
+        [_subshape_ref_to_domain(ref) for ref in payload.face_refs]
+        if payload.face_refs is not None
+        else feature.face_refs
     )
     new_offset = payload.offset if payload.offset is not None else feature.offset
     new_line_ref = (
@@ -454,18 +510,20 @@ def update_create_plane_feature(
         else feature.point_ref
     )
 
-    _validate_create_plane_payload(feature.plane_type, new_face_ref, new_offset, new_line_ref, new_point_ref)
+    _validate_create_plane_payload(
+        feature.plane_type, new_face_refs, new_offset, new_line_ref, new_point_ref
+    )
     candidate = CreatePlaneFeature(
         id=feature.id,
         plane_type=feature.plane_type,
-        face_ref=new_face_ref,
+        face_refs=new_face_refs,
         offset=new_offset,
         line_ref=new_line_ref,
         point_ref=new_point_ref,
     )
     resolve_create_plane(part, candidate)  # raises on an unresolvable reference
 
-    feature.face_ref = candidate.face_ref
+    feature.face_refs = candidate.face_refs
     feature.offset = candidate.offset
     feature.line_ref = candidate.line_ref
     feature.point_ref = candidate.point_ref

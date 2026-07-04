@@ -287,21 +287,47 @@ void main() {
         'locked': false,
         'produces': 'plane',
         'plane_type': 'offset_face',
-        'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 2},
+        'face_refs': [{'body_id': 'body-1', 'shape_type': 'face', 'index': 2}],
         'offset': 5.0,
         'origin': [1.0, 2.0, 3.0],
         'normal': [0.0, 0.0, 1.0],
+        'x_axis': [1.0, 0.0, 0.0],
+        'y_axis': [0.0, 1.0, 0.0],
       });
 
       expect(dto.type, 'create_plane');
       expect(dto.planeType, 'offset_face');
-      expect(dto.faceRef?.bodyId, 'body-1');
-      expect(dto.faceRef?.index, 2);
+      expect(dto.faceRefs.single.bodyId, 'body-1');
+      expect(dto.faceRefs.single.index, 2);
       expect(dto.offset, 5.0);
       expect(dto.lineRef, isNull);
       expect(dto.pointRef, isNull);
       expect(dto.origin, [1.0, 2.0, 3.0]);
       expect(dto.normal, [0.0, 0.0, 1.0]);
+      expect(dto.xAxis, [1.0, 0.0, 0.0]);
+      expect(dto.yAxis, [0.0, 1.0, 0.0]);
+    });
+
+    test('parses a midplane Feature with two face_refs entries', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'plane-4',
+        'locked': false,
+        'produces': 'plane',
+        'plane_type': 'midplane',
+        'face_refs': [
+          {'body_id': 'body-1', 'shape_type': 'face', 'index': 0},
+          {'body_id': 'body-1', 'shape_type': 'face', 'index': 3},
+        ],
+        'origin': [0.0, 0.0, 5.0],
+        'normal': [0.0, 0.0, 1.0],
+      });
+
+      expect(dto.planeType, 'midplane');
+      expect(dto.faceRefs, hasLength(2));
+      expect(dto.faceRefs[0].index, 0);
+      expect(dto.faceRefs[1].index, 3);
+      expect(dto.offset, isNull);
     });
 
     test('parses a normal_to_line_at_point Feature', () {
@@ -318,7 +344,7 @@ void main() {
       });
 
       expect(dto.planeType, 'normal_to_line_at_point');
-      expect(dto.faceRef, isNull);
+      expect(dto.faceRefs, isEmpty);
       expect(dto.offset, isNull);
       expect(dto.lineRef?.entityId, 'line-1');
       expect(dto.pointRef?.entityId, 'point-1');
@@ -331,7 +357,7 @@ void main() {
         'locked': false,
         'produces': 'plane',
         'plane_type': 'offset_face',
-        'face_ref': {'body_id': 'gone', 'shape_type': 'face', 'index': 0},
+        'face_refs': [{'body_id': 'gone', 'shape_type': 'face', 'index': 0}],
         'offset': 1.0,
         'origin': null,
         'normal': null,
@@ -357,7 +383,7 @@ void main() {
             'locked': false,
             'produces': 'plane',
             'plane_type': 'offset_face',
-            'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 0},
+            'face_refs': [{'body_id': 'body-1', 'shape_type': 'face', 'index': 0}],
             'offset': 5.0,
             'origin': [0.0, 0.0, 5.0],
             'normal': [0.0, 0.0, 1.0],
@@ -368,12 +394,12 @@ void main() {
       final feature = await client.createCreatePlaneFeature(
         'part-1',
         planeType: 'offset_face',
-        faceRef: const SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 0),
+        faceRefs: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 0)],
         offset: 5.0,
       );
 
       expect(capturedBody['plane_type'], 'offset_face');
-      expect(capturedBody['face_ref'], {'body_id': 'body-1', 'shape_type': 'face', 'index': 0});
+      expect(capturedBody['face_refs'], [{'body_id': 'body-1', 'shape_type': 'face', 'index': 0}]);
       expect(capturedBody['offset'], 5.0);
       expect(capturedBody.containsKey('line_ref'), isFalse);
       expect(capturedBody.containsKey('point_ref'), isFalse);
@@ -407,7 +433,7 @@ void main() {
       );
 
       expect(capturedBody['plane_type'], 'normal_to_line_at_point');
-      expect(capturedBody.containsKey('face_ref'), isFalse);
+      expect(capturedBody.containsKey('face_refs'), isFalse);
       expect(capturedBody.containsKey('offset'), isFalse);
       expect(capturedBody['line_ref'], {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'line-1'});
     });
@@ -423,7 +449,7 @@ void main() {
             'locked': false,
             'produces': 'plane',
             'plane_type': 'offset_face',
-            'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 0},
+            'face_refs': [{'body_id': 'body-1', 'shape_type': 'face', 'index': 0}],
             'offset': 20.0,
             'origin': [0.0, 0.0, 20.0],
             'normal': [0.0, 0.0, 1.0],
@@ -434,6 +460,92 @@ void main() {
       await client.updateCreatePlaneFeature('part-1', 'plane-1', offset: 20.0);
 
       expect(capturedBody, {'offset': 20.0});
+    });
+
+    test('createCreatePlaneFeature sends both face_refs entries for midplane', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'create_plane',
+            'id': 'plane-5',
+            'locked': false,
+            'produces': 'plane',
+            'plane_type': 'midplane',
+            'face_refs': [
+              {'body_id': 'body-1', 'shape_type': 'face', 'index': 0},
+              {'body_id': 'body-1', 'shape_type': 'face', 'index': 3},
+            ],
+            'origin': [0.0, 0.0, 5.0],
+            'normal': [0.0, 0.0, 1.0],
+          });
+        }),
+      );
+
+      await client.createCreatePlaneFeature(
+        'part-1',
+        planeType: 'midplane',
+        faceRefs: const [
+          SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 0),
+          SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 3),
+        ],
+      );
+
+      expect(capturedBody['plane_type'], 'midplane');
+      expect(capturedBody['face_refs'], [
+        {'body_id': 'body-1', 'shape_type': 'face', 'index': 0},
+        {'body_id': 'body-1', 'shape_type': 'face', 'index': 3},
+      ]);
+      expect(capturedBody.containsKey('offset'), isFalse);
+    });
+  });
+
+  group('DocumentApiClient createSketchFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('defaults to plane: XY when neither plane nor planeFeatureId is given', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'sketch',
+            'id': 'sf-1',
+            'sketch_id': 'sketch-1',
+            'locked': false,
+            'produces': 'sketch',
+          });
+        }),
+      );
+
+      await client.createSketchFeature('part-1');
+
+      expect(capturedBody, {'plane': 'XY'});
+    });
+
+    test('sends plane_feature_id instead of plane when supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'sketch',
+            'id': 'sf-2',
+            'sketch_id': 'sketch-2',
+            'locked': false,
+            'produces': 'sketch',
+            'plane_feature_id': 'plane-1',
+          });
+        }),
+      );
+
+      final feature =
+          await client.createSketchFeature('part-1', plane: null, planeFeatureId: 'plane-1');
+
+      expect(capturedBody, {'plane_feature_id': 'plane-1'});
+      expect(feature.planeFeatureId, 'plane-1');
     });
   });
 }

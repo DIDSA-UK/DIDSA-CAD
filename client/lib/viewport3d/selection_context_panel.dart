@@ -86,6 +86,7 @@ class SelectionContextPanel extends StatelessWidget {
         // TODO: wire up Fillet once the backend Fillet operation exists.
         return null;
       case 'Create Plane':
+      case 'Create Plane (Midplane)':
         return action.enabled ? onCreatePlane : null;
       case 'Create Plane (Normal to Edge Through Vertex)':
       case 'Create Plane (Parallel to Face Through Vertex)':

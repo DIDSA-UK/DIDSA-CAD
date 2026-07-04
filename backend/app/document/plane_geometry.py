@@ -1,11 +1,12 @@
 """Pure-Python plane-geometry math for CreatePlaneFeature's NORMAL_TO_LINE_
-AT_POINT case (C2) - deliberately has no OCCT/pythonocc-core import anywhere
-in this file (only app.sketch.models/store, themselves OCCT-free), so the
-point-on-line/off-line validation this prompt's own testing instructions
-call out can run for real in this sandbox, unlike almost every other
-backend prompt's geometry construction. See app.document.create_plane for
-the OFFSET_FACE case, which does need OCCT (a planarity check has no
-OCCT-free equivalent).
+AT_POINT case (C2) plus the fixed-plane basis table every Sketch embedding
+(fixed or, since C3, anchored to a custom plane) is built from - deliberately
+has no OCCT/pythonocc-core import anywhere in this file (only app.sketch.
+models/store, themselves OCCT-free), so the point-on-line/off-line validation
+this prompt's own testing instructions call out can run for real in this
+sandbox, unlike almost every other backend prompt's geometry construction.
+See app.document.create_plane for the OFFSET_FACE/MIDPLANE cases, which do
+need OCCT (a planarity/parallelism check has no OCCT-free equivalent).
 """
 
 import math
@@ -16,6 +17,97 @@ from app.document.models import ResolvedPlane
 from app.sketch.models import Line, Plane, Point, SketchEntityRef
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
+Vector3 = tuple[float, float, float]
+
+
+# C3: the exact fixed-plane origin/basis every Sketch on a fixed `Plane`
+# embeds through - matches `_sketch_point_to_world` below (and the client's
+# own `sketchPointToWorld`, client/lib/viewport3d/sketch_geometry_3d.dart)
+# exactly: `origin + x * x_axis + y * y_axis` must reproduce the same
+# world point `_sketch_point_to_world(plane, x, y)` already returns for
+# every (x, y). Deliberately hand-written per plane rather than derived from
+# a `normal`-only formula (e.g. a generic cross-product) - hand-verification
+# shows no single such formula reproduces all three fixed planes' existing,
+# already-shipped conventions at once (XZ's own (x_axis, y_axis, normal)
+# triple is left-handed: `normal != x_axis cross y_axis` there, only for XZ -
+# an accident of history now baked into every already-created XZ Sketch, not
+# something to "fix" retroactively), so an explicit lookup table is the only
+# option that is both correct and unsurprising here.
+_PLANE_BASIS: dict[Plane, ResolvedPlane] = {
+    Plane.XY: ResolvedPlane(
+        origin=(0.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0), x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 1.0, 0.0)
+    ),
+    Plane.XZ: ResolvedPlane(
+        origin=(0.0, 0.0, 0.0), normal=(0.0, 1.0, 0.0), x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 0.0, 1.0)
+    ),
+    Plane.YZ: ResolvedPlane(
+        origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0), x_axis=(0.0, 1.0, 0.0), y_axis=(0.0, 0.0, 1.0)
+    ),
+}
+
+
+def sketch_basis_for_plane(plane: Plane) -> ResolvedPlane:
+    """C3: the full basis (see `ResolvedPlane`) for one of the three fixed
+    reference planes - the "anchor plane" every Sketch resolved to before
+    C3 implicitly used, now made explicit so `app.document.extrude` and
+    `app.document.create_plane` can treat a fixed-plane Sketch and a
+    custom-plane-anchored one (C3) identically once each has its own
+    `ResolvedPlane`."""
+    return _PLANE_BASIS[plane]
+
+
+def _cross(a: Vector3, b: Vector3) -> Vector3:
+    ax, ay, az = a
+    bx, by, bz = b
+    return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
+
+
+def _normalized(v: Vector3) -> Vector3:
+    length = math.sqrt(sum(c * c for c in v))
+    return tuple(c / length for c in v)
+
+
+def _arbitrary_perpendicular_basis(normal: Vector3) -> tuple[Vector3, Vector3]:
+    """C3: an arbitrary (but deterministic) orthonormal (x_axis, y_axis) pair
+    perpendicular to `normal`, for the plane types that have no natural
+    in-plane reference direction of their own (`NORMAL_TO_LINE_AT_POINT`,
+    `MIDPLANE`) - unlike `_PLANE_BASIS` above, there is no pre-existing
+    convention such a plane needs to match, so any valid right-handed
+    (x_axis, y_axis, normal) triple is equally correct; this just needs to
+    be deterministic (the same `normal` always yields the same basis) so a
+    live-recomputed plane doesn't visually "spin" between requests.
+
+    Picks whichever of world +Z or +Y is *less* parallel to `normal` as a
+    reference vector (avoiding the degenerate near-parallel case that would
+    otherwise blow up the cross product's normalization), then derives
+    `x_axis = normalize(reference x normal)` and `y_axis = normal x x_axis`
+    (already unit length, since `normal`/`x_axis` are orthonormal)."""
+    _, _, nz = normal
+    reference: Vector3 = (0.0, 0.0, 1.0) if abs(nz) < 0.9 else (0.0, 1.0, 0.0)
+    x_axis = _normalized(_cross(reference, normal))
+    y_axis = _cross(normal, x_axis)
+    return x_axis, y_axis
+
+
+def _basis_point(basis: ResolvedPlane, x: float, y: float) -> Vector3:
+    """`basis`'s own local (x, y) -> world-space point mapping:
+    `origin + x * x_axis + y * y_axis`."""
+    ox, oy, oz = basis.origin
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    return (ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
+
+
+def _basis_vector(basis: ResolvedPlane, dx: float, dy: float) -> Vector3:
+    """The world-space *direction* (not position - no `origin` offset) for a
+    local-space delta `(dx, dy)` in `basis` - correct because `_basis_point`
+    is linear in (x, y) (an origin-preserving affine map once the origin
+    offset is set aside), so mapping a delta gives exactly the same result
+    as mapping the two endpoints and subtracting."""
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    return (dx * xx + dy * yx, dx * xy + dy * yy, dx * xz + dy * yz)
+
 
 # Deliberately duplicates (does not import) app.document.extrude's own
 # sketch_point_to_world - that version returns an OCCT gp_Pnt, and importing
@@ -24,7 +116,7 @@ from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 # sync with each other and with the client's own sketchPointToWorld
 # (client/lib/viewport3d/sketch_geometry_3d.dart) - the same fixed XY/XZ/YZ
 # embedding used everywhere else in this project.
-def _sketch_point_to_world(plane: Plane, x: float, y: float) -> tuple[float, float, float]:
+def _sketch_point_to_world(plane: Plane, x: float, y: float) -> Vector3:
     return {
         Plane.XY: (x, y, 0.0),
         Plane.XZ: (x, 0.0, y),
@@ -52,9 +144,9 @@ def _point_not_on_line(line_ref: SketchEntityRef, point_ref: SketchEntityRef) ->
 
 
 def resolve_normal_to_line_at_point(
-    line_ref: SketchEntityRef, point_ref: SketchEntityRef
+    line_ref: SketchEntityRef, point_ref: SketchEntityRef, basis: ResolvedPlane
 ) -> ResolvedPlane:
-    """C2: resolves a NORMAL_TO_LINE_AT_POINT CreatePlaneFeature - a plane
+    """C2/C3: resolves a NORMAL_TO_LINE_AT_POINT CreatePlaneFeature - a plane
     normal to `line_ref`'s direction, passing through `point_ref`'s
     position. Fully determined by the two references alone, no numeric
     input (per this prompt's own scope). Resolves both refs via C1's
@@ -64,12 +156,20 @@ def resolve_normal_to_line_at_point(
     Line's own endpoints - fails closed with `point_not_on_line` otherwise
     (see `_point_not_on_line`).
 
-    The line's direction vector maps into world space via
-    `_sketch_point_to_world` applied to the (dx, dy) delta directly, not
-    just to positions - correct because every fixed reference plane's
-    embedding is linear (origin-preserving: (0, 0) always maps to the
-    world origin), so mapping a delta gives exactly the same result as
-    mapping the two endpoints and subtracting."""
+    C3: `basis` is the referenced Line's own Sketch's resolved anchor plane
+    (see `app.document.create_plane.resolve_sketch_basis`) - a fixed plane's
+    `sketch_basis_for_plane(sketch.plane)`, or (new in C3) a custom plane's
+    own already-resolved `ResolvedPlane` when the Sketch is anchored to one
+    via `SketchFeature.plane_feature_id`. Threaded in explicitly rather than
+    derived from `sketch.plane` internally (C2's original approach) so this
+    function has no OCCT dependency of its own even now that a Sketch can
+    live on an OCCT-derived custom plane - resolving *that* basis is the
+    caller's job, this function only ever consumes the result.
+
+    The line's direction vector maps into world space via `_basis_vector`
+    applied to the (dx, dy) delta directly, not just to positions - see that
+    helper's own docstring for why a delta and a position/position
+    subtraction agree."""
     line = resolve_sketch_entity(line_ref)
     assert isinstance(line, Line)  # entity_type already validated LINE by resolve_sketch_entity
     point = resolve_sketch_entity(point_ref)
@@ -83,9 +183,10 @@ def resolve_normal_to_line_at_point(
     end = sketch.points[line.end_point_id]
 
     dx, dy = end.x - start.x, end.y - start.y
-    direction = _sketch_point_to_world(sketch.plane, dx, dy)
+    direction = _basis_vector(basis, dx, dy)
     length = math.sqrt(sum(c * c for c in direction))
     normal = tuple(c / length for c in direction)
 
-    origin = _sketch_point_to_world(sketch.plane, point.x, point.y)
-    return ResolvedPlane(origin=origin, normal=normal)
+    origin = _basis_point(basis, point.x, point.y)
+    x_axis, y_axis = _arbitrary_perpendicular_basis(normal)
+    return ResolvedPlane(origin=origin, normal=normal, x_axis=x_axis, y_axis=y_axis)

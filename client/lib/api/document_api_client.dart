@@ -67,13 +67,13 @@ class SketchEntityRefDto {
 /// A Feature in a Part's history - a SketchFeature, an ExtrudeFeature, or
 /// (C2) a CreatePlaneFeature, distinguished by [type] (the same
 /// discriminator the backend's `FeatureResponse` union uses). [sketchId] is
-/// only present on a `"sketch"` Feature; [sketchFeatureId]/[extrudeType]/
-/// [startDistance]/[endDistance] only on an `"extrude"` one;
-/// [planeType]/[faceRef]/[offset]/[lineRef]/[pointRef]/[origin]/[normal]
-/// only on a `"create_plane"` one - kept as one DTO (rather than three
-/// separate classes) since most call sites (the Feature tree, the
-/// long-press menu) only care about [id]/[type]/[locked] regardless of
-/// which kind a row is.
+/// only present on a `"sketch"` Feature (as is, since C3, [planeFeatureId]);
+/// [sketchFeatureId]/[extrudeType]/[startDistance]/[endDistance] only on an
+/// `"extrude"` one; [planeType]/[faceRefs]/[offset]/[lineRef]/[pointRef]/
+/// [origin]/[normal]/[xAxis]/[yAxis] only on a `"create_plane"` one - kept
+/// as one DTO (rather than three separate classes) since most call sites
+/// (the Feature tree, the long-press menu) only care about [id]/[type]/
+/// [locked] regardless of which kind a row is.
 class FeatureDto {
   final String type;
   final String id;
@@ -83,6 +83,11 @@ class FeatureDto {
   final String? extrudeType;
   final double? startDistance;
   final double? endDistance;
+
+  /// C3: only present on a `"sketch"` Feature - the id of the
+  /// CreatePlaneFeature this Sketch is anchored to, or null when it lives on
+  /// one of the three fixed reference planes instead (the common case).
+  final String? planeFeatureId;
 
   /// Prompt A4: only present on an `"extrude"` Feature - which existing
   /// Bodies (by id) this one combines with, per A1's `target_body_ids`.
@@ -100,10 +105,15 @@ class FeatureDto {
   /// key entirely.
   final String produces;
 
-  /// C2: `"offset_face"` or `"normal_to_line_at_point"` - only present on a
-  /// `"create_plane"` Feature.
+  /// C2/C3: `"offset_face"`, `"normal_to_line_at_point"`, or (C3)
+  /// `"midplane"` - only present on a `"create_plane"` Feature.
   final String? planeType;
-  final SubShapeRefDto? faceRef;
+
+  /// C2/C3: `"offset_face"` has exactly one entry, `"midplane"` (C3) has
+  /// exactly two, `"normal_to_line_at_point"` has none - see the backend's
+  /// `CreatePlaneFeature.face_refs` (C3 generalized the old singular
+  /// `face_ref` into this list so MIDPLANE could reuse the same field).
+  final List<SubShapeRefDto> faceRefs;
   final double? offset;
   final SketchEntityRefDto? lineRef;
   final SketchEntityRefDto? pointRef;
@@ -116,6 +126,14 @@ class FeatureDto {
   final List<double>? origin;
   final List<double>? normal;
 
+  /// C3: the plane's own in-plane basis (see the backend's `ResolvedPlane.
+  /// x_axis`/`y_axis`) - the exact orientation a Sketch anchored to this
+  /// Plane embeds its local (x, y) geometry through, and what the viewport
+  /// uses to orient the rendered quad consistently with that embedding.
+  /// Null exactly when [origin]/[normal] are.
+  final List<double>? xAxis;
+  final List<double>? yAxis;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -127,13 +145,16 @@ class FeatureDto {
     this.endDistance,
     this.targetBodyIds = const [],
     this.produces = 'none',
+    this.planeFeatureId,
     this.planeType,
-    this.faceRef,
+    this.faceRefs = const [],
     this.offset,
     this.lineRef,
     this.pointRef,
     this.origin,
     this.normal,
+    this.xAxis,
+    this.yAxis,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -147,10 +168,12 @@ class FeatureDto {
         endDistance: (json['end_distance'] as num?)?.toDouble(),
         targetBodyIds: (json['target_body_ids'] as List?)?.cast<String>() ?? const [],
         produces: json['produces'] as String? ?? 'none',
+        planeFeatureId: json['plane_feature_id'] as String?,
         planeType: json['plane_type'] as String?,
-        faceRef: json['face_ref'] == null
-            ? null
-            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        faceRefs: (json['face_refs'] as List?)
+                ?.map((r) => SubShapeRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
         offset: (json['offset'] as num?)?.toDouble(),
         lineRef: json['line_ref'] == null
             ? null
@@ -160,6 +183,8 @@ class FeatureDto {
             : SketchEntityRefDto.fromJson(json['point_ref'] as Map<String, dynamic>),
         origin: (json['origin'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         normal: (json['normal'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        xAxis: (json['x_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        yAxis: (json['y_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
       );
 }
 
@@ -326,11 +351,21 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<FeatureDto> createSketchFeature(String partId, {String plane = 'XY'}) => _send(
+  /// C3: exactly one of [plane] or [planeFeatureId] should be supplied - a
+  /// fixed reference plane, or an existing CreatePlaneFeature's id to anchor
+  /// this Sketch to instead (see the backend's
+  /// `_validate_sketch_feature_payload`, which enforces the combination and
+  /// that [planeFeatureId] resolves to a real, currently-resolvable Plane).
+  /// [plane] defaults to `'XY'` for every pre-C3 call site that never passes
+  /// [planeFeatureId] - passing both, or neither, is rejected server-side.
+  Future<FeatureDto> createSketchFeature(String partId, {String? plane = 'XY', String? planeFeatureId}) =>
+      _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/features/sketch'),
               headers: _headers,
-              body: jsonEncode({'plane': plane}),
+              body: jsonEncode({
+                if (planeFeatureId != null) 'plane_feature_id': planeFeatureId else 'plane': plane,
+              }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
@@ -390,16 +425,17 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// C2: creates an OFFSET_FACE or NORMAL_TO_LINE_AT_POINT CreatePlaneFeature -
-  /// exactly one of ([faceRef], [offset]) or ([lineRef], [pointRef]) should
-  /// be supplied, matching [planeType] ("offset_face"/
+  /// C2/C3: creates an OFFSET_FACE, MIDPLANE, or NORMAL_TO_LINE_AT_POINT
+  /// CreatePlaneFeature - exactly one of ([faceRefs], [offset])
+  /// [OFFSET_FACE: one entry; MIDPLANE, C3: two] or ([lineRef], [pointRef])
+  /// should be supplied, matching [planeType] ("offset_face"/"midplane"/
   /// "normal_to_line_at_point"); the backend validates this combination and
   /// rejects a malformed one (see `_validate_create_plane_payload`), this
   /// method just serializes whatever it's given.
   Future<FeatureDto> createCreatePlaneFeature(
     String partId, {
     required String planeType,
-    SubShapeRefDto? faceRef,
+    List<SubShapeRefDto> faceRefs = const [],
     double? offset,
     SketchEntityRefDto? lineRef,
     SketchEntityRefDto? pointRef,
@@ -410,7 +446,7 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 'plane_type': planeType,
-                if (faceRef != null) 'face_ref': faceRef.toJson(),
+                if (faceRefs.isNotEmpty) 'face_refs': faceRefs.map((r) => r.toJson()).toList(),
                 if (offset != null) 'offset': offset,
                 if (lineRef != null) 'line_ref': lineRef.toJson(),
                 if (pointRef != null) 'point_ref': pointRef.toJson(),
@@ -425,7 +461,7 @@ class DocumentApiClient {
   Future<FeatureDto> updateCreatePlaneFeature(
     String partId,
     String featureId, {
-    SubShapeRefDto? faceRef,
+    List<SubShapeRefDto>? faceRefs,
     double? offset,
     SketchEntityRefDto? lineRef,
     SketchEntityRefDto? pointRef,
@@ -435,7 +471,7 @@ class DocumentApiClient {
               _uri('/document/parts/$partId/create-plane-features/$featureId'),
               headers: _headers,
               body: jsonEncode({
-                if (faceRef != null) 'face_ref': faceRef.toJson(),
+                if (faceRefs != null) 'face_refs': faceRefs.map((r) => r.toJson()).toList(),
                 if (offset != null) 'offset': offset,
                 if (lineRef != null) 'line_ref': lineRef.toJson(),
                 if (pointRef != null) 'point_ref': pointRef.toJson(),

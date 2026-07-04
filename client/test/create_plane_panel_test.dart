@@ -38,6 +38,12 @@ void main() {
       expect(find.byType(TextField), findsNothing);
     });
 
+    testWidgets('midplane has no numeric field and is always enabled', (tester) async {
+      expect(await confirmEnabled(tester, CreatePlaneMode.midplane), isTrue);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.textContaining('equidistant'), findsOneWidget);
+    });
+
     testWidgets('offsetFace shows a numeric offset field', (tester) async {
       await confirmEnabled(tester, CreatePlaneMode.offsetFace);
       expect(find.byType(TextField), findsOneWidget);
