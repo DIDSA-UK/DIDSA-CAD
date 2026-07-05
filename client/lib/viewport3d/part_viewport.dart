@@ -935,7 +935,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// see [hitTestCreatePlanes]'s own doc comment for why reference planes
   /// keep first claim), wrapped as a [HoverHit] so [_recomputeHover] can
   /// depth-compare it against a mesh/sketch hit along the same ray.
+  ///
+  /// On-device feedback: gated on [SelectionFilterState.plane] - C5 shipped
+  /// this hit-test with no filter check at all, so a picking mode that
+  /// turns every other kind off (e.g. Fillet's edge/face-only filter) still
+  /// left planes selectable regardless, since there was nothing here to
+  /// turn off in the first place.
   HoverHit? _hoverHitTestPlanes(vm.Ray ray) {
+    if (!widget.selectionFilter.plane) return null;
     final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
     if (referenceHit != null) {
       return HoverHit(

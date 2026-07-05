@@ -488,6 +488,22 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   caveat), `flutter analyze` clean, 46/46 `document_api_client_test.dart` +
   4/4 `feature_picker_sheet_test.dart` genuinely executed. **Not yet
   on-device confirmed** - Prompt E (Chamfer) remains blocked.
+- **Follow-up bug fixes on the above**: reference/created Planes stayed
+  selectable while picking edges for Fillet, since `SelectionFilterState`
+  had no `plane` field at all - `_hoverHitTestPlanes` (`part_viewport.dart`)
+  had no filter check to gate on. New `SelectionFilterState.plane` (default
+  `true`) fixes this; `_filletSelectionFilter` sets it `false`. Also: the
+  "Add" FAB's Fillet entry only opened a picker banner, requiring an extra
+  tap on the ambient Fillet button before `FilletPanel` itself appeared -
+  unified both Fillet entry points into `_openFilletPanel`, which now opens
+  the panel immediately either way (mirrors `_openExtrudePanel` showing
+  `ExtrudePanel` immediately with no target Bodies picked yet), removing
+  the separate `_filletPickerActive` picker-only phase entirely.
+  `_ensureFilletFeatureExists` generalized to create-or-update (mirrors
+  `_ensureExtrudeFeatureExists`) since a Feature can't exist with zero edges
+  yet. `flutter analyze` clean, `selection_filter_test.dart` +4 (now
+  10/10), same 46/46 + 9/9 + 4/4 + 12/12 other Dart suites still passing.
+  **Not yet on-device confirmed.**
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

@@ -17,6 +17,11 @@ void main() {
       expect(state.sketchPoint, isTrue);
       expect(state.sketchLine, isTrue);
     });
+
+    test('on-device feedback: plane defaults on, mirroring vertex/edge/face', () {
+      const state = SelectionFilterState.defaults;
+      expect(state.plane, isTrue);
+    });
   });
 
   group('SelectionFilterState.copyWith', () {
@@ -54,6 +59,16 @@ void main() {
       expect(next.face, isTrue);
       expect(next.body, isFalse);
     });
+
+    test('on-device feedback: plane can be set independently, leaving the rest untouched', () {
+      const state = SelectionFilterState.defaults;
+      final next = state.copyWith(plane: false);
+      expect(next.plane, isFalse);
+      expect(next.vertex, isTrue);
+      expect(next.edge, isTrue);
+      expect(next.face, isTrue);
+      expect(next.body, isFalse);
+    });
   });
 
   group('SelectionFilterState equality', () {
@@ -72,6 +87,7 @@ void main() {
       expect(base, isNot(base.copyWith(body: true)));
       expect(base, isNot(base.copyWith(sketchPoint: false)));
       expect(base, isNot(base.copyWith(sketchLine: false)));
+      expect(base, isNot(base.copyWith(plane: false)));
     });
   });
 }

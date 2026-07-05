@@ -23,6 +23,22 @@ class SelectionFilterState {
   final bool sketchPoint;
   final bool sketchLine;
 
+  /// On-device feedback: gates both `SelectionEntityKind.referencePlane` and
+  /// `.createPlane` hover/hit-testing (see `part_viewport.dart`'s
+  /// `_hoverHitTestPlanes`) - a single field for both plane kinds, not a
+  /// separate pair the way `vertex`/`edge`/`face` each get their own,
+  /// since no picking mode so far has needed to tell them apart (C5's own
+  /// `contextActionsFor` already treats them as one interchangeable
+  /// "plane-like" category). Added after C5 shipped planes as a selectable
+  /// kind with no filter field at all - every picking mode up to and
+  /// including the "Add" FAB's Fillet entry, `PartScreen._filletSelectionFilter`,
+  /// needs a real way to turn planes off, not just the mesh/sketch kinds
+  /// above. Defaults to `true` (matches every plane being unconditionally
+  /// hit-testable before this field existed) - no View-submenu toggle
+  /// exists for this yet, same "wired up, no UI yet" precedent `body` once
+  /// was before its own toggle shipped.
+  final bool plane;
+
   const SelectionFilterState({
     required this.vertex,
     required this.edge,
@@ -30,6 +46,7 @@ class SelectionFilterState {
     required this.body,
     this.sketchPoint = true,
     this.sketchLine = true,
+    this.plane = true,
   });
 
   /// Matches hit-testing's behaviour from before this filter framework
@@ -37,7 +54,8 @@ class SelectionFilterState {
   /// there's nothing for it to do yet (see the class doc comment).
   /// `sketchPoint`/`sketchLine` start on, mirroring vertex/edge/face's own
   /// "always considered by default" precedent now that Sketch geometry is
-  /// rendered and pickable in the 3D viewport (Prompt C1).
+  /// rendered and pickable in the 3D viewport (Prompt C1). `plane` also
+  /// starts on for the same reason.
   static const defaults = SelectionFilterState(vertex: true, edge: true, face: true, body: false);
 
   SelectionFilterState copyWith({
@@ -47,6 +65,7 @@ class SelectionFilterState {
     bool? body,
     bool? sketchPoint,
     bool? sketchLine,
+    bool? plane,
   }) {
     return SelectionFilterState(
       vertex: vertex ?? this.vertex,
@@ -55,6 +74,7 @@ class SelectionFilterState {
       body: body ?? this.body,
       sketchPoint: sketchPoint ?? this.sketchPoint,
       sketchLine: sketchLine ?? this.sketchLine,
+      plane: plane ?? this.plane,
     );
   }
 
@@ -66,13 +86,14 @@ class SelectionFilterState {
       other.face == face &&
       other.body == body &&
       other.sketchPoint == sketchPoint &&
-      other.sketchLine == sketchLine;
+      other.sketchLine == sketchLine &&
+      other.plane == plane;
 
   @override
-  int get hashCode => Object.hash(vertex, edge, face, body, sketchPoint, sketchLine);
+  int get hashCode => Object.hash(vertex, edge, face, body, sketchPoint, sketchLine, plane);
 
   @override
   String toString() =>
       'SelectionFilterState(vertex: $vertex, edge: $edge, face: $face, body: $body, '
-      'sketchPoint: $sketchPoint, sketchLine: $sketchLine)';
+      'sketchPoint: $sketchPoint, sketchLine: $sketchLine, plane: $plane)';
 }

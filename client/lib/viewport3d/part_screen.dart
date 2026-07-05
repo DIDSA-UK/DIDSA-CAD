@@ -323,16 +323,17 @@ class _PartScreenState extends State<PartScreen> {
   /// is a body pick - reschedules the debounced live-preview re-solve so it
   /// picks up the new `target_body_ids`, same as any other field change.
   ///
-  /// On-device feedback: while [_filletActive]/[_filletPickerActive], a Face
-  /// tap is special-cased to [_toggleFilletFaceEdges] instead of toggling
-  /// the face itself - the filter allows Faces through purely as a "select
-  /// this face's whole edge loop" convenience (see
-  /// [_filletSelectionFilter]'s own doc comment), never as a real Fillet
-  /// reference. Also reschedules the debounced live-preview re-solve while
-  /// [_filletActive], same reasoning as the [_extrudeActive] case just
-  /// above.
+  /// On-device feedback: while [_filletActive] (the panel now opens
+  /// immediately, whether from the "Add" FAB with zero edges yet or from an
+  /// existing edge selection - see [_openFilletPanel]), a Face tap is
+  /// special-cased to [_toggleFilletFaceEdges] instead of toggling the face
+  /// itself - the filter allows Faces through purely as a "select this
+  /// face's whole edge loop" convenience (see [_filletSelectionFilter]'s
+  /// own doc comment), never as a real Fillet reference. Also reschedules
+  /// the debounced live-preview re-solve while [_filletActive], same
+  /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
-    if ((_filletActive || _filletPickerActive) && entity.kind == SelectionEntityKind.face) {
+    if (_filletActive && entity.kind == SelectionEntityKind.face) {
       _toggleFilletFaceEdges(entity);
       return;
     }
@@ -583,25 +584,21 @@ class _PartScreenState extends State<PartScreen> {
 
   Timer? _filletDebounce;
 
-  /// On-device feedback: true from the "Add" FAB's guided Fillet entry
-  /// ([_startFilletPicker]) until either edges are actually picked (handed
-  /// off to [_openFilletPanel], which sets [_filletActive] instead - see
-  /// [_onFilletTapped]) or the pick is abandoned ([_cancelFilletPicker]).
-  /// Mirrors [_sketchPickerActive]'s "guided picker, no Feature yet" shape,
-  /// not [_filletActive]'s "a real preview Feature exists" shape - kept
-  /// separate so the FAB/banner UI (this) and the bottom panel (that) never
-  /// both claim to be "the current Fillet flow" at once.
-  bool _filletPickerActive = false;
-
   /// On-device feedback: locks [_selectionFilterOverrides] to edges/faces
-  /// only for the *whole* Fillet flow - both while [_filletPickerActive]
-  /// (picking before any Feature exists) and while [_filletActive] (the
-  /// panel open, picking live edits) - so a stray vertex/Body tap can never
-  /// end up in [_selectedEntities] mid-flow. `face: true` is not "faces are
+  /// only for the *whole* Fillet flow (from the moment [_openFilletPanel]/
+  /// [_openFilletPanelForEdit] opens the panel, whether or not any edges
+  /// are picked yet) - so a stray vertex/Body tap can never end up in
+  /// [_selectedEntities] mid-flow. `face: true` is not "faces are
   /// themselves fillet-able" (only edges ever go into `edge_refs`) - it's
   /// so [_toggleSelectedEntity]'s face branch (see [_toggleFilletFaceEdges])
   /// can offer "tap a face to select its whole boundary loop" as a
   /// convenience for reliably building a vertex-complete edge selection.
+  ///
+  /// Bug fix (on-device feedback): `plane: false` too - reference/created
+  /// Planes stayed selectable through this whole flow despite every other
+  /// kind being turned off, since `SelectionFilterState` had no `plane`
+  /// field at all until this fix (`part_viewport.dart`'s
+  /// `_hoverHitTestPlanes` now checks it).
   static const _filletSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
@@ -609,6 +606,7 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: false,
+    plane: false,
   );
 
   /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
@@ -1005,8 +1003,6 @@ class _PartScreenState extends State<PartScreen> {
     // Prompt D: a background tap is as much a "never mind" gesture for the
     // Sketch picker as it already is for plane-selection mode above.
     if (_sketchPickerActive) _cancelSketchPicker();
-    // On-device feedback: same "never mind" gesture for the Fillet picker.
-    if (_filletPickerActive) _cancelFilletPicker();
   }
 
   /// Opens the "Add" FAB's flyout. "New Sketch" enters [_planeSelectionMode]
@@ -2041,64 +2037,43 @@ class _PartScreenState extends State<PartScreen> {
 
   /// On-device feedback: the "Add" FAB's Feature picker's "Fillet" entry -
   /// mirrors [_startPlanePicker]'s shape (clear selection, force Selection
-  /// mode, hint what to pick) but also locks the filter to
-  /// [_filletSelectionFilter] and sets [_filletPickerActive] instead of
-  /// relying on the ambient default filter, since picking edges without a
-  /// stray vertex/Body tap landing in the selection matters here in a way
-  /// it doesn't for Create Plane's own guided entry. There is no Feature
-  /// yet at this point - [_onFilletTapped] is what actually creates one,
-  /// once 1+ edges have been picked and the (now-enabled)
-  /// [SelectionContextPanel] Fillet button is tapped.
+  /// mode, hint what to pick) - just [_openFilletPanel] with no edges yet,
+  /// so the [FilletPanel] itself (radius field, Confirm/Cancel) flies up
+  /// immediately rather than waiting for a separate "edges picked, now tap
+  /// the ambient Fillet button" step (on-device feedback: the old
+  /// picker-then-hand-off shape made the FAB entry feel like it hadn't
+  /// actually done anything until that extra tap). No Feature exists until
+  /// the first edge is actually picked - see [_ensureFilletFeatureExists]'s
+  /// create-or-update branching, mirroring [_ensureExtrudeFeatureExists].
   void _startFilletPicker() {
-    setState(() {
-      _selectedEntities = {};
-      _selectionMode = true;
-      _toolbarOpen = false;
-      _featureTreeVisible = false;
-      _filletPickerActive = true;
-      _selectionFilterOverrides.push(_filletSelectionFilter);
-    });
-    _showSnack('Select one or more edges (or a face, for its whole edge loop) on a single Body to fillet');
-  }
-
-  /// Abandons [_startFilletPicker] without ever creating a Feature - wired
-  /// to the same "background tap"/back-gesture "never mind" gestures
-  /// [_cancelSketchPicker]/[_cancelPlaneSelectionMode] already use for their
-  /// own guided pickers.
-  void _cancelFilletPicker() {
-    setState(() {
-      _filletPickerActive = false;
-      _selectedEntities = {};
-      _selectionFilterOverrides.pop();
-    });
+    _openFilletPanel(edgeEntities: const []);
   }
 
   /// [SelectionContextPanel.onFillet]'s callback - `contextActionsFor` only
   /// ever enables this button for a selection that's one or more edges, all
   /// on the same Body, so there is no combination to re-derive the way
-  /// [_onCreatePlaneTapped] has to for its own six flows. If this selection
-  /// came from [_startFilletPicker]'s guided mode, hands the filter
-  /// override off to [_openFilletPanel] rather than popping/pushing twice -
-  /// there is always exactly one [_filletSelectionFilter] layer active
-  /// across the hand-off, never zero or two.
+  /// [_onCreatePlaneTapped] has to for its own six flows.
   void _onFilletTapped() {
     final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
-    if (_filletPickerActive) {
-      _filletPickerActive = false;
-      _selectionFilterOverrides.pop();
-    }
     _openFilletPanel(edgeEntities: edges);
   }
 
-  /// Creates the FilletFeature eagerly (mirrors [_openCreatePlanePanel]'s
-  /// "create on open" pattern) from [edgeEntities].
+  /// Opens [FilletPanel] immediately, whether [edgeEntities] is empty (the
+  /// "Add" FAB's guided entry - see [_startFilletPicker]) or already has
+  /// edges (the ambient [SelectionContextPanel] button - see
+  /// [_onFilletTapped]). No FilletFeature is created yet when
+  /// [edgeEntities] is empty - there is nothing valid to create until at
+  /// least one edge is picked - so this returns right after opening the
+  /// panel in that case; [_ensureFilletFeatureExists] (via
+  /// [_scheduleFilletPreview], fired by the first edge/face-loop tap) is
+  /// what actually creates it, mirroring [_ensureExtrudeFeatureExists]'s own
+  /// create-or-update branching.
   ///
-  /// On-device feedback: unlike the old create-once-and-forget flow, the
-  /// edge selection now stays *live* for the panel's whole session -
-  /// [_selectedEntities] keeps [edgeEntities] (rather than being cleared to
-  /// `{}`) and a [_filletSelectionFilter] override is pushed, mirroring
-  /// [_openExtrudePanel]'s live target-body picking exactly. Every
-  /// subsequent edge/face-loop tap ([_toggleSelectedEntity]/
+  /// On-device feedback: the edge selection stays *live* for the panel's
+  /// whole session - [_selectedEntities] keeps [edgeEntities] (rather than
+  /// being cleared to `{}`) and a [_filletSelectionFilter] override is
+  /// pushed, mirroring [_openExtrudePanel]'s live target-body picking
+  /// exactly. Every subsequent edge/face-loop tap ([_toggleSelectedEntity]/
   /// [_toggleFilletFaceEdges]) reschedules [_scheduleFilletPreview] the same
   /// way a target-body tap reschedules [_scheduleExtrudePreview] - this is
   /// what actually lets edges be added to/removed from an in-progress
@@ -2113,28 +2088,18 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = edgeEntities.toSet();
       _filletRadius = 1.0;
       _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
       _selectionFilterOverrides.push(_filletSelectionFilter);
     });
-    await _runGuarded(() async {
-      final feature = await _api.createFilletFeature(
-        part.id,
-        edgeRefs: _currentFilletEdgeRefs(),
-        radius: _filletRadius,
-      );
-      _previewFilletFeatureId = feature.id;
-      await _refreshFeatures();
-      // Bug fix (on-device feedback): unlike Create Plane, a Fillet actually
-      // changes body geometry - _refreshFeatures() alone only refetches the
-      // Feature list, leaving the viewport showing the pre-fillet mesh until
-      // some unrelated later action (e.g. Hide/Show) happens to trigger a
-      // mesh refresh.
-      await _refreshMesh();
-    });
+    if (edgeEntities.isEmpty) return;
+    await _runGuarded(() => _ensureFilletFeatureExists(_filletRadius, _currentFilletEdgeRefs()));
     if (_previewFilletFeatureId == null && mounted) {
       // Creation failed (e.g. mixed_body_selection/fillet_failed -
       // _errorMessage is already set by _runGuarded) - nothing to edit, so
       // close the panel back out rather than leaving it stuck open with no
-      // real Feature behind it.
+      // real Feature behind it. Never reached for the empty-edges (Add FAB)
+      // case above, since that returns before ever attempting a create.
       setState(() {
         _filletActive = false;
         _selectedEntities = _entitiesBeforeFillet ?? {};
@@ -2183,10 +2148,10 @@ class _PartScreenState extends State<PartScreen> {
     await _beginRollback({feature.id});
   }
 
-  /// [_selectedEntities]' edges while [_filletActive]/[_filletPickerActive] -
-  /// always [SelectionEntityKind.edge] entries only, mirroring
+  /// [_selectedEntities]' edges while [_filletActive] - always
+  /// [SelectionEntityKind.edge] entries only, mirroring
   /// [_currentTargetBodyIds] exactly (both flows force their own kind-only
-  /// filter for the picker's whole lifetime, so nothing else ever ends up in
+  /// filter for the panel's whole lifetime, so nothing else ever ends up in
   /// here).
   List<SubShapeRefDto> _currentFilletEdgeRefs() => [
         for (final entity in _selectedEntities)
@@ -2217,20 +2182,27 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// PATCHes the preview/edited FilletFeature to [radius]/[edgeRefs], then
-  /// refetches Features and mesh - shared by [_scheduleFilletPreview]'s
-  /// debounce and (indirectly, via a direct radius/edge snapshot) nothing
-  /// else, since unlike [_ensureExtrudeFeatureExists] the Feature always
-  /// already exists by the time this can run ([_openFilletPanel] creates it
-  /// eagerly before any debounce could fire). Skips the request entirely
-  /// once [edgeRefs] is empty - the backend rejects an empty `edge_refs`
-  /// with 422, and "user removed every edge, about to add some back" is a
-  /// normal mid-edit state, not an error worth surfacing.
+  /// Creates the preview FilletFeature on the first call with 1+ edges
+  /// (mirrors [_ensureExtrudeFeatureExists]'s create-or-update branching -
+  /// the "Add" FAB's [_startFilletPicker] opens the panel with no edges and
+  /// nothing to create yet), or PATCHes the one already created/being
+  /// edited on every later call, then refetches Features and mesh - shared
+  /// by [_openFilletPanel]'s own initial attempt and every
+  /// [_scheduleFilletPreview] debounce fire after. Skips the request
+  /// entirely once [edgeRefs] is empty - the backend rejects an empty
+  /// `edge_refs` with 422 either way, and "no edges picked/selected yet" is
+  /// a normal state (both right after opening from the FAB, and mid-edit if
+  /// every edge is briefly deselected), not an error worth surfacing.
   Future<void> _ensureFilletFeatureExists(double radius, List<SubShapeRefDto> edgeRefs) async {
     final part = _part;
-    final featureId = _previewFilletFeatureId;
-    if (part == null || featureId == null || edgeRefs.isEmpty) return;
-    await _api.updateFilletFeature(part.id, featureId, edgeRefs: edgeRefs, radius: radius);
+    if (part == null || edgeRefs.isEmpty) return;
+    final existingId = _previewFilletFeatureId;
+    if (existingId == null) {
+      final feature = await _api.createFilletFeature(part.id, edgeRefs: edgeRefs, radius: radius);
+      _previewFilletFeatureId = feature.id;
+    } else {
+      await _api.updateFilletFeature(part.id, existingId, edgeRefs: edgeRefs, radius: radius);
+    }
     await _refreshFeatures();
     await _refreshMesh();
   }
@@ -2453,18 +2425,18 @@ class _PartScreenState extends State<PartScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // While choosing a plane for a new Sketch (Stage 10b), a Sketch to
-      // extrude (Prompt D), or edges to fillet (on-device feedback), the
-      // device back gesture cancels that mode instead of popping this
-      // screen - canPop: false intercepts it; any other time, popping
-      // proceeds normally.
-      canPop: !_planeSelectionMode && !_sketchPickerActive && !_filletPickerActive,
+      // While choosing a plane for a new Sketch (Stage 10b) or a Sketch to
+      // extrude (Prompt D), the device back gesture cancels that mode
+      // instead of popping this screen - canPop: false intercepts it; any
+      // other time, popping proceeds normally. Fillet's own guided entry
+      // doesn't intercept back here, consistent with Extrude/Create Plane's
+      // own "Confirm/Cancel are the only way out" panels once open - see
+      // [_openFilletPanel].
+      canPop: !_planeSelectionMode && !_sketchPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_sketchPickerActive) {
           _cancelSketchPicker();
-        } else if (_filletPickerActive) {
-          _cancelFilletPicker();
         } else {
           _cancelPlaneSelectionMode();
         }
@@ -2747,8 +2719,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_planeSelectionMode &&
                     !_extrudeActive &&
                     !_createPlaneActive &&
-                    !_filletActive &&
-                    !_filletPickerActive)
+                    !_filletActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -2828,11 +2799,18 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
-                // On-device feedback: shown only while [_startFilletPicker]'s
-                // guided mode is active (before any edges have been picked
-                // into a real preview Feature) - same shape as the plane-
-                // selection banner just above.
-                if (_filletPickerActive)
+                // On-device feedback: shown while [_filletActive] but no
+                // FilletFeature exists yet ([_openFilletPanel] opened with
+                // no edges - the "Add" FAB's guided entry, see
+                // [_startFilletPicker]) - same shape as the plane-selection
+                // banner just above. [FilletPanel] itself is already open
+                // underneath this (see [_openFilletPanel]'s own doc comment
+                // for why it opens immediately rather than waiting for a
+                // separate pick-then-confirm step); Cancel here is the same
+                // [_cancelFillet] the panel's own Cancel button uses - both
+                // are a no-op past the "restore selection, close" step since
+                // nothing was ever created to delete.
+                if (_filletActive && _previewFilletFeatureId == null)
                   Positioned(
                     top: 8,
                     left: 0,
@@ -2851,7 +2829,7 @@ class _PartScreenState extends State<PartScreen> {
                                 const Text('Select edges (or a face) to fillet'),
                                 const SizedBox(width: 12),
                                 TextButton(
-                                  onPressed: _cancelFilletPicker,
+                                  onPressed: _cancelFillet,
                                   child: const Text('Cancel'),
                                 ),
                               ],
@@ -2903,10 +2881,7 @@ class _PartScreenState extends State<PartScreen> {
                     // orbit/rotate glyph while in Selection mode.
                     child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
                   ),
-                  if (!_extrudeActive &&
-                      !_createPlaneActive &&
-                      !_filletActive &&
-                      !_filletPickerActive) ...[
+                  if (!_extrudeActive && !_createPlaneActive && !_filletActive) ...[
                     const SizedBox(height: 12),
                     FloatingActionButton(
                       heroTag: 'add-fab',
