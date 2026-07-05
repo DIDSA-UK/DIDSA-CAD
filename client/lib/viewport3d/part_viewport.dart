@@ -80,10 +80,15 @@ class PartViewport extends StatefulWidget {
   final bool isPreviewMesh;
 
   /// On-device feedback: a *per-Body* alternative to [isPreviewMesh] for
-  /// Fillet (and, later, Chamfer - same mechanism, see this field's own
-  /// status-doc entry for why to reuse it rather than build a second one) -
-  /// [bodies] itself must stay the stable, *pre*-operation mesh for the
-  /// whole live-edit session (hit-testing/edge-picking needs edge ids that
+  /// Fillet (and, later, Chamfer - same mechanism; see
+  /// `docs/live-preview-pattern.md` for the full decision tree on which of
+  /// these two fields a new Feature type should use, and exactly what to
+  /// mirror) - these two fields are already generic/reusable as-is, not
+  /// Fillet-specific despite the name - a new Feature type wires its own
+  /// preview body/mesh straight through the same pair, no `PartViewport`
+  /// changes needed. [bodies] itself must stay the stable, *pre*-operation
+  /// mesh for the whole live-edit session (hit-testing/edge-picking needs
+  /// edge ids that
   /// never move out from under the user - see the "missing_reference"
   /// bug fix this follows), but the operation's actual current effect
   /// still needs to be *visible* somewhere, or the radius/edge-selection

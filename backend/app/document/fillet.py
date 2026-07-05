@@ -88,6 +88,14 @@ def resolve_fillet(
     filleting an already-filleted edge selection, not re-deriving the
     original candidate). A brand-new Feature (not yet in `part.features`)
     is unaffected by the extra exclusion - its id isn't there to exclude in
-    the first place."""
+    the first place.
+
+    Any future Feature type with the same shape (modifies a Body in place,
+    and its own live-edit UI lets the client keep re-picking sub-shapes of
+    that same Body - Chamfer will) needs this identical self-exclusion
+    convention in its own resolver, paired with the client-side
+    stable-pick-body + preview-overlay pattern this enables - see
+    `docs/live-preview-pattern.md`, written after a real bug shipped from
+    the client half of this pairing being implemented without it."""
     bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
     return resolve_fillet_from_bodies(bodies, feature)

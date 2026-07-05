@@ -541,6 +541,20 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   Dart tests passing (unaffected - this touches `PartViewport`'s rendering
   internals, which no test file in this sandbox can exercise regardless).
   **Not yet on-device confirmed.**
+- **Audit: brought every existing "preview" mechanism in line with the
+  above, or documented why not**. Extrude (Boss/Cut) and Create Plane both
+  audited and left unchanged - Extrude picks Body-level ids, which stay
+  stable across its own re-solves (unlike Fillet's edge ids), so its
+  existing single global `isPreviewMesh` tint is already correct; Create
+  Plane never modifies Body geometry and doesn't even support re-picking
+  its reference once its panel is open, so there's nothing to retrofit.
+  New `docs/live-preview-pattern.md` - a decision tree + exact mirror-list
+  for the next Feature type that needs a live mesh preview (Chamfer will) -
+  cross-linked from `PartViewport.previewOverlayBodyId`,
+  `PartScreen._ensureFilletFeatureExists`, and
+  `app.document.fillet.resolve_fillet` so a future agent building the next
+  one actually finds it while reading the reference implementation, not
+  just the other way around.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

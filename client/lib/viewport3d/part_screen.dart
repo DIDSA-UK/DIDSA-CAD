@@ -2226,6 +2226,14 @@ class _PartScreenState extends State<PartScreen> {
   /// `edge_refs` with 422 either way, and "no edges picked/selected yet" is
   /// a normal state (both right after opening from the FAB, and mid-edit if
   /// every edge is briefly deselected), not an error worth surfacing.
+  ///
+  /// This whole method - the self-exclusion on create, the concurrent
+  /// [_refreshFilletPreviewMesh] fetch - is the reference implementation
+  /// for "a Feature that live-edits sub-shape picks of the Body it's
+  /// modifying"; see `docs/live-preview-pattern.md` before building the
+  /// same shape for Chamfer or anything else, rather than re-deriving it
+  /// (or missing the self-exclusion bug this now guards against) from
+  /// scratch.
   Future<void> _ensureFilletFeatureExists(double radius, List<SubShapeRefDto> edgeRefs) async {
     final part = _part;
     if (part == null || edgeRefs.isEmpty) return;
