@@ -894,23 +894,63 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   /// Item 3's hover hit-test, run from [_cursorPosition] - null result
   /// clears any prior hover (cursor moved over empty background).
+  ///
+  /// C5: also competes a reference-plane/created-Plane hit (see
+  /// [_hoverHitTestPlanes]) against the mesh/sketch hit, by [HoverHit.rayT] -
+  /// planes are now selectable in Selection mode via this same cursor/hover/
+  /// commit pipeline (never via [onPlaneTap]/[onCreatePlaneTap], which - see
+  /// [_onPointerEnd] - are only ever reached in Orbit mode).
   void _recomputeHover() {
     final cursor = _cursorPosition;
-    // Prompt C1: previously gated on `widget.bodies.isEmpty` alone, which
-    // skipped hit-testing entirely for a Part with no Bodies yet (e.g. a
-    // bare Sketch with no Extrude) - now also runs whenever there's Sketch
-    // geometry to test, since that's real pickable content on its own.
-    if ((widget.bodies.isEmpty && widget.sketchGeometries.isEmpty) || cursor == null) {
+    if (cursor == null) {
       _hoverHit = null;
       return;
     }
     final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
-    _hoverHit = hitTestBodies(
-      ray: ray,
-      viewportSize: _viewportSize,
-      bodies: widget.bodies,
-      sketchGeometries: widget.sketchGeometries,
-      filter: widget.selectionFilter,
+    // Prompt C1: previously gated on `widget.bodies.isEmpty` alone, which
+    // skipped hit-testing entirely for a Part with no Bodies yet (e.g. a
+    // bare Sketch with no Extrude) - now also runs whenever there's Sketch
+    // geometry to test, since that's real pickable content on its own.
+    final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
+        ? null
+        : hitTestBodies(
+            ray: ray,
+            viewportSize: _viewportSize,
+            bodies: widget.bodies,
+            sketchGeometries: widget.sketchGeometries,
+            filter: widget.selectionFilter,
+          );
+    final planeHit = _hoverHitTestPlanes(ray);
+    if (meshHit == null) {
+      _hoverHit = planeHit;
+    } else if (planeHit == null) {
+      _hoverHit = meshHit;
+    } else {
+      _hoverHit = meshHit.rayT <= planeHit.rayT ? meshHit : planeHit;
+    }
+  }
+
+  /// C5: hit-tests reference planes then created planes (same precedence
+  /// [_handleTap] already used for the pre-C5 Orbit-mode-only tap path -
+  /// see [hitTestCreatePlanes]'s own doc comment for why reference planes
+  /// keep first claim), wrapped as a [HoverHit] so [_recomputeHover] can
+  /// depth-compare it against a mesh/sketch hit along the same ray.
+  HoverHit? _hoverHitTestPlanes(vm.Ray ray) {
+    final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
+    if (referenceHit != null) {
+      return HoverHit(
+        entity: SelectionEntityRef(
+          kind: SelectionEntityKind.referencePlane,
+          referencePlaneKind: referenceHit.plane,
+        ),
+        rayT: referenceHit.rayT,
+      );
+    }
+    final createHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    if (createHit == null) return null;
+    return HoverHit(
+      entity: SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: createHit.featureId),
+      rayT: createHit.rayT,
     );
   }
 
@@ -1135,16 +1175,40 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
       case SelectionEntityKind.referencePlane:
+        final plane = entity.referencePlaneKind;
+        if (plane == null) return null;
+        return _buildPlaneHighlightNode(plane.localTransform, referencePlaneSize / 2, color);
       case SelectionEntityKind.createPlane:
-        // C5: never produced by this widget's own hover/cursor hit-testing
-        // (that only ever scans [widget.bodies]'/[widget.sketchGeometries]'
-        // mesh geometry - a plane tap is a separate, direct callback, see
-        // [onPlaneTap]/[onCreatePlaneTap]), so [_syncHoverNode] (this
-        // method's only caller) never actually reaches this case in
-        // practice; still handled explicitly (returning null, "no hover
-        // node") rather than omitted, so this switch stays exhaustive.
-        return null;
+        final geometry = widget.createPlanes[entity.planeFeatureId];
+        if (geometry == null) return null;
+        return _buildPlaneHighlightNode(
+          createPlaneTransform(geometry.origin, geometry.xAxis, geometry.yAxis, geometry.normal),
+          createPlaneSize / 2,
+          color,
+        );
     }
+  }
+
+  /// C5: a flat, single-color quad at [transform] - the hover-highlight
+  /// counterpart to [buildReferencePlaneNode]/[buildCreatePlaneNode] (which
+  /// only ever render their own fixed unselected/selected tints, not an
+  /// arbitrary [color]), reusing the same [doubleSidedQuadBuffers] geometry
+  /// those build from.
+  Node _buildPlaneHighlightNode(vm.Matrix4 transform, double halfSize, vm.Vector4 color) {
+    final material = UnlitMaterial()
+      ..alphaMode = AlphaMode.blend
+      ..baseColorFactor = color;
+    final buffers = doubleSidedQuadBuffers(halfSize);
+    final geometry = MeshGeometry.fromArrays(
+      positions: buffers.positions,
+      normals: buffers.normals,
+      indices: buffers.indices,
+    );
+    return Node(
+      name: 'plane-highlight',
+      localTransform: transform,
+      mesh: Mesh.primitives(primitives: [MeshPrimitive(geometry, material)]),
+    );
   }
 
   @override

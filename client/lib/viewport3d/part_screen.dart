@@ -799,21 +799,19 @@ class _PartScreenState extends State<PartScreen> {
   /// highlight) and opens [showPlaneContextSheet]'s fly-up with its
   /// contextual action - Stage 19b Item 2 moved that out of the hamburger
   /// drawer, which must no longer open on a selection tap.
+  ///
+  /// C5: only ever reached in Orbit mode - [PartViewport]'s own pointer
+  /// dispatch ([PartViewport._onPointerEnd]) routes every tap in Selection
+  /// mode to its cursor/hover/commit pipeline instead ([PartViewport.
+  /// _commitSelection] -> [onSelectionToggle]/[_toggleSelectedEntity]), which
+  /// is how a plane tap actually joins [_selectedEntities] now (see
+  /// [PartViewport._hoverHitTestPlanes]) - this callback is simply never
+  /// invoked while [_selectionMode] is true, so it needs no gating of its
+  /// own here.
   void _onPlaneTap(ReferencePlaneKind plane) {
     if (_planeSelectionMode) {
       setState(() => _planeSelectionModeStack.pop());
       _addSketchFeature(plane: plane);
-      return;
-    }
-    // C5: while in Selection mode, a plane tap toggles it into
-    // [_selectedEntities] like every other selectable entity kind, so it
-    // can compose with a Body face or another plane into a Create Plane
-    // operation (see `selection_actions.dart`'s `contextActionsFor`) -
-    // instead of always opening its own single-plane context sheet below.
-    if (_selectionMode) {
-      _toggleSelectedEntity(
-        SelectionEntityRef(kind: SelectionEntityKind.referencePlane, referencePlaneKind: plane),
-      );
       return;
     }
     setState(() {
@@ -839,14 +837,10 @@ class _PartScreenState extends State<PartScreen> {
   /// C3: a tap that landed on a created Plane's rendered quad - selects it
   /// (brighter highlight, mirroring [_onPlaneTap]'s own for the three fixed
   /// planes) and opens [showCreatePlaneContextSheet]'s fly-up.
+  ///
+  /// C5: mirrors [_onPlaneTap]'s own doc comment - only ever reached in
+  /// Orbit mode, so it needs no Selection-mode gating of its own either.
   void _onCreatePlaneFeatureTap(String featureId) {
-    // C5: mirrors [_onPlaneTap]'s own Selection-mode gating.
-    if (_selectionMode) {
-      _toggleSelectedEntity(
-        SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: featureId),
-      );
-      return;
-    }
     setState(() {
       _selectedCreatePlaneFeatureId = featureId;
       _featureTreeVisible = false;

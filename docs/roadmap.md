@@ -408,8 +408,21 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `test_stage_c5_graph.py`, `test_stage_c5_create_plane.py` the latter
   `ast.parse`-only per the usual OCCT-in-sandbox caveat), `flutter analyze`
   clean, 39/39 `document_api_client_test.dart` cases genuinely executed
-  (DTO round-trips + wire format). **Not yet on-device confirmed** - same
-  gating discipline as every other C-series prompt before Prompt D starts.
+  (DTO round-trips + wire format).
+- **Bug fix (same-day follow-up)**: a user question caught that C5's own
+  Selection-mode plane-picking was dead code - `PartViewport`'s pointer
+  dispatch routes every tap in Selection mode to `_commitSelection()`, never
+  to `_handleTap` (the only place `onPlaneTap`/`onCreatePlaneTap` fire), so
+  the `if (_selectionMode)` branches added above could never run; planes had
+  no dynamic hover highlight either. Fixed by routing planes through the
+  same cursor/hover/commit pipeline every mesh entity already uses -
+  `ReferencePlaneHit`/`CreatePlaneHit` gained a `rayT` for depth-comparison,
+  `_recomputeHover` now competes a plane hit against the mesh hit by `rayT`,
+  and `_buildEntityHighlightNode` builds a real amber hover quad for a
+  plane instead of returning null. Also fixed: the "Add > Plane" guided
+  picker never switched to Selection mode, and its hint text predated both
+  C4's and C5's new combos. **Not yet on-device confirmed** - same gating
+  discipline as every other C-series prompt before Prompt D starts.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

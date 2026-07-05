@@ -217,12 +217,17 @@ Node buildReferencePlaneNode(ReferencePlaneKind plane, {bool selected = false}) 
   );
 }
 
-/// A tap that intersected [plane] at world-space [point].
+/// A tap that intersected [plane] at world-space [point]. [rayT] (C5) is
+/// the ray parameter the hit occurred at - lets a caller depth-compare this
+/// against another hit along the same ray (see `PartViewport._recomputeHover`,
+/// which competes this against a mesh/sketch entity hit for the Selection-
+/// mode cursor).
 class ReferencePlaneHit {
   final ReferencePlaneKind plane;
   final vm.Vector3 point;
+  final double rayT;
 
-  const ReferencePlaneHit({required this.plane, required this.point});
+  const ReferencePlaneHit({required this.plane, required this.point, required this.rayT});
 }
 
 /// Pure ray-vs-reference-planes intersection: tests [ray] against all three
@@ -259,7 +264,7 @@ ReferencePlaneHit? hitTestReferencePlanes(vm.Ray ray, {double halfSize = _refere
 
     if (bestT == null || t < bestT) {
       bestT = t;
-      best = ReferencePlaneHit(plane: plane, point: point);
+      best = ReferencePlaneHit(plane: plane, point: point, rayT: t);
     }
   }
 

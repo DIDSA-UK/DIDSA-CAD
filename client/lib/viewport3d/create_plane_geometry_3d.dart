@@ -129,12 +129,14 @@ Node buildCreatePlaneNode(
 
 /// C3: a tap that intersected a created Plane's rendered quad - mirrors
 /// [ReferencePlaneHit], just keyed by Feature id (a created Plane's identity)
-/// rather than a fixed [ReferencePlaneKind].
+/// rather than a fixed [ReferencePlaneKind]. [rayT] (C5) mirrors
+/// [ReferencePlaneHit.rayT]'s own doc comment.
 class CreatePlaneHit {
   final String featureId;
   final vm.Vector3 point;
+  final double rayT;
 
-  const CreatePlaneHit({required this.featureId, required this.point});
+  const CreatePlaneHit({required this.featureId, required this.point, required this.rayT});
 }
 
 /// C3: pure ray-vs-created-planes intersection, the arbitrary-orientation
@@ -175,7 +177,7 @@ CreatePlaneHit? hitTestCreatePlanes(
 
     if (bestT == null || t < bestT) {
       bestT = t;
-      best = CreatePlaneHit(featureId: entry.key, point: point);
+      best = CreatePlaneHit(featureId: entry.key, point: point, rayT: t);
     }
   }
 
