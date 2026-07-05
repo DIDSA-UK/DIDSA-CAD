@@ -217,7 +217,7 @@ def test_resolve_subshape_raises_missing_reference_for_an_unknown_body_id():
     }
 
 
-def test_resolve_subshape_raises_missing_reference_when_the_body_is_hidden():
+def test_resolve_subshape_raises_missing_reference_when_the_body_is_excluded():
     part_dict = _create_part()
     boss = _boss_box(part_dict["id"])
     part = get_part_or_404(part_dict["id"])
@@ -225,7 +225,7 @@ def test_resolve_subshape_raises_missing_reference_when_the_body_is_hidden():
     ref = SubShapeRef(body_id=boss["id"], shape_type=SubShapeType.FACE, index=0)
 
     with pytest.raises(HTTPException) as exc_info:
-        resolve_subshape(part, ref, hidden_feature_ids=frozenset({boss["id"]}))
+        resolve_subshape(part, ref, excluded_feature_ids=frozenset({boss["id"]}))
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["type"] == "missing_reference"

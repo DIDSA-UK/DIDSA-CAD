@@ -144,6 +144,47 @@ void main() {
       await client.getPartMesh('part-1', hiddenFeatureIds: ['f1', 'f2']);
 
       expect(capturedUri!.queryParametersAll['hidden_feature_ids'], ['f1', 'f2']);
+      expect(capturedUri!.queryParametersAll.containsKey('rollback_excluded_feature_ids'), isFalse);
+    });
+
+    test(
+      'bug fix: sends rollback_excluded_feature_ids as its own separate repeated query '
+      'parameter, never merged with hidden_feature_ids',
+      () async {
+        Uri? capturedUri;
+        final client = DocumentApiClient(
+          httpClient: MockClient((request) async {
+            capturedUri = request.url;
+            return jsonResponse(const []);
+          }),
+        );
+
+        await client.getPartMesh(
+          'part-1',
+          hiddenFeatureIds: ['hidden-1'],
+          rollbackExcludedFeatureIds: ['rollback-1', 'rollback-2'],
+        );
+
+        expect(capturedUri!.queryParametersAll['hidden_feature_ids'], ['hidden-1']);
+        expect(
+          capturedUri!.queryParametersAll['rollback_excluded_feature_ids'],
+          ['rollback-1', 'rollback-2'],
+        );
+      },
+    );
+
+    test('sends no query string at all when both id lists are empty', () async {
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          return jsonResponse(const []);
+        }),
+      );
+
+      await client.getPartMesh('part-1');
+
+      expect(capturedUri!.query, isEmpty);
     });
   });
 

@@ -222,18 +222,46 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Feature ids hidden from the 3D viewport via the long-press
-  /// Hide/Show action - client-side only, never sent to the backend.
+  /// Feature ids hidden from the 3D viewport via the long-press Hide/Show
+  /// action (plus [_confirmExtrude]'s auto-hide-the-consumed-Sketch
+  /// bookkeeping, see [_autoHiddenSketchFeatureIds] below) - client-side
+  /// only, and (bug fix, post-C4) now purely cosmetic server-side too, sent
+  /// as `hidden_feature_ids`: every Body is still fully computed against
+  /// the Part's real, unmodified history, so a Plane anchored to a hidden
+  /// Body's face (and anything built on that Plane) keeps resolving
+  /// normally - a hidden Body is only dropped from the mesh response
+  /// afterward. See `app.document.router.get_part_mesh`'s own docstring for
+  /// the full incident writeup of why this and [_rollbackExcludedFeatureIds]
+  /// used to be the same set, and why that broke Create Plane.
   final Set<String> _hiddenFeatureIds = {};
+
+  /// B4 true-rollback's own "pretend these Features (and hence everything
+  /// depending on them) don't exist yet" state (see [_beginRollback]/
+  /// [_endRollback]) - sent to the backend as `rollback_excluded_feature_ids`,
+  /// genuinely excluded from recompute there (unlike [_hiddenFeatureIds]
+  /// above). Kept as a wholly separate set/query-param rather than merged
+  /// into [_hiddenFeatureIds] the way it was before this bug fix - see
+  /// [_hiddenFeatureIds]'s own doc comment for why that broke Create Plane.
+  /// Always empty outside an active rollback edit.
+  final Set<String> _rollbackExcludedFeatureIds = {};
+
+  /// Every Feature id that should be invisible/unpickable in the 3D
+  /// viewport right now, for either reason - [_hiddenFeatureIds] (Hide/Show,
+  /// cosmetic) or [_rollbackExcludedFeatureIds] (true-rollback, the
+  /// Feature genuinely isn't part of the model being previewed). The
+  /// viewport itself (unlike the backend's `/mesh` computation) has no
+  /// reason to tell the two apart - either way, nothing of that Feature's
+  /// should render or be tappable right now.
+  Set<String> get _viewportHiddenFeatureIds => {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds};
 
   /// The subset of [_hiddenFeatureIds] hidden purely because
   /// [_confirmExtrude]'s auto-hide-the-consumed-Sketch bookkeeping put them
   /// there - never because the user explicitly hid them, and never one of
-  /// B4's rollback-suppressed later Features (see [_beginRollback], which
-  /// deliberately does not add to this set). A consumed Sketch is fully
-  /// excluded from the 3D viewport (rendering and pickability alike) exactly
-  /// like a manually-hidden Feature - this set exists purely so a later
-  /// event that makes the Sketch stop being consumed (deleting its
+  /// B4's rollback-suppressed later Features (those live in
+  /// [_rollbackExcludedFeatureIds] instead, never here). A consumed Sketch is
+  /// fully excluded from the 3D viewport (rendering and pickability alike)
+  /// exactly like a manually-hidden Feature - this set exists purely so a
+  /// later event that makes the Sketch stop being consumed (deleting its
   /// ExtrudeFeature - see the cascade-delete cleanup in
   /// [_cascadeDeleteFeature] - or explicitly toggling visibility, see
   /// [_toggleFeatureVisibility]) can tell "hidden because auto-consumed,
@@ -297,7 +325,7 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
-  /// [_hiddenFeatureIds] - [_visibleSketchGeometries] is the
+  /// [_viewportHiddenFeatureIds] - [_visibleSketchGeometries] is the
   /// hidden-filtered view of this actually passed to [PartViewport].
   Map<String, SketchGeometry3D> _allSketchGeometries = {};
   Map<String, SketchGeometry3D> _visibleSketchGeometries = {};
@@ -374,12 +402,6 @@ class _PartScreenState extends State<PartScreen> {
   /// already-existing Feature must never be deleted just because its edit
   /// was cancelled.
   ({ExtrudeType type, double start, double end, List<String> targetBodyIds})? _extrudeEditSnapshot;
-
-  /// B4: [_hiddenFeatureIds]' value from just before true-rollback editing
-  /// began (see [_beginRollback]/[_endRollback]) - null whenever rollback
-  /// isn't currently active (e.g. editing the last Feature, which has
-  /// nothing after it to suppress in the first place).
-  Set<String>? _hiddenFeatureIdsBeforeRollback;
 
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
@@ -631,12 +653,14 @@ class _PartScreenState extends State<PartScreen> {
     _recomputeCreatePlaneGeometries();
   }
 
-  /// Re-fetches the Part's mesh with [_hiddenFeatureIds] sent along, so a
-  /// hidden ExtrudeFeature's contribution to the displayed solid (and so to
-  /// the camera target/zoom bounds [PartViewport] derives from it) drops
-  /// out immediately - called after anything that can change either the
-  /// Part's geometry (extrude preview/confirm/cancel, cascade delete) or
-  /// [_hiddenFeatureIds] itself (Hide/Show).
+  /// Re-fetches the Part's mesh with [_hiddenFeatureIds]/
+  /// [_rollbackExcludedFeatureIds] sent along (as two separate params - see
+  /// [_hiddenFeatureIds]'s own doc comment for why they must never be
+  /// merged), so a hidden/rolled-back-past ExtrudeFeature's contribution to
+  /// the displayed solid (and so to the camera target/zoom bounds
+  /// [PartViewport] derives from it) drops out immediately - called after
+  /// anything that can change the Part's geometry (extrude preview/confirm/
+  /// cancel, cascade delete) or either of those two sets.
   ///
   /// Discards the response entirely when it's the placeholder box (Prompt
   /// A1: a single-entry array, `body_id: "placeholder"`, `source:
@@ -649,7 +673,11 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshMesh() async {
     final part = _part;
     if (part == null) return;
-    final response = await _api.getPartMesh(part.id, hiddenFeatureIds: _hiddenFeatureIds.toList());
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
+    );
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
     _bodies = isPlaceholder ? [] : response;
   }
@@ -686,9 +714,11 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Filters [_allSketchGeometries] down to [_visibleSketchGeometries] by
-  /// [_hiddenFeatureIds] - the only place that builds a new `Map` instance
-  /// for [PartViewport.sketchGeometries], so its `didUpdateWidget` `!=`
-  /// check only fires on a genuine content/visibility change.
+  /// [_viewportHiddenFeatureIds] (Hide/Show *and* true-rollback alike - the
+  /// viewport doesn't care which of the two reasons applies) - the only
+  /// place that builds a new `Map` instance for [PartViewport.
+  /// sketchGeometries], so its `didUpdateWidget` `!=` check only fires on a
+  /// genuine content/visibility change.
   ///
   /// A Feature auto-hidden because it's consumed by a downstream Extrude
   /// (see [_autoHiddenSketchFeatureIds]) is excluded here exactly like a
@@ -697,9 +727,10 @@ class _PartScreenState extends State<PartScreen> {
   /// geometry (e.g. for Create Plane's "normal to line at point") requires
   /// explicitly un-hiding it first via [_toggleFeatureVisibility].
   void _recomputeVisibleSketchGeometries() {
+    final hidden = _viewportHiddenFeatureIds;
     _visibleSketchGeometries = {
       for (final entry in _allSketchGeometries.entries)
-        if (!_hiddenFeatureIds.contains(entry.key)) entry.key: entry.value,
+        if (!hidden.contains(entry.key)) entry.key: entry.value,
     };
   }
 
@@ -1048,37 +1079,32 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// B4: engages true rollback - hides [rollbackIds] on top of whatever the
-  /// user already had hidden manually (Hide/Show, unrelated to this),
-  /// stashing the pre-rollback set so [_endRollback] can restore it
-  /// exactly. Reuses the pre-existing [_hiddenFeatureIds]/
-  /// `hidden_feature_ids` mechanism (A1) - a Feature named there is already
-  /// excluded entirely from backend recompute, not just hidden visually -
-  /// rather than inventing a second, parallel suppression concept.
+  /// B4: engages true rollback - adds [rollbackIds] to
+  /// [_rollbackExcludedFeatureIds], entirely separate from whatever the user
+  /// already had hidden manually via [_hiddenFeatureIds] (Hide/Show,
+  /// unrelated to this). Bug fix (post-C4): used to reuse [_hiddenFeatureIds]
+  /// itself for this (stashing/restoring it around the edit) on the theory
+  /// that "rolled back" and "hidden" meant the same thing to the backend -
+  /// see [_hiddenFeatureIds]'s own doc comment for why that broke Create
+  /// Plane once a Plane could depend on a hidden Body's face. No stash/
+  /// restore needed anymore: [_rollbackExcludedFeatureIds] starts and ends
+  /// every rollback empty, untouched by anything else.
   Future<void> _beginRollback(Set<String> rollbackIds) async {
-    _hiddenFeatureIdsBeforeRollback = Set.of(_hiddenFeatureIds);
-    setState(() => _hiddenFeatureIds.addAll(rollbackIds));
+    setState(() => _rollbackExcludedFeatureIds.addAll(rollbackIds));
     await _runGuarded(_refreshMesh);
   }
 
-  /// B4: undoes [_beginRollback] - restores exactly the hidden set from
-  /// before rollback began, discarding the rollback-only additions (a real
-  /// manual Hide/Show made *during* the edit is also discarded here, same
-  /// as every other "restore to before this flow started" stash in this
-  /// file, e.g. [_meshBeforeExtrude]/[_entitiesBeforeExtrude]). A safe no-op
-  /// if rollback was never engaged for this edit (editing the last
-  /// Feature).
+  /// B4: undoes [_beginRollback] - clears [_rollbackExcludedFeatureIds]
+  /// entirely (it only ever holds rollback-only ids, nothing to preserve).
+  /// A safe no-op if rollback was never engaged for this edit (editing the
+  /// last Feature).
   Future<void> _endRollback() async {
-    final before = _hiddenFeatureIdsBeforeRollback;
-    if (before == null) return;
+    if (_rollbackExcludedFeatureIds.isEmpty) return;
     setState(() {
-      _hiddenFeatureIds
-        ..clear()
-        ..addAll(before);
+      _rollbackExcludedFeatureIds.clear();
       // Without this, [_visibleSketchGeometries] would stay computed
       // against the mid-rollback hidden set until some unrelated later
       // refresh happened to recompute it.
-      _hiddenFeatureIdsBeforeRollback = null;
       _recomputeVisibleSketchGeometries();
     });
     await _runGuarded(_refreshMesh);
@@ -2085,7 +2111,7 @@ class _PartScreenState extends State<PartScreen> {
                     visible: _featureTreeVisible && !_extrudeActive && !_createPlaneActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
-                    hiddenFeatureIds: _hiddenFeatureIds,
+                    hiddenFeatureIds: _viewportHiddenFeatureIds,
                     onFeatureTap: _onFeatureTap,
                     onFeatureLongPress: _onFeatureLongPress,
                     onClose: () {

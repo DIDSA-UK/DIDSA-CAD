@@ -45,11 +45,23 @@ String featureDisplayName(List<FeatureDto> features, int index) {
 ///
 /// Hidden by default so the 3D viewport gets full space - slides in from
 /// the left (same [AnimatedSlide] pattern as [SketchRibbon]) when
-/// [visible], capped to 40% of the available width so the viewport stays
-/// visible alongside it rather than being fully covered, with its own
-/// close button ([onClose]) rather than relying solely on the toolbar
-/// toggle that opened it.
-class FeatureTreePanel extends StatelessWidget {
+/// [visible], starting at 40% of the available width (never past
+/// [_maxWidthFraction] or below [_minWidthFraction]) so the viewport stays
+/// visible alongside it rather than being fully covered - a drag handle on
+/// its trailing edge (see [_buildDragHandle]) lets the user widen it
+/// themselves rather than being stuck at that default, which on-device
+/// feedback found too narrow: row text was wrapping onto a second line
+/// (e.g. "Extrude 1" breaking into "Extru" / "de 1") instead of eliding.
+/// Has its own close button ([onClose]) rather than relying solely on the
+/// toolbar toggle that opened it.
+///
+/// Bodies and Planes start collapsed ([_buildBodiesSection]/
+/// [_buildPlanesSection]'s own `initiallyExpanded: false`) since they're
+/// derived/read-only sections most sessions don't need open; Features
+/// starts expanded ([_buildFeaturesSection]'s `initiallyExpanded: true`)
+/// since it's the one section every edit/rollback/delete action actually
+/// targets.
+class FeatureTreePanel extends StatefulWidget {
   final bool visible;
   final List<FeatureDto> features;
   final String? selectedFeatureId;
@@ -117,61 +129,143 @@ class FeatureTreePanel extends StatelessWidget {
   });
 
   @override
+  State<FeatureTreePanel> createState() => _FeatureTreePanelState();
+}
+
+class _FeatureTreePanelState extends State<FeatureTreePanel> {
+  static const double _defaultWidthFraction = 0.4;
+  static const double _minWidthFraction = 0.28;
+  static const double _maxWidthFraction = 0.75;
+
+  /// Same non-wrapping, size-13 treatment for every row title (Body/Plane/
+  /// Feature alike) - on-device feedback found the default `ListTile`/
+  /// `ExpansionTile` text size wrapped mid-word at the panel's original
+  /// default width (e.g. "Extrude 1" -> "Extru" / "de 1"); paired with the
+  /// drag handle below (so a user who wants the full name can just widen
+  /// the panel instead), an explicit `maxLines: 1` + ellipsis is the other
+  /// half of the fix - wrapping is never acceptable here regardless of
+  /// width, since a row is one line of tree structure, not a paragraph.
+  static const TextStyle _rowTitleStyle = TextStyle(fontSize: 13);
+  static const TextStyle _rowSubtitleStyle = TextStyle(fontSize: 11);
+  static const TextStyle _sectionTitleStyle = TextStyle(fontSize: 14, fontWeight: FontWeight.w600);
+
+  double _widthFraction = _defaultWidthFraction;
+
+  @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.topLeft,
-      child: ClipRect(
-        child: AnimatedSlide(
-          offset: visible ? Offset.zero : const Offset(-1.05, 0),
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-          child: SafeArea(
-            child: FractionallySizedBox(
-              widthFactor: 0.4,
-              heightFactor: 1,
-              child: Material(
-                elevation: 2,
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(12),
-                  bottomRight: Radius.circular(12),
-                ),
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
-                      child: Row(
-                        children: [
-                          const Expanded(
-                            child: Text('Build Tree', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                          IconButton(
-                            tooltip: 'Close',
-                            icon: const Icon(Icons.close, size: 20),
-                            onPressed: onClose,
-                          ),
-                        ],
-                      ),
-                    ),
-                    // Prompt D: an inline banner (not a dialog) naming the
-                    // picker mode the user is in - sits below the header so
-                    // the close (X) button stays usable to cancel the
-                    // pending Extrude.
-                    if (isSketchPickerMode)
-                      Container(
-                        width: double.infinity,
-                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        child: Text(
-                          'Select a sketch to extrude',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            fontSize: 13,
-                          ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final totalWidth = constraints.maxWidth;
+        final panelWidth = (_widthFraction * totalWidth).clamp(
+          _minWidthFraction * totalWidth,
+          _maxWidthFraction * totalWidth,
+        );
+        return Align(
+          alignment: Alignment.topLeft,
+          child: ClipRect(
+            child: AnimatedSlide(
+              offset: widget.visible ? Offset.zero : const Offset(-1.05, 0),
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              child: SafeArea(
+                child: SizedBox(
+                  width: panelWidth,
+                  height: double.infinity,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Material(
+                        elevation: 2,
+                        borderRadius: const BorderRadius.only(
+                          topRight: Radius.circular(12),
+                          bottomRight: Radius.circular(12),
+                        ),
+                        child: Column(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+                              child: Row(
+                                children: [
+                                  const Expanded(
+                                    child: Text(
+                                      'Build Tree',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Close',
+                                    icon: const Icon(Icons.close, size: 20),
+                                    onPressed: widget.onClose,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            // Prompt D: an inline banner (not a dialog) naming the
+                            // picker mode the user is in - sits below the header so
+                            // the close (X) button stays usable to cancel the
+                            // pending Extrude.
+                            if (widget.isSketchPickerMode)
+                              Container(
+                                width: double.infinity,
+                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                child: Text(
+                                  'Select a sketch to extrude',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            Expanded(child: _buildGroupedTree(context)),
+                          ],
                         ),
                       ),
-                    Expanded(child: _buildGroupedTree(context)),
-                  ],
+                      Positioned(top: 0, bottom: 0, right: -7, child: _buildDragHandle(totalWidth)),
+                    ],
+                  ),
                 ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// The trailing-edge resize grip - a 14px-wide invisible hit target
+  /// (comfortable for touch even though the visible grip inside it is
+  /// slimmer) that adjusts [_widthFraction] by the same fraction of
+  /// [totalWidth] the user's finger/pointer actually moved, clamped to
+  /// [_minWidthFraction]/[_maxWidthFraction] so the panel can never be
+  /// dragged down to unreadable or out past covering the whole viewport.
+  Widget _buildDragHandle(double totalWidth) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeLeftRight,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragUpdate: (details) {
+          if (totalWidth <= 0) return;
+          setState(() {
+            _widthFraction = (_widthFraction + details.delta.dx / totalWidth).clamp(
+              _minWidthFraction,
+              _maxWidthFraction,
+            );
+          });
+        },
+        child: SizedBox(
+          width: 14,
+          child: Center(
+            child: Container(
+              width: 4,
+              height: 56,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.outlineVariant,
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
           ),
@@ -186,37 +280,48 @@ class FeatureTreePanel extends StatelessWidget {
   /// Filters [ExpansionTile] convention rather than inventing a new
   /// grouping widget. Neither section reorders anything - Bodies are
   /// ordered by `bodyDisplayNames` (Feature-creation order, then split
-  /// index), and Features keep [features]' own creation/graph order
-  /// exactly as before this prompt.
+  /// index), and Features keep [FeatureTreePanel.features]' own creation/
+  /// graph order exactly as before this prompt.
   Widget _buildGroupedTree(BuildContext context) {
     return ListView(
       children: [
-        if (bodyIds.isNotEmpty) _buildBodiesSection(context),
-        if (features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
+        if (widget.bodyIds.isNotEmpty) _buildBodiesSection(context),
+        if (widget.features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
         _buildFeaturesSection(context),
       ],
     );
   }
 
-  /// The Bodies section - omitted entirely when [bodyIds] is empty (e.g. a
-  /// Part with no real geometry yet), rather than shown as an empty/error
-  /// section. Row order follows [bodyNames]' own iteration order (a
-  /// `LinkedHashMap`, so it preserves `bodyDisplayNames`' already-correct
-  /// "Body 1", "Body 2", ... insertion order) rather than re-sorting
-  /// [bodyIds] here by the display name *string* - "Body 10" would
-  /// otherwise sort before "Body 2".
+  /// The Bodies section - omitted entirely when [FeatureTreePanel.bodyIds]
+  /// is empty (e.g. a Part with no real geometry yet), rather than shown as
+  /// an empty/error section. Row order follows [FeatureTreePanel.bodyNames]'
+  /// own iteration order (a `LinkedHashMap`, so it preserves
+  /// `bodyDisplayNames`' already-correct "Body 1", "Body 2", ... insertion
+  /// order) rather than re-sorting [FeatureTreePanel.bodyIds] here by the
+  /// display name *string* - "Body 10" would otherwise sort before "Body 2".
+  /// Starts collapsed - a derived, read-only section most sessions don't
+  /// need open by default.
   Widget _buildBodiesSection(BuildContext context) {
-    final orderedIds = bodyNames.keys.where(bodyIds.contains).toList();
+    final orderedIds = widget.bodyNames.keys.where(widget.bodyIds.contains).toList();
     return ExpansionTile(
-      initiallyExpanded: true,
-      leading: const Icon(Icons.view_in_ar),
-      title: const Text('Bodies'),
+      initiallyExpanded: false,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: const Icon(Icons.view_in_ar, size: 20),
+      title: const Text('Bodies', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [
         for (final bodyId in orderedIds)
           ListTile(
-            leading: const Icon(Icons.view_in_ar_outlined),
-            title: Text(bodyNames[bodyId] ?? bodyId),
-            onTap: () => onBodyTap(bodyId),
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            leading: const Icon(Icons.view_in_ar_outlined, size: 18),
+            title: Text(
+              widget.bodyNames[bodyId] ?? bodyId,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: _rowTitleStyle,
+            ),
+            onTap: () => widget.onBodyTap(bodyId),
           ),
       ],
     );
@@ -227,22 +332,32 @@ class FeatureTreePanel extends StatelessWidget {
   /// multiple-Bodies split, so this needs no separate id/name map the way
   /// [_buildBodiesSection] does). Omitted entirely when there are none yet
   /// (see [_buildGroupedTree]'s own check), same "no empty section" rule
-  /// [_buildBodiesSection] follows. Tapping a row reuses [onFeatureTap] -
-  /// same B4 rollback/edit flow a Features-section row already opens for
-  /// this same Feature, not a separate select-only action the way tapping a
-  /// Body row is.
+  /// [_buildBodiesSection] follows. Tapping a row reuses [FeatureTreePanel.
+  /// onFeatureTap] - same B4 rollback/edit flow a Features-section row
+  /// already opens for this same Feature, not a separate select-only action
+  /// the way tapping a Body row is. Starts collapsed, same reasoning as
+  /// [_buildBodiesSection].
   Widget _buildPlanesSection(BuildContext context) {
-    final planeFeatures = features.where((f) => f.type == 'create_plane').toList();
+    final planeFeatures = widget.features.where((f) => f.type == 'create_plane').toList();
     return ExpansionTile(
-      initiallyExpanded: true,
-      leading: const Icon(Icons.crop_din),
-      title: const Text('Planes'),
+      initiallyExpanded: false,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: const Icon(Icons.crop_din, size: 20),
+      title: const Text('Planes', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [
         for (final feature in planeFeatures)
           ListTile(
-            leading: const Icon(Icons.crop_din_outlined),
-            title: Text(featureDisplayName(features, features.indexOf(feature))),
-            onTap: () => onFeatureTap(feature),
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            leading: const Icon(Icons.crop_din_outlined, size: 18),
+            title: Text(
+              featureDisplayName(widget.features, widget.features.indexOf(feature)),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: _rowTitleStyle,
+            ),
+            onTap: () => widget.onFeatureTap(feature),
           ),
       ],
     );
@@ -251,30 +366,36 @@ class FeatureTreePanel extends StatelessWidget {
   /// The Features section - always shown (even if empty, which can only
   /// happen for a brand-new Part with nothing in it yet - an
   /// [ExpansionTile] with no children is a normal, sane empty state, not an
-  /// error one).
+  /// error one). Starts expanded, unlike Bodies/Planes above - this is the
+  /// section every edit/rollback/delete action targets.
   Widget _buildFeaturesSection(BuildContext context) {
     return ExpansionTile(
       initiallyExpanded: true,
-      leading: const Icon(Icons.list_alt),
-      title: const Text('Features'),
-      children: [for (final feature in features) _buildFeatureTile(context, feature)],
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: const Icon(Icons.list_alt, size: 20),
+      title: const Text('Features', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
+      children: [for (final feature in widget.features) _buildFeatureTile(context, feature)],
     );
   }
 
   /// One Feature's row inside the Features section - unchanged in
-  /// behaviour/appearance from before B3's revision.
+  /// behaviour from before B3's revision, just denser/non-wrapping text.
   Widget _buildFeatureTile(BuildContext context, FeatureDto feature) {
-    final index = features.indexWhere((f) => f.id == feature.id);
-    final selected = feature.id == selectedFeatureId;
-    final hidden = hiddenFeatureIds.contains(feature.id);
+    final index = widget.features.indexWhere((f) => f.id == feature.id);
+    final selected = feature.id == widget.selectedFeatureId;
+    final hidden = widget.hiddenFeatureIds.contains(feature.id);
     final isSketch = feature.type == 'sketch';
     // Dimmed (but still tappable - an ineligible tap surfaces a SnackBar via
     // onSketchPicked rather than being inert) whenever picking and this row
     // isn't a Sketch with a known-closed profile.
-    final pickerDimmed = isSketchPickerMode && (!isSketch || !pickableSketchIds.contains(feature.id));
+    final pickerDimmed =
+        widget.isSketchPickerMode && (!isSketch || !widget.pickableSketchIds.contains(feature.id));
     return Opacity(
       opacity: hidden || pickerDimmed ? 0.5 : 1.0,
       child: ListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
         selected: selected,
         leading: Icon(
           feature.locked
@@ -284,19 +405,30 @@ class FeatureTreePanel extends StatelessWidget {
                   'create_plane' => Icons.crop_din,
                   _ => Icons.edit,
                 },
+          size: 20,
           color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
         ),
-        title: Text(featureDisplayName(features, index)),
-        subtitle: Text(feature.locked ? 'Locked' : 'Editable'),
+        title: Text(
+          featureDisplayName(widget.features, index),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _rowTitleStyle,
+        ),
+        subtitle: Text(
+          feature.locked ? 'Locked' : 'Editable',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _rowSubtitleStyle,
+        ),
         trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
         onTap: () {
-          if (isSketchPickerMode) {
-            if (isSketch) onSketchPicked?.call(feature);
+          if (widget.isSketchPickerMode) {
+            if (isSketch) widget.onSketchPicked?.call(feature);
           } else {
-            onFeatureTap(feature);
+            widget.onFeatureTap(feature);
           }
         },
-        onLongPress: isSketchPickerMode ? null : () => onFeatureLongPress(feature),
+        onLongPress: widget.isSketchPickerMode ? null : () => widget.onFeatureLongPress(feature),
       ),
     );
   }

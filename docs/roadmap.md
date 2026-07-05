@@ -365,6 +365,21 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   18/13-file OCCT/GPU-blocked sets, respectively, as before). **Not yet
   on-device confirmed** - same gating discipline before Prompt D (Fillet)
   starts.
+- **Bug fix (on-device report, post-C4)**: hiding a Body via plain Hide/Show
+  and B4 true-rollback's own "pretend this Feature doesn't exist yet"
+  exclusion were the same underlying mechanism (`hidden_feature_ids`) -
+  correct for rollback, but it meant hiding a Body that a still-visible
+  Plane depended on (and anything built on that Plane) broke the *entire*
+  `/mesh` response with `missing_reference`, including unrelated Bodies.
+  Split into two separate concepts end to end: `rollback_excluded_feature_ids`
+  (still genuinely excludes a Feature from recompute, B4-only) and
+  `hidden_feature_ids` (now purely cosmetic - every Body is always fully
+  computed, then filtered out of the response only). Accepted trade-off:
+  hiding a Cut (which owns no standalone Body) no longer "un-subtracts" it.
+  New end-to-end regression test reproduces the exact reported scenario.
+  Also: Build Tree text no longer wraps (smaller, single-line, ellipsized),
+  gained a drag handle to resize the panel, and Bodies/Planes now start
+  collapsed while Features stays expanded.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

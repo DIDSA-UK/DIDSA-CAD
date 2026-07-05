@@ -165,7 +165,7 @@ def _solid_for_extrude_feature(
     sketch_feature: SketchFeature,
     part: Part,
     bodies_so_far: dict[str, TopoDS_Shape],
-    hidden_feature_ids: frozenset[str],
+    excluded_feature_ids: frozenset[str],
 ) -> TopoDS_Shape | None:
     """The real OCCT solid for one ExtrudeFeature, or None if its backing
     Sketch no longer has an extrudable profile - callers skip rather than
@@ -203,7 +203,7 @@ def _solid_for_extrude_feature(
         )
         return None
 
-    basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, hidden_feature_ids)
+    basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
     if result.status == ProfileStatus.CLOSED_LOOP:
         assert result.profile is not None
         profiles = [result.profile]
@@ -266,7 +266,7 @@ def _register_solids(bodies: dict[str, TopoDS_Shape], base_id: str, shape: TopoD
 
 
 def compute_part_bodies(
-    part: Part, hidden_feature_ids: frozenset[str] = frozenset()
+    part: Part, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> dict[str, TopoDS_Shape]:
     """Recomputes every Body in `part`, keyed by stable Body id (A1) -
     replaces the old single-accumulated-solid `compute_part_solid`.
@@ -288,9 +288,9 @@ def compute_part_bodies(
     Cut: subtracts its solid from every Body named in
     `feature.target_body_ids` (never empty by the time recompute runs - see
     app.document.router._validate_target_body_ids). A named Body that
-    doesn't currently exist (e.g. hidden away via `hidden_feature_ids`) is
-    skipped for that Body only (logged, not raised) - mirrors the old
-    "Cut with nothing to cut from" skip behaviour.
+    doesn't currently exist (e.g. excluded via `excluded_feature_ids`, or
+    genuinely deleted) is skipped for that Body only (logged, not raised) -
+    mirrors the old "Cut with nothing to cut from" skip behaviour.
 
     Amendment to A1's original rule: every Boss/Cut result (new, fused, or
     cut) is decomposed into its maximally-connected solid components (see
@@ -301,9 +301,25 @@ def compute_part_bodies(
     Body. The common single-solid case is entirely unaffected (same ids as
     before this amendment).
 
-    An ExtrudeFeature whose id is in `hidden_feature_ids` (client-side
-    Hide/Show, see app.document.router.get_part_mesh) is skipped entirely,
-    as if it weren't in the Part's history at all."""
+    An ExtrudeFeature whose id is in `excluded_feature_ids` is skipped
+    entirely, as if it weren't in the Part's history at all - used ONLY for
+    B4 true-rollback ("pretend this Feature and everything after it doesn't
+    exist yet while I edit an earlier one"), never for the client's plain
+    Hide/Show. Bug fix (post-C4): those two were originally the same
+    client-side set/query-param (`hidden_feature_ids`) on the theory that
+    "hidden" and "doesn't exist for recompute purposes" were equivalent -
+    true as long as nothing else could ever reference a hidden Body's own
+    topology. Once Create Plane (C2) could anchor a Plane to a Body face,
+    that stopped holding: hiding the Extrude that produced a Body used by a
+    *different*, still-visible Plane (and anything built on that Plane -
+    C3's Sketch-on-Plane/Extrude-on-that-Sketch) made the Plane's own
+    face_ref resolve to nothing, throwing `missing_reference` and taking
+    the *entire* `/mesh` response down with it - including unrelated Bodies
+    that had nothing wrong with them. `excluded_feature_ids` now carries
+    only the true-rollback set; a Body hidden via plain Hide/Show is always
+    still fully computed here and only filtered out afterward, at the
+    response layer - see app.document.router.get_part_mesh's own
+    `hidden_feature_ids` (the renamed, now purely cosmetic parameter)."""
     feature_index = {feature.id: i for i, feature in enumerate(part.features)}
     bodies: dict[str, TopoDS_Shape] = {}
 
@@ -312,7 +328,7 @@ def compute_part_bodies(
         feature = part.get_feature(feature_id)
         if not isinstance(feature, ExtrudeFeature):
             continue
-        if feature.id in hidden_feature_ids:
+        if feature.id in excluded_feature_ids:
             continue
 
         sketch_feature = part.get_feature(feature.sketch_feature_id)
@@ -324,7 +340,7 @@ def compute_part_bodies(
             )
             continue
 
-        solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, hidden_feature_ids)
+        solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, excluded_feature_ids)
         if solid is None:
             continue
 
@@ -418,7 +434,7 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
 
 
 def resolve_subshape(
-    part: Part, ref: SubShapeRef, hidden_feature_ids: frozenset[str] = frozenset()
+    part: Part, ref: SubShapeRef, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> TopoDS_Shape:
     """B1: resolves `ref` against `part`'s *current* recomputed bodies (via
     `compute_part_bodies`, not a cached shape from whenever `ref` was first
@@ -431,11 +447,11 @@ def resolve_subshape(
     Fails closed - raises the structured `missing_reference` HTTPException
     above (see `_missing_reference`) rather than falling back to some
     "closest" sub-shape - whenever `ref.body_id` no longer exists among the
-    Part's current Bodies (deleted, or hidden via `hidden_feature_ids`), or
+    Part's current Bodies (deleted, or hidden via `excluded_feature_ids`), or
     `ref.index` is out of range for that Body's current sub-shape count of
     `ref.shape_type` (its upstream topology changed since `ref` was
     captured). This is a deliberate product choice, not a placeholder - a
     cheap, deterministic enumeration index is cheap to ship and cheap to
     fall back from later if it proves too fragile in practice."""
-    bodies = compute_part_bodies(part, hidden_feature_ids)
+    bodies = compute_part_bodies(part, excluded_feature_ids)
     return resolve_subshape_from_bodies(bodies, ref)

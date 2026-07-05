@@ -512,7 +512,9 @@ def update_extrude_feature(
     fetched, via A1's existing graph-based recompute path, unchanged by
     this prompt - there is no separate "rollback" concept on this side at
     all, since suppressing downstream Features during an edit is purely a
-    client-side concern (`hidden_feature_ids`, already existed before B4)."""
+    client-side concern (`rollback_excluded_feature_ids`, already existed
+    before B4 under the `hidden_feature_ids` name it shared with plain
+    Hide/Show until the bug fix that split them - see `get_part_mesh`)."""
     part = get_part_or_404(part_id)
     feature = _get_extrude_feature_or_404(part, feature_id)
     new_start = payload.start_distance if payload.start_distance is not None else feature.start_distance
@@ -731,7 +733,9 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
 
 @router.get("/parts/{part_id}/mesh", response_model=list[BodyMeshResponse])
 def get_part_mesh(
-    part_id: str, hidden_feature_ids: list[str] = Query(default=[])
+    part_id: str,
+    hidden_feature_ids: list[str] = Query(default=[]),
+    rollback_excluded_feature_ids: list[str] = Query(default=[]),
 ) -> list[BodyMeshResponse]:
     """A1: returns an array of Bodies rather than one combined mesh - each
     entry is one independently-tessellated Body, carrying its own stable
@@ -742,19 +746,40 @@ def get_part_mesh(
     Placeholder mesh (a fixed box, `body_id="placeholder"`) while the Part
     has no ExtrudeFeature yet, per `Part.produces_solid_geometry` - always
     exactly one entry in that case. Once it does, this instead recomputes
-    every non-hidden ExtrudeFeature's real OCCT geometry (Boss/Cut, in
-    dependency-graph order - see app.document.extrude.compute_part_bodies)
-    and tessellates each resulting Body independently. A Part whose
-    ExtrudeFeature(s) all skipped or whose Bodies were all hidden away
-    returns an empty array - there is no "real" geometry to show at all,
-    unlike the old single-mesh response which still returned an empty mesh
-    tagged `source="computed"` for this case.
+    every ExtrudeFeature's real OCCT geometry (Boss/Cut, in dependency-graph
+    order - see app.document.extrude.compute_part_bodies) and tessellates
+    each resulting Body independently, before the two exclusion params
+    below are applied. A Part whose ExtrudeFeature(s) all skipped, or whose
+    Bodies were all hidden away, returns an empty array - there is no
+    "real" geometry to show at all, unlike the old single-mesh response
+    which still returned an empty mesh tagged `source="computed"` for this
+    case.
 
-    `hidden_feature_ids` is the client's Hide/Show state (see
-    PartScreen._hiddenFeatureIds) - purely client-side, never persisted here;
-    the client re-sends it on every mesh fetch so a hidden body's
-    contribution to the displayed solid (and so to its bounding box, used
-    for camera centering/zoom - see OrbitCamera) drops out immediately."""
+    Two distinct client-side exclusion sets, deliberately kept separate
+    (bug fix, post-C4 - see `compute_part_bodies`'s own docstring for the
+    full incident writeup of why conflating them broke Create Plane):
+
+    - `hidden_feature_ids` is the client's plain Hide/Show state
+      (`PartScreen._hiddenFeatureIds`) - purely cosmetic. Every Body is
+      still fully computed against the Part's real, unmodified history (so
+      a Plane anchored to a hidden Body's face, and anything built on that
+      Plane, keeps resolving normally); a hidden Body is only dropped from
+      *this response* afterward, by mapping its `body_id` back to the
+      ExtrudeFeature that produced it (`base_feature_id` - handles the
+      `#N` multi-solid-split suffix) and checking that id against this set.
+
+    - `rollback_excluded_feature_ids` is B4 true-rollback's "pretend these
+      Features (and hence anything depending on them) don't exist yet"
+      state - fed straight into `compute_part_bodies`, which skips a named
+      ExtrudeFeature's own computation entirely, exactly as before this fix
+      (correct for rollback: a downstream Feature genuinely should fail to
+      resolve if what it depends on is being edited out from under it).
+
+    Both are purely client-side and never persisted here; the client
+    re-sends whichever apply on every mesh fetch so a hidden/rolled-back
+    Body's contribution to the displayed solid (and so to its bounding box,
+    used for camera centering/zoom - see OrbitCamera) drops out
+    immediately."""
     part = get_part_or_404(part_id)
 
     if not part.produces_solid_geometry:
@@ -766,7 +791,8 @@ def get_part_mesh(
             )
         ]
 
-    bodies = compute_part_bodies(part, frozenset(hidden_feature_ids))
+    bodies = compute_part_bodies(part, frozenset(rollback_excluded_feature_ids))
+    hidden = frozenset(hidden_feature_ids)
     return [
         BodyMeshResponse(
             body_id=body_id,
@@ -774,4 +800,5 @@ def get_part_mesh(
             mesh=_mesh_vertex_data(tessellate_shape(shape, DEFAULT_MESH_QUALITY)),
         )
         for body_id, shape in bodies.items()
+        if base_feature_id(body_id) not in hidden
     ]

@@ -560,20 +560,48 @@ class DocumentApiClient {
         (body) => CascadeDeleteResultDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// [hiddenFeatureIds] is re-sent on every fetch (see
-  /// `PartScreen._hiddenFeatureIds`) - purely client-side Hide/Show state,
-  /// never persisted on the backend - and is encoded as a repeated query
-  /// parameter (`?hidden_feature_ids=a&hidden_feature_ids=b`) matching
+  /// Bug fix (post-C4): [hiddenFeatureIds] and [rollbackExcludedFeatureIds]
+  /// are two deliberately separate sets, both re-sent on every fetch, both
+  /// purely client-side and never persisted on the backend - see
+  /// `app.document.router.get_part_mesh`'s own docstring for the full
+  /// incident writeup of why conflating them (as this method originally
+  /// did, under the single `hiddenFeatureIds` name) broke Create Plane.
+  ///
+  /// [hiddenFeatureIds] is `PartScreen._hiddenFeatureIds` - plain Hide/Show,
+  /// purely cosmetic: every Body is still fully computed against the
+  /// Part's real, unmodified history, so a Plane anchored to a hidden
+  /// Body's face (and anything built on that Plane) keeps resolving
+  /// normally; a hidden Body is just dropped from *this response*
+  /// afterward.
+  ///
+  /// [rollbackExcludedFeatureIds] is B4 true-rollback's own "pretend these
+  /// Features (and hence anything depending on them) don't exist yet"
+  /// state (`PartScreen._rollbackExcludedFeatureIds`) - still genuinely
+  /// excluded from the backend's recompute, so a downstream Feature
+  /// correctly fails to resolve if what it depends on is being edited out
+  /// from under it.
+  ///
+  /// Both are encoded as repeated query parameters
+  /// (`?hidden_feature_ids=a&rollback_excluded_feature_ids=b`) matching
   /// FastAPI's `Query(default=[])` parsing on the other end.
   ///
   /// Prompt A3: parses the array-of-Bodies response Prompt A1 introduced -
   /// the top-level JSON is now a `List`, not a single object.
-  Future<List<BodyMeshDto>> getPartMesh(String partId, {List<String> hiddenFeatureIds = const []}) =>
+  Future<List<BodyMeshDto>> getPartMesh(
+    String partId, {
+    List<String> hiddenFeatureIds = const [],
+    List<String> rollbackExcludedFeatureIds = const [],
+  }) =>
       _send(
         () => _httpClient.get(
               _uri('/document/parts/$partId/mesh').replace(
-                queryParameters:
-                    hiddenFeatureIds.isEmpty ? null : {'hidden_feature_ids': hiddenFeatureIds},
+                queryParameters: hiddenFeatureIds.isEmpty && rollbackExcludedFeatureIds.isEmpty
+                    ? null
+                    : {
+                        if (hiddenFeatureIds.isNotEmpty) 'hidden_feature_ids': hiddenFeatureIds,
+                        if (rollbackExcludedFeatureIds.isNotEmpty)
+                          'rollback_excluded_feature_ids': rollbackExcludedFeatureIds,
+                      },
               ),
               headers: _headers,
             ),

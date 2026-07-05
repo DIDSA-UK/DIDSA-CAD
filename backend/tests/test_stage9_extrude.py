@@ -198,11 +198,17 @@ def test_cut_with_empty_target_body_ids_is_rejected_with_422():
     assert "target_body_ids" in response.json()["detail"]
 
 
-def test_cut_targeting_a_hidden_body_is_skipped_gracefully():
-    """A1's equivalent of the old "cut with nothing to cut from" case: the
-    target Body's creating Boss is hidden, so the Body doesn't exist at
-    recompute time - the Cut must be skipped (not raised) and the mesh
-    request must still succeed, with no Body for it in the array."""
+def test_cutting_into_a_hidden_boss_still_computes_but_the_result_stays_hidden():
+    """Bug fix (post-C4): `hidden_feature_ids` is now a purely cosmetic,
+    post-hoc filter (see app.document.router.get_part_mesh's own docstring
+    for the full incident writeup) - the Boss is still fully computed and
+    the Cut still executes against it normally; the resulting Body simply
+    never appears in the response because it traces back (via
+    `base_feature_id`) to the hidden Boss's own feature id, same as if the
+    Cut had never touched it. Net observable result is unchanged from
+    before this fix (still an empty array) even though the mechanism is
+    now entirely different - see the sibling "un-subtracts" test below for
+    the one case (hiding the *Cut* itself) that really did change."""
     part = _create_part()
     boss_sketch = _create_square_sketch_feature(part["id"])
     boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
@@ -393,7 +399,9 @@ def test_patch_making_end_distance_not_greater_than_start_distance_is_rejected()
     assert _max_z(mesh) == pytest.approx(10.0)
 
 
-# --- hidden_feature_ids ----------------------------------------------------------
+# --- hidden_feature_ids (bug fix, post-C4: purely cosmetic - see -------------
+# app.document.router.get_part_mesh's docstring for the full incident writeup
+# of why this can no longer exclude anything from the actual computation) -----
 
 
 def test_hidden_feature_ids_excludes_a_boss_feature_from_the_computed_mesh():
@@ -404,30 +412,44 @@ def test_hidden_feature_ids_excludes_a_boss_feature_from_the_computed_mesh():
     visible_body = _single_body(part["id"])
     assert len(visible_body["mesh"]["vertices"]) > 0
 
-    # A1: hiding the only Boss feature means its Body was never created at
-    # all this recompute, so the array is empty - there is no Body left to
-    # return an empty mesh for.
+    # The Boss's own standalone Body is still fully computed - it's filtered
+    # out of *this response* afterward because it traces back to a hidden
+    # feature id, not because it failed to exist at recompute time.
     hidden_bodies = _get_bodies(part["id"], hidden_feature_ids=[extrude["id"]])
 
     assert hidden_bodies == []
 
 
-def test_hidden_feature_ids_un_subtracts_a_hidden_cut_feature():
+def test_hiding_a_cut_no_longer_un_subtracts_it_since_a_cut_owns_no_body_of_its_own():
+    """Bug fix (post-C4): before this fix, `hidden_feature_ids` excluded a
+    named ExtrudeFeature from computation entirely, so hiding a Cut made it
+    behave as if it had never run - a (mildly abused, but real) way to
+    peek under a Cut. That's no longer possible: hiding only filters the
+    *response* by tracing a resulting Body back to whichever feature
+    produced it (`base_feature_id`), and a Cut never produces its own
+    Body - it modifies the Boss's. So the Cut's own id never matches
+    anything in the response, and the (still fully cut) result is shown
+    exactly as if nothing were hidden. This is the deliberate, accepted
+    trade-off for the actual fix: `hidden_feature_ids` must never again
+    change what's *computed* (only what's *shown*), because a Plane
+    anchored to a Body's face - and anything built on that Plane - needs
+    that Body's real topology regardless of any Feature's Hide/Show state.
+    """
     part = _create_part()
 
     boss_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0, size=10.0)
     boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
-    boss_only_body = _single_body(part["id"])
 
     cut_sketch = _create_square_sketch_feature(part["id"], x0=3.0, y0=3.0, size=4.0)
     cut = _create_extrude_feature(
         part["id"], cut_sketch["id"], extrude_type="cut", target_body_ids=[boss["id"]]
     ).json()
+    cut_result_body = _single_body(part["id"])
 
     cut_hidden_body = _single_body(part["id"], hidden_feature_ids=[cut["id"]])
 
-    # With the Cut hidden, the mesh should match the pre-Cut (Boss-only) solid.
-    assert cut_hidden_body["mesh"]["vertices"] == boss_only_body["mesh"]["vertices"]
+    # Hiding the Cut has no effect at all - the Body is still the cut result.
+    assert cut_hidden_body["mesh"]["vertices"] == cut_result_body["mesh"]["vertices"]
 
 
 # --- C1: nested profiles (a hole in a plate) --------------------------------

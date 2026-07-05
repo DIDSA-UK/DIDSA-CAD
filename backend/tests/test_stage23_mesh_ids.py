@@ -178,7 +178,12 @@ def test_body_with_a_skipped_cut_and_no_other_geometry_is_absent_from_the_array(
     (see test_stage_a1_multibody.py's 422 test), so "nothing computed yet"
     is represented by an empty array rather than a single Body entry with
     empty id lists. This reproduces the equivalent "nothing to show" state
-    via a Cut whose target Body is hidden away at recompute time."""
+    via a Cut whose target Body is hidden away.
+
+    Bug fix (post-C4): the Boss/Cut are still fully computed - the result
+    is absent from the array only because it traces back
+    (`base_feature_id`) to the hidden Boss, filtered at the response layer
+    - see app.document.router.get_part_mesh's own docstring."""
     part = _create_part()
     boss_sketch = _create_square_sketch_feature(part["id"])
     boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")

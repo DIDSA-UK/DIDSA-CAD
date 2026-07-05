@@ -160,7 +160,7 @@ def resolve_offset_face(
     part: Part,
     face_ref: SubShapeRef,
     offset: float,
-    hidden_feature_ids: frozenset[str] = frozenset(),
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
     """C2: resolves an OFFSET_FACE CreatePlaneFeature - fresh wrapper around
     `resolve_offset_face_from_bodies` that computes `bodies` itself via
@@ -168,7 +168,7 @@ def resolve_offset_face(
     one on hand. Fails closed with `missing_reference` (via `resolve_
     subshape_from_bodies`) or `non_planar_reference` (see `_resolve_planar_
     face`)."""
-    bodies = compute_part_bodies(part, hidden_feature_ids)
+    bodies = compute_part_bodies(part, excluded_feature_ids)
     return resolve_offset_face_from_bodies(bodies, face_ref, offset)
 
 
@@ -210,12 +210,12 @@ def resolve_midplane(
     part: Part,
     face_ref_a: SubShapeRef,
     face_ref_b: SubShapeRef,
-    hidden_feature_ids: frozenset[str] = frozenset(),
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
     """C3: resolves a MIDPLANE CreatePlaneFeature - fresh wrapper around
     `resolve_midplane_from_bodies`, mirroring `resolve_offset_face`'s own
     fresh-vs-`_from_bodies` split."""
-    bodies = compute_part_bodies(part, hidden_feature_ids)
+    bodies = compute_part_bodies(part, excluded_feature_ids)
     return resolve_midplane_from_bodies(bodies, face_ref_a, face_ref_b)
 
 
@@ -249,12 +249,12 @@ def resolve_normal_to_edge_through_vertex(
     part: Part,
     edge_ref: SubShapeRef,
     vertex_ref: SubShapeRef,
-    hidden_feature_ids: frozenset[str] = frozenset(),
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
     """C4: resolves a NORMAL_TO_EDGE_THROUGH_VERTEX CreatePlaneFeature -
     fresh wrapper around `resolve_normal_to_edge_through_vertex_from_bodies`,
     mirroring `resolve_offset_face`'s own fresh-vs-`_from_bodies` split."""
-    bodies = compute_part_bodies(part, hidden_feature_ids)
+    bodies = compute_part_bodies(part, excluded_feature_ids)
     return resolve_normal_to_edge_through_vertex_from_bodies(bodies, edge_ref, vertex_ref)
 
 
@@ -285,12 +285,12 @@ def resolve_parallel_face_through_vertex(
     part: Part,
     face_ref: SubShapeRef,
     vertex_ref: SubShapeRef,
-    hidden_feature_ids: frozenset[str] = frozenset(),
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
     """C4: resolves a PARALLEL_TO_FACE_THROUGH_VERTEX CreatePlaneFeature -
     fresh wrapper around `resolve_parallel_face_through_vertex_from_bodies`,
     mirroring `resolve_offset_face`'s own fresh-vs-`_from_bodies` split."""
-    bodies = compute_part_bodies(part, hidden_feature_ids)
+    bodies = compute_part_bodies(part, excluded_feature_ids)
     return resolve_parallel_face_through_vertex_from_bodies(bodies, face_ref, vertex_ref)
 
 
@@ -298,7 +298,7 @@ def _basis_for_sketch(
     part: Part,
     sketch: Sketch,
     bodies: dict[str, TopoDS_Shape],
-    hidden_feature_ids: frozenset[str],
+    excluded_feature_ids: frozenset[str],
 ) -> ResolvedPlane:
     """C3: `sketch`'s own resolved anchor plane - a fixed plane's `sketch_
     basis_for_plane(sketch.plane)`, or (new in C3) the `ResolvedPlane` of
@@ -319,7 +319,7 @@ def _basis_for_sketch(
     if isinstance(sketch_feature, SketchFeature) and sketch_feature.plane_feature_id is not None:
         plane_feature = part.get_feature(sketch_feature.plane_feature_id)
         assert isinstance(plane_feature, CreatePlaneFeature)
-        return resolve_create_plane_from_bodies(part, plane_feature, bodies, hidden_feature_ids)
+        return resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
     assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
     return sketch_basis_for_plane(sketch.plane)
 
@@ -328,7 +328,7 @@ def resolve_sketch_basis(
     part: Part,
     sketch_feature: SketchFeature,
     bodies: dict[str, TopoDS_Shape],
-    hidden_feature_ids: frozenset[str] = frozenset(),
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
     """C3: `sketch_feature`'s own resolved anchor plane - the public entry
     point `app.document.extrude._solid_for_extrude_feature` calls (function-
@@ -336,14 +336,14 @@ def resolve_sketch_basis(
     2D geometry into world space regardless of whether that Sketch sits on
     a fixed plane or a custom one."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
-    return _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)
+    return _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
 
 
 def _resolve_point_ref_position(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     point_ref: PointRef,
-    hidden_feature_ids: frozenset[str],
+    excluded_feature_ids: frozenset[str],
 ) -> tuple[float, float, float]:
     """C4: `point_ref`'s own world-space position - a Body vertex's directly
     (see `_resolve_vertex_position`), or a Sketch Point's local (x, y)
@@ -358,7 +358,7 @@ def _resolve_point_ref_position(
     sketch_point = resolve_sketch_entity(ref)
     assert isinstance(sketch_point, Point)  # entity_type already validated POINT by resolve_sketch_entity
     sketch = get_sketch_or_404(ref.sketch_id)
-    basis = _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)
+    basis = _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
     return basis_point(basis, sketch_point.x, sketch_point.y)
 
 
@@ -366,7 +366,7 @@ def resolve_three_points_from_bodies(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     point_refs: list[PointRef],
-    hidden_feature_ids: frozenset[str],
+    excluded_feature_ids: frozenset[str],
 ) -> ResolvedPlane:
     """C4: the `_from_bodies` core of `resolve_three_points_feature` -
     resolves each of `point_refs`' three entries to a world position (see
@@ -374,7 +374,7 @@ def resolve_three_points_from_bodies(
     `app.document.plane_geometry.resolve_three_points`, which needs no OCCT
     of its own once given three plain positions."""
     p0, p1, p2 = (
-        _resolve_point_ref_position(part, bodies, point_ref, hidden_feature_ids)
+        _resolve_point_ref_position(part, bodies, point_ref, excluded_feature_ids)
         for point_ref in point_refs
     )
     return resolve_three_points(p0, p1, p2)
@@ -383,7 +383,7 @@ def resolve_three_points_from_bodies(
 def resolve_three_points_feature(
     part: Part,
     point_refs: list[PointRef],
-    hidden_feature_ids: frozenset[str] = frozenset(),
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
     """C4: resolves a THREE_POINTS CreatePlaneFeature - fresh wrapper around
     `resolve_three_points_from_bodies`, mirroring `resolve_offset_face`'s own
@@ -391,15 +391,15 @@ def resolve_three_points_feature(
     every other `resolve_<type>` fresh wrapper here) only to avoid shadowing
     `app.document.plane_geometry.resolve_three_points`, which this calls
     (via `resolve_three_points_from_bodies`) rather than duplicates."""
-    bodies = compute_part_bodies(part, hidden_feature_ids)
-    return resolve_three_points_from_bodies(part, bodies, point_refs, hidden_feature_ids)
+    bodies = compute_part_bodies(part, excluded_feature_ids)
+    return resolve_three_points_from_bodies(part, bodies, point_refs, excluded_feature_ids)
 
 
 def resolve_create_plane_from_bodies(
     part: Part,
     feature: CreatePlaneFeature,
     bodies: dict[str, TopoDS_Shape],
-    hidden_feature_ids: frozenset[str] = frozenset(),
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
     """C2/C3/C4: the `_from_bodies` core of `resolve_create_plane` - the
     single dispatch point for all six `PlaneType`s that never triggers its
@@ -422,15 +422,15 @@ def resolve_create_plane_from_bodies(
         )
     if feature.plane_type == PlaneType.THREE_POINTS:
         assert len(feature.point_refs) == 3
-        return resolve_three_points_from_bodies(part, bodies, feature.point_refs, hidden_feature_ids)
+        return resolve_three_points_from_bodies(part, bodies, feature.point_refs, excluded_feature_ids)
     assert feature.line_ref is not None and feature.point_ref is not None
     sketch = get_sketch_or_404(feature.line_ref.sketch_id)
-    basis = _basis_for_sketch(part, sketch, bodies, hidden_feature_ids)
+    basis = _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
     return resolve_normal_to_line_at_point(feature.line_ref, feature.point_ref, basis)
 
 
 def resolve_create_plane(
-    part: Part, feature: CreatePlaneFeature, hidden_feature_ids: frozenset[str] = frozenset()
+    part: Part, feature: CreatePlaneFeature, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> ResolvedPlane:
     """C2: the single dispatch point `app.document.router` uses regardless
     of `feature.plane_type` - callers never need to branch on `plane_type`
@@ -439,5 +439,5 @@ def resolve_create_plane(
     `_from_bodies` split. Every branch raises its own structured 422 on
     failure; this function adds no behavior of its own beyond the dispatch
     and the one-time `bodies` computation."""
-    bodies = compute_part_bodies(part, hidden_feature_ids)
-    return resolve_create_plane_from_bodies(part, feature, bodies, hidden_feature_ids)
+    bodies = compute_part_bodies(part, excluded_feature_ids)
+    return resolve_create_plane_from_bodies(part, feature, bodies, excluded_feature_ids)

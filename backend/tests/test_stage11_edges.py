@@ -135,7 +135,13 @@ def test_placeholder_mesh_also_includes_edges():
 def test_body_with_a_skipped_cut_and_no_other_geometry_is_absent_from_the_array():
     """A1: replaces the old "empty computed mesh has empty edges" test -
     see test_stage23_mesh_ids.py's identically-named/reasoned replacement
-    for why a Cut can no longer be created with nothing to target."""
+    for why a Cut can no longer be created with nothing to target.
+
+    Bug fix (post-C4): the Boss is still fully computed and the Cut still
+    executes against it - the result is absent from the array because it
+    traces back (`base_feature_id`) to the hidden Boss, not because
+    nothing was computed - see app.document.router.get_part_mesh's own
+    docstring."""
     part = _create_part()
     boss_sketch = _create_square_sketch_feature(part["id"])
     boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")

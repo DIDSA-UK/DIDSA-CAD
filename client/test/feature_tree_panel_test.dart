@@ -75,6 +75,10 @@ void main() {
       );
 
       expect(find.text('Bodies'), findsOneWidget);
+      // Bodies starts collapsed - expand it before its rows are findable.
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+
       expect(find.text('Body 1'), findsOneWidget);
       // The Extrude Feature itself still appears too, under Features.
       expect(find.text('Extrude 1'), findsOneWidget);
@@ -104,6 +108,9 @@ void main() {
         ),
       );
 
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+
       expect(find.text('Body 1'), findsOneWidget);
       expect(find.text('Body 2'), findsOneWidget);
       // Still exactly one Feature row for the one Extrude that produced them.
@@ -131,10 +138,39 @@ void main() {
       ),
     );
 
+    await tester.tap(find.text('Bodies'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Body 1'));
     await tester.pump();
 
     expect(tapped, 'e1');
+  });
+
+  testWidgets('Bodies and Planes start collapsed; Features starts expanded', (tester) async {
+    final features = [_sketch('s1'), _extrude('e1', locked: false)];
+    final names = bodyDisplayNames(features, ['e1']);
+    await tester.pumpWidget(
+      _wrap(
+        FeatureTreePanel(
+          visible: true,
+          features: features,
+          selectedFeatureId: null,
+          onFeatureTap: (_) {},
+          onFeatureLongPress: (_) {},
+          onClose: () {},
+          onBodyTap: (_) {},
+          bodyIds: const ['e1'],
+          bodyNames: names,
+        ),
+      ),
+    );
+
+    // Bodies section header is present, but its row is not - collapsed.
+    expect(find.text('Bodies'), findsOneWidget);
+    expect(find.text('Body 1'), findsNothing);
+    // Features starts expanded - both its rows are already visible.
+    expect(find.text('Sketch 1'), findsOneWidget);
+    expect(find.text('Extrude 1'), findsOneWidget);
   });
 
   testWidgets('tapping a Feature row still calls onFeatureTap, not onBodyTap', (tester) async {
