@@ -444,6 +444,22 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   genuinely executed. **Not yet on-device confirmed** - per the brief's own
   stop condition, do not start Prompt E (Chamfer) until this comes back
   positive.
+- **Bug fixes from on-device feedback on the above**: live preview/post-
+  confirm mesh never appeared (Fillet's create/edit/cancel flow only
+  refetched Features, never the mesh - `_ensureExtrudeFeatureExists`'s
+  `_refreshMesh()` call was missing from all four Fillet call sites, now
+  added); editing an existing Fillet showed the already-filleted body
+  instead of the rolled-back one (`_openFilletPanelForEdit` now also
+  excludes its own Feature id via `_beginRollback`, same mechanism B4
+  already uses for downstream Features); Body row long-press now opens a
+  context menu (new `showBodyContextMenu`) instead of directly toggling
+  Hide/Show, matching the Feature long-press pattern. **Still open, flagged
+  back as a v2-scope design question rather than guessed at**: corner
+  treatment when 2+ selected edges share a vertex - OCCT blends a shared
+  vertex smooth when all edges go through one builder call (today's
+  behavior); user wants this exposed as a selectable option in the
+  FilletPanel, which the original brief didn't specify. **Still not
+  on-device confirmed** - Prompt E (Chamfer) remains blocked until it is.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

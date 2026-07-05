@@ -1144,7 +1144,7 @@ class _PartScreenState extends State<PartScreen> {
       // Prompt D: rollback is ended by _confirmFillet/_cancelFillet
       // instead, same "stays engaged for the panel's whole lifetime"
       // reasoning as the extrude/create_plane branches above.
-      _openFilletPanelForEdit(feature);
+      await _openFilletPanelForEdit(feature);
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -1194,17 +1194,28 @@ class _PartScreenState extends State<PartScreen> {
     _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
   }
 
-  /// On-device feedback: long-pressing a Body row toggles its Hide/Show
-  /// state, mirroring the same long-press action a Feature row already
-  /// offers under Features - reuses [_toggleFeatureVisibility] itself
-  /// (Hide/Show is always Feature-scoped) by resolving [bodyId] back to the
-  /// Feature that produced it via [baseFeatureId] (`body_naming.dart`).
-  /// Defensive no-op if that Feature can no longer be found (a stale
-  /// [bodyId] from a mesh response that's since changed).
+  /// On-device feedback: long-pressing a Body row used to directly toggle
+  /// its Hide/Show state; it now opens a context menu instead, matching the
+  /// same bottom-sheet style a Feature row's long-press already shows (see
+  /// [showFeatureContextMenu]) - resolves [bodyId] back to the Feature that
+  /// produced it via [baseFeatureId] (`body_naming.dart`) since Hide/Show is
+  /// always Feature-scoped. Defensive no-op if that Feature can no longer be
+  /// found (a stale [bodyId] from a mesh response that's since changed).
   Future<void> _onBodyLongPress(String bodyId) async {
+    if (_busy) return;
     final feature = _featureById(baseFeatureId(bodyId));
     if (feature == null) return;
-    await _toggleFeatureVisibility(feature);
+
+    final action = await showBodyContextMenu(
+      context,
+      isHidden: _hiddenFeatureIds.contains(feature.id),
+    );
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case BodyContextMenuAction.toggleVisibility:
+        await _toggleFeatureVisibility(feature);
+    }
   }
 
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
@@ -1971,6 +1982,12 @@ class _PartScreenState extends State<PartScreen> {
       final feature = await _api.createFilletFeature(part.id, edgeRefs: edgeRefs, radius: _filletRadius);
       _previewFilletFeatureId = feature.id;
       await _refreshFeatures();
+      // Bug fix (on-device feedback): unlike Create Plane, a Fillet actually
+      // changes body geometry - _refreshFeatures() alone only refetches the
+      // Feature list, leaving the viewport showing the pre-fillet mesh until
+      // some unrelated later action (e.g. Hide/Show) happens to trigger a
+      // mesh refresh.
+      await _refreshMesh();
     });
     if (_previewFilletFeatureId == null && mounted) {
       // Creation failed (e.g. mixed_body_selection/fillet_failed -
@@ -1986,10 +2003,18 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// B4: opens [FilletPanel] to edit an *already-existing* FilletFeature -
-  /// mirrors [_openCreatePlanePanelForEdit] exactly, including the "no
-  /// zero-argument reconstruction" snapshot stash for [_cancelFillet] to
-  /// PATCH back verbatim.
-  void _openFilletPanelForEdit(FeatureDto feature) {
+  /// mirrors [_openCreatePlanePanelForEdit], but unlike Create Plane, a
+  /// Fillet actually modifies its target Body's shape in place, so the Body
+  /// shown while editing must exclude *this* Fillet's own contribution -
+  /// otherwise the viewport shows the already-filleted body and its
+  /// original (pre-fillet) edges are gone, so they can't be added to/
+  /// removed from the selection. [_onFeatureTap]'s preamble already rolls
+  /// back Features *after* this one; this adds the tapped Fillet itself to
+  /// the same [_rollbackExcludedFeatureIds] set (additive - see
+  /// [_beginRollback]), relying on [_confirmFillet]/[_cancelFillet]'s
+  /// existing [_endRollback] call to clear the whole set again once the
+  /// panel closes.
+  Future<void> _openFilletPanelForEdit(FeatureDto feature) async {
     final radius = feature.radius ?? 1.0;
     setState(() {
       _filletActive = true;
@@ -2000,6 +2025,7 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeFillet = _selectedEntities;
       _selectedEntities = {};
     });
+    await _beginRollback({feature.id});
   }
 
   /// Debounces the panel's radius-field edits into a PATCH + Feature
@@ -2019,6 +2045,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || featureId == null) return;
     await _api.updateFilletFeature(part.id, featureId, radius: _filletRadius);
     await _refreshFeatures();
+    await _refreshMesh();
   }
 
   /// Keeps the just-created/edited Feature, restores whatever was selected
@@ -2064,11 +2091,13 @@ class _PartScreenState extends State<PartScreen> {
             radius: editSnapshot.radius,
           );
           await _refreshFeatures();
+          await _refreshMesh();
         });
       } else {
         await _runGuarded(() async {
           await _api.deleteFeature(part.id, previewId);
           await _refreshFeatures();
+          await _refreshMesh();
         });
       }
     }

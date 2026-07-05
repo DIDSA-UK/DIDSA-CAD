@@ -59,3 +59,35 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
     ),
   );
 }
+
+/// Actions available from a Body row's long-press context menu. Only
+/// [toggleVisibility] exists today - a Body can't be renamed or deleted
+/// directly (that's done via the Feature that produced it) - but this stays
+/// an enum + bottom sheet, matching [FeatureContextMenuAction]/
+/// [showFeatureContextMenu]'s own shape, so a later stage can add more
+/// entries here without restructuring this call site or [FeatureTreePanel].
+enum BodyContextMenuAction { toggleVisibility }
+
+/// On-device feedback: a Body row's long-press used to toggle Hide/Show
+/// directly; this instead shows a bottom sheet in the same style as
+/// [showFeatureContextMenu], with Hide/Show as its one entry.
+Future<BodyContextMenuAction?> showBodyContextMenu(
+  BuildContext context, {
+  required bool isHidden,
+}) {
+  return showModalBottomSheet<BodyContextMenuAction>(
+    context: context,
+    builder: (context) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
+            title: Text(isHidden ? 'Show' : 'Hide'),
+            onTap: () => Navigator.of(context).pop(BodyContextMenuAction.toggleVisibility),
+          ),
+        ],
+      ),
+    ),
+  );
+}
