@@ -519,6 +519,28 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   editing (the two asks were in direct tension; correctness of the edge
   selection won per the user's own explicit preference). **Not yet
   on-device confirmed.**
+- **Live rounded-corner visual preview, built generically for Chamfer reuse
+  later**. Reinstates the visual the previous fix traded away, without
+  reintroducing the `missing_reference` bug - two meshes now, fetched
+  separately, never conflated: `_bodies` stays the stable pre-Fillet body
+  driving all hit-testing/picking (unchanged from the previous fix); a new
+  `_filletPreviewMesh`/`_filletPreviewBodyId` (fetched via
+  `_refreshFilletPreviewMesh`, the same `/mesh` endpoint with this
+  Feature's id *not* excluded) is purely visual. New `PartViewport.
+  previewOverlayBodyId`/`previewOverlayMesh` - a per-Body alternative to
+  the existing global-only `isPreviewMesh` flag - substitute the preview
+  mesh (same translucent-orange tint) into `_syncMeshNode`/`_syncEdgesNode`'s
+  rendering for just the one Body it targets; `bodies` itself, and every
+  hit-test/selection path reading from it, is untouched. `_refreshMesh()`
+  and `_refreshFilletPreviewMesh()` now run concurrently (`Future.wait`) so
+  the extra backend recompute doesn't double the round-trip latency, only
+  the backend's CPU cost per edit - flagged as a real trade-off worth
+  watching once Chamfer doubles the total live-preview traffic again.
+  Backend unchanged (reuses the existing `rollback_excluded_feature_ids`
+  param with a different exclusion set). `flutter analyze` clean, same 81
+  Dart tests passing (unaffected - this touches `PartViewport`'s rendering
+  internals, which no test file in this sandbox can exercise regardless).
+  **Not yet on-device confirmed.**
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

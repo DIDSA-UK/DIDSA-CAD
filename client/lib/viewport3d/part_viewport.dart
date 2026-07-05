@@ -79,6 +79,23 @@ class PartViewport extends StatefulWidget {
   /// is never mistaken for the Part's actual, saved shape.
   final bool isPreviewMesh;
 
+  /// On-device feedback: a *per-Body* alternative to [isPreviewMesh] for
+  /// Fillet (and, later, Chamfer - same mechanism, see this field's own
+  /// status-doc entry for why to reuse it rather than build a second one) -
+  /// [bodies] itself must stay the stable, *pre*-operation mesh for the
+  /// whole live-edit session (hit-testing/edge-picking needs edge ids that
+  /// never move out from under the user - see the "missing_reference"
+  /// bug fix this follows), but the operation's actual current effect
+  /// still needs to be *visible* somewhere, or the radius/edge-selection
+  /// panel has no visual feedback at all. When [previewOverlayMesh] is
+  /// non-null, [_syncMeshNode]/[_syncEdgesNode] substitute it (rendered
+  /// with the same translucent tint [isPreviewMesh] uses) for the one Body
+  /// in [bodies] whose id equals [previewOverlayBodyId] - every other Body,
+  /// and [bodies] itself for hit-testing/selection purposes, is completely
+  /// unaffected.
+  final String? previewOverlayBodyId;
+  final MeshDto? previewOverlayMesh;
+
   /// Stage 10b: globally hides all three reference planes - both their
   /// rendered geometry and their [onPlaneTap] hit-testing, so a tap where a
   /// hidden plane would be falls through to [onBackgroundTap] instead of
@@ -159,6 +176,8 @@ class PartViewport extends StatefulWidget {
     this.onCreatePlaneTap,
     this.selectedCreatePlaneFeatureId,
     this.isPreviewMesh = false,
+    this.previewOverlayBodyId,
+    this.previewOverlayMesh,
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
@@ -349,12 +368,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     super.didUpdateWidget(oldWidget);
     if (widget.bodies != oldWidget.bodies ||
         widget.isPreviewMesh != oldWidget.isPreviewMesh ||
+        widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
+        widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodyColourHex != oldWidget.bodyColourHex ||
         widget.bodyOpacity != oldWidget.bodyOpacity) {
       setState(_syncMeshNode);
     }
-    if (widget.bodies != oldWidget.bodies || widget.renderMode != oldWidget.renderMode) {
+    if (widget.bodies != oldWidget.bodies ||
+        widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
+        widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
+        widget.renderMode != oldWidget.renderMode) {
       setState(_syncEdgesNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane ||
@@ -440,7 +464,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // real mesh data either way, so switching modes never moves the camera.
     if (widget.renderMode.showsFilledFaces) {
       for (final body in bodies) {
-        final mesh = body.mesh;
+        // On-device feedback: if this is the one Body [previewOverlayMesh]
+        // targets, render *that* mesh (the operation's actual current
+        // effect) instead of this stable Body's own - [bodies] itself stays
+        // untouched (hit-testing/edge ids below still come from the real
+        // `body.mesh`), only the rendered geometry for this one Node swaps.
+        final isPreviewOverlay =
+            widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId;
+        final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh;
         if (mesh.vertices.isEmpty) {
           // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
           // GPU device buffer sized off the vertex/index data - a
@@ -460,7 +491,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           '${mesh.vertices.length} verts)...',
         );
         final geometry = geometryFromMesh(mesh);
-        final material = widget.isPreviewMesh
+        final material = (widget.isPreviewMesh || isPreviewOverlay)
             ? (UnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
@@ -519,7 +550,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
     var totalSegments = 0;
     for (final body in widget.bodies) {
-      var segments = edgeSegmentsFromMesh(body.mesh);
+      // See _syncMeshNode's identical substitution for why - keeps the
+      // wireframe/shaded-with-edges overlay consistent with whichever mesh
+      // (stable or preview) that Body's filled faces are actually showing.
+      final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
+          ? widget.previewOverlayMesh!
+          : body.mesh;
+      var segments = edgeSegmentsFromMesh(mesh);
       if (segments.isEmpty) continue;
       if (biased) {
         segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);

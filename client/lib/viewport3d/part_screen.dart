@@ -584,6 +584,28 @@ class _PartScreenState extends State<PartScreen> {
 
   Timer? _filletDebounce;
 
+  /// On-device feedback: the Body id the live rounded-corner visual preview
+  /// targets (see [_refreshFilletPreviewMesh]) - null whenever there's no
+  /// Fillet Feature yet or no edge is currently selected to derive it from.
+  /// Passed straight through to [PartViewport.previewOverlayBodyId].
+  String? _filletPreviewBodyId;
+
+  /// On-device feedback: the *actual current effect* of the in-progress
+  /// Fillet (radius/edges as last successfully PATCHed), fetched
+  /// separately from [_bodies] (which must stay the stable, pre-Fillet
+  /// mesh for the whole live-edit session - see [_ensureFilletFeatureExists]'s
+  /// own doc comment on why) purely so there's something to actually *see*
+  /// while adjusting the radius/edge selection. Passed straight through to
+  /// [PartViewport.previewOverlayMesh], which renders it (translucent-
+  /// tinted, same as an Extrude preview) in place of the stable mesh for
+  /// just the one Body [_filletPreviewBodyId] names - [_bodies] itself,
+  /// and therefore hit-testing/edge-picking, is completely unaffected.
+  /// Chamfer's own future live-edit flow should reuse this exact mechanism
+  /// (same two fields, same [_refreshFilletPreviewMesh] shape) rather than
+  /// invent a second one - the "stable body for picking, separate overlay
+  /// for the visual" split applies identically to both operations.
+  MeshDto? _filletPreviewMesh;
+
   /// On-device feedback: locks [_selectionFilterOverrides] to edges/faces
   /// only for the *whole* Fillet flow (from the moment [_openFilletPanel]/
   /// [_openFilletPanelForEdit] opens the panel, whether or not any edges
@@ -2159,6 +2181,17 @@ class _PartScreenState extends State<PartScreen> {
             SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
       ];
 
+  /// The Body id [_refreshFilletPreviewMesh] should fetch a preview for -
+  /// any selected edge's `bodyId` (every edge in [_selectedEntities] shares
+  /// one, same guarantee [_currentFilletEdgeRefs] relies on), or null if
+  /// nothing is selected yet (nothing to preview).
+  String? _currentFilletBodyId() {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.edge) return entity.bodyId;
+    }
+    return null;
+  }
+
   /// [FilletPanel.onRadiusChanged] - records the latest radius immediately
   /// (so [_confirmFillet]/[_cancelFillet] always have it, even mid-
   /// debounce) and (re)starts the same 500ms debounce
@@ -2219,12 +2252,49 @@ class _PartScreenState extends State<PartScreen> {
       // _confirmFillet's _endRollback() clears this exclusion.
       setState(() => _rollbackExcludedFeatureIds.add(feature.id));
       await _refreshFeatures();
-      await _refreshMesh();
+      await Future.wait([_refreshMesh(), _refreshFilletPreviewMesh()]);
     } else {
       await _api.updateFilletFeature(part.id, existingId, edgeRefs: edgeRefs, radius: radius);
       await _refreshFeatures();
-      await _refreshMesh();
+      await Future.wait([_refreshMesh(), _refreshFilletPreviewMesh()]);
     }
+  }
+
+  /// On-device feedback: fetches the *actual* current effect of the
+  /// in-progress Fillet - the same `/mesh` endpoint [_refreshMesh] calls,
+  /// but with this Feature's own id *not* excluded (the opposite of
+  /// [_refreshMesh]'s own `_rollbackExcludedFeatureIds`, which must keep
+  /// excluding it so [_bodies] stays the stable, pickable pre-fillet body -
+  /// see [_ensureFilletFeatureExists]) - purely to have something to render
+  /// as a visual preview (see [PartViewport.previewOverlayMesh]). Run
+  /// alongside [_refreshMesh] via `Future.wait` (see
+  /// [_ensureFilletFeatureExists]) rather than after it, so this doesn't
+  /// double the live-preview round-trip latency on top of doubling the
+  /// backend's recompute work.
+  Future<void> _refreshFilletPreviewMesh() async {
+    final part = _part;
+    final featureId = _previewFilletFeatureId;
+    final bodyId = _currentFilletBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      _filletPreviewBodyId = null;
+      _filletPreviewMesh = null;
+      return;
+    }
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds:
+          _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+    );
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    _filletPreviewBodyId = bodyId;
+    _filletPreviewMesh = match?.mesh;
   }
 
   /// Keeps the just-created/edited Feature, restores whatever was selected
@@ -2242,6 +2312,8 @@ class _PartScreenState extends State<PartScreen> {
       _editingFilletFeatureId = null;
       _filletEditSnapshot = null;
       _selectionFilterOverrides.pop();
+      _filletPreviewBodyId = null;
+      _filletPreviewMesh = null;
     });
     await _endRollback();
   }
@@ -2264,6 +2336,8 @@ class _PartScreenState extends State<PartScreen> {
       _editingFilletFeatureId = null;
       _filletEditSnapshot = null;
       _selectionFilterOverrides.pop();
+      _filletPreviewBodyId = null;
+      _filletPreviewMesh = null;
     });
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
@@ -2499,6 +2573,8 @@ class _PartScreenState extends State<PartScreen> {
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,
+                  previewOverlayBodyId: _filletPreviewBodyId,
+                  previewOverlayMesh: _filletPreviewMesh,
                   referencePlanesHidden: _referencePlanesHidden,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
