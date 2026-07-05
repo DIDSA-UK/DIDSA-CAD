@@ -2200,11 +2200,31 @@ class _PartScreenState extends State<PartScreen> {
     if (existingId == null) {
       final feature = await _api.createFilletFeature(part.id, edgeRefs: edgeRefs, radius: radius);
       _previewFilletFeatureId = feature.id;
+      // Bug fix (on-device feedback): a newly-created Fillet must exclude
+      // its *own* effect from every mesh refresh for the rest of this
+      // live-edit session, exactly like _openFilletPanelForEdit already
+      // does for an already-existing one (via _beginRollback - inlined
+      // here, not called directly, since this whole function already runs
+      // inside a _runGuarded call and _beginRollback wraps its own) -
+      // otherwise the refresh below shows the *post*-fillet body, whose
+      // edges are a new topology (the fillet's own rounded faces/edges
+      // replacing the straight ones) with different ids from the
+      // pre-fillet body `edge_refs` still needs to reference. The next edge
+      // pick/removal would then send an edge id that only exists in that
+      // post-fillet mesh, which `resolve_fillet`'s own self-exclusion
+      // validates against the *pre*-fillet body instead - producing
+      // exactly the "missing_reference" 422 this fixes (the reported
+      // symptom: editing the selection "removes edges the fillet tool is
+      // using"). Real filleted geometry is only ever shown again once
+      // _confirmFillet's _endRollback() clears this exclusion.
+      setState(() => _rollbackExcludedFeatureIds.add(feature.id));
+      await _refreshFeatures();
+      await _refreshMesh();
     } else {
       await _api.updateFilletFeature(part.id, existingId, edgeRefs: edgeRefs, radius: radius);
+      await _refreshFeatures();
+      await _refreshMesh();
     }
-    await _refreshFeatures();
-    await _refreshMesh();
   }
 
   /// Keeps the just-created/edited Feature, restores whatever was selected

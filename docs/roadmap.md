@@ -504,6 +504,21 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   yet. `flutter analyze` clean, `selection_filter_test.dart` +4 (now
   10/10), same 46/46 + 9/9 + 4/4 + 12/12 other Dart suites still passing.
   **Not yet on-device confirmed.**
+- **Bug fix: live-editing a Fillet's edges after the first preview update
+  crashed with `missing_reference`**. User's own diagnosis was correct: the
+  create branch of `_ensureFilletFeatureExists` never excluded the newly-
+  created Fillet's own effect from the shown mesh, so the very first
+  successful create flipped the interactive body to the *post*-fillet
+  topology - new edge ids replacing the pre-fillet ones the backend's own
+  self-exclusion still validated `edge_refs` against. Fixed by adding the
+  new Feature's id to `_rollbackExcludedFeatureIds` right after creating it
+  (same mechanism `_openFilletPanelForEdit` already used for editing an
+  *existing* Fillet), so the shown/interactive body stays the stable
+  pre-fillet shape for the whole live-edit session, create or edit alike -
+  at the cost of no longer showing a live rounded-corner visual while
+  editing (the two asks were in direct tension; correctness of the edge
+  selection won per the user's own explicit preference). **Not yet
+  on-device confirmed.**
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not
