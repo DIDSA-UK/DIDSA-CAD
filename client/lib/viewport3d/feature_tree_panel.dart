@@ -86,11 +86,29 @@ class FeatureTreePanel extends StatefulWidget {
   /// mirroring what tapping it directly in the 3D viewport already does.
   final void Function(String bodyId) onBodyTap;
 
+  /// On-device feedback: long-pressing a Bodies-section row toggles that
+  /// Body's own Hide/Show state, same as long-pressing its owning Feature's
+  /// row under Features already does - [PartScreen] resolves [bodyId] back
+  /// to the Feature that produced it (`baseFeatureId`, `body_naming.dart`)
+  /// itself, since Hide/Show is always Feature-scoped. `null` disables the
+  /// long-press entirely (defensive default for any test/fixture built
+  /// before this).
+  final void Function(String bodyId)? onBodyLongPress;
+
   /// Feature ids hidden from the 3D viewport (see [PartScreen]'s Hide/Show
   /// context-menu action) - shown here as a dimmed row with an eye-slash
   /// icon, so hidden state is visible from the tree, not just invisible by
   /// its absence in the 3D view.
   final Set<String> hiddenFeatureIds;
+
+  /// On-device feedback: Body ids the backend tagged `hidden` (see
+  /// `app.document.router.get_part_mesh`'s own docstring) - unlike
+  /// [hiddenFeatureIds] (Feature-scoped), Bodies-section rows are styled
+  /// off this directly, since a `body_id` and the Feature id that produced
+  /// it are related but distinct strings (`baseFeatureId` maps one to the
+  /// other, but a hidden Body still needs to keep appearing here at all,
+  /// which is the whole point of this on-device follow-up).
+  final Set<String> hiddenBodyIds;
 
   /// Prompt D: true while the tree is acting as a Sketch picker for a
   /// pending Extrude (entered from the "Add" FAB's Feature > Extrude entry
@@ -120,9 +138,11 @@ class FeatureTreePanel extends StatefulWidget {
     required this.onFeatureLongPress,
     required this.onClose,
     required this.onBodyTap,
+    this.onBodyLongPress,
     this.bodyIds = const [],
     this.bodyNames = const {},
     this.hiddenFeatureIds = const {},
+    this.hiddenBodyIds = const {},
     this.isSketchPickerMode = false,
     this.pickableSketchIds = const {},
     this.onSketchPicked,
@@ -309,21 +329,34 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       visualDensity: VisualDensity.compact,
       leading: const Icon(Icons.view_in_ar, size: 20),
       title: const Text('Bodies', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [
-        for (final bodyId in orderedIds)
-          ListTile(
-            dense: true,
-            visualDensity: VisualDensity.compact,
-            leading: const Icon(Icons.view_in_ar_outlined, size: 18),
-            title: Text(
-              widget.bodyNames[bodyId] ?? bodyId,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: _rowTitleStyle,
-            ),
-            onTap: () => widget.onBodyTap(bodyId),
-          ),
-      ],
+      children: [for (final bodyId in orderedIds) _buildBodyTile(bodyId)],
+    );
+  }
+
+  /// One Body's row inside the Bodies section. On-device feedback: a hidden
+  /// Body keeps its row here (same dimmed-plus-eye-slash treatment a hidden
+  /// Feature row already gets under Features) rather than disappearing, and
+  /// a long press toggles it back - previously the only way to un-hide a
+  /// Body was to remember which Feature produced it and find that row
+  /// instead.
+  Widget _buildBodyTile(String bodyId) {
+    final hidden = widget.hiddenBodyIds.contains(bodyId);
+    return Opacity(
+      opacity: hidden ? 0.5 : 1.0,
+      child: ListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        leading: const Icon(Icons.view_in_ar_outlined, size: 18),
+        title: Text(
+          widget.bodyNames[bodyId] ?? bodyId,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _rowTitleStyle,
+        ),
+        trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+        onTap: () => widget.onBodyTap(bodyId),
+        onLongPress: widget.onBodyLongPress == null ? null : () => widget.onBodyLongPress!(bodyId),
+      ),
     );
   }
 

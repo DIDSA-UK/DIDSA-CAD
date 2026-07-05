@@ -198,17 +198,17 @@ def test_cut_with_empty_target_body_ids_is_rejected_with_422():
     assert "target_body_ids" in response.json()["detail"]
 
 
-def test_cutting_into_a_hidden_boss_still_computes_but_the_result_stays_hidden():
-    """Bug fix (post-C4): `hidden_feature_ids` is now a purely cosmetic,
-    post-hoc filter (see app.document.router.get_part_mesh's own docstring
-    for the full incident writeup) - the Boss is still fully computed and
-    the Cut still executes against it normally; the resulting Body simply
-    never appears in the response because it traces back (via
-    `base_feature_id`) to the hidden Boss's own feature id, same as if the
-    Cut had never touched it. Net observable result is unchanged from
-    before this fix (still an empty array) even though the mechanism is
-    now entirely different - see the sibling "un-subtracts" test below for
-    the one case (hiding the *Cut* itself) that really did change."""
+def test_cutting_into_a_hidden_boss_still_computes_and_the_result_is_tagged_hidden():
+    """Bug fix (post-C4): `hidden_feature_ids` is now a purely cosmetic tag,
+    not a filter (see app.document.router.get_part_mesh's own docstring for
+    the full incident writeup, and the on-device follow-up that made the
+    Build Tree need every Body's entry to still list a hidden one) - the
+    Boss is still fully computed and the Cut still executes against it
+    normally; the resulting Body is still present in the array, just marked
+    `hidden: true`, since it traces back (via `base_feature_id`) to the
+    hidden Boss's own feature id - see the sibling "un-subtracts" test below
+    for the one case (hiding the *Cut* itself) whose behavior really did
+    change."""
     part = _create_part()
     boss_sketch = _create_square_sketch_feature(part["id"])
     boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss").json()
@@ -219,7 +219,8 @@ def test_cutting_into_a_hidden_boss_still_computes_but_the_result_stays_hidden()
 
     bodies = _get_bodies(part["id"], hidden_feature_ids=[boss["id"]])
 
-    assert bodies == []
+    assert len(bodies) == 1
+    assert bodies[0]["hidden"] is True
 
 
 def test_boss_followed_by_cut_produces_a_different_accumulated_solid():
@@ -401,23 +402,30 @@ def test_patch_making_end_distance_not_greater_than_start_distance_is_rejected()
 
 # --- hidden_feature_ids (bug fix, post-C4: purely cosmetic - see -------------
 # app.document.router.get_part_mesh's docstring for the full incident writeup
-# of why this can no longer exclude anything from the actual computation) -----
+# of why this can no longer exclude anything from the actual computation, and
+# the on-device follow-up that made a hidden Body's entry stay in the array
+# (tagged `hidden`) instead of being dropped, so the Build Tree can still
+# list it) -----------------------------------------------------------------
 
 
-def test_hidden_feature_ids_excludes_a_boss_feature_from_the_computed_mesh():
+def test_hidden_feature_ids_tags_a_boss_features_body_hidden_without_dropping_it():
     part = _create_part()
     sketch_feature = _create_square_sketch_feature(part["id"])
     extrude = _create_extrude_feature(part["id"], sketch_feature["id"]).json()
 
     visible_body = _single_body(part["id"])
     assert len(visible_body["mesh"]["vertices"]) > 0
+    assert visible_body["hidden"] is False
 
-    # The Boss's own standalone Body is still fully computed - it's filtered
-    # out of *this response* afterward because it traces back to a hidden
-    # feature id, not because it failed to exist at recompute time.
+    # The Boss's own standalone Body is still fully computed and still
+    # present in the array - only `hidden` flips, by tracing the Body back
+    # to a hidden feature id, not because it failed to exist at recompute
+    # time.
     hidden_bodies = _get_bodies(part["id"], hidden_feature_ids=[extrude["id"]])
 
-    assert hidden_bodies == []
+    assert len(hidden_bodies) == 1
+    assert hidden_bodies[0]["body_id"] == visible_body["body_id"]
+    assert hidden_bodies[0]["hidden"] is True
 
 
 def test_hiding_a_cut_no_longer_un_subtracts_it_since_a_cut_owns_no_body_of_its_own():

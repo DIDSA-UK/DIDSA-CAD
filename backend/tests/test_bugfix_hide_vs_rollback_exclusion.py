@@ -17,12 +17,16 @@ Fix: `app.document.router.get_part_mesh` now takes two separate params -
 `rollback_excluded_feature_ids` (still fed into `compute_part_bodies`,
 still "pretend it doesn't exist", used only by B4) and `hidden_feature_ids`
 (now purely cosmetic - every Body is always fully computed against the
-Part's real, unmodified history, then filtered out of *this response only*
-by tracing its `body_id` back to its producing Feature via
-`base_feature_id`). See `get_part_mesh`'s own docstring for the full
-writeup, and `test_stage9_extrude.py`'s `hidden_feature_ids` section for
-the one pre-existing test whose semantics genuinely changed (hiding a Cut,
-which owns no Body of its own, no longer "un-subtracts" it).
+Part's real, unmodified history and always present in the response;
+`BodyMeshResponse.hidden` is set instead, by tracing the Body's `body_id`
+back to its producing Feature via `base_feature_id`). On-device follow-up:
+`hidden_feature_ids` originally *dropped* a hidden Body's entry outright,
+but the Build Tree needs to keep listing a hidden Body (so Show can be
+reached again from the tree) - `hidden` replaced the drop. See
+`get_part_mesh`'s own docstring for the full writeup, and
+`test_stage9_extrude.py`'s `hidden_feature_ids` section for the one
+pre-existing test whose semantics genuinely changed (hiding a Cut, which
+owns no Body of its own, still never gets tagged).
 
 Needs a real pythonocc-core environment (not available in this sandbox -
 see the recurring caveat in docs/status.md) - `ast.parse`-verified/manually
@@ -156,37 +160,47 @@ def test_hiding_the_extrude_a_midplane_depends_on_no_longer_breaks_downstream_ge
     with `missing_reference` (Midplane's own `face_refs` pointing at a Body
     `compute_part_bodies` had skipped entirely while resolving Sketch 2's
     basis for Extrude 2) - taking the *entire* response down, including
-    Body A itself. It must now succeed, with Body B (Extrude 2's own,
-    genuinely new Body) present and only Body A's entry omitted."""
+    Body A itself. It must now succeed, with both Bodies present - Body A
+    tagged `hidden` (on-device follow-up: a hidden Body's entry stays in
+    the array so the Build Tree can still list it, see
+    app.document.router.get_part_mesh's own docstring) and Body B
+    (Extrude 2's own, genuinely new Body) not."""
     scenario = _build_the_reported_scenario()
     part_id = scenario["part"]["id"]
 
     bodies = _get_bodies(part_id, hidden_feature_ids=[scenario["extrude_1"]["id"]])
 
-    body_ids = [b["body_id"] for b in bodies]
-    assert scenario["body_a_id"] not in body_ids
-    assert len(body_ids) == 1
+    assert len(bodies) == 2
+    body_a = next(b for b in bodies if b["body_id"] == scenario["body_a_id"])
+    body_b = next(b for b in bodies if b["body_id"] != scenario["body_a_id"])
+    assert body_a["hidden"] is True
+    assert body_b["hidden"] is False
 
 
 def test_hiding_body_a_never_actually_removes_it_only_the_display_of_it():
     """Directly answers the on-device report's own suspicion ("suspect 2nd
     extrude tries to consume 1st") - Body A is never deleted or fused away
-    by hiding it. Un-hiding (an empty `hidden_feature_ids`) brings it right
-    back, unchanged, alongside Body B."""
+    by hiding it, and its own geometry is untouched by the `hidden` tag.
+    Un-hiding (an empty `hidden_feature_ids`) brings it right back exactly
+    as it was, alongside Body B."""
     scenario = _build_the_reported_scenario()
     part_id = scenario["part"]["id"]
 
     visible_bodies = _get_bodies(part_id)
     assert len(visible_bodies) == 2
-    assert scenario["body_a_id"] in [b["body_id"] for b in visible_bodies]
+    assert all(not b["hidden"] for b in visible_bodies)
+    original_a = next(b for b in visible_bodies if b["body_id"] == scenario["body_a_id"])
 
     hidden_bodies = _get_bodies(part_id, hidden_feature_ids=[scenario["extrude_1"]["id"]])
-    assert len(hidden_bodies) == 1
+    assert len(hidden_bodies) == 2
+    hidden_a = next(b for b in hidden_bodies if b["body_id"] == scenario["body_a_id"])
+    assert hidden_a["hidden"] is True
+    assert hidden_a["mesh"]["vertices"] == original_a["mesh"]["vertices"]
 
     restored_bodies = _get_bodies(part_id)
     assert len(restored_bodies) == 2
+    assert all(not b["hidden"] for b in restored_bodies)
     restored_a = next(b for b in restored_bodies if b["body_id"] == scenario["body_a_id"])
-    original_a = next(b for b in visible_bodies if b["body_id"] == scenario["body_a_id"])
     assert restored_a["mesh"]["vertices"] == original_a["mesh"]["vertices"]
 
 

@@ -249,11 +249,21 @@ class BodyMeshResponse(BaseModel):
     one entry (the fixed dev-time stand-in box) - and "computed" once real
     Feature-derived geometry is being returned instead, one entry per
     actual Body (zero entries if every ExtrudeFeature so far has been
-    skipped/hidden)."""
+    skipped by the Part's own graph, e.g. a Cut with no target left after a
+    genuine deletion - never merely hidden, see `hidden` below).
+
+    On-device feedback (post-C4 hide/rollback fix): every computed Body is
+    now always included here, `hidden` set instead of the entry being
+    dropped - the Build Tree's own Bodies section needs to keep listing a
+    hidden Body (so Show can be reached again from the tree, not only from
+    whichever Feature originally produced it), which an omitted entry can't
+    support. `source="placeholder"` is never `hidden` - there is nothing to
+    hide yet at that point."""
 
     body_id: str
     source: Literal["placeholder", "computed"]
     mesh: MeshVertexData
+    hidden: bool = False
 
 
 class CascadeDeleteResponse(BaseModel):

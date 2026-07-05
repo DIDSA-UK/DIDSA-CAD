@@ -220,4 +220,120 @@ void main() {
     expect(find.text('Sketch 1'), findsOneWidget);
     expect(find.text('Sketch 2'), findsOneWidget);
   });
+
+  group('On-device feedback: hidden Bodies stay listed, long-press toggles them', () {
+    testWidgets('a hidden Body still shows its row, dimmed with a visibility-off icon', (
+      tester,
+    ) async {
+      final features = [_extrude('e1', locked: false)];
+      final names = bodyDisplayNames(features, ['e1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            bodyIds: const ['e1'],
+            bodyNames: names,
+            hiddenBodyIds: const {'e1'},
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Body 1'), findsOneWidget);
+      expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+    });
+
+    testWidgets('a visible Body shows no visibility-off icon', (tester) async {
+      final features = [_extrude('e1', locked: false)];
+      final names = bodyDisplayNames(features, ['e1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            bodyIds: const ['e1'],
+            bodyNames: names,
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.visibility_off), findsNothing);
+    });
+
+    testWidgets('long-pressing a Body row calls onBodyLongPress with that body_id', (
+      tester,
+    ) async {
+      String? longPressed;
+      final features = [_extrude('e1', locked: false)];
+      final names = bodyDisplayNames(features, ['e1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            onBodyLongPress: (id) => longPressed = id,
+            bodyIds: const ['e1'],
+            bodyNames: names,
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+      await tester.longPress(find.text('Body 1'));
+      await tester.pump();
+
+      expect(longPressed, 'e1');
+    });
+
+    testWidgets('long-pressing a Body row is a no-op when onBodyLongPress is not supplied', (
+      tester,
+    ) async {
+      final features = [_extrude('e1', locked: false)];
+      final names = bodyDisplayNames(features, ['e1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            bodyIds: const ['e1'],
+            bodyNames: names,
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+
+      // Must not throw.
+      await tester.longPress(find.text('Body 1'));
+      await tester.pump();
+    });
+  });
 }

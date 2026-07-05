@@ -40,6 +40,7 @@ void main() {
       expect(dto.source, 'computed');
       expect(dto.mesh.vertices.length, 3);
       expect(dto.mesh.faceIds, [7]);
+      expect(dto.hidden, isFalse);
     });
 
     test('placeholder entry parses the same way as a computed one', () {
@@ -59,6 +60,43 @@ void main() {
 
       expect(dto.bodyId, 'placeholder');
       expect(dto.source, 'placeholder');
+    });
+
+    test('on-device follow-up: parses hidden: true instead of the entry being omitted', () {
+      final dto = BodyMeshDto.fromJson({
+        'body_id': 'boss-1',
+        'source': 'computed',
+        'hidden': true,
+        'mesh': {
+          'vertices': [
+            [0.0, 0.0, 0.0],
+          ],
+          'normals': [
+            [0.0, 0.0, 1.0],
+          ],
+          'triangle_indices': <List<int>>[],
+        },
+      });
+
+      expect(dto.hidden, isTrue);
+    });
+
+    test('defaults hidden to false when the key is absent (older fixtures)', () {
+      final dto = BodyMeshDto.fromJson({
+        'body_id': 'boss-1',
+        'source': 'computed',
+        'mesh': {
+          'vertices': [
+            [0.0, 0.0, 0.0],
+          ],
+          'normals': [
+            [0.0, 0.0, 1.0],
+          ],
+          'triangle_indices': <List<int>>[],
+        },
+      });
+
+      expect(dto.hidden, isFalse);
     });
   });
 

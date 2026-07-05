@@ -380,6 +380,26 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   Also: Build Tree text no longer wraps (smaller, single-line, ellipsized),
   gained a drag handle to resize the panel, and Bodies/Planes now start
   collapsed while Features stays expanded.
+- **On-device follow-ups (same report thread)**: the Orbit/Selection
+  mode-toggle FAB is now reachable while the Extrude/Create Plane panel is
+  open (it used to hide for the panel's whole lifetime, purely to dodge a
+  layout collision - now only the toolbar-open case hides it, and a bottom
+  padding clears the panel instead); Extrude's forced-Selection-mode
+  override is gone too, replaced by a one-time default the FAB can still
+  toggle away from. Hidden Bodies now keep their row in the Build Tree
+  (`BodyMeshResponse.hidden` replaces the old drop-the-entry behavior -
+  free, since tessellation already happened before that filter ever ran),
+  dimmed with an eye-slash icon, long-press-toggleable directly from the
+  tree instead of only from the Feature that produced it.
+- **Open, deferred pending scoping**: Create Plane's OFFSET_FACE/MIDPLANE
+  should accept a Plane (a fixed reference plane, or an existing custom
+  Plane) as a valid reference alongside a Body face - "offset from XY
+  plane", "midplane between a Plane and a Face". Needs a new mixed
+  reference type (a `SubShapeRef`-or-Plane-identifier - the same shape of
+  problem C4's `PointRef` solved for THREE_POINTS) and reconciling two
+  currently-separate client selection subsystems (tapping a reference
+  Plane today starts a new Sketch on it; tapping a Body face feeds Create
+  Plane's own selection set - these don't currently compose). Not started.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

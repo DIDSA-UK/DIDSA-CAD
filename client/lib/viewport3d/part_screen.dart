@@ -72,17 +72,32 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
   /// `/mesh` array) - was a single `MeshDto? _mesh` before this. Empty
-  /// (not the placeholder box) whenever the Part has no ExtrudeFeature yet
-  /// or every current Body is hidden - see [_refreshMesh].
+  /// (not the placeholder box) whenever the Part has no ExtrudeFeature yet -
+  /// see [_refreshMesh]. On-device follow-up: unlike its original A3 shape,
+  /// this now includes hidden Bodies too (`BodyMeshDto.hidden`, echoing
+  /// `hidden_feature_ids` back rather than dropping the entry - see
+  /// `app.document.router.get_part_mesh`'s own docstring) so the Build
+  /// Tree's Bodies section can keep listing one; use [_visibleBodies], not
+  /// this directly, for anything that actually renders/hit-tests geometry.
   List<BodyMeshDto> _bodies = [];
   String? _selectedFeatureId;
 
-  /// B3 revision: the Part's real, currently-computed Body ids - excludes
-  /// the dev-time placeholder box (`source: "placeholder"`), which is never
-  /// a real Body and shouldn't appear in the Build Tree's Bodies section or
-  /// [SelectionListDrawer]'s naming.
+  /// B3 revision: the Part's real, currently-computed Body ids, hidden or
+  /// not - excludes only the dev-time placeholder box (`source:
+  /// "placeholder"`), which is never a real Body and shouldn't appear in
+  /// the Build Tree's Bodies section or [SelectionListDrawer]'s naming. Not
+  /// filtered by [BodyMeshDto.hidden] - the Build Tree needs to keep
+  /// listing a hidden Body so Show can be reached again from its own row.
   List<String> get _computedBodyIds =>
       _bodies.where((b) => b.source == 'computed').map((b) => b.bodyId).toList();
+
+  /// [_bodies] filtered down to what should actually render/hit-test in the
+  /// 3D viewport - everything that isn't [BodyMeshDto.hidden]. Use this
+  /// (never [_bodies] directly) for [PartViewport.bodies] and anything else
+  /// that projects/derives from real Body geometry (e.g. the ghost-edge
+  /// reference in [_openSketch]) - [_computedBodyIds]/[_bodyNames] are the
+  /// deliberate exception, since the Build Tree wants the unfiltered list.
+  List<BodyMeshDto> get _visibleBodies => _bodies.where((b) => !b.hidden).toList();
 
   /// Stable "Body 1"/"Body 2"... names shared between the Build Tree's
   /// Bodies section and [SelectionListDrawer] - see `body_naming.dart`.
@@ -1120,6 +1135,19 @@ class _PartScreenState extends State<PartScreen> {
     _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
   }
 
+  /// On-device feedback: long-pressing a Body row toggles its Hide/Show
+  /// state, mirroring the same long-press action a Feature row already
+  /// offers under Features - reuses [_toggleFeatureVisibility] itself
+  /// (Hide/Show is always Feature-scoped) by resolving [bodyId] back to the
+  /// Feature that produced it via [baseFeatureId] (`body_naming.dart`).
+  /// Defensive no-op if that Feature can no longer be found (a stale
+  /// [bodyId] from a mesh response that's since changed).
+  Future<void> _onBodyLongPress(String bodyId) async {
+    final feature = _featureById(baseFeatureId(bodyId));
+    if (feature == null) return;
+    await _toggleFeatureVisibility(feature);
+  }
+
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
   /// brief's "camera animation when entering a sketch") before navigating to
   /// its 2D canvas - skips straight to navigation if the plane can't be
@@ -1224,6 +1252,13 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEndDistance = 10.0;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
+      // On-device feedback: a one-time default rather than the permanent
+      // forced-true override this used to be (see the removed ternary at
+      // this widget's own `PartViewport.selectionMode` call site) - target-
+      // body picking needs Selection mode to start with, but the user must
+      // still be able to toggle back to Orbit mode via the FAB (now visible
+      // throughout this panel's lifetime) to look around before picking.
+      _selectionMode = true;
       _selectionFilterOverrides.push(
         const SelectionFilterState(
           vertex: false,
@@ -1274,6 +1309,8 @@ class _PartScreenState extends State<PartScreen> {
         for (final bodyId in targetBodyIds)
           SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
       };
+      // See _openExtrudePanel's own comment on this same line.
+      _selectionMode = true;
       _selectionFilterOverrides.push(
         const SelectionFilterState(
           vertex: false,
@@ -1937,7 +1974,7 @@ class _PartScreenState extends State<PartScreen> {
     // Prompt A3: merges every Body's edges into one flat list - the ghost
     // outline doesn't care which Body an edge came from, only where it
     // projects onto the new Sketch's plane.
-    final allEdgeSegments = [for (final body in _bodies) ...edgeSegmentsFromMesh(body.mesh)];
+    final allEdgeSegments = [for (final body in _visibleBodies) ...edgeSegmentsFromMesh(body.mesh)];
     final ghostSegments = basis != null
         ? projectMeshEdgesOntoPlane(basis, allEdgeSegments)
         : const <((double, double), (double, double))>[];
@@ -2018,7 +2055,7 @@ class _PartScreenState extends State<PartScreen> {
                 // loses space to a hidden panel.
                 PartViewport(
                   key: _viewportKey,
-                  bodies: _bodies,
+                  bodies: _visibleBodies,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   createPlanes: _createPlaneGeometries,
@@ -2032,13 +2069,17 @@ class _PartScreenState extends State<PartScreen> {
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
                   bodyOpacity: _bodyOpacity,
-                  // Prompt A4: forced on for the duration of the Extrude
-                  // panel regardless of the Stage 23 mode-toggle FAB's own
-                  // state (hidden while the panel is open anyway - see
-                  // floatingActionButton below) - target-body picking always
-                  // needs live hit-testing/cursor, the same as the general
-                  // Selection mode does.
-                  selectionMode: _extrudeActive ? true : _selectionMode,
+                  // On-device feedback: this used to be forced true for the
+                  // whole Extrude panel lifetime, unconditionally overriding
+                  // the mode-toggle FAB (itself hidden while the panel was
+                  // open) - target-body picking needs Selection mode, but
+                  // that shouldn't mean the user can never orbit to look
+                  // around while the panel's open. [_openExtrudePanel]/
+                  // [_openExtrudePanelForEdit] now only set [_selectionMode]
+                  // true as a one-time default on open; the FAB (visible
+                  // throughout, see floatingActionButton below) can toggle
+                  // it either way from there, same as any other time.
+                  selectionMode: _selectionMode,
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
                   onClearSelection: _clearSelectedEntities,
@@ -2127,6 +2168,8 @@ class _PartScreenState extends State<PartScreen> {
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
+                    onBodyLongPress: _onBodyLongPress,
+                    hiddenBodyIds: {for (final body in _bodies) if (body.hidden) body.bodyId},
                   ),
                 ),
                 Positioned.fill(
@@ -2330,42 +2373,52 @@ class _PartScreenState extends State<PartScreen> {
           ),
         ],
       ),
-      // Stage 10b: hidden while the Extrude panel is open, so its bottom-
-      // aligned content never has the FAB sitting on top of it.
+      // Stage 22 item 3: hidden while the toolbar is open - Scaffold always
+      // paints floatingActionButton after the entire body (including the
+      // body Stack's PartToolbar entry), so it would otherwise sit on top
+      // of the open toolbar panel regardless of the body Stack's own child
+      // order. That's the only case that hides the mode-toggle FAB itself
+      // now (on-device feedback: it used to also hide for the whole
+      // Extrude/Create Plane panel lifetime, leaving no way to switch to
+      // Orbit mode and look around while confirming one of those - see
+      // _openExtrudePanel's own comment on the selectionMode default this
+      // replaced).
       //
-      // Stage 22 item 3: also hidden while the toolbar is open - Scaffold
-      // always paints floatingActionButton after the entire body
-      // (including the body Stack's PartToolbar entry), so it would
-      // otherwise sit on top of the open toolbar panel regardless of the
-      // body Stack's own child order.
-      //
-      // Stage 23 Item 1: the mode-toggle FAB sits above the "Add" FAB,
-      // hidden under the exact same conditions - it follows the same Stage
-      // 22 z-order rules as every other FAB here.
-      floatingActionButton: (_extrudeSketchFeature != null || _createPlaneActive || _toolbarOpen)
+      // The "Add" FAB stays hidden while either panel is open (you can't
+      // start a second Feature mid-flow) - extra bottom padding while one
+      // is active keeps the remaining mode-toggle FAB clear of that panel's
+      // own bottom-sheet content, which sits in the body Stack rather than
+      // a real `Scaffold.bottomSheet` Scaffold could otherwise push this
+      // FAB above automatically.
+      floatingActionButton: _toolbarOpen
           ? null
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FloatingActionButton(
-                  heroTag: 'selection-mode-fab',
-                  tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
-                  backgroundColor:
-                      _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
-                  onPressed: _busy ? null : _toggleSelectionMode,
-                  // The icon shows the mode a tap will switch *into*: a
-                  // cursor/pointer while in (default) Orbit mode, an
-                  // orbit/rotate glyph while in Selection mode.
-                  child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
-                ),
-                const SizedBox(height: 12),
-                FloatingActionButton(
-                  heroTag: 'add-fab',
-                  tooltip: 'Add',
-                  onPressed: _busy ? null : _onAddPressed,
-                  child: const Icon(Icons.add),
-                ),
-              ],
+          : Padding(
+              padding: EdgeInsets.only(bottom: (_extrudeActive || _createPlaneActive) ? 180 : 0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FloatingActionButton(
+                    heroTag: 'selection-mode-fab',
+                    tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+                    backgroundColor:
+                        _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
+                    onPressed: _busy ? null : _toggleSelectionMode,
+                    // The icon shows the mode a tap will switch *into*: a
+                    // cursor/pointer while in (default) Orbit mode, an
+                    // orbit/rotate glyph while in Selection mode.
+                    child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
+                  ),
+                  if (!_extrudeActive && !_createPlaneActive) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'add-fab',
+                      tooltip: 'Add',
+                      onPressed: _busy ? null : _onAddPressed,
+                      child: const Icon(Icons.add),
+                    ),
+                  ],
+                ],
+              ),
             ),
     );
   }

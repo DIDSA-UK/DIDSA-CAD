@@ -301,17 +301,33 @@ class MeshDto {
 /// own tessellation, not globally across the array - see
 /// `SelectionEntityRef.bodyId` for how the client keeps hit-test entities
 /// globally unique despite that.
+///
+/// On-device follow-up (post hide/rollback bug fix): [hidden] is the
+/// client's own plain Hide/Show state, echoed back rather than used to
+/// drop the entry - every Body always has an entry here now, hidden or
+/// not, so the Build Tree's Bodies section can keep listing (and offering
+/// Show again for) a hidden one. `PartScreen` is responsible for excluding
+/// a [hidden] entry from the 3D viewport/camera-fit itself; this DTO just
+/// carries the flag through. Always `false` for the `source: "placeholder"`
+/// case - there is nothing to hide yet at that point.
 class BodyMeshDto {
   final String bodyId;
   final String source;
   final MeshDto mesh;
+  final bool hidden;
 
-  BodyMeshDto({required this.bodyId, required this.source, required this.mesh});
+  BodyMeshDto({
+    required this.bodyId,
+    required this.source,
+    required this.mesh,
+    this.hidden = false,
+  });
 
   factory BodyMeshDto.fromJson(Map<String, dynamic> json) => BodyMeshDto(
         bodyId: json['body_id'] as String,
         source: json['source'] as String,
         mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
+        hidden: json['hidden'] as bool? ?? false,
       );
 }
 
