@@ -282,6 +282,11 @@ class MeshVertexData(BaseModel):
     edge_ids: list[int] = []
     topology_vertices: list[tuple[float, float, float]] = []
     topology_vertex_ids: list[int] = []
+    # Fillet follow-up: face_edge_ids[face_id] is the sorted list of edge_ids
+    # bounding that face - see app.document.mesh._extract_face_edge_ids.
+    # Defaults to [] for the same backward-compatibility reason as the ids
+    # above.
+    face_edge_ids: list[list[int]] = []
 
 
 class BodyMeshResponse(BaseModel):

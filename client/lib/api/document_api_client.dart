@@ -306,6 +306,12 @@ class MeshDto {
   final List<int> edgeIds;
   final List<List<double>> topologyVertices;
   final List<int> topologyVertexIds;
+  // On-device feedback: faceEdgeIds[faceId] is the sorted list of edgeIds
+  // bounding that face - lets the Fillet flow offer "tap a face to select
+  // its whole edge loop" (see PartScreen._toggleFilletFaceEdges). Defaults
+  // to const [] for the same backward-compatibility reason as the ids
+  // above.
+  final List<List<int>> faceEdgeIds;
 
   MeshDto({
     required this.vertices,
@@ -316,6 +322,7 @@ class MeshDto {
     this.edgeIds = const [],
     this.topologyVertices = const [],
     this.topologyVertexIds = const [],
+    this.faceEdgeIds = const [],
   });
 
   factory MeshDto.fromJson(Map<String, dynamic> json) => MeshDto(
@@ -334,6 +341,10 @@ class MeshDto {
             : _triples(json['topology_vertices'] as List),
         topologyVertexIds:
             (json['topology_vertex_ids'] as List?)?.map((v) => v as int).toList() ?? const [],
+        faceEdgeIds: (json['face_edge_ids'] as List?)
+                ?.map((ids) => (ids as List).map((v) => v as int).toList())
+                .toList() ??
+            const [],
       );
 
   static List<List<double>> _triples(List raw) =>

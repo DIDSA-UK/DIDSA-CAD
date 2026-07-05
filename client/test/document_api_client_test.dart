@@ -98,6 +98,49 @@ void main() {
 
       expect(dto.hidden, isFalse);
     });
+
+    test('on-device feedback: parses face_edge_ids (one list per face)', () {
+      final dto = BodyMeshDto.fromJson({
+        'body_id': 'boss-1',
+        'source': 'computed',
+        'mesh': {
+          'vertices': [
+            [0.0, 0.0, 0.0],
+          ],
+          'normals': [
+            [0.0, 0.0, 1.0],
+          ],
+          'triangle_indices': <List<int>>[],
+          'face_edge_ids': [
+            [0, 1, 2, 3],
+            [3, 4, 5, 6],
+          ],
+        },
+      });
+
+      expect(dto.mesh.faceEdgeIds, [
+        [0, 1, 2, 3],
+        [3, 4, 5, 6],
+      ]);
+    });
+
+    test('defaults face_edge_ids to [] when the key is absent (older fixtures)', () {
+      final dto = BodyMeshDto.fromJson({
+        'body_id': 'boss-1',
+        'source': 'computed',
+        'mesh': {
+          'vertices': [
+            [0.0, 0.0, 0.0],
+          ],
+          'normals': [
+            [0.0, 0.0, 1.0],
+          ],
+          'triangle_indices': <List<int>>[],
+        },
+      });
+
+      expect(dto.mesh.faceEdgeIds, isEmpty);
+    });
   });
 
   group('DocumentApiClient.getPartMesh', () {

@@ -77,6 +77,13 @@ class MeshData:
     # list, same per-request-only stability caveat as `face_ids`/`edge_ids`.
     topology_vertices: list[tuple[float, float, float]] = field(default_factory=list)
     topology_vertex_ids: list[int] = field(default_factory=list)
+    # Fillet follow-up: per-face boundary edge ids ("tap a face to select
+    # all its edges" for Fillet) - dense, one entry per face in the same
+    # `TopExp_Explorer(shape, TopAbs_FACE)` order `face_ids` is assigned in
+    # (every face gets an entry, even one with no triangulation), each a
+    # sorted list of the same dense edge ids `edge_ids` uses (degenerate
+    # edges never appear, same skip `_extract_edges` already applies).
+    face_edge_ids: list[list[int]] = field(default_factory=list)
 
 
 def _cross(u: tuple[float, float, float], v: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -121,43 +128,91 @@ def tessellate_shape(shape, quality: MeshQuality = DEFAULT_MESH_QUALITY) -> Mesh
 
     mesh.edges, mesh.edge_ids = _extract_edges(shape)
     mesh.topology_vertices, mesh.topology_vertex_ids = _extract_topology_vertices(shape)
+    mesh.face_edge_ids = _extract_face_edge_ids(shape)
     return mesh
+
+
+def _dense_edge_ids(shape) -> tuple[TopTools_IndexedMapOfShape, dict[int, int]]:
+    """Shared by `_extract_edges` and `_extract_face_edge_ids`: the whole-
+    shape edge map (`topexp.MapShapes`, de-duplicating an edge shared
+    between two faces the way a plain TopExp_Explorer wouldn't) alongside a
+    `{map_index (1-based) -> dense edge id}` lookup - ids assigned in
+    iteration order, skipping degenerate edges entirely (they never emit a
+    segment, so they must never consume an id either), which is exactly
+    the id space `edge_ids`/`face_edge_ids` both need to agree on."""
+    edge_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(shape, TopAbs_EDGE, edge_map)
+
+    edge_id_by_map_index: dict[int, int] = {}
+    next_edge_id = 0
+    for i in range(1, edge_map.Size() + 1):
+        edge = topods.Edge(edge_map.FindKey(i))
+        if BRep_Tool.Degenerated(edge):
+            continue
+        edge_id_by_map_index[i] = next_edge_id
+        next_edge_id += 1
+
+    return edge_map, edge_id_by_map_index
 
 
 def _extract_edges(shape) -> tuple[list[float], list[int]]:
     """Real-geometry edge polylines for `shape`, sampled from each edge's
     underlying OCCT curve (BRepAdaptor_Curve), not derived from the
     triangle mesh - that would show every tessellation triangle's edges
-    instead of the shape's true ones. `topexp.MapShapes` is used (rather
-    than a plain TopExp_Explorer, as `_append_face_triangles` above uses
-    for faces) because an edge shared between two faces is referenced from
-    both and a plain explorer would walk it twice; the indexed map
-    de-duplicates by underlying shape identity, so e.g. a box's 12 edges
-    are returned exactly once each.
+    instead of the shape's true ones.
 
     Returns the flat segment list alongside a parallel per-segment edge id
-    list (Stage 23) - ids are assigned densely, in iteration order, only to
-    edges that actually emit at least one segment, so a degenerate edge
-    (skipped below) never consumes an id."""
-    edge_map = TopTools_IndexedMapOfShape()
-    topexp.MapShapes(shape, TopAbs_EDGE, edge_map)
+    list (Stage 23), using `_dense_edge_ids`' id assignment."""
+    edge_map, edge_id_by_map_index = _dense_edge_ids(shape)
 
     segments: list[float] = []
     edge_ids: list[int] = []
-    next_edge_id = 0
     for i in range(1, edge_map.Size() + 1):
-        edge = topods.Edge(edge_map.FindKey(i))
-        if BRep_Tool.Degenerated(edge):
+        edge_id = edge_id_by_map_index.get(i)
+        if edge_id is None:
             continue
+        edge = topods.Edge(edge_map.FindKey(i))
         points = _sample_edge(edge)
         segment_count = 0
         for p1, p2 in zip(points, points[1:]):
             segments.extend([p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]])
             segment_count += 1
-        edge_ids.extend([next_edge_id] * segment_count)
-        next_edge_id += 1
+        edge_ids.extend([edge_id] * segment_count)
 
     return segments, edge_ids
+
+
+def _extract_face_edge_ids(shape) -> list[list[int]]:
+    """Fillet follow-up: per-face boundary edge ids, letting the client
+    offer "tap a face to select all its edges" - a face's own edges are
+    walked via a per-face `TopExp_Explorer(face, TopAbs_EDGE)` (which can
+    revisit an edge shared by an inner/outer wire twice, hence the `set`),
+    then each is translated to the *same* dense edge id `_extract_edges`
+    assigns via `_dense_edge_ids`'s shared map, not a fresh per-face index -
+    a client matching a `face_edge_ids` entry against `edge_ids`/its own
+    `SubShapeRef.index` needs both to agree on one id space. Dense, one
+    entry per face in the same `TopExp_Explorer(shape, TopAbs_FACE)` order
+    `tessellate_shape`'s own face_id loop uses - every face gets an entry,
+    even one with no triangulation."""
+    edge_map, edge_id_by_map_index = _dense_edge_ids(shape)
+
+    face_edge_ids: list[list[int]] = []
+    face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while face_explorer.More():
+        face = topods.Face(face_explorer.Current())
+        ids: set[int] = set()
+        edge_explorer = TopExp_Explorer(face, TopAbs_EDGE)
+        while edge_explorer.More():
+            edge = topods.Edge(edge_explorer.Current())
+            if not BRep_Tool.Degenerated(edge):
+                edge_id = edge_id_by_map_index.get(edge_map.FindIndex(edge))
+                if edge_id is not None:
+                    ids.add(edge_id)
+            edge_explorer.Next()
+        face_edge_ids.append(sorted(ids))
+        face_explorer.Next()
+
+    return face_edge_ids
 
 
 def _extract_topology_vertices(shape) -> tuple[list[tuple[float, float, float]], list[int]]:

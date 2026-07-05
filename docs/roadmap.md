@@ -460,6 +460,34 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   behavior); user wants this exposed as a selectable option in the
   FilletPanel, which the original brief didn't specify. **Still not
   on-device confirmed** - Prompt E (Chamfer) remains blocked until it is.
+- **Follow-up: Fillet selection filter, "Add" FAB entry, live edge editing,
+  corner-treatment investigation**. Asked (per explicit permission) before
+  guessing at two genuinely open questions: whether a Face-tap should select
+  its edge loop (yes, confirmed - needed new backend face→edge adjacency
+  data, `MeshData.face_edge_ids`) and whether the corner-rounding difference
+  needs an auto-expansion fix or is correct kernel behavior (user chose
+  "investigate first"). **Investigation conclusion**: the resolver already
+  uses the correct one-builder/all-edges-together OCCT approach; there is no
+  `BRepFilletAPI_MakeFillet` "corner type" switch that makes a 2-of-3-edges
+  selection look like the 3-edge case - `ChFi3d_FilletShape` only controls
+  cross-section profile, not vertex blending, and a still-sharp unfilleted
+  edge unavoidably meets the fillet surfaces differently. Not a bug; not
+  re-verified against real OCCT output (unavailable in this sandbox), a
+  reasoned conclusion from the API's documented behavior instead. The
+  practical fix is reliable full-loop *selection*, which the new Face-tap
+  feature provides. Also: new `_filletSelectionFilter` (edge+face only)
+  locked in for the whole Fillet flow via `_selectionFilterOverrides`; new
+  `FeaturePickerAction.fillet` "Add" FAB entry (`_startFilletPicker`,
+  mirrors `_startPlanePicker`'s guided-mode shape); Fillet's edge selection
+  is now genuinely live for the panel's whole session (previously
+  eager-create-once with no live-editing wiring at all, despite the prior
+  round's rollback fix implying it) - mirrors Extrude's live target-body
+  picking exactly, generalizing `_ensureFilletRadiusUpdated` into
+  `_ensureFilletFeatureExists(radius, edgeRefs)`. 95 OCCT-free backend tests
+  still passing (5 new `face_edge_ids` cases `ast.parse`-only per the usual
+  caveat), `flutter analyze` clean, 46/46 `document_api_client_test.dart` +
+  4/4 `feature_picker_sheet_test.dart` genuinely executed. **Not yet
+  on-device confirmed** - Prompt E (Chamfer) remains blocked.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

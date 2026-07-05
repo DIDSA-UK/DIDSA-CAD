@@ -212,6 +212,7 @@ def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
         edge_ids=mesh_data.edge_ids,
         topology_vertices=mesh_data.topology_vertices,
         topology_vertex_ids=mesh_data.topology_vertex_ids,
+        face_edge_ids=mesh_data.face_edge_ids,
     )
 
 

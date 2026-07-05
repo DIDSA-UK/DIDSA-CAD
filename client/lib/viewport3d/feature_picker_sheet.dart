@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 /// Actions available from the "Add" FAB's second-level Feature picker.
-/// [extrude] and (C3) [plane] are the only entries wired to a real flow -
-/// Revolve/Sweep/Fillet/Chamfer are listed (per the Stage 19b brief) but
-/// rendered disabled since this codebase has no flow for them yet.
-enum FeaturePickerAction { extrude, plane }
+/// [extrude], (C3) [plane], and (on-device feedback) [fillet] are the only
+/// entries wired to a real flow - Revolve/Sweep/Chamfer are listed (per the
+/// Stage 19b brief) but rendered disabled since this codebase has no flow
+/// for them yet (Chamfer's own Prompt E is explicitly blocked until Fillet's
+/// on-device confirmation comes back).
+enum FeaturePickerAction { extrude, plane, fillet }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
 /// Feature entry offers - same drag-handle/rounded-top-corner shape as
@@ -55,9 +57,10 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                 title: Text('Sweep', style: TextStyle(color: disabledColor)),
               ),
               ListTile(
-                enabled: false,
-                leading: Icon(Icons.rounded_corner, color: disabledColor),
-                title: Text('Fillet', style: TextStyle(color: disabledColor)),
+                leading: const Icon(Icons.rounded_corner),
+                title: const Text('Fillet'),
+                onTap: () =>
+                    Navigator.of(context).pop(FeaturePickerAction.fillet),
               ),
               ListTile(
                 enabled: false,

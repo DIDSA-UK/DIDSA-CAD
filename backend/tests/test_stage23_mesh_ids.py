@@ -169,6 +169,58 @@ def test_placeholder_mesh_also_includes_topology_vertices():
     assert mesh["topology_vertex_ids"] == list(range(8))
 
 
+# --- face_edge_ids (Fillet follow-up: "tap a face to select all its edges") -
+
+
+def test_box_extrude_has_face_edge_ids_matching_face_count():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    assert len(mesh["face_edge_ids"]) == 6
+
+
+def test_box_extrude_each_face_has_four_edges():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    for edge_ids in mesh["face_edge_ids"]:
+        assert len(edge_ids) == 4
+
+
+def test_box_extrude_face_edge_ids_share_edge_ids_id_space():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    all_ids = {edge_id for edge_ids in mesh["face_edge_ids"] for edge_id in edge_ids}
+    assert all_ids == set(mesh["edge_ids"])
+
+
+def test_box_extrude_every_edge_is_shared_by_exactly_two_faces():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    counts: dict[int, int] = {}
+    for edge_ids in mesh["face_edge_ids"]:
+        for edge_id in edge_ids:
+            counts[edge_id] = counts.get(edge_id, 0) + 1
+    assert all(count == 2 for count in counts.values())
+
+
+def test_placeholder_mesh_also_includes_face_edge_ids():
+    part = _create_part()
+
+    bodies = _get_bodies(part["id"])
+
+    mesh = bodies[0]["mesh"]
+    assert len(mesh["face_edge_ids"]) == 6
+    for edge_ids in mesh["face_edge_ids"]:
+        assert len(edge_ids) == 4
+
+
 # --- hidden Body, no other geometry ------------------------------------------
 
 
