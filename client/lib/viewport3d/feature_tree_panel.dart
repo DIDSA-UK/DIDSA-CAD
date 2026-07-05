@@ -13,6 +13,7 @@ String featureDisplayName(List<FeatureDto> features, int index) {
   final label = switch (feature.type) {
     'extrude' => 'Extrude',
     'create_plane' => 'Plane',
+    'fillet' => 'Fillet',
     _ => 'Sketch',
   };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
@@ -436,6 +437,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
               : switch (feature.type) {
                   'extrude' => Icons.view_in_ar,
                   'create_plane' => Icons.crop_din,
+                  'fillet' => Icons.rounded_corner,
                   _ => Icons.edit,
                 },
           size: 20,

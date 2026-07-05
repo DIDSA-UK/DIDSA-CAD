@@ -229,7 +229,41 @@ class CreatePlaneFeatureResponse(BaseModel):
     produces: Produces
 
 
-FeatureResponse = Union[SketchFeatureResponse, ExtrudeFeatureResponse, CreatePlaneFeatureResponse]
+class FilletFeatureCreate(BaseModel):
+    """Prompt D: rounds every edge named in `edge_refs` (all must resolve to
+    the same Body - see `app.document.fillet._mixed_body_selection`) with
+    one shared `radius`. See `app.document.router._validate_fillet_payload`
+    for the exact checks (non-empty `edge_refs`, each entry's `shape_type
+    == EDGE`, `radius > 0`) - not encoded here, mirroring every other
+    Feature's own "payload shape validated by the API layer" split."""
+
+    edge_refs: list[SubShapeRefSchema] = []
+    radius: float
+
+
+class FilletFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ExtrudeFeatureUpdate`/`CreatePlaneFeatureUpdate` - `None` means "not
+    provided, keep the current value" for both fields below."""
+
+    edge_refs: list[SubShapeRefSchema] | None = None
+    radius: float | None = None
+
+
+class FilletFeatureResponse(BaseModel):
+    type: Literal["fillet"] = "fillet"
+    id: str
+    edge_refs: list[SubShapeRefSchema] = []
+    radius: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # FilletFeature (it modifies, rather than creates, a Body).
+    produces: Produces
+
+
+FeatureResponse = Union[
+    SketchFeatureResponse, ExtrudeFeatureResponse, CreatePlaneFeatureResponse, FilletFeatureResponse
+]
 
 
 class MeshVertexData(BaseModel):

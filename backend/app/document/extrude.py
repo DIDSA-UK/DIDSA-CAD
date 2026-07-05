@@ -31,6 +31,7 @@ from app.document.graph import base_feature_id, build_feature_graph, topological
 from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
+    FilletFeature,
     Part,
     ResolvedPlane,
     SketchFeature,
@@ -319,16 +320,44 @@ def compute_part_bodies(
     only the true-rollback set; a Body hidden via plain Hide/Show is always
     still fully computed here and only filtered out afterward, at the
     response layer - see app.document.router.get_part_mesh's own
-    `hidden_feature_ids` (the renamed, now purely cosmetic parameter)."""
+    `hidden_feature_ids` (the renamed, now purely cosmetic parameter).
+
+    Prompt D: a `FilletFeature` modifies a Body already in `bodies` in
+    place (see `app.document.fillet.resolve_fillet_from_bodies`), rather
+    than adding or replacing an entry the way Boss/Cut do - `bodies[body_id]`
+    is simply reassigned to the post-fillet shape, keeping the same key. A
+    Fillet that can't currently be resolved (its edges span more than one
+    Body, its own topology drifted since creation, or the fillet geometry
+    itself fails) is skipped with a warning rather than raising - the same
+    resilience `compute_part_bodies` already gives a Cut naming a Body that
+    no longer exists, since this function computes the *whole* Part's
+    Bodies unconditionally for every `/mesh` fetch and one bad Fillet
+    shouldn't take down every other Body's response. The router's own
+    create/update endpoints validate a Fillet eagerly instead (see
+    `app.document.fillet.resolve_fillet`), so a genuinely invalid Fillet is
+    normally never persisted in the first place - this fallback only ever
+    matters for topology drift after the fact."""
+    from app.document.fillet import resolve_fillet_from_bodies
+
     feature_index = {feature.id: i for i, feature in enumerate(part.features)}
     bodies: dict[str, TopoDS_Shape] = {}
 
     order = topological_order(build_feature_graph(part))
     for feature_id in order:
         feature = part.get_feature(feature_id)
-        if not isinstance(feature, ExtrudeFeature):
-            continue
         if feature.id in excluded_feature_ids:
+            continue
+
+        if isinstance(feature, FilletFeature):
+            try:
+                body_id, filleted_shape = resolve_fillet_from_bodies(bodies, feature)
+            except HTTPException:
+                logger.warning("Skipping FilletFeature %s: could not be resolved", feature.id)
+                continue
+            bodies[body_id] = filleted_shape
+            continue
+
+        if not isinstance(feature, ExtrudeFeature):
             continue
 
         sketch_feature = part.get_feature(feature.sketch_feature_id)

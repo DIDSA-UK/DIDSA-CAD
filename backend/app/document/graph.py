@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from app.document.models import (
     CreatePlaneFeature,
     ExtrudeFeature,
+    FilletFeature,
     Part,
     PlaneRef,
     PlaneType,
@@ -178,6 +179,16 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     "everything after it in the list" bug class B2 fixed for Boss/Cut's
     `target_body_ids`, just for a new reference kind.
 
+    Prompt D: a `FilletFeature` depends on the owning ExtrudeFeature(s) of
+    every `edge_refs` entry's `body_id` (deduplicated via a `set` - by
+    construction they should all be the same Body, see
+    `app.document.fillet._mixed_body_selection`, but this tolerates an
+    already-invalid/hand-crafted Feature the same defensive way
+    `topological_order`/`transitive_dependents` already tolerate any
+    unresolvable dependency id). Deleting the Extrude that created a Body a
+    Fillet modifies must cascade-delete the Fillet too - it would otherwise
+    be left trying to modify a Body that no longer exists.
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -193,6 +204,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             )
         elif isinstance(feature, CreatePlaneFeature):
             depends_on = _create_plane_dependencies(part, feature)
+        elif isinstance(feature, FilletFeature):
+            depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 

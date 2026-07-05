@@ -19,6 +19,7 @@ import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
+import 'fillet_panel.dart';
 import 'mesh_geometry.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
@@ -488,6 +489,43 @@ class _PartScreenState extends State<PartScreen> {
   Timer? _createPlaneDebounce;
 
   bool get _createPlaneActive => _createPlaneMode != null;
+
+  /// Prompt D: true while [FilletPanel] is open - unlike [_createPlaneMode]
+  /// (one of six construction methods), Fillet has only the one flow, so
+  /// there's no mode enum to be non-null instead; this is the direct
+  /// equivalent, set synchronously by [_openFilletPanel]/[_openFilletPanelForEdit]
+  /// so the panel shows immediately, even during the brief async gap before
+  /// [_previewFilletFeatureId] itself is set (mirrors [_createPlaneMode]'s
+  /// own reason for being a separate flag from [_previewCreatePlaneFeatureId]).
+  bool _filletActive = false;
+
+  /// The FilletFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewCreatePlaneFeatureId]'s "create
+  /// eagerly on open, PATCH on every field edit, Confirm just closes,
+  /// Cancel deletes-or-reverts" pattern.
+  String? _previewFilletFeatureId;
+
+  /// B4: non-null while [FilletPanel] is editing an *existing* FilletFeature
+  /// (as opposed to [_onFilletTapped]'s "create a brand-new one from the
+  /// current selection" flow) - same purpose as [_editingCreatePlaneFeatureId].
+  String? _editingFilletFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelFillet] PATCHes these back verbatim when
+  /// [_editingFilletFeatureId] is set, same reason [_createPlaneEditSnapshot]
+  /// exists.
+  ({List<SubShapeRefDto> edgeRefs, double radius})? _filletEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmFillet] and [_cancelFillet], same purpose
+  /// [_entitiesBeforeCreatePlane] serves.
+  Set<SelectionEntityRef>? _entitiesBeforeFillet;
+
+  /// The panel's live radius field value, debounced into a PATCH the same
+  /// way [_createPlaneOffset] is.
+  double _filletRadius = 1.0;
+
+  Timer? _filletDebounce;
 
   /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
   /// recomputed from [_features] directly (no extra network call - the
@@ -1102,6 +1140,11 @@ class _PartScreenState extends State<PartScreen> {
       // instead, same "stays engaged for the panel's whole lifetime"
       // reasoning as the extrude branch above.
       _openCreatePlanePanelForEdit(feature);
+    } else if (feature.type == 'fillet') {
+      // Prompt D: rollback is ended by _confirmFillet/_cancelFillet
+      // instead, same "stays engaged for the panel's whole lifetime"
+      // reasoning as the extrude/create_plane branches above.
+      _openFilletPanelForEdit(feature);
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -1895,6 +1938,143 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Prompt D: Fillet -------------------------------------------------
+
+  /// [SelectionContextPanel.onFillet]'s callback - `contextActionsFor` only
+  /// ever enables this button for a selection that's one or more edges, all
+  /// on the same Body, so there is no combination to re-derive the way
+  /// [_onCreatePlaneTapped] has to for its own six flows.
+  void _onFilletTapped() {
+    final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    _openFilletPanel(edgeEntities: edges);
+  }
+
+  /// Creates the FilletFeature eagerly (mirrors [_openCreatePlanePanel]'s
+  /// "create on open" pattern) from [edgeEntities]. Stashes/clears
+  /// [_selectedEntities] the same way [_openCreatePlanePanel] does, since
+  /// the edges that triggered this are baked into the created Feature, not
+  /// something the user keeps adjusting in the viewport afterward.
+  Future<void> _openFilletPanel({required List<SelectionEntityRef> edgeEntities}) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _filletActive = true;
+      _entitiesBeforeFillet = _selectedEntities;
+      _selectedEntities = {};
+      _filletRadius = 1.0;
+    });
+    await _runGuarded(() async {
+      final edgeRefs = [
+        for (final entity in edgeEntities)
+          SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+      ];
+      final feature = await _api.createFilletFeature(part.id, edgeRefs: edgeRefs, radius: _filletRadius);
+      _previewFilletFeatureId = feature.id;
+      await _refreshFeatures();
+    });
+    if (_previewFilletFeatureId == null && mounted) {
+      // Creation failed (e.g. mixed_body_selection/fillet_failed -
+      // _errorMessage is already set by _runGuarded) - nothing to edit, so
+      // close the panel back out rather than leaving it stuck open with no
+      // real Feature behind it.
+      setState(() {
+        _filletActive = false;
+        _selectedEntities = _entitiesBeforeFillet ?? {};
+        _entitiesBeforeFillet = null;
+      });
+    }
+  }
+
+  /// B4: opens [FilletPanel] to edit an *already-existing* FilletFeature -
+  /// mirrors [_openCreatePlanePanelForEdit] exactly, including the "no
+  /// zero-argument reconstruction" snapshot stash for [_cancelFillet] to
+  /// PATCH back verbatim.
+  void _openFilletPanelForEdit(FeatureDto feature) {
+    final radius = feature.radius ?? 1.0;
+    setState(() {
+      _filletActive = true;
+      _editingFilletFeatureId = feature.id;
+      _previewFilletFeatureId = feature.id;
+      _filletRadius = radius;
+      _filletEditSnapshot = (edgeRefs: feature.edgeRefs, radius: radius);
+      _entitiesBeforeFillet = _selectedEntities;
+      _selectedEntities = {};
+    });
+  }
+
+  /// Debounces the panel's radius-field edits into a PATCH + Feature
+  /// refresh, same 500ms-after-last-change pattern
+  /// [_onCreatePlaneOffsetChanged] uses.
+  void _onFilletRadiusChanged(double radius) {
+    _filletRadius = radius;
+    _filletDebounce?.cancel();
+    _filletDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(_ensureFilletRadiusUpdated);
+    });
+  }
+
+  Future<void> _ensureFilletRadiusUpdated() async {
+    final part = _part;
+    final featureId = _previewFilletFeatureId;
+    if (part == null || featureId == null) return;
+    await _api.updateFilletFeature(part.id, featureId, radius: _filletRadius);
+    await _refreshFeatures();
+  }
+
+  /// Keeps the just-created/edited Feature, restores whatever was selected
+  /// before the panel opened, and rolls B4 rollback forward - mirrors
+  /// [_confirmCreatePlane] exactly.
+  Future<void> _confirmFillet() async {
+    _filletDebounce?.cancel();
+    setState(() {
+      _filletActive = false;
+      _selectedEntities = _entitiesBeforeFillet ?? {};
+      _entitiesBeforeFillet = null;
+      _previewFilletFeatureId = null;
+      _editingFilletFeatureId = null;
+      _filletEditSnapshot = null;
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview Feature (new-Fillet flow) or PATCHes
+  /// [_filletEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelCreatePlane]'s structure exactly.
+  Future<void> _cancelFillet() async {
+    _filletDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewFilletFeatureId;
+    final wasEditing = _editingFilletFeatureId != null;
+    final editSnapshot = _filletEditSnapshot;
+    setState(() {
+      _filletActive = false;
+      _selectedEntities = _entitiesBeforeFillet ?? {};
+      _entitiesBeforeFillet = null;
+      _previewFilletFeatureId = null;
+      _editingFilletFeatureId = null;
+      _filletEditSnapshot = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateFilletFeature(
+            part.id,
+            previewId,
+            edgeRefs: editSnapshot.edgeRefs,
+            radius: editSnapshot.radius,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   /// Prompt A4: the top banner's text while [_extrudeActive] - Cut's wording
   /// differs from Boss's since Cut requires 1+ picks (mirrors
   /// [ExtrudePanel]'s own Confirm-disable rule, `_canConfirm`) while Boss
@@ -2173,7 +2353,7 @@ class _PartScreenState extends State<PartScreen> {
                 // empty-selection gate would already hide this too, but this
                 // stays explicit rather than relying on that as an implicit
                 // side effect).
-                if (!_extrudeActive && !_createPlaneActive)
+                if (!_extrudeActive && !_createPlaneActive && !_filletActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -2182,13 +2362,14 @@ class _PartScreenState extends State<PartScreen> {
                         selectedEntities: _selectedEntities,
                         isPointOnLine: _isPointOnLine,
                         onCreatePlane: _onCreatePlaneTapped,
+                        onFillet: _onFilletTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),
                   ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: _featureTreeVisible && !_extrudeActive && !_createPlaneActive,
+                    visible: _featureTreeVisible && !_extrudeActive && !_createPlaneActive && !_filletActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -2264,6 +2445,17 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelCreatePlane,
                     ),
                   ),
+                if (_filletActive)
+                  Positioned.fill(
+                    child: FilletPanel(
+                      key: ValueKey(_editingFilletFeatureId ?? _previewFilletFeatureId),
+                      title: _editingFilletFeatureId != null ? 'Edit Fillet' : 'Fillet',
+                      initialRadius: _filletRadius,
+                      onRadiusChanged: _onFilletRadiusChanged,
+                      onConfirm: _confirmFillet,
+                      onCancel: _cancelFillet,
+                    ),
+                  ),
                 // Prompt A4: names the target-body picking mode live for the
                 // whole time the Extrude panel is open - same top-center
                 // pill convention as the plane-selection-mode banner below,
@@ -2327,7 +2519,11 @@ class _PartScreenState extends State<PartScreen> {
                 // feature-tree FAB specifically (unlike the hamburger just
                 // below, which already has its own extrude-aware check) sat
                 // underneath/overlapping A4's banner.
-                if (!_featureTreeVisible && !_planeSelectionMode && !_extrudeActive && !_createPlaneActive)
+                if (!_featureTreeVisible &&
+                    !_planeSelectionMode &&
+                    !_extrudeActive &&
+                    !_createPlaneActive &&
+                    !_filletActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -2432,7 +2628,9 @@ class _PartScreenState extends State<PartScreen> {
       floatingActionButton: _toolbarOpen
           ? null
           : Padding(
-              padding: EdgeInsets.only(bottom: (_extrudeActive || _createPlaneActive) ? 180 : 0),
+              padding: EdgeInsets.only(
+                bottom: (_extrudeActive || _createPlaneActive || _filletActive) ? 180 : 0,
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2447,7 +2645,7 @@ class _PartScreenState extends State<PartScreen> {
                     // orbit/rotate glyph while in Selection mode.
                     child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
                   ),
-                  if (!_extrudeActive && !_createPlaneActive) ...[
+                  if (!_extrudeActive && !_createPlaneActive && !_filletActive) ...[
                     const SizedBox(height: 12),
                     FloatingActionButton(
                       heroTag: 'add-fab',

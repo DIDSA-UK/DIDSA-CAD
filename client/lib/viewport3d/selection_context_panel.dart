@@ -10,9 +10,9 @@ import 'selection_hit_test.dart';
 /// this widget itself always renders its content, leaving visibility/
 /// positioning to the caller, the same split [SelectionListDrawer] uses.
 ///
-/// C2 is the first to wire a real callback (Create Plane) - Chamfer/Fillet
-/// stay disabled scaffolds until D/E exist, see [_callbackFor]'s per-action
-/// `// TODO: wire up <action>` comments.
+/// C2 is the first to wire a real callback (Create Plane); Prompt D wires
+/// Fillet - Chamfer stays a disabled scaffold until Prompt E exists, see
+/// [_callbackFor]'s own `// TODO: wire up Chamfer` comment.
 class SelectionContextPanel extends StatelessWidget {
   final Set<SelectionEntityRef> selectedEntities;
 
@@ -31,11 +31,16 @@ class SelectionContextPanel extends StatelessWidget {
   /// signature.
   final VoidCallback? onCreatePlane;
 
+  /// Prompt D: fired when the user taps an *enabled* Fillet button - mirrors
+  /// [onCreatePlane]'s own "never called for a disabled one" contract.
+  final VoidCallback? onFillet;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
     this.isPointOnLine,
     this.onCreatePlane,
+    this.onFillet,
   });
 
   @override
@@ -57,10 +62,7 @@ class SelectionContextPanel extends StatelessWidget {
                 for (final action in actions)
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: OutlinedButton(
-                      onPressed: _callbackFor(action),
-                      child: Text(action.label),
-                    ),
+                    child: _buildActionButton(action),
                   ),
               ],
             ),
@@ -70,19 +72,31 @@ class SelectionContextPanel extends StatelessWidget {
     );
   }
 
-  /// C2/C3/C4: 'Create Plane' only ever gets a real callback when
-  /// [SelectionContextAction.enabled] is true (all six flows
-  /// [contextActionsFor] now wires) - every other action stays null, kept
-  /// as a per-action switch so each future CAD operation gets its own
-  /// `// TODO: wire up <action>` comment at its own callback site.
+  /// Prompt D: wraps the button in a [Tooltip] only when
+  /// [SelectionContextAction.disabledReason] is set - every other action
+  /// (enabled, or disabled with no reason at all - the "not built yet"
+  /// scaffolded case) renders the plain button, so hovering/long-pressing
+  /// it doesn't pop up an empty tooltip.
+  Widget _buildActionButton(SelectionContextAction action) {
+    final button = OutlinedButton(
+      onPressed: _callbackFor(action),
+      child: Text(action.label),
+    );
+    final reason = action.disabledReason;
+    return reason == null ? button : Tooltip(message: reason, child: button);
+  }
+
+  /// C2/C3/C4/D: 'Create Plane'/'Fillet' only ever get a real callback when
+  /// [SelectionContextAction.enabled] is true - every other action stays
+  /// null, kept as a per-action switch so each future CAD operation gets
+  /// its own `// TODO: wire up <action>` comment at its own callback site.
   VoidCallback? _callbackFor(SelectionContextAction action) {
     switch (action.label) {
       case 'Chamfer':
         // TODO: wire up Chamfer once the backend Chamfer operation exists.
         return null;
       case 'Fillet':
-        // TODO: wire up Fillet once the backend Fillet operation exists.
-        return null;
+        return action.enabled ? onFillet : null;
       case 'Create Plane':
       case 'Create Plane (Midplane)':
       case 'Create Plane (Normal to Edge Through Vertex)':

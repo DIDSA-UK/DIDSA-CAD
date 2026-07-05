@@ -26,10 +26,16 @@ void main() {
       expect(contextActionsFor(const {}), isEmpty);
     });
 
-    test('edges only offers Chamfer and Fillet', () {
-      final actions = contextActionsFor({_edge0});
-      expect(actions, [const SelectionContextAction('Chamfer'), const SelectionContextAction('Fillet')]);
-    });
+    test(
+      'Prompt D: edges only (all on the same Body) offers a real, enabled Chamfer and Fillet',
+      () {
+        final actions = contextActionsFor({_edge0});
+        expect(actions, [
+          const SelectionContextAction('Chamfer', enabled: true),
+          const SelectionContextAction('Fillet', enabled: true),
+        ]);
+      },
+    );
 
     test('C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face)', () {
       final actions = contextActionsFor({_face0});
@@ -292,6 +298,38 @@ void main() {
         const SelectionContextAction('Chamfer'),
         const SelectionContextAction('Fillet'),
       ]);
+    });
+  });
+
+  group('Prompt D: contextActionsFor Fillet/Chamfer edge selection', () {
+    const edge1SameBody = SelectionEntityRef(kind: SelectionEntityKind.edge, id: 1);
+    const edgeOtherBody = SelectionEntityRef(
+      kind: SelectionEntityKind.edge,
+      id: 0,
+      bodyId: 'body-2',
+    );
+
+    test('multiple edges on the same Body offers a real, enabled Chamfer and Fillet', () {
+      final actions = contextActionsFor({_edge0, edge1SameBody});
+      expect(actions, [
+        const SelectionContextAction('Chamfer', enabled: true),
+        const SelectionContextAction('Fillet', enabled: true),
+      ]);
+    });
+
+    test('edges spanning two different Bodies offers Chamfer/Fillet disabled, with a reason', () {
+      final actions = contextActionsFor({_edge0, edgeOtherBody});
+      const reason = 'Selected edges must all belong to the same Body';
+      expect(actions, [
+        const SelectionContextAction('Chamfer', disabledReason: reason),
+        const SelectionContextAction('Fillet', disabledReason: reason),
+      ]);
+      expect(actions.every((a) => !a.enabled), isTrue);
+    });
+
+    test('a same-Body edge selection has no disabledReason set', () {
+      final actions = contextActionsFor({_edge0, edge1SameBody});
+      expect(actions.every((a) => a.disabledReason == null), isTrue);
     });
   });
 }

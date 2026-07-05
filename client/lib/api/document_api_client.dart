@@ -203,6 +203,16 @@ class FeatureDto {
   final List<double>? xAxis;
   final List<double>? yAxis;
 
+  /// Prompt D: only present on a `"fillet"` Feature - which Body edges it
+  /// rounds (the backend's `FilletFeature.edge_refs`). A plain list of
+  /// [SubShapeRefDto], never a [PlaneRefDto] - a Fillet only ever
+  /// references Body edges, never a plane-like thing.
+  final List<SubShapeRefDto> edgeRefs;
+
+  /// Prompt D: only present on a `"fillet"` Feature - the shared radius
+  /// applied to every one of [edgeRefs].
+  final double? radius;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -227,6 +237,8 @@ class FeatureDto {
     this.normal,
     this.xAxis,
     this.yAxis,
+    this.edgeRefs = const [],
+    this.radius,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -267,6 +279,11 @@ class FeatureDto {
         normal: (json['normal'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         xAxis: (json['x_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         yAxis: (json['y_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        edgeRefs: (json['edge_refs'] as List?)
+                ?.map((r) => SubShapeRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        radius: (json['radius'] as num?)?.toDouble(),
       );
 }
 
@@ -518,6 +535,51 @@ class DocumentApiClient {
                 if (startDistance != null) 'start_distance': startDistance,
                 if (endDistance != null) 'end_distance': endDistance,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Prompt D: creates a FilletFeature - rounds every edge in [edgeRefs]
+  /// (all must belong to the same Body) with one shared [radius]. The
+  /// backend validates payload shape and resolvability before persisting
+  /// (`mixed_body_selection`/`fillet_failed`/`missing_reference` on
+  /// failure - see `app.document.router.create_fillet_feature`), this
+  /// method just serializes whatever it's given.
+  Future<FeatureDto> createFilletFeature(
+    String partId, {
+    required List<SubShapeRefDto> edgeRefs,
+    required double radius,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/fillet-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
+                'radius': radius,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing FilletFeature - either/both of
+  /// [edgeRefs]/[radius] may be supplied; omitted fields keep their
+  /// current value. Used for the live-preview debounced re-solve, same
+  /// pattern as [updateExtrudeFeature].
+  Future<FeatureDto> updateFilletFeature(
+    String partId,
+    String featureId, {
+    List<SubShapeRefDto>? edgeRefs,
+    double? radius,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/fillet-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
+                if (radius != null) 'radius': radius,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

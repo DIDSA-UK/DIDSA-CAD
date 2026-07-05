@@ -6,6 +6,7 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.create_plane import resolve_create_plane
 from app.document.extrude import compute_part_bodies
+from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.models import (
@@ -13,6 +14,7 @@ from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
     Feature,
+    FilletFeature,
     Part,
     PlaneRef,
     PlaneType,
@@ -31,6 +33,9 @@ from app.document.schemas import (
     ExtrudeFeatureResponse,
     ExtrudeFeatureUpdate,
     FeatureResponse,
+    FilletFeatureCreate,
+    FilletFeatureResponse,
+    FilletFeatureUpdate,
     MeshVertexData,
     PartCreate,
     PartResponse,
@@ -186,6 +191,14 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         )
     if isinstance(feature, CreatePlaneFeature):
         return _create_plane_feature_response(part, feature)
+    if isinstance(feature, FilletFeature):
+        return FilletFeatureResponse(
+            id=feature.id,
+            edge_refs=[_subshape_ref_to_schema(ref) for ref in feature.edge_refs],
+            radius=feature.radius,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -267,6 +280,36 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
             detail=f"Sketch does not contain a closed profile (status: {result.status.value})",
         )
     return feature
+
+
+def _validate_fillet_radius(radius: float) -> None:
+    """Prompt D: mirrors `_validate_extrude_distances`'s own plain-400
+    convention for a bare numeric-field check with no structured error
+    type - a Fillet's radius must be a positive real number, otherwise
+    there is no rounding to construct."""
+    if radius <= 0:
+        raise HTTPException(status_code=400, detail="radius must be greater than 0")
+
+
+def _validate_fillet_edge_refs(edge_refs: list[SubShapeRef]) -> None:
+    """Prompt D: a FilletFeature must name at least one edge (422, mirroring
+    Cut's own "at least one target_body_ids entry" check in
+    `_validate_target_body_ids`) and every named ref must actually be an
+    edge (422, mirroring `_validate_plane_ref`'s own `shape_type == FACE`
+    check) - these are payload-shape checks. Whether the edges actually
+    resolve, and whether they all belong to the same Body, is a
+    referential/geometric check made by `app.document.fillet.resolve_
+    fillet` instead (the same "payload shape in the router, resolution in
+    the OCCT module" split every other structured Feature error in this
+    codebase already uses)."""
+    if not edge_refs:
+        raise HTTPException(
+            status_code=422,
+            detail="FilletFeature requires at least one edge_refs entry",
+        )
+    for ref in edge_refs:
+        if ref.shape_type != SubShapeType.EDGE:
+            raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
 
 
 def _all_other_create_plane_fields_empty(
@@ -726,6 +769,69 @@ def update_create_plane_feature(
     feature.edge_ref = candidate.edge_ref
     feature.vertex_ref = candidate.vertex_ref
     feature.point_refs = candidate.point_refs
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/fillet-features", response_model=FilletFeatureResponse, status_code=201
+)
+def create_fillet_feature(part_id: str, payload: FilletFeatureCreate) -> FilletFeatureResponse:
+    """Prompt D: never locked-editable-only-if-last from the start, same
+    instruction as C2/C5 - B4 already established "any Feature can be
+    edited" generically before this endpoint existed.
+
+    Validates the payload shape (`_validate_fillet_edge_refs`/
+    `_validate_fillet_radius`) and then resolvability
+    (`app.document.fillet.resolve_fillet`, discarding its result here - the
+    real geometry is recomputed again the next time `/mesh` is fetched, via
+    `compute_part_bodies`'s own Fillet handling) *before* constructing the
+    Feature - fails closed with `mixed_body_selection`/`fillet_failed`/
+    `missing_reference` rather than ever persisting an unresolvable
+    Fillet."""
+    part = get_part_or_404(part_id)
+    edge_refs = [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+    _validate_fillet_edge_refs(edge_refs)
+    _validate_fillet_radius(payload.radius)
+    feature = FilletFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, radius=payload.radius)
+    resolve_fillet(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_fillet_feature_or_404(part: Part, feature_id: str) -> FilletFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, FilletFeature):
+        raise HTTPException(status_code=404, detail="Fillet feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/fillet-features/{feature_id}", response_model=FilletFeatureResponse)
+def update_fillet_feature(
+    part_id: str, feature_id: str, payload: FilletFeatureUpdate
+) -> FilletFeatureResponse:
+    """Same validate-before-mutate discipline as `create_fillet_feature`:
+    the merged (existing-plus-payload) values are checked against a scratch
+    Feature (same `id` as the real one - `resolve_fillet` excludes that id
+    from its own "current bodies" computation for exactly this reason, see
+    its own doc comment) before anything on the real, stored Feature is
+    touched, so a failed PATCH never leaves it half-updated."""
+    part = get_part_or_404(part_id)
+    feature = _get_fillet_feature_or_404(part, feature_id)
+
+    new_edge_refs = (
+        [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+        if payload.edge_refs is not None
+        else feature.edge_refs
+    )
+    new_radius = payload.radius if payload.radius is not None else feature.radius
+    _validate_fillet_edge_refs(new_edge_refs)
+    _validate_fillet_radius(new_radius)
+
+    candidate = FilletFeature(id=feature.id, edge_refs=new_edge_refs, radius=new_radius)
+    resolve_fillet(part, candidate)  # raises on an unresolvable reference
+
+    feature.edge_refs = candidate.edge_refs
+    feature.radius = candidate.radius
     return _feature_response(part, feature)
 
 

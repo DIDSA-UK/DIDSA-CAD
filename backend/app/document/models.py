@@ -386,6 +386,43 @@ class CreatePlaneFeature(Feature):
 
 
 @dataclass
+class FilletFeature(Feature):
+    """Prompt D: rounds every edge named in `edge_refs` (all of which must
+    belong to the same Body - see `app.document.fillet._mixed_body_
+    selection`) with one shared `radius`, via OCCT `BRepFilletAPI_
+    MakeFillet`. No per-edge radii, no variable/setback fillets - v1 scope,
+    matching this project's established conservative-scoping convention
+    (mirrors `CreatePlaneFeature`'s own "narrowest correct slice first"
+    precedent).
+
+    Unlike Boss/Cut, a Fillet *modifies* a Body's shape rather than
+    creating a new one - it therefore keeps the target Body's existing
+    `body_id` (an in-place shape replacement in `app.document.extrude.
+    compute_part_bodies`'s `bodies` accumulator), rather than minting a new
+    one the way a fresh Boss with no `target_body_ids` does. This preserves
+    A1's body-identity guarantee: any later Boss/Cut `target_body_ids`
+    entry, or `SubShapeRef`/Fillet `edge_refs` entry, that already named
+    this Body keeps resolving to it after a Fillet is applied, instead of
+    silently dangling."""
+
+    id: str
+    edge_refs: list[SubShapeRef] = field(default_factory=list)
+    radius: float = 0.0
+
+    @property
+    def type(self) -> str:
+        return "fillet"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
 

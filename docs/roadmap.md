@@ -421,8 +421,29 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   and `_buildEntityHighlightNode` builds a real amber hover quad for a
   plane instead of returning null. Also fixed: the "Add > Plane" guided
   picker never switched to Selection mode, and its hint text predated both
-  C4's and C5's new combos. **Not yet on-device confirmed** - same gating
-  discipline as every other C-series prompt before Prompt D starts.
+  C4's and C5's new combos. Confirmed working on-device.
+- **Prompt D: Fillet**. Multi-edge Fillet, one shared radius across all
+  selected edges (v1 scope, no per-edge radii/variable fillets, matching
+  the project's established conservative-scoping convention). Keeps the
+  target Body's existing `body_id` (an in-place shape replacement in
+  `compute_part_bodies`) rather than minting a new one, per the brief's own
+  body-identity decision - preserves A1's guarantee that a later
+  `target_body_ids`/`edge_refs` entry naming this Body keeps resolving to
+  it. New `FilletFeature` model + `app/document/fillet.py` (OCCT
+  `BRepFilletAPI_MakeFillet`, `mixed_body_selection`/`fillet_failed`
+  structured errors), `graph.py` dependency edges, `POST/PATCH /parts/{id}/
+  fillet-features[/{id}]`. Client: `contextActionsFor` enables Fillet (and,
+  per Prompt E's own shared-condition instruction, Chamfer) for a 1+-edges-
+  same-Body selection, disabled with a new `SelectionContextAction.
+  disabledReason` tooltip otherwise; new `FilletPanel` (mirrors
+  `CreatePlanePanel`'s Confirm/Cancel/live-preview shape); full part_screen
+  create/edit/confirm/cancel wiring. 95 OCCT-free backend tests passed (new
+  `test_stage_d_graph.py`, `test_stage_d_fillet.py` the latter `ast.parse`-
+  only per the usual OCCT-in-sandbox caveat), `flutter analyze` clean, 44/44
+  `document_api_client_test.dart` + 9/9 new `fillet_panel_test.dart` cases
+  genuinely executed. **Not yet on-device confirmed** - per the brief's own
+  stop condition, do not start Prompt E (Chamfer) until this comes back
+  positive.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

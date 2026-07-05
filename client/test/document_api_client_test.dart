@@ -579,6 +579,137 @@ void main() {
     });
   });
 
+  group('Prompt D: FeatureDto.fromJson for a fillet Feature', () {
+    test('parses edge_refs and radius', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'fillet',
+        'id': 'fillet-1',
+        'locked': false,
+        'produces': 'body',
+        'edge_refs': [
+          {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+          {'body_id': 'body-1', 'shape_type': 'edge', 'index': 3},
+        ],
+        'radius': 2.0,
+      });
+
+      expect(dto.type, 'fillet');
+      expect(dto.edgeRefs, hasLength(2));
+      expect(dto.edgeRefs[0].bodyId, 'body-1');
+      expect(dto.edgeRefs[0].index, 0);
+      expect(dto.edgeRefs[1].index, 3);
+      expect(dto.radius, 2.0);
+      expect(dto.produces, 'body');
+    });
+
+    test('defaults edgeRefs to empty and radius to null when omitted', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'extrude',
+        'id': 'ef-1',
+        'locked': false,
+        'produces': 'body',
+        'sketch_feature_id': 'sf-1',
+        'extrude_type': 'boss',
+        'start_distance': 0.0,
+        'end_distance': 10.0,
+      });
+
+      expect(dto.edgeRefs, isEmpty);
+      expect(dto.radius, isNull);
+    });
+  });
+
+  group('Prompt D: DocumentApiClient createFilletFeature/updateFilletFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('createFilletFeature sends edge_refs and radius', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'fillet',
+            'id': 'fillet-1',
+            'locked': false,
+            'produces': 'body',
+            'edge_refs': [
+              {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+            ],
+            'radius': 1.5,
+          });
+        }),
+      );
+
+      final feature = await client.createFilletFeature(
+        'part-1',
+        edgeRefs: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'edge', index: 0)],
+        radius: 1.5,
+      );
+
+      expect(capturedBody['edge_refs'], [
+        {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+      ]);
+      expect(capturedBody['radius'], 1.5);
+      expect(feature.radius, 1.5);
+      expect(feature.edgeRefs.single.bodyId, 'body-1');
+    });
+
+    test('updateFilletFeature only sends the fields supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'fillet',
+            'id': 'fillet-1',
+            'locked': false,
+            'produces': 'body',
+            'edge_refs': [
+              {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+            ],
+            'radius': 3.0,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateFilletFeature('part-1', 'fillet-1', radius: 3.0);
+
+      expect(capturedBody, {'radius': 3.0});
+    });
+
+    test('updateFilletFeature sends edge_refs when supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'fillet',
+            'id': 'fillet-1',
+            'locked': false,
+            'produces': 'body',
+            'edge_refs': [
+              {'body_id': 'body-1', 'shape_type': 'edge', 'index': 1},
+            ],
+            'radius': 1.0,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateFilletFeature(
+        'part-1',
+        'fillet-1',
+        edgeRefs: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'edge', index: 1)],
+      );
+
+      expect(capturedBody, {
+        'edge_refs': [
+          {'body_id': 'body-1', 'shape_type': 'edge', 'index': 1},
+        ],
+      });
+    });
+  });
+
   group('DocumentApiClient createCreatePlaneFeature/updateCreatePlaneFeature', () {
     http.Response jsonResponse(Object body, {int status = 201}) =>
         http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});

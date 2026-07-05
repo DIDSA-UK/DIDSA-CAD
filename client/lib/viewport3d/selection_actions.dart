@@ -4,21 +4,33 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 /// [label] is shown on the button. [enabled] was always false pre-C2 (no
 /// Chamfer/Fillet/Create Plane logic existed yet); C2 is the first to ever
 /// return `enabled: true` for real, for its own two Create Plane flows -
-/// see the `// TODO: wire up <action>` comment at Chamfer/Fillet's own
-/// callback sites in `selection_context_panel.dart` for what's still a
-/// scaffold.
+/// see the `// TODO: wire up <action>` comment at Chamfer's own callback
+/// site in `selection_context_panel.dart` for what's still a scaffold.
+///
+/// Prompt D: [disabledReason], when non-null, is shown as a tooltip on the
+/// (necessarily disabled) button - "explain, don't silently omit" (mirrors
+/// the Body-only-selection guard's own style further down this file) for a
+/// case where the button's *kind* of selection is right but a specific
+/// property of it isn't (e.g. edges selected, but spanning more than one
+/// Body) - as opposed to every other disabled scaffold action, which has no
+/// reason text at all since it's simply "not built yet", not a rejected
+/// selection.
 class SelectionContextAction {
   final String label;
   final bool enabled;
+  final String? disabledReason;
 
-  const SelectionContextAction(this.label, {this.enabled = false});
+  const SelectionContextAction(this.label, {this.enabled = false, this.disabledReason});
 
   @override
   bool operator ==(Object other) =>
-      other is SelectionContextAction && other.label == label && other.enabled == enabled;
+      other is SelectionContextAction &&
+      other.label == label &&
+      other.enabled == enabled &&
+      other.disabledReason == disabledReason;
 
   @override
-  int get hashCode => Object.hash(label, enabled);
+  int get hashCode => Object.hash(label, enabled, disabledReason);
 
   @override
   String toString() => 'SelectionContextAction($label)';
@@ -175,9 +187,32 @@ List<SelectionContextAction> contextActionsFor(
   if (hasFace && hasVertex) {
     return const [SelectionContextAction('Create Plane (Parallel to Face Through Vertex)')];
   }
+  // Prompt D: one or more edges, nothing else - Fillet (and, matching
+  // Prompt E's own instruction to reuse this exact condition, Chamfer) are
+  // enabled only when every selected edge belongs to the same Body (OCCT's
+  // `BRepFilletAPI_MakeFillet`/`BRepFilletAPI_MakeChamfer` each operate on
+  // one solid at a time - see the backend's `mixed_body_selection` error).
+  // A cross-body edge selection still shows both buttons (never silently
+  // omitted, matching the Body-only-selection guard's own "explain, don't
+  // omit" precedent above) but disabled, with `disabledReason` set so the
+  // panel can surface why.
+  if (hasEdge && selection.length == edges.length) {
+    final sameBody = _allSameBody(edges);
+    final reason = sameBody ? null : 'Selected edges must all belong to the same Body';
+    return [
+      SelectionContextAction('Chamfer', enabled: sameBody, disabledReason: reason),
+      SelectionContextAction('Fillet', enabled: sameBody, disabledReason: reason),
+    ];
+  }
   if (hasEdge) {
     return const [SelectionContextAction('Chamfer'), SelectionContextAction('Fillet')];
   }
   // hasFace (2+) || hasVertex, alone.
   return const [SelectionContextAction('Create Plane')];
 }
+
+/// Prompt D/E: whether every entry in [edges] names the same Body -
+/// factored out so Fillet and Chamfer's identical "1+ edges, same Body"
+/// enabling rule is checked in exactly one place, per Prompt E's own
+/// instruction not to duplicate it.
+bool _allSameBody(List<SelectionEntityRef> edges) => edges.map((e) => e.bodyId).toSet().length == 1;
