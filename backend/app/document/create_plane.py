@@ -8,6 +8,24 @@ anchored to a custom plane does) - kept in a separate module for exactly that
 reason, mirroring the existing app.document.extrude / app.sketch.store split
 by OCCT dependency.
 
+C5: `OFFSET_FACE`/`MIDPLANE`/`PARALLEL_TO_FACE_THROUGH_VERTEX` no longer
+require a Body face specifically - `_resolve_plane_ref` dispatches a
+`PlaneRef` to whichever of a Body face (still OCCT, via `_resolve_planar_
+face`), a fixed reference plane, or an existing Plane it actually names, so
+this module's own resolvers work against a single, uniform `ResolvedPlane`
+regardless of which kind of reference they were given.
+
+C3 also splits every resolver here into a `_from_bodies` core (accepts an
+already-computed `bodies` dict, never recomputes) plus a "fresh" wrapper
+(computes `bodies` once via `compute_part_bodies`) - needed because `app.
+document.extrude._solid_for_extrude_feature` now calls into this module
+(via `resolve_sketch_basis`, function-local import to break the circular
+import this module's own module-level `from app.document.extrude import
+resolve_subshape` would otherwise create) *from inside* `compute_part_
+bodies`'s own topological-order loop, using its in-progress `bodies`
+accumulator - calling back into a fresh top-level `compute_part_bodies`
+there would recurse forever.
+
 C3 also splits every resolver here into a `_from_bodies` core (accepts an
 already-computed `bodies` dict, never recomputes) plus a "fresh" wrapper
 (computes `bodies` once via `compute_part_bodies`) - needed because `app.
@@ -24,7 +42,7 @@ from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.GeomAbs import GeomAbs_Line, GeomAbs_Plane
-from OCC.Core.gp import gp_Pnt, gp_Vec
+from OCC.Core.gp import gp_Pnt
 from OCC.Core.TopAbs import TopAbs_REVERSED
 from OCC.Core.TopoDS import TopoDS_Shape, topods
 
@@ -33,6 +51,7 @@ from app.document.graph import sketch_feature_id_for_sketch
 from app.document.models import (
     CreatePlaneFeature,
     Part,
+    PlaneRef,
     PlaneType,
     PointRef,
     ResolvedPlane,
@@ -62,20 +81,38 @@ def _non_planar_reference(ref: SubShapeRef) -> HTTPException:
     )
 
 
-def _faces_not_parallel(ref_a: SubShapeRef, ref_b: SubShapeRef) -> HTTPException:
-    """C3: structured 422 for a MIDPLANE whose two `face_refs` do not
-    resolve to parallel planar faces - a midplane is only meaningful between
-    two faces that face each other (or away from each other) along a shared
-    normal direction; anything else has no single well-defined equidistant
-    plane."""
+def _describe_plane_ref(ref: PlaneRef) -> dict:
+    """C5: a small JSON-safe description of whichever of `ref`'s three
+    kinds is set, for embedding in a structured error - a single
+    (body_id, index) pair can no longer describe every `face_refs` entry,
+    now that one can be a fixed reference plane or an existing Plane
+    instead of a Body face."""
+    if ref.face_ref is not None:
+        return {"kind": "face", "body_id": ref.face_ref.body_id, "index": ref.face_ref.index}
+    if ref.fixed_plane is not None:
+        return {"kind": "fixed_plane", "plane": ref.fixed_plane.value}
+    assert ref.plane_feature_id is not None
+    return {"kind": "create_plane", "feature_id": ref.plane_feature_id}
+
+
+def _faces_not_parallel(ref_a: PlaneRef, ref_b: PlaneRef) -> HTTPException:
+    """C3/C5: structured 422 for a MIDPLANE whose two `face_refs` do not
+    resolve to parallel planes - a midplane is only meaningful between two
+    references that face each other (or away from each other) along a
+    shared normal direction; anything else has no single well-defined
+    equidistant plane. C5: `ref_a`/`ref_b` describe whichever of a face, a
+    fixed plane, or an existing Plane each entry actually was (see
+    `_describe_plane_ref`) - the error detail shape changed from C3's
+    Body-face-only `body_id_a`/`index_a`/`body_id_b`/`index_b` fields to
+    accommodate that; nothing in this project's client inspects those
+    fields individually (only `type`), so this is not a breaking change in
+    practice."""
     return HTTPException(
         status_code=422,
         detail={
             "type": "faces_not_parallel",
-            "body_id_a": ref_a.body_id,
-            "index_a": ref_a.index,
-            "body_id_b": ref_b.body_id,
-            "index_b": ref_b.index,
+            "ref_a": _describe_plane_ref(ref_a),
+            "ref_b": _describe_plane_ref(ref_b),
         },
     )
 
@@ -102,8 +139,8 @@ def _resolve_vertex_position(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) 
     return BRep_Tool.Pnt(vertex)
 
 
-def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef):
-    """The full natural frame (location, normal, x_axis, y_axis) OCCT's own
+def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> ResolvedPlane:
+    """The full natural frame (origin, normal, x_axis, y_axis) OCCT's own
     `gp_Ax3` already derives for a planar face's underlying surface -
     corrected for `TopAbs_REVERSED` (a face's `Orientation()` can flip its
     effective normal without changing the underlying surface, same quirk
@@ -115,7 +152,14 @@ def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef):
     geometry`'s own docstring for why *those* use an explicit lookup table
     instead of trusting a formula), so trusting `gp_Ax3`'s own XDirection/
     YDirection here, with this one sign correction, is both correct and the
-    simplest option."""
+    simplest option.
+
+    C5: returns a `ResolvedPlane` (plain float tuples) rather than the four
+    raw OCCT `gp_Pnt`/`gp_Dir` values it used to - every caller now also
+    needs to combine this with `_resolve_plane_ref`'s other two, OCCT-free
+    branches (a fixed reference plane, an existing Plane), so converting at
+    this one boundary lets every caller work against the same plain-tuple
+    `ResolvedPlane` shape regardless of which kind of reference it got."""
     shape = resolve_subshape_from_bodies(bodies, ref)
     face = topods.Face(shape)
     surface = BRepAdaptor_Surface(face, True)
@@ -131,92 +175,128 @@ def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef):
     if face.Orientation() == TopAbs_REVERSED:
         normal = normal.Reversed()
         y_axis = y_axis.Reversed()
-    return location, normal, x_axis, y_axis
-
-
-def resolve_offset_face_from_bodies(
-    bodies: dict[str, TopoDS_Shape], face_ref: SubShapeRef, offset: float
-) -> ResolvedPlane:
-    """C2/C3: the `_from_bodies` core of `resolve_offset_face` - a plane
-    parallel to the referenced face, translated `offset` along the face's
-    own outward normal (positive = along the normal direction, matching
-    `ExtrudeFeature`'s own signed-distance convention)."""
-    location, normal, x_axis, y_axis = _resolve_planar_face(bodies, face_ref)
-    offset_vector = gp_Vec(normal.X(), normal.Y(), normal.Z()).Multiplied(offset)
-    origin = (
-        location.X() + offset_vector.X(),
-        location.Y() + offset_vector.Y(),
-        location.Z() + offset_vector.Z(),
-    )
     return ResolvedPlane(
-        origin=origin,
+        origin=(location.X(), location.Y(), location.Z()),
         normal=(normal.X(), normal.Y(), normal.Z()),
         x_axis=(x_axis.X(), x_axis.Y(), x_axis.Z()),
         y_axis=(y_axis.X(), y_axis.Y(), y_axis.Z()),
     )
 
 
+def _resolve_plane_ref(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    ref: PlaneRef,
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """C5: `ref`'s own resolved plane, regardless of which of its three
+    kinds is set - a Body face (OCCT, `_resolve_planar_face`), a fixed
+    reference plane (pure Python, `sketch_basis_for_plane`), or an existing
+    Plane (recursive `resolve_create_plane_from_bodies`, against the same
+    `bodies` accumulator - never a fresh `compute_part_bodies` call, same
+    "would recurse forever from inside `compute_part_bodies`'s own loop"
+    reasoning this module's own docstring already gives for
+    `_basis_for_sketch`). A cycle (a Plane transitively referencing itself)
+    is structurally impossible: a `plane_feature_id` can only ever name a
+    Feature created *before* this one, and Feature creation is strictly
+    append-only, so the reference graph is a DAG by construction. The
+    router guarantees exactly one of the three fields is set before this is
+    ever called."""
+    if ref.face_ref is not None:
+        return _resolve_planar_face(bodies, ref.face_ref)
+    if ref.fixed_plane is not None:
+        return sketch_basis_for_plane(ref.fixed_plane)
+    assert ref.plane_feature_id is not None
+    plane_feature = part.get_feature(ref.plane_feature_id)
+    assert isinstance(plane_feature, CreatePlaneFeature)
+    return resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
+
+
+def resolve_offset_face_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    plane_ref: PlaneRef,
+    offset: float,
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """C2/C3/C5: the `_from_bodies` core of `resolve_offset_face` - a plane
+    parallel to the referenced plane-like reference, translated `offset`
+    along its own normal (positive = along the normal direction, matching
+    `ExtrudeFeature`'s own signed-distance convention). C5: `plane_ref` can
+    be a Body face, a fixed reference plane, or an existing Plane (see
+    `_resolve_plane_ref`) - `part`/`excluded_feature_ids` are only actually
+    used by the existing-Plane case, a Body face or fixed plane ignores
+    both, but every caller threads them through uniformly rather than
+    branching on `plane_ref`'s own kind itself."""
+    resolved = _resolve_plane_ref(part, bodies, plane_ref, excluded_feature_ids)
+    nx, ny, nz = resolved.normal
+    ox, oy, oz = resolved.origin
+    origin = (ox + nx * offset, oy + ny * offset, oz + nz * offset)
+    return ResolvedPlane(origin=origin, normal=resolved.normal, x_axis=resolved.x_axis, y_axis=resolved.y_axis)
+
+
 def resolve_offset_face(
     part: Part,
-    face_ref: SubShapeRef,
+    plane_ref: PlaneRef,
     offset: float,
     excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
-    """C2: resolves an OFFSET_FACE CreatePlaneFeature - fresh wrapper around
-    `resolve_offset_face_from_bodies` that computes `bodies` itself via
-    `compute_part_bodies`, for callers (the router) that don't already have
-    one on hand. Fails closed with `missing_reference` (via `resolve_
+    """C2/C5: resolves an OFFSET_FACE CreatePlaneFeature - fresh wrapper
+    around `resolve_offset_face_from_bodies` that computes `bodies` itself
+    via `compute_part_bodies`, for callers (the router) that don't already
+    have one on hand. Fails closed with `missing_reference` (via `resolve_
     subshape_from_bodies`) or `non_planar_reference` (see `_resolve_planar_
-    face`)."""
+    face`) for the Body-face case."""
     bodies = compute_part_bodies(part, excluded_feature_ids)
-    return resolve_offset_face_from_bodies(bodies, face_ref, offset)
+    return resolve_offset_face_from_bodies(part, bodies, plane_ref, offset, excluded_feature_ids)
 
 
 def resolve_midplane_from_bodies(
-    bodies: dict[str, TopoDS_Shape], face_ref_a: SubShapeRef, face_ref_b: SubShapeRef
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    plane_ref_a: PlaneRef,
+    plane_ref_b: PlaneRef,
+    excluded_feature_ids: frozenset[str],
 ) -> ResolvedPlane:
-    """C3: the `_from_bodies` core of `resolve_midplane` - a plane
-    equidistant between two parallel planar Body faces, oriented along the
-    first face's own (corrected) normal. Fails closed with `faces_not_
-    parallel` (see `_faces_not_parallel`) unless the two faces' normals are
-    parallel or anti-parallel (`abs(dot) ~= 1`) - anything else has no
-    single well-defined midplane."""
-    location_a, normal_a, x_axis, y_axis = _resolve_planar_face(bodies, face_ref_a)
-    location_b, normal_b, _x_axis_b, _y_axis_b = _resolve_planar_face(bodies, face_ref_b)
+    """C3/C5: the `_from_bodies` core of `resolve_midplane` - a plane
+    equidistant between two parallel plane-like references (any mix of
+    Body faces, fixed reference planes, and existing Planes - see
+    `_resolve_plane_ref`), oriented along the first reference's own
+    (corrected) normal. Fails closed with `faces_not_parallel` (see
+    `_faces_not_parallel`) unless the two references' normals are parallel
+    or anti-parallel (`abs(dot) ~= 1`) - anything else has no single
+    well-defined midplane. C5: plain-tuple dot-product/vector math now that
+    `_resolve_plane_ref` always returns a `ResolvedPlane`, not raw OCCT
+    `gp_Pnt`/`gp_Dir` values - no OCCT construction needed in this function
+    at all anymore (resolving the references themselves may still need it,
+    for the Body-face case)."""
+    resolved_a = _resolve_plane_ref(part, bodies, plane_ref_a, excluded_feature_ids)
+    resolved_b = _resolve_plane_ref(part, bodies, plane_ref_b, excluded_feature_ids)
 
-    if abs(abs(normal_a.Dot(normal_b)) - 1.0) > 1e-6:
-        raise _faces_not_parallel(face_ref_a, face_ref_b)
+    dot = sum(a * b for a, b in zip(resolved_a.normal, resolved_b.normal))
+    if abs(abs(dot) - 1.0) > 1e-6:
+        raise _faces_not_parallel(plane_ref_a, plane_ref_b)
 
-    normal_vec = gp_Vec(normal_a.X(), normal_a.Y(), normal_a.Z())
-    separation = gp_Vec(
-        gp_Pnt(location_a.X(), location_a.Y(), location_a.Z()),
-        gp_Pnt(location_b.X(), location_b.Y(), location_b.Z()),
-    ).Dot(normal_vec)
-    midpoint_offset = normal_vec.Multiplied(separation / 2.0)
-    origin = (
-        location_a.X() + midpoint_offset.X(),
-        location_a.Y() + midpoint_offset.Y(),
-        location_a.Z() + midpoint_offset.Z(),
+    separation = sum(
+        (b - a) * n for a, b, n in zip(resolved_a.origin, resolved_b.origin, resolved_a.normal)
     )
+    origin = tuple(o + n * separation / 2.0 for o, n in zip(resolved_a.origin, resolved_a.normal))
     return ResolvedPlane(
-        origin=origin,
-        normal=(normal_a.X(), normal_a.Y(), normal_a.Z()),
-        x_axis=(x_axis.X(), x_axis.Y(), x_axis.Z()),
-        y_axis=(y_axis.X(), y_axis.Y(), y_axis.Z()),
+        origin=origin, normal=resolved_a.normal, x_axis=resolved_a.x_axis, y_axis=resolved_a.y_axis
     )
 
 
 def resolve_midplane(
     part: Part,
-    face_ref_a: SubShapeRef,
-    face_ref_b: SubShapeRef,
+    plane_ref_a: PlaneRef,
+    plane_ref_b: PlaneRef,
     excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
-    """C3: resolves a MIDPLANE CreatePlaneFeature - fresh wrapper around
+    """C3/C5: resolves a MIDPLANE CreatePlaneFeature - fresh wrapper around
     `resolve_midplane_from_bodies`, mirroring `resolve_offset_face`'s own
     fresh-vs-`_from_bodies` split."""
     bodies = compute_part_bodies(part, excluded_feature_ids)
-    return resolve_midplane_from_bodies(bodies, face_ref_a, face_ref_b)
+    return resolve_midplane_from_bodies(part, bodies, plane_ref_a, plane_ref_b, excluded_feature_ids)
 
 
 def resolve_normal_to_edge_through_vertex_from_bodies(
@@ -259,39 +339,41 @@ def resolve_normal_to_edge_through_vertex(
 
 
 def resolve_parallel_face_through_vertex_from_bodies(
-    bodies: dict[str, TopoDS_Shape], face_ref: SubShapeRef, vertex_ref: SubShapeRef
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    plane_ref: PlaneRef,
+    vertex_ref: SubShapeRef,
+    excluded_feature_ids: frozenset[str],
 ) -> ResolvedPlane:
-    """C4: the `_from_bodies` core of `resolve_parallel_face_through_vertex`
-    - a plane parallel to `face_ref`'s own plane, passing through
-    `vertex_ref`'s position instead of `OFFSET_FACE`'s numeric offset.
-    `vertex_ref`'s own position becomes `origin` directly (rather than, say,
-    the face's own location projected along its normal) - the vertex
-    necessarily lies on the resulting plane by construction, so using its
-    own position as the plane's origin is both correct and the simplest
-    option, and renders the plane's quad naturally centered on the point
-    the user actually picked."""
-    _location, normal, x_axis, y_axis = _resolve_planar_face(bodies, face_ref)
+    """C4/C5: the `_from_bodies` core of `resolve_parallel_face_through_vertex`
+    - a plane parallel to `plane_ref`'s own plane (a Body face, a fixed
+    reference plane, or an existing Plane - see `_resolve_plane_ref`),
+    passing through `vertex_ref`'s position instead of `OFFSET_FACE`'s
+    numeric offset. `vertex_ref`'s own position becomes `origin` directly
+    (rather than, say, the reference's own origin projected along its
+    normal) - the vertex necessarily lies on the resulting plane by
+    construction, so using its own position as the plane's origin is both
+    correct and the simplest option, and renders the plane's quad naturally
+    centered on the point the user actually picked."""
+    resolved = _resolve_plane_ref(part, bodies, plane_ref, excluded_feature_ids)
     vertex_point = _resolve_vertex_position(bodies, vertex_ref)
     origin = (vertex_point.X(), vertex_point.Y(), vertex_point.Z())
-    return ResolvedPlane(
-        origin=origin,
-        normal=(normal.X(), normal.Y(), normal.Z()),
-        x_axis=(x_axis.X(), x_axis.Y(), x_axis.Z()),
-        y_axis=(y_axis.X(), y_axis.Y(), y_axis.Z()),
-    )
+    return ResolvedPlane(origin=origin, normal=resolved.normal, x_axis=resolved.x_axis, y_axis=resolved.y_axis)
 
 
 def resolve_parallel_face_through_vertex(
     part: Part,
-    face_ref: SubShapeRef,
+    plane_ref: PlaneRef,
     vertex_ref: SubShapeRef,
     excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> ResolvedPlane:
-    """C4: resolves a PARALLEL_TO_FACE_THROUGH_VERTEX CreatePlaneFeature -
+    """C4/C5: resolves a PARALLEL_TO_FACE_THROUGH_VERTEX CreatePlaneFeature -
     fresh wrapper around `resolve_parallel_face_through_vertex_from_bodies`,
     mirroring `resolve_offset_face`'s own fresh-vs-`_from_bodies` split."""
     bodies = compute_part_bodies(part, excluded_feature_ids)
-    return resolve_parallel_face_through_vertex_from_bodies(bodies, face_ref, vertex_ref)
+    return resolve_parallel_face_through_vertex_from_bodies(
+        part, bodies, plane_ref, vertex_ref, excluded_feature_ids
+    )
 
 
 def _basis_for_sketch(
@@ -406,10 +488,14 @@ def resolve_create_plane_from_bodies(
     own top-level `compute_part_bodies` call (see module docstring)."""
     if feature.plane_type == PlaneType.OFFSET_FACE:
         assert len(feature.face_refs) == 1 and feature.offset is not None
-        return resolve_offset_face_from_bodies(bodies, feature.face_refs[0], feature.offset)
+        return resolve_offset_face_from_bodies(
+            part, bodies, feature.face_refs[0], feature.offset, excluded_feature_ids
+        )
     if feature.plane_type == PlaneType.MIDPLANE:
         assert len(feature.face_refs) == 2
-        return resolve_midplane_from_bodies(bodies, feature.face_refs[0], feature.face_refs[1])
+        return resolve_midplane_from_bodies(
+            part, bodies, feature.face_refs[0], feature.face_refs[1], excluded_feature_ids
+        )
     if feature.plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
         assert feature.edge_ref is not None and feature.vertex_ref is not None
         return resolve_normal_to_edge_through_vertex_from_bodies(
@@ -418,7 +504,7 @@ def resolve_create_plane_from_bodies(
     if feature.plane_type == PlaneType.PARALLEL_TO_FACE_THROUGH_VERTEX:
         assert len(feature.face_refs) == 1 and feature.vertex_ref is not None
         return resolve_parallel_face_through_vertex_from_bodies(
-            bodies, feature.face_refs[0], feature.vertex_ref
+            part, bodies, feature.face_refs[0], feature.vertex_ref, excluded_feature_ids
         )
     if feature.plane_type == PlaneType.THREE_POINTS:
         assert len(feature.point_refs) == 3

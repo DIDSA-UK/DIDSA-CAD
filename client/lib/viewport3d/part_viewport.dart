@@ -358,14 +358,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       setState(_syncEdgesNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane ||
-        widget.referencePlanesHidden != oldWidget.referencePlanesHidden) {
+        widget.referencePlanesHidden != oldWidget.referencePlanesHidden ||
+        widget.selectedEntities != oldWidget.selectedEntities) {
       setState(_syncReferencePlaneNodes);
     }
     if (widget.sketchGeometries != oldWidget.sketchGeometries) {
       setState(_syncSketchNodes);
     }
     if (widget.createPlanes != oldWidget.createPlanes ||
-        widget.selectedCreatePlaneFeatureId != oldWidget.selectedCreatePlaneFeatureId) {
+        widget.selectedCreatePlaneFeatureId != oldWidget.selectedCreatePlaneFeatureId ||
+        widget.selectedEntities != oldWidget.selectedEntities) {
       setState(_syncCreatePlaneNodes);
     }
     if (widget.selectionMode != oldWidget.selectionMode) {
@@ -534,6 +536,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     );
   }
 
+  /// C5: true if [plane] is highlighted - either the single "just tapped,
+  /// its context sheet is open" plane ([PartViewport.selectedPlane], the
+  /// pre-C5 controlled-widget flow), or a `referencePlane` entry in
+  /// [PartViewport.selectedEntities] (the Selection-mode multi-select flow -
+  /// see [PartScreen._onPlaneTap]'s own doc comment for which of the two
+  /// applies when).
+  bool _isPlaneSelected(ReferencePlaneKind plane) =>
+      plane == widget.selectedPlane ||
+      widget.selectedEntities.any(
+        (e) => e.kind == SelectionEntityKind.referencePlane && e.referencePlaneKind == plane,
+      );
+
+  /// C5: mirrors [_isPlaneSelected] for a created Plane's own Feature id.
+  bool _isCreatePlaneSelected(String featureId) =>
+      featureId == widget.selectedCreatePlaneFeatureId ||
+      widget.selectedEntities.any(
+        (e) => e.kind == SelectionEntityKind.createPlane && e.planeFeatureId == featureId,
+      );
+
   /// Rebuilds all three reference-plane nodes from scratch - cheap enough
   /// (three small rectangles) to redo wholesale on every selection change,
   /// rather than reaching into [UnlitMaterial] to mutate an existing node's
@@ -550,7 +571,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _planeNodes = {
       for (final plane in ReferencePlaneKind.values)
-        plane: buildReferencePlaneNode(plane, selected: plane == widget.selectedPlane),
+        plane: buildReferencePlaneNode(plane, selected: _isPlaneSelected(plane)),
     };
     for (final node in _planeNodes.values) {
       scene.add(node);
@@ -594,7 +615,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           entry.value.xAxis,
           entry.value.yAxis,
           entry.value.normal,
-          selected: entry.key == widget.selectedCreatePlaneFeatureId,
+          selected: _isCreatePlaneSelected(entry.key),
         ),
     };
     for (final node in _createPlaneNodes.values) {
@@ -1025,6 +1046,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               }
             }
           }
+        case SelectionEntityKind.referencePlane:
+        case SelectionEntityKind.createPlane:
+          // C5: a selected plane's highlight is its own quad rendering
+          // straight from [widget.selectedEntities] (see
+          // [_syncReferencePlaneNodes]/[_syncCreatePlaneNodes]'s own
+          // `selected:` check), not one of this method's three overlay
+          // Nodes - nothing to accumulate here.
+          break;
       }
     }
 
@@ -1105,6 +1134,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         ];
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+      case SelectionEntityKind.referencePlane:
+      case SelectionEntityKind.createPlane:
+        // C5: never produced by this widget's own hover/cursor hit-testing
+        // (that only ever scans [widget.bodies]'/[widget.sketchGeometries]'
+        // mesh geometry - a plane tap is a separate, direct callback, see
+        // [onPlaneTap]/[onCreatePlaneTap]), so [_syncHoverNode] (this
+        // method's only caller) never actually reaches this case in
+        // practice; still handled explicitly (returning null, "no hover
+        // node") rather than omitted, so this switch stays exhaustive.
+        return null;
     }
   }
 

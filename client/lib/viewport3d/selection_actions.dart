@@ -110,23 +110,37 @@ List<SelectionContextAction> contextActionsFor(
   final hasEdge = edges.isNotEmpty;
   final hasVertex = vertices.isNotEmpty;
 
-  // C2: exactly one Body Face, nothing else - the other real Create Plane
-  // flow this prompt wires (offset-from-face). Checked before the generic
-  // buckets below so it takes precedence over the old scaffolded "face(s)
-  // alone" placeholder those still cover for 2+ faces.
-  if (faces.length == 1 && selection.length == 1) {
+  // C5: a `referencePlane`/`createPlane` entity is "plane-like" for exactly
+  // the three Create Plane combos below (OFFSET_FACE/MIDPLANE/PARALLEL_TO_
+  // FACE_THROUGH_VERTEX all now accept a `PlaneRefDto` - a Body face, a
+  // fixed reference plane, or an existing Plane - in place of a bare
+  // face_ref, see the backend's `PlaneRef`) - deliberately kept out of
+  // `hasFace`/`faces` themselves, which stay strictly Body faces, so the
+  // Chamfer/Fillet/`hasEdge && hasFace` branches below (real Body-topology
+  // operations a plane can't participate in) are unaffected.
+  final referencePlanes = selection.where((s) => s.kind == SelectionEntityKind.referencePlane).toList();
+  final createPlanes = selection.where((s) => s.kind == SelectionEntityKind.createPlane).toList();
+  final planeLikeCount = faces.length + referencePlanes.length + createPlanes.length;
+
+  // C2/C5: exactly one plane-like entity, nothing else - the other real
+  // Create Plane flow this prompt wires (offset-from-face/-plane). Checked
+  // before the generic buckets below so it takes precedence over the old
+  // scaffolded "face(s) alone" placeholder those still cover for 2+ faces.
+  if (planeLikeCount == 1 && selection.length == 1) {
     return const [SelectionContextAction('Create Plane', enabled: true)];
   }
 
-  // C3: exactly two Body Faces, nothing else - Midplane, equidistant between
-  // them. Checked before the generic "hasFace (2+)" bucket below (still a
-  // scaffolded placeholder for 3+ faces, or 2 faces mixed with an edge/
-  // vertex) so it takes precedence for exactly this shape, the same way the
-  // single-face OFFSET_FACE check above takes precedence over that bucket
-  // for exactly one face. Whether the two faces are actually parallel is a
-  // backend-only check (see `_faces_not_parallel`) - this only gates on
-  // selection *shape*, not on any geometric property the client can't see.
-  if (faces.length == 2 && selection.length == 2) {
+  // C3/C5: exactly two plane-like entities (any mix of Body faces, fixed
+  // reference planes, and existing Planes), nothing else - Midplane,
+  // equidistant between them. Checked before the generic "hasFace (2+)"
+  // bucket below (still a scaffolded placeholder for 3+ faces, or 2 faces
+  // mixed with an edge/vertex) so it takes precedence for exactly this
+  // shape, the same way the single-plane-like OFFSET_FACE check above takes
+  // precedence over that bucket for exactly one. Whether the two are
+  // actually parallel is a backend-only check (see `_faces_not_parallel`) -
+  // this only gates on selection *shape*, not on any geometric property the
+  // client can't see.
+  if (planeLikeCount == 2 && selection.length == 2) {
     return const [SelectionContextAction('Create Plane (Midplane)', enabled: true)];
   }
 
@@ -148,9 +162,9 @@ List<SelectionContextAction> contextActionsFor(
       SelectionContextAction('Create Plane (Normal to Edge Through Vertex)', enabled: true),
     ];
   }
-  // C4: exactly one Face and one Vertex, nothing else - Parallel to Face
-  // Through Vertex, same precedence pattern.
-  if (faces.length == 1 && vertices.length == 1 && selection.length == 2) {
+  // C4/C5: exactly one plane-like entity and one Vertex, nothing else -
+  // Parallel to Face Through Vertex, same precedence pattern.
+  if (planeLikeCount == 1 && vertices.length == 1 && selection.length == 2) {
     return const [
       SelectionContextAction('Create Plane (Parallel to Face Through Vertex)', enabled: true),
     ];

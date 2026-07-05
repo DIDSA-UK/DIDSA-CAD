@@ -103,7 +103,7 @@ def _create_offset_face_plane(part_id: str, body_id: str, index: int, offset: fl
         f"/document/parts/{part_id}/create-plane-features",
         json={
             "plane_type": "offset_face",
-            "face_refs": [{"body_id": body_id, "shape_type": "face", "index": index}],
+            "face_refs": [{"face_ref": {"body_id": body_id, "shape_type": "face", "index": index}}],
             "offset": offset,
         },
     )
@@ -115,8 +115,8 @@ def _create_midplane_plane(part_id: str, body_id: str, index_a: int, index_b: in
         json={
             "plane_type": "midplane",
             "face_refs": [
-                {"body_id": body_id, "shape_type": "face", "index": index_a},
-                {"body_id": body_id, "shape_type": "face", "index": index_b},
+                {"face_ref": {"body_id": body_id, "shape_type": "face", "index": index_a}},
+                {"face_ref": {"body_id": body_id, "shape_type": "face", "index": index_b}},
             ],
         },
     )
@@ -203,7 +203,7 @@ def test_offset_face_payload_missing_offset_is_rejected():
         f"/document/parts/{part['id']}/create-plane-features",
         json={
             "plane_type": "offset_face",
-            "face_refs": [{"body_id": body_id, "shape_type": "face", "index": 0}],
+            "face_refs": [{"face_ref": {"body_id": body_id, "shape_type": "face", "index": 0}}],
         },
     )
     assert response.status_code == 422
@@ -438,7 +438,7 @@ def test_midplane_payload_with_only_one_face_ref_is_rejected():
         f"/document/parts/{part['id']}/create-plane-features",
         json={
             "plane_type": "midplane",
-            "face_refs": [{"body_id": body_id, "shape_type": "face", "index": 0}],
+            "face_refs": [{"face_ref": {"body_id": body_id, "shape_type": "face", "index": 0}}],
         },
     )
     assert response.status_code == 422

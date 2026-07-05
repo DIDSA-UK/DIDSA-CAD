@@ -110,8 +110,8 @@ def _first_successful_midplane(part_id: str, body_id: str) -> dict:
                 json={
                     "plane_type": "midplane",
                     "face_refs": [
-                        {"body_id": body_id, "shape_type": "face", "index": i},
-                        {"body_id": body_id, "shape_type": "face", "index": j},
+                        {"face_ref": {"body_id": body_id, "shape_type": "face", "index": i}},
+                        {"face_ref": {"body_id": body_id, "shape_type": "face", "index": j}},
                     ],
                 },
             )

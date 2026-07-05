@@ -141,6 +141,9 @@ class SelectionListDrawer extends StatelessWidget {
         return Icons.control_point;
       case SelectionEntityKind.sketchLine:
         return Icons.timeline;
+      case SelectionEntityKind.referencePlane:
+      case SelectionEntityKind.createPlane:
+        return Icons.crop_square;
     }
   }
 
@@ -158,6 +161,9 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Sketch Point';
       case SelectionEntityKind.sketchLine:
         return 'Sketch Line';
+      case SelectionEntityKind.referencePlane:
+      case SelectionEntityKind.createPlane:
+        return 'Plane';
     }
   }
 
@@ -180,6 +186,18 @@ class SelectionListDrawer extends StatelessWidget {
     if (entity.kind == SelectionEntityKind.sketchPoint || entity.kind == SelectionEntityKind.sketchLine) {
       final id = entity.sketchEntityId;
       return '${_labelFor(entity.kind)} #${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    // C5: a referencePlane entity names its fixed plane directly ("Plane
+    // XY"); a createPlane entity has no human-readable name of its own
+    // (unlike Bodies, there's no equivalent `planeNames` map threaded
+    // through here) so it falls back to the same truncated-id convention
+    // [bodyNames]'s own fallback above uses.
+    if (entity.kind == SelectionEntityKind.referencePlane) {
+      return 'Plane ${entity.referencePlaneKind?.name.toUpperCase() ?? ''}';
+    }
+    if (entity.kind == SelectionEntityKind.createPlane) {
+      final id = entity.planeFeatureId;
+      return 'Plane #${id.length > 8 ? id.substring(0, 8) : id}';
     }
     return '${_labelFor(entity.kind)} #${entity.id}';
   }

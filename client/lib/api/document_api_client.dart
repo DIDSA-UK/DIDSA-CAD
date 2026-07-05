@@ -90,6 +90,36 @@ class PointRefDto {
       };
 }
 
+/// C5: the wire counterpart to the backend's `PlaneRefSchema` - exactly one
+/// of [faceRef]/[fixedPlane]/[planeFeatureId] should be supplied (a Body
+/// face, a fixed reference plane, or an existing `CreatePlaneFeature`),
+/// matching the backend `PlaneRef`'s own "one of three optional fields"
+/// convention. Each `CreatePlaneFeature.face_refs` entry (OFFSET_FACE/
+/// MIDPLANE/PARALLEL_TO_FACE_THROUGH_VERTEX) is now one of these, not a
+/// bare [SubShapeRefDto], so a Plane can be built from another Plane or a
+/// fixed reference plane, not just a Body face.
+class PlaneRefDto {
+  final SubShapeRefDto? faceRef;
+  final String? fixedPlane;
+  final String? planeFeatureId;
+
+  const PlaneRefDto({this.faceRef, this.fixedPlane, this.planeFeatureId});
+
+  factory PlaneRefDto.fromJson(Map<String, dynamic> json) => PlaneRefDto(
+        faceRef: json['face_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        fixedPlane: json['fixed_plane'] as String?,
+        planeFeatureId: json['plane_feature_id'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (faceRef != null) 'face_ref': faceRef!.toJson(),
+        if (fixedPlane != null) 'fixed_plane': fixedPlane,
+        if (planeFeatureId != null) 'plane_feature_id': planeFeatureId,
+      };
+}
+
 /// A Feature in a Part's history - a SketchFeature, an ExtrudeFeature, or
 /// (C2) a CreatePlaneFeature, distinguished by [type] (the same
 /// discriminator the backend's `FeatureResponse` union uses). [sketchId] is
@@ -135,11 +165,14 @@ class FeatureDto {
   /// `"midplane"` - only present on a `"create_plane"` Feature.
   final String? planeType;
 
-  /// C2/C3: `"offset_face"` has exactly one entry, `"midplane"` (C3) has
+  /// C2/C3/C5: `"offset_face"` has exactly one entry, `"midplane"` (C3) has
   /// exactly two, `"normal_to_line_at_point"` has none - see the backend's
   /// `CreatePlaneFeature.face_refs` (C3 generalized the old singular
-  /// `face_ref` into this list so MIDPLANE could reuse the same field).
-  final List<SubShapeRefDto> faceRefs;
+  /// `face_ref` into this list so MIDPLANE could reuse the same field; C5
+  /// generalized each entry from a bare [SubShapeRefDto] to a [PlaneRefDto]
+  /// so it can name a Body face, a fixed reference plane, or an existing
+  /// Plane).
+  final List<PlaneRefDto> faceRefs;
   final double? offset;
   final SketchEntityRefDto? lineRef;
   final SketchEntityRefDto? pointRef;
@@ -210,7 +243,7 @@ class FeatureDto {
         planeFeatureId: json['plane_feature_id'] as String?,
         planeType: json['plane_type'] as String?,
         faceRefs: (json['face_refs'] as List?)
-                ?.map((r) => SubShapeRefDto.fromJson(r as Map<String, dynamic>))
+                ?.map((r) => PlaneRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
             const [],
         offset: (json['offset'] as num?)?.toDouble(),
@@ -490,18 +523,19 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// C2/C3/C4: creates a CreatePlaneFeature of any of the six `planeType`s -
-  /// exactly one combination of ([faceRefs], [offset]) [OFFSET_FACE: one
-  /// entry; MIDPLANE: two], ([lineRef], [pointRef]), ([edgeRef], [vertexRef]),
-  /// ([faceRefs] one entry, [vertexRef]), or ([pointRefs], three entries)
-  /// should be supplied, matching [planeType]; the backend validates this
-  /// combination and rejects a malformed one (see
-  /// `_validate_create_plane_payload`), this method just serializes whatever
-  /// it's given.
+  /// C2/C3/C4/C5: creates a CreatePlaneFeature of any of the six
+  /// `planeType`s - exactly one combination of ([faceRefs], [offset])
+  /// [OFFSET_FACE: one entry; MIDPLANE: two], ([lineRef], [pointRef]),
+  /// ([edgeRef], [vertexRef]), ([faceRefs] one entry, [vertexRef]), or
+  /// ([pointRefs], three entries) should be supplied, matching [planeType];
+  /// the backend validates this combination and rejects a malformed one
+  /// (see `_validate_create_plane_payload`), this method just serializes
+  /// whatever it's given. Each [faceRefs] entry is a [PlaneRefDto] (C5) - a
+  /// Body face, a fixed reference plane, or an existing Plane.
   Future<FeatureDto> createCreatePlaneFeature(
     String partId, {
     required String planeType,
-    List<SubShapeRefDto> faceRefs = const [],
+    List<PlaneRefDto> faceRefs = const [],
     double? offset,
     SketchEntityRefDto? lineRef,
     SketchEntityRefDto? pointRef,
@@ -533,7 +567,7 @@ class DocumentApiClient {
   Future<FeatureDto> updateCreatePlaneFeature(
     String partId,
     String featureId, {
-    List<SubShapeRefDto>? faceRefs,
+    List<PlaneRefDto>? faceRefs,
     double? offset,
     SketchEntityRefDto? lineRef,
     SketchEntityRefDto? pointRef,

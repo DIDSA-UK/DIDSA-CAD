@@ -13,6 +13,7 @@ from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
     Part,
+    PlaneRef,
     PlaneType,
     SketchFeature,
     SubShapeRef,
@@ -43,7 +44,7 @@ def test_a_sketch_feature_anchored_to_a_custom_plane_depends_on_it():
     plane = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
+        face_refs=[PlaneRef(face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0))],
         offset=5.0,
     )
     part.add_feature(plane)
@@ -62,7 +63,7 @@ def test_cascade_deleting_the_custom_plane_takes_the_sketch_anchored_to_it():
     plane = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
+        face_refs=[PlaneRef(face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0))],
         offset=5.0,
     )
     part.add_feature(plane)
@@ -98,8 +99,8 @@ def test_midplane_depends_on_both_of_its_owning_extrude_features():
         id="pl1",
         plane_type=PlaneType.MIDPLANE,
         face_refs=[
-            SubShapeRef(body_id="ef1", shape_type=SubShapeType.FACE, index=0),
-            SubShapeRef(body_id="ef2", shape_type=SubShapeType.FACE, index=0),
+            PlaneRef(face_ref=SubShapeRef(body_id="ef1", shape_type=SubShapeType.FACE, index=0)),
+            PlaneRef(face_ref=SubShapeRef(body_id="ef2", shape_type=SubShapeType.FACE, index=0)),
         ],
     )
     part.add_feature(midplane)
@@ -125,8 +126,8 @@ def test_deleting_only_one_midplane_source_extrude_takes_the_midplane_with_it():
         id="pl1",
         plane_type=PlaneType.MIDPLANE,
         face_refs=[
-            SubShapeRef(body_id="ef1", shape_type=SubShapeType.FACE, index=0),
-            SubShapeRef(body_id="ef2", shape_type=SubShapeType.FACE, index=0),
+            PlaneRef(face_ref=SubShapeRef(body_id="ef1", shape_type=SubShapeType.FACE, index=0)),
+            PlaneRef(face_ref=SubShapeRef(body_id="ef2", shape_type=SubShapeType.FACE, index=0)),
         ],
     )
     part.add_feature(midplane)

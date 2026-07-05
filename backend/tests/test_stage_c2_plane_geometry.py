@@ -17,6 +17,7 @@ from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
     Part,
+    PlaneRef,
     PlaneType,
     SketchFeature,
     SubShapeRef,
@@ -157,7 +158,7 @@ def test_offset_face_plane_depends_on_the_owning_extrude_feature():
     plane = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
+        face_refs=[PlaneRef(face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0))],
         offset=5.0,
     )
     part.add_feature(plane)
@@ -195,7 +196,7 @@ def test_cascade_deleting_the_sketch_feature_takes_both_kinds_of_plane_with_it()
     plane1 = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
+        face_refs=[PlaneRef(face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0))],
         offset=5.0,
     )
     plane2 = CreatePlaneFeature(
@@ -218,7 +219,7 @@ def test_deleting_only_the_extrude_leaves_the_sketch_referencing_plane_alone():
     plane1 = CreatePlaneFeature(
         id="pl1",
         plane_type=PlaneType.OFFSET_FACE,
-        face_refs=[SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0)],
+        face_refs=[PlaneRef(face_ref=SubShapeRef(body_id=extrude_id, shape_type=SubShapeType.FACE, index=0))],
         offset=5.0,
     )
     plane2 = CreatePlaneFeature(

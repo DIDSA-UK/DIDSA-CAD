@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
-from app.sketch.models import SketchEntityRef
+from app.sketch.models import Plane, SketchEntityRef
 
 
 class Produces(str, Enum):
@@ -210,19 +210,22 @@ class PlaneType(str, Enum):
     """Which plane-construction method a `CreatePlaneFeature` uses - mirrors
     `ExtrudeType`/`SubShapeType`'s str-Enum pattern.
 
-    C3 added `MIDPLANE` (equidistant between two parallel Body faces) to C2's
-    original `OFFSET_FACE`/`NORMAL_TO_LINE_AT_POINT` pair. C4 adds three more,
-    all using Body edges/vertices (or, for `THREE_POINTS`, optionally Sketch
-    Points too) rather than Sketch entities:
+    C3 added `MIDPLANE` (equidistant between two parallel plane-like
+    references) to C2's original `OFFSET_FACE`/`NORMAL_TO_LINE_AT_POINT`
+    pair. C4 adds three more, all using Body edges/vertices (or, for
+    `THREE_POINTS`, optionally Sketch Points too) rather than Sketch
+    entities:
     - `NORMAL_TO_EDGE_THROUGH_VERTEX`: a plane normal to a straight Body
       edge's direction, through a given Body vertex.
-    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: a plane parallel to a planar Body
-      face, through a given Body vertex (an offset-through-a-point instead
-      of `OFFSET_FACE`'s offset-by-a-distance).
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: a plane parallel to a plane-like
+      reference, through a given Body vertex (an offset-through-a-point
+      instead of `OFFSET_FACE`'s offset-by-a-distance).
     - `THREE_POINTS`: the plane through three points, each independently
       either a Body vertex or a Sketch Point (see `PointRef`).
     All six share the same `CreatePlaneFeature` shape (see its own
-    docstring)."""
+    docstring). C5: `OFFSET_FACE`/`MIDPLANE`/`PARALLEL_TO_FACE_THROUGH_VERTEX`'s
+    "plane-like reference" is a `PlaneRef` - a Body face, a fixed reference
+    plane, or an existing Plane, not just a Body face as before."""
 
     OFFSET_FACE = "offset_face"
     NORMAL_TO_LINE_AT_POINT = "normal_to_line_at_point"
@@ -278,21 +281,49 @@ class PointRef:
     sketch_point_ref: SketchEntityRef | None = None
 
 
+@dataclass(frozen=True)
+class PlaneRef:
+    """C5: a face-like reference usable in `OFFSET_FACE`/`MIDPLANE`/
+    `PARALLEL_TO_FACE_THROUGH_VERTEX`'s `face_refs` - exactly one of the
+    three fields is ever set (payload shape validated by the router, same
+    convention `PointRef` (C4) already established for its own two-way
+    version of this same idea):
+    - `face_ref`: a Body face (the only option before C5).
+    - `fixed_plane`: one of the three fixed reference planes (XY/XZ/YZ) -
+      e.g. an `OFFSET_FACE` offset from the XY plane instead of a Body face.
+    - `plane_feature_id`: an existing `CreatePlaneFeature` in this Part -
+      e.g. a `MIDPLANE` between an already-created Plane and a Body face.
+
+    Named `face_refs`' element type (not renamed to e.g. `PlaneOrFaceRef`)
+    because the field itself keeps its pre-C5 name - `CreatePlaneFeature`'s
+    own docstring already explains why `face_refs` is the shared name for
+    every plane-construction method that needs "a face-like thing", and C5
+    only widens what "face-like" can mean, not which Feature fields use it."""
+
+    face_ref: SubShapeRef | None = None
+    fixed_plane: Plane | None = None
+    plane_feature_id: str | None = None
+
+
 @dataclass
 class CreatePlaneFeature(Feature):
-    """C2/C3/C4: a reference-only Plane, fully determined by one of six
+    """C2/C3/C4/C5: a reference-only Plane, fully determined by one of six
     construction methods, never more than one at once:
-    - `OFFSET_FACE`: an offset from an existing planar Body face
-      (`face_refs` has exactly one entry, `offset` is set).
-    - `MIDPLANE` (C3): equidistant between two parallel planar Body faces
-      (`face_refs` has exactly two entries, `offset` is unset).
+    - `OFFSET_FACE`: an offset from an existing planar Body face, a fixed
+      reference plane, or an existing Plane (`face_refs` has exactly one
+      `PlaneRef` entry, `offset` is set).
+    - `MIDPLANE` (C3): equidistant between two parallel plane-like
+      references - any mix of Body faces, fixed reference planes, and
+      existing Planes (`face_refs` has exactly two `PlaneRef` entries,
+      `offset` is unset).
     - `NORMAL_TO_LINE_AT_POINT`: a Sketch Line's direction through one of
       its own endpoints (`line_ref`/`point_ref` set, `face_refs` empty).
     - `NORMAL_TO_EDGE_THROUGH_VERTEX` (C4): a straight Body edge's direction
       through a given Body vertex (`edge_ref`/`vertex_ref` set).
-    - `PARALLEL_TO_FACE_THROUGH_VERTEX` (C4): parallel to a planar Body face,
-      through a given Body vertex instead of a numeric offset (`face_refs`
-      has exactly one entry, `vertex_ref` set, `offset` unset).
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX` (C4): parallel to a plane-like
+      reference, through a given Body vertex instead of a numeric offset
+      (`face_refs` has exactly one `PlaneRef` entry, `vertex_ref` set,
+      `offset` unset).
     - `THREE_POINTS` (C4): the plane through three points, each a Body
       vertex or a Sketch Point (`point_refs` has exactly three entries -
       see `PointRef`).
@@ -314,8 +345,13 @@ class CreatePlaneFeature(Feature):
     can reuse the same field as `OFFSET_FACE` instead of adding a second,
     near-identical pair of fields - `OFFSET_FACE` and
     `PARALLEL_TO_FACE_THROUGH_VERTEX` (C4) always have exactly one entry,
-    `MIDPLANE` always exactly two. `vertex_ref` (C4) is likewise shared
-    between `NORMAL_TO_EDGE_THROUGH_VERTEX` and
+    `MIDPLANE` always exactly two. C5 widened each entry from a plain
+    `SubShapeRef` (a Body face only) to a `PlaneRef` (a Body face, a fixed
+    reference plane, or an existing Plane), on user feedback that a Plane
+    ought to be a valid reference too - e.g. "offset from XY plane",
+    "midplane between an existing Plane and a Face" - without needing a
+    parallel set of fields per reference kind. `vertex_ref` (C4) is likewise
+    shared between `NORMAL_TO_EDGE_THROUGH_VERTEX` and
     `PARALLEL_TO_FACE_THROUGH_VERTEX`.
 
     The actual OCCT/plane-geometry resolution lives in
@@ -332,7 +368,7 @@ class CreatePlaneFeature(Feature):
 
     id: str
     plane_type: PlaneType
-    face_refs: list[SubShapeRef] = field(default_factory=list)
+    face_refs: list[PlaneRef] = field(default_factory=list)
     offset: float | None = None
     line_ref: SketchEntityRef | None = None
     point_ref: SketchEntityRef | None = None

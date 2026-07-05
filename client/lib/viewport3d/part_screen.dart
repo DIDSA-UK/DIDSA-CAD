@@ -466,7 +466,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [_editingCreatePlaneFeatureId] is set, same reason
   /// [_extrudeEditSnapshot] exists.
   ({
-    List<SubShapeRefDto> faceRefs,
+    List<PlaneRefDto> faceRefs,
     double? offset,
     SketchEntityRefDto? lineRef,
     SketchEntityRefDto? pointRef,
@@ -805,6 +805,17 @@ class _PartScreenState extends State<PartScreen> {
       _addSketchFeature(plane: plane);
       return;
     }
+    // C5: while in Selection mode, a plane tap toggles it into
+    // [_selectedEntities] like every other selectable entity kind, so it
+    // can compose with a Body face or another plane into a Create Plane
+    // operation (see `selection_actions.dart`'s `contextActionsFor`) -
+    // instead of always opening its own single-plane context sheet below.
+    if (_selectionMode) {
+      _toggleSelectedEntity(
+        SelectionEntityRef(kind: SelectionEntityKind.referencePlane, referencePlaneKind: plane),
+      );
+      return;
+    }
     setState(() {
       _selectedPlane = plane;
       _featureTreeVisible = false;
@@ -829,6 +840,13 @@ class _PartScreenState extends State<PartScreen> {
   /// (brighter highlight, mirroring [_onPlaneTap]'s own for the three fixed
   /// planes) and opens [showCreatePlaneContextSheet]'s fly-up.
   void _onCreatePlaneFeatureTap(String featureId) {
+    // C5: mirrors [_onPlaneTap]'s own Selection-mode gating.
+    if (_selectionMode) {
+      _toggleSelectedEntity(
+        SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: featureId),
+      );
+      return;
+    }
     setState(() {
       _selectedCreatePlaneFeatureId = featureId;
       _featureTreeVisible = false;
@@ -1568,6 +1586,13 @@ class _PartScreenState extends State<PartScreen> {
     final vertices = _selectedEntities.where((e) => e.kind == SelectionEntityKind.vertex).toList();
     final points = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchPoint).toList();
     final lines = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchLine).toList();
+    // C5: a fixed reference plane or an existing Plane is "plane-like" for
+    // the same three combos a Body face already was - see
+    // `selection_actions.dart`'s own `planeLikeCount`, which this mirrors
+    // exactly (same precedence, same combo shapes).
+    final referencePlanes = _selectedEntities.where((e) => e.kind == SelectionEntityKind.referencePlane);
+    final createPlanes = _selectedEntities.where((e) => e.kind == SelectionEntityKind.createPlane);
+    final planeLikes = [...faces, ...referencePlanes, ...createPlanes];
 
     // C4: exactly three points total (any mix of Body Vertices and Sketch
     // Points) - checked first, same precedence `selection_actions.dart`'s
@@ -1577,12 +1602,12 @@ class _PartScreenState extends State<PartScreen> {
       _openCreatePlanePanel(mode: CreatePlaneMode.threePoints, pointEntities: [...vertices, ...points]);
       return;
     }
-    if (faces.length == 1 && _selectedEntities.length == 1) {
-      _openCreatePlanePanel(mode: CreatePlaneMode.offsetFace, faceEntities: faces);
+    if (planeLikes.length == 1 && _selectedEntities.length == 1) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.offsetFace, faceEntities: planeLikes);
       return;
     }
-    if (faces.length == 2 && _selectedEntities.length == 2) {
-      _openCreatePlanePanel(mode: CreatePlaneMode.midplane, faceEntities: faces);
+    if (planeLikes.length == 2 && _selectedEntities.length == 2) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.midplane, faceEntities: planeLikes);
       return;
     }
     // C4: exactly one Edge and one Vertex - Normal to Edge Through Vertex.
@@ -1594,11 +1619,12 @@ class _PartScreenState extends State<PartScreen> {
       );
       return;
     }
-    // C4: exactly one Face and one Vertex - Parallel to Face Through Vertex.
-    if (faces.length == 1 && vertices.length == 1 && _selectedEntities.length == 2) {
+    // C4/C5: exactly one plane-like entity and one Vertex - Parallel to
+    // Face Through Vertex.
+    if (planeLikes.length == 1 && vertices.length == 1 && _selectedEntities.length == 2) {
       _openCreatePlanePanel(
         mode: CreatePlaneMode.parallelToFaceThroughVertex,
-        faceEntities: faces,
+        faceEntities: planeLikes,
         vertexEntity: vertices.single,
       );
       return;
@@ -1639,6 +1665,27 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// C5: converts a selected [SelectionEntityRef] into a [PlaneRefDto] for
+  /// [CreatePlaneMode.offsetFace]/[CreatePlaneMode.midplane]/
+  /// [CreatePlaneMode.parallelToFaceThroughVertex]'s `faceEntities` - a Body
+  /// Face ([SelectionEntityKind.face]), a fixed reference plane
+  /// ([SelectionEntityKind.referencePlane]), or an existing Plane
+  /// ([SelectionEntityKind.createPlane]) - never anything else, since
+  /// [_onCreatePlaneTapped]'s own pool for these three modes is exactly
+  /// those three kinds (mirrors [_pointRefDtoFor]'s own doc comment).
+  PlaneRefDto _planeRefDtoFor(SelectionEntityRef entity) {
+    if (entity.kind == SelectionEntityKind.referencePlane) {
+      return PlaneRefDto(fixedPlane: entity.referencePlaneKind!.apiValue);
+    }
+    if (entity.kind == SelectionEntityKind.createPlane) {
+      return PlaneRefDto(planeFeatureId: entity.planeFeatureId);
+    }
+    assert(entity.kind == SelectionEntityKind.face);
+    return PlaneRefDto(
+      faceRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+    );
+  }
+
   /// Creates the CreatePlaneFeature eagerly (mirrors [_ensureExtrudeFeatureExists]'s
   /// "create on open" pattern) from whichever refs [_onCreatePlaneTapped]
   /// resolved. Stashes/clears [_selectedEntities] the same way
@@ -1672,10 +1719,7 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(() async {
       final FeatureDto feature;
       if (mode == CreatePlaneMode.offsetFace || mode == CreatePlaneMode.midplane) {
-        final faceRefs = [
-          for (final faceEntity in faceEntities)
-            SubShapeRefDto(bodyId: faceEntity.bodyId, shapeType: 'face', index: faceEntity.id),
-        ];
+        final faceRefs = faceEntities.map(_planeRefDtoFor).toList();
         feature = await _api.createCreatePlaneFeature(
           part.id,
           planeType: mode == CreatePlaneMode.offsetFace ? 'offset_face' : 'midplane',
@@ -1690,10 +1734,7 @@ class _PartScreenState extends State<PartScreen> {
           vertexRef: SubShapeRefDto(bodyId: vertexEntity!.bodyId, shapeType: 'vertex', index: vertexEntity.id),
         );
       } else if (mode == CreatePlaneMode.parallelToFaceThroughVertex) {
-        final faceRefs = [
-          for (final faceEntity in faceEntities)
-            SubShapeRefDto(bodyId: faceEntity.bodyId, shapeType: 'face', index: faceEntity.id),
-        ];
+        final faceRefs = faceEntities.map(_planeRefDtoFor).toList();
         feature = await _api.createCreatePlaneFeature(
           part.id,
           planeType: 'parallel_to_face_through_vertex',

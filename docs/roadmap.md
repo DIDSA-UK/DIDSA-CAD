@@ -391,15 +391,25 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   free, since tessellation already happened before that filter ever ran),
   dimmed with an eye-slash icon, long-press-toggleable directly from the
   tree instead of only from the Feature that produced it.
-- **Open, deferred pending scoping**: Create Plane's OFFSET_FACE/MIDPLANE
-  should accept a Plane (a fixed reference plane, or an existing custom
-  Plane) as a valid reference alongside a Body face - "offset from XY
-  plane", "midplane between a Plane and a Face". Needs a new mixed
-  reference type (a `SubShapeRef`-or-Plane-identifier - the same shape of
-  problem C4's `PointRef` solved for THREE_POINTS) and reconciling two
-  currently-separate client selection subsystems (tapping a reference
-  Plane today starts a new Sketch on it; tapping a Body face feeds Create
-  Plane's own selection set - these don't currently compose). Not started.
+- **Prompt C5 (previously "deferred pending scoping", now built)**: Create
+  Plane's OFFSET_FACE/MIDPLANE/PARALLEL_TO_FACE_THROUGH_VERTEX now accept a
+  Plane (a fixed reference plane, or an existing custom Plane) as a valid
+  reference alongside a Body face - "offset from XY plane", "midplane
+  between a Plane and a Face". New `PlaneRef` union type (backend
+  `app.document.models`, mirroring C4's `PointRef`) and a `_resolve_plane_ref`
+  dispatcher in `create_plane.py`; `graph.py`'s dependency edges and the
+  router's validation generalized to match. Client: reference-plane/created-
+  Plane taps now toggle into the same selection set every other entity kind
+  uses while in Selection mode (new `SelectionEntityKind.referencePlane`/
+  `.createPlane`), instead of always opening their own single-plane context
+  sheet; `contextActionsFor`'s single/two/plus-vertex Create Plane combos
+  generalized from "Body face" to "plane-like" (face, fixed plane, or
+  existing Plane) accordingly. 90 OCCT-free backend tests passed (new
+  `test_stage_c5_graph.py`, `test_stage_c5_create_plane.py` the latter
+  `ast.parse`-only per the usual OCCT-in-sandbox caveat), `flutter analyze`
+  clean, 39/39 `document_api_client_test.dart` cases genuinely executed
+  (DTO round-trips + wire format). **Not yet on-device confirmed** - same
+  gating discipline as every other C-series prompt before Prompt D starts.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

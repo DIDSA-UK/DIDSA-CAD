@@ -1,11 +1,24 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/selection_actions.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
 const _face0 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 0);
 const _edge0 = SelectionEntityRef(kind: SelectionEntityKind.edge, id: 0);
 const _vertex0 = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 0);
+const _planeXy = SelectionEntityRef(
+  kind: SelectionEntityKind.referencePlane,
+  referencePlaneKind: ReferencePlaneKind.xy,
+);
+const _planeXz = SelectionEntityRef(
+  kind: SelectionEntityKind.referencePlane,
+  referencePlaneKind: ReferencePlaneKind.xz,
+);
+const _createPlane1 = SelectionEntityRef(
+  kind: SelectionEntityKind.createPlane,
+  planeFeatureId: 'plane-1',
+);
 
 void main() {
   group('contextActionsFor', () {
@@ -228,6 +241,57 @@ void main() {
     test('three points plus an unrelated face offers nothing', () {
       final actions = contextActionsFor({_vertex0, vertex1, point1, _face0});
       expect(actions, isEmpty);
+    });
+  });
+
+  group('C5: contextActionsFor with referencePlane/createPlane entities', () {
+    test('a lone fixed reference plane offers a real, enabled Create Plane (offset)', () {
+      final actions = contextActionsFor({_planeXy});
+      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
+    });
+
+    test('a lone existing Plane offers a real, enabled Create Plane (offset)', () {
+      final actions = contextActionsFor({_createPlane1});
+      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
+    });
+
+    test('two fixed reference planes offers a real, enabled Create Plane (Midplane)', () {
+      final actions = contextActionsFor({_planeXy, _planeXz});
+      expect(actions, [const SelectionContextAction('Create Plane (Midplane)', enabled: true)]);
+    });
+
+    test('a fixed reference plane + a Body face offers a real, enabled Create Plane (Midplane)', () {
+      final actions = contextActionsFor({_planeXy, _face0});
+      expect(actions, [const SelectionContextAction('Create Plane (Midplane)', enabled: true)]);
+    });
+
+    test('a fixed reference plane + an existing Plane offers a real, enabled Create Plane (Midplane)', () {
+      final actions = contextActionsFor({_planeXy, _createPlane1});
+      expect(actions, [const SelectionContextAction('Create Plane (Midplane)', enabled: true)]);
+    });
+
+    test(
+      'a fixed reference plane + one Vertex offers a real, enabled Create Plane '
+      '(Parallel to Face Through Vertex)',
+      () {
+        final actions = contextActionsFor({_planeXy, _vertex0});
+        expect(actions, [
+          const SelectionContextAction('Create Plane (Parallel to Face Through Vertex)', enabled: true),
+        ]);
+      },
+    );
+
+    test('a fixed reference plane mixed with an Edge falls through to the full operation set', () {
+      // A plane never composes with Chamfer/Fillet - this only exercises
+      // that `hasFace`/`hasEdge` (the Chamfer/Fillet gate) stay strictly
+      // Body-only and are unaffected by a plane-like entity also being
+      // present, same as they already are for a plain face + edge.
+      final actions = contextActionsFor({_planeXy, _edge0, _face0});
+      expect(actions, [
+        const SelectionContextAction('Create Plane'),
+        const SelectionContextAction('Chamfer'),
+        const SelectionContextAction('Fillet'),
+      ]);
     });
   });
 }

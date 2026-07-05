@@ -130,9 +130,24 @@ class PointRefSchema(BaseModel):
     sketch_point_ref: SketchEntityRefSchema | None = None
 
 
+class PlaneRefSchema(BaseModel):
+    """C5: the wire counterpart to `app.document.models.PlaneRef` - exactly
+    one of `face_ref`/`fixed_plane`/`plane_feature_id` should be supplied,
+    matching `PlaneRef`'s own "one of three optional fields" convention
+    (see its docstring); not enforced here, checked by
+    `app.document.router._validate_plane_ref`. Lets OFFSET_FACE/MIDPLANE/
+    PARALLEL_TO_FACE_THROUGH_VERTEX reference a Body face, a fixed
+    reference plane, or an existing CreatePlaneFeature, instead of only a
+    Body face as in C2-C4."""
+
+    face_ref: SubShapeRefSchema | None = None
+    fixed_plane: Plane | None = None
+    plane_feature_id: str | None = None
+
+
 class CreatePlaneFeatureCreate(BaseModel):
-    """Creates a CreatePlaneFeature (C2/C3/C4) - exactly one combination of
-    fields should be supplied, matching `plane_type`:
+    """Creates a CreatePlaneFeature (C2/C3/C4/C5) - exactly one combination
+    of fields should be supplied, matching `plane_type`:
     - `OFFSET_FACE`: `face_refs` (one entry), `offset`.
     - `MIDPLANE`: `face_refs` (two entries).
     - `NORMAL_TO_LINE_AT_POINT`: `line_ref`, `point_ref`.
@@ -146,10 +161,13 @@ class CreatePlaneFeatureCreate(BaseModel):
     `face_ref` (C2, singular) became `face_refs` (C3, a list) so MIDPLANE
     (and, C4, PARALLEL_TO_FACE_THROUGH_VERTEX) can reuse the same field as
     OFFSET_FACE. `vertex_ref` (C4) is likewise shared between
-    NORMAL_TO_EDGE_THROUGH_VERTEX and PARALLEL_TO_FACE_THROUGH_VERTEX."""
+    NORMAL_TO_EDGE_THROUGH_VERTEX and PARALLEL_TO_FACE_THROUGH_VERTEX.
+    `face_refs` entries became `PlaneRefSchema` (C5, was `SubShapeRefSchema`)
+    so each entry can be a Body face, a fixed reference plane, or an
+    existing CreatePlaneFeature."""
 
     plane_type: PlaneType
-    face_refs: list[SubShapeRefSchema] = []
+    face_refs: list[PlaneRefSchema] = []
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
@@ -169,7 +187,7 @@ class CreatePlaneFeatureUpdate(BaseModel):
     while staying valid, so `None` unambiguously means "not provided,
     keep the current value" for every field below."""
 
-    face_refs: list[SubShapeRefSchema] | None = None
+    face_refs: list[PlaneRefSchema] | None = None
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None
@@ -184,7 +202,7 @@ class CreatePlaneFeatureResponse(BaseModel):
     plane_type: PlaneType
     # Echo of whichever refs/values were supplied - for edit-mode prefill,
     # same purpose B4's Extrude edit-prefill serves.
-    face_refs: list[SubShapeRefSchema] = []
+    face_refs: list[PlaneRefSchema] = []
     offset: float | None = None
     line_ref: SketchEntityRefSchema | None = None
     point_ref: SketchEntityRefSchema | None = None

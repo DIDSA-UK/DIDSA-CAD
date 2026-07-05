@@ -31,7 +31,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.document.models import CreatePlaneFeature, ExtrudeFeature, Part, PlaneType, SketchFeature
+from app.document.models import (
+    CreatePlaneFeature,
+    ExtrudeFeature,
+    Part,
+    PlaneRef,
+    PlaneType,
+    SketchFeature,
+)
 
 
 class CycleError(ValueError):
@@ -190,17 +197,34 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     return nodes
 
 
+def _plane_ref_dependency(ref: PlaneRef) -> str | None:
+    """C5: the single Feature id `ref` depends on, or `None` if it depends
+    on nothing - a `face_ref` depends on the owning ExtrudeFeature of its
+    Body (`base_feature_id`), a `plane_feature_id` depends on that Plane
+    Feature directly (already a Feature id, no `base_feature_id` mapping
+    needed), and a `fixed_plane` depends on nothing at all - one of the
+    three fixed reference planes always exists, no Feature produces it."""
+    if ref.face_ref is not None:
+        return base_feature_id(ref.face_ref.body_id)
+    if ref.plane_feature_id is not None:
+        return ref.plane_feature_id
+    return None
+
+
 def _create_plane_dependencies(part: Part, feature: CreatePlaneFeature) -> tuple[str, ...]:
-    """C2/C3/C4: `build_feature_graph`'s per-`plane_type` dependency-edge
+    """C2/C3/C4/C5: `build_feature_graph`'s per-`plane_type` dependency-edge
     logic for a `CreatePlaneFeature`, split out since C4 added three more
     types (each with their own reference shape) to C2/C3's original two:
-    - `OFFSET_FACE`/`MIDPLANE`: the owning ExtrudeFeature(s) of `face_refs`'
-      `body_id`s (one entry for `OFFSET_FACE`, two for `MIDPLANE`).
+    - `OFFSET_FACE`/`MIDPLANE`: whatever each `face_refs` entry depends on
+      (see `_plane_ref_dependency` - a Body's owning ExtrudeFeature, an
+      existing Plane's own Feature id, or nothing for a fixed reference
+      plane), one entry for `OFFSET_FACE`, two for `MIDPLANE`.
     - `NORMAL_TO_EDGE_THROUGH_VERTEX`: the owning ExtrudeFeature(s) of
       `edge_ref`'s and `vertex_ref`'s `body_id`s (deduplicated - normally
       the same Body, but not required to be).
-    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: the owning ExtrudeFeature(s) of
-      `face_refs[0]`'s and `vertex_ref`'s `body_id`s (same dedup).
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: whatever `face_refs[0]` depends on
+      (see `_plane_ref_dependency`) plus the owning ExtrudeFeature of
+      `vertex_ref`'s `body_id` (same dedup).
     - `THREE_POINTS`: for each of `point_refs`' three entries, either the
       owning ExtrudeFeature of its `vertex_ref`'s `body_id`, or the
       SketchFeature wrapping its `sketch_point_ref`'s `sketch_id`.
@@ -209,7 +233,8 @@ def _create_plane_dependencies(part: Part, feature: CreatePlaneFeature) -> tuple
       construction - see `app.document.router._validate_create_plane_payload`).
     """
     if feature.plane_type in (PlaneType.OFFSET_FACE, PlaneType.MIDPLANE) and feature.face_refs:
-        return tuple(base_feature_id(ref.body_id) for ref in feature.face_refs)
+        deps = {_plane_ref_dependency(ref) for ref in feature.face_refs}
+        return tuple(dep for dep in deps if dep is not None)
     if feature.plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
         if feature.edge_ref is None or feature.vertex_ref is None:
             return ()
@@ -217,9 +242,8 @@ def _create_plane_dependencies(part: Part, feature: CreatePlaneFeature) -> tuple
     if feature.plane_type == PlaneType.PARALLEL_TO_FACE_THROUGH_VERTEX:
         if not feature.face_refs or feature.vertex_ref is None:
             return ()
-        return tuple(
-            {base_feature_id(feature.face_refs[0].body_id), base_feature_id(feature.vertex_ref.body_id)}
-        )
+        deps = {_plane_ref_dependency(feature.face_refs[0]), base_feature_id(feature.vertex_ref.body_id)}
+        return tuple(dep for dep in deps if dep is not None)
     if feature.plane_type == PlaneType.THREE_POINTS:
         deps: set[str] = set()
         for point_ref in feature.point_refs:

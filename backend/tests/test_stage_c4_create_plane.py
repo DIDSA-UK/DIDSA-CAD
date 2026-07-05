@@ -134,7 +134,7 @@ def _create_parallel_to_face_plane(part_id: str, body_id: str, face_index: int, 
         f"/document/parts/{part_id}/create-plane-features",
         json={
             "plane_type": "parallel_to_face_through_vertex",
-            "face_refs": [{"body_id": body_id, "shape_type": "face", "index": face_index}],
+            "face_refs": [{"face_ref": {"body_id": body_id, "shape_type": "face", "index": face_index}}],
             "vertex_ref": {"body_id": body_id, "shape_type": "vertex", "index": vertex_index},
         },
     )

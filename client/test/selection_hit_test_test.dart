@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/reference_planes.dart' show ReferencePlaneKind;
 import 'package:didsa_cad_client/viewport3d/selection_filter.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
@@ -856,6 +857,47 @@ void main() {
       const vertex = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 0);
       const sketchPoint = SelectionEntityRef(kind: SelectionEntityKind.sketchPoint);
       expect(vertex, isNot(sketchPoint));
+    });
+
+    test('C5: two referencePlane refs naming the same plane are equal', () {
+      const a = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      const b = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('C5: referencePlane refs naming different planes are not equal', () {
+      const xy = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      const xz = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xz,
+      );
+      expect(xy, isNot(xz));
+    });
+
+    test('C5: two createPlane refs naming the same Feature id are equal', () {
+      const a = SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: 'plane-1');
+      const b = SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: 'plane-1');
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('C5: a referencePlane ref and a createPlane ref never collide despite shared defaults', () {
+      const plane = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      const createPlane = SelectionEntityRef(kind: SelectionEntityKind.createPlane);
+      expect(plane, isNot(createPlane));
     });
   });
 }

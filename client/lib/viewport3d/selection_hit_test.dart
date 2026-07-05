@@ -5,6 +5,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import 'mesh_geometry.dart' show edgeSegmentsFromMesh;
+import 'reference_planes.dart' show ReferencePlaneKind;
 import 'selection_filter.dart';
 import 'sketch_geometry_3d.dart' show SketchGeometry3D;
 
@@ -44,8 +45,15 @@ const double kVertexSelectionHitRadiusPixels = kSelectionHitRadiusPixels;
 /// rather than one of its individual faces/edges/vertices. Prompt C1 added
 /// `sketchPoint`/`sketchLine` - a Sketch's own Point/Line entities, rendered
 /// and pickable in the 3D viewport alongside Body geometry (see
-/// `sketch_geometry_3d.dart`).
-enum SelectionEntityKind { face, edge, vertex, body, sketchPoint, sketchLine }
+/// `sketch_geometry_3d.dart`). C5 added `referencePlane`/`createPlane` - one
+/// of the three fixed reference planes, or an existing CreatePlaneFeature's
+/// own rendered quad, so either can now feed a Create Plane operation as a
+/// `PlaneRefDto` (an offset from, or a midplane against, a plane instead of
+/// only a Body face) exactly like every other selectable entity kind - see
+/// `PartScreen._onPlaneTap`/`_onCreatePlaneFeatureTap`, which toggle these
+/// into the selection set while in Selection mode instead of always opening
+/// their own context sheet.
+enum SelectionEntityKind { face, edge, vertex, body, sketchPoint, sketchLine, referencePlane, createPlane }
 
 /// Identifies one selectable mesh entity - a [SelectionEntityKind] plus the
 /// stable id `MeshDto.faceIds`/`edgeIds`/`topologyVertexIds` assigns it.
@@ -80,12 +88,29 @@ class SelectionEntityRef {
   final String sketchFeatureId;
   final String sketchEntityId;
 
+  /// C5: which fixed reference plane this is, for a [SelectionEntityKind.
+  /// referencePlane] entity - null (and meaningless) for every other kind,
+  /// the same "carries no meaning outside its own kind" convention
+  /// [bodyId]/[id] and [sketchFeatureId]/[sketchEntityId] already use for
+  /// each other's kinds.
+  final ReferencePlaneKind? referencePlaneKind;
+
+  /// C5: the CreatePlaneFeature's own id, for a [SelectionEntityKind.
+  /// createPlane] entity - meaningless for every other kind. A separate
+  /// field from [sketchFeatureId] even though both are "a Feature id
+  /// string", since a `createPlane` entity *is* that Feature (identifies
+  /// it directly), whereas [sketchFeatureId] names the Feature a
+  /// sketchPoint/sketchLine entity merely *belongs to*.
+  final String planeFeatureId;
+
   const SelectionEntityRef({
     required this.kind,
     this.bodyId = '',
     this.id = 0,
     this.sketchFeatureId = '',
     this.sketchEntityId = '',
+    this.referencePlaneKind,
+    this.planeFeatureId = '',
   });
 
   @override
@@ -95,15 +120,30 @@ class SelectionEntityRef {
       other.bodyId == bodyId &&
       other.id == id &&
       other.sketchFeatureId == sketchFeatureId &&
-      other.sketchEntityId == sketchEntityId;
+      other.sketchEntityId == sketchEntityId &&
+      other.referencePlaneKind == referencePlaneKind &&
+      other.planeFeatureId == planeFeatureId;
 
   @override
-  int get hashCode => Object.hash(kind, bodyId, id, sketchFeatureId, sketchEntityId);
+  int get hashCode => Object.hash(
+        kind,
+        bodyId,
+        id,
+        sketchFeatureId,
+        sketchEntityId,
+        referencePlaneKind,
+        planeFeatureId,
+      );
 
   @override
-  String toString() => kind == SelectionEntityKind.sketchPoint || kind == SelectionEntityKind.sketchLine
-      ? 'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)'
-      : 'SelectionEntityRef($kind, bodyId: $bodyId, $id)';
+  String toString() => switch (kind) {
+        SelectionEntityKind.sketchPoint ||
+        SelectionEntityKind.sketchLine =>
+          'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)',
+        SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
+        SelectionEntityKind.createPlane => 'SelectionEntityRef($kind, planeFeatureId: $planeFeatureId)',
+        _ => 'SelectionEntityRef($kind, bodyId: $bodyId, $id)',
+      };
 }
 
 /// A hit-test result: which entity, how far along the ray it was found (for
