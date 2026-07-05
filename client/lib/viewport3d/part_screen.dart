@@ -926,25 +926,29 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// C3: the "Add" FAB's Feature picker's "Plane" entry - clears the current
-  /// selection and hints what to pick next, then relies entirely on the
-  /// pre-existing ambient selection machinery ([SelectionContextPanel]/
-  /// `contextActionsFor`/[_onCreatePlaneTapped]) to actually open
-  /// [CreatePlanePanel] once a valid combo (one Face, two Faces, or a Line
-  /// plus the Point that's its own endpoint) is selected. Unlike
+  /// C3/C4/C5: the "Add" FAB's Feature picker's "Plane" entry - clears the
+  /// current selection, switches to Selection mode (a bare tap in Orbit mode
+  /// does nothing - this used to leave the user in whichever mode they were
+  /// already in, silently stranding anyone who opened this from Orbit mode
+  /// with a hint but no way to act on it), and hints what to pick next, then
+  /// relies entirely on the pre-existing ambient selection machinery
+  /// ([SelectionContextPanel]/`contextActionsFor`/[_onCreatePlaneTapped]) to
+  /// actually open [CreatePlanePanel] once a valid combo is selected. Unlike
   /// [_startSketchPicker], there is no separate guided-picker mode to enter -
   /// Create Plane's selection flow already worked this way for every other
-  /// entry point (a free tap on a Face/Line/Point in the viewport already
-  /// offered "Create Plane" before this menu entry existed), so this just
-  /// clears the deck and points the user at it.
+  /// entry point (a free tap on a Face/Line/Point/plane in the viewport
+  /// already offers "Create Plane" before this menu entry is even used), so
+  /// this just clears the deck, ensures taps do something, and points the
+  /// user at it.
   void _startPlanePicker() {
     setState(() {
       _selectedEntities = {};
+      _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _planeSelectionModeStack.pop();
     });
-    _showSnack('Select a face, two faces, or a line and its endpoint to create a plane');
+    _showSnack('Select a face or plane (or two, for a midplane) to create a plane');
   }
 
   /// Extrudes the Feature currently selected in the tree, opened from the
