@@ -196,16 +196,63 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   existing single-entity hover highlight), click toggles a whole loop
   in/out of the pick set (mirrors Fillet's own "tap a face, select its
   whole edge loop" convenience), and a checkmark FAB confirms and opens the
-  target panel. Known limitation carried over, not newly introduced:
-  Circle-only loops aren't individually tappable yet (Circle picking in the
-  3D viewport has been out of scope since Prompt C1) - a Circle profile
-  among others can still only be included via the "pick nothing = use
-  every profile" default, not individually selected. 7 new pure-Python
-  `detect_profile` tests (`test_stage_g_profile.py`) genuinely executed
-  (68/68 passing across every pure-Python graph/geometry/profile test file
-  in this sandbox); the real-OCCT HTTP surface tests
-  (`test_stage_g_profile_refs.py`) `ast.parse`/`pyflakes`-verified only,
-  per the standing sandbox caveat. Pending on-device confirmation.
+  target panel. 7 new pure-Python `detect_profile` tests
+  (`test_stage_g_profile.py`) genuinely executed (68/68 passing across
+  every pure-Python graph/geometry/profile test file in this sandbox); the
+  real-OCCT HTTP surface tests (`test_stage_g_profile_refs.py`)
+  `ast.parse`/`pyflakes`-verified only, per the standing sandbox caveat.
+  On-device testing surfaced three follow-up bugs, all fixed in the same
+  round - see the entry directly below.
+- **Bug fixes (on-device feedback, post-Prompt-G): viewport camera jump,
+  profile picker not appearing, Sketch Circles not selectable.** Three
+  issues reported from the same on-device test pass, all fixed:
+  (1) *Viewport jumped when switching Orbit/Selection mode, and after
+  selecting an entity.* Root cause: `PartScreen._visibleBodies` was a plain
+  `_bodies.where(...).toList()` getter, allocating a brand-new `List`
+  instance on every access - since `PartViewport.bodies`'s own contract
+  requires a new instance only when the content actually changes (so
+  `didUpdateWidget` can tell "unrelated rebuild" from "the mesh changed"),
+  *every* unrelated `setState` in `PartScreen` (mode toggle, entity
+  selection, anything) looked like a Body change to `PartViewport`, which
+  re-ran `_syncMeshNode` and unconditionally snapped `OrbitCamera.target`
+  back to the mesh bounds' centre, discarding any pan the user had done.
+  Fixed by memoizing `_visibleBodies` against `_bodies`' own identity (only
+  reassigned on a genuine mesh refetch), restoring the documented contract.
+  (2) *Revolve's profile picker never appeared for a multi-closed-profile
+  Sketch.* Traced to (3) below in the common case (a test sketch mixing a
+  Line-chain profile with a Circle profile) - the picker itself entered
+  correctly (`detect_profile`/`select_profiles` already handled this case
+  server-side, confirmed via a synthetic pure-Python repro), but a
+  Circle-only loop had nothing tappable to toggle it with, reading as "no
+  option to pick" even though the banner/confirm-FAB were showing.
+  (3) *Sketch Circles weren't a selectable/tappable entity in the 3D
+  viewport*, despite being drawable there since C1 and just as valid a
+  closed Profile as a Line-chain loop (`app.sketch.profile._circle_profile`).
+  Fixed by adding a full `SelectionEntityKind.sketchCircle` kind end to end:
+  `SketchGeometry3D` gained a `circleIds` array parallel to `circlePolygons`
+  (previously absent - a deliberately deferred C1 gap); new
+  `hitTestSketchCircles` (tests every segment of a Circle's tessellated
+  outline, same convention as `hitTestSketchLines`) wired into
+  `hitTestBodies`; new `SelectionFilterState.sketchCircle` field (mirrors
+  `sketchLine`, on by default; explicitly off for Revolve's axis filter -
+  a Circle is never a valid axis - and for the body-only/Fillet/Chamfer
+  filters, on for the profile picker's own filter); `PartViewport`'s
+  hover/selected-entity highlight rendering gained matching
+  `sketchCircle` cases. This also surfaced (and fixed) a latent bug in
+  `PartScreen._confirmProfilePicker`: it hardcoded `SketchEntityRefDto.
+  entityType: 'line'` for every picked loop's anchor id, which would have
+  422'd (`resolve_sketch_entity` validates the declared type against the
+  real entity via `isinstance`) the first time a Circle-only loop's anchor
+  was actually confirmed - now resolved per-anchor via a new
+  `_isProfileCircleEntity` helper. No backend changes were needed for any
+  of the three; `_toggleProfileLoop`/`_confirmProfilePicker` now build the
+  correct `SelectionEntityKind`/`entityType` per member id instead of
+  assuming every loop member is a Line. No Dart SDK available in this
+  sandbox to compile/run - verified via brace-balance checks and manual
+  review only; the (2)/(3) root-cause analysis was cross-checked against a
+  synthetic pure-Python `detect_profile` repro (not a Dart test) confirming
+  the backend's own multi-loop/mixed-profile classification was already
+  correct. Pending on-device confirmation.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

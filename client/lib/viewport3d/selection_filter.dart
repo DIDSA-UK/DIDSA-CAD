@@ -23,6 +23,16 @@ class SelectionFilterState {
   final bool sketchPoint;
   final bool sketchLine;
 
+  /// On-device feedback: gates `SelectionEntityKind.sketchCircle` the same
+  /// way `sketchLine` gates `SelectionEntityKind.sketchLine` - a separate
+  /// field (not folded into `sketchLine`) since a picking mode may want a
+  /// Sketch's Lines but not its Circles (e.g. Revolve's axis pick, which
+  /// must stay a Line - see `PartScreen._revolveSelectionFilter`) or vice
+  /// versa. Defaults to `true`, mirroring `sketchLine`'s own "always
+  /// considered by default" precedent now that Circles are independently
+  /// pickable (Prompt G follow-up).
+  final bool sketchCircle;
+
   /// On-device feedback: gates both `SelectionEntityKind.referencePlane` and
   /// `.createPlane` hover/hit-testing (see `part_viewport.dart`'s
   /// `_hoverHitTestPlanes`) - a single field for both plane kinds, not a
@@ -46,6 +56,7 @@ class SelectionFilterState {
     required this.body,
     this.sketchPoint = true,
     this.sketchLine = true,
+    this.sketchCircle = true,
     this.plane = true,
   });
 
@@ -65,6 +76,7 @@ class SelectionFilterState {
     bool? body,
     bool? sketchPoint,
     bool? sketchLine,
+    bool? sketchCircle,
     bool? plane,
   }) {
     return SelectionFilterState(
@@ -74,6 +86,7 @@ class SelectionFilterState {
       body: body ?? this.body,
       sketchPoint: sketchPoint ?? this.sketchPoint,
       sketchLine: sketchLine ?? this.sketchLine,
+      sketchCircle: sketchCircle ?? this.sketchCircle,
       plane: plane ?? this.plane,
     );
   }
@@ -87,13 +100,15 @@ class SelectionFilterState {
       other.body == body &&
       other.sketchPoint == sketchPoint &&
       other.sketchLine == sketchLine &&
+      other.sketchCircle == sketchCircle &&
       other.plane == plane;
 
   @override
-  int get hashCode => Object.hash(vertex, edge, face, body, sketchPoint, sketchLine, plane);
+  int get hashCode =>
+      Object.hash(vertex, edge, face, body, sketchPoint, sketchLine, sketchCircle, plane);
 
   @override
   String toString() =>
       'SelectionFilterState(vertex: $vertex, edge: $edge, face: $face, body: $body, '
-      'sketchPoint: $sketchPoint, sketchLine: $sketchLine, plane: $plane)';
+      'sketchPoint: $sketchPoint, sketchLine: $sketchLine, sketchCircle: $sketchCircle, plane: $plane)';
 }

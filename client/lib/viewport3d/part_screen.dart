@@ -100,13 +100,39 @@ class _PartScreenState extends State<PartScreen> {
   List<String> get _computedBodyIds =>
       _bodies.where((b) => b.source == 'computed').map((b) => b.bodyId).toList();
 
+  /// Memoization for [_visibleBodies] - `identical(_visibleBodiesCacheSource,
+  /// _bodies)` tells us the last computed [_visibleBodiesCache] is still
+  /// valid, so unrelated rebuilds (toggling selection mode, picking an
+  /// entity, anything that calls `setState` without touching [_bodies]
+  /// itself) don't hand `PartViewport` a freshly-allocated `List` each time.
+  List<BodyMeshDto>? _visibleBodiesCache;
+  List<BodyMeshDto>? _visibleBodiesCacheSource;
+
   /// [_bodies] filtered down to what should actually render/hit-test in the
   /// 3D viewport - everything that isn't [BodyMeshDto.hidden]. Use this
   /// (never [_bodies] directly) for [PartViewport.bodies] and anything else
   /// that projects/derives from real Body geometry (e.g. the ghost-edge
   /// reference in [_openSketch]) - [_computedBodyIds]/[_bodyNames] are the
   /// deliberate exception, since the Build Tree wants the unfiltered list.
-  List<BodyMeshDto> get _visibleBodies => _bodies.where((b) => !b.hidden).toList();
+  ///
+  /// On-device feedback: this used to be a plain `.where(...).toList()`
+  /// getter, building a brand-new `List` instance on *every* access - since
+  /// [PartViewport.bodies]'s own doc comment requires a new instance only
+  /// when the content actually changes (so [PartViewport.didUpdateWidget]
+  /// can tell "unrelated rebuild" from "the mesh changed"), that meant every
+  /// unrelated `setState` in this widget (selection-mode toggle, picking an
+  /// entity, etc.) looked like a body change to `PartViewport`, which
+  /// re-ran `_syncMeshNode` and snapped the camera's target back to the
+  /// mesh bounds' centre - discarding any pan the user had done. Caching
+  /// against [_bodies]' own identity (only reassigned where [_bodies] itself
+  /// is, i.e. on a genuine mesh refetch) restores the contract.
+  List<BodyMeshDto> get _visibleBodies {
+    if (!identical(_visibleBodiesCacheSource, _bodies)) {
+      _visibleBodiesCacheSource = _bodies;
+      _visibleBodiesCache = _bodies.where((b) => !b.hidden).toList();
+    }
+    return _visibleBodiesCache!;
+  }
 
   /// Stable "Body 1"/"Body 2"... names shared between the Build Tree's
   /// Bodies section and [SelectionListDrawer] - see `body_naming.dart`.
@@ -234,6 +260,7 @@ class _PartScreenState extends State<PartScreen> {
               body: true,
               sketchPoint: false,
               sketchLine: false,
+              sketchCircle: false,
             )
           : _selectionFilterBase.copyWith(
               vertex: true,
@@ -242,6 +269,7 @@ class _PartScreenState extends State<PartScreen> {
               body: false,
               sketchPoint: true,
               sketchLine: true,
+              sketchCircle: true,
             );
     });
   }
@@ -349,12 +377,14 @@ class _PartScreenState extends State<PartScreen> {
       _toggleChamferFaceEdges(entity);
       return;
     }
-    // Prompt G: a sketchLine tap while the profile picker is open toggles
-    // its whole containing loop, not just the one tapped Line - see
-    // [_toggleProfileLoop]. Checked before the Revolve axis special-case
-    // below since the two modes are never active at the same time, but
-    // this ordering costs nothing either way.
-    if (_profilePickerActive && entity.kind == SelectionEntityKind.sketchLine) {
+    // Prompt G: a sketchLine/sketchCircle tap while the profile picker is
+    // open toggles its whole containing loop, not just the one tapped
+    // entity - see [_toggleProfileLoop]. Checked before the Revolve axis
+    // special-case below since the two modes are never active at the same
+    // time, but this ordering costs nothing either way.
+    if (_profilePickerActive &&
+        (entity.kind == SelectionEntityKind.sketchLine ||
+            entity.kind == SelectionEntityKind.sketchCircle)) {
       _toggleProfileLoop(entity);
       return;
     }
@@ -731,6 +761,7 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: false,
+    sketchCircle: false,
     plane: false,
   );
 
@@ -785,6 +816,7 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: false,
+    sketchCircle: false,
     plane: false,
   );
 
@@ -867,6 +899,11 @@ class _PartScreenState extends State<PartScreen> {
     body: true,
     sketchPoint: false,
     sketchLine: true,
+    // On-device feedback: a Circle is never a valid Revolve axis (no
+    // meaningful "axis direction" - see this project's already-resolved
+    // Prompt F decision that the axis stays a Line reference), so this
+    // stays off even though sketchLine (axis picking) is on.
+    sketchCircle: false,
     plane: false,
   );
 
@@ -910,14 +947,10 @@ class _PartScreenState extends State<PartScreen> {
   /// entitiesBeforeX field serves.
   Set<SelectionEntityRef>? _entitiesBeforeProfilePicker;
 
-  /// Restricts the picker session to `sketchLine` hits only - Circle-only
-  /// loops aren't independently tappable via this mechanism yet (Circle
-  /// picking in the 3D viewport is a pre-existing gap, out of scope since
-  /// C1 - see that prompt's own boundary note) - a sketch with only Circle
-  /// profiles never has more than the picker would auto-skip anyway once
-  /// it's genuinely just one loop, but a mix of Circle and Line-chain
-  /// profiles would leave the Circle one un-pickable by tap; it's still
-  /// included via the "pick nothing = use every profile" default.
+  /// Restricts the picker session to `sketchLine`/`sketchCircle` hits only -
+  /// a tap on either toggles that entity's whole containing loop (see
+  /// [_toggleProfileLoop]), a Circle-only loop being a single-entity "loop"
+  /// of exactly one Circle (see `app.sketch.profile._circle_profile`).
   static const _profilePickerSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -925,6 +958,7 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: true,
+    sketchCircle: true,
     plane: false,
   );
 
@@ -1016,20 +1050,31 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Whether [entityId] (one of [_profilePickerLoops]' member ids, for
+  /// [sketchFeatureId]) is a Circle rather than a Line - a Circle-only loop
+  /// is exactly one Circle id (see `app.sketch.profile._circle_profile`),
+  /// so this is what tells [_toggleProfileLoop]/[_confirmProfilePicker]
+  /// which [SelectionEntityKind]/`SketchEntityRefDto.entityType` to build
+  /// for a given member id, instead of assuming every member is a Line.
+  bool _isProfileCircleEntity(String sketchFeatureId, String entityId) =>
+      _allSketchGeometries[sketchFeatureId]?.circleIds.contains(entityId) ?? false;
+
   /// [_toggleSelectedEntity]'s profile-picker special-case - toggles every
-  /// entity in [lineEntity]'s whole containing loop in/out of
+  /// entity in [tappedEntity]'s whole containing loop in/out of
   /// [_selectedEntities] as one unit, mirroring [_toggleFilletFaceEdges]'s
   /// own "grow a partial pick to the complete loop, or clear a complete one"
-  /// convenience. A no-op if [lineEntity] doesn't resolve to any of
+  /// convenience. A no-op if [tappedEntity] doesn't resolve to any of
   /// [_profilePickerLoops] (stale hit against data that's since changed).
-  void _toggleProfileLoop(SelectionEntityRef lineEntity) {
-    final index = _profileLoopIndexFor(lineEntity.sketchEntityId);
+  void _toggleProfileLoop(SelectionEntityRef tappedEntity) {
+    final index = _profileLoopIndexFor(tappedEntity.sketchEntityId);
     if (index == null) return;
     final loopEntities = {
       for (final entityId in _profilePickerLoops[index])
         SelectionEntityRef(
-          kind: SelectionEntityKind.sketchLine,
-          sketchFeatureId: lineEntity.sketchFeatureId,
+          kind: _isProfileCircleEntity(tappedEntity.sketchFeatureId, entityId)
+              ? SelectionEntityKind.sketchCircle
+              : SelectionEntityKind.sketchLine,
+          sketchFeatureId: tappedEntity.sketchFeatureId,
           sketchEntityId: entityId,
         ),
     };
@@ -1051,7 +1096,10 @@ class _PartScreenState extends State<PartScreen> {
   int _profilePickedCount() {
     final pickedLoopIndices = <int>{};
     for (final entity in _selectedEntities) {
-      if (entity.kind != SelectionEntityKind.sketchLine) continue;
+      if (entity.kind != SelectionEntityKind.sketchLine &&
+          entity.kind != SelectionEntityKind.sketchCircle) {
+        continue;
+      }
       final index = _profileLoopIndexFor(entity.sketchEntityId);
       if (index != null) pickedLoopIndices.add(index);
     }
@@ -1074,16 +1122,27 @@ class _PartScreenState extends State<PartScreen> {
 
     final pickedLoopIndices = <int>{};
     for (final entity in _selectedEntities) {
-      if (entity.kind != SelectionEntityKind.sketchLine) continue;
+      if (entity.kind != SelectionEntityKind.sketchLine &&
+          entity.kind != SelectionEntityKind.sketchCircle) {
+        continue;
+      }
       final index = _profileLoopIndexFor(entity.sketchEntityId);
       if (index != null) pickedLoopIndices.add(index);
     }
     final sketchId = sketchFeature.sketchId!;
+    // On-device feedback: `entityType` used to be hardcoded to `'line'`,
+    // which broke the moment a picked loop's anchor member was actually a
+    // Circle's own id (a Circle-only loop, per `_circle_profile`) - the
+    // backend's `resolve_sketch_entity` validates `entity_type` against the
+    // real entity's type (`isinstance(entity, expected_type)`) and 422s a
+    // mismatch, so this now reports whichever type the anchor id really is.
     final profileRefs = [
       for (final index in pickedLoopIndices)
         SketchEntityRefDto(
           sketchId: sketchId,
-          entityType: 'line',
+          entityType: _isProfileCircleEntity(sketchFeature.id, _profilePickerLoops[index].first)
+              ? 'circle'
+              : 'line',
           entityId: _profilePickerLoops[index].first,
         ),
     ];
@@ -2063,6 +2122,7 @@ class _PartScreenState extends State<PartScreen> {
           body: true,
           sketchPoint: false,
           sketchLine: false,
+          sketchCircle: false,
         ),
       );
     });
@@ -2123,6 +2183,7 @@ class _PartScreenState extends State<PartScreen> {
           body: true,
           sketchPoint: false,
           sketchLine: false,
+          sketchCircle: false,
         ),
       );
     });
@@ -4078,8 +4139,8 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 // Prompt G: names the profile-picking mode live - same
                 // top-center pill convention as the plane-selection-mode/
-                // target-body-picking banners above. Tap a line to toggle
-                // its whole loop; the checkmark FAB (see floatingActionButton
+                // target-body-picking banners above. Tap a line or circle to
+                // toggle its whole loop; the checkmark FAB (see floatingActionButton
                 // below) confirms and opens the target panel.
                 if (_profilePickerActive)
                   Positioned(

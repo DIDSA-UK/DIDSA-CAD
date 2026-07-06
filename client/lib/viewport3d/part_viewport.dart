@@ -1157,6 +1157,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               }
             }
           }
+        case SelectionEntityKind.sketchCircle:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.circleIds.length; i++) {
+              if (geometry.circleIds[i] == entity.sketchEntityId) {
+                edgeSegments.addAll(_polygonSegments(geometry.circlePolygons[i]));
+              }
+            }
+          }
         case SelectionEntityKind.referencePlane:
         case SelectionEntityKind.createPlane:
           // C5: a selected plane's highlight is its own quad rendering
@@ -1192,6 +1201,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _selectedVerticesNode = node;
     }
   }
+
+  /// Consecutive-pair segments making up a rendered Circle outline (see
+  /// `sketch_geometry_3d.dart`'s `circlePolygons`) - the same shape
+  /// [buildMeshEdgesNode]/[edgeSegments] elsewhere in this file expect,
+  /// since a Circle has no single `(start, end)` segment of its own the way
+  /// a Line does.
+  static List<(vm.Vector3, vm.Vector3)> _polygonSegments(List<vm.Vector3> polygon) => [
+        for (var i = 0; i < polygon.length - 1; i++) (polygon[i], polygon[i + 1]),
+      ];
 
   /// Resolves one [SelectionEntityRef] (any kind) into its highlight [Node],
   /// shared by [_syncHoverNode] - a single entity's worth of whichever of
@@ -1250,6 +1268,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         ];
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+      case SelectionEntityKind.sketchCircle:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        // On-device feedback: mirrors the sketchLine case above - a Circle
+        // is a single-entity "loop" of its own (see
+        // `app.sketch.profile._circle_profile`), so [sketchLineLoopGroup]
+        // never expands it to anything wider than itself, but the same
+        // callback is still consulted for consistency.
+        final group = widget.sketchLineLoopGroup?.call(entity.sketchFeatureId, entity.sketchEntityId);
+        final entityIds = group ?? {entity.sketchEntityId};
+        final circleSegments = <(vm.Vector3, vm.Vector3)>[
+          for (var i = 0; i < geometry.circleIds.length; i++)
+            if (entityIds.contains(geometry.circleIds[i])) ..._polygonSegments(geometry.circlePolygons[i]),
+        ];
+        if (circleSegments.isEmpty) return null;
+        return buildMeshEdgesNode(circleSegments, color: color, width: kHighlightEdgeStrokeWidth);
       case SelectionEntityKind.referencePlane:
         final plane = entity.referencePlaneKind;
         if (plane == null) return null;

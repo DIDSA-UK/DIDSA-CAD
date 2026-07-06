@@ -52,8 +52,23 @@ const double kVertexSelectionHitRadiusPixels = kSelectionHitRadiusPixels;
 /// only a Body face) exactly like every other selectable entity kind - see
 /// `PartScreen._onPlaneTap`/`_onCreatePlaneFeatureTap`, which toggle these
 /// into the selection set while in Selection mode instead of always opening
-/// their own context sheet.
-enum SelectionEntityKind { face, edge, vertex, body, sketchPoint, sketchLine, referencePlane, createPlane }
+/// their own context sheet. On-device feedback added `sketchCircle` - a
+/// Sketch's own Circle entities, previously drawn (see
+/// `sketch_geometry_3d.dart`'s `circlePolygons`) but never independently
+/// tappable, even though a Circle can be its own closed Profile exactly
+/// like a Line-chain loop (see `app.sketch.profile._circle_profile`) and so
+/// needs to participate in Prompt G's profile-picking flow the same way.
+enum SelectionEntityKind {
+  face,
+  edge,
+  vertex,
+  body,
+  sketchPoint,
+  sketchLine,
+  sketchCircle,
+  referencePlane,
+  createPlane,
+}
 
 /// Identifies one selectable mesh entity - a [SelectionEntityKind] plus the
 /// stable id `MeshDto.faceIds`/`edgeIds`/`topologyVertexIds` assigns it.
@@ -138,7 +153,8 @@ class SelectionEntityRef {
   @override
   String toString() => switch (kind) {
         SelectionEntityKind.sketchPoint ||
-        SelectionEntityKind.sketchLine =>
+        SelectionEntityKind.sketchLine ||
+        SelectionEntityKind.sketchCircle =>
           'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)',
         SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
         SelectionEntityKind.createPlane => 'SelectionEntityRef($kind, planeFeatureId: $planeFeatureId)',
@@ -338,6 +354,48 @@ HoverHit? hitTestSketchLines(
         rayT: t,
         pixelDistance: pixelDistance,
       );
+    }
+  }
+  return best;
+}
+
+/// On-device feedback: [hitTestSketchLines]' counterpart for a Sketch's own
+/// Circles - each circle is rendered as a closed polyline of
+/// [circleSegments3D] straight segments (see `sketch_geometry_3d.dart`'s
+/// `circlePolygons`), so this tests every consecutive segment pair of each
+/// polygon the same way [hitTestSketchLines] tests one segment per Line, and
+/// keeps whichever segment (across every polygon) comes closest - tagging
+/// the hit with that whole polygon's own Circle id (parallel in [ids]), not
+/// a per-segment one, since a Circle is selected as a single entity.
+HoverHit? hitTestSketchCircles(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<List<vm.Vector3>> polygons,
+  List<String> ids, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+}) {
+  final direction = ray.direction.normalized();
+  HoverHit? best;
+  for (var p = 0; p < polygons.length; p++) {
+    final polygon = polygons[p];
+    for (var i = 0; i < polygon.length - 1; i++) {
+      final closest = _closestRaySegmentDistance(ray.origin, direction, polygon[i], polygon[i + 1]);
+      if (closest == null) continue;
+      final (t, worldDistance) = closest;
+      final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+      if (pixelDistance > radiusPixels) continue;
+      if (best == null || pixelDistance < best.pixelDistance!) {
+        best = HoverHit(
+          entity: SelectionEntityRef(
+            kind: SelectionEntityKind.sketchCircle,
+            sketchFeatureId: sketchFeatureId,
+            sketchEntityId: ids[p],
+          ),
+          rayT: t,
+          pixelDistance: pixelDistance,
+        );
+      }
     }
   }
   return best;
@@ -633,6 +691,19 @@ HoverHit? hitTestBodies({
         entry.key,
         geometry.lineSegments,
         geometry.lineIds,
+        radiusPixels: radiusPixels,
+      );
+      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchCircle) {
+      final hit = hitTestSketchCircles(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.circlePolygons,
+        geometry.circleIds,
         radiusPixels: radiusPixels,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {

@@ -105,15 +105,19 @@ const int circleSegments3D = 32;
 /// a real backend `Point`/Line id (see `selection_hit_test.dart`'s
 /// `hitTestBodies`) - before this prompt, this type only carried enough
 /// data to *draw* a Sketch's geometry, never enough to select any of it.
-/// Circles are deliberately not given a parallel id array here - C1's scope
-/// is Point/Line picking only (see its own doc comment for why Circle
-/// picking is flagged as future work, not built now).
+/// On-device feedback: Circles originally had no parallel id array (C1's
+/// scope was Point/Line picking only), but a Circle can be its own closed
+/// Profile (see `app.sketch.profile._circle_profile`) just as much as a
+/// Line-chain loop can, and Prompt G's profile picker needs to let a user
+/// tap one to pick it - [circleIds] (parallel to [circlePolygons]) closes
+/// that gap, mirroring [lineIds] exactly.
 class SketchGeometry3D {
   final List<(vm.Vector3, vm.Vector3)> lineSegments;
   final List<String> lineIds;
   final List<vm.Vector3> points;
   final List<String> pointIds;
   final List<List<vm.Vector3>> circlePolygons;
+  final List<String> circleIds;
 
   const SketchGeometry3D({
     required this.lineSegments,
@@ -121,10 +125,17 @@ class SketchGeometry3D {
     required this.points,
     required this.pointIds,
     required this.circlePolygons,
+    required this.circleIds,
   });
 
-  static const empty =
-      SketchGeometry3D(lineSegments: [], lineIds: [], points: [], pointIds: [], circlePolygons: []);
+  static const empty = SketchGeometry3D(
+    lineSegments: [],
+    lineIds: [],
+    points: [],
+    pointIds: [],
+    circlePolygons: [],
+    circleIds: [],
+  );
 
   bool get isEmpty => lineSegments.isEmpty && points.isEmpty && circlePolygons.isEmpty;
 }
@@ -159,6 +170,7 @@ SketchGeometry3D sketchGeometry3DFrom({
   final pointIds = [for (final p in points) p.id];
 
   final circlePolygons = <List<vm.Vector3>>[];
+  final circleIds = <String>[];
   for (final circle in circles) {
     final center = pointsById[circle.centerPointId];
     if (center == null) continue;
@@ -170,6 +182,7 @@ SketchGeometry3D sketchGeometry3DFrom({
       polygon.add(sketchPointToWorld(basis, x, y));
     }
     circlePolygons.add(polygon);
+    circleIds.add(circle.id);
   }
 
   return SketchGeometry3D(
@@ -178,6 +191,7 @@ SketchGeometry3D sketchGeometry3DFrom({
     points: worldPoints,
     pointIds: pointIds,
     circlePolygons: circlePolygons,
+    circleIds: circleIds,
   );
 }
 
