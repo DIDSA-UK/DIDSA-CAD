@@ -337,8 +337,27 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   the pre-fix algorithm would genuinely have rejected - never caught
   because this whole test file is `ast.parse`-verified only in this
   sandbox (no real OCCT to execute it against), a concrete reminder of
-  that verification gap's real cost. Pending on-device confirmation of
-  this fix.
+  that verification gap's real cost. **Confirmed working on-device** -
+  user rebuilt and picked a multi-segment path successfully.
+- **Bug fix (on-device feedback): Sweep's profile wasn't staying normal to
+  the path.** Reported/screenshotted symptom: a non-circular (rectangular)
+  profile swept along a bent path pinched to a wedge at the sharp corner
+  instead of keeping its cross-section shape throughout; a circular
+  profile looked fine (radially symmetric, so it visually hides the same
+  underlying issue). Root cause: `resolve_sweep_from_bodies` used the
+  simpler `BRepOffsetAPI_MakePipe(spine, profile)` - which does not
+  reorient the profile's cross-section to stay normal to the spine's
+  local tangent as its direction changes, and has no explicit handling for
+  a polyline spine's sharp (non-tangent-continuous) corners - instead of
+  `BRepOffsetAPI_MakePipeShell`, OCCT's more general "generalized sweep"
+  API built specifically for both of those (its default trihedron mode
+  already reorients the profile; `SetTransitionMode(BRepBuilderAPI_
+  RightCorner)` now explicitly cuts each sharp corner with a flat planar
+  face instead of leaving the transition undefined). `.Build()` +
+  `.MakeSolid()` replace the old single-constructor-call shape. Not
+  verifiable against real OCCT in this sandbox (same standing caveat) -
+  implemented from OCCT API documentation/knowledge, flagged for on-device
+  re-confirmation once rebuilt.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

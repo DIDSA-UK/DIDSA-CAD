@@ -24,8 +24,8 @@ import logging
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
-from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipe
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakePolygon, BRepBuilderAPI_RightCorner
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
 from OCC.Core.gp import gp_Pnt
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
 
@@ -97,11 +97,11 @@ def _disconnected_path(ref: SketchEntityRef, index: int) -> HTTPException:
 
 
 def _sweep_failed() -> HTTPException:
-    """`BRepOffsetAPI_MakePipe.IsDone()` returned false - a geometric
-    failure (the path's curvature/corners make the profile self-intersect
-    as it sweeps, etc.), not a malformed reference. 422, matching
-    `app.document.revolve._revolve_failed`'s identical "structured error,
-    not an uncaught OCCT exception surfacing as a 500" convention."""
+    """`BRepOffsetAPI_MakePipeShell.IsDone()`/`.MakeSolid()` returned false -
+    a geometric failure (the path's curvature/corners make the profile
+    self-intersect as it sweeps, etc.), not a malformed reference. 422,
+    matching `app.document.revolve._revolve_failed`'s identical "structured
+    error, not an uncaught OCCT exception surfacing as a 500" convention."""
     return HTTPException(status_code=422, detail={"type": "sweep_failed"})
 
 
@@ -243,7 +243,25 @@ def resolve_sweep_from_bodies(
     `resolve_revolve_from_bodies`'s own MultiProfile handling.
     `feature.profile_refs`, if non-empty, narrows this down to just the
     named outer profile(s) - see `app.document.extrude.select_profiles`,
-    reused directly rather than re-derived."""
+    reused directly rather than re-derived.
+
+    On-device feedback: uses `BRepOffsetAPI_MakePipeShell`, not the
+    simpler `BRepOffsetAPI_MakePipe` this originally shipped with -
+    `MakePipe`'s own sweep does not keep the profile's cross-section
+    reoriented normal to the spine's local tangent as the spine's direction
+    changes (it stays visibly closer to its own original fixed orientation
+    instead, most obvious with a non-radially-symmetric profile, e.g. a
+    flat rectangle pinching to a wedge at a sharp path corner) -
+    `MakePipeShell` is OCCT's more general "generalized sweep" API, built
+    specifically to reorient the profile as it goes (its default trihedron
+    mode already does this - no explicit `SetMode` override needed) and to
+    handle a polyline spine's sharp (non-tangent-continuous) corners
+    explicitly via `SetTransitionMode`, rather than leaving that undefined
+    the way `MakePipe` does. `BRepBuilderAPI_RightCorner` is used here (cuts
+    a sharp corner with a flat planar face rather than trying to round or
+    stretch it) since every path segment is a straight Line - the standard
+    choice for a polyline spine, avoiding the self-intersecting/pinched
+    corner artifact `MakePipe` itself was producing."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
     if result.status not in EXTRUDABLE_STATUSES:
@@ -268,8 +286,11 @@ def resolve_sweep_from_bodies(
     solids = []
     for profile in profiles:
         face = face_for_profile(sketch, profile, basis)
-        pipe_maker = BRepOffsetAPI_MakePipe(path_wire, face)
-        if not pipe_maker.IsDone():
+        pipe_maker = BRepOffsetAPI_MakePipeShell(path_wire)
+        pipe_maker.SetTransitionMode(BRepBuilderAPI_RightCorner)
+        pipe_maker.Add(face)
+        pipe_maker.Build()
+        if not pipe_maker.IsDone() or not pipe_maker.MakeSolid():
             raise _sweep_failed()
         solids.append(pipe_maker.Shape())
 
