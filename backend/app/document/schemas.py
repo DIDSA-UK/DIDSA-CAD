@@ -261,8 +261,42 @@ class FilletFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ChamferFeatureCreate(BaseModel):
+    """Prompt E: mirrors `FilletFeatureCreate` exactly, substituting
+    `distance` for `radius` - see `app.document.router.
+    _validate_chamfer_edge_refs`/`_validate_chamfer_distance` for the
+    payload-shape checks (non-empty `edge_refs`, each entry's `shape_type
+    == EDGE`, `distance > 0`)."""
+
+    edge_refs: list[SubShapeRefSchema] = []
+    distance: float
+
+
+class ChamferFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `FilletFeatureUpdate`."""
+
+    edge_refs: list[SubShapeRefSchema] | None = None
+    distance: float | None = None
+
+
+class ChamferFeatureResponse(BaseModel):
+    type: Literal["chamfer"] = "chamfer"
+    id: str
+    edge_refs: list[SubShapeRefSchema] = []
+    distance: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # ChamferFeature (it modifies, rather than creates, a Body).
+    produces: Produces
+
+
 FeatureResponse = Union[
-    SketchFeatureResponse, ExtrudeFeatureResponse, CreatePlaneFeatureResponse, FilletFeatureResponse
+    SketchFeatureResponse,
+    ExtrudeFeatureResponse,
+    CreatePlaneFeatureResponse,
+    FilletFeatureResponse,
+    ChamferFeatureResponse,
 ]
 
 

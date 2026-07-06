@@ -4,12 +4,14 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
+from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import resolve_create_plane
 from app.document.extrude import compute_part_bodies
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.models import (
+    ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
     ExtrudeType,
@@ -26,6 +28,9 @@ from app.document.models import (
 from app.document.schemas import (
     BodyMeshResponse,
     CascadeDeleteResponse,
+    ChamferFeatureCreate,
+    ChamferFeatureResponse,
+    ChamferFeatureUpdate,
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
     CreatePlaneFeatureUpdate,
@@ -199,6 +204,14 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, ChamferFeature):
+        return ChamferFeatureResponse(
+            id=feature.id,
+            edge_refs=[_subshape_ref_to_schema(ref) for ref in feature.edge_refs],
+            distance=feature.distance,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -307,6 +320,26 @@ def _validate_fillet_edge_refs(edge_refs: list[SubShapeRef]) -> None:
         raise HTTPException(
             status_code=422,
             detail="FilletFeature requires at least one edge_refs entry",
+        )
+    for ref in edge_refs:
+        if ref.shape_type != SubShapeType.EDGE:
+            raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _validate_chamfer_distance(distance: float) -> None:
+    """Prompt E: mirrors `_validate_fillet_radius` exactly, substituting
+    `distance` for `radius`."""
+    if distance <= 0:
+        raise HTTPException(status_code=400, detail="distance must be greater than 0")
+
+
+def _validate_chamfer_edge_refs(edge_refs: list[SubShapeRef]) -> None:
+    """Prompt E: mirrors `_validate_fillet_edge_refs` exactly - see that
+    function's own doc comment for the full reasoning."""
+    if not edge_refs:
+        raise HTTPException(
+            status_code=422,
+            detail="ChamferFeature requires at least one edge_refs entry",
         )
     for ref in edge_refs:
         if ref.shape_type != SubShapeType.EDGE:
@@ -833,6 +866,56 @@ def update_fillet_feature(
 
     feature.edge_refs = candidate.edge_refs
     feature.radius = candidate.radius
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/chamfer-features", response_model=ChamferFeatureResponse, status_code=201
+)
+def create_chamfer_feature(part_id: str, payload: ChamferFeatureCreate) -> ChamferFeatureResponse:
+    """Prompt E: mirrors `create_fillet_feature` exactly - see that
+    function's own doc comment for the full reasoning (unlocked from the
+    start, fails closed before ever persisting an unresolvable Chamfer)."""
+    part = get_part_or_404(part_id)
+    edge_refs = [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+    _validate_chamfer_edge_refs(edge_refs)
+    _validate_chamfer_distance(payload.distance)
+    feature = ChamferFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, distance=payload.distance)
+    resolve_chamfer(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_chamfer_feature_or_404(part: Part, feature_id: str) -> ChamferFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, ChamferFeature):
+        raise HTTPException(status_code=404, detail="Chamfer feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/chamfer-features/{feature_id}", response_model=ChamferFeatureResponse)
+def update_chamfer_feature(
+    part_id: str, feature_id: str, payload: ChamferFeatureUpdate
+) -> ChamferFeatureResponse:
+    """Mirrors `update_fillet_feature` exactly - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_chamfer_feature_or_404(part, feature_id)
+
+    new_edge_refs = (
+        [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+        if payload.edge_refs is not None
+        else feature.edge_refs
+    )
+    new_distance = payload.distance if payload.distance is not None else feature.distance
+    _validate_chamfer_edge_refs(new_edge_refs)
+    _validate_chamfer_distance(new_distance)
+
+    candidate = ChamferFeature(id=feature.id, edge_refs=new_edge_refs, distance=new_distance)
+    resolve_chamfer(part, candidate)  # raises on an unresolvable reference
+
+    feature.edge_refs = candidate.edge_refs
+    feature.distance = candidate.distance
     return _feature_response(part, feature)
 
 

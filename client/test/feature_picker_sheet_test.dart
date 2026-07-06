@@ -48,9 +48,16 @@ void main() {
       expect(await pendingResult, FeaturePickerAction.fillet);
     });
 
-    testWidgets('Revolve/Sweep/Chamfer render disabled', (tester) async {
+    testWidgets('Prompt E: tapping Chamfer resolves FeaturePickerAction.chamfer', (tester) async {
       await openSheet(tester);
-      for (final label in ['Revolve', 'Sweep', 'Chamfer']) {
+      await tester.tap(find.text('Chamfer'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, FeaturePickerAction.chamfer);
+    });
+
+    testWidgets('Revolve/Sweep render disabled', (tester) async {
+      await openSheet(tester);
+      for (final label in ['Revolve', 'Sweep']) {
         final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, label));
         expect(tile.enabled, isFalse, reason: label);
       }

@@ -3,9 +3,8 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 /// One operation offered by the Stage 23 context action panel (Item 6) -
 /// [label] is shown on the button. [enabled] was always false pre-C2 (no
 /// Chamfer/Fillet/Create Plane logic existed yet); C2 is the first to ever
-/// return `enabled: true` for real, for its own two Create Plane flows -
-/// see the `// TODO: wire up <action>` comment at Chamfer's own callback
-/// site in `selection_context_panel.dart` for what's still a scaffold.
+/// return `enabled: true` for real, for its own two Create Plane flows.
+/// Prompt D wires Fillet's own callback; Prompt E wires Chamfer's.
 ///
 /// Prompt D: [disabledReason], when non-null, is shown as a tooltip on the
 /// (necessarily disabled) button - "explain, don't silently omit" (mirrors

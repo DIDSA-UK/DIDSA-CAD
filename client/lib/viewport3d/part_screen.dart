@@ -12,6 +12,7 @@ import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
 import 'body_naming.dart';
 import 'cascade_delete_dialog.dart';
+import 'chamfer_panel.dart';
 import 'create_plane_context_sheet.dart';
 import 'create_plane_geometry_3d.dart';
 import 'create_plane_panel.dart';
@@ -337,6 +338,10 @@ class _PartScreenState extends State<PartScreen> {
       _toggleFilletFaceEdges(entity);
       return;
     }
+    if (_chamferActive && entity.kind == SelectionEntityKind.face) {
+      _toggleChamferFaceEdges(entity);
+      return;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
@@ -344,17 +349,19 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
+    if (_chamferActive) _scheduleChamferPreview();
   }
 
   /// Item 4: "Empty space tap -> clears entire selection set" - passed to
   /// [PartViewport.onClearSelection], fired by a tap (Fix 4) when the
   /// cursor's hover hit is null. See [_toggleSelectedEntity]'s doc comment
   /// for why this also reschedules the preview during [_extrudeActive]/
-  /// [_filletActive].
+  /// [_filletActive]/[_chamferActive].
   void _clearSelectedEntities() {
     setState(() => _selectedEntities = {});
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
+    if (_chamferActive) _scheduleChamferPreview();
   }
 
   /// On-device feedback: [_toggleSelectedEntity]'s Face special-case for the
@@ -395,6 +402,38 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = next;
     });
     if (_filletActive) _scheduleFilletPreview();
+  }
+
+  /// Mirrors [_toggleFilletFaceEdges] exactly for the Chamfer flow - see
+  /// that method's own doc comment for the full reasoning.
+  void _toggleChamferFaceEdges(SelectionEntityRef faceEntity) {
+    BodyMeshDto? body;
+    for (final candidate in _bodies) {
+      if (candidate.bodyId == faceEntity.bodyId) {
+        body = candidate;
+        break;
+      }
+    }
+    final faceEdgeIds = body?.mesh.faceEdgeIds;
+    if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return;
+    final loopEdgeIds = faceEdgeIds[faceEntity.id];
+    if (loopEdgeIds.isEmpty) return;
+
+    final loopEntities = [
+      for (final edgeId in loopEdgeIds)
+        SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: faceEntity.bodyId, id: edgeId),
+    ];
+    final allSelected = loopEntities.every(_selectedEntities.contains);
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (allSelected) {
+        next.removeAll(loopEntities);
+      } else {
+        next.addAll(loopEntities);
+      }
+      _selectedEntities = next;
+    });
+    if (_chamferActive) _scheduleChamferPreview();
   }
 
   /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
@@ -600,10 +639,12 @@ class _PartScreenState extends State<PartScreen> {
   /// tinted, same as an Extrude preview) in place of the stable mesh for
   /// just the one Body [_filletPreviewBodyId] names - [_bodies] itself,
   /// and therefore hit-testing/edge-picking, is completely unaffected.
-  /// Chamfer's own future live-edit flow should reuse this exact mechanism
-  /// (same two fields, same [_refreshFilletPreviewMesh] shape) rather than
-  /// invent a second one - the "stable body for picking, separate overlay
-  /// for the visual" split applies identically to both operations.
+  /// Prompt E's own Chamfer flow mirrors this exact mechanism with its own
+  /// separate fields ([_chamferPreviewBodyId]/[_chamferPreviewMesh]) - the
+  /// "stable body for picking, separate overlay for the visual" split
+  /// applies identically to both operations, but each keeps its own state
+  /// rather than sharing (see the Chamfer state section's own header
+  /// comment for why).
   MeshDto? _filletPreviewMesh;
 
   /// On-device feedback: locks [_selectionFilterOverrides] to edges/faces
@@ -622,6 +663,60 @@ class _PartScreenState extends State<PartScreen> {
   /// field at all until this fix (`part_viewport.dart`'s
   /// `_hoverHitTestPlanes` now checks it).
   static const _filletSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    plane: false,
+  );
+
+  // --- Prompt E: Chamfer state --------------------------------------------
+  // Mirrors every one of the Fillet fields directly above, field for field -
+  // deliberately its own separate set (not shared/generalized with Fillet's)
+  // since only one of _extrudeActive/_createPlaneActive/_filletActive/
+  // _chamferActive is ever true at a time, but generalizing now would mean
+  // touching Fillet's own working code for no functional gain - see
+  // `docs/live-preview-pattern.md`'s own note that this is a call to make
+  // when it's actually needed, not speculatively.
+
+  /// Prompt E: true while [ChamferPanel] is open - mirrors [_filletActive]
+  /// exactly.
+  bool _chamferActive = false;
+
+  /// The ChamferFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewFilletFeatureId].
+  String? _previewChamferFeatureId;
+
+  /// B4: non-null while [ChamferPanel] is editing an *existing*
+  /// ChamferFeature - mirrors [_editingFilletFeatureId].
+  String? _editingChamferFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - mirrors [_filletEditSnapshot].
+  ({List<SubShapeRefDto> edgeRefs, double distance})? _chamferEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - mirrors
+  /// [_entitiesBeforeFillet].
+  Set<SelectionEntityRef>? _entitiesBeforeChamfer;
+
+  /// The panel's live distance field value - mirrors [_filletRadius].
+  double _chamferDistance = 1.0;
+
+  Timer? _chamferDebounce;
+
+  /// Mirrors [_filletPreviewBodyId] - see [_refreshChamferPreviewMesh].
+  String? _chamferPreviewBodyId;
+
+  /// Mirrors [_filletPreviewMesh] - see [_ensureChamferFeatureExists]'s own
+  /// doc comment (identical reasoning to [_ensureFilletFeatureExists]'s).
+  MeshDto? _chamferPreviewMesh;
+
+  /// Mirrors [_filletSelectionFilter] exactly - same edge/face-only, plane-
+  /// off filter, kept as Chamfer's own separate constant rather than
+  /// reusing Fillet's (see this section's own header comment on why).
+  static const _chamferSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
     face: true,
@@ -1061,6 +1156,8 @@ class _PartScreenState extends State<PartScreen> {
         _startPlanePicker();
       case FeaturePickerAction.fillet:
         _startFilletPicker();
+      case FeaturePickerAction.chamfer:
+        _startChamferPicker();
     }
   }
 
@@ -1251,6 +1348,9 @@ class _PartScreenState extends State<PartScreen> {
       // instead, same "stays engaged for the panel's whole lifetime"
       // reasoning as the extrude/create_plane branches above.
       await _openFilletPanelForEdit(feature);
+    } else if (feature.type == 'chamfer') {
+      // Prompt E: mirrors the fillet branch above exactly.
+      await _openChamferPanelForEdit(feature);
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -2370,6 +2470,205 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Prompt E: Chamfer -------------------------------------------------
+  // Mirrors the entire Fillet section directly above, method for method -
+  // see that section's own doc comments for the full reasoning behind each
+  // one; only pointed out below where Chamfer's own shape differs.
+
+  /// Mirrors [_startFilletPicker] exactly.
+  void _startChamferPicker() {
+    _openChamferPanel(edgeEntities: const []);
+  }
+
+  /// Mirrors [_onFilletTapped] exactly.
+  void _onChamferTapped() {
+    final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    _openChamferPanel(edgeEntities: edges);
+  }
+
+  /// Mirrors [_openFilletPanel] exactly, substituting Chamfer's own state
+  /// fields/filter/methods for Fillet's.
+  Future<void> _openChamferPanel({required List<SelectionEntityRef> edgeEntities}) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _chamferActive = true;
+      _entitiesBeforeChamfer = _selectedEntities;
+      _selectedEntities = edgeEntities.toSet();
+      _chamferDistance = 1.0;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_chamferSelectionFilter);
+    });
+    if (edgeEntities.isEmpty) return;
+    await _runGuarded(() => _ensureChamferFeatureExists(_chamferDistance, _currentChamferEdgeRefs()));
+    if (_previewChamferFeatureId == null && mounted) {
+      setState(() {
+        _chamferActive = false;
+        _selectedEntities = _entitiesBeforeChamfer ?? {};
+        _entitiesBeforeChamfer = null;
+        _selectionFilterOverrides.pop();
+      });
+    }
+  }
+
+  /// Mirrors [_openFilletPanelForEdit] exactly.
+  Future<void> _openChamferPanelForEdit(FeatureDto feature) async {
+    final distance = feature.distance ?? 1.0;
+    setState(() {
+      _chamferActive = true;
+      _editingChamferFeatureId = feature.id;
+      _previewChamferFeatureId = feature.id;
+      _chamferDistance = distance;
+      _chamferEditSnapshot = (edgeRefs: feature.edgeRefs, distance: distance);
+      _entitiesBeforeChamfer = _selectedEntities;
+      _selectedEntities = {
+        for (final ref in feature.edgeRefs)
+          SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: ref.bodyId, id: ref.index),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_chamferSelectionFilter);
+    });
+    await _beginRollback({feature.id});
+  }
+
+  /// Mirrors [_currentFilletEdgeRefs] exactly.
+  List<SubShapeRefDto> _currentChamferEdgeRefs() => [
+        for (final entity in _selectedEntities)
+          if (entity.kind == SelectionEntityKind.edge)
+            SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+      ];
+
+  /// Mirrors [_currentFilletBodyId] exactly.
+  String? _currentChamferBodyId() {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.edge) return entity.bodyId;
+    }
+    return null;
+  }
+
+  /// Mirrors [_onFilletRadiusChanged] exactly.
+  void _onChamferDistanceChanged(double distance) {
+    _chamferDistance = distance;
+    _scheduleChamferPreview();
+  }
+
+  /// Mirrors [_scheduleFilletPreview] exactly.
+  void _scheduleChamferPreview() {
+    _chamferDebounce?.cancel();
+    _chamferDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureChamferFeatureExists(_chamferDistance, _currentChamferEdgeRefs()));
+    });
+  }
+
+  /// Mirrors [_ensureFilletFeatureExists] exactly, including the same
+  /// self-exclusion-on-create fix and concurrent preview-mesh fetch - see
+  /// that method's own doc comment (and `docs/live-preview-pattern.md`) for
+  /// the full reasoning.
+  Future<void> _ensureChamferFeatureExists(double distance, List<SubShapeRefDto> edgeRefs) async {
+    final part = _part;
+    if (part == null || edgeRefs.isEmpty) return;
+    final existingId = _previewChamferFeatureId;
+    if (existingId == null) {
+      final feature =
+          await _api.createChamferFeature(part.id, edgeRefs: edgeRefs, distance: distance);
+      _previewChamferFeatureId = feature.id;
+      setState(() => _rollbackExcludedFeatureIds.add(feature.id));
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
+    } else {
+      await _api.updateChamferFeature(part.id, existingId, edgeRefs: edgeRefs, distance: distance);
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
+    }
+  }
+
+  /// Mirrors [_refreshFilletPreviewMesh] exactly.
+  Future<void> _refreshChamferPreviewMesh() async {
+    final part = _part;
+    final featureId = _previewChamferFeatureId;
+    final bodyId = _currentChamferBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      _chamferPreviewBodyId = null;
+      _chamferPreviewMesh = null;
+      return;
+    }
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds:
+          _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+    );
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    _chamferPreviewBodyId = bodyId;
+    _chamferPreviewMesh = match?.mesh;
+  }
+
+  /// Mirrors [_confirmFillet] exactly.
+  Future<void> _confirmChamfer() async {
+    _chamferDebounce?.cancel();
+    setState(() {
+      _chamferActive = false;
+      _selectedEntities = _entitiesBeforeChamfer ?? {};
+      _entitiesBeforeChamfer = null;
+      _previewChamferFeatureId = null;
+      _editingChamferFeatureId = null;
+      _chamferEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _chamferPreviewBodyId = null;
+      _chamferPreviewMesh = null;
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelFillet] exactly.
+  Future<void> _cancelChamfer() async {
+    _chamferDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewChamferFeatureId;
+    final wasEditing = _editingChamferFeatureId != null;
+    final editSnapshot = _chamferEditSnapshot;
+    setState(() {
+      _chamferActive = false;
+      _selectedEntities = _entitiesBeforeChamfer ?? {};
+      _entitiesBeforeChamfer = null;
+      _previewChamferFeatureId = null;
+      _editingChamferFeatureId = null;
+      _chamferEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _chamferPreviewBodyId = null;
+      _chamferPreviewMesh = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateChamferFeature(
+            part.id,
+            previewId,
+            edgeRefs: editSnapshot.edgeRefs,
+            distance: editSnapshot.distance,
+          );
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   /// Prompt A4: the top banner's text while [_extrudeActive] - Cut's wording
   /// differs from Boss's since Cut requires 1+ picks (mirrors
   /// [ExtrudePanel]'s own Confirm-disable rule, `_canConfirm`) while Boss
@@ -2581,8 +2880,14 @@ class _PartScreenState extends State<PartScreen> {
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,
-                  previewOverlayBodyId: _filletPreviewBodyId,
-                  previewOverlayMesh: _filletPreviewMesh,
+                  // Prompt E: only one of _filletActive/_chamferActive is
+                  // ever true at a time (see the Chamfer state section's own
+                  // header comment), so a simple ternary - not a list -
+                  // picks whichever flow's preview overlay is currently
+                  // live; see `docs/live-preview-pattern.md` if a third
+                  // concurrent live-edit flow is ever added.
+                  previewOverlayBodyId: _filletActive ? _filletPreviewBodyId : _chamferPreviewBodyId,
+                  previewOverlayMesh: _filletActive ? _filletPreviewMesh : _chamferPreviewMesh,
                   referencePlanesHidden: _referencePlanesHidden,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
@@ -2653,7 +2958,7 @@ class _PartScreenState extends State<PartScreen> {
                 // empty-selection gate would already hide this too, but this
                 // stays explicit rather than relying on that as an implicit
                 // side effect).
-                if (!_extrudeActive && !_createPlaneActive && !_filletActive)
+                if (!_extrudeActive && !_createPlaneActive && !_filletActive && !_chamferActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -2663,13 +2968,18 @@ class _PartScreenState extends State<PartScreen> {
                         isPointOnLine: _isPointOnLine,
                         onCreatePlane: _onCreatePlaneTapped,
                         onFillet: _onFilletTapped,
+                        onChamfer: _onChamferTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),
                   ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: _featureTreeVisible && !_extrudeActive && !_createPlaneActive && !_filletActive,
+                    visible: _featureTreeVisible &&
+                        !_extrudeActive &&
+                        !_createPlaneActive &&
+                        !_filletActive &&
+                        !_chamferActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -2756,6 +3066,17 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelFillet,
                     ),
                   ),
+                if (_chamferActive)
+                  Positioned.fill(
+                    child: ChamferPanel(
+                      key: ValueKey(_editingChamferFeatureId ?? _previewChamferFeatureId),
+                      title: _editingChamferFeatureId != null ? 'Edit Chamfer' : 'Chamfer',
+                      initialDistance: _chamferDistance,
+                      onDistanceChanged: _onChamferDistanceChanged,
+                      onConfirm: _confirmChamfer,
+                      onCancel: _cancelChamfer,
+                    ),
+                  ),
                 // Prompt A4: names the target-body picking mode live for the
                 // whole time the Extrude panel is open - same top-center
                 // pill convention as the plane-selection-mode banner below,
@@ -2823,7 +3144,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_planeSelectionMode &&
                     !_extrudeActive &&
                     !_createPlaneActive &&
-                    !_filletActive)
+                    !_filletActive &&
+                    !_chamferActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -2943,6 +3265,37 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Mirrors the Fillet banner directly above exactly, for
+                // Chamfer's own guided "Add" FAB entry.
+                if (_chamferActive && _previewChamferFeatureId == null)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Select edges (or a face) to chamfer'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelChamfer,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -2969,7 +3322,8 @@ class _PartScreenState extends State<PartScreen> {
           ? null
           : Padding(
               padding: EdgeInsets.only(
-                bottom: (_extrudeActive || _createPlaneActive || _filletActive) ? 180 : 0,
+                bottom:
+                    (_extrudeActive || _createPlaneActive || _filletActive || _chamferActive) ? 180 : 0,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -2985,7 +3339,10 @@ class _PartScreenState extends State<PartScreen> {
                     // orbit/rotate glyph while in Selection mode.
                     child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
                   ),
-                  if (!_extrudeActive && !_createPlaneActive && !_filletActive) ...[
+                  if (!_extrudeActive &&
+                      !_createPlaneActive &&
+                      !_filletActive &&
+                      !_chamferActive) ...[
                     const SizedBox(height: 12),
                     FloatingActionButton(
                       heroTag: 'add-fab',

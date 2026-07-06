@@ -555,6 +555,31 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `app.document.fillet.resolve_fillet` so a future agent building the next
   one actually finds it while reading the reference implementation, not
   just the other way around.
+- **Prompt E: Chamfer, rolled out as a full mirror of Fillet** (per explicit
+  instruction: use Fillet as the template, including every on-device fix
+  layered onto it since Prompt D, not just the original brief). Same design
+  decisions as Fillet throughout (per Prompt E's own brief): `ChamferFeature`
+  model + `app/document/chamfer.py` (`BRepFilletAPI_MakeChamfer`,
+  `mixed_body_selection`/`chamfer_failed` structured errors, identical
+  self-exclusion convention in `resolve_chamfer`), `graph.py` dependency
+  edges, `POST/PATCH /parts/{id}/chamfer-features[/{id}]`. Client: new
+  `ChamferPanel` (structurally identical to `FilletPanel`); `part_screen.dart`
+  gained Chamfer's own complete, separate state/method set - a full
+  method-for-method mirror of Fillet's, not a shared abstraction (matches
+  this codebase's convention of separate-but-structurally-identical Feature
+  flows) - including the self-exclusion-on-create fix and the dual-mesh
+  preview overlay from day one, so Chamfer never has to earn these the hard
+  way the way Fillet did. `contextActionsFor`'s same-body enabling rule
+  already covered both buttons from Prompt D's own work (the one place the
+  brief calls for sharing code) - only `onChamfer`'s actual callback needed
+  wiring. 100 OCCT-free backend tests passed (new `test_stage_e_graph.py`
+  genuinely executed, `test_stage_e_chamfer.py` `ast.parse`-only per the
+  usual caveat, plus a new case for Prompt E's own on-device gate: a Body
+  with both a Fillet and a Chamfer recomputes correctly), `flutter analyze`
+  clean, 96 Dart tests genuinely executed across every touched/new
+  no-`flutter_scene`-dependency file. **Not yet on-device confirmed** - per
+  Prompt E's own stop condition, this closes out the C/D/E sequence (Create
+  Plane, Fillet, Chamfer) pending on-device confirmation of all three.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

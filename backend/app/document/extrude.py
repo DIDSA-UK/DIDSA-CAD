@@ -29,6 +29,7 @@ from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
 from app.document.models import (
+    ChamferFeature,
     ExtrudeFeature,
     ExtrudeType,
     FilletFeature,
@@ -336,7 +337,14 @@ def compute_part_bodies(
     create/update endpoints validate a Fillet eagerly instead (see
     `app.document.fillet.resolve_fillet`), so a genuinely invalid Fillet is
     normally never persisted in the first place - this fallback only ever
-    matters for topology drift after the fact."""
+    matters for topology drift after the fact.
+
+    Prompt E: `ChamferFeature` gets the identical branch, one entry down -
+    same in-place `bodies[body_id]` reassignment, same skip-with-warning
+    resilience, same "router validates eagerly, this is only the topology-
+    drift fallback" reasoning - see `app.document.chamfer.
+    resolve_chamfer_from_bodies`."""
+    from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
 
     feature_index = {feature.id: i for i, feature in enumerate(part.features)}
@@ -355,6 +363,15 @@ def compute_part_bodies(
                 logger.warning("Skipping FilletFeature %s: could not be resolved", feature.id)
                 continue
             bodies[body_id] = filleted_shape
+            continue
+
+        if isinstance(feature, ChamferFeature):
+            try:
+                body_id, chamfered_shape = resolve_chamfer_from_bodies(bodies, feature)
+            except HTTPException:
+                logger.warning("Skipping ChamferFeature %s: could not be resolved", feature.id)
+                continue
+            bodies[body_id] = chamfered_shape
             continue
 
         if not isinstance(feature, ExtrudeFeature):

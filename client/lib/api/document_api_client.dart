@@ -213,6 +213,13 @@ class FeatureDto {
   /// applied to every one of [edgeRefs].
   final double? radius;
 
+  /// Prompt E: only present on a `"chamfer"` Feature - the shared distance
+  /// applied to every one of [edgeRefs]. A Chamfer reuses [edgeRefs] itself
+  /// (never its own separate field) since a Feature is only ever one type
+  /// at a time - mirrors how [radius]/[distance] are the only two fields
+  /// that actually differ between Fillet's and Chamfer's wire shape.
+  final double? distance;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -239,6 +246,7 @@ class FeatureDto {
     this.yAxis,
     this.edgeRefs = const [],
     this.radius,
+    this.distance,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -284,6 +292,7 @@ class FeatureDto {
                 .toList() ??
             const [],
         radius: (json['radius'] as num?)?.toDouble(),
+        distance: (json['distance'] as num?)?.toDouble(),
       );
 }
 
@@ -591,6 +600,47 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 if (radius != null) 'radius': radius,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Prompt E: creates a ChamferFeature - mirrors [createFilletFeature]
+  /// exactly, substituting [distance] for `radius` (`mixed_body_selection`/
+  /// `chamfer_failed`/`missing_reference` on failure - see
+  /// `app.document.router.create_chamfer_feature`).
+  Future<FeatureDto> createChamferFeature(
+    String partId, {
+    required List<SubShapeRefDto> edgeRefs,
+    required double distance,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/chamfer-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
+                'distance': distance,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing ChamferFeature - mirrors
+  /// [updateFilletFeature] exactly.
+  Future<FeatureDto> updateChamferFeature(
+    String partId,
+    String featureId, {
+    List<SubShapeRefDto>? edgeRefs,
+    double? distance,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/chamfer-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
+                if (distance != null) 'distance': distance,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

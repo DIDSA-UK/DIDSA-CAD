@@ -32,6 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.document.models import (
+    ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
     FilletFeature,
@@ -189,6 +190,9 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     Fillet modifies must cascade-delete the Fillet too - it would otherwise
     be left trying to modify a Body that no longer exists.
 
+    Prompt E: `ChamferFeature` gets the identical dependency rule, one
+    branch down - see `app.document.chamfer._mixed_body_selection`.
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -205,6 +209,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
         elif isinstance(feature, CreatePlaneFeature):
             depends_on = _create_plane_dependencies(part, feature)
         elif isinstance(feature, FilletFeature):
+            depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
+        elif isinstance(feature, ChamferFeature):
             depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes

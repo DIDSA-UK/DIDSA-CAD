@@ -11,8 +11,7 @@ import 'selection_hit_test.dart';
 /// positioning to the caller, the same split [SelectionListDrawer] uses.
 ///
 /// C2 is the first to wire a real callback (Create Plane); Prompt D wires
-/// Fillet - Chamfer stays a disabled scaffold until Prompt E exists, see
-/// [_callbackFor]'s own `// TODO: wire up Chamfer` comment.
+/// Fillet; Prompt E wires Chamfer.
 class SelectionContextPanel extends StatelessWidget {
   final Set<SelectionEntityRef> selectedEntities;
 
@@ -35,12 +34,17 @@ class SelectionContextPanel extends StatelessWidget {
   /// [onCreatePlane]'s own "never called for a disabled one" contract.
   final VoidCallback? onFillet;
 
+  /// Prompt E: fired when the user taps an *enabled* Chamfer button - same
+  /// "never called for a disabled one" contract as [onFillet].
+  final VoidCallback? onChamfer;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
     this.isPointOnLine,
     this.onCreatePlane,
     this.onFillet,
+    this.onChamfer,
   });
 
   @override
@@ -86,15 +90,14 @@ class SelectionContextPanel extends StatelessWidget {
     return reason == null ? button : Tooltip(message: reason, child: button);
   }
 
-  /// C2/C3/C4/D: 'Create Plane'/'Fillet' only ever get a real callback when
-  /// [SelectionContextAction.enabled] is true - every other action stays
-  /// null, kept as a per-action switch so each future CAD operation gets
-  /// its own `// TODO: wire up <action>` comment at its own callback site.
+  /// C2/C3/C4/D/E: 'Create Plane'/'Fillet'/'Chamfer' only ever get a real
+  /// callback when [SelectionContextAction.enabled] is true - every other
+  /// action stays null, kept as a per-action switch so each future CAD
+  /// operation gets its own callback site.
   VoidCallback? _callbackFor(SelectionContextAction action) {
     switch (action.label) {
       case 'Chamfer':
-        // TODO: wire up Chamfer once the backend Chamfer operation exists.
-        return null;
+        return action.enabled ? onChamfer : null;
       case 'Fillet':
         return action.enabled ? onFillet : null;
       case 'Create Plane':

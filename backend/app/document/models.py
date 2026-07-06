@@ -423,6 +423,41 @@ class FilletFeature(Feature):
 
 
 @dataclass
+class ChamferFeature(Feature):
+    """Prompt E: bevels every edge named in `edge_refs` (all of which must
+    belong to the same Body - see `app.document.chamfer._mixed_body_
+    selection`) with one shared `distance`, via OCCT `BRepFilletAPI_
+    MakeChamfer`. Same narrow v1 scope as `FilletFeature`: no per-edge
+    distances, no two-distance/angle chamfer variants - this prompt follows
+    Prompt D's design decisions exactly rather than re-deriving them (see
+    that Feature's own docstring for the reasoning in full).
+
+    Same body-identity decision as `FilletFeature`, for the same reason:
+    keeps the target Body's existing `body_id` (an in-place shape
+    replacement in `app.document.extrude.compute_part_bodies`'s `bodies`
+    accumulator) rather than minting a new one - matters doubly here since
+    a Fillet and a Chamfer can both apply to the same Body, in either
+    order, in a real feature tree, and both need to preserve A1's
+    body-identity guarantee identically for that to work."""
+
+    id: str
+    edge_refs: list[SubShapeRef] = field(default_factory=list)
+    distance: float = 0.0
+
+    @property
+    def type(self) -> str:
+        return "chamfer"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
 

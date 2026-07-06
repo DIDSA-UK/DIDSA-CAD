@@ -753,6 +753,137 @@ void main() {
     });
   });
 
+  group('Prompt E: FeatureDto.fromJson for a chamfer Feature', () {
+    test('parses edge_refs and distance', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'chamfer',
+        'id': 'chamfer-1',
+        'locked': false,
+        'produces': 'body',
+        'edge_refs': [
+          {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+          {'body_id': 'body-1', 'shape_type': 'edge', 'index': 3},
+        ],
+        'distance': 2.0,
+      });
+
+      expect(dto.type, 'chamfer');
+      expect(dto.edgeRefs, hasLength(2));
+      expect(dto.edgeRefs[0].bodyId, 'body-1');
+      expect(dto.edgeRefs[0].index, 0);
+      expect(dto.edgeRefs[1].index, 3);
+      expect(dto.distance, 2.0);
+      expect(dto.produces, 'body');
+    });
+
+    test('defaults edgeRefs to empty and distance to null when omitted', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'extrude',
+        'id': 'ef-1',
+        'locked': false,
+        'produces': 'body',
+        'sketch_feature_id': 'sf-1',
+        'extrude_type': 'boss',
+        'start_distance': 0.0,
+        'end_distance': 10.0,
+      });
+
+      expect(dto.edgeRefs, isEmpty);
+      expect(dto.distance, isNull);
+    });
+  });
+
+  group('Prompt E: DocumentApiClient createChamferFeature/updateChamferFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('createChamferFeature sends edge_refs and distance', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'chamfer',
+            'id': 'chamfer-1',
+            'locked': false,
+            'produces': 'body',
+            'edge_refs': [
+              {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+            ],
+            'distance': 1.5,
+          });
+        }),
+      );
+
+      final feature = await client.createChamferFeature(
+        'part-1',
+        edgeRefs: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'edge', index: 0)],
+        distance: 1.5,
+      );
+
+      expect(capturedBody['edge_refs'], [
+        {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+      ]);
+      expect(capturedBody['distance'], 1.5);
+      expect(feature.distance, 1.5);
+      expect(feature.edgeRefs.single.bodyId, 'body-1');
+    });
+
+    test('updateChamferFeature only sends the fields supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'chamfer',
+            'id': 'chamfer-1',
+            'locked': false,
+            'produces': 'body',
+            'edge_refs': [
+              {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+            ],
+            'distance': 3.0,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateChamferFeature('part-1', 'chamfer-1', distance: 3.0);
+
+      expect(capturedBody, {'distance': 3.0});
+    });
+
+    test('updateChamferFeature sends edge_refs when supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'chamfer',
+            'id': 'chamfer-1',
+            'locked': false,
+            'produces': 'body',
+            'edge_refs': [
+              {'body_id': 'body-1', 'shape_type': 'edge', 'index': 1},
+            ],
+            'distance': 1.0,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateChamferFeature(
+        'part-1',
+        'chamfer-1',
+        edgeRefs: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'edge', index: 1)],
+      );
+
+      expect(capturedBody, {
+        'edge_refs': [
+          {'body_id': 'body-1', 'shape_type': 'edge', 'index': 1},
+        ],
+      });
+    });
+  });
+
   group('DocumentApiClient createCreatePlaneFeature/updateCreatePlaneFeature', () {
     http.Response jsonResponse(Object body, {int status = 201}) =>
         http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
