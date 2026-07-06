@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
@@ -60,7 +63,20 @@ class PartScreen extends StatefulWidget {
   /// calls in a test either.
   final SketchApiClient Function()? sketchApiFactory;
 
-  const PartScreen({super.key, this.documentApi, this.sketchApiFactory});
+  /// Native Load: when set, [_loadPart] opens this existing Part (via
+  /// [DocumentApiClient.getPart]) instead of the default "always start
+  /// fresh" `createPart` call - set by [_PartScreenState._openNativeFile]
+  /// when it pushes a brand-new [PartScreen] onto whichever Part a native
+  /// file import just replaced the backend's Document with. A fresh
+  /// [PartScreen]/State pair (rather than mutating the current one in
+  /// place) is deliberate: it's the simplest way to guarantee every one of
+  /// this screen's many transient fields (selection, hidden/rollback sets,
+  /// in-progress picker/panel state) starts clean against Feature/Body ids
+  /// that belong to the newly-opened Part, not the one that was open a
+  /// moment ago.
+  final String? initialPartId;
+
+  const PartScreen({super.key, this.documentApi, this.sketchApiFactory, this.initialPartId});
 
   @override
   State<PartScreen> createState() => _PartScreenState();
@@ -1974,6 +1990,69 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// Native Save: exports the whole Document (every Part's ordered Feature
+  /// list, plus every Sketch it references - no cached mesh/geometry) as
+  /// this app's own native project file format, and hands the bytes to the
+  /// platform's save-file dialog. Client-owned files (locked-in scope): the
+  /// backend has no project storage of its own, this is this app's one
+  /// point of contact with the device's actual filesystem for Save.
+  Future<void> _saveNativeFile() async {
+    setState(() => _toolbarOpen = false);
+    await _runGuarded(() async {
+      final data = await _api.exportNative();
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(data)));
+      await FilePicker.platform.saveFile(
+        dialogTitle: 'Save Project',
+        fileName: '${_part?.name ?? 'part'}.didsacad',
+        bytes: bytes,
+      );
+    });
+  }
+
+  /// Native Load: reads a native project file the user picks and imports it
+  /// - a full replace of the backend's whole Document/Sketch store (see
+  /// [DocumentApiClient.importNative]'s own docstring) - then pushes a
+  /// brand-new [PartScreen] pointed at whichever Part the import returned
+  /// (this app has no "pick an existing Part" UI, see [PartScreen]'s own
+  /// doc comment, so the first one is simply which Part opens). Pushing a
+  /// fresh screen rather than reloading in place is deliberate - see
+  /// [PartScreen.initialPartId]'s own doc comment for why.
+  Future<void> _openNativeFile() async {
+    setState(() => _toolbarOpen = false);
+    final result = await FilePicker.platform.pickFiles(
+      withData: true,
+      type: FileType.custom,
+      allowedExtensions: ['didsacad', 'json'],
+    );
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final bytes = result.files.single.bytes;
+    if (bytes == null) return;
+
+    Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    } catch (_) {
+      setState(() => _errorMessage = 'Not a valid native project file');
+      return;
+    }
+
+    NativeImportResultDto? imported;
+    await _runGuarded(() async {
+      imported = await _api.importNative(decoded);
+    });
+    if (imported == null || imported!.partIds.isEmpty || !mounted) return;
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PartScreen(
+          documentApi: widget.documentApi,
+          sketchApiFactory: widget.sketchApiFactory,
+          initialPartId: imported!.partIds.first,
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _extrudeDebounce?.cancel();
@@ -1986,9 +2065,16 @@ class _PartScreenState extends State<PartScreen> {
 
   Future<void> _loadPart() async {
     await _runGuarded(() async {
-      debugPrint('[PartScreen] createPart...');
-      final part = await _api.createPart('Part 1');
-      debugPrint('[PartScreen] createPart done: ${part.id}');
+      final PartDto part;
+      if (widget.initialPartId != null) {
+        debugPrint('[PartScreen] getPart(${widget.initialPartId})...');
+        part = await _api.getPart(widget.initialPartId!);
+        debugPrint('[PartScreen] getPart done: ${part.id}');
+      } else {
+        debugPrint('[PartScreen] createPart...');
+        part = await _api.createPart('Part 1');
+        debugPrint('[PartScreen] createPart done: ${part.id}');
+      }
       _part = part;
       debugPrint('[PartScreen] getPartMesh...');
       await _refreshMesh();
@@ -4652,6 +4738,8 @@ class _PartScreenState extends State<PartScreen> {
                     renderMode: _renderMode,
                     onRenderModeChanged: _onRenderModeChanged,
                     onOpenConnectionSettings: _openConnectionSettings,
+                    onSaveNative: _saveNativeFile,
+                    onOpenNative: _openNativeFile,
                     bgColourHex: _bgColourHex,
                     bodyColourHex: _bodyColourHex,
                     bodyOpacity: _bodyOpacity,

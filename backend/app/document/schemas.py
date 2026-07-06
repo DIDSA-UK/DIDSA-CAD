@@ -478,6 +478,16 @@ class BodyMeshResponse(BaseModel):
     hidden: bool = False
 
 
+class NativeImportResponse(BaseModel):
+    """What `POST /document/import/native` hands back once the full-replace
+    import succeeds - just enough for the client to confirm the new state
+    (which Parts now exist) without re-fetching, mirroring
+    `CascadeDeleteResponse`'s own "confirm what just happened" purpose."""
+
+    document_id: str
+    part_ids: list[str]
+
+
 class CascadeDeleteResponse(BaseModel):
     """What got deleted by a cascade-delete: the target Feature and every
     Feature after it, plus the Sketch each deleted SketchFeature owned -

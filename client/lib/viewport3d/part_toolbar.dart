@@ -55,6 +55,15 @@ class PartToolbar extends StatelessWidget {
   /// isn't a disabled placeholder.
   final VoidCallback? onOpenConnectionSettings;
 
+  /// Native Save/Load: reads/writes the whole Document (every Part's
+  /// ordered Feature list, plus every Sketch it references) as this app's
+  /// own native project file - see `PartScreen._saveNativeFile`/
+  /// `_openNativeFile`. The only other real (non-placeholder) File entries
+  /// besides Connection Settings; STEP/STL/OBJ/glTF export and a foreign-
+  /// format Import remain disabled placeholders until a later pass.
+  final VoidCallback? onSaveNative;
+  final VoidCallback? onOpenNative;
+
   /// Stage 18: current 3D-viewport appearance preferences (see
   /// [ViewPreferences]) and their change callbacks - [PartScreen] owns the
   /// state and persistence, this just renders the entries that open each
@@ -97,6 +106,8 @@ class PartToolbar extends StatelessWidget {
     this.renderMode = ViewportRenderMode.shaded,
     this.onRenderModeChanged,
     this.onOpenConnectionSettings,
+    this.onSaveNative,
+    this.onOpenNative,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
@@ -165,8 +176,6 @@ class PartToolbar extends StatelessWidget {
 
   static const List<String> _filePlaceholders = [
     'New',
-    'Open…',
-    'Save',
     'Save As…',
     'Import…',
     'Export STEP',
@@ -179,6 +188,16 @@ class PartToolbar extends StatelessWidget {
       leading: const Icon(Icons.folder_outlined),
       title: const Text('File'),
       children: [
+        ListTile(
+          leading: const Icon(Icons.folder_open_outlined),
+          title: const Text('Open…'),
+          onTap: onOpenNative,
+        ),
+        ListTile(
+          leading: const Icon(Icons.save_outlined),
+          title: const Text('Save'),
+          onTap: onSaveNative,
+        ),
         for (final label in _filePlaceholders)
           ListTile(
             enabled: false,

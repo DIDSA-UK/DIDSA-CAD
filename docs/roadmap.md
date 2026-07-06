@@ -954,6 +954,47 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   consolidated closing note, and the "Other open items" section at the top
   of this file for what's still genuinely open (Revolve/Sweep, the C3
   rendering bug, etc.) now that this sequence is done.
+- **Native Save/Load (first slice of the Save/Load/Import/Export phase,
+  "native first" per explicit user instruction deferring STEP/STL/OBJ/glTF
+  export to a later pass).** Scoped via 4 rounds of AskUserQuestion, all
+  "Recommended" except STEP's own schema: client-owned files (backend has
+  no project storage of its own - the client owns the actual file on disk);
+  pure parametric tree (no cached mesh/geometry in the file - reopening
+  recomputes Bodies via the existing `compute_part_bodies`, same as any
+  other recompute); STEP deferred to AP242 later; mesh-export formats
+  deferred to reusing existing `MeshData` later. Backend: new
+  `app/document/native_format.py` - `export_native(document, sketches) ->
+  dict`/`import_native(data) -> (Document, sketches)`, a standalone dict
+  mapping (not a reuse of the HTTP API's own pydantic response schemas,
+  which carry API-only fields like `locked`/`produces`/resolved plane
+  geometry that have no place in a save file) covering every Feature type
+  (Sketch/Extrude/CreatePlane/Fillet/Chamfer/Revolve/Sweep) and every
+  Sketch entity/constraint kind, keyed by a `schema_version` that rejects
+  anything unrecognized outright rather than guessing. New `GET
+  /document/export/native`/`POST /document/import/native` endpoints; new
+  `replace_document`/`all_sketches`/`replace_all_sketches` store functions
+  for the "full replace, not merge" import semantics client-owned files
+  calls for. 8 new genuinely-executable pure-Python round-trip tests (this
+  is the first Feature-adjacent work this session where the serialization
+  logic itself needs no OCCT at all, unlike almost everything else in this
+  codebase) plus one CI-only HTTP smoke test that saves/restores the
+  process-global Document/Sketch store around itself, since this test
+  suite otherwise shares that global state across every test module in one
+  pytest session and a native import is a deliberate full replace. Client:
+  new `file_picker` dependency (the first file-system-access dependency
+  this app has needed); `DocumentApiClient.exportNative`/`importNative`;
+  wired into the File menu's pre-existing "Open…"/"Save" placeholder
+  entries (left "Save As…"/"New"/"Import…"/"Export STEP"/"Export STL"
+  disabled, matching what's still out of scope). `PartScreen` gained an
+  `initialPartId` constructor param - Open pushes a brand-new `PartScreen`
+  instance pointed at the imported Part rather than mutating the current
+  screen's state in place, deliberately sidestepping the need to manually
+  reset this screen's many transient fields (selection, hidden/rollback
+  sets, in-progress picker/panel state) against Feature/Body ids that
+  belong to a different Part after a full-document-replace import. Not yet
+  confirmed on-device - the client changes (new dependency, file-picker
+  wiring) could not be compiled/run in this sandbox (no Flutter SDK), only
+  manually reviewed plus a brace-balance check against the pre-edit file.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

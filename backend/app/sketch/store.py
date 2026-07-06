@@ -11,6 +11,28 @@ from app.sketch.models import Circle, Line, Point, Plane, Sketch, SketchEntityRe
 _sketches: dict[str, Sketch] = {}
 
 
+def all_sketches() -> dict[str, Sketch]:
+    """Every Sketch currently in the store, keyed by id - read-only access
+    for a whole-store consumer (native file export, see
+    `app.document.native_format.export_native`) that has no single Sketch
+    id to look up by. Returns the live dict itself, not a copy - callers
+    must not mutate it (mirrors `app.document.store.get_document`'s same
+    live-reference convention)."""
+    return _sketches
+
+
+def replace_all_sketches(sketches: dict[str, Sketch]) -> None:
+    """Native file import's "full replace, not merge" (client-owned files,
+    locked-in scope): swaps out every Sketch currently in the store for
+    exactly the ones in `sketches`. Only intended to be called by
+    `app.document.router`'s native-import endpoint, immediately after
+    `app.document.store.replace_document` does the same for the Document
+    side - together they make an import a clean, atomic full replacement
+    rather than a merge with whatever was open before."""
+    global _sketches
+    _sketches = sketches
+
+
 def create_sketch(plane: Plane | None) -> Sketch:
     """C3: `plane` is `None` only for a Sketch created via the Document
     layer's custom-plane-anchor path (see `app.document.router.

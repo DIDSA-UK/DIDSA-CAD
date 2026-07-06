@@ -467,6 +467,24 @@ class CascadeDeleteResultDto {
       );
 }
 
+/// What `POST /document/import/native` hands back once the full-replace
+/// native-file import succeeds - the freshly-imported Document's id and
+/// every Part id now in it. This app has no "pick an existing Part" UI (see
+/// `PartScreen`'s own doc comment - a single Part is always created on
+/// startup), so a native Open just points the current screen at
+/// [partIds].first.
+class NativeImportResultDto {
+  final String documentId;
+  final List<String> partIds;
+
+  NativeImportResultDto({required this.documentId, required this.partIds});
+
+  factory NativeImportResultDto.fromJson(Map<String, dynamic> json) => NativeImportResultDto(
+        documentId: json['document_id'] as String,
+        partIds: (json['part_ids'] as List).cast<String>(),
+      );
+}
+
 /// Thin wrapper over the backend's `/document` REST API - same shape and
 /// conventions as [SketchApiClient], kept as a separate client rather than
 /// merged into it because it talks to a different backend router
@@ -956,6 +974,34 @@ class DocumentApiClient {
             ),
         (body) =>
             (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
+      );
+
+  /// Native Save: the whole in-memory Document (every Part's ordered
+  /// Feature list) plus every Sketch referenced by any SketchFeature in it,
+  /// as a plain JSON object - no cached mesh/geometry (see the backend's
+  /// `app.document.native_format.export_native` docstring for the full
+  /// "pure parametric tree" rationale). The caller is responsible for
+  /// writing this to an actual file - client-owned files, this app has no
+  /// project storage of its own.
+  Future<Map<String, dynamic>> exportNative() => _send(
+        () => _httpClient.get(_uri('/document/export/native'), headers: _headers),
+        (body) => body as Map<String, dynamic>,
+      );
+
+  /// Native Load: the inverse of [exportNative] - a full replace, not a
+  /// merge (client-owned files, locked-in scope): whatever Document/Sketches
+  /// were open on the backend before this call are discarded entirely in
+  /// favor of exactly what [nativeFileContents] describes. Throws
+  /// [ApiException] (422) for anything malformed - an unsupported
+  /// schema_version, an unknown Feature/entity/constraint type, a missing
+  /// required field.
+  Future<NativeImportResultDto> importNative(Map<String, dynamic> nativeFileContents) => _send(
+        () => _httpClient.post(
+              _uri('/document/import/native'),
+              headers: _headers,
+              body: jsonEncode(nativeFileContents),
+            ),
+        (body) => NativeImportResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   void close() => _httpClient.close();

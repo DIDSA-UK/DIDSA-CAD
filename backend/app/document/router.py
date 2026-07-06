@@ -10,6 +10,7 @@ from app.document.extrude import compute_part_bodies, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
+from app.document.native_format import NativeFormatError, export_native, import_native
 from app.document.models import (
     ChamferFeature,
     CreatePlaneFeature,
@@ -47,6 +48,7 @@ from app.document.schemas import (
     FilletFeatureResponse,
     FilletFeatureUpdate,
     MeshVertexData,
+    NativeImportResponse,
     PartCreate,
     PartResponse,
     PlaneRefSchema,
@@ -63,10 +65,10 @@ from app.document.schemas import (
     SweepFeatureUpdate,
 )
 from app.document.sweep import resolve_sweep
-from app.document.store import get_document, get_part_or_404
+from app.document.store import get_document, get_part_or_404, replace_document
 from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
-from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
+from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
 logger = logging.getLogger(__name__)
 
@@ -1347,3 +1349,35 @@ def get_part_mesh(
         )
         for body_id, shape in bodies.items()
     ]
+
+
+@router.get("/export/native")
+def export_native_document() -> dict:
+    """Native Save: hands back the whole in-memory Document (every Part's
+    ordered Feature list) plus every Sketch referenced by any SketchFeature
+    in it, as a plain JSON dict - no cached mesh/geometry (see
+    `app.document.native_format.export_native`'s own docstring for the full
+    "pure parametric tree" rationale). Client-owned files (locked-in scope):
+    the backend has no project storage of its own, this is the client's one
+    chance to read the full state out before it writes the actual file to
+    disk."""
+    return export_native(get_document(), all_sketches())
+
+
+@router.post("/import/native", response_model=NativeImportResponse)
+def import_native_document(payload: dict) -> NativeImportResponse:
+    """Native Load: the inverse of `export_native_document` - a full
+    replace, not a merge (client-owned files, locked-in scope): whatever
+    Document/Sketches were open before this call are discarded entirely in
+    favor of exactly what `payload` describes. Fails closed with a 422 for
+    anything malformed (`NativeFormatError` - an unsupported schema_version,
+    an unknown Feature/entity/constraint type, a missing required field)
+    *before* either store is touched, so a bad import can never leave the
+    process in a half-replaced state."""
+    try:
+        document, sketches = import_native(payload)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid native file: {exc}")
+    replace_document(document)
+    replace_all_sketches(sketches)
+    return NativeImportResponse(document_id=document.id, part_ids=list(document.parts.keys()))
