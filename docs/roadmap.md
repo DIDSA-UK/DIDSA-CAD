@@ -249,10 +249,11 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   correct `SelectionEntityKind`/`entityType` per member id instead of
   assuming every loop member is a Line. No Dart SDK available in this
   sandbox to compile/run - verified via brace-balance checks and manual
-  review only; the (2)/(3) root-cause analysis was cross-checked against a
-  synthetic pure-Python `detect_profile` repro (not a Dart test) confirming
-  the backend's own multi-loop/mixed-profile classification was already
-  correct. Pending on-device confirmation.
+  review only, which missed one real build break a subsequent user build
+  caught: `selection_list_drawer.dart`'s `_iconFor`/`_labelFor` switch
+  statements weren't exhaustive over the new `sketchCircle` variant (fixed
+  in a same-day follow-up commit). **Confirmed working on-device** by the
+  user after that follow-up fix.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what
