@@ -141,6 +141,8 @@ class SelectionListDrawer extends StatelessWidget {
         return Icons.control_point;
       case SelectionEntityKind.sketchLine:
         return Icons.timeline;
+      case SelectionEntityKind.sketchCircle:
+        return Icons.circle_outlined;
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return Icons.crop_square;
@@ -161,6 +163,8 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Sketch Point';
       case SelectionEntityKind.sketchLine:
         return 'Sketch Line';
+      case SelectionEntityKind.sketchCircle:
+        return 'Sketch Circle';
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return 'Plane';
