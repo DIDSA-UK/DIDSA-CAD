@@ -404,8 +404,38 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `test_boss_sweep_of_an_annular_pipe_wall_profile_succeeds` (two
   concentric circles, the common pipe-wall case) added to
   `test_stage_h_sweep.py`. Same standing caveat - not verifiable against
-  real OCCT in this sandbox, flagged for on-device re-confirmation once
-  rebuilt.
+  real OCCT in this sandbox.
+
+  **CI actually runs these against real OCCT** (a Docker-based backend
+  build+test workflow this whole Sweep implementation round didn't realize
+  existed/was checking every push) - asked to check it directly, and every
+  one of the 21 new Sweep tests genuinely passed against a real kernel,
+  confirming the corner-orientation fix, the wire-not-face fix, and the
+  annular-profile (pipe-wall) support all actually work, not just
+  "implemented from documentation." One unrelated failure surfaced:
+  `test_bugfix_hide_vs_rollback_exclusion.py::test_rollback_excluded_
+  feature_ids_still_breaks_a_downstream_plane_as_intended` regressed
+  (200 instead of the expected 422) - a real bug introduced back in the
+  Prompt G round, not by Sweep. Root cause: Prompt G's own `compute_part_
+  bodies` fix (wrapping `_solid_for_extrude_feature` in a blanket `except
+  HTTPException` so a stale `invalid_profile_ref` pick doesn't take down
+  the whole `/mesh` response) was too broad - it also swallowed a
+  `missing_reference` raised by `resolve_sketch_basis` when B4's true
+  rollback deliberately excludes an upstream Feature a Sketch's custom
+  plane depends on, which must still propagate and fail the whole request
+  (that is the entire point of true rollback, and was the pre-Prompt-G
+  behavior this test guards). Fixed by narrowing the catch to only
+  `invalid_profile_ref` specifically, re-raising anything else - applied
+  to both the `ExtrudeFeature` branch (the one CI actually caught) and the
+  brand-new `SweepFeature` branch (identical latent risk, caught
+  proactively since it was written in this same session and not yet
+  "shipped" anywhere). `RevolveFeature`'s own branch has the identical
+  latent risk too (its blanket catch predates Prompt G, from Prompt F,
+  and is by its own doc comment *deliberately* broad enough to tolerate
+  an unresolvable axis or geometry failure) - left untouched since no
+  test currently exercises it and it's an established, working, Prompt-F-
+  era decision, not something this pass introduced or was asked to
+  revisit; flagged here as a known parallel risk if it's ever picked up.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

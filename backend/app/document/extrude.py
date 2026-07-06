@@ -593,7 +593,25 @@ def compute_part_bodies(
                 solid = resolve_sweep_from_bodies(
                     feature, sketch_feature, part, bodies, excluded_feature_ids
                 )
-            except HTTPException:
+            except HTTPException as exc:
+                # Tolerates this Sweep's own stale/broken references
+                # (an edited-away path segment, a disconnected path, a
+                # geometrically-invalid sweep, a stale profile_refs pick) -
+                # deliberately narrower than a blanket `except
+                # HTTPException`, matching the fix applied to the
+                # ExtrudeFeature branch below for the identical reason: a
+                # `missing_reference` from `resolve_sketch_basis` (B4 true
+                # rollback deliberately excluding an upstream Feature this
+                # Sweep's Profile or path depends on) must still propagate
+                # and fail the whole request, not be swallowed as "this
+                # Sweep is just stale."
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_path_ref",
+                    "disconnected_path",
+                    "sweep_failed",
+                    "invalid_profile_ref",
+                ):
+                    raise
                 logger.warning("Skipping SweepFeature %s: could not be resolved", feature.id)
                 continue
             if solid is None:
@@ -618,11 +636,24 @@ def compute_part_bodies(
 
         try:
             solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, excluded_feature_ids)
-        except HTTPException:
+        except HTTPException as exc:
             # Prompt G: profile_refs can now raise invalid_profile_ref (e.g.
-            # topology drift since creation) - same resilience the
-            # Fillet/Chamfer/Revolve branches above already have, so one bad
-            # ExtrudeFeature doesn't take down every other Body's response.
+            # topology drift since creation) - tolerated here the same way
+            # Fillet/Chamfer/Revolve's own branches tolerate their own
+            # topology-drift failures, so one Extrude with a stale
+            # profile_refs pick doesn't take down every other Body's
+            # response. Deliberately narrower than a blanket `except
+            # HTTPException`, though (bug fix: a blanket catch here briefly
+            # regressed `test_rollback_excluded_feature_ids_still_breaks_a_
+            # downstream_plane_as_intended` - a `missing_reference` raised
+            # by `resolve_sketch_basis` because B4's true rollback
+            # deliberately excluded an upstream Feature must still
+            # propagate and fail the whole request, exactly as it did
+            # before profile_refs existed; only `invalid_profile_ref`
+            # itself is a "this Extrude specifically has stale data"
+            # failure worth swallowing).
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") != "invalid_profile_ref":
+                raise
             logger.warning("Skipping ExtrudeFeature %s: could not be resolved", feature.id)
             continue
         if solid is None:
