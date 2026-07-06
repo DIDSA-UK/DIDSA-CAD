@@ -2019,11 +2019,14 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartScreen.initialPartId]'s own doc comment for why.
   Future<void> _openNativeFile() async {
     setState(() => _toolbarOpen = false);
-    final result = await FilePicker.platform.pickFiles(
-      withData: true,
-      type: FileType.custom,
-      allowedExtensions: ['didsacad', 'json'],
-    );
+    // On-device feedback: `FileType.custom` + `allowedExtensions` filters by
+    // OS-guessed MIME type - Android has no MIME mapping for a made-up
+    // extension like `.didsacad`, so a saved file shows up greyed out/
+    // unselectable in the picker even though it's visible. `FileType.any`
+    // sidesteps that entirely; content is already validated just below
+    // (JSON decode, then the backend's own schema_version check), so the
+    // extension filter was a UX nicety only, never load-bearing.
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
     if (result == null || result.files.isEmpty || !mounted) return;
     final bytes = result.files.single.bytes;
     if (bytes == null) return;
