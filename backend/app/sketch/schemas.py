@@ -12,7 +12,10 @@ class SketchCreate(BaseModel):
 
 class SketchResponse(BaseModel):
     id: str
-    plane: Plane
+    # C3: null for a Sketch anchored to a custom CreatePlaneFeature via the
+    # Document layer (see app.sketch.models.Sketch's own docstring) - always
+    # populated for a Sketch created through the standalone /sketch API.
+    plane: Plane | None
     origin_point_id: str
 
 

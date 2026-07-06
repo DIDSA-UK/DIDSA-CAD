@@ -2,8 +2,8 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
-from app.document.models import ExtrudeType, Produces
-from app.sketch.models import Plane
+from app.document.models import ExtrudeType, PlaneType, Produces, SubShapeType
+from app.sketch.models import Plane, SketchEntityType
 
 
 class PartCreate(BaseModel):
@@ -17,12 +17,18 @@ class PartResponse(BaseModel):
 
 
 class SketchFeatureCreate(BaseModel):
-    """Creates a SketchFeature wrapping a brand-new, empty Sketch on the
-    given plane - there is no "wrap an existing Sketch" mode, since the
-    out-of-scope "tap a locked Feature to re-edit its sketch" flow is the
-    only case that would need one."""
+    """Creates a SketchFeature wrapping a brand-new, empty Sketch, either on
+    one of the three fixed reference planes (`plane`) or (C3) anchored to an
+    existing `CreatePlaneFeature` (`plane_feature_id`) - exactly one of the
+    two must be supplied (see
+    `app.document.router._validate_sketch_feature_payload`, same "payload
+    shape validated by the API layer" split every other mutually-exclusive
+    Feature field already uses). There is no "wrap an existing Sketch" mode,
+    since the out-of-scope "tap a locked Feature to re-edit its sketch" flow
+    is the only case that would need one."""
 
-    plane: Plane
+    plane: Plane | None = None
+    plane_feature_id: str | None = None
 
 
 # `type` is a discriminator, same pattern as app.sketch.schemas'
@@ -31,6 +37,10 @@ class SketchFeatureResponse(BaseModel):
     type: Literal["sketch"] = "sketch"
     id: str
     sketch_id: str
+    # C3: echoes SketchFeature.plane_feature_id - null for a Sketch on one of
+    # the three fixed reference planes (the common case, unchanged from
+    # before C3), set for one anchored to a custom plane instead.
+    plane_feature_id: str | None = None
     locked: bool
     # B1: what this Feature contributes, for the client tree's grouping
     # (B3) - see app.document.models.Feature.produces.
@@ -85,7 +95,209 @@ class ExtrudeFeatureResponse(BaseModel):
     produces: Produces
 
 
-FeatureResponse = Union[SketchFeatureResponse, ExtrudeFeatureResponse]
+class SubShapeRefSchema(BaseModel):
+    """C2: the wire (pydantic) counterpart to `app.document.models.
+    SubShapeRef` - B1 built that dataclass and its resolver with no consumer
+    yet, so no pydantic schema existed for it either; this is the first
+    Feature payload to embed one (`CreatePlaneFeatureCreate.face_ref`).
+    Converted to/from the domain dataclass in `app.document.router`, the
+    same plain-BaseModel-vs-dataclass split every other schema/model pair
+    in this file already keeps."""
+
+    body_id: str
+    shape_type: SubShapeType
+    index: int
+
+
+class SketchEntityRefSchema(BaseModel):
+    """C2: the wire counterpart to `app.sketch.models.SketchEntityRef` (C1)
+    - same "no schema until a real consumer exists" story as
+    `SubShapeRefSchema` above."""
+
+    sketch_id: str
+    entity_type: SketchEntityType
+    entity_id: str
+
+
+class PointRefSchema(BaseModel):
+    """C4: the wire counterpart to `app.document.models.PointRef` - exactly
+    one of `vertex_ref`/`sketch_point_ref` should be supplied, matching
+    `PointRef`'s own "one of two optional fields" convention (see its
+    docstring); not enforced here, checked by
+    `app.document.router._validate_create_plane_payload`."""
+
+    vertex_ref: SubShapeRefSchema | None = None
+    sketch_point_ref: SketchEntityRefSchema | None = None
+
+
+class PlaneRefSchema(BaseModel):
+    """C5: the wire counterpart to `app.document.models.PlaneRef` - exactly
+    one of `face_ref`/`fixed_plane`/`plane_feature_id` should be supplied,
+    matching `PlaneRef`'s own "one of three optional fields" convention
+    (see its docstring); not enforced here, checked by
+    `app.document.router._validate_plane_ref`. Lets OFFSET_FACE/MIDPLANE/
+    PARALLEL_TO_FACE_THROUGH_VERTEX reference a Body face, a fixed
+    reference plane, or an existing CreatePlaneFeature, instead of only a
+    Body face as in C2-C4."""
+
+    face_ref: SubShapeRefSchema | None = None
+    fixed_plane: Plane | None = None
+    plane_feature_id: str | None = None
+
+
+class CreatePlaneFeatureCreate(BaseModel):
+    """Creates a CreatePlaneFeature (C2/C3/C4/C5) - exactly one combination
+    of fields should be supplied, matching `plane_type`:
+    - `OFFSET_FACE`: `face_refs` (one entry), `offset`.
+    - `MIDPLANE`: `face_refs` (two entries).
+    - `NORMAL_TO_LINE_AT_POINT`: `line_ref`, `point_ref`.
+    - `NORMAL_TO_EDGE_THROUGH_VERTEX`: `edge_ref`, `vertex_ref`.
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: `face_refs` (one entry), `vertex_ref`.
+    - `THREE_POINTS`: `point_refs` (three entries).
+    See `app.document.router._validate_create_plane_payload` for the exact
+    combination check (not encoded here, mirroring `ExtrudeFeatureCreate`'s
+    own Boss-vs-Cut `target_body_ids` split).
+
+    `face_ref` (C2, singular) became `face_refs` (C3, a list) so MIDPLANE
+    (and, C4, PARALLEL_TO_FACE_THROUGH_VERTEX) can reuse the same field as
+    OFFSET_FACE. `vertex_ref` (C4) is likewise shared between
+    NORMAL_TO_EDGE_THROUGH_VERTEX and PARALLEL_TO_FACE_THROUGH_VERTEX.
+    `face_refs` entries became `PlaneRefSchema` (C5, was `SubShapeRefSchema`)
+    so each entry can be a Body face, a fixed reference plane, or an
+    existing CreatePlaneFeature."""
+
+    plane_type: PlaneType
+    face_refs: list[PlaneRefSchema] = []
+    offset: float | None = None
+    line_ref: SketchEntityRefSchema | None = None
+    point_ref: SketchEntityRefSchema | None = None
+    edge_ref: SubShapeRefSchema | None = None
+    vertex_ref: SubShapeRefSchema | None = None
+    point_refs: list[PointRefSchema] = []
+
+
+class CreatePlaneFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ExtrudeFeatureUpdate` - `plane_type` itself is never changed by an
+    update (switching plane-construction method is a delete+recreate, not
+    an edit); only the refs/offset for whichever type the Feature already
+    is can be revised. Unlike `ExtrudeFeatureUpdate.target_body_ids`, there
+    is no "omitted vs. explicit empty" distinction to make here - a
+    CreatePlaneFeature's refs are never legitimately cleared to nothing
+    while staying valid, so `None` unambiguously means "not provided,
+    keep the current value" for every field below."""
+
+    face_refs: list[PlaneRefSchema] | None = None
+    offset: float | None = None
+    line_ref: SketchEntityRefSchema | None = None
+    point_ref: SketchEntityRefSchema | None = None
+    edge_ref: SubShapeRefSchema | None = None
+    vertex_ref: SubShapeRefSchema | None = None
+    point_refs: list[PointRefSchema] | None = None
+
+
+class CreatePlaneFeatureResponse(BaseModel):
+    type: Literal["create_plane"] = "create_plane"
+    id: str
+    plane_type: PlaneType
+    # Echo of whichever refs/values were supplied - for edit-mode prefill,
+    # same purpose B4's Extrude edit-prefill serves.
+    face_refs: list[PlaneRefSchema] = []
+    offset: float | None = None
+    line_ref: SketchEntityRefSchema | None = None
+    point_ref: SketchEntityRefSchema | None = None
+    edge_ref: SubShapeRefSchema | None = None
+    vertex_ref: SubShapeRefSchema | None = None
+    point_refs: list[PointRefSchema] = []
+    # Resolved world-space geometry (see app.document.models.ResolvedPlane)
+    # for rendering - null when it can't currently be resolved (e.g. a
+    # referenced Body/Sketch was deleted out from under it), rather than
+    # failing the whole list/get response over one bad Feature. Always
+    # non-null right after a successful create/update, since those
+    # endpoints validate resolvability before ever constructing the
+    # Feature - see app.document.router._validate_create_plane_payload.
+    origin: tuple[float, float, float] | None = None
+    normal: tuple[float, float, float] | None = None
+    # C3: the plane's own in-plane basis, for a Sketch anchored to it (see
+    # app.document.models.ResolvedPlane) to embed its local geometry, and
+    # for the client to orient its rendered quad consistently with that
+    # embedding rather than deriving its own (possibly different)
+    # arbitrary in-plane orientation. Null exactly when origin/normal are.
+    x_axis: tuple[float, float, float] | None = None
+    y_axis: tuple[float, float, float] | None = None
+    locked: bool
+    produces: Produces
+
+
+class FilletFeatureCreate(BaseModel):
+    """Prompt D: rounds every edge named in `edge_refs` (all must resolve to
+    the same Body - see `app.document.fillet._mixed_body_selection`) with
+    one shared `radius`. See `app.document.router._validate_fillet_payload`
+    for the exact checks (non-empty `edge_refs`, each entry's `shape_type
+    == EDGE`, `radius > 0`) - not encoded here, mirroring every other
+    Feature's own "payload shape validated by the API layer" split."""
+
+    edge_refs: list[SubShapeRefSchema] = []
+    radius: float
+
+
+class FilletFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ExtrudeFeatureUpdate`/`CreatePlaneFeatureUpdate` - `None` means "not
+    provided, keep the current value" for both fields below."""
+
+    edge_refs: list[SubShapeRefSchema] | None = None
+    radius: float | None = None
+
+
+class FilletFeatureResponse(BaseModel):
+    type: Literal["fillet"] = "fillet"
+    id: str
+    edge_refs: list[SubShapeRefSchema] = []
+    radius: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # FilletFeature (it modifies, rather than creates, a Body).
+    produces: Produces
+
+
+class ChamferFeatureCreate(BaseModel):
+    """Prompt E: mirrors `FilletFeatureCreate` exactly, substituting
+    `distance` for `radius` - see `app.document.router.
+    _validate_chamfer_edge_refs`/`_validate_chamfer_distance` for the
+    payload-shape checks (non-empty `edge_refs`, each entry's `shape_type
+    == EDGE`, `distance > 0`)."""
+
+    edge_refs: list[SubShapeRefSchema] = []
+    distance: float
+
+
+class ChamferFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `FilletFeatureUpdate`."""
+
+    edge_refs: list[SubShapeRefSchema] | None = None
+    distance: float | None = None
+
+
+class ChamferFeatureResponse(BaseModel):
+    type: Literal["chamfer"] = "chamfer"
+    id: str
+    edge_refs: list[SubShapeRefSchema] = []
+    distance: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # ChamferFeature (it modifies, rather than creates, a Body).
+    produces: Produces
+
+
+FeatureResponse = Union[
+    SketchFeatureResponse,
+    ExtrudeFeatureResponse,
+    CreatePlaneFeatureResponse,
+    FilletFeatureResponse,
+    ChamferFeatureResponse,
+]
 
 
 class MeshVertexData(BaseModel):
@@ -104,6 +316,11 @@ class MeshVertexData(BaseModel):
     edge_ids: list[int] = []
     topology_vertices: list[tuple[float, float, float]] = []
     topology_vertex_ids: list[int] = []
+    # Fillet follow-up: face_edge_ids[face_id] is the sorted list of edge_ids
+    # bounding that face - see app.document.mesh._extract_face_edge_ids.
+    # Defaults to [] for the same backward-compatibility reason as the ids
+    # above.
+    face_edge_ids: list[list[int]] = []
 
 
 class BodyMeshResponse(BaseModel):
@@ -123,11 +340,21 @@ class BodyMeshResponse(BaseModel):
     one entry (the fixed dev-time stand-in box) - and "computed" once real
     Feature-derived geometry is being returned instead, one entry per
     actual Body (zero entries if every ExtrudeFeature so far has been
-    skipped/hidden)."""
+    skipped by the Part's own graph, e.g. a Cut with no target left after a
+    genuine deletion - never merely hidden, see `hidden` below).
+
+    On-device feedback (post-C4 hide/rollback fix): every computed Body is
+    now always included here, `hidden` set instead of the entry being
+    dropped - the Build Tree's own Bodies section needs to keep listing a
+    hidden Body (so Show can be reached again from the tree, not only from
+    whichever Feature originally produced it), which an omitted entry can't
+    support. `source="placeholder"` is never `hidden` - there is nothing to
+    hide yet at that point."""
 
     body_id: str
     source: Literal["placeholder", "computed"]
     mesh: MeshVertexData
+    hidden: bool = False
 
 
 class CascadeDeleteResponse(BaseModel):

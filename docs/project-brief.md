@@ -134,7 +134,9 @@ Render the returned extrude mesh; verify it updates live when the sketch changes
 - Constraint types beyond distance (coincident, tangent, parallel, angle, etc.) — see Section 4.2a for what's now in scope
 - Precise root-cause diagnosis of over-constrained systems (e.g. subset-removal retry) — see Section 4.2a
 - Revolve module
-- Fillet/Chamfer
+- Fillet/Chamfer — since built (Prompts D and E); see `docs/status.md`'s
+  2026-07-05/06 entries and `docs/roadmap.md` for what shipped. Left here
+  unedited as a record of the original v1 scoping, not a current status.
 - Boolean operations (union/subtract/intersect)
 - Multi-user/concurrent editing
 - Server-side persistence or accounts

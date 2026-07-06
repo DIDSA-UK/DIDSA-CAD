@@ -15,24 +15,66 @@ class SelectionFilterState {
   final bool face;
   final bool body;
 
+  /// Prompt C1: gate Sketch Points/Lines the same way `vertex`/`edge` gate
+  /// Body vertices/edges - a separate pair rather than folding into
+  /// `vertex`/`edge` themselves, since a Sketch entity and a Body sub-shape
+  /// are different underlying things a picking mode may want to allow
+  /// independently (e.g. C2's future "Point + Line only" mode).
+  final bool sketchPoint;
+  final bool sketchLine;
+
+  /// On-device feedback: gates both `SelectionEntityKind.referencePlane` and
+  /// `.createPlane` hover/hit-testing (see `part_viewport.dart`'s
+  /// `_hoverHitTestPlanes`) - a single field for both plane kinds, not a
+  /// separate pair the way `vertex`/`edge`/`face` each get their own,
+  /// since no picking mode so far has needed to tell them apart (C5's own
+  /// `contextActionsFor` already treats them as one interchangeable
+  /// "plane-like" category). Added after C5 shipped planes as a selectable
+  /// kind with no filter field at all - every picking mode up to and
+  /// including the "Add" FAB's Fillet entry, `PartScreen._filletSelectionFilter`,
+  /// needs a real way to turn planes off, not just the mesh/sketch kinds
+  /// above. Defaults to `true` (matches every plane being unconditionally
+  /// hit-testable before this field existed) - no View-submenu toggle
+  /// exists for this yet, same "wired up, no UI yet" precedent `body` once
+  /// was before its own toggle shipped.
+  final bool plane;
+
   const SelectionFilterState({
     required this.vertex,
     required this.edge,
     required this.face,
     required this.body,
+    this.sketchPoint = true,
+    this.sketchLine = true,
+    this.plane = true,
   });
 
   /// Matches hit-testing's behaviour from before this filter framework
   /// existed (vertex/edge/face always considered) - `body` starts off since
   /// there's nothing for it to do yet (see the class doc comment).
+  /// `sketchPoint`/`sketchLine` start on, mirroring vertex/edge/face's own
+  /// "always considered by default" precedent now that Sketch geometry is
+  /// rendered and pickable in the 3D viewport (Prompt C1). `plane` also
+  /// starts on for the same reason.
   static const defaults = SelectionFilterState(vertex: true, edge: true, face: true, body: false);
 
-  SelectionFilterState copyWith({bool? vertex, bool? edge, bool? face, bool? body}) {
+  SelectionFilterState copyWith({
+    bool? vertex,
+    bool? edge,
+    bool? face,
+    bool? body,
+    bool? sketchPoint,
+    bool? sketchLine,
+    bool? plane,
+  }) {
     return SelectionFilterState(
       vertex: vertex ?? this.vertex,
       edge: edge ?? this.edge,
       face: face ?? this.face,
       body: body ?? this.body,
+      sketchPoint: sketchPoint ?? this.sketchPoint,
+      sketchLine: sketchLine ?? this.sketchLine,
+      plane: plane ?? this.plane,
     );
   }
 
@@ -42,11 +84,16 @@ class SelectionFilterState {
       other.vertex == vertex &&
       other.edge == edge &&
       other.face == face &&
-      other.body == body;
+      other.body == body &&
+      other.sketchPoint == sketchPoint &&
+      other.sketchLine == sketchLine &&
+      other.plane == plane;
 
   @override
-  int get hashCode => Object.hash(vertex, edge, face, body);
+  int get hashCode => Object.hash(vertex, edge, face, body, sketchPoint, sketchLine, plane);
 
   @override
-  String toString() => 'SelectionFilterState(vertex: $vertex, edge: $edge, face: $face, body: $body)';
+  String toString() =>
+      'SelectionFilterState(vertex: $vertex, edge: $edge, face: $face, body: $body, '
+      'sketchPoint: $sketchPoint, sketchLine: $sketchLine, plane: $plane)';
 }

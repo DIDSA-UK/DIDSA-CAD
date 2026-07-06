@@ -23,8 +23,8 @@ Map<String, String> bodyDisplayNames(List<FeatureDto> features, List<String> bod
 
   final sorted = [...bodyIds]
     ..sort((a, b) {
-      final indexA = featureIndex[_baseFeatureId(a)] ?? features.length;
-      final indexB = featureIndex[_baseFeatureId(b)] ?? features.length;
+      final indexA = featureIndex[baseFeatureId(a)] ?? features.length;
+      final indexB = featureIndex[baseFeatureId(b)] ?? features.length;
       if (indexA != indexB) return indexA.compareTo(indexB);
       return _splitIndex(a).compareTo(_splitIndex(b));
     });
@@ -32,10 +32,16 @@ Map<String, String> bodyDisplayNames(List<FeatureDto> features, List<String> bod
   return {for (var i = 0; i < sorted.length; i++) sorted[i]: 'Body ${i + 1}'};
 }
 
-/// Mirrors backend `app.document.extrude.base_feature_id`: strips a `#N`
+/// Mirrors backend `app.document.graph.base_feature_id`: strips a `#N`
 /// split-index suffix to resolve a composite Body id back to the Feature
 /// id that created it. A plain, unsuffixed body_id is returned unchanged.
-String _baseFeatureId(String bodyId) {
+///
+/// Public (not `_baseFeatureId`) since `PartScreen`'s long-press-to-toggle-
+/// visibility on a Bodies-section row also needs it - Hide/Show is always
+/// Feature-scoped (`hidden_feature_ids`), never Body-scoped, so toggling a
+/// Body's own visibility means toggling whichever Feature id this resolves
+/// its `body_id` back to.
+String baseFeatureId(String bodyId) {
   final hashIndex = bodyId.indexOf('#');
   return hashIndex == -1 ? bodyId : bodyId.substring(0, hashIndex);
 }

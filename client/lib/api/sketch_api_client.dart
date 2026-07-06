@@ -18,14 +18,21 @@ class ApiException implements Exception {
 
 class SketchDto {
   final String id;
-  final String plane;
+
+  /// C3: null for a Sketch anchored to a custom CreatePlaneFeature via the
+  /// Document layer (see the backend's `app.sketch.models.Sketch` docstring)
+  /// - always populated for a Sketch created through this standalone
+  /// `/sketch` API directly. [SketchController._plane]/[PlaneIndicator]
+  /// already tolerate a null plane (no indicator shown), so this needs no
+  /// further client-side handling beyond the type becoming nullable here.
+  final String? plane;
   final String originPointId;
 
   SketchDto({required this.id, required this.plane, required this.originPointId});
 
   factory SketchDto.fromJson(Map<String, dynamic> json) => SketchDto(
         id: json['id'] as String,
-        plane: json['plane'] as String,
+        plane: json['plane'] as String?,
         originPointId: json['origin_point_id'] as String,
       );
 }

@@ -1,9 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
+import '../api/sketch_api_client.dart' show ApiException, LineDto, SketchApiClient;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
@@ -11,10 +12,15 @@ import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
 import 'body_naming.dart';
 import 'cascade_delete_dialog.dart';
+import 'chamfer_panel.dart';
+import 'create_plane_context_sheet.dart';
+import 'create_plane_geometry_3d.dart';
+import 'create_plane_panel.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
+import 'fillet_panel.dart';
 import 'mesh_geometry.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
@@ -68,17 +74,32 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
   /// `/mesh` array) - was a single `MeshDto? _mesh` before this. Empty
-  /// (not the placeholder box) whenever the Part has no ExtrudeFeature yet
-  /// or every current Body is hidden - see [_refreshMesh].
+  /// (not the placeholder box) whenever the Part has no ExtrudeFeature yet -
+  /// see [_refreshMesh]. On-device follow-up: unlike its original A3 shape,
+  /// this now includes hidden Bodies too (`BodyMeshDto.hidden`, echoing
+  /// `hidden_feature_ids` back rather than dropping the entry - see
+  /// `app.document.router.get_part_mesh`'s own docstring) so the Build
+  /// Tree's Bodies section can keep listing one; use [_visibleBodies], not
+  /// this directly, for anything that actually renders/hit-tests geometry.
   List<BodyMeshDto> _bodies = [];
   String? _selectedFeatureId;
 
-  /// B3 revision: the Part's real, currently-computed Body ids - excludes
-  /// the dev-time placeholder box (`source: "placeholder"`), which is never
-  /// a real Body and shouldn't appear in the Build Tree's Bodies section or
-  /// [SelectionListDrawer]'s naming.
+  /// B3 revision: the Part's real, currently-computed Body ids, hidden or
+  /// not - excludes only the dev-time placeholder box (`source:
+  /// "placeholder"`), which is never a real Body and shouldn't appear in
+  /// the Build Tree's Bodies section or [SelectionListDrawer]'s naming. Not
+  /// filtered by [BodyMeshDto.hidden] - the Build Tree needs to keep
+  /// listing a hidden Body so Show can be reached again from its own row.
   List<String> get _computedBodyIds =>
       _bodies.where((b) => b.source == 'computed').map((b) => b.bodyId).toList();
+
+  /// [_bodies] filtered down to what should actually render/hit-test in the
+  /// 3D viewport - everything that isn't [BodyMeshDto.hidden]. Use this
+  /// (never [_bodies] directly) for [PartViewport.bodies] and anything else
+  /// that projects/derives from real Body geometry (e.g. the ghost-edge
+  /// reference in [_openSketch]) - [_computedBodyIds]/[_bodyNames] are the
+  /// deliberate exception, since the Build Tree wants the unfiltered list.
+  List<BodyMeshDto> get _visibleBodies => _bodies.where((b) => !b.hidden).toList();
 
   /// Stable "Body 1"/"Body 2"... names shared between the Build Tree's
   /// Bodies section and [SelectionListDrawer] - see `body_naming.dart`.
@@ -91,6 +112,12 @@ class _PartScreenState extends State<PartScreen> {
   /// "New Sketch on..." entry. Controlled-widget state, same pattern as
   /// [_selectedFeatureId]/[FeatureTreePanel].
   ReferencePlaneKind? _selectedPlane;
+
+  /// C3: the created Plane (by Feature id) currently tap-selected in the 3D
+  /// viewport, if any - mirrors [_selectedPlane]'s own controlled-widget
+  /// pattern for [PartViewport]'s brighter highlight, just for a
+  /// `CreatePlaneFeature` instead of one of the three fixed planes.
+  String? _selectedCreatePlaneFeatureId;
 
   /// Stage 10b: whether all three reference planes are globally hidden -
   /// toggled from [PartToolbar]'s "Hide/Show Reference Planes" entry,
@@ -171,6 +198,14 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(face: value));
   }
 
+  void _setSketchPointFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(sketchPoint: value));
+  }
+
+  void _setSketchLineFilter(bool value) {
+    setState(() => _selectionFilterBase = _selectionFilterBase.copyWith(sketchLine: value));
+  }
+
   /// Body is exclusive against vertex/edge/face, not merely additive: there
   /// is no click that lands "on the body" without also landing on one of its
   /// faces/edges/vertices, and [hitTestBodies] tries vertex/edge before body
@@ -178,18 +213,78 @@ class _PartScreenState extends State<PartScreen> {
   /// never actually be picked wherever a vertex/edge is in range - precisely
   /// where users naturally click. Turning Body on therefore forces the other
   /// three off (and the toolbar greys them out, see [PartToolbar]); turning
-  /// it back off restores them to their default on-state.
+  /// it back off restores them to their default on-state. Prompt C1: also
+  /// excludes Sketch Point/Line, which tie with Body Vertex/Edge at the top
+  /// of the hit-test priority order - without this, "Body only" would still
+  /// let a Sketch entity win the pick.
   void _setBodyFilter(bool value) {
     setState(() {
       _selectionFilterBase = value
-          ? const SelectionFilterState(vertex: false, edge: false, face: false, body: true)
-          : _selectionFilterBase.copyWith(vertex: true, edge: true, face: true, body: false);
+          ? const SelectionFilterState(
+              vertex: false,
+              edge: false,
+              face: false,
+              body: true,
+              sketchPoint: false,
+              sketchLine: false,
+            )
+          : _selectionFilterBase.copyWith(
+              vertex: true,
+              edge: true,
+              face: true,
+              body: false,
+              sketchPoint: true,
+              sketchLine: true,
+            );
     });
   }
 
-  /// Feature ids hidden from the 3D viewport via the long-press
-  /// Hide/Show action - client-side only, never sent to the backend.
+  /// Feature ids hidden from the 3D viewport via the long-press Hide/Show
+  /// action (plus [_confirmExtrude]'s auto-hide-the-consumed-Sketch
+  /// bookkeeping, see [_autoHiddenSketchFeatureIds] below) - client-side
+  /// only, and (bug fix, post-C4) now purely cosmetic server-side too, sent
+  /// as `hidden_feature_ids`: every Body is still fully computed against
+  /// the Part's real, unmodified history, so a Plane anchored to a hidden
+  /// Body's face (and anything built on that Plane) keeps resolving
+  /// normally - a hidden Body is only dropped from the mesh response
+  /// afterward. See `app.document.router.get_part_mesh`'s own docstring for
+  /// the full incident writeup of why this and [_rollbackExcludedFeatureIds]
+  /// used to be the same set, and why that broke Create Plane.
   final Set<String> _hiddenFeatureIds = {};
+
+  /// B4 true-rollback's own "pretend these Features (and hence everything
+  /// depending on them) don't exist yet" state (see [_beginRollback]/
+  /// [_endRollback]) - sent to the backend as `rollback_excluded_feature_ids`,
+  /// genuinely excluded from recompute there (unlike [_hiddenFeatureIds]
+  /// above). Kept as a wholly separate set/query-param rather than merged
+  /// into [_hiddenFeatureIds] the way it was before this bug fix - see
+  /// [_hiddenFeatureIds]'s own doc comment for why that broke Create Plane.
+  /// Always empty outside an active rollback edit.
+  final Set<String> _rollbackExcludedFeatureIds = {};
+
+  /// Every Feature id that should be invisible/unpickable in the 3D
+  /// viewport right now, for either reason - [_hiddenFeatureIds] (Hide/Show,
+  /// cosmetic) or [_rollbackExcludedFeatureIds] (true-rollback, the
+  /// Feature genuinely isn't part of the model being previewed). The
+  /// viewport itself (unlike the backend's `/mesh` computation) has no
+  /// reason to tell the two apart - either way, nothing of that Feature's
+  /// should render or be tappable right now.
+  Set<String> get _viewportHiddenFeatureIds => {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds};
+
+  /// The subset of [_hiddenFeatureIds] hidden purely because
+  /// [_confirmExtrude]'s auto-hide-the-consumed-Sketch bookkeeping put them
+  /// there - never because the user explicitly hid them, and never one of
+  /// B4's rollback-suppressed later Features (those live in
+  /// [_rollbackExcludedFeatureIds] instead, never here). A consumed Sketch is
+  /// fully excluded from the 3D viewport (rendering and pickability alike)
+  /// exactly like a manually-hidden Feature - this set exists purely so a
+  /// later event that makes the Sketch stop being consumed (deleting its
+  /// ExtrudeFeature - see the cascade-delete cleanup in
+  /// [_cascadeDeleteFeature] - or explicitly toggling visibility, see
+  /// [_toggleFeatureVisibility]) can tell "hidden because auto-consumed,
+  /// safe to auto-restore" apart from "hidden because the user explicitly
+  /// hid it, leave it alone".
+  final Set<String> _autoHiddenSketchFeatureIds = {};
 
   /// Stage 23 Item 1: whether the viewport is in Selection mode (vs the
   /// default Orbit mode) - toggled by the second FAB added below. Per Item
@@ -228,29 +323,132 @@ class _PartScreenState extends State<PartScreen> {
   /// target-body picker's selection (see [_openExtrudePanel]), so a tap here
   /// is a body pick - reschedules the debounced live-preview re-solve so it
   /// picks up the new `target_body_ids`, same as any other field change.
+  ///
+  /// On-device feedback: while [_filletActive] (the panel now opens
+  /// immediately, whether from the "Add" FAB with zero edges yet or from an
+  /// existing edge selection - see [_openFilletPanel]), a Face tap is
+  /// special-cased to [_toggleFilletFaceEdges] instead of toggling the face
+  /// itself - the filter allows Faces through purely as a "select this
+  /// face's whole edge loop" convenience (see [_filletSelectionFilter]'s
+  /// own doc comment), never as a real Fillet reference. Also reschedules
+  /// the debounced live-preview re-solve while [_filletActive], same
+  /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
+    if (_filletActive && entity.kind == SelectionEntityKind.face) {
+      _toggleFilletFaceEdges(entity);
+      return;
+    }
+    if (_chamferActive && entity.kind == SelectionEntityKind.face) {
+      _toggleChamferFaceEdges(entity);
+      return;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
       _selectedEntities = next;
     });
     if (_extrudeActive) _scheduleExtrudePreview();
+    if (_filletActive) _scheduleFilletPreview();
+    if (_chamferActive) _scheduleChamferPreview();
   }
 
   /// Item 4: "Empty space tap -> clears entire selection set" - passed to
   /// [PartViewport.onClearSelection], fired by a tap (Fix 4) when the
   /// cursor's hover hit is null. See [_toggleSelectedEntity]'s doc comment
-  /// for why this also reschedules the preview during [_extrudeActive].
+  /// for why this also reschedules the preview during [_extrudeActive]/
+  /// [_filletActive]/[_chamferActive].
   void _clearSelectedEntities() {
     setState(() => _selectedEntities = {});
     if (_extrudeActive) _scheduleExtrudePreview();
+    if (_filletActive) _scheduleFilletPreview();
+    if (_chamferActive) _scheduleChamferPreview();
+  }
+
+  /// On-device feedback: [_toggleSelectedEntity]'s Face special-case for the
+  /// Fillet flow - resolves [faceEntity]'s Body/face id to that face's whole
+  /// boundary loop (`BodyMeshDto.mesh.faceEdgeIds`, backend
+  /// `app.document.mesh._extract_face_edge_ids`) and toggles the *whole
+  /// loop* as one unit: if every edge in it is already selected, all are
+  /// removed; otherwise every edge not yet selected is added (a partial
+  /// loop is grown to complete, never left half-toggled). A no-op if the
+  /// face's body/index can't be resolved (stale hit against mesh data
+  /// that's since changed) or the face borders no edges at all (never
+  /// happens for a real solid, but there's nothing to toggle either way).
+  void _toggleFilletFaceEdges(SelectionEntityRef faceEntity) {
+    BodyMeshDto? body;
+    for (final candidate in _bodies) {
+      if (candidate.bodyId == faceEntity.bodyId) {
+        body = candidate;
+        break;
+      }
+    }
+    final faceEdgeIds = body?.mesh.faceEdgeIds;
+    if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return;
+    final loopEdgeIds = faceEdgeIds[faceEntity.id];
+    if (loopEdgeIds.isEmpty) return;
+
+    final loopEntities = [
+      for (final edgeId in loopEdgeIds)
+        SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: faceEntity.bodyId, id: edgeId),
+    ];
+    final allSelected = loopEntities.every(_selectedEntities.contains);
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (allSelected) {
+        next.removeAll(loopEntities);
+      } else {
+        next.addAll(loopEntities);
+      }
+      _selectedEntities = next;
+    });
+    if (_filletActive) _scheduleFilletPreview();
+  }
+
+  /// Mirrors [_toggleFilletFaceEdges] exactly for the Chamfer flow - see
+  /// that method's own doc comment for the full reasoning.
+  void _toggleChamferFaceEdges(SelectionEntityRef faceEntity) {
+    BodyMeshDto? body;
+    for (final candidate in _bodies) {
+      if (candidate.bodyId == faceEntity.bodyId) {
+        body = candidate;
+        break;
+      }
+    }
+    final faceEdgeIds = body?.mesh.faceEdgeIds;
+    if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return;
+    final loopEdgeIds = faceEdgeIds[faceEntity.id];
+    if (loopEdgeIds.isEmpty) return;
+
+    final loopEntities = [
+      for (final edgeId in loopEdgeIds)
+        SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: faceEntity.bodyId, id: edgeId),
+    ];
+    final allSelected = loopEntities.every(_selectedEntities.contains);
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (allSelected) {
+        next.removeAll(loopEntities);
+      } else {
+        next.addAll(loopEntities);
+      }
+      _selectedEntities = next;
+    });
+    if (_chamferActive) _scheduleChamferPreview();
   }
 
   /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
-  /// [_hiddenFeatureIds] - [_visibleSketchGeometries] is the
+  /// [_viewportHiddenFeatureIds] - [_visibleSketchGeometries] is the
   /// hidden-filtered view of this actually passed to [PartViewport].
   Map<String, SketchGeometry3D> _allSketchGeometries = {};
   Map<String, SketchGeometry3D> _visibleSketchGeometries = {};
+
+  /// C2: raw `LineDto`s per Sketch Feature, populated alongside
+  /// [_allSketchGeometries] (see [_refreshSketchGeometries]) - unlike
+  /// [SketchGeometry3D] (world-space render geometry only), this keeps each
+  /// Line's own `startPointId`/`endPointId`, which [_isPointOnLine] needs to
+  /// tell a Line's real endpoint apart from an unrelated Point elsewhere in
+  /// the same Sketch.
+  Map<String, List<LineDto>> _linesByFeatureId = {};
 
   bool _busy = false;
   String? _errorMessage;
@@ -317,12 +515,6 @@ class _PartScreenState extends State<PartScreen> {
   /// was cancelled.
   ({ExtrudeType type, double start, double end, List<String> targetBodyIds})? _extrudeEditSnapshot;
 
-  /// B4: [_hiddenFeatureIds]' value from just before true-rollback editing
-  /// began (see [_beginRollback]/[_endRollback]) - null whenever rollback
-  /// isn't currently active (e.g. editing the last Feature, which has
-  /// nothing after it to suppress in the first place).
-  Set<String>? _hiddenFeatureIdsBeforeRollback;
-
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
   double _extrudeEndDistance = 10.0;
@@ -340,6 +532,282 @@ class _PartScreenState extends State<PartScreen> {
   /// on top of it; restores on Confirm/Cancel since those null out
   /// [_extrudeSketchFeature] without otherwise touching [_featureTreeVisible].
   bool get _extrudeActive => _extrudeSketchFeature != null;
+
+  // --- C2: Create Plane -----------------------------------------------------
+
+  /// Non-null while [CreatePlanePanel] is open - which of the two v1 flows
+  /// (see `create_plane_panel.dart`'s `CreatePlaneMode`) is showing. Set by
+  /// [_onCreatePlaneTapped]/[_openCreatePlanePanelForEdit], cleared by
+  /// [_confirmCreatePlane]/[_cancelCreatePlane].
+  CreatePlaneMode? _createPlaneMode;
+
+  /// The CreatePlaneFeature created (or, in edit mode, already existing) for
+  /// the panel session - mirrors [_previewExtrudeFeatureId]'s "create
+  /// eagerly on open, PATCH on every field edit, Confirm just closes,
+  /// Cancel deletes-or-reverts" pattern, since unlike Extrude there is no
+  /// separate "not yet a real Feature" preview state to speak of: Create
+  /// Plane produces no mesh, so there's no expensive-to-discard geometry
+  /// riding on the distinction. Null only while creation is still in
+  /// flight, or if it failed outright (see [_openCreatePlanePanel]'s own
+  /// handling of that case).
+  String? _previewCreatePlaneFeatureId;
+
+  /// B4: non-null while [CreatePlanePanel] is editing an *existing*
+  /// CreatePlaneFeature (as opposed to [_onCreatePlaneTapped]'s "create a
+  /// brand-new one from the current selection" flow) - same purpose as
+  /// [_editingExtrudeFeatureId].
+  String? _editingCreatePlaneFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelCreatePlane] PATCHes these back verbatim when
+  /// [_editingCreatePlaneFeatureId] is set, same reason
+  /// [_extrudeEditSnapshot] exists.
+  ({
+    List<PlaneRefDto> faceRefs,
+    double? offset,
+    SketchEntityRefDto? lineRef,
+    SketchEntityRefDto? pointRef,
+    SubShapeRefDto? edgeRef,
+    SubShapeRefDto? vertexRef,
+    List<PointRefDto> pointRefs,
+  })? _createPlaneEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmCreatePlane] and [_cancelCreatePlane], same purpose
+  /// [_entitiesBeforeExtrude] serves for target-body picking.
+  Set<SelectionEntityRef>? _entitiesBeforeCreatePlane;
+
+  /// Only meaningful (and only ever read) while [_createPlaneMode] is
+  /// [CreatePlaneMode.offsetFace] - the panel's live offset field value,
+  /// debounced into a PATCH the same way [_extrudeStartDistance] etc. are.
+  double _createPlaneOffset = 0.0;
+
+  Timer? _createPlaneDebounce;
+
+  bool get _createPlaneActive => _createPlaneMode != null;
+
+  /// Prompt D: true while [FilletPanel] is open - unlike [_createPlaneMode]
+  /// (one of six construction methods), Fillet has only the one flow, so
+  /// there's no mode enum to be non-null instead; this is the direct
+  /// equivalent, set synchronously by [_openFilletPanel]/[_openFilletPanelForEdit]
+  /// so the panel shows immediately, even during the brief async gap before
+  /// [_previewFilletFeatureId] itself is set (mirrors [_createPlaneMode]'s
+  /// own reason for being a separate flag from [_previewCreatePlaneFeatureId]).
+  bool _filletActive = false;
+
+  /// The FilletFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewCreatePlaneFeatureId]'s "create
+  /// eagerly on open, PATCH on every field edit, Confirm just closes,
+  /// Cancel deletes-or-reverts" pattern.
+  String? _previewFilletFeatureId;
+
+  /// B4: non-null while [FilletPanel] is editing an *existing* FilletFeature
+  /// (as opposed to [_onFilletTapped]'s "create a brand-new one from the
+  /// current selection" flow) - same purpose as [_editingCreatePlaneFeatureId].
+  String? _editingFilletFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelFillet] PATCHes these back verbatim when
+  /// [_editingFilletFeatureId] is set, same reason [_createPlaneEditSnapshot]
+  /// exists.
+  ({List<SubShapeRefDto> edgeRefs, double radius})? _filletEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmFillet] and [_cancelFillet], same purpose
+  /// [_entitiesBeforeCreatePlane] serves.
+  Set<SelectionEntityRef>? _entitiesBeforeFillet;
+
+  /// The panel's live radius field value, debounced into a PATCH the same
+  /// way [_createPlaneOffset] is.
+  double _filletRadius = 1.0;
+
+  Timer? _filletDebounce;
+
+  /// On-device feedback: the Body id the live rounded-corner visual preview
+  /// targets (see [_refreshFilletPreviewMesh]) - null whenever there's no
+  /// Fillet Feature yet or no edge is currently selected to derive it from.
+  /// Passed straight through to [PartViewport.previewOverlayBodyId].
+  String? _filletPreviewBodyId;
+
+  /// On-device feedback: the *actual current effect* of the in-progress
+  /// Fillet (radius/edges as last successfully PATCHed), fetched
+  /// separately from [_bodies] (which must stay the stable, pre-Fillet
+  /// mesh for the whole live-edit session - see [_ensureFilletFeatureExists]'s
+  /// own doc comment on why) purely so there's something to actually *see*
+  /// while adjusting the radius/edge selection. Passed straight through to
+  /// [PartViewport.previewOverlayMesh], which renders it (translucent-
+  /// tinted, same as an Extrude preview) in place of the stable mesh for
+  /// just the one Body [_filletPreviewBodyId] names - [_bodies] itself,
+  /// and therefore hit-testing/edge-picking, is completely unaffected.
+  /// Prompt E's own Chamfer flow mirrors this exact mechanism with its own
+  /// separate fields ([_chamferPreviewBodyId]/[_chamferPreviewMesh]) - the
+  /// "stable body for picking, separate overlay for the visual" split
+  /// applies identically to both operations, but each keeps its own state
+  /// rather than sharing (see the Chamfer state section's own header
+  /// comment for why).
+  MeshDto? _filletPreviewMesh;
+
+  /// On-device feedback: locks [_selectionFilterOverrides] to edges/faces
+  /// only for the *whole* Fillet flow (from the moment [_openFilletPanel]/
+  /// [_openFilletPanelForEdit] opens the panel, whether or not any edges
+  /// are picked yet) - so a stray vertex/Body tap can never end up in
+  /// [_selectedEntities] mid-flow. `face: true` is not "faces are
+  /// themselves fillet-able" (only edges ever go into `edge_refs`) - it's
+  /// so [_toggleSelectedEntity]'s face branch (see [_toggleFilletFaceEdges])
+  /// can offer "tap a face to select its whole boundary loop" as a
+  /// convenience for reliably building a vertex-complete edge selection.
+  ///
+  /// Bug fix (on-device feedback): `plane: false` too - reference/created
+  /// Planes stayed selectable through this whole flow despite every other
+  /// kind being turned off, since `SelectionFilterState` had no `plane`
+  /// field at all until this fix (`part_viewport.dart`'s
+  /// `_hoverHitTestPlanes` now checks it).
+  static const _filletSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    plane: false,
+  );
+
+  // --- Prompt E: Chamfer state --------------------------------------------
+  // Mirrors every one of the Fillet fields directly above, field for field -
+  // deliberately its own separate set (not shared/generalized with Fillet's)
+  // since only one of _extrudeActive/_createPlaneActive/_filletActive/
+  // _chamferActive is ever true at a time, but generalizing now would mean
+  // touching Fillet's own working code for no functional gain - see
+  // `docs/live-preview-pattern.md`'s own note that this is a call to make
+  // when it's actually needed, not speculatively.
+
+  /// Prompt E: true while [ChamferPanel] is open - mirrors [_filletActive]
+  /// exactly.
+  bool _chamferActive = false;
+
+  /// The ChamferFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewFilletFeatureId].
+  String? _previewChamferFeatureId;
+
+  /// B4: non-null while [ChamferPanel] is editing an *existing*
+  /// ChamferFeature - mirrors [_editingFilletFeatureId].
+  String? _editingChamferFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - mirrors [_filletEditSnapshot].
+  ({List<SubShapeRefDto> edgeRefs, double distance})? _chamferEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - mirrors
+  /// [_entitiesBeforeFillet].
+  Set<SelectionEntityRef>? _entitiesBeforeChamfer;
+
+  /// The panel's live distance field value - mirrors [_filletRadius].
+  double _chamferDistance = 1.0;
+
+  Timer? _chamferDebounce;
+
+  /// Mirrors [_filletPreviewBodyId] - see [_refreshChamferPreviewMesh].
+  String? _chamferPreviewBodyId;
+
+  /// Mirrors [_filletPreviewMesh] - see [_ensureChamferFeatureExists]'s own
+  /// doc comment (identical reasoning to [_ensureFilletFeatureExists]'s).
+  MeshDto? _chamferPreviewMesh;
+
+  /// Mirrors [_filletSelectionFilter] exactly - same edge/face-only, plane-
+  /// off filter, kept as Chamfer's own separate constant rather than
+  /// reusing Fillet's (see this section's own header comment on why).
+  static const _chamferSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    plane: false,
+  );
+
+  /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
+  /// recomputed from [_features] directly (no extra network call - the
+  /// resolved `origin`/`normal` already ride along on every
+  /// `GET .../features` response, see `_create_plane_feature_response`),
+  /// so this is refreshed unconditionally at the end of every
+  /// [_refreshFeatures] call rather than needing its own explicit refresh
+  /// call threaded through every call site the way [_refreshSketchGeometries]
+  /// needs (that one needs its own separate network calls per Sketch).
+  Map<String, ResolvedPlaneGeometry> _createPlaneGeometries = {};
+
+  void _recomputeCreatePlaneGeometries() {
+    _createPlaneGeometries = {
+      for (final feature in _features)
+        if (feature.type == 'create_plane' &&
+            feature.origin != null &&
+            feature.normal != null &&
+            feature.xAxis != null &&
+            feature.yAxis != null)
+          feature.id: ResolvedPlaneGeometry(
+            origin: vm.Vector3(feature.origin![0], feature.origin![1], feature.origin![2]),
+            normal: vm.Vector3(feature.normal![0], feature.normal![1], feature.normal![2]),
+            xAxis: vm.Vector3(feature.xAxis![0], feature.xAxis![1], feature.xAxis![2]),
+            yAxis: vm.Vector3(feature.yAxis![0], feature.yAxis![1], feature.yAxis![2]),
+          ),
+    };
+  }
+
+  /// C3: [feature]'s own resolved basis, converted to [SketchPlaneBasis] for
+  /// a Sketch anchored to it (see `sketch_geometry_3d.dart`) - null if
+  /// [feature] isn't a currently-resolvable `create_plane` Feature (a stale
+  /// reference, or [_recomputeCreatePlaneGeometries] hasn't run yet).
+  SketchPlaneBasis? _customPlaneBasis(String planeFeatureId) {
+    final geometry = _createPlaneGeometries[planeFeatureId];
+    if (geometry == null) return null;
+    return SketchPlaneBasis(
+      origin: geometry.origin,
+      xAxis: geometry.xAxis,
+      yAxis: geometry.yAxis,
+      normal: geometry.normal,
+    );
+  }
+
+  /// C3: [feature]'s own Sketch-embedding basis - a custom plane's (via
+  /// [feature.planeFeatureId]) or one of the three fixed reference planes'
+  /// (via [ReferencePlaneKind], fetched from the standalone Sketch API the
+  /// same way this always worked before C3). Returns null when neither
+  /// resolves (a stale/broken reference, or a fetch failure) - callers treat
+  /// that the same way an unresolvable [ReferencePlaneKind] already was
+  /// (skip rendering/animation, never crash).
+  Future<SketchPlaneBasis?> _sketchPlaneBasisFor(FeatureDto feature) async {
+    final planeFeatureId = feature.planeFeatureId;
+    if (planeFeatureId != null) return _customPlaneBasis(planeFeatureId);
+    final sketchId = feature.sketchId;
+    if (sketchId == null) return null;
+    final sketch = await _sketchApi.getSketch(sketchId);
+    final plane = referencePlaneKindFromApiValue(sketch.plane);
+    return plane == null ? null : SketchPlaneBasis.fixed(plane);
+  }
+
+  /// C2: resolves a `SelectionEntityRef.sketchFeatureId` (a Feature id) back
+  /// to the real `app.sketch.models.Sketch` id the backend's
+  /// `SketchEntityRef.sketch_id` needs - see `SketchEntityRefDto`'s own doc
+  /// comment for why those two ids differ. Null if no such Feature exists
+  /// (defensive only - every sketchLine/sketchPoint selection is always
+  /// tagged with a real, currently-loaded Feature id).
+  String? _sketchIdForFeatureId(String featureId) => _featureById(featureId)?.sketchId;
+
+  /// C2: whether [pointEntityId] is one of [lineEntityId]'s own two endpoint
+  /// ids, within the Sketch Feature [sketchFeatureId] - the real lookup
+  /// `selection_actions.dart`'s `PointOnLineChecker` needs, backed by
+  /// [_linesByFeatureId] (populated alongside [_allSketchGeometries] - see
+  /// [_refreshSketchGeometries]).
+  bool _isPointOnLine(String sketchFeatureId, String lineEntityId, String pointEntityId) {
+    final lines = _linesByFeatureId[sketchFeatureId];
+    if (lines == null) return false;
+    for (final line in lines) {
+      if (line.id == lineEntityId) {
+        return line.startPointId == pointEntityId || line.endPointId == pointEntityId;
+      }
+    }
+    return false;
+  }
 
   @override
   void initState() {
@@ -434,14 +902,17 @@ class _PartScreenState extends State<PartScreen> {
     final part = _part;
     if (part == null) return;
     _features = await _api.listFeatures(part.id);
+    _recomputeCreatePlaneGeometries();
   }
 
-  /// Re-fetches the Part's mesh with [_hiddenFeatureIds] sent along, so a
-  /// hidden ExtrudeFeature's contribution to the displayed solid (and so to
-  /// the camera target/zoom bounds [PartViewport] derives from it) drops
-  /// out immediately - called after anything that can change either the
-  /// Part's geometry (extrude preview/confirm/cancel, cascade delete) or
-  /// [_hiddenFeatureIds] itself (Hide/Show).
+  /// Re-fetches the Part's mesh with [_hiddenFeatureIds]/
+  /// [_rollbackExcludedFeatureIds] sent along (as two separate params - see
+  /// [_hiddenFeatureIds]'s own doc comment for why they must never be
+  /// merged), so a hidden/rolled-back-past ExtrudeFeature's contribution to
+  /// the displayed solid (and so to the camera target/zoom bounds
+  /// [PartViewport] derives from it) drops out immediately - called after
+  /// anything that can change the Part's geometry (extrude preview/confirm/
+  /// cancel, cascade delete) or either of those two sets.
   ///
   /// Discards the response entirely when it's the placeholder box (Prompt
   /// A1: a single-entry array, `body_id: "placeholder"`, `source:
@@ -454,7 +925,11 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshMesh() async {
     final part = _part;
     if (part == null) return;
-    final response = await _api.getPartMesh(part.id, hiddenFeatureIds: _hiddenFeatureIds.toList());
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
+    );
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
     _bodies = isPlaceholder ? [] : response;
   }
@@ -467,58 +942,87 @@ class _PartScreenState extends State<PartScreen> {
   /// issue) only drops that Feature's geometry, not the whole viewport.
   Future<void> _refreshSketchGeometries() async {
     final updated = <String, SketchGeometry3D>{};
+    final updatedLines = <String, List<LineDto>>{};
     for (final feature in _features) {
       final sketchId = feature.sketchId;
       if (sketchId == null) continue; // An ExtrudeFeature - no Sketch of its own.
       try {
-        final sketch = await _sketchApi.getSketch(sketchId);
-        final plane = referencePlaneKindFromApiValue(sketch.plane);
-        if (plane == null) continue;
+        final basis = await _sketchPlaneBasisFor(feature);
+        if (basis == null) continue;
         final points = await _sketchApi.listPoints(sketchId);
         final lines = await _sketchApi.listLines(sketchId);
         final circles = await _sketchApi.listCircles(sketchId);
+        updatedLines[feature.id] = lines;
         final geometry =
-            sketchGeometry3DFrom(plane: plane, points: points, lines: lines, circles: circles);
+            sketchGeometry3DFrom(basis: basis, points: points, lines: lines, circles: circles);
         if (!geometry.isEmpty) updated[feature.id] = geometry;
       } catch (_) {
         // Swallow - see doc comment above.
       }
     }
     _allSketchGeometries = updated;
+    _linesByFeatureId = updatedLines;
     _recomputeVisibleSketchGeometries();
   }
 
   /// Filters [_allSketchGeometries] down to [_visibleSketchGeometries] by
-  /// [_hiddenFeatureIds] - the only place that builds a new Map instance for
-  /// [PartViewport.sketchGeometries], so its `didUpdateWidget` `!=` check
-  /// only fires on a genuine content/visibility change.
+  /// [_viewportHiddenFeatureIds] (Hide/Show *and* true-rollback alike - the
+  /// viewport doesn't care which of the two reasons applies) - the only
+  /// place that builds a new `Map` instance for [PartViewport.
+  /// sketchGeometries], so its `didUpdateWidget` `!=` check only fires on a
+  /// genuine content/visibility change.
+  ///
+  /// A Feature auto-hidden because it's consumed by a downstream Extrude
+  /// (see [_autoHiddenSketchFeatureIds]) is excluded here exactly like a
+  /// manually-hidden one - fully invisible and unpickable in the 3D
+  /// viewport, not merely dimmed. Referencing a consumed Sketch's own
+  /// geometry (e.g. for Create Plane's "normal to line at point") requires
+  /// explicitly un-hiding it first via [_toggleFeatureVisibility].
   void _recomputeVisibleSketchGeometries() {
+    final hidden = _viewportHiddenFeatureIds;
     _visibleSketchGeometries = {
       for (final entry in _allSketchGeometries.entries)
-        if (!_hiddenFeatureIds.contains(entry.key)) entry.key: entry.value,
+        if (!hidden.contains(entry.key)) entry.key: entry.value,
     };
   }
 
-  /// Creates a SketchFeature on [plane] and navigates straight to its
-  /// SketchScreen - called from both the free-tap fly-up sheet flow
-  /// ([_showPlaneContextSheet]) and the FAB's flyout-driven
-  /// plane-selection mode ([_onPlaneTap]).
-  Future<void> _addSketchFeature({ReferencePlaneKind plane = ReferencePlaneKind.xy}) async {
+  /// Creates a SketchFeature on [plane] (default) or, since C3, anchored to
+  /// an existing created Plane ([planeFeatureId] - never both) and navigates
+  /// straight to its SketchScreen - called from the free-tap fly-up sheet
+  /// flow ([_showPlaneContextSheet]), the FAB's flyout-driven plane-selection
+  /// mode ([_onPlaneTap]), and (C3) a created Plane's own context sheet's
+  /// "Create Sketch on Plane" action ([_onCreatePlaneContextAction]).
+  ///
+  /// C3: a custom-plane Sketch has no [ReferencePlaneKind] to animate the
+  /// camera toward (see [_openSketchWithAnimation]'s own doc comment) - skips
+  /// the animation for that case, same graceful degradation.
+  Future<void> _addSketchFeature({ReferencePlaneKind? plane, String? planeFeatureId}) async {
     final part = _part;
     if (part == null || _busy) return;
+    final fixedPlane = planeFeatureId == null ? (plane ?? ReferencePlaneKind.xy) : null;
 
     FeatureDto? created;
     await _runGuarded(() async {
-      created = await _api.createSketchFeature(part.id, plane: plane.apiValue);
+      created = await _api.createSketchFeature(
+        part.id,
+        plane: fixedPlane?.apiValue,
+        planeFeatureId: planeFeatureId,
+      );
       await _refreshFeatures();
       await _refreshSketchGeometries();
     });
 
     final feature = created;
     if (feature != null && mounted) {
-      await _viewportKey.currentState?.animateToPlane(plane);
-      if (!mounted) return;
-      await _openSketch(feature, plane: plane);
+      SketchPlaneBasis? basis;
+      if (fixedPlane != null) {
+        await _viewportKey.currentState?.animateToPlane(fixedPlane);
+        if (!mounted) return;
+        basis = SketchPlaneBasis.fixed(fixedPlane);
+      } else if (planeFeatureId != null) {
+        basis = _customPlaneBasis(planeFeatureId);
+      }
+      await _openSketch(feature, basis: basis);
     }
   }
 
@@ -532,6 +1036,15 @@ class _PartScreenState extends State<PartScreen> {
   /// highlight) and opens [showPlaneContextSheet]'s fly-up with its
   /// contextual action - Stage 19b Item 2 moved that out of the hamburger
   /// drawer, which must no longer open on a selection tap.
+  ///
+  /// C5: only ever reached in Orbit mode - [PartViewport]'s own pointer
+  /// dispatch ([PartViewport._onPointerEnd]) routes every tap in Selection
+  /// mode to its cursor/hover/commit pipeline instead ([PartViewport.
+  /// _commitSelection] -> [onSelectionToggle]/[_toggleSelectedEntity]), which
+  /// is how a plane tap actually joins [_selectedEntities] now (see
+  /// [PartViewport._hoverHitTestPlanes]) - this callback is simply never
+  /// invoked while [_selectionMode] is true, so it needs no gating of its
+  /// own here.
   void _onPlaneTap(ReferencePlaneKind plane) {
     if (_planeSelectionMode) {
       setState(() => _planeSelectionModeStack.pop());
@@ -558,6 +1071,40 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// C3: a tap that landed on a created Plane's rendered quad - selects it
+  /// (brighter highlight, mirroring [_onPlaneTap]'s own for the three fixed
+  /// planes) and opens [showCreatePlaneContextSheet]'s fly-up.
+  ///
+  /// C5: mirrors [_onPlaneTap]'s own doc comment - only ever reached in
+  /// Orbit mode, so it needs no Selection-mode gating of its own either.
+  void _onCreatePlaneFeatureTap(String featureId) {
+    setState(() {
+      _selectedCreatePlaneFeatureId = featureId;
+      _featureTreeVisible = false;
+    });
+    _showCreatePlaneContextSheet(featureId);
+  }
+
+  /// Awaits [showCreatePlaneContextSheet] and acts on whatever it returns,
+  /// clearing the highlight once it's dismissed either way - mirrors
+  /// [_showPlaneContextSheet] exactly. "Create Sketch on Plane" reuses
+  /// [_addSketchFeature]'s [planeFeatureId] path; "Delete Plane" reuses the
+  /// same cascade-delete flow ([_cascadeDeleteFeature]) every other Feature's
+  /// long-press menu already offers, since a created Plane is just another
+  /// Feature that may have Sketches (and their own downstream Extrudes)
+  /// depending on it.
+  Future<void> _showCreatePlaneContextSheet(String featureId) async {
+    final action = await showCreatePlaneContextSheet(context, featureId: featureId);
+    if (!mounted) return;
+    setState(() => _selectedCreatePlaneFeatureId = null);
+    if (action == CreatePlaneContextSheetAction.newSketch) {
+      await _addSketchFeature(planeFeatureId: featureId);
+    } else if (action == CreatePlaneContextSheetAction.delete) {
+      final feature = _featureById(featureId);
+      if (feature != null) await _cascadeDeleteFeature(feature);
+    }
+  }
+
   /// A tap that missed every reference plane - dismisses the toolbar and
   /// clears the selection, mirroring a tap on empty space elsewhere in the
   /// app deselecting whatever was selected; also exits [_planeSelectionMode]
@@ -566,6 +1113,7 @@ class _PartScreenState extends State<PartScreen> {
   void _onViewportBackgroundTap() {
     setState(() {
       _selectedPlane = null;
+      _selectedCreatePlaneFeatureId = null;
       _toolbarOpen = false;
       _planeSelectionModeStack.pop();
     });
@@ -595,16 +1143,47 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
-  /// acts on whichever (enabled) entry was tapped. Only Extrude is wired up
-  /// per the Stage 19b brief; the rest render disabled in the sheet itself
-  /// and so never produce an action here.
+  /// acts on whichever (enabled) entry was tapped. Extrude and (C3) Plane
+  /// are wired up; the rest render disabled in the sheet itself and so
+  /// never produce an action here.
   Future<void> _onFeaturePressed() async {
     final action = await showFeaturePickerSheet(context);
     if (!mounted || action == null) return;
     switch (action) {
       case FeaturePickerAction.extrude:
         await _extrudeSelectedFeature();
+      case FeaturePickerAction.plane:
+        _startPlanePicker();
+      case FeaturePickerAction.fillet:
+        _startFilletPicker();
+      case FeaturePickerAction.chamfer:
+        _startChamferPicker();
     }
+  }
+
+  /// C3/C4/C5: the "Add" FAB's Feature picker's "Plane" entry - clears the
+  /// current selection, switches to Selection mode (a bare tap in Orbit mode
+  /// does nothing - this used to leave the user in whichever mode they were
+  /// already in, silently stranding anyone who opened this from Orbit mode
+  /// with a hint but no way to act on it), and hints what to pick next, then
+  /// relies entirely on the pre-existing ambient selection machinery
+  /// ([SelectionContextPanel]/`contextActionsFor`/[_onCreatePlaneTapped]) to
+  /// actually open [CreatePlanePanel] once a valid combo is selected. Unlike
+  /// [_startSketchPicker], there is no separate guided-picker mode to enter -
+  /// Create Plane's selection flow already worked this way for every other
+  /// entry point (a free tap on a Face/Line/Point/plane in the viewport
+  /// already offers "Create Plane" before this menu entry is even used), so
+  /// this just clears the deck, ensures taps do something, and points the
+  /// user at it.
+  void _startPlanePicker() {
+    setState(() {
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _planeSelectionModeStack.pop();
+    });
+    _showSnack('Select a face or plane (or two, for a midplane) to create a plane');
   }
 
   /// Extrudes the Feature currently selected in the tree, opened from the
@@ -759,6 +1338,19 @@ class _PartScreenState extends State<PartScreen> {
       // leaving rollback stuck engaged with nothing to end it.
       final opened = _openExtrudePanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'create_plane') {
+      // C2: rollback is ended by _confirmCreatePlane/_cancelCreatePlane
+      // instead, same "stays engaged for the panel's whole lifetime"
+      // reasoning as the extrude branch above.
+      _openCreatePlanePanelForEdit(feature);
+    } else if (feature.type == 'fillet') {
+      // Prompt D: rollback is ended by _confirmFillet/_cancelFillet
+      // instead, same "stays engaged for the panel's whole lifetime"
+      // reasoning as the extrude/create_plane branches above.
+      await _openFilletPanelForEdit(feature);
+    } else if (feature.type == 'chamfer') {
+      // Prompt E: mirrors the fillet branch above exactly.
+      await _openChamferPanelForEdit(feature);
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -767,35 +1359,34 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// B4: engages true rollback - hides [rollbackIds] on top of whatever the
-  /// user already had hidden manually (Hide/Show, unrelated to this),
-  /// stashing the pre-rollback set so [_endRollback] can restore it
-  /// exactly. Reuses the pre-existing [_hiddenFeatureIds]/
-  /// `hidden_feature_ids` mechanism (A1) - a Feature named there is already
-  /// excluded entirely from backend recompute, not just hidden visually -
-  /// rather than inventing a second, parallel suppression concept.
+  /// B4: engages true rollback - adds [rollbackIds] to
+  /// [_rollbackExcludedFeatureIds], entirely separate from whatever the user
+  /// already had hidden manually via [_hiddenFeatureIds] (Hide/Show,
+  /// unrelated to this). Bug fix (post-C4): used to reuse [_hiddenFeatureIds]
+  /// itself for this (stashing/restoring it around the edit) on the theory
+  /// that "rolled back" and "hidden" meant the same thing to the backend -
+  /// see [_hiddenFeatureIds]'s own doc comment for why that broke Create
+  /// Plane once a Plane could depend on a hidden Body's face. No stash/
+  /// restore needed anymore: [_rollbackExcludedFeatureIds] starts and ends
+  /// every rollback empty, untouched by anything else.
   Future<void> _beginRollback(Set<String> rollbackIds) async {
-    _hiddenFeatureIdsBeforeRollback = Set.of(_hiddenFeatureIds);
-    setState(() => _hiddenFeatureIds.addAll(rollbackIds));
+    setState(() => _rollbackExcludedFeatureIds.addAll(rollbackIds));
     await _runGuarded(_refreshMesh);
   }
 
-  /// B4: undoes [_beginRollback] - restores exactly the hidden set from
-  /// before rollback began, discarding the rollback-only additions (a real
-  /// manual Hide/Show made *during* the edit is also discarded here, same
-  /// as every other "restore to before this flow started" stash in this
-  /// file, e.g. [_meshBeforeExtrude]/[_entitiesBeforeExtrude]). A safe no-op
-  /// if rollback was never engaged for this edit (editing the last
-  /// Feature).
+  /// B4: undoes [_beginRollback] - clears [_rollbackExcludedFeatureIds]
+  /// entirely (it only ever holds rollback-only ids, nothing to preserve).
+  /// A safe no-op if rollback was never engaged for this edit (editing the
+  /// last Feature).
   Future<void> _endRollback() async {
-    final before = _hiddenFeatureIdsBeforeRollback;
-    if (before == null) return;
+    if (_rollbackExcludedFeatureIds.isEmpty) return;
     setState(() {
-      _hiddenFeatureIds
-        ..clear()
-        ..addAll(before);
+      _rollbackExcludedFeatureIds.clear();
+      // Without this, [_visibleSketchGeometries] would stay computed
+      // against the mid-rollback hidden set until some unrelated later
+      // refresh happened to recompute it.
+      _recomputeVisibleSketchGeometries();
     });
-    _hiddenFeatureIdsBeforeRollback = null;
     await _runGuarded(_refreshMesh);
   }
 
@@ -809,18 +1400,53 @@ class _PartScreenState extends State<PartScreen> {
     _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
   }
 
+  /// On-device feedback: long-pressing a Body row used to directly toggle
+  /// its Hide/Show state; it now opens a context menu instead, matching the
+  /// same bottom-sheet style a Feature row's long-press already shows (see
+  /// [showFeatureContextMenu]) - resolves [bodyId] back to the Feature that
+  /// produced it via [baseFeatureId] (`body_naming.dart`) since Hide/Show is
+  /// always Feature-scoped. Defensive no-op if that Feature can no longer be
+  /// found (a stale [bodyId] from a mesh response that's since changed).
+  Future<void> _onBodyLongPress(String bodyId) async {
+    if (_busy) return;
+    final feature = _featureById(baseFeatureId(bodyId));
+    if (feature == null) return;
+
+    final action = await showBodyContextMenu(
+      context,
+      isHidden: _hiddenFeatureIds.contains(feature.id),
+    );
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case BodyContextMenuAction.toggleVisibility:
+        await _toggleFeatureVisibility(feature);
+    }
+  }
+
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
   /// brief's "camera animation when entering a sketch") before navigating to
   /// its 2D canvas - skips straight to navigation if the plane can't be
   /// resolved (e.g. a fetch failure), rather than blocking the open.
   Future<void> _openSketchWithAnimation(FeatureDto feature) async {
+    final planeFeatureId = feature.planeFeatureId;
+    if (planeFeatureId != null) {
+      // C3: a custom-plane Sketch has no ReferencePlaneKind to animate the
+      // camera to (orientationFacingPlane only covers the three fixed
+      // planes) - skips the animation, the same graceful "can't resolve,
+      // just navigate" fallback this method already used for a fetch
+      // failure, and still passes along the real basis for the ghost
+      // overlay below.
+      await _openSketch(feature, basis: _customPlaneBasis(planeFeatureId));
+      return;
+    }
     final plane = await _planeOfFeature(feature);
     if (!mounted) return;
     if (plane != null) {
       await _viewportKey.currentState?.animateToPlane(plane);
       if (!mounted) return;
     }
-    await _openSketch(feature, plane: plane);
+    await _openSketch(feature, basis: plane == null ? null : SketchPlaneBasis.fixed(plane));
   }
 
   Future<ReferencePlaneKind?> _planeOfFeature(FeatureDto feature) async {
@@ -902,8 +1528,22 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEndDistance = 10.0;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
+      // On-device feedback: a one-time default rather than the permanent
+      // forced-true override this used to be (see the removed ternary at
+      // this widget's own `PartViewport.selectionMode` call site) - target-
+      // body picking needs Selection mode to start with, but the user must
+      // still be able to toggle back to Orbit mode via the FAB (now visible
+      // throughout this panel's lifetime) to look around before picking.
+      _selectionMode = true;
       _selectionFilterOverrides.push(
-        const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+        const SelectionFilterState(
+          vertex: false,
+          edge: false,
+          face: false,
+          body: true,
+          sketchPoint: false,
+          sketchLine: false,
+        ),
       );
     });
   }
@@ -945,8 +1585,17 @@ class _PartScreenState extends State<PartScreen> {
         for (final bodyId in targetBodyIds)
           SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
       };
+      // See _openExtrudePanel's own comment on this same line.
+      _selectionMode = true;
       _selectionFilterOverrides.push(
-        const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+        const SelectionFilterState(
+          vertex: false,
+          edge: false,
+          face: false,
+          body: true,
+          sketchPoint: false,
+          sketchLine: false,
+        ),
       );
     });
     return true;
@@ -1086,7 +1735,13 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (!mounted) return;
     setState(() {
-      if (sketchFeature != null && !wasEditing) _hiddenFeatureIds.add(sketchFeature.id);
+      if (sketchFeature != null && !wasEditing) {
+        _hiddenFeatureIds.add(sketchFeature.id);
+        // This is *the* auto-hide-on-consume case [_autoHiddenSketchFeatureIds]
+        // exists for - mark it so a later event that un-consumes this
+        // Sketch (deleting its Extrude) can auto-restore its visibility.
+        _autoHiddenSketchFeatureIds.add(sketchFeature.id);
+      }
       _recomputeVisibleSketchGeometries();
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
@@ -1176,6 +1831,844 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- C2: Create Plane -----------------------------------------------------
+
+  /// [SelectionContextPanel.onCreatePlane]'s callback - re-derives which of
+  /// the three flows applies from [_selectedEntities]' current shape, the
+  /// same check `selection_actions.dart`'s `contextActionsFor` already used
+  /// to decide the button should be enabled in the first place (so this is
+  /// never reached for any other selection shape).
+  void _onCreatePlaneTapped() {
+    final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+    final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    final vertices = _selectedEntities.where((e) => e.kind == SelectionEntityKind.vertex).toList();
+    final points = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchPoint).toList();
+    final lines = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchLine).toList();
+    // C5: a fixed reference plane or an existing Plane is "plane-like" for
+    // the same three combos a Body face already was - see
+    // `selection_actions.dart`'s own `planeLikeCount`, which this mirrors
+    // exactly (same precedence, same combo shapes).
+    final referencePlanes = _selectedEntities.where((e) => e.kind == SelectionEntityKind.referencePlane);
+    final createPlanes = _selectedEntities.where((e) => e.kind == SelectionEntityKind.createPlane);
+    final planeLikes = [...faces, ...referencePlanes, ...createPlanes];
+
+    // C4: exactly three points total (any mix of Body Vertices and Sketch
+    // Points) - checked first, same precedence `selection_actions.dart`'s
+    // `contextActionsFor` already gives this combo over the single-line-
+    // plus-point/single-face checks below.
+    if (vertices.length + points.length == 3 && _selectedEntities.length == 3) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.threePoints, pointEntities: [...vertices, ...points]);
+      return;
+    }
+    if (planeLikes.length == 1 && _selectedEntities.length == 1) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.offsetFace, faceEntities: planeLikes);
+      return;
+    }
+    if (planeLikes.length == 2 && _selectedEntities.length == 2) {
+      _openCreatePlanePanel(mode: CreatePlaneMode.midplane, faceEntities: planeLikes);
+      return;
+    }
+    // C4: exactly one Edge and one Vertex - Normal to Edge Through Vertex.
+    if (edges.length == 1 && vertices.length == 1 && _selectedEntities.length == 2) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.normalToEdgeThroughVertex,
+        edgeEntity: edges.single,
+        vertexEntity: vertices.single,
+      );
+      return;
+    }
+    // C4/C5: exactly one plane-like entity and one Vertex - Parallel to
+    // Face Through Vertex.
+    if (planeLikes.length == 1 && vertices.length == 1 && _selectedEntities.length == 2) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.parallelToFaceThroughVertex,
+        faceEntities: planeLikes,
+        vertexEntity: vertices.single,
+      );
+      return;
+    }
+    if (points.length == 1 && lines.length == 1) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.normalToLineAtPoint,
+        lineEntity: lines.single,
+        pointEntity: points.single,
+      );
+    }
+  }
+
+  /// C4: converts a selected [SelectionEntityRef] into a [PointRefDto] for
+  /// [CreatePlaneMode.threePoints] - a Body Vertex ([SelectionEntityKind.
+  /// vertex], identified by [SelectionEntityRef.bodyId]/[SelectionEntityRef.id])
+  /// or a Sketch Point ([SelectionEntityKind.sketchPoint], identified by
+  /// [SelectionEntityRef.sketchFeatureId]/[SelectionEntityRef.sketchEntityId],
+  /// resolved to a real Sketch id via [_sketchIdForFeatureId] the same way
+  /// the normal-to-line-at-point flow already does) - never anything else,
+  /// since [_onCreatePlaneTapped]'s own pool for this mode is exactly those
+  /// two kinds.
+  PointRefDto? _pointRefDtoFor(SelectionEntityRef entity) {
+    if (entity.kind == SelectionEntityKind.vertex) {
+      return PointRefDto(
+        vertexRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'vertex', index: entity.id),
+      );
+    }
+    assert(entity.kind == SelectionEntityKind.sketchPoint);
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return null; // Defensive - see _sketchIdForFeatureId's own doc comment.
+    return PointRefDto(
+      sketchPointRef: SketchEntityRefDto(
+        sketchId: sketchId,
+        entityType: 'point',
+        entityId: entity.sketchEntityId,
+      ),
+    );
+  }
+
+  /// C5: converts a selected [SelectionEntityRef] into a [PlaneRefDto] for
+  /// [CreatePlaneMode.offsetFace]/[CreatePlaneMode.midplane]/
+  /// [CreatePlaneMode.parallelToFaceThroughVertex]'s `faceEntities` - a Body
+  /// Face ([SelectionEntityKind.face]), a fixed reference plane
+  /// ([SelectionEntityKind.referencePlane]), or an existing Plane
+  /// ([SelectionEntityKind.createPlane]) - never anything else, since
+  /// [_onCreatePlaneTapped]'s own pool for these three modes is exactly
+  /// those three kinds (mirrors [_pointRefDtoFor]'s own doc comment).
+  PlaneRefDto _planeRefDtoFor(SelectionEntityRef entity) {
+    if (entity.kind == SelectionEntityKind.referencePlane) {
+      return PlaneRefDto(fixedPlane: entity.referencePlaneKind!.apiValue);
+    }
+    if (entity.kind == SelectionEntityKind.createPlane) {
+      return PlaneRefDto(planeFeatureId: entity.planeFeatureId);
+    }
+    assert(entity.kind == SelectionEntityKind.face);
+    return PlaneRefDto(
+      faceRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+    );
+  }
+
+  /// Creates the CreatePlaneFeature eagerly (mirrors [_ensureExtrudeFeatureExists]'s
+  /// "create on open" pattern) from whichever refs [_onCreatePlaneTapped]
+  /// resolved. Stashes/clears [_selectedEntities] the same way
+  /// [_openExtrudePanel] does for target-body picking, since the
+  /// face(s)/line/point that triggered this is baked into the created
+  /// Feature, not something the user keeps adjusting in the viewport
+  /// afterward. [faceEntities] has exactly one entry for [CreatePlaneMode.
+  /// offsetFace]/[CreatePlaneMode.parallelToFaceThroughVertex] or exactly two
+  /// for [CreatePlaneMode.midplane] (C3). C4: [edgeEntity]/[vertexEntity] are
+  /// only meaningful for [CreatePlaneMode.normalToEdgeThroughVertex]/
+  /// [CreatePlaneMode.parallelToFaceThroughVertex]; [pointEntities] (exactly
+  /// three, each a Vertex or a Sketch Point) only for [CreatePlaneMode.
+  /// threePoints].
+  Future<void> _openCreatePlanePanel({
+    required CreatePlaneMode mode,
+    List<SelectionEntityRef> faceEntities = const [],
+    SelectionEntityRef? lineEntity,
+    SelectionEntityRef? pointEntity,
+    SelectionEntityRef? edgeEntity,
+    SelectionEntityRef? vertexEntity,
+    List<SelectionEntityRef> pointEntities = const [],
+  }) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _createPlaneMode = mode;
+      _entitiesBeforeCreatePlane = _selectedEntities;
+      _selectedEntities = {};
+      if (mode == CreatePlaneMode.offsetFace) _createPlaneOffset = 0.0;
+    });
+    await _runGuarded(() async {
+      final FeatureDto feature;
+      if (mode == CreatePlaneMode.offsetFace || mode == CreatePlaneMode.midplane) {
+        final faceRefs = faceEntities.map(_planeRefDtoFor).toList();
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: mode == CreatePlaneMode.offsetFace ? 'offset_face' : 'midplane',
+          faceRefs: faceRefs,
+          offset: mode == CreatePlaneMode.offsetFace ? _createPlaneOffset : null,
+        );
+      } else if (mode == CreatePlaneMode.normalToEdgeThroughVertex) {
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'normal_to_edge_through_vertex',
+          edgeRef: SubShapeRefDto(bodyId: edgeEntity!.bodyId, shapeType: 'edge', index: edgeEntity.id),
+          vertexRef: SubShapeRefDto(bodyId: vertexEntity!.bodyId, shapeType: 'vertex', index: vertexEntity.id),
+        );
+      } else if (mode == CreatePlaneMode.parallelToFaceThroughVertex) {
+        final faceRefs = faceEntities.map(_planeRefDtoFor).toList();
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'parallel_to_face_through_vertex',
+          faceRefs: faceRefs,
+          vertexRef: SubShapeRefDto(bodyId: vertexEntity!.bodyId, shapeType: 'vertex', index: vertexEntity.id),
+        );
+      } else if (mode == CreatePlaneMode.threePoints) {
+        final pointRefs = pointEntities.map(_pointRefDtoFor).toList();
+        if (pointRefs.any((ref) => ref == null)) return; // Defensive - see _pointRefDtoFor's own doc comment.
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'three_points',
+          pointRefs: pointRefs.cast<PointRefDto>(),
+        );
+      } else {
+        final sketchId = _sketchIdForFeatureId(lineEntity!.sketchFeatureId);
+        if (sketchId == null) return; // Defensive - see _sketchIdForFeatureId's own doc comment.
+        final lineRef = SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'line',
+          entityId: lineEntity.sketchEntityId,
+        );
+        final pointRef = SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'point',
+          entityId: pointEntity!.sketchEntityId,
+        );
+        feature = await _api.createCreatePlaneFeature(
+          part.id,
+          planeType: 'normal_to_line_at_point',
+          lineRef: lineRef,
+          pointRef: pointRef,
+        );
+      }
+      _previewCreatePlaneFeatureId = feature.id;
+      await _refreshFeatures();
+    });
+    if (_previewCreatePlaneFeatureId == null && mounted) {
+      // Creation failed (e.g. non_planar_reference/point_not_on_line/
+      // faces_not_parallel - _errorMessage is already set by _runGuarded) -
+      // nothing to edit, so close the panel back out rather than leaving it
+      // stuck open with no real Feature behind it.
+      setState(() {
+        _createPlaneMode = null;
+        _selectedEntities = _entitiesBeforeCreatePlane ?? {};
+        _entitiesBeforeCreatePlane = null;
+      });
+    }
+  }
+
+  /// B4: opens [CreatePlanePanel] to edit an *already-existing*
+  /// CreatePlaneFeature - mirrors [_openExtrudePanelForEdit] exactly,
+  /// including the "no zero-argument reconstruction" snapshot stash for
+  /// [_cancelCreatePlane] to PATCH back verbatim.
+  void _openCreatePlanePanelForEdit(FeatureDto feature) {
+    final mode = switch (feature.planeType) {
+      'offset_face' => CreatePlaneMode.offsetFace,
+      'midplane' => CreatePlaneMode.midplane,
+      'normal_to_edge_through_vertex' => CreatePlaneMode.normalToEdgeThroughVertex,
+      'parallel_to_face_through_vertex' => CreatePlaneMode.parallelToFaceThroughVertex,
+      'three_points' => CreatePlaneMode.threePoints,
+      _ => CreatePlaneMode.normalToLineAtPoint,
+    };
+    setState(() {
+      _createPlaneMode = mode;
+      _editingCreatePlaneFeatureId = feature.id;
+      _previewCreatePlaneFeatureId = feature.id;
+      _createPlaneOffset = feature.offset ?? 0.0;
+      _createPlaneEditSnapshot = (
+        faceRefs: feature.faceRefs,
+        offset: feature.offset,
+        lineRef: feature.lineRef,
+        pointRef: feature.pointRef,
+        edgeRef: feature.edgeRef,
+        vertexRef: feature.vertexRef,
+        pointRefs: feature.pointRefs,
+      );
+      _entitiesBeforeCreatePlane = _selectedEntities;
+      _selectedEntities = {};
+    });
+  }
+
+  /// Debounces the panel's offset-field edits into a PATCH + Feature refresh,
+  /// same 500ms-after-last-change pattern [_scheduleExtrudePreview] uses.
+  /// Only ever called while [_createPlaneMode] is [CreatePlaneMode.offsetFace] -
+  /// [CreatePlaneMode.normalToLineAtPoint] has no field to debounce.
+  void _onCreatePlaneOffsetChanged(double offset) {
+    _createPlaneOffset = offset;
+    _createPlaneDebounce?.cancel();
+    _createPlaneDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(_ensureCreatePlaneOffsetUpdated);
+    });
+  }
+
+  Future<void> _ensureCreatePlaneOffsetUpdated() async {
+    final part = _part;
+    final featureId = _previewCreatePlaneFeatureId;
+    if (part == null || featureId == null) return;
+    await _api.updateCreatePlaneFeature(part.id, featureId, offset: _createPlaneOffset);
+    await _refreshFeatures();
+  }
+
+  /// Keeps the just-created/edited Feature (it's already fully persisted -
+  /// unlike Extrude, there's no separate "not yet real" preview state to
+  /// promote), restores whatever was selected before the panel opened, and
+  /// rolls B4 rollback forward.
+  Future<void> _confirmCreatePlane() async {
+    _createPlaneDebounce?.cancel();
+    setState(() {
+      _createPlaneMode = null;
+      _selectedEntities = _entitiesBeforeCreatePlane ?? {};
+      _entitiesBeforeCreatePlane = null;
+      _previewCreatePlaneFeatureId = null;
+      _editingCreatePlaneFeatureId = null;
+      _createPlaneEditSnapshot = null;
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview Feature (new-Plane flow) or PATCHes
+  /// [_createPlaneEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelExtrude]'s structure exactly.
+  Future<void> _cancelCreatePlane() async {
+    _createPlaneDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewCreatePlaneFeatureId;
+    final wasEditing = _editingCreatePlaneFeatureId != null;
+    final editSnapshot = _createPlaneEditSnapshot;
+    setState(() {
+      _createPlaneMode = null;
+      _selectedEntities = _entitiesBeforeCreatePlane ?? {};
+      _entitiesBeforeCreatePlane = null;
+      _previewCreatePlaneFeatureId = null;
+      _editingCreatePlaneFeatureId = null;
+      _createPlaneEditSnapshot = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateCreatePlaneFeature(
+            part.id,
+            previewId,
+            faceRefs: editSnapshot.faceRefs,
+            offset: editSnapshot.offset,
+            lineRef: editSnapshot.lineRef,
+            pointRef: editSnapshot.pointRef,
+            edgeRef: editSnapshot.edgeRef,
+            vertexRef: editSnapshot.vertexRef,
+            pointRefs: editSnapshot.pointRefs,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  // --- Prompt D: Fillet -------------------------------------------------
+
+  /// On-device feedback: the "Add" FAB's Feature picker's "Fillet" entry -
+  /// mirrors [_startPlanePicker]'s shape (clear selection, force Selection
+  /// mode, hint what to pick) - just [_openFilletPanel] with no edges yet,
+  /// so the [FilletPanel] itself (radius field, Confirm/Cancel) flies up
+  /// immediately rather than waiting for a separate "edges picked, now tap
+  /// the ambient Fillet button" step (on-device feedback: the old
+  /// picker-then-hand-off shape made the FAB entry feel like it hadn't
+  /// actually done anything until that extra tap). No Feature exists until
+  /// the first edge is actually picked - see [_ensureFilletFeatureExists]'s
+  /// create-or-update branching, mirroring [_ensureExtrudeFeatureExists].
+  void _startFilletPicker() {
+    _openFilletPanel(edgeEntities: const []);
+  }
+
+  /// [SelectionContextPanel.onFillet]'s callback - `contextActionsFor` only
+  /// ever enables this button for a selection that's one or more edges, all
+  /// on the same Body, so there is no combination to re-derive the way
+  /// [_onCreatePlaneTapped] has to for its own six flows.
+  void _onFilletTapped() {
+    final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    _openFilletPanel(edgeEntities: edges);
+  }
+
+  /// Opens [FilletPanel] immediately, whether [edgeEntities] is empty (the
+  /// "Add" FAB's guided entry - see [_startFilletPicker]) or already has
+  /// edges (the ambient [SelectionContextPanel] button - see
+  /// [_onFilletTapped]). No FilletFeature is created yet when
+  /// [edgeEntities] is empty - there is nothing valid to create until at
+  /// least one edge is picked - so this returns right after opening the
+  /// panel in that case; [_ensureFilletFeatureExists] (via
+  /// [_scheduleFilletPreview], fired by the first edge/face-loop tap) is
+  /// what actually creates it, mirroring [_ensureExtrudeFeatureExists]'s own
+  /// create-or-update branching.
+  ///
+  /// On-device feedback: the edge selection stays *live* for the panel's
+  /// whole session - [_selectedEntities] keeps [edgeEntities] (rather than
+  /// being cleared to `{}`) and a [_filletSelectionFilter] override is
+  /// pushed, mirroring [_openExtrudePanel]'s live target-body picking
+  /// exactly. Every subsequent edge/face-loop tap ([_toggleSelectedEntity]/
+  /// [_toggleFilletFaceEdges]) reschedules [_scheduleFilletPreview] the same
+  /// way a target-body tap reschedules [_scheduleExtrudePreview] - this is
+  /// what actually lets edges be added to/removed from an in-progress
+  /// Fillet, on both the create and (via [_openFilletPanelForEdit]) edit
+  /// paths.
+  Future<void> _openFilletPanel({required List<SelectionEntityRef> edgeEntities}) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _filletActive = true;
+      _entitiesBeforeFillet = _selectedEntities;
+      _selectedEntities = edgeEntities.toSet();
+      _filletRadius = 1.0;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_filletSelectionFilter);
+    });
+    if (edgeEntities.isEmpty) return;
+    await _runGuarded(() => _ensureFilletFeatureExists(_filletRadius, _currentFilletEdgeRefs()));
+    if (_previewFilletFeatureId == null && mounted) {
+      // Creation failed (e.g. mixed_body_selection/fillet_failed -
+      // _errorMessage is already set by _runGuarded) - nothing to edit, so
+      // close the panel back out rather than leaving it stuck open with no
+      // real Feature behind it. Never reached for the empty-edges (Add FAB)
+      // case above, since that returns before ever attempting a create.
+      setState(() {
+        _filletActive = false;
+        _selectedEntities = _entitiesBeforeFillet ?? {};
+        _entitiesBeforeFillet = null;
+        _selectionFilterOverrides.pop();
+      });
+    }
+  }
+
+  /// B4: opens [FilletPanel] to edit an *already-existing* FilletFeature -
+  /// mirrors [_openCreatePlanePanelForEdit], but unlike Create Plane, a
+  /// Fillet actually modifies its target Body's shape in place, so the Body
+  /// shown while editing must exclude *this* Fillet's own contribution -
+  /// otherwise the viewport shows the already-filleted body and its
+  /// original (pre-fillet) edges are gone, so they can't be added to/
+  /// removed from the selection. [_onFeatureTap]'s preamble already rolls
+  /// back Features *after* this one; this adds the tapped Fillet itself to
+  /// the same [_rollbackExcludedFeatureIds] set (additive - see
+  /// [_beginRollback]), relying on [_confirmFillet]/[_cancelFillet]'s
+  /// existing [_endRollback] call to clear the whole set again once the
+  /// panel closes.
+  ///
+  /// On-device feedback: [_selectedEntities] is now seeded with [feature]'s
+  /// own current `edgeRefs` (rather than cleared to `{}`), and the same
+  /// [_filletSelectionFilter] override [_openFilletPanel] pushes is pushed
+  /// here too - the rolled-back body's original edges are both visible
+  /// (thanks to the `_beginRollback` above) and now actually live-editable,
+  /// which is the other half of the on-device "edges can't be added/
+  /// removed" report the rollback fix alone didn't cover.
+  Future<void> _openFilletPanelForEdit(FeatureDto feature) async {
+    final radius = feature.radius ?? 1.0;
+    setState(() {
+      _filletActive = true;
+      _editingFilletFeatureId = feature.id;
+      _previewFilletFeatureId = feature.id;
+      _filletRadius = radius;
+      _filletEditSnapshot = (edgeRefs: feature.edgeRefs, radius: radius);
+      _entitiesBeforeFillet = _selectedEntities;
+      _selectedEntities = {
+        for (final ref in feature.edgeRefs)
+          SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: ref.bodyId, id: ref.index),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_filletSelectionFilter);
+    });
+    await _beginRollback({feature.id});
+  }
+
+  /// [_selectedEntities]' edges while [_filletActive] - always
+  /// [SelectionEntityKind.edge] entries only, mirroring
+  /// [_currentTargetBodyIds] exactly (both flows force their own kind-only
+  /// filter for the panel's whole lifetime, so nothing else ever ends up in
+  /// here).
+  List<SubShapeRefDto> _currentFilletEdgeRefs() => [
+        for (final entity in _selectedEntities)
+          if (entity.kind == SelectionEntityKind.edge)
+            SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+      ];
+
+  /// The Body id [_refreshFilletPreviewMesh] should fetch a preview for -
+  /// any selected edge's `bodyId` (every edge in [_selectedEntities] shares
+  /// one, same guarantee [_currentFilletEdgeRefs] relies on), or null if
+  /// nothing is selected yet (nothing to preview).
+  String? _currentFilletBodyId() {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.edge) return entity.bodyId;
+    }
+    return null;
+  }
+
+  /// [FilletPanel.onRadiusChanged] - records the latest radius immediately
+  /// (so [_confirmFillet]/[_cancelFillet] always have it, even mid-
+  /// debounce) and (re)starts the same 500ms debounce
+  /// [_toggleSelectedEntity]'s edge/face-loop taps also feed into, mirroring
+  /// [_onExtrudeValuesChanged]/[_scheduleExtrudePreview]'s shared-debounce
+  /// shape exactly.
+  void _onFilletRadiusChanged(double radius) {
+    _filletRadius = radius;
+    _scheduleFilletPreview();
+  }
+
+  /// Shared by [_onFilletRadiusChanged] (a radius edit) and
+  /// [_toggleSelectedEntity]/[_toggleFilletFaceEdges] (an edge pick
+  /// changed) - either kind of change debounces the same live-preview
+  /// re-solve, using whichever the *other* kind's latest value currently
+  /// is.
+  void _scheduleFilletPreview() {
+    _filletDebounce?.cancel();
+    _filletDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureFilletFeatureExists(_filletRadius, _currentFilletEdgeRefs()));
+    });
+  }
+
+  /// Creates the preview FilletFeature on the first call with 1+ edges
+  /// (mirrors [_ensureExtrudeFeatureExists]'s create-or-update branching -
+  /// the "Add" FAB's [_startFilletPicker] opens the panel with no edges and
+  /// nothing to create yet), or PATCHes the one already created/being
+  /// edited on every later call, then refetches Features and mesh - shared
+  /// by [_openFilletPanel]'s own initial attempt and every
+  /// [_scheduleFilletPreview] debounce fire after. Skips the request
+  /// entirely once [edgeRefs] is empty - the backend rejects an empty
+  /// `edge_refs` with 422 either way, and "no edges picked/selected yet" is
+  /// a normal state (both right after opening from the FAB, and mid-edit if
+  /// every edge is briefly deselected), not an error worth surfacing.
+  ///
+  /// This whole method - the self-exclusion on create, the concurrent
+  /// [_refreshFilletPreviewMesh] fetch - is the reference implementation
+  /// for "a Feature that live-edits sub-shape picks of the Body it's
+  /// modifying"; see `docs/live-preview-pattern.md` before building the
+  /// same shape for Chamfer or anything else, rather than re-deriving it
+  /// (or missing the self-exclusion bug this now guards against) from
+  /// scratch.
+  Future<void> _ensureFilletFeatureExists(double radius, List<SubShapeRefDto> edgeRefs) async {
+    final part = _part;
+    if (part == null || edgeRefs.isEmpty) return;
+    final existingId = _previewFilletFeatureId;
+    if (existingId == null) {
+      final feature = await _api.createFilletFeature(part.id, edgeRefs: edgeRefs, radius: radius);
+      _previewFilletFeatureId = feature.id;
+      // Bug fix (on-device feedback): a newly-created Fillet must exclude
+      // its *own* effect from every mesh refresh for the rest of this
+      // live-edit session, exactly like _openFilletPanelForEdit already
+      // does for an already-existing one (via _beginRollback - inlined
+      // here, not called directly, since this whole function already runs
+      // inside a _runGuarded call and _beginRollback wraps its own) -
+      // otherwise the refresh below shows the *post*-fillet body, whose
+      // edges are a new topology (the fillet's own rounded faces/edges
+      // replacing the straight ones) with different ids from the
+      // pre-fillet body `edge_refs` still needs to reference. The next edge
+      // pick/removal would then send an edge id that only exists in that
+      // post-fillet mesh, which `resolve_fillet`'s own self-exclusion
+      // validates against the *pre*-fillet body instead - producing
+      // exactly the "missing_reference" 422 this fixes (the reported
+      // symptom: editing the selection "removes edges the fillet tool is
+      // using"). Real filleted geometry is only ever shown again once
+      // _confirmFillet's _endRollback() clears this exclusion.
+      setState(() => _rollbackExcludedFeatureIds.add(feature.id));
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshFilletPreviewMesh()]);
+    } else {
+      await _api.updateFilletFeature(part.id, existingId, edgeRefs: edgeRefs, radius: radius);
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshFilletPreviewMesh()]);
+    }
+  }
+
+  /// On-device feedback: fetches the *actual* current effect of the
+  /// in-progress Fillet - the same `/mesh` endpoint [_refreshMesh] calls,
+  /// but with this Feature's own id *not* excluded (the opposite of
+  /// [_refreshMesh]'s own `_rollbackExcludedFeatureIds`, which must keep
+  /// excluding it so [_bodies] stays the stable, pickable pre-fillet body -
+  /// see [_ensureFilletFeatureExists]) - purely to have something to render
+  /// as a visual preview (see [PartViewport.previewOverlayMesh]). Run
+  /// alongside [_refreshMesh] via `Future.wait` (see
+  /// [_ensureFilletFeatureExists]) rather than after it, so this doesn't
+  /// double the live-preview round-trip latency on top of doubling the
+  /// backend's recompute work.
+  Future<void> _refreshFilletPreviewMesh() async {
+    final part = _part;
+    final featureId = _previewFilletFeatureId;
+    final bodyId = _currentFilletBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      _filletPreviewBodyId = null;
+      _filletPreviewMesh = null;
+      return;
+    }
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds:
+          _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+    );
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    _filletPreviewBodyId = bodyId;
+    _filletPreviewMesh = match?.mesh;
+  }
+
+  /// Keeps the just-created/edited Feature, restores whatever was selected
+  /// before the panel opened, and rolls B4 rollback forward - mirrors
+  /// [_confirmCreatePlane] exactly, plus popping the
+  /// [_filletSelectionFilter] override [_openFilletPanel]/
+  /// [_openFilletPanelForEdit] pushed.
+  Future<void> _confirmFillet() async {
+    _filletDebounce?.cancel();
+    setState(() {
+      _filletActive = false;
+      _selectedEntities = _entitiesBeforeFillet ?? {};
+      _entitiesBeforeFillet = null;
+      _previewFilletFeatureId = null;
+      _editingFilletFeatureId = null;
+      _filletEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _filletPreviewBodyId = null;
+      _filletPreviewMesh = null;
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview Feature (new-Fillet flow) or PATCHes
+  /// [_filletEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelCreatePlane]'s structure exactly, plus popping the
+  /// filter override the same way [_confirmFillet] does.
+  Future<void> _cancelFillet() async {
+    _filletDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewFilletFeatureId;
+    final wasEditing = _editingFilletFeatureId != null;
+    final editSnapshot = _filletEditSnapshot;
+    setState(() {
+      _filletActive = false;
+      _selectedEntities = _entitiesBeforeFillet ?? {};
+      _entitiesBeforeFillet = null;
+      _previewFilletFeatureId = null;
+      _editingFilletFeatureId = null;
+      _filletEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _filletPreviewBodyId = null;
+      _filletPreviewMesh = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateFilletFeature(
+            part.id,
+            previewId,
+            edgeRefs: editSnapshot.edgeRefs,
+            radius: editSnapshot.radius,
+          );
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  // --- Prompt E: Chamfer -------------------------------------------------
+  // Mirrors the entire Fillet section directly above, method for method -
+  // see that section's own doc comments for the full reasoning behind each
+  // one; only pointed out below where Chamfer's own shape differs.
+
+  /// Mirrors [_startFilletPicker] exactly.
+  void _startChamferPicker() {
+    _openChamferPanel(edgeEntities: const []);
+  }
+
+  /// Mirrors [_onFilletTapped] exactly.
+  void _onChamferTapped() {
+    final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    _openChamferPanel(edgeEntities: edges);
+  }
+
+  /// Mirrors [_openFilletPanel] exactly, substituting Chamfer's own state
+  /// fields/filter/methods for Fillet's.
+  Future<void> _openChamferPanel({required List<SelectionEntityRef> edgeEntities}) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _chamferActive = true;
+      _entitiesBeforeChamfer = _selectedEntities;
+      _selectedEntities = edgeEntities.toSet();
+      _chamferDistance = 1.0;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_chamferSelectionFilter);
+    });
+    if (edgeEntities.isEmpty) return;
+    await _runGuarded(() => _ensureChamferFeatureExists(_chamferDistance, _currentChamferEdgeRefs()));
+    if (_previewChamferFeatureId == null && mounted) {
+      setState(() {
+        _chamferActive = false;
+        _selectedEntities = _entitiesBeforeChamfer ?? {};
+        _entitiesBeforeChamfer = null;
+        _selectionFilterOverrides.pop();
+      });
+    }
+  }
+
+  /// Mirrors [_openFilletPanelForEdit] exactly.
+  Future<void> _openChamferPanelForEdit(FeatureDto feature) async {
+    final distance = feature.distance ?? 1.0;
+    setState(() {
+      _chamferActive = true;
+      _editingChamferFeatureId = feature.id;
+      _previewChamferFeatureId = feature.id;
+      _chamferDistance = distance;
+      _chamferEditSnapshot = (edgeRefs: feature.edgeRefs, distance: distance);
+      _entitiesBeforeChamfer = _selectedEntities;
+      _selectedEntities = {
+        for (final ref in feature.edgeRefs)
+          SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: ref.bodyId, id: ref.index),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_chamferSelectionFilter);
+    });
+    await _beginRollback({feature.id});
+  }
+
+  /// Mirrors [_currentFilletEdgeRefs] exactly.
+  List<SubShapeRefDto> _currentChamferEdgeRefs() => [
+        for (final entity in _selectedEntities)
+          if (entity.kind == SelectionEntityKind.edge)
+            SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+      ];
+
+  /// Mirrors [_currentFilletBodyId] exactly.
+  String? _currentChamferBodyId() {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.edge) return entity.bodyId;
+    }
+    return null;
+  }
+
+  /// Mirrors [_onFilletRadiusChanged] exactly.
+  void _onChamferDistanceChanged(double distance) {
+    _chamferDistance = distance;
+    _scheduleChamferPreview();
+  }
+
+  /// Mirrors [_scheduleFilletPreview] exactly.
+  void _scheduleChamferPreview() {
+    _chamferDebounce?.cancel();
+    _chamferDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureChamferFeatureExists(_chamferDistance, _currentChamferEdgeRefs()));
+    });
+  }
+
+  /// Mirrors [_ensureFilletFeatureExists] exactly, including the same
+  /// self-exclusion-on-create fix and concurrent preview-mesh fetch - see
+  /// that method's own doc comment (and `docs/live-preview-pattern.md`) for
+  /// the full reasoning.
+  Future<void> _ensureChamferFeatureExists(double distance, List<SubShapeRefDto> edgeRefs) async {
+    final part = _part;
+    if (part == null || edgeRefs.isEmpty) return;
+    final existingId = _previewChamferFeatureId;
+    if (existingId == null) {
+      final feature =
+          await _api.createChamferFeature(part.id, edgeRefs: edgeRefs, distance: distance);
+      _previewChamferFeatureId = feature.id;
+      setState(() => _rollbackExcludedFeatureIds.add(feature.id));
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
+    } else {
+      await _api.updateChamferFeature(part.id, existingId, edgeRefs: edgeRefs, distance: distance);
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
+    }
+  }
+
+  /// Mirrors [_refreshFilletPreviewMesh] exactly.
+  Future<void> _refreshChamferPreviewMesh() async {
+    final part = _part;
+    final featureId = _previewChamferFeatureId;
+    final bodyId = _currentChamferBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      _chamferPreviewBodyId = null;
+      _chamferPreviewMesh = null;
+      return;
+    }
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds:
+          _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+    );
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    _chamferPreviewBodyId = bodyId;
+    _chamferPreviewMesh = match?.mesh;
+  }
+
+  /// Mirrors [_confirmFillet] exactly.
+  Future<void> _confirmChamfer() async {
+    _chamferDebounce?.cancel();
+    setState(() {
+      _chamferActive = false;
+      _selectedEntities = _entitiesBeforeChamfer ?? {};
+      _entitiesBeforeChamfer = null;
+      _previewChamferFeatureId = null;
+      _editingChamferFeatureId = null;
+      _chamferEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _chamferPreviewBodyId = null;
+      _chamferPreviewMesh = null;
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelFillet] exactly.
+  Future<void> _cancelChamfer() async {
+    _chamferDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewChamferFeatureId;
+    final wasEditing = _editingChamferFeatureId != null;
+    final editSnapshot = _chamferEditSnapshot;
+    setState(() {
+      _chamferActive = false;
+      _selectedEntities = _entitiesBeforeChamfer ?? {};
+      _entitiesBeforeChamfer = null;
+      _previewChamferFeatureId = null;
+      _editingChamferFeatureId = null;
+      _chamferEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _chamferPreviewBodyId = null;
+      _chamferPreviewMesh = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateChamferFeature(
+            part.id,
+            previewId,
+            edgeRefs: editSnapshot.edgeRefs,
+            distance: editSnapshot.distance,
+          );
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   /// Prompt A4: the top banner's text while [_extrudeActive] - Cut's wording
   /// differs from Boss's since Cut requires 1+ picks (mirrors
   /// [ExtrudePanel]'s own Confirm-disable rule, `_canConfirm`) while Boss
@@ -1198,6 +2691,13 @@ class _PartScreenState extends State<PartScreen> {
   /// hiding an ExtrudeFeature also drops its volume from the displayed
   /// solid, not just its own Sketch geometry from [_visibleSketchGeometries]
   /// (a SketchFeature has no solid of its own to drop).
+  ///
+  /// Prompt C1: an explicit Hide here always removes [feature.id] from
+  /// [_autoHiddenSketchFeatureIds] too (a no-op unless it was already
+  /// auto-hidden) - once the user has explicitly acted on a Feature's
+  /// visibility, its hidden state means what it says for every purpose,
+  /// including 3D-viewport pickability, not just the auto-hide-on-consume
+  /// exception.
   Future<void> _toggleFeatureVisibility(FeatureDto feature) async {
     setState(() {
       if (_hiddenFeatureIds.contains(feature.id)) {
@@ -1205,6 +2705,7 @@ class _PartScreenState extends State<PartScreen> {
       } else {
         _hiddenFeatureIds.add(feature.id);
       }
+      _autoHiddenSketchFeatureIds.remove(feature.id);
       _recomputeVisibleSketchGeometries();
     });
     await _runGuarded(_refreshMesh);
@@ -1238,15 +2739,17 @@ class _PartScreenState extends State<PartScreen> {
         _selectedFeatureId = null;
       }
       _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+      _autoHiddenSketchFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
       // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
       // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
       // _hiddenFeatureIds forever, since it never stopped existing - only
-      // stopped being locked - so the tree kept showing it dimmed/hidden
-      // even once it was editable again. The Sketch was only ever hidden
-      // because something depended on it; once the new last Feature is
-      // unlocked again, there's nothing left to make it redundant clutter.
+      // stopped being locked - so the tree/viewport kept treating it as
+      // hidden even once it was editable again. The Sketch was only ever
+      // hidden because something depended on it; once the new last Feature
+      // is unlocked again, there's nothing left to make it redundant clutter.
       if (_features.isNotEmpty && !_features.last.locked) {
         _hiddenFeatureIds.remove(_features.last.id);
+        _autoHiddenSketchFeatureIds.remove(_features.last.id);
       }
       _recomputeVisibleSketchGeometries();
       await _refreshMesh();
@@ -1280,13 +2783,13 @@ class _PartScreenState extends State<PartScreen> {
   /// still-hidden rollback siblings correctly stay excluded from this
   /// refresh regardless (the caller only calls [_endRollback], which
   /// refreshes again, once *this* method has already returned).
-  Future<void> _openSketch(FeatureDto feature, {ReferencePlaneKind? plane}) async {
+  Future<void> _openSketch(FeatureDto feature, {SketchPlaneBasis? basis}) async {
     // Prompt A3: merges every Body's edges into one flat list - the ghost
     // outline doesn't care which Body an edge came from, only where it
     // projects onto the new Sketch's plane.
-    final allEdgeSegments = [for (final body in _bodies) ...edgeSegmentsFromMesh(body.mesh)];
-    final ghostSegments = plane != null
-        ? projectMeshEdgesOntoPlane(plane, allEdgeSegments)
+    final allEdgeSegments = [for (final body in _visibleBodies) ...edgeSegmentsFromMesh(body.mesh)];
+    final ghostSegments = basis != null
+        ? projectMeshEdgesOntoPlane(basis, allEdgeSegments)
         : const <((double, double), (double, double))>[];
 
     await Navigator.of(context).push(
@@ -1326,7 +2829,10 @@ class _PartScreenState extends State<PartScreen> {
       // While choosing a plane for a new Sketch (Stage 10b) or a Sketch to
       // extrude (Prompt D), the device back gesture cancels that mode
       // instead of popping this screen - canPop: false intercepts it; any
-      // other time, popping proceeds normally.
+      // other time, popping proceeds normally. Fillet's own guided entry
+      // doesn't intercept back here, consistent with Extrude/Create Plane's
+      // own "Confirm/Cancel are the only way out" panels once open - see
+      // [_openFilletPanel].
       canPop: !_planeSelectionMode && !_sketchPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
@@ -1365,24 +2871,39 @@ class _PartScreenState extends State<PartScreen> {
                 // loses space to a hidden panel.
                 PartViewport(
                   key: _viewportKey,
-                  bodies: _bodies,
+                  bodies: _visibleBodies,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
+                  createPlanes: _createPlaneGeometries,
+                  onCreatePlaneTap: _onCreatePlaneFeatureTap,
+                  selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
                   isPreviewMesh: _extrudeSketchFeature != null,
+                  // Prompt E: only one of _filletActive/_chamferActive is
+                  // ever true at a time (see the Chamfer state section's own
+                  // header comment), so a simple ternary - not a list -
+                  // picks whichever flow's preview overlay is currently
+                  // live; see `docs/live-preview-pattern.md` if a third
+                  // concurrent live-edit flow is ever added.
+                  previewOverlayBodyId: _filletActive ? _filletPreviewBodyId : _chamferPreviewBodyId,
+                  previewOverlayMesh: _filletActive ? _filletPreviewMesh : _chamferPreviewMesh,
                   referencePlanesHidden: _referencePlanesHidden,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
                   bodyOpacity: _bodyOpacity,
-                  // Prompt A4: forced on for the duration of the Extrude
-                  // panel regardless of the Stage 23 mode-toggle FAB's own
-                  // state (hidden while the panel is open anyway - see
-                  // floatingActionButton below) - target-body picking always
-                  // needs live hit-testing/cursor, the same as the general
-                  // Selection mode does.
-                  selectionMode: _extrudeActive ? true : _selectionMode,
+                  // On-device feedback: this used to be forced true for the
+                  // whole Extrude panel lifetime, unconditionally overriding
+                  // the mode-toggle FAB (itself hidden while the panel was
+                  // open) - target-body picking needs Selection mode, but
+                  // that shouldn't mean the user can never orbit to look
+                  // around while the panel's open. [_openExtrudePanel]/
+                  // [_openExtrudePanelForEdit] now only set [_selectionMode]
+                  // true as a one-time default on open; the FAB (visible
+                  // throughout, see floatingActionButton below) can toggle
+                  // it either way from there, same as any other time.
+                  selectionMode: _selectionMode,
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
                   onClearSelection: _clearSelectedEntities,
@@ -1429,21 +2950,39 @@ class _PartScreenState extends State<PartScreen> {
                 // this drawer is bottom-docked (a DraggableScrollableSheet)
                 // exactly where [ExtrudePanel]'s own Confirm/Cancel controls
                 // live - showing both at once would visually collide.
-                if (!_extrudeActive)
+                // C2: also hidden while CreatePlanePanel is open - same
+                // bottom-docked-panel visual-collision reasoning as the
+                // Extrude case above (in practice [_selectedEntities] is
+                // already empty for the panel's whole session - see
+                // [_openCreatePlanePanel] - so [SelectionListDrawer]'s own
+                // empty-selection gate would already hide this too, but this
+                // stays explicit rather than relying on that as an implicit
+                // side effect).
+                if (!_extrudeActive && !_createPlaneActive && !_filletActive && !_chamferActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
                       onRemove: _toggleSelectedEntity,
-                      header: SelectionContextPanel(selectedEntities: _selectedEntities),
+                      header: SelectionContextPanel(
+                        selectedEntities: _selectedEntities,
+                        isPointOnLine: _isPointOnLine,
+                        onCreatePlane: _onCreatePlaneTapped,
+                        onFillet: _onFilletTapped,
+                        onChamfer: _onChamferTapped,
+                      ),
                       bodyNames: _bodyNames,
                     ),
                   ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: _featureTreeVisible && !_extrudeActive,
+                    visible: _featureTreeVisible &&
+                        !_extrudeActive &&
+                        !_createPlaneActive &&
+                        !_filletActive &&
+                        !_chamferActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
-                    hiddenFeatureIds: _hiddenFeatureIds,
+                    hiddenFeatureIds: _viewportHiddenFeatureIds,
                     onFeatureTap: _onFeatureTap,
                     onFeatureLongPress: _onFeatureLongPress,
                     onClose: () {
@@ -1459,6 +2998,8 @@ class _PartScreenState extends State<PartScreen> {
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
+                    onBodyLongPress: _onBodyLongPress,
+                    hiddenBodyIds: {for (final body in _bodies) if (body.hidden) body.bodyId},
                   ),
                 ),
                 Positioned.fill(
@@ -1484,6 +3025,8 @@ class _PartScreenState extends State<PartScreen> {
                     onEdgeFilterChanged: _setEdgeFilter,
                     onFaceFilterChanged: _setFaceFilter,
                     onBodyFilterChanged: _setBodyFilter,
+                    onSketchPointFilterChanged: _setSketchPointFilter,
+                    onSketchLineFilterChanged: _setSketchLineFilter,
                   ),
                 ),
                 if (_extrudeSketchFeature != null)
@@ -1498,6 +3041,40 @@ class _PartScreenState extends State<PartScreen> {
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,
                       onCancel: _cancelExtrude,
+                    ),
+                  ),
+                if (_createPlaneMode != null)
+                  Positioned.fill(
+                    child: CreatePlanePanel(
+                      key: ValueKey(_editingCreatePlaneFeatureId ?? _previewCreatePlaneFeatureId),
+                      title: _editingCreatePlaneFeatureId != null ? 'Edit Plane' : 'Create Plane',
+                      mode: _createPlaneMode!,
+                      initialOffset: _createPlaneOffset,
+                      onOffsetChanged: _onCreatePlaneOffsetChanged,
+                      onConfirm: _confirmCreatePlane,
+                      onCancel: _cancelCreatePlane,
+                    ),
+                  ),
+                if (_filletActive)
+                  Positioned.fill(
+                    child: FilletPanel(
+                      key: ValueKey(_editingFilletFeatureId ?? _previewFilletFeatureId),
+                      title: _editingFilletFeatureId != null ? 'Edit Fillet' : 'Fillet',
+                      initialRadius: _filletRadius,
+                      onRadiusChanged: _onFilletRadiusChanged,
+                      onConfirm: _confirmFillet,
+                      onCancel: _cancelFillet,
+                    ),
+                  ),
+                if (_chamferActive)
+                  Positioned.fill(
+                    child: ChamferPanel(
+                      key: ValueKey(_editingChamferFeatureId ?? _previewChamferFeatureId),
+                      title: _editingChamferFeatureId != null ? 'Edit Chamfer' : 'Chamfer',
+                      initialDistance: _chamferDistance,
+                      onDistanceChanged: _onChamferDistanceChanged,
+                      onConfirm: _confirmChamfer,
+                      onCancel: _cancelChamfer,
                     ),
                   ),
                 // Prompt A4: names the target-body picking mode live for the
@@ -1563,7 +3140,12 @@ class _PartScreenState extends State<PartScreen> {
                 // feature-tree FAB specifically (unlike the hamburger just
                 // below, which already has its own extrude-aware check) sat
                 // underneath/overlapping A4's banner.
-                if (!_featureTreeVisible && !_planeSelectionMode && !_extrudeActive)
+                if (!_featureTreeVisible &&
+                    !_planeSelectionMode &&
+                    !_extrudeActive &&
+                    !_createPlaneActive &&
+                    !_filletActive &&
+                    !_chamferActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -1643,47 +3225,134 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // On-device feedback: shown while [_filletActive] but no
+                // FilletFeature exists yet ([_openFilletPanel] opened with
+                // no edges - the "Add" FAB's guided entry, see
+                // [_startFilletPicker]) - same shape as the plane-selection
+                // banner just above. [FilletPanel] itself is already open
+                // underneath this (see [_openFilletPanel]'s own doc comment
+                // for why it opens immediately rather than waiting for a
+                // separate pick-then-confirm step); Cancel here is the same
+                // [_cancelFillet] the panel's own Cancel button uses - both
+                // are a no-op past the "restore selection, close" step since
+                // nothing was ever created to delete.
+                if (_filletActive && _previewFilletFeatureId == null)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Select edges (or a face) to fillet'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelFillet,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Mirrors the Fillet banner directly above exactly, for
+                // Chamfer's own guided "Add" FAB entry.
+                if (_chamferActive && _previewChamferFeatureId == null)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Select edges (or a face) to chamfer'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelChamfer,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
         ],
       ),
-      // Stage 10b: hidden while the Extrude panel is open, so its bottom-
-      // aligned content never has the FAB sitting on top of it.
+      // Stage 22 item 3: hidden while the toolbar is open - Scaffold always
+      // paints floatingActionButton after the entire body (including the
+      // body Stack's PartToolbar entry), so it would otherwise sit on top
+      // of the open toolbar panel regardless of the body Stack's own child
+      // order. That's the only case that hides the mode-toggle FAB itself
+      // now (on-device feedback: it used to also hide for the whole
+      // Extrude/Create Plane panel lifetime, leaving no way to switch to
+      // Orbit mode and look around while confirming one of those - see
+      // _openExtrudePanel's own comment on the selectionMode default this
+      // replaced).
       //
-      // Stage 22 item 3: also hidden while the toolbar is open - Scaffold
-      // always paints floatingActionButton after the entire body
-      // (including the body Stack's PartToolbar entry), so it would
-      // otherwise sit on top of the open toolbar panel regardless of the
-      // body Stack's own child order.
-      //
-      // Stage 23 Item 1: the mode-toggle FAB sits above the "Add" FAB,
-      // hidden under the exact same conditions - it follows the same Stage
-      // 22 z-order rules as every other FAB here.
-      floatingActionButton: (_extrudeSketchFeature != null || _toolbarOpen)
+      // The "Add" FAB stays hidden while either panel is open (you can't
+      // start a second Feature mid-flow) - extra bottom padding while one
+      // is active keeps the remaining mode-toggle FAB clear of that panel's
+      // own bottom-sheet content, which sits in the body Stack rather than
+      // a real `Scaffold.bottomSheet` Scaffold could otherwise push this
+      // FAB above automatically.
+      floatingActionButton: _toolbarOpen
           ? null
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FloatingActionButton(
-                  heroTag: 'selection-mode-fab',
-                  tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
-                  backgroundColor:
-                      _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
-                  onPressed: _busy ? null : _toggleSelectionMode,
-                  // The icon shows the mode a tap will switch *into*: a
-                  // cursor/pointer while in (default) Orbit mode, an
-                  // orbit/rotate glyph while in Selection mode.
-                  child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
-                ),
-                const SizedBox(height: 12),
-                FloatingActionButton(
-                  heroTag: 'add-fab',
-                  tooltip: 'Add',
-                  onPressed: _busy ? null : _onAddPressed,
-                  child: const Icon(Icons.add),
-                ),
-              ],
+          : Padding(
+              padding: EdgeInsets.only(
+                bottom:
+                    (_extrudeActive || _createPlaneActive || _filletActive || _chamferActive) ? 180 : 0,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FloatingActionButton(
+                    heroTag: 'selection-mode-fab',
+                    tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+                    backgroundColor:
+                        _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
+                    onPressed: _busy ? null : _toggleSelectionMode,
+                    // The icon shows the mode a tap will switch *into*: a
+                    // cursor/pointer while in (default) Orbit mode, an
+                    // orbit/rotate glyph while in Selection mode.
+                    child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
+                  ),
+                  if (!_extrudeActive &&
+                      !_createPlaneActive &&
+                      !_filletActive &&
+                      !_chamferActive) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'add-fab',
+                      tooltip: 'Add',
+                      onPressed: _busy ? null : _onAddPressed,
+                      child: const Icon(Icons.add),
+                    ),
+                  ],
+                ],
+              ),
             ),
     );
   }

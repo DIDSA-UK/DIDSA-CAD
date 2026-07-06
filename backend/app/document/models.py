@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.sketch.models import Plane, SketchEntityRef
+
 
 class Produces(str, Enum):
     """B1: what a Feature contributes to the Part, for the client's feature-
@@ -61,10 +63,19 @@ class SketchFeature(Feature):
     history. Does not own or duplicate the Sketch's geometry - app.sketch
     remains the sole owner of Sketch data, this is just a reference plus
     its position in the Feature list. A Sketch alone never produces solid
-    geometry - it's only ever an input to a future Extrude/Revolve."""
+    geometry - it's only ever an input to a future Extrude/Revolve.
+
+    C3: `plane_feature_id` anchors this Sketch to a `CreatePlaneFeature`
+    instead of one of the three fixed reference planes - mutually exclusive
+    with the wrapped Sketch's own `plane` (exactly one is set; enforced by
+    `app.document.router._validate_sketch_feature_payload`, same "payload
+    shape validated by the API layer" split every other mutually-exclusive
+    Feature field already uses). None (the common case) means this Sketch
+    lives on its own fixed `plane`, unchanged from before C3."""
 
     id: str
     sketch_id: str
+    plane_feature_id: str | None = None
 
     @property
     def type(self) -> str:
@@ -152,10 +163,19 @@ class SubShapeType(str, Enum):
     """Which kind of sub-shape a `SubShapeRef` (below) points at. Mirrors
     `ExtrudeType`'s str-Enum pattern so it round-trips through pydantic the
     same way once a future Feature (Fillet's `edge_refs`, Create Plane's
-    `face_ref`) embeds one in its own payload schema."""
+    `face_ref`) embeds one in its own payload schema.
+
+    C4: `VERTEX` added for `NORMAL_TO_EDGE_THROUGH_VERTEX`/
+    `PARALLEL_TO_FACE_THROUGH_VERTEX`/`THREE_POINTS`'s Body-vertex
+    references - resolves the same way EDGE/FACE already do (see
+    `app.document.extrude._TOPABS_FOR_SUBSHAPE_TYPE`), against the same
+    0-based `topexp.MapShapes(body, TopAbs_VERTEX, ...)` index scheme the
+    client's `topology_vertex_ids` (see `app.document.mesh.
+    _extract_topology_vertices`) already assigns."""
 
     EDGE = "edge"
     FACE = "face"
+    VERTEX = "vertex"
 
 
 @dataclass(frozen=True)
@@ -184,6 +204,257 @@ class SubShapeRef:
     body_id: str
     shape_type: SubShapeType
     index: int
+
+
+class PlaneType(str, Enum):
+    """Which plane-construction method a `CreatePlaneFeature` uses - mirrors
+    `ExtrudeType`/`SubShapeType`'s str-Enum pattern.
+
+    C3 added `MIDPLANE` (equidistant between two parallel plane-like
+    references) to C2's original `OFFSET_FACE`/`NORMAL_TO_LINE_AT_POINT`
+    pair. C4 adds three more, all using Body edges/vertices (or, for
+    `THREE_POINTS`, optionally Sketch Points too) rather than Sketch
+    entities:
+    - `NORMAL_TO_EDGE_THROUGH_VERTEX`: a plane normal to a straight Body
+      edge's direction, through a given Body vertex.
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX`: a plane parallel to a plane-like
+      reference, through a given Body vertex (an offset-through-a-point
+      instead of `OFFSET_FACE`'s offset-by-a-distance).
+    - `THREE_POINTS`: the plane through three points, each independently
+      either a Body vertex or a Sketch Point (see `PointRef`).
+    All six share the same `CreatePlaneFeature` shape (see its own
+    docstring). C5: `OFFSET_FACE`/`MIDPLANE`/`PARALLEL_TO_FACE_THROUGH_VERTEX`'s
+    "plane-like reference" is a `PlaneRef` - a Body face, a fixed reference
+    plane, or an existing Plane, not just a Body face as before."""
+
+    OFFSET_FACE = "offset_face"
+    NORMAL_TO_LINE_AT_POINT = "normal_to_line_at_point"
+    MIDPLANE = "midplane"
+    NORMAL_TO_EDGE_THROUGH_VERTEX = "normal_to_edge_through_vertex"
+    PARALLEL_TO_FACE_THROUGH_VERTEX = "parallel_to_face_through_vertex"
+    THREE_POINTS = "three_points"
+
+
+@dataclass(frozen=True)
+class ResolvedPlane:
+    """C2/C3: the world-space geometry a `CreatePlaneFeature` (or a fixed
+    reference plane, via `app.document.plane_geometry.sketch_basis_for_
+    plane`) resolves to - an origin point, a unit normal, and a full
+    right-handed in-plane basis (`x_axis`/`y_axis`), everything a client
+    needs to render the plane (a bounded quad centered at `origin`, oriented
+    by `normal`) and everything a Sketch anchored to it (C3) needs to embed
+    its own local (x, y) coordinates into world space (`origin + x * x_axis
+    + y * y_axis`). Not persisted - recomputed on every read/use the same
+    way `/mesh` recomputes Bodies, so it always reflects the Part's
+    *current* state rather than whatever it was at creation time (consistent
+    with `resolve_subshape`'s own "re-derive, don't cache" philosophy).
+
+    C3: `x_axis`/`y_axis` are new (C2 shipped with only `origin`/`normal`,
+    since nothing yet consumed a plane's in-plane orientation) - added
+    rather than left to be derived ad hoc by each consumer, since a Sketch's
+    embedding must use the *exact same* basis its Extrude later re-derives
+    (see `app.document.extrude._solid_for_extrude_feature`), and because a
+    generic `normal`-only cross-product derivation does not reproduce this
+    project's existing fixed-plane conventions (see `app.document.plane_
+    geometry`'s explicit per-plane lookup table, kept instead of such a
+    formula for exactly this reason)."""
+
+    origin: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    x_axis: tuple[float, float, float]
+    y_axis: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class PointRef:
+    """C4: a reference to one point usable in a `THREE_POINTS`
+    `CreatePlaneFeature` - either a Body vertex (`vertex_ref`) or a Sketch
+    Point (`sketch_point_ref`), never both at once. Mirrors
+    `CreatePlaneFeature`'s own "exactly one of two optional fields, payload
+    shape validated by the router" convention, just at the single-point
+    granularity rather than the whole Feature's - lets `THREE_POINTS` accept
+    any mix of Body vertices and Sketch Points (e.g. two Sketch Points and
+    one Body vertex) without needing a separate `CreatePlaneFeature` field
+    per source kind."""
+
+    vertex_ref: SubShapeRef | None = None
+    sketch_point_ref: SketchEntityRef | None = None
+
+
+@dataclass(frozen=True)
+class PlaneRef:
+    """C5: a face-like reference usable in `OFFSET_FACE`/`MIDPLANE`/
+    `PARALLEL_TO_FACE_THROUGH_VERTEX`'s `face_refs` - exactly one of the
+    three fields is ever set (payload shape validated by the router, same
+    convention `PointRef` (C4) already established for its own two-way
+    version of this same idea):
+    - `face_ref`: a Body face (the only option before C5).
+    - `fixed_plane`: one of the three fixed reference planes (XY/XZ/YZ) -
+      e.g. an `OFFSET_FACE` offset from the XY plane instead of a Body face.
+    - `plane_feature_id`: an existing `CreatePlaneFeature` in this Part -
+      e.g. a `MIDPLANE` between an already-created Plane and a Body face.
+
+    Named `face_refs`' element type (not renamed to e.g. `PlaneOrFaceRef`)
+    because the field itself keeps its pre-C5 name - `CreatePlaneFeature`'s
+    own docstring already explains why `face_refs` is the shared name for
+    every plane-construction method that needs "a face-like thing", and C5
+    only widens what "face-like" can mean, not which Feature fields use it."""
+
+    face_ref: SubShapeRef | None = None
+    fixed_plane: Plane | None = None
+    plane_feature_id: str | None = None
+
+
+@dataclass
+class CreatePlaneFeature(Feature):
+    """C2/C3/C4/C5: a reference-only Plane, fully determined by one of six
+    construction methods, never more than one at once:
+    - `OFFSET_FACE`: an offset from an existing planar Body face, a fixed
+      reference plane, or an existing Plane (`face_refs` has exactly one
+      `PlaneRef` entry, `offset` is set).
+    - `MIDPLANE` (C3): equidistant between two parallel plane-like
+      references - any mix of Body faces, fixed reference planes, and
+      existing Planes (`face_refs` has exactly two `PlaneRef` entries,
+      `offset` is unset).
+    - `NORMAL_TO_LINE_AT_POINT`: a Sketch Line's direction through one of
+      its own endpoints (`line_ref`/`point_ref` set, `face_refs` empty).
+    - `NORMAL_TO_EDGE_THROUGH_VERTEX` (C4): a straight Body edge's direction
+      through a given Body vertex (`edge_ref`/`vertex_ref` set).
+    - `PARALLEL_TO_FACE_THROUGH_VERTEX` (C4): parallel to a plane-like
+      reference, through a given Body vertex instead of a numeric offset
+      (`face_refs` has exactly one `PlaneRef` entry, `vertex_ref` set,
+      `offset` unset).
+    - `THREE_POINTS` (C4): the plane through three points, each a Body
+      vertex or a Sketch Point (`point_refs` has exactly three entries -
+      see `PointRef`).
+    Produces no mesh/solid of its own, but (C3) can anchor a Sketch via
+    `SketchFeature.plane_feature_id` - this is a pure reference object other
+    Features (a Sketch, so far) can target.
+
+    Which combination of fields is populated, matching `plane_type`, is
+    enforced by the router at construction time
+    (`app.document.router._validate_create_plane_payload`), not by this
+    dataclass itself, the same "payload shape validated by the API layer,
+    not encoded in the domain type" split `ExtrudeFeature`'s Boss-vs-Cut
+    `target_body_ids` rules already use. All fields are optional here
+    (rather than six mutually-exclusive dataclasses) so one concrete type
+    can flow through `Part.features`/`Feature.get_feature` uniformly, same
+    reason `ExtrudeFeature` doesn't split into `BossFeature`/`CutFeature`.
+
+    `face_ref` (C2, singular) became `face_refs` (C3, a list) so `MIDPLANE`
+    can reuse the same field as `OFFSET_FACE` instead of adding a second,
+    near-identical pair of fields - `OFFSET_FACE` and
+    `PARALLEL_TO_FACE_THROUGH_VERTEX` (C4) always have exactly one entry,
+    `MIDPLANE` always exactly two. C5 widened each entry from a plain
+    `SubShapeRef` (a Body face only) to a `PlaneRef` (a Body face, a fixed
+    reference plane, or an existing Plane), on user feedback that a Plane
+    ought to be a valid reference too - e.g. "offset from XY plane",
+    "midplane between an existing Plane and a Face" - without needing a
+    parallel set of fields per reference kind. `vertex_ref` (C4) is likewise
+    shared between `NORMAL_TO_EDGE_THROUGH_VERTEX` and
+    `PARALLEL_TO_FACE_THROUGH_VERTEX`.
+
+    The actual OCCT/plane-geometry resolution lives in
+    `app.document.create_plane` (every type except `NORMAL_TO_LINE_AT_POINT`
+    needs OCCT - planarity/parallelism/line-type checks have no OCCT-free
+    equivalent) and `app.document.plane_geometry` (`NORMAL_TO_LINE_AT_POINT`'s
+    own dispatch, plus `THREE_POINTS`'s pure cross-product math once each
+    `PointRef` is already resolved to a world position - no OCCT needed at
+    all as long as every Sketch involved sits on a fixed plane; C3's
+    custom-plane case still needs OCCT to resolve a Sketch's own anchor
+    plane first, see `app.document.create_plane.resolve_sketch_basis`),
+    mirroring the existing app.document.extrude / app.sketch.store split by
+    OCCT dependency."""
+
+    id: str
+    plane_type: PlaneType
+    face_refs: list[PlaneRef] = field(default_factory=list)
+    offset: float | None = None
+    line_ref: SketchEntityRef | None = None
+    point_ref: SketchEntityRef | None = None
+    edge_ref: SubShapeRef | None = None
+    vertex_ref: SubShapeRef | None = None
+    point_refs: list[PointRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "create_plane"
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.PLANE
+
+
+@dataclass
+class FilletFeature(Feature):
+    """Prompt D: rounds every edge named in `edge_refs` (all of which must
+    belong to the same Body - see `app.document.fillet._mixed_body_
+    selection`) with one shared `radius`, via OCCT `BRepFilletAPI_
+    MakeFillet`. No per-edge radii, no variable/setback fillets - v1 scope,
+    matching this project's established conservative-scoping convention
+    (mirrors `CreatePlaneFeature`'s own "narrowest correct slice first"
+    precedent).
+
+    Unlike Boss/Cut, a Fillet *modifies* a Body's shape rather than
+    creating a new one - it therefore keeps the target Body's existing
+    `body_id` (an in-place shape replacement in `app.document.extrude.
+    compute_part_bodies`'s `bodies` accumulator), rather than minting a new
+    one the way a fresh Boss with no `target_body_ids` does. This preserves
+    A1's body-identity guarantee: any later Boss/Cut `target_body_ids`
+    entry, or `SubShapeRef`/Fillet `edge_refs` entry, that already named
+    this Body keeps resolving to it after a Fillet is applied, instead of
+    silently dangling."""
+
+    id: str
+    edge_refs: list[SubShapeRef] = field(default_factory=list)
+    radius: float = 0.0
+
+    @property
+    def type(self) -> str:
+        return "fillet"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
+class ChamferFeature(Feature):
+    """Prompt E: bevels every edge named in `edge_refs` (all of which must
+    belong to the same Body - see `app.document.chamfer._mixed_body_
+    selection`) with one shared `distance`, via OCCT `BRepFilletAPI_
+    MakeChamfer`. Same narrow v1 scope as `FilletFeature`: no per-edge
+    distances, no two-distance/angle chamfer variants - this prompt follows
+    Prompt D's design decisions exactly rather than re-deriving them (see
+    that Feature's own docstring for the reasoning in full).
+
+    Same body-identity decision as `FilletFeature`, for the same reason:
+    keeps the target Body's existing `body_id` (an in-place shape
+    replacement in `app.document.extrude.compute_part_bodies`'s `bodies`
+    accumulator) rather than minting a new one - matters doubly here since
+    a Fillet and a Chamfer can both apply to the same Body, in either
+    order, in a real feature tree, and both need to preserve A1's
+    body-identity guarantee identically for that to work."""
+
+    id: str
+    edge_refs: list[SubShapeRef] = field(default_factory=list)
+    distance: float = 0.0
+
+    @property
+    def type(self) -> str:
+        return "chamfer"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
 
 
 @dataclass

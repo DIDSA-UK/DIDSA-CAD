@@ -79,11 +79,6 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   entry (alongside Shaded / Shaded+Edges / Wireframe) that renders
   occluded edges distinctly (e.g. dashed) rather than hiding or bleeding
   them through.
-- **Chamfer, Fillet, Create Plane context actions.** Scaffolded end-to-end
-  (selection composition rules, disabled buttons with per-action
-  `// TODO: wire up <action>` comments) since the 3D-viewport
-  selection-mode work, but never implemented. Needs actual OCCT operations
-  behind each action.
 - **Revolve, Sweep.** Disabled placeholders in the Feature picker sheet
   since Stage 19b. Not implemented.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
@@ -226,9 +221,379 @@ bug; reverting either would only reintroduce previously-fixed regressions.
     deletion-gating (`locked` field, single-`DELETE` vs. cascade-delete)
     is untouched. CI-confirmed green on both architectures on the first
     push (no fix-up round needed, unlike B1/B2).
-  - **Current gate**: on-device confirmation of the full B1–B4 set (B3's
-    revision plus B4's actual rollback/Confirm/Cancel flow, neither
-    exercisable in a sandbox) is what Prompt C (Create Plane) now waits on.
+  - **Superseded gate**: this bullet's own on-device confirmation of B1–B4
+    was still pending when Prompt C1 (below) started, on the user's
+    explicit instruction to proceed - if that confirmation is still
+    outstanding, fold it into C1's own on-device pass rather than treating
+    it as a separate blocking step.
+- **Prompt C1 (sketch Point/Line selection in the 3D viewport) — built,
+  pending on-device confirmation.** Inserted ahead of the original Prompt C
+  (renamed C2, content unaffected) since Create Plane's "Normal to Line at
+  Point" reference type needs the user to pick a Sketch's Line/Point
+  directly in the 3D viewport. See `docs/status.md`'s 2026-07-04 entry for
+  full detail. Backend: `SketchEntityRef`/`SketchEntityType` (Point/Line/
+  Circle) + `resolve_sketch_entity`, mirroring B1's `SubShapeRef` pattern -
+  6/6 new pure-Python tests genuinely passed (no OCCT needed at all, a
+  first for this project's backend prompts). Client: Sketch Lines/Circles
+  turned out to already render in the 3D viewport pre-this-prompt (a stale
+  assumption in the prompt's own scope doc) - the real gaps closed were
+  Point rendering (new marker primitives), keeping a just-consumed Sketch
+  visible-but-dimmed rather than fully hidden (`_autoHiddenSketchFeatureIds`,
+  correctly suspended during an active B4 rollback), hit-testing (Sketch
+  Point ties with Body Vertex, Sketch Line ties with Body Edge, both new
+  `SelectionFilterState`/`SelectionEntityKind` values), and the Selection
+  Filters menu/drawer/context-actions wiring. `flutter analyze` clean;
+  207/224 client tests passed for real (the 17 loading-failures are the
+  same pre-existing `flutter_scene`/`flutter_gpu` mismatch set as every
+  prior client prompt, confirmed unchanged via `git stash` against the
+  pre-C1 tree). Left out of scope, per the prompt's own boundary: Circle
+  picking (backend ref type supports it, no client wiring), any specific
+  Point+Line picking-mode combination (C2's job), custom/arbitrary sketch
+  planes. **C1's on-device confirmation came back positive** (user-confirmed
+  directly) - this closed C1 out and let Prompt C2 begin next.
+- **Prompt C2 (Create Plane) — built, pending on-device confirmation.** See
+  `docs/status.md`'s second 2026-07-04 entry for full detail. Two v1 plane
+  types: OFFSET_FACE (one planar Body face + a signed offset) and
+  NORMAL_TO_LINE_AT_POINT (a Sketch Line + the Point that's its own
+  endpoint) - both reference-only, matching the brief's custom-plane
+  deferral. Backend split by OCCT dependency same as B1/C1:
+  `app/document/plane_geometry.py` (new, OCCT-free) resolves the line/point
+  case via pure 2D vector math; `app/document/create_plane.py` (new, real
+  OCCT) resolves the offset-face case via a `BRepAdaptor_Surface` planarity
+  check. **Caught and closed a real gap before it could bite**:
+  `build_feature_graph` only built dependency edges for `ExtrudeFeature` -
+  extended it for `CreatePlaneFeature` too (a new
+  `_sketch_feature_id_for_sketch` helper resolves a Sketch id back to its
+  wrapping SketchFeature id), otherwise cascade-deleting a Plane's
+  referenced Body/Sketch would have silently left it dangling, the exact
+  bug class B2 fixed for `target_body_ids` - verified directly with a real
+  `transitive_dependents` test, not just by inspection. 11/11 new
+  pure-Python tests (`test_stage_c2_plane_geometry.py`) genuinely passed, no
+  OCCT needed; 14 new real-OCCT tests (`test_stage_c2_create_plane.py`,
+  full HTTP surface) need real CI to confirm, same constraint every
+  OCCT-touching backend prompt hits in this sandbox. Client: new
+  `create_plane_geometry_3d.dart` (arbitrary-orientation quad rendering,
+  reusing `reference_planes.dart`'s existing local geometry with a
+  `Quaternion.fromTwoVectors`-based transform) and `create_plane_panel.dart`
+  (`CreatePlanePanel`, mirrors `ExtrudePanel`'s session shape);
+  `selection_actions.dart`'s `contextActionsFor` gained its two real
+  enabling rules (a lone Body Face; a Sketch Line + its own endpoint Point,
+  via a new `PointOnLineChecker` callback `part_screen.dart` backs with a
+  new `_linesByFeatureId` map) alongside its still-scaffolded Chamfer/Fillet
+  ones. `part_screen.dart`'s flow mirrors Extrude's "create eagerly, PATCH
+  live, Confirm closes, Cancel deletes-or-reverts" pattern, including B4
+  rollback wiring, and closes the panel back out automatically if creation
+  fails (the one thing client-side selection-shape validation can't catch
+  ahead of time - a lone face turning out to be curved). `feature_tree_panel.dart`
+  gained a **Planes** section, shown only when non-empty. `flutter analyze`
+  clean; new pure-Dart/widget test files pass 100% standalone
+  (`create_plane_panel_test.dart` 8/8, `document_api_client_test.dart`'s new
+  cases 8/8, `selection_actions_test.dart`'s new cases) - flagged honestly
+  that a full-suite batch run intermittently (twice, reproducibly) reports
+  `create_plane_panel_test.dart` as failing to load with a generic "Dart
+  compiler exited unexpectedly" error while the same file passes cleanly
+  every time it's run in isolation, read as this sandbox's compiler
+  struggling under the full ~30-file batch's resource pressure rather than
+  a real defect - confirmed via a fresh `git worktree` diff against the
+  pre-C2 tree that no previously-passing file was newly broken. **This gate
+  has since passed**: Prompt D (Fillet) and Prompt E (Chamfer) have both
+  since been built and confirmed working on-device (see the Chamfer entry
+  below), which presupposes this stage's own on-device gate (both plane
+  types create/render correctly including offset direction, a curved-face
+  attempt is cleanly rejected not a crash, the Planes tree section works,
+  edit-via-rollback and Cancel both behave correctly) was satisfied too.
+- **Prompt C3 (informal, user feedback expanding C2's scope before its own
+  on-device confirmation came back)**: "Plane" added as a Feature-picker
+  entry; a third plane type, `PlaneType.MIDPLANE` (equidistant between two
+  parallel Body faces); created Planes made tappable/selectable with a
+  context menu ("Create Sketch on Plane"/"Delete Plane"); and, per the
+  user's explicit "Full support now" answer to how far to take the last
+  item, **full generalized Sketch-on-custom-plane support** - a
+  `CreatePlaneFeature` is now a real anchor a Sketch can embed onto and an
+  Extrude can build solid geometry on top of, not just a reference-only
+  rendered object. Backend: `ResolvedPlane` gained a full orthonormal basis
+  (`x_axis`/`y_axis`, hand-verified against - not formula-derived from - the
+  three fixed planes' already-shipped conventions); `SketchFeature.
+  plane_feature_id` anchors a Sketch to a custom Plane (mutually exclusive
+  with a fixed `Plane`); `app.document.extrude`/`app.document.create_plane`
+  generalized to build on any resolved basis via a `_from_bodies`-core/
+  fresh-wrapper split (needed to avoid a circular-import/infinite-recursion
+  trap resolving a custom plane's own basis from inside `compute_part_
+  bodies`'s topological-order loop). Client: `sketchPointToWorld` generalized
+  from a fixed `ReferencePlaneKind` to a new `SketchPlaneBasis` (closing a
+  real gap - without it a custom-plane Sketch would render/pick as nothing);
+  `createPlaneTransform` rebuilt on the backend's real basis instead of a
+  `Quaternion.fromTwoVectors` guess; new `hitTestCreatePlanes`/
+  `create_plane_context_sheet.dart` for the tap/context-menu flow. 80/80
+  OCCT-free backend tests, 231 client tests passed, both confirmed
+  regression-free via `git worktree` diff against the pre-C3 commit.
+  **Superseded** - Prompt D (Fillet) and Prompt E (Chamfer) have both since
+  been built and confirmed working on-device, presupposing this stage's own
+  gate passed too.
+- **Prompt C4 (user feedback: "wire up other common methods of creating
+  planes", scoped via explicit choice to "the two scaffolded ones + 3-point
+  plane")**: three more `PlaneType`s - `NORMAL_TO_EDGE_THROUGH_VERTEX` (a
+  plane normal to a selected straight Body edge, through a selected Vertex),
+  `PARALLEL_TO_FACE_THROUGH_VERTEX` (parallel to a selected planar Body face,
+  through a selected Vertex), and `THREE_POINTS` (through three selected
+  points, each independently a Body Vertex or a Sketch Point). Backend:
+  `SubShapeType` gained `VERTEX` (resolved via the same 0-based
+  `topexp.MapShapes` scheme the mesh's own `topology_vertex_ids` already
+  uses); new `PointRef` value type holds *either* a `vertex_ref` or a
+  `sketch_point_ref` (never both), letting a single `THREE_POINTS` Feature
+  mix Body vertices and Sketch points freely; `plane_geometry.
+  resolve_three_points` is pure-Python (origin = first point, `x_axis` =
+  first-to-second direction, normal = cross product, rejecting collinear/
+  coincident points with a new `collinear_points` 422) while the edge/face+
+  vertex resolvers live in `create_plane.py` (need OCCT for the linearity/
+  planarity checks); `_validate_create_plane_payload`'s per-type "every
+  other field must be empty" check factored into one shared
+  `_all_other_create_plane_fields_empty` helper as the field count grew from
+  four to seven. Client: `CreatePlaneMode` gained the three new cases (no
+  numeric field, same as `normalToLineAtPoint`); `contextActionsFor` gained
+  real enabled rules for exactly-1-edge+1-vertex, exactly-1-face+1-vertex,
+  and exactly-3-points (mixed vertex/sketch-point pool), each checked before
+  their own pre-existing disabled-placeholder buckets; `part_screen.dart`
+  wired end-to-end (create/edit/cancel-restore) for all three. 86/86 OCCT-
+  free backend tests (new `test_stage_c4_plane_basis.py`/
+  `test_stage_c4_create_plane.py`, the latter `ast.parse`-only per the usual
+  OCCT-in-sandbox caveat), 242 client tests passed, both confirmed
+  regression-free via `git worktree` diff against the pre-C4 commit (same
+  18/13-file OCCT/GPU-blocked sets, respectively, as before). **Superseded**
+  - Prompt D (Fillet) and Prompt E (Chamfer) have both since been built and
+  confirmed working on-device, presupposing this stage's own gate passed
+  too.
+- **Bug fix (on-device report, post-C4)**: hiding a Body via plain Hide/Show
+  and B4 true-rollback's own "pretend this Feature doesn't exist yet"
+  exclusion were the same underlying mechanism (`hidden_feature_ids`) -
+  correct for rollback, but it meant hiding a Body that a still-visible
+  Plane depended on (and anything built on that Plane) broke the *entire*
+  `/mesh` response with `missing_reference`, including unrelated Bodies.
+  Split into two separate concepts end to end: `rollback_excluded_feature_ids`
+  (still genuinely excludes a Feature from recompute, B4-only) and
+  `hidden_feature_ids` (now purely cosmetic - every Body is always fully
+  computed, then filtered out of the response only). Accepted trade-off:
+  hiding a Cut (which owns no standalone Body) no longer "un-subtracts" it.
+  New end-to-end regression test reproduces the exact reported scenario.
+  Also: Build Tree text no longer wraps (smaller, single-line, ellipsized),
+  gained a drag handle to resize the panel, and Bodies/Planes now start
+  collapsed while Features stays expanded.
+- **On-device follow-ups (same report thread)**: the Orbit/Selection
+  mode-toggle FAB is now reachable while the Extrude/Create Plane panel is
+  open (it used to hide for the panel's whole lifetime, purely to dodge a
+  layout collision - now only the toolbar-open case hides it, and a bottom
+  padding clears the panel instead); Extrude's forced-Selection-mode
+  override is gone too, replaced by a one-time default the FAB can still
+  toggle away from. Hidden Bodies now keep their row in the Build Tree
+  (`BodyMeshResponse.hidden` replaces the old drop-the-entry behavior -
+  free, since tessellation already happened before that filter ever ran),
+  dimmed with an eye-slash icon, long-press-toggleable directly from the
+  tree instead of only from the Feature that produced it.
+- **Prompt C5 (previously "deferred pending scoping", now built)**: Create
+  Plane's OFFSET_FACE/MIDPLANE/PARALLEL_TO_FACE_THROUGH_VERTEX now accept a
+  Plane (a fixed reference plane, or an existing custom Plane) as a valid
+  reference alongside a Body face - "offset from XY plane", "midplane
+  between a Plane and a Face". New `PlaneRef` union type (backend
+  `app.document.models`, mirroring C4's `PointRef`) and a `_resolve_plane_ref`
+  dispatcher in `create_plane.py`; `graph.py`'s dependency edges and the
+  router's validation generalized to match. Client: reference-plane/created-
+  Plane taps now toggle into the same selection set every other entity kind
+  uses while in Selection mode (new `SelectionEntityKind.referencePlane`/
+  `.createPlane`), instead of always opening their own single-plane context
+  sheet; `contextActionsFor`'s single/two/plus-vertex Create Plane combos
+  generalized from "Body face" to "plane-like" (face, fixed plane, or
+  existing Plane) accordingly. 90 OCCT-free backend tests passed (new
+  `test_stage_c5_graph.py`, `test_stage_c5_create_plane.py` the latter
+  `ast.parse`-only per the usual OCCT-in-sandbox caveat), `flutter analyze`
+  clean, 39/39 `document_api_client_test.dart` cases genuinely executed
+  (DTO round-trips + wire format).
+- **Bug fix (same-day follow-up)**: a user question caught that C5's own
+  Selection-mode plane-picking was dead code - `PartViewport`'s pointer
+  dispatch routes every tap in Selection mode to `_commitSelection()`, never
+  to `_handleTap` (the only place `onPlaneTap`/`onCreatePlaneTap` fire), so
+  the `if (_selectionMode)` branches added above could never run; planes had
+  no dynamic hover highlight either. Fixed by routing planes through the
+  same cursor/hover/commit pipeline every mesh entity already uses -
+  `ReferencePlaneHit`/`CreatePlaneHit` gained a `rayT` for depth-comparison,
+  `_recomputeHover` now competes a plane hit against the mesh hit by `rayT`,
+  and `_buildEntityHighlightNode` builds a real amber hover quad for a
+  plane instead of returning null. Also fixed: the "Add > Plane" guided
+  picker never switched to Selection mode, and its hint text predated both
+  C4's and C5's new combos. Confirmed working on-device.
+- **Prompt D: Fillet**. Multi-edge Fillet, one shared radius across all
+  selected edges (v1 scope, no per-edge radii/variable fillets, matching
+  the project's established conservative-scoping convention). Keeps the
+  target Body's existing `body_id` (an in-place shape replacement in
+  `compute_part_bodies`) rather than minting a new one, per the brief's own
+  body-identity decision - preserves A1's guarantee that a later
+  `target_body_ids`/`edge_refs` entry naming this Body keeps resolving to
+  it. New `FilletFeature` model + `app/document/fillet.py` (OCCT
+  `BRepFilletAPI_MakeFillet`, `mixed_body_selection`/`fillet_failed`
+  structured errors), `graph.py` dependency edges, `POST/PATCH /parts/{id}/
+  fillet-features[/{id}]`. Client: `contextActionsFor` enables Fillet (and,
+  per Prompt E's own shared-condition instruction, Chamfer) for a 1+-edges-
+  same-Body selection, disabled with a new `SelectionContextAction.
+  disabledReason` tooltip otherwise; new `FilletPanel` (mirrors
+  `CreatePlanePanel`'s Confirm/Cancel/live-preview shape); full part_screen
+  create/edit/confirm/cancel wiring. 95 OCCT-free backend tests passed (new
+  `test_stage_d_graph.py`, `test_stage_d_fillet.py` the latter `ast.parse`-
+  only per the usual OCCT-in-sandbox caveat), `flutter analyze` clean, 44/44
+  `document_api_client_test.dart` + 9/9 new `fillet_panel_test.dart` cases
+  genuinely executed. **Confirmed working on-device** (see the Chamfer
+  entry below for the final consolidated confirmation) - this Feature went
+  through several more rounds of on-device bug fixes before that
+  confirmation, all captured in the entries immediately below.
+- **Bug fixes from on-device feedback on the above**: live preview/post-
+  confirm mesh never appeared (Fillet's create/edit/cancel flow only
+  refetched Features, never the mesh - `_ensureExtrudeFeatureExists`'s
+  `_refreshMesh()` call was missing from all four Fillet call sites, now
+  added); editing an existing Fillet showed the already-filleted body
+  instead of the rolled-back one (`_openFilletPanelForEdit` now also
+  excludes its own Feature id via `_beginRollback`, same mechanism B4
+  already uses for downstream Features); Body row long-press now opens a
+  context menu (new `showBodyContextMenu`) instead of directly toggling
+  Hide/Show, matching the Feature long-press pattern. **Flagged back as a
+  v2-scope design question rather than guessed at**: corner treatment when
+  2+ selected edges share a vertex - OCCT blends a shared vertex smooth
+  when all edges go through one builder call (today's behavior); user
+  wanted this exposed as a selectable option in the FilletPanel, which the
+  original brief didn't specify. **Resolved, not as a UI toggle**: a later
+  investigation (see the "Follow-up" entry two below) found no kernel-level
+  "corner type" switch exists that could do this - `ChFi3d_FilletShape`
+  only affects cross-section profile, not vertex blending. The practical
+  answer shipped instead is reliable full-loop *selection* (tap a face to
+  select its whole boundary loop), not a corner-treatment option. **Confirmed
+  working on-device** (see the Chamfer entry below).
+- **Follow-up: Fillet selection filter, "Add" FAB entry, live edge editing,
+  corner-treatment investigation**. Asked (per explicit permission) before
+  guessing at two genuinely open questions: whether a Face-tap should select
+  its edge loop (yes, confirmed - needed new backend face→edge adjacency
+  data, `MeshData.face_edge_ids`) and whether the corner-rounding difference
+  needs an auto-expansion fix or is correct kernel behavior (user chose
+  "investigate first"). **Investigation conclusion**: the resolver already
+  uses the correct one-builder/all-edges-together OCCT approach; there is no
+  `BRepFilletAPI_MakeFillet` "corner type" switch that makes a 2-of-3-edges
+  selection look like the 3-edge case - `ChFi3d_FilletShape` only controls
+  cross-section profile, not vertex blending, and a still-sharp unfilleted
+  edge unavoidably meets the fillet surfaces differently. Not a bug; not
+  re-verified against real OCCT output (unavailable in this sandbox), a
+  reasoned conclusion from the API's documented behavior instead. The
+  practical fix is reliable full-loop *selection*, which the new Face-tap
+  feature provides. Also: new `_filletSelectionFilter` (edge+face only)
+  locked in for the whole Fillet flow via `_selectionFilterOverrides`; new
+  `FeaturePickerAction.fillet` "Add" FAB entry (`_startFilletPicker`,
+  mirrors `_startPlanePicker`'s guided-mode shape); Fillet's edge selection
+  is now genuinely live for the panel's whole session (previously
+  eager-create-once with no live-editing wiring at all, despite the prior
+  round's rollback fix implying it) - mirrors Extrude's live target-body
+  picking exactly, generalizing `_ensureFilletRadiusUpdated` into
+  `_ensureFilletFeatureExists(radius, edgeRefs)`. 95 OCCT-free backend tests
+  still passing (5 new `face_edge_ids` cases `ast.parse`-only per the usual
+  caveat), `flutter analyze` clean, 46/46 `document_api_client_test.dart` +
+  4/4 `feature_picker_sheet_test.dart` genuinely executed. **Confirmed
+  working on-device** (see the Chamfer entry below).
+- **Follow-up bug fixes on the above**: reference/created Planes stayed
+  selectable while picking edges for Fillet, since `SelectionFilterState`
+  had no `plane` field at all - `_hoverHitTestPlanes` (`part_viewport.dart`)
+  had no filter check to gate on. New `SelectionFilterState.plane` (default
+  `true`) fixes this; `_filletSelectionFilter` sets it `false`. Also: the
+  "Add" FAB's Fillet entry only opened a picker banner, requiring an extra
+  tap on the ambient Fillet button before `FilletPanel` itself appeared -
+  unified both Fillet entry points into `_openFilletPanel`, which now opens
+  the panel immediately either way (mirrors `_openExtrudePanel` showing
+  `ExtrudePanel` immediately with no target Bodies picked yet), removing
+  the separate `_filletPickerActive` picker-only phase entirely.
+  `_ensureFilletFeatureExists` generalized to create-or-update (mirrors
+  `_ensureExtrudeFeatureExists`) since a Feature can't exist with zero edges
+  yet. `flutter analyze` clean, `selection_filter_test.dart` +4 (now
+  10/10), same 46/46 + 9/9 + 4/4 + 12/12 other Dart suites still passing.
+  **Confirmed working on-device** (see the Chamfer entry below).
+- **Bug fix: live-editing a Fillet's edges after the first preview update
+  crashed with `missing_reference`**. User's own diagnosis was correct: the
+  create branch of `_ensureFilletFeatureExists` never excluded the newly-
+  created Fillet's own effect from the shown mesh, so the very first
+  successful create flipped the interactive body to the *post*-fillet
+  topology - new edge ids replacing the pre-fillet ones the backend's own
+  self-exclusion still validated `edge_refs` against. Fixed by adding the
+  new Feature's id to `_rollbackExcludedFeatureIds` right after creating it
+  (same mechanism `_openFilletPanelForEdit` already used for editing an
+  *existing* Fillet), so the shown/interactive body stays the stable
+  pre-fillet shape for the whole live-edit session, create or edit alike -
+  at the cost of no longer showing a live rounded-corner visual while
+  editing (the two asks were in direct tension; correctness of the edge
+  selection won per the user's own explicit preference). **Confirmed
+  working on-device** (see the Chamfer entry below).
+- **Live rounded-corner visual preview, built generically for Chamfer reuse
+  later**. Reinstates the visual the previous fix traded away, without
+  reintroducing the `missing_reference` bug - two meshes now, fetched
+  separately, never conflated: `_bodies` stays the stable pre-Fillet body
+  driving all hit-testing/picking (unchanged from the previous fix); a new
+  `_filletPreviewMesh`/`_filletPreviewBodyId` (fetched via
+  `_refreshFilletPreviewMesh`, the same `/mesh` endpoint with this
+  Feature's id *not* excluded) is purely visual. New `PartViewport.
+  previewOverlayBodyId`/`previewOverlayMesh` - a per-Body alternative to
+  the existing global-only `isPreviewMesh` flag - substitute the preview
+  mesh (same translucent-orange tint) into `_syncMeshNode`/`_syncEdgesNode`'s
+  rendering for just the one Body it targets; `bodies` itself, and every
+  hit-test/selection path reading from it, is untouched. `_refreshMesh()`
+  and `_refreshFilletPreviewMesh()` now run concurrently (`Future.wait`) so
+  the extra backend recompute doesn't double the round-trip latency, only
+  the backend's CPU cost per edit - flagged as a real trade-off, now
+  actually in effect for both Fillet and Chamfer (each doubles its own
+  backend recompute per edit) since Chamfer's own rollout reused this exact
+  mechanism rather than inventing a second one; worth revisiting only if
+  on-device performance actually suffers, not preemptively.
+  Backend unchanged (reuses the existing `rollback_excluded_feature_ids`
+  param with a different exclusion set). `flutter analyze` clean, same 81
+  Dart tests passing (unaffected - this touches `PartViewport`'s rendering
+  internals, which no test file in this sandbox can exercise regardless).
+  **Confirmed working on-device** (see the Chamfer entry below).
+- **Audit: brought every existing "preview" mechanism in line with the
+  above, or documented why not**. Extrude (Boss/Cut) and Create Plane both
+  audited and left unchanged - Extrude picks Body-level ids, which stay
+  stable across its own re-solves (unlike Fillet's edge ids), so its
+  existing single global `isPreviewMesh` tint is already correct; Create
+  Plane never modifies Body geometry and doesn't even support re-picking
+  its reference once its panel is open, so there's nothing to retrofit.
+  New `docs/live-preview-pattern.md` - a decision tree + exact mirror-list
+  for the next Feature type that needs a live mesh preview (Chamfer will) -
+  cross-linked from `PartViewport.previewOverlayBodyId`,
+  `PartScreen._ensureFilletFeatureExists`, and
+  `app.document.fillet.resolve_fillet` so a future agent building the next
+  one actually finds it while reading the reference implementation, not
+  just the other way around.
+- **Prompt E: Chamfer, rolled out as a full mirror of Fillet** (per explicit
+  instruction: use Fillet as the template, including every on-device fix
+  layered onto it since Prompt D, not just the original brief). Same design
+  decisions as Fillet throughout (per Prompt E's own brief): `ChamferFeature`
+  model + `app/document/chamfer.py` (`BRepFilletAPI_MakeChamfer`,
+  `mixed_body_selection`/`chamfer_failed` structured errors, identical
+  self-exclusion convention in `resolve_chamfer`), `graph.py` dependency
+  edges, `POST/PATCH /parts/{id}/chamfer-features[/{id}]`. Client: new
+  `ChamferPanel` (structurally identical to `FilletPanel`); `part_screen.dart`
+  gained Chamfer's own complete, separate state/method set - a full
+  method-for-method mirror of Fillet's, not a shared abstraction (matches
+  this codebase's convention of separate-but-structurally-identical Feature
+  flows) - including the self-exclusion-on-create fix and the dual-mesh
+  preview overlay from day one, so Chamfer never has to earn these the hard
+  way the way Fillet did. `contextActionsFor`'s same-body enabling rule
+  already covered both buttons from Prompt D's own work (the one place the
+  brief calls for sharing code) - only `onChamfer`'s actual callback needed
+  wiring. 100 OCCT-free backend tests passed (new `test_stage_e_graph.py`
+  genuinely executed, `test_stage_e_chamfer.py` `ast.parse`-only per the
+  usual caveat, plus a new case for Prompt E's own on-device gate: a Body
+  with both a Fillet and a Chamfer recomputes correctly), `flutter analyze`
+  clean, 96 Dart tests genuinely executed across every touched/new
+  no-`flutter_scene`-dependency file. **Confirmed working on-device
+  (2026-07-06)** - user tested Chamfer directly and reported it "working
+  well on device." Per Prompt E's own stop condition, this closes out the
+  entire C/D/E sequence: Create Plane (C2-C5), Fillet (Prompt D, including
+  every on-device bug-fix round layered onto it), and Chamfer (Prompt E).
+  No CAD-feature work remains blocked on an on-device confirmation gate as
+  of this entry - see `docs/status.md`'s matching 2026-07-06 entry for the
+  consolidated closing note, and the "Other open items" section at the top
+  of this file for what's still genuinely open (Revolve/Sweep, the C3
+  rendering bug, etc.) now that this sequence is done.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

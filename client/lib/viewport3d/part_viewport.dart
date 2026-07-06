@@ -7,6 +7,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
@@ -51,11 +52,54 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
+  /// C2: per-Feature resolved Create Plane geometry (null values omitted by
+  /// callers - a Plane whose reference is currently unresolvable has
+  /// nothing to render, same convention [sketchGeometries] uses for a
+  /// Feature with no geometry at all), keyed by Feature id. Same "only
+  /// build a new Map instance on genuine change" contract as
+  /// [sketchGeometries].
+  final Map<String, ResolvedPlaneGeometry> createPlanes;
+
+  /// C3: fired for a tap that lands on a rendered created-Plane quad (see
+  /// [createPlanes]/[hitTestCreatePlanes]) - checked after [onPlaneTap]'s
+  /// fixed reference planes in [_handleTap], so a created Plane that happens
+  /// to overlap one of the three fixed planes never shadows it (reference
+  /// planes keep first claim on a tap, same precedence they already had
+  /// before created Planes existed).
+  final void Function(String featureId)? onCreatePlaneTap;
+
+  /// C3: which created Plane (if any) renders with [ResolvedPlaneGeometry]'s
+  /// brighter "selected" tint - mirrors [selectedPlane]'s own
+  /// controlled-widget pattern for the three fixed planes.
+  final String? selectedCreatePlaneFeatureId;
+
   /// True while [bodies] is an Extrude live preview (see [PartScreen]'s
   /// debounced create/update-then-refetch flow) rather than confirmed
   /// geometry - renders the mesh translucent and tinted so a preview solid
   /// is never mistaken for the Part's actual, saved shape.
   final bool isPreviewMesh;
+
+  /// On-device feedback: a *per-Body* alternative to [isPreviewMesh] for
+  /// Fillet (and, later, Chamfer - same mechanism; see
+  /// `docs/live-preview-pattern.md` for the full decision tree on which of
+  /// these two fields a new Feature type should use, and exactly what to
+  /// mirror) - these two fields are already generic/reusable as-is, not
+  /// Fillet-specific despite the name - a new Feature type wires its own
+  /// preview body/mesh straight through the same pair, no `PartViewport`
+  /// changes needed. [bodies] itself must stay the stable, *pre*-operation
+  /// mesh for the whole live-edit session (hit-testing/edge-picking needs
+  /// edge ids that
+  /// never move out from under the user - see the "missing_reference"
+  /// bug fix this follows), but the operation's actual current effect
+  /// still needs to be *visible* somewhere, or the radius/edge-selection
+  /// panel has no visual feedback at all. When [previewOverlayMesh] is
+  /// non-null, [_syncMeshNode]/[_syncEdgesNode] substitute it (rendered
+  /// with the same translucent tint [isPreviewMesh] uses) for the one Body
+  /// in [bodies] whose id equals [previewOverlayBodyId] - every other Body,
+  /// and [bodies] itself for hit-testing/selection purposes, is completely
+  /// unaffected.
+  final String? previewOverlayBodyId;
+  final MeshDto? previewOverlayMesh;
 
   /// Stage 10b: globally hides all three reference planes - both their
   /// rendered geometry and their [onPlaneTap] hit-testing, so a tap where a
@@ -133,7 +177,12 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
+    this.createPlanes = const {},
+    this.onCreatePlaneTap,
+    this.selectedCreatePlaneFeatureId,
     this.isPreviewMesh = false,
+    this.previewOverlayBodyId,
+    this.previewOverlayMesh,
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
@@ -176,6 +225,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Map<String, Node> _edgesNodes = {};
   Map<ReferencePlaneKind, Node> _planeNodes = {};
   Map<String, Node> _sketchNodes = {};
+  Map<String, Node> _createPlaneNodes = {};
 
   /// Set if GPU/scene setup throws - without this, that failure would only
   /// ever reach the console (it happens inside an unawaited Future), leaving
@@ -309,6 +359,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncEdgesNode();
         _syncReferencePlaneNodes();
         _syncSketchNodes();
+        _syncCreatePlaneNodes();
       });
     }).catchError((Object error) {
       debugPrint('[PartViewport] GPU/scene setup failed: $error');
@@ -322,20 +373,31 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     super.didUpdateWidget(oldWidget);
     if (widget.bodies != oldWidget.bodies ||
         widget.isPreviewMesh != oldWidget.isPreviewMesh ||
+        widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
+        widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodyColourHex != oldWidget.bodyColourHex ||
         widget.bodyOpacity != oldWidget.bodyOpacity) {
       setState(_syncMeshNode);
     }
-    if (widget.bodies != oldWidget.bodies || widget.renderMode != oldWidget.renderMode) {
+    if (widget.bodies != oldWidget.bodies ||
+        widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
+        widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
+        widget.renderMode != oldWidget.renderMode) {
       setState(_syncEdgesNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane ||
-        widget.referencePlanesHidden != oldWidget.referencePlanesHidden) {
+        widget.referencePlanesHidden != oldWidget.referencePlanesHidden ||
+        widget.selectedEntities != oldWidget.selectedEntities) {
       setState(_syncReferencePlaneNodes);
     }
     if (widget.sketchGeometries != oldWidget.sketchGeometries) {
       setState(_syncSketchNodes);
+    }
+    if (widget.createPlanes != oldWidget.createPlanes ||
+        widget.selectedCreatePlaneFeatureId != oldWidget.selectedCreatePlaneFeatureId ||
+        widget.selectedEntities != oldWidget.selectedEntities) {
+      setState(_syncCreatePlaneNodes);
     }
     if (widget.selectionMode != oldWidget.selectionMode) {
       setState(() {
@@ -407,7 +469,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // real mesh data either way, so switching modes never moves the camera.
     if (widget.renderMode.showsFilledFaces) {
       for (final body in bodies) {
-        final mesh = body.mesh;
+        // On-device feedback: if this is the one Body [previewOverlayMesh]
+        // targets, render *that* mesh (the operation's actual current
+        // effect) instead of this stable Body's own - [bodies] itself stays
+        // untouched (hit-testing/edge ids below still come from the real
+        // `body.mesh`), only the rendered geometry for this one Node swaps.
+        final isPreviewOverlay =
+            widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId;
+        final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh;
         if (mesh.vertices.isEmpty) {
           // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
           // GPU device buffer sized off the vertex/index data - a
@@ -427,7 +496,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           '${mesh.vertices.length} verts)...',
         );
         final geometry = geometryFromMesh(mesh);
-        final material = widget.isPreviewMesh
+        final material = (widget.isPreviewMesh || isPreviewOverlay)
             ? (UnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
@@ -486,7 +555,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
     var totalSegments = 0;
     for (final body in widget.bodies) {
-      var segments = edgeSegmentsFromMesh(body.mesh);
+      // See _syncMeshNode's identical substitution for why - keeps the
+      // wireframe/shaded-with-edges overlay consistent with whichever mesh
+      // (stable or preview) that Body's filled faces are actually showing.
+      final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
+          ? widget.previewOverlayMesh!
+          : body.mesh;
+      var segments = edgeSegmentsFromMesh(mesh);
       if (segments.isEmpty) continue;
       if (biased) {
         segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
@@ -502,6 +577,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
     );
   }
+
+  /// C5: true if [plane] is highlighted - either the single "just tapped,
+  /// its context sheet is open" plane ([PartViewport.selectedPlane], the
+  /// pre-C5 controlled-widget flow), or a `referencePlane` entry in
+  /// [PartViewport.selectedEntities] (the Selection-mode multi-select flow -
+  /// see [PartScreen._onPlaneTap]'s own doc comment for which of the two
+  /// applies when).
+  bool _isPlaneSelected(ReferencePlaneKind plane) =>
+      plane == widget.selectedPlane ||
+      widget.selectedEntities.any(
+        (e) => e.kind == SelectionEntityKind.referencePlane && e.referencePlaneKind == plane,
+      );
+
+  /// C5: mirrors [_isPlaneSelected] for a created Plane's own Feature id.
+  bool _isCreatePlaneSelected(String featureId) =>
+      featureId == widget.selectedCreatePlaneFeatureId ||
+      widget.selectedEntities.any(
+        (e) => e.kind == SelectionEntityKind.createPlane && e.planeFeatureId == featureId,
+      );
 
   /// Rebuilds all three reference-plane nodes from scratch - cheap enough
   /// (three small rectangles) to redo wholesale on every selection change,
@@ -519,7 +613,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _planeNodes = {
       for (final plane in ReferencePlaneKind.values)
-        plane: buildReferencePlaneNode(plane, selected: plane == widget.selectedPlane),
+        plane: buildReferencePlaneNode(plane, selected: _isPlaneSelected(plane)),
     };
     for (final node in _planeNodes.values) {
       scene.add(node);
@@ -542,6 +636,31 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (!entry.value.isEmpty) entry.key: buildSketchGeometryNode(entry.key, entry.value),
     };
     for (final node in _sketchNodes.values) {
+      scene.add(node);
+    }
+  }
+
+  /// C2: mirrors [_syncSketchNodes] for [PartViewport.createPlanes] - one
+  /// [Node] per resolvable CreatePlaneFeature, rebuilt wholesale on every
+  /// genuine content change per the widget's own contract.
+  void _syncCreatePlaneNodes() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _createPlaneNodes.values) {
+      scene.remove(node);
+    }
+    _createPlaneNodes = {
+      for (final entry in widget.createPlanes.entries)
+        entry.key: buildCreatePlaneNode(
+          entry.key,
+          entry.value.origin,
+          entry.value.xAxis,
+          entry.value.yAxis,
+          entry.value.normal,
+          selected: _isCreatePlaneSelected(entry.key),
+        ),
+    };
+    for (final node in _createPlaneNodes.values) {
       scene.add(node);
     }
   }
@@ -638,9 +757,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final hit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
     if (hit != null) {
       widget.onPlaneTap(hit.plane);
-    } else {
-      widget.onBackgroundTap();
+      return;
     }
+    // C3: checked after the three fixed reference planes so those keep
+    // first claim on a tap (see [PartViewport.onCreatePlaneTap]'s own doc
+    // comment).
+    final createPlaneHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    if (createPlaneHit != null) {
+      widget.onCreatePlaneTap?.call(createPlaneHit.featureId);
+      return;
+    }
+    widget.onBackgroundTap();
   }
 
   void _handlePointerSignal(PointerSignalEvent event) {
@@ -809,18 +936,70 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   /// Item 3's hover hit-test, run from [_cursorPosition] - null result
   /// clears any prior hover (cursor moved over empty background).
+  ///
+  /// C5: also competes a reference-plane/created-Plane hit (see
+  /// [_hoverHitTestPlanes]) against the mesh/sketch hit, by [HoverHit.rayT] -
+  /// planes are now selectable in Selection mode via this same cursor/hover/
+  /// commit pipeline (never via [onPlaneTap]/[onCreatePlaneTap], which - see
+  /// [_onPointerEnd] - are only ever reached in Orbit mode).
   void _recomputeHover() {
     final cursor = _cursorPosition;
-    if (widget.bodies.isEmpty || cursor == null) {
+    if (cursor == null) {
       _hoverHit = null;
       return;
     }
     final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
-    _hoverHit = hitTestBodies(
-      ray: ray,
-      viewportSize: _viewportSize,
-      bodies: widget.bodies,
-      filter: widget.selectionFilter,
+    // Prompt C1: previously gated on `widget.bodies.isEmpty` alone, which
+    // skipped hit-testing entirely for a Part with no Bodies yet (e.g. a
+    // bare Sketch with no Extrude) - now also runs whenever there's Sketch
+    // geometry to test, since that's real pickable content on its own.
+    final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
+        ? null
+        : hitTestBodies(
+            ray: ray,
+            viewportSize: _viewportSize,
+            bodies: widget.bodies,
+            sketchGeometries: widget.sketchGeometries,
+            filter: widget.selectionFilter,
+          );
+    final planeHit = _hoverHitTestPlanes(ray);
+    if (meshHit == null) {
+      _hoverHit = planeHit;
+    } else if (planeHit == null) {
+      _hoverHit = meshHit;
+    } else {
+      _hoverHit = meshHit.rayT <= planeHit.rayT ? meshHit : planeHit;
+    }
+  }
+
+  /// C5: hit-tests reference planes then created planes (same precedence
+  /// [_handleTap] already used for the pre-C5 Orbit-mode-only tap path -
+  /// see [hitTestCreatePlanes]'s own doc comment for why reference planes
+  /// keep first claim), wrapped as a [HoverHit] so [_recomputeHover] can
+  /// depth-compare it against a mesh/sketch hit along the same ray.
+  ///
+  /// On-device feedback: gated on [SelectionFilterState.plane] - C5 shipped
+  /// this hit-test with no filter check at all, so a picking mode that
+  /// turns every other kind off (e.g. Fillet's edge/face-only filter) still
+  /// left planes selectable regardless, since there was nothing here to
+  /// turn off in the first place.
+  HoverHit? _hoverHitTestPlanes(vm.Ray ray) {
+    if (!widget.selectionFilter.plane) return null;
+    final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
+    if (referenceHit != null) {
+      return HoverHit(
+        entity: SelectionEntityRef(
+          kind: SelectionEntityKind.referencePlane,
+          referencePlaneKind: referenceHit.plane,
+        ),
+        rayT: referenceHit.rayT,
+      );
+    }
+    final createHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    if (createHit == null) return null;
+    return HoverHit(
+      entity: SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: createHit.featureId),
+      rayT: createHit.rayT,
     );
   }
 
@@ -921,23 +1100,49 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final faceTriangles = <(vm.Vector3, vm.Vector3, vm.Vector3)>[];
     final edgeSegments = <(vm.Vector3, vm.Vector3)>[];
     final vertexPositions = <vm.Vector3>[];
+    // Prompt C1: sketchPoint/sketchLine entities feed the same
+    // vertexPositions/edgeSegments accumulators as Body vertices/edges -
+    // the final highlight [Node]s (buildVertexMarkersNode/buildMeshEdgesNode)
+    // don't care whether a point/segment came from mesh or Sketch geometry.
     for (final entity in widget.selectedEntities) {
-      final body = _bodyFor(entity.bodyId);
-      if (body == null) continue;
-      final mesh = body.mesh;
       switch (entity.kind) {
         case SelectionEntityKind.face:
-          faceTriangles.addAll(faceTrianglesForId(mesh, entity.id));
+          final body = _bodyFor(entity.bodyId);
+          if (body != null) faceTriangles.addAll(faceTrianglesForId(body.mesh, entity.id));
         case SelectionEntityKind.edge:
-          edgeSegments.addAll(edgeSegmentsForId(mesh, entity.id));
+          final body = _bodyFor(entity.bodyId);
+          if (body != null) edgeSegments.addAll(edgeSegmentsForId(body.mesh, entity.id));
         case SelectionEntityKind.vertex:
-          final position = vertexPositionForId(mesh, entity.id);
+          final body = _bodyFor(entity.bodyId);
+          final position = body == null ? null : vertexPositionForId(body.mesh, entity.id);
           if (position != null) vertexPositions.add(position);
         case SelectionEntityKind.body:
           // Prompt A3: a Body selection highlights every one of its faces,
           // not just one - reuses the same "selected faces" Node/colour
           // rather than introducing a fourth highlight Node type.
-          faceTriangles.addAll(trianglesFromMesh(mesh));
+          final body = _bodyFor(entity.bodyId);
+          if (body != null) faceTriangles.addAll(trianglesFromMesh(body.mesh));
+        case SelectionEntityKind.sketchPoint:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          final index = geometry?.pointIds.indexOf(entity.sketchEntityId) ?? -1;
+          if (geometry != null && index != -1) vertexPositions.add(geometry.points[index]);
+        case SelectionEntityKind.sketchLine:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.lineIds.length; i++) {
+              if (geometry.lineIds[i] == entity.sketchEntityId) {
+                edgeSegments.add(geometry.lineSegments[i]);
+              }
+            }
+          }
+        case SelectionEntityKind.referencePlane:
+        case SelectionEntityKind.createPlane:
+          // C5: a selected plane's highlight is its own quad rendering
+          // straight from [widget.selectedEntities] (see
+          // [_syncReferencePlaneNodes]/[_syncCreatePlaneNodes]'s own
+          // `selected:` check), not one of this method's three overlay
+          // Nodes - nothing to accumulate here.
+          break;
       }
     }
 
@@ -969,31 +1174,90 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Resolves one [SelectionEntityRef] (any kind) into its highlight [Node],
   /// shared by [_syncHoverNode] - a single entity's worth of whichever of
   /// [buildHighlightFacesNode]/[buildMeshEdgesNode]/[buildVertexMarkersNode]
-  /// matches its kind, or null if [entity]'s Body/id no longer exists.
+  /// matches its kind, or null if [entity]'s Body/Sketch/id no longer exists.
+  ///
+  /// Prompt C1: sketchPoint/sketchLine entities resolve against
+  /// [PartViewport.sketchGeometries] (keyed by Feature id via
+  /// [SelectionEntityRef.sketchFeatureId]) instead of [_bodyFor] - mirrors
+  /// [_syncSelectedEntityNodes]'s own per-case lookup.
   Node? _buildEntityHighlightNode(SelectionEntityRef entity, vm.Vector4 color) {
-    final body = _bodyFor(entity.bodyId);
-    if (body == null) return null;
-    final mesh = body.mesh;
     switch (entity.kind) {
       case SelectionEntityKind.face:
-        final triangles = faceTrianglesForId(mesh, entity.id);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final triangles = faceTrianglesForId(body.mesh, entity.id);
         if (triangles.isEmpty) return null;
         return buildHighlightFacesNode(triangles, color: color);
       case SelectionEntityKind.edge:
-        final segments = edgeSegmentsForId(mesh, entity.id);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final segments = edgeSegmentsForId(body.mesh, entity.id);
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
       case SelectionEntityKind.vertex:
-        final position = vertexPositionForId(mesh, entity.id);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final position = vertexPositionForId(body.mesh, entity.id);
         if (position == null) return null;
         return buildVertexMarkersNode([position], color: color);
       case SelectionEntityKind.body:
         // Prompt A3: whole-Body highlight - same as a Body-kind selection
         // (see _syncSelectedEntityNodes), just for the hover case.
-        final triangles = trianglesFromMesh(mesh);
+        final body = _bodyFor(entity.bodyId);
+        if (body == null) return null;
+        final triangles = trianglesFromMesh(body.mesh);
         if (triangles.isEmpty) return null;
         return buildHighlightFacesNode(triangles, color: color);
+      case SelectionEntityKind.sketchPoint:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final index = geometry.pointIds.indexOf(entity.sketchEntityId);
+        if (index == -1) return null;
+        return buildVertexMarkersNode([geometry.points[index]], color: color);
+      case SelectionEntityKind.sketchLine:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final segments = [
+          for (var i = 0; i < geometry.lineIds.length; i++)
+            if (geometry.lineIds[i] == entity.sketchEntityId) geometry.lineSegments[i],
+        ];
+        if (segments.isEmpty) return null;
+        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+      case SelectionEntityKind.referencePlane:
+        final plane = entity.referencePlaneKind;
+        if (plane == null) return null;
+        return _buildPlaneHighlightNode(plane.localTransform, referencePlaneSize / 2, color);
+      case SelectionEntityKind.createPlane:
+        final geometry = widget.createPlanes[entity.planeFeatureId];
+        if (geometry == null) return null;
+        return _buildPlaneHighlightNode(
+          createPlaneTransform(geometry.origin, geometry.xAxis, geometry.yAxis, geometry.normal),
+          createPlaneSize / 2,
+          color,
+        );
     }
+  }
+
+  /// C5: a flat, single-color quad at [transform] - the hover-highlight
+  /// counterpart to [buildReferencePlaneNode]/[buildCreatePlaneNode] (which
+  /// only ever render their own fixed unselected/selected tints, not an
+  /// arbitrary [color]), reusing the same [doubleSidedQuadBuffers] geometry
+  /// those build from.
+  Node _buildPlaneHighlightNode(vm.Matrix4 transform, double halfSize, vm.Vector4 color) {
+    final material = UnlitMaterial()
+      ..alphaMode = AlphaMode.blend
+      ..baseColorFactor = color;
+    final buffers = doubleSidedQuadBuffers(halfSize);
+    final geometry = MeshGeometry.fromArrays(
+      positions: buffers.positions,
+      normals: buffers.normals,
+      indices: buffers.indices,
+    );
+    return Node(
+      name: 'plane-highlight',
+      localTransform: transform,
+      mesh: Mesh.primitives(primitives: [MeshPrimitive(geometry, material)]),
+    );
   }
 
   @override
@@ -1038,6 +1302,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
                     ..._sketchNodes.values,
+                    ..._createPlaneNodes.values,
                     ..._edgesNodes.values,
                     if (_hoverNode != null) _hoverNode!,
                     if (_selectedEdgesNode != null) _selectedEdgesNode!,

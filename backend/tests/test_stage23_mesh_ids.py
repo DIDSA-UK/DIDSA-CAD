@@ -169,16 +169,73 @@ def test_placeholder_mesh_also_includes_topology_vertices():
     assert mesh["topology_vertex_ids"] == list(range(8))
 
 
-# --- empty computed mesh -------------------------------------------------------
+# --- face_edge_ids (Fillet follow-up: "tap a face to select all its edges") -
 
 
-def test_body_with_a_skipped_cut_and_no_other_geometry_is_absent_from_the_array():
+def test_box_extrude_has_face_edge_ids_matching_face_count():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    assert len(mesh["face_edge_ids"]) == 6
+
+
+def test_box_extrude_each_face_has_four_edges():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    for edge_ids in mesh["face_edge_ids"]:
+        assert len(edge_ids) == 4
+
+
+def test_box_extrude_face_edge_ids_share_edge_ids_id_space():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    all_ids = {edge_id for edge_ids in mesh["face_edge_ids"] for edge_id in edge_ids}
+    assert all_ids == set(mesh["edge_ids"])
+
+
+def test_box_extrude_every_edge_is_shared_by_exactly_two_faces():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    counts: dict[int, int] = {}
+    for edge_ids in mesh["face_edge_ids"]:
+        for edge_id in edge_ids:
+            counts[edge_id] = counts.get(edge_id, 0) + 1
+    assert all(count == 2 for count in counts.values())
+
+
+def test_placeholder_mesh_also_includes_face_edge_ids():
+    part = _create_part()
+
+    bodies = _get_bodies(part["id"])
+
+    mesh = bodies[0]["mesh"]
+    assert len(mesh["face_edge_ids"]) == 6
+    for edge_ids in mesh["face_edge_ids"]:
+        assert len(edge_ids) == 4
+
+
+# --- hidden Body, no other geometry ------------------------------------------
+
+
+def test_body_with_a_skipped_cut_and_no_other_geometry_is_tagged_hidden_not_absent():
     """A1: replaces the old "empty computed mesh has empty ids" test - a
     Cut can no longer be created with nothing to name in target_body_ids
-    (see test_stage_a1_multibody.py's 422 test), so "nothing computed yet"
-    is represented by an empty array rather than a single Body entry with
-    empty id lists. This reproduces the equivalent "nothing to show" state
-    via a Cut whose target Body is hidden away at recompute time."""
+    (see test_stage_a1_multibody.py's 422 test). This reproduces the
+    equivalent "nothing real to show" state via a Cut whose target Body is
+    hidden away.
+
+    Bug fix (post-C4, revised on-device): the Boss/Cut are still fully
+    computed - the result stays in the array, tagged `hidden`, because it
+    traces back (`base_feature_id`) to the hidden Boss - see
+    app.document.router.get_part_mesh's own docstring for why a hidden
+    Body's entry is never dropped (the Build Tree needs it)."""
     part = _create_part()
     boss_sketch = _create_square_sketch_feature(part["id"])
     boss = _create_extrude_feature(part["id"], boss_sketch["id"], extrude_type="boss")
@@ -189,4 +246,5 @@ def test_body_with_a_skipped_cut_and_no_other_geometry_is_absent_from_the_array(
 
     bodies = _get_bodies(part["id"], hidden_feature_ids=[boss["id"]])
 
-    assert bodies == []
+    assert len(bodies) == 1
+    assert bodies[0]["hidden"] is True

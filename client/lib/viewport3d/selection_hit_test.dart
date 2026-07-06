@@ -5,7 +5,9 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import 'mesh_geometry.dart' show edgeSegmentsFromMesh;
+import 'reference_planes.dart' show ReferencePlaneKind;
 import 'selection_filter.dart';
+import 'sketch_geometry_3d.dart' show SketchGeometry3D;
 
 /// flutter_scene's `PerspectiveCamera` only exposes `fovNear`/`fovFar` (the
 /// near/far *clip* distances, see `OrbitCamera.cameraFor`) - there's no
@@ -40,8 +42,18 @@ const double kSelectionHitRadiusPixels = 12.5;
 const double kVertexSelectionHitRadiusPixels = kSelectionHitRadiusPixels;
 
 /// Prompt A3 added `body` - a whole Body (Prompt A1), selected as a unit
-/// rather than one of its individual faces/edges/vertices.
-enum SelectionEntityKind { face, edge, vertex, body }
+/// rather than one of its individual faces/edges/vertices. Prompt C1 added
+/// `sketchPoint`/`sketchLine` - a Sketch's own Point/Line entities, rendered
+/// and pickable in the 3D viewport alongside Body geometry (see
+/// `sketch_geometry_3d.dart`). C5 added `referencePlane`/`createPlane` - one
+/// of the three fixed reference planes, or an existing CreatePlaneFeature's
+/// own rendered quad, so either can now feed a Create Plane operation as a
+/// `PlaneRefDto` (an offset from, or a midplane against, a plane instead of
+/// only a Body face) exactly like every other selectable entity kind - see
+/// `PartScreen._onPlaneTap`/`_onCreatePlaneFeatureTap`, which toggle these
+/// into the selection set while in Selection mode instead of always opening
+/// their own context sheet.
+enum SelectionEntityKind { face, edge, vertex, body, sketchPoint, sketchLine, referencePlane, createPlane }
 
 /// Identifies one selectable mesh entity - a [SelectionEntityKind] plus the
 /// stable id `MeshDto.faceIds`/`edgeIds`/`topologyVertexIds` assigns it.
@@ -58,22 +70,80 @@ enum SelectionEntityKind { face, edge, vertex, body }
 /// [PartViewport] uses) ever produces a meaningful, non-empty [bodyId].
 /// For a [SelectionEntityKind.body] entity, [bodyId] alone is the whole
 /// identity - [id] is always `0` and carries no meaning.
+///
+/// Prompt C1: [sketchFeatureId]/[sketchEntityId] identify a
+/// [SelectionEntityKind.sketchPoint]/[SelectionEntityKind.sketchLine] entity
+/// instead - [bodyId]/[id] carry no meaning for those two kinds, the same
+/// way [bodyId] carries no meaning for mesh kinds and vice versa. A separate
+/// pair (rather than reusing [bodyId]/[id]) because Sketch Point/Line ids
+/// are real backend UUID strings (`Point.id`/`SketchEntity.id`), not the
+/// small dense ints `MeshDto` assigns its own entities - [sketchFeatureId]
+/// is the owning Feature's id (matching `PartViewport.sketchGeometries`'
+/// own keying), not the Sketch's own id, so this stays resolvable the same
+/// way `_bodyFor`/`PartViewport.sketchGeometries` already key by Feature id.
 class SelectionEntityRef {
   final SelectionEntityKind kind;
   final String bodyId;
   final int id;
+  final String sketchFeatureId;
+  final String sketchEntityId;
 
-  const SelectionEntityRef({required this.kind, this.bodyId = '', this.id = 0});
+  /// C5: which fixed reference plane this is, for a [SelectionEntityKind.
+  /// referencePlane] entity - null (and meaningless) for every other kind,
+  /// the same "carries no meaning outside its own kind" convention
+  /// [bodyId]/[id] and [sketchFeatureId]/[sketchEntityId] already use for
+  /// each other's kinds.
+  final ReferencePlaneKind? referencePlaneKind;
+
+  /// C5: the CreatePlaneFeature's own id, for a [SelectionEntityKind.
+  /// createPlane] entity - meaningless for every other kind. A separate
+  /// field from [sketchFeatureId] even though both are "a Feature id
+  /// string", since a `createPlane` entity *is* that Feature (identifies
+  /// it directly), whereas [sketchFeatureId] names the Feature a
+  /// sketchPoint/sketchLine entity merely *belongs to*.
+  final String planeFeatureId;
+
+  const SelectionEntityRef({
+    required this.kind,
+    this.bodyId = '',
+    this.id = 0,
+    this.sketchFeatureId = '',
+    this.sketchEntityId = '',
+    this.referencePlaneKind,
+    this.planeFeatureId = '',
+  });
 
   @override
   bool operator ==(Object other) =>
-      other is SelectionEntityRef && other.kind == kind && other.bodyId == bodyId && other.id == id;
+      other is SelectionEntityRef &&
+      other.kind == kind &&
+      other.bodyId == bodyId &&
+      other.id == id &&
+      other.sketchFeatureId == sketchFeatureId &&
+      other.sketchEntityId == sketchEntityId &&
+      other.referencePlaneKind == referencePlaneKind &&
+      other.planeFeatureId == planeFeatureId;
 
   @override
-  int get hashCode => Object.hash(kind, bodyId, id);
+  int get hashCode => Object.hash(
+        kind,
+        bodyId,
+        id,
+        sketchFeatureId,
+        sketchEntityId,
+        referencePlaneKind,
+        planeFeatureId,
+      );
 
   @override
-  String toString() => 'SelectionEntityRef($kind, bodyId: $bodyId, $id)';
+  String toString() => switch (kind) {
+        SelectionEntityKind.sketchPoint ||
+        SelectionEntityKind.sketchLine =>
+          'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)',
+        SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
+        SelectionEntityKind.createPlane => 'SelectionEntityRef($kind, planeFeatureId: $planeFeatureId)',
+        _ => 'SelectionEntityRef($kind, bodyId: $bodyId, $id)',
+      };
 }
 
 /// A hit-test result: which entity, how far along the ray it was found (for
@@ -190,6 +260,81 @@ HoverHit? hitTestEdges(
     if (best == null || pixelDistance < best.pixelDistance!) {
       best = HoverHit(
         entity: SelectionEntityRef(kind: SelectionEntityKind.edge, id: ids[i]),
+        rayT: t,
+        pixelDistance: pixelDistance,
+      );
+    }
+  }
+  return best;
+}
+
+/// Prompt C1: [hitTestVertices]' counterpart for a Sketch's own Points -
+/// same nearest-in-range-wins logic, just producing
+/// [SelectionEntityKind.sketchPoint] entities tagged with [sketchFeatureId]/
+/// a String [SketchEntityRef]-style id (see [SelectionEntityRef]'s own doc
+/// comment for why that's a separate field pair from [bodyId]/`id`) instead
+/// of a Body-scoped int id.
+HoverHit? hitTestSketchPoints(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<vm.Vector3> points,
+  List<String> ids, {
+  double radiusPixels = kVertexSelectionHitRadiusPixels,
+}) {
+  final direction = ray.direction.normalized();
+  HoverHit? best;
+  for (var i = 0; i < points.length; i++) {
+    final toPoint = points[i] - ray.origin;
+    final t = toPoint.dot(direction);
+    if (t <= 0) continue;
+    final closestOnRay = ray.origin + direction * t;
+    final worldDistance = (points[i] - closestOnRay).length;
+    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+    if (pixelDistance > radiusPixels) continue;
+    if (best == null || pixelDistance < best.pixelDistance!) {
+      best = HoverHit(
+        entity: SelectionEntityRef(
+          kind: SelectionEntityKind.sketchPoint,
+          sketchFeatureId: sketchFeatureId,
+          sketchEntityId: ids[i],
+        ),
+        rayT: t,
+        pixelDistance: pixelDistance,
+      );
+    }
+  }
+  return best;
+}
+
+/// Prompt C1: [hitTestEdges]' counterpart for a Sketch's own Lines - see
+/// [hitTestSketchPoints]'s doc comment for why this produces
+/// [SelectionEntityRef.sketchFeatureId]/[SelectionEntityRef.sketchEntityId]
+/// rather than [SelectionEntityRef.bodyId]/`id`.
+HoverHit? hitTestSketchLines(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<(vm.Vector3, vm.Vector3)> segments,
+  List<String> ids, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+}) {
+  final direction = ray.direction.normalized();
+  HoverHit? best;
+  for (var i = 0; i < segments.length; i++) {
+    final closest =
+        _closestRaySegmentDistance(ray.origin, direction, segments[i].$1, segments[i].$2);
+    if (closest == null) continue;
+    final (t, worldDistance) = closest;
+    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+    if (pixelDistance > radiusPixels) continue;
+    if (best == null || pixelDistance < best.pixelDistance!) {
+      best = HoverHit(
+        entity: SelectionEntityRef(
+          kind: SelectionEntityKind.sketchLine,
+          sketchFeatureId: sketchFeatureId,
+          sketchEntityId: ids[i],
+        ),
         rayT: t,
         pixelDistance: pixelDistance,
       );
@@ -400,10 +545,22 @@ HoverHit? hitTestMeshEntities({
 /// the tapped [SelectionEntityKind.face] - Body deliberately takes
 /// precedence over a plain face pick whenever both are enabled, since
 /// toggling Body on is specifically a request for the coarser granularity.
+///
+/// Prompt C1: [sketchGeometries] (same map [PartViewport.sketchGeometries]
+/// carries, keyed by Feature id) is folded into the same two tiers rather
+/// than tested as a separate third pass - a Sketch Point ties with a Body
+/// Vertex at the top priority tier, a Sketch Line ties with a Body Edge at
+/// the next one, per this prompt's own confirmed design (the recommended
+/// "kind-based tie" over "all Sketch entities outrank all Body entities" -
+/// see the prompt's own scope doc). Reuses [hitTestSketchPoints]/
+/// [hitTestSketchLines] rather than a second hit-test path, per this
+/// project's standing "extend the existing projection/hit-test logic"
+/// principle.
 HoverHit? hitTestBodies({
   required vm.Ray ray,
   required Size viewportSize,
   required List<BodyMeshDto> bodies,
+  Map<String, SketchGeometry3D> sketchGeometries = const {},
   double radiusPixels = kSelectionHitRadiusPixels,
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   SelectionFilterState filter = SelectionFilterState.defaults,
@@ -450,6 +607,36 @@ HoverHit? hitTestBodies({
       if (hit != null && (bestFace == null || hit.rayT < bestFace.rayT)) {
         bestFace = hit;
         bestFaceBodyId = body.bodyId;
+      }
+    }
+  }
+
+  for (final entry in sketchGeometries.entries) {
+    final geometry = entry.value;
+    if (filter.sketchPoint) {
+      final hit = hitTestSketchPoints(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.points,
+        geometry.pointIds,
+        radiusPixels: vertexRadiusPixels,
+      );
+      if (hit != null && (bestVertex == null || hit.pixelDistance! < bestVertex.pixelDistance!)) {
+        bestVertex = hit;
+      }
+    }
+    if (filter.sketchLine) {
+      final hit = hitTestSketchLines(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.lineSegments,
+        geometry.lineIds,
+        radiusPixels: radiusPixels,
+      );
+      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+        bestEdge = hit;
       }
     }
   }

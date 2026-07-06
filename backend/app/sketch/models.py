@@ -150,18 +150,62 @@ class Circle(SketchEntity):
         return math.hypot(radius_point.x - center.x, radius_point.y - center.y)
 
 
+class SketchEntityType(str, Enum):
+    """Which kind of Sketch entity a `SketchEntityRef` (below) points at.
+    Mirrors app.document.models.SubShapeType's str-Enum pattern so it
+    round-trips through pydantic the same way once a future Feature (e.g.
+    Create Plane's "Normal to Line at Point" reference) embeds one in its
+    own payload schema."""
+
+    POINT = "point"
+    LINE = "line"
+    CIRCLE = "circle"
+
+
+@dataclass(frozen=True)
+class SketchEntityRef:
+    """C1: a reference to one specific Point/Line/Circle inside one specific
+    Sketch - the Sketch-domain counterpart to `app.document.models.SubShapeRef`,
+    for a future Feature that needs to persist "this specific sketch entity"
+    (e.g. Create Plane's "Normal to Line at Point"). Deliberately not routed
+    through anything resembling `resolve_subshape`: Points/Lines/Circles
+    already carry their own stable id assigned at creation time (`Point.id`,
+    `SketchEntity.id`), so resolution is a direct dict lookup against the
+    Sketch's own collections, not an OCCT topology re-derivation - simpler
+    than `SubShapeRef` by construction, with no risk of the "same index,
+    different sub-shape" fragility that motivates `SubShapeRef`'s fail-closed
+    index revalidation.
+
+    Frozen/hashable like `SubShapeRef`, since this is a plain value type, not
+    an owned entity."""
+
+    sketch_id: str
+    entity_type: SketchEntityType
+    entity_id: str
+
+
 @dataclass
 class Sketch:
-    """An independent 2D sketch on one of the three fixed reference planes.
+    """An independent 2D sketch, on one of the three fixed reference planes
+    or (C3) anchored to a custom `CreatePlaneFeature` instead.
 
     Each Sketch owns its own Points and entities - nothing is shared
-    between Sketches. The plane is stored but not yet used for any 3D
-    transform/embedding (that becomes relevant once there's a 3D viewport
-    and/or Extrude needs it).
+    between Sketches.
+
+    C3: `plane` is `None` for a Sketch created via the Document/Part/Feature
+    layer's `SketchFeatureCreate.plane_feature_id` path (see
+    `app.document.router.create_sketch_feature`) - its real anchor plane is
+    instead resolved live from the owning `SketchFeature.plane_feature_id`
+    (see `app.document.create_plane.resolve_sketch_basis`), the same
+    "re-derive, don't cache" philosophy `ResolvedPlane` itself already
+    follows. Every Sketch created via the standalone `/sketch` API (which
+    has no notion of a Part/Feature/CreatePlaneFeature at all) always has a
+    real `plane` - `None` only ever appears for a custom-plane-anchored
+    Sketch created through the Document layer.
     """
 
     id: str
-    plane: Plane
+    plane: Plane | None
     points: dict[str, Point] = field(default_factory=dict)
     entities: dict[str, SketchEntity] = field(default_factory=dict)
     constraints: dict[str, Constraint] = field(default_factory=dict)

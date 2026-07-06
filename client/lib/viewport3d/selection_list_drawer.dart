@@ -59,6 +59,14 @@ class SelectionListDrawer extends StatelessWidget {
         // "Face #3" entries would sort nondeterministically against each
         // other. For a Body-kind entry, id is always 0 (meaningless) and
         // bodyId alone already fully orders them.
+        // Prompt C1: sketchPoint/sketchLine entries carry no bodyId/id at
+        // all (always '' / 0) - sort by sketchFeatureId/sketchEntityId
+        // instead, for the same "two different Sketches' entries shouldn't
+        // sort nondeterministically against each other" reason.
+        if (a.kind == SelectionEntityKind.sketchPoint || a.kind == SelectionEntityKind.sketchLine) {
+          final featureOrder = a.sketchFeatureId.compareTo(b.sketchFeatureId);
+          return featureOrder != 0 ? featureOrder : a.sketchEntityId.compareTo(b.sketchEntityId);
+        }
         final bodyOrder = a.bodyId.compareTo(b.bodyId);
         return bodyOrder != 0 ? bodyOrder : a.id.compareTo(b.id);
       });
@@ -129,6 +137,13 @@ class SelectionListDrawer extends StatelessWidget {
         return Icons.circle;
       case SelectionEntityKind.body:
         return Icons.view_in_ar_outlined;
+      case SelectionEntityKind.sketchPoint:
+        return Icons.control_point;
+      case SelectionEntityKind.sketchLine:
+        return Icons.timeline;
+      case SelectionEntityKind.referencePlane:
+      case SelectionEntityKind.createPlane:
+        return Icons.crop_square;
     }
   }
 
@@ -142,6 +157,13 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Vertex';
       case SelectionEntityKind.body:
         return 'Body';
+      case SelectionEntityKind.sketchPoint:
+        return 'Sketch Point';
+      case SelectionEntityKind.sketchLine:
+        return 'Sketch Line';
+      case SelectionEntityKind.referencePlane:
+      case SelectionEntityKind.createPlane:
+        return 'Plane';
     }
   }
 
@@ -150,10 +172,32 @@ class SelectionListDrawer extends StatelessWidget {
   /// with the feature tree's "Bodies" section) rather than a raw id
   /// truncation, so e.g. a split Body's two halves read as "Body 1"/
   /// "Body 2" instead of two identical truncated-id rows.
+  ///
+  /// Prompt C1: a sketchPoint/sketchLine entry has its own real backend
+  /// UUID (`entity.sketchEntityId`), not the small dense int [_labelFor]'s
+  /// other rows key off - shortened the same "first 8 characters" way
+  /// [bodyNames]'s own fallback does, for the same "too long to read at a
+  /// glance" reason.
   String _titleFor(SelectionEntityRef entity) {
     if (entity.kind == SelectionEntityKind.body) {
       final id = entity.bodyId;
       return bodyNames[id] ?? 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    if (entity.kind == SelectionEntityKind.sketchPoint || entity.kind == SelectionEntityKind.sketchLine) {
+      final id = entity.sketchEntityId;
+      return '${_labelFor(entity.kind)} #${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    // C5: a referencePlane entity names its fixed plane directly ("Plane
+    // XY"); a createPlane entity has no human-readable name of its own
+    // (unlike Bodies, there's no equivalent `planeNames` map threaded
+    // through here) so it falls back to the same truncated-id convention
+    // [bodyNames]'s own fallback above uses.
+    if (entity.kind == SelectionEntityKind.referencePlane) {
+      return 'Plane ${entity.referencePlaneKind?.name.toUpperCase() ?? ''}';
+    }
+    if (entity.kind == SelectionEntityKind.createPlane) {
+      final id = entity.planeFeatureId;
+      return 'Plane #${id.length > 8 ? id.substring(0, 8) : id}';
     }
     return '${_labelFor(entity.kind)} #${entity.id}';
   }

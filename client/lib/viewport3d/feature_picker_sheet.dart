@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 
 /// Actions available from the "Add" FAB's second-level Feature picker.
-/// [extrude] is the only entry wired to a real flow for now - Revolve/Sweep/
-/// Fillet/Chamfer are listed (per the Stage 19b brief) but rendered disabled
-/// since this codebase has no flow for them yet.
-enum FeaturePickerAction { extrude }
+/// [extrude], (C3) [plane], (on-device feedback) [fillet], and (Prompt E)
+/// [chamfer] are the only entries wired to a real flow - Revolve/Sweep are
+/// listed (per the Stage 19b brief) but rendered disabled since this
+/// codebase has no flow for them yet.
+enum FeaturePickerAction { extrude, plane, fillet, chamfer }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
 /// Feature entry offers - same drag-handle/rounded-top-corner shape as
@@ -12,46 +13,63 @@ enum FeaturePickerAction { extrude }
 Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
   return showModalBottomSheet<FeaturePickerAction>(
     context: context,
+    // C3: added a sixth entry (Plane) - scroll-controlled so this sheet can
+    // grow past its old fixed-fraction default height instead of clipping/
+    // overflowing on a short viewport (a small phone in landscape, or a
+    // split-screen window) the way a fixed-size six-row sheet otherwise
+    // risks doing.
+    isScrollControlled: true,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
     builder: (context) {
       final disabledColor = Theme.of(context).disabledColor;
       return SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: _DragHandle(),
-            ),
-            ListTile(
-              leading: const Icon(Icons.move_to_inbox_outlined),
-              title: const Text('Extrude'),
-              onTap: () => Navigator.of(context).pop(FeaturePickerAction.extrude),
-            ),
-            ListTile(
-              enabled: false,
-              leading: Icon(Icons.rotate_right, color: disabledColor),
-              title: Text('Revolve', style: TextStyle(color: disabledColor)),
-            ),
-            ListTile(
-              enabled: false,
-              leading: Icon(Icons.gesture, color: disabledColor),
-              title: Text('Sweep', style: TextStyle(color: disabledColor)),
-            ),
-            ListTile(
-              enabled: false,
-              leading: Icon(Icons.rounded_corner, color: disabledColor),
-              title: Text('Fillet', style: TextStyle(color: disabledColor)),
-            ),
-            ListTile(
-              enabled: false,
-              leading: Icon(Icons.change_history, color: disabledColor),
-              title: Text('Chamfer', style: TextStyle(color: disabledColor)),
-            ),
-            const SizedBox(height: 8),
-          ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: _DragHandle(),
+              ),
+              ListTile(
+                leading: const Icon(Icons.move_to_inbox_outlined),
+                title: const Text('Extrude'),
+                onTap: () =>
+                    Navigator.of(context).pop(FeaturePickerAction.extrude),
+              ),
+              ListTile(
+                leading: const Icon(Icons.crop_square),
+                title: const Text('Plane'),
+                onTap: () =>
+                    Navigator.of(context).pop(FeaturePickerAction.plane),
+              ),
+              ListTile(
+                enabled: false,
+                leading: Icon(Icons.rotate_right, color: disabledColor),
+                title: Text('Revolve', style: TextStyle(color: disabledColor)),
+              ),
+              ListTile(
+                enabled: false,
+                leading: Icon(Icons.gesture, color: disabledColor),
+                title: Text('Sweep', style: TextStyle(color: disabledColor)),
+              ),
+              ListTile(
+                leading: const Icon(Icons.rounded_corner),
+                title: const Text('Fillet'),
+                onTap: () =>
+                    Navigator.of(context).pop(FeaturePickerAction.fillet),
+              ),
+              ListTile(
+                leading: const Icon(Icons.change_history),
+                title: const Text('Chamfer'),
+                onTap: () =>
+                    Navigator.of(context).pop(FeaturePickerAction.chamfer),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       );
     },

@@ -11,12 +11,13 @@ import 'package:vector_math/vector_math.dart' as vm;
 enum ReferencePlaneKind { xy, xz, yz }
 
 /// The inverse of [ReferencePlaneKindX.apiValue] - parses a `SketchDto.plane`
-/// string (always one of `"XY"`/`"XZ"`/`"YZ"`, per the backend's `Plane`
-/// enum) back into a [ReferencePlaneKind], e.g. to resolve which plane an
-/// existing Feature's Sketch lives on for the camera-animation-on-open flow.
-/// Returns null on anything unrecognized rather than throwing, since this
+/// string (one of `"XY"`/`"XZ"`/`"YZ"`, per the backend's `Plane` enum, or -
+/// C3 - `null` for a Sketch anchored to a custom plane instead) back into a
+/// [ReferencePlaneKind], e.g. to resolve which plane an existing Feature's
+/// Sketch lives on for the camera-animation-on-open flow. Returns null on
+/// `null` or anything else unrecognized rather than throwing, since this
 /// only ever feeds a "skip the animation" fallback, not a hard requirement.
-ReferencePlaneKind? referencePlaneKindFromApiValue(String value) => switch (value) {
+ReferencePlaneKind? referencePlaneKindFromApiValue(String? value) => switch (value) {
       'XY' => ReferencePlaneKind.xy,
       'XZ' => ReferencePlaneKind.xz,
       'YZ' => ReferencePlaneKind.yz,
@@ -216,12 +217,17 @@ Node buildReferencePlaneNode(ReferencePlaneKind plane, {bool selected = false}) 
   );
 }
 
-/// A tap that intersected [plane] at world-space [point].
+/// A tap that intersected [plane] at world-space [point]. [rayT] (C5) is
+/// the ray parameter the hit occurred at - lets a caller depth-compare this
+/// against another hit along the same ray (see `PartViewport._recomputeHover`,
+/// which competes this against a mesh/sketch entity hit for the Selection-
+/// mode cursor).
 class ReferencePlaneHit {
   final ReferencePlaneKind plane;
   final vm.Vector3 point;
+  final double rayT;
 
-  const ReferencePlaneHit({required this.plane, required this.point});
+  const ReferencePlaneHit({required this.plane, required this.point, required this.rayT});
 }
 
 /// Pure ray-vs-reference-planes intersection: tests [ray] against all three
@@ -258,7 +264,7 @@ ReferencePlaneHit? hitTestReferencePlanes(vm.Ray ray, {double halfSize = _refere
 
     if (bestT == null || t < bestT) {
       bestT = t;
-      best = ReferencePlaneHit(plane: plane, point: point);
+      best = ReferencePlaneHit(plane: plane, point: point, rayT: t);
     }
   }
 

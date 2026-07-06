@@ -4,8 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/reference_planes.dart' show ReferencePlaneKind;
 import 'package:didsa_cad_client/viewport3d/selection_filter.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
+import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
 
 void main() {
   // Every ray below travels straight down +Z from the origin - the
@@ -102,6 +104,79 @@ void main() {
         viewportSize,
         [(vm.Vector3(0, -1, -5), vm.Vector3(0, 1, -5))],
         [5],
+      );
+      expect(hit, isNull);
+    });
+  });
+
+  group('Prompt C1: hitTestSketchPoints', () {
+    test('a Point within the vertex pixel radius at its depth is hit, tagged with the Feature id', () {
+      final hit = hitTestSketchPoints(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [vm.Vector3(0.05, 0, 10)],
+        ['point-a'],
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(
+          kind: SelectionEntityKind.sketchPoint,
+          sketchFeatureId: 'feature-1',
+          sketchEntityId: 'point-a',
+        ),
+      );
+    });
+
+    test('a Point outside the pixel radius at its depth is not hit', () {
+      final hit = hitTestSketchPoints(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [vm.Vector3(0.2, 0, 10)],
+        ['point-a'],
+      );
+      expect(hit, isNull);
+    });
+
+    test('the nearer of two in-radius Points wins', () {
+      final hit = hitTestSketchPoints(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [vm.Vector3(0.05, 0, 10), vm.Vector3(0.01, 0, 10)],
+        ['point-a', 'point-b'],
+      );
+      expect(hit?.entity.sketchEntityId, 'point-b');
+    });
+  });
+
+  group('Prompt C1: hitTestSketchLines', () {
+    test('a segment whose closest point to the ray is within radius is hit, tagged with the Feature id', () {
+      final hit = hitTestSketchLines(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [(vm.Vector3(0.05, -1, 10), vm.Vector3(0.05, 1, 10))],
+        ['line-a'],
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(
+          kind: SelectionEntityKind.sketchLine,
+          sketchFeatureId: 'feature-1',
+          sketchEntityId: 'line-a',
+        ),
+      );
+    });
+
+    test('a segment whose closest point is outside radius is not hit', () {
+      final hit = hitTestSketchLines(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [(vm.Vector3(0.5, -1, 10), vm.Vector3(0.5, 1, 10))],
+        ['line-a'],
       );
       expect(hit, isNull);
     });
@@ -656,6 +731,173 @@ void main() {
     test('empty bodies list returns null', () {
       final hit = hitTestBodies(ray: straightDownZ, viewportSize: viewportSize, bodies: const []);
       expect(hit, isNull);
+    });
+  });
+
+  group('Prompt C1: hitTestBodies with sketchGeometries', () {
+    // A lone Sketch Point/Line, no Body geometry at all - the "bare Sketch,
+    // no Extrude yet" case _recomputeHover's own fix (see part_viewport.dart)
+    // exists for.
+    final sketchGeometries = {
+      'sketch-feature-1': SketchGeometry3D(
+        lineSegments: const [],
+        lineIds: const [],
+        points: [vm.Vector3(0.05, 0, 10)],
+        pointIds: const ['point-a'],
+        circlePolygons: const [],
+      ),
+    };
+
+    test('a Sketch Point is pickable with an empty bodies list', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: const [],
+        sketchGeometries: sketchGeometries,
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(
+          kind: SelectionEntityKind.sketchPoint,
+          sketchFeatureId: 'sketch-feature-1',
+          sketchEntityId: 'point-a',
+        ),
+      );
+    });
+
+    test('sketchPoint filter off excludes it even though nothing else is in range', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: const [],
+        sketchGeometries: sketchGeometries,
+        filter: const SelectionFilterState(
+          vertex: true,
+          edge: true,
+          face: true,
+          body: false,
+          sketchPoint: false,
+          sketchLine: false,
+        ),
+      );
+      expect(hit, isNull);
+    });
+
+    test('a Sketch Point ties with a Body Vertex at the same pixel distance - nearer one wins', () {
+      // Confirms the priority design this prompt settled on: Sketch Point
+      // and Body Vertex share one tier, decided by pixel distance like any
+      // other same-tier comparison - not "Sketch always wins" or "Body
+      // always wins" outright.
+      final bodyVertexCloser = BodyMeshDto(
+        bodyId: 'b1',
+        source: 'computed',
+        mesh: MeshDto(
+          vertices: const [
+            [-1, -1, 10],
+            [1, -1, 10],
+            [0, 1, 10],
+          ],
+          normals: const [],
+          triangleIndices: const [
+            [0, 1, 2],
+          ],
+          faceIds: const [7],
+          topologyVertices: const [
+            [0.01, 0, 10],
+          ],
+          topologyVertexIds: const [3],
+          edges: const [],
+          edgeIds: const [],
+        ),
+      );
+
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [bodyVertexCloser],
+        sketchGeometries: sketchGeometries, // Sketch Point sits at x=0.05.
+      );
+      // 0.01 (body vertex) is closer to the ray than 0.05 (sketch point).
+      expect(hit?.entity.kind, SelectionEntityKind.vertex);
+      expect(hit?.entity.bodyId, 'b1');
+    });
+  });
+
+  group('SelectionEntityRef equality', () {
+    test('two sketchPoint refs with the same fields are equal', () {
+      const a = SelectionEntityRef(
+        kind: SelectionEntityKind.sketchPoint,
+        sketchFeatureId: 'f1',
+        sketchEntityId: 'p1',
+      );
+      const b = SelectionEntityRef(
+        kind: SelectionEntityKind.sketchPoint,
+        sketchFeatureId: 'f1',
+        sketchEntityId: 'p1',
+      );
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('a sketchPoint and sketchLine ref with the same feature/entity ids are not equal', () {
+      const point = SelectionEntityRef(
+        kind: SelectionEntityKind.sketchPoint,
+        sketchFeatureId: 'f1',
+        sketchEntityId: 'x1',
+      );
+      const line = SelectionEntityRef(
+        kind: SelectionEntityKind.sketchLine,
+        sketchFeatureId: 'f1',
+        sketchEntityId: 'x1',
+      );
+      expect(point, isNot(line));
+    });
+
+    test('a mesh-kind ref and a sketch-kind ref never collide despite shared defaults', () {
+      const vertex = SelectionEntityRef(kind: SelectionEntityKind.vertex, id: 0);
+      const sketchPoint = SelectionEntityRef(kind: SelectionEntityKind.sketchPoint);
+      expect(vertex, isNot(sketchPoint));
+    });
+
+    test('C5: two referencePlane refs naming the same plane are equal', () {
+      const a = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      const b = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('C5: referencePlane refs naming different planes are not equal', () {
+      const xy = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      const xz = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xz,
+      );
+      expect(xy, isNot(xz));
+    });
+
+    test('C5: two createPlane refs naming the same Feature id are equal', () {
+      const a = SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: 'plane-1');
+      const b = SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: 'plane-1');
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('C5: a referencePlane ref and a createPlane ref never collide despite shared defaults', () {
+      const plane = SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: ReferencePlaneKind.xy,
+      );
+      const createPlane = SelectionEntityRef(kind: SelectionEntityKind.createPlane);
+      expect(plane, isNot(createPlane));
     });
   });
 }

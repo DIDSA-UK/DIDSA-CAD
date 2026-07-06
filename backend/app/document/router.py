@@ -1,28 +1,62 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
+from app.document.chamfer import resolve_chamfer
+from app.document.create_plane import resolve_create_plane
 from app.document.extrude import compute_part_bodies
+from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
-from app.document.models import ExtrudeFeature, ExtrudeType, Feature, Part, SketchFeature
+from app.document.models import (
+    ChamferFeature,
+    CreatePlaneFeature,
+    ExtrudeFeature,
+    ExtrudeType,
+    Feature,
+    FilletFeature,
+    Part,
+    PlaneRef,
+    PlaneType,
+    PointRef,
+    SketchFeature,
+    SubShapeRef,
+    SubShapeType,
+)
 from app.document.schemas import (
     BodyMeshResponse,
     CascadeDeleteResponse,
+    ChamferFeatureCreate,
+    ChamferFeatureResponse,
+    ChamferFeatureUpdate,
+    CreatePlaneFeatureCreate,
+    CreatePlaneFeatureResponse,
+    CreatePlaneFeatureUpdate,
     ExtrudeFeatureCreate,
     ExtrudeFeatureResponse,
     ExtrudeFeatureUpdate,
     FeatureResponse,
+    FilletFeatureCreate,
+    FilletFeatureResponse,
+    FilletFeatureUpdate,
     MeshVertexData,
     PartCreate,
     PartResponse,
+    PlaneRefSchema,
+    PointRefSchema,
+    SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
+    SubShapeRefSchema,
 )
 from app.document.store import get_document, get_part_or_404
+from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/document", tags=["document"])
 
@@ -43,11 +77,109 @@ def _part_response(part: Part) -> PartResponse:
     return PartResponse(id=part.id, name=part.name, feature_ids=[f.id for f in part.features])
 
 
+def _subshape_ref_to_domain(schema: SubShapeRefSchema) -> SubShapeRef:
+    return SubShapeRef(body_id=schema.body_id, shape_type=schema.shape_type, index=schema.index)
+
+
+def _subshape_ref_to_schema(ref: SubShapeRef) -> SubShapeRefSchema:
+    return SubShapeRefSchema(body_id=ref.body_id, shape_type=ref.shape_type, index=ref.index)
+
+
+def _sketch_entity_ref_to_domain(schema: SketchEntityRefSchema) -> SketchEntityRef:
+    return SketchEntityRef(
+        sketch_id=schema.sketch_id, entity_type=schema.entity_type, entity_id=schema.entity_id
+    )
+
+
+def _sketch_entity_ref_to_schema(ref: SketchEntityRef) -> SketchEntityRefSchema:
+    return SketchEntityRefSchema(
+        sketch_id=ref.sketch_id, entity_type=ref.entity_type, entity_id=ref.entity_id
+    )
+
+
+def _point_ref_to_domain(schema: PointRefSchema) -> PointRef:
+    return PointRef(
+        vertex_ref=_subshape_ref_to_domain(schema.vertex_ref) if schema.vertex_ref else None,
+        sketch_point_ref=_sketch_entity_ref_to_domain(schema.sketch_point_ref)
+        if schema.sketch_point_ref
+        else None,
+    )
+
+
+def _point_ref_to_schema(ref: PointRef) -> PointRefSchema:
+    return PointRefSchema(
+        vertex_ref=_subshape_ref_to_schema(ref.vertex_ref) if ref.vertex_ref else None,
+        sketch_point_ref=_sketch_entity_ref_to_schema(ref.sketch_point_ref)
+        if ref.sketch_point_ref
+        else None,
+    )
+
+
+def _plane_ref_to_domain(schema: PlaneRefSchema) -> PlaneRef:
+    return PlaneRef(
+        face_ref=_subshape_ref_to_domain(schema.face_ref) if schema.face_ref else None,
+        fixed_plane=schema.fixed_plane,
+        plane_feature_id=schema.plane_feature_id,
+    )
+
+
+def _plane_ref_to_schema(ref: PlaneRef) -> PlaneRefSchema:
+    return PlaneRefSchema(
+        face_ref=_subshape_ref_to_schema(ref.face_ref) if ref.face_ref else None,
+        fixed_plane=ref.fixed_plane,
+        plane_feature_id=ref.plane_feature_id,
+    )
+
+
+def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> CreatePlaneFeatureResponse:
+    """C2: unlike every other `_feature_response` branch, this resolves live
+    geometry (`origin`/`normal`) on every read - soft-fails to `None` rather
+    than raising, so one Feature with a since-broken reference (its
+    referenced Body/Sketch deleted, or its face's topology having shrunk)
+    never fails the whole `GET .../features` list. Real validation still
+    happens at create/update time (`_validate_create_plane_payload` plus an
+    explicit `resolve_create_plane` call - see `create_create_plane_feature`/
+    `update_create_plane_feature`), so a freshly created/edited Feature's
+    response is always non-null here; only a Feature that became stale
+    *after* creation, or an existing test fixture with unresolvable OCCT
+    (no kernel in this sandbox - never a concern over real HTTP), reaches
+    the fallback."""
+    try:
+        resolved = resolve_create_plane(part, feature)
+        origin, normal, x_axis, y_axis = (
+            resolved.origin,
+            resolved.normal,
+            resolved.x_axis,
+            resolved.y_axis,
+        )
+    except HTTPException:
+        logger.warning("CreatePlaneFeature %s could not be resolved for its response", feature.id)
+        origin, normal, x_axis, y_axis = None, None, None, None
+    return CreatePlaneFeatureResponse(
+        id=feature.id,
+        plane_type=feature.plane_type,
+        face_refs=[_plane_ref_to_schema(ref) for ref in feature.face_refs],
+        offset=feature.offset,
+        line_ref=_sketch_entity_ref_to_schema(feature.line_ref) if feature.line_ref else None,
+        point_ref=_sketch_entity_ref_to_schema(feature.point_ref) if feature.point_ref else None,
+        edge_ref=_subshape_ref_to_schema(feature.edge_ref) if feature.edge_ref else None,
+        vertex_ref=_subshape_ref_to_schema(feature.vertex_ref) if feature.vertex_ref else None,
+        point_refs=[_point_ref_to_schema(ref) for ref in feature.point_refs],
+        origin=origin,
+        normal=normal,
+        x_axis=x_axis,
+        y_axis=y_axis,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+    )
+
+
 def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, SketchFeature):
         return SketchFeatureResponse(
             id=feature.id,
             sketch_id=feature.sketch_id,
+            plane_feature_id=feature.plane_feature_id,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -60,6 +192,24 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             end_distance=feature.end_distance,
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
+            produces=feature.produces,
+        )
+    if isinstance(feature, CreatePlaneFeature):
+        return _create_plane_feature_response(part, feature)
+    if isinstance(feature, FilletFeature):
+        return FilletFeatureResponse(
+            id=feature.id,
+            edge_refs=[_subshape_ref_to_schema(ref) for ref in feature.edge_refs],
+            radius=feature.radius,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, ChamferFeature):
+        return ChamferFeatureResponse(
+            id=feature.id,
+            edge_refs=[_subshape_ref_to_schema(ref) for ref in feature.edge_refs],
+            distance=feature.distance,
+            locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
@@ -75,6 +225,7 @@ def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
         edge_ids=mesh_data.edge_ids,
         topology_vertices=mesh_data.topology_vertices,
         topology_vertex_ids=mesh_data.topology_vertex_ids,
+        face_edge_ids=mesh_data.face_edge_ids,
     )
 
 
@@ -145,6 +296,270 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
     return feature
 
 
+def _validate_fillet_radius(radius: float) -> None:
+    """Prompt D: mirrors `_validate_extrude_distances`'s own plain-400
+    convention for a bare numeric-field check with no structured error
+    type - a Fillet's radius must be a positive real number, otherwise
+    there is no rounding to construct."""
+    if radius <= 0:
+        raise HTTPException(status_code=400, detail="radius must be greater than 0")
+
+
+def _validate_fillet_edge_refs(edge_refs: list[SubShapeRef]) -> None:
+    """Prompt D: a FilletFeature must name at least one edge (422, mirroring
+    Cut's own "at least one target_body_ids entry" check in
+    `_validate_target_body_ids`) and every named ref must actually be an
+    edge (422, mirroring `_validate_plane_ref`'s own `shape_type == FACE`
+    check) - these are payload-shape checks. Whether the edges actually
+    resolve, and whether they all belong to the same Body, is a
+    referential/geometric check made by `app.document.fillet.resolve_
+    fillet` instead (the same "payload shape in the router, resolution in
+    the OCCT module" split every other structured Feature error in this
+    codebase already uses)."""
+    if not edge_refs:
+        raise HTTPException(
+            status_code=422,
+            detail="FilletFeature requires at least one edge_refs entry",
+        )
+    for ref in edge_refs:
+        if ref.shape_type != SubShapeType.EDGE:
+            raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _validate_chamfer_distance(distance: float) -> None:
+    """Prompt E: mirrors `_validate_fillet_radius` exactly, substituting
+    `distance` for `radius`."""
+    if distance <= 0:
+        raise HTTPException(status_code=400, detail="distance must be greater than 0")
+
+
+def _validate_chamfer_edge_refs(edge_refs: list[SubShapeRef]) -> None:
+    """Prompt E: mirrors `_validate_fillet_edge_refs` exactly - see that
+    function's own doc comment for the full reasoning."""
+    if not edge_refs:
+        raise HTTPException(
+            status_code=422,
+            detail="ChamferFeature requires at least one edge_refs entry",
+        )
+    for ref in edge_refs:
+        if ref.shape_type != SubShapeType.EDGE:
+            raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _all_other_create_plane_fields_empty(
+    exclude: set[str],
+    *,
+    face_refs: list[PlaneRef],
+    offset: float | None,
+    line_ref: SketchEntityRef | None,
+    point_ref: SketchEntityRef | None,
+    edge_ref: SubShapeRef | None,
+    vertex_ref: SubShapeRef | None,
+    point_refs: list[PointRef],
+) -> bool:
+    """C4: every `CreatePlaneFeature` field not named in `exclude` is empty
+    (`None` for a single optional ref/`offset`, `[]` for a list) - the
+    "and nothing else" half of `_validate_create_plane_payload`'s per-
+    `plane_type` check, split out since C4 grew the field count from four to
+    seven and repeating a seven-field emptiness check inline for each of six
+    `plane_type` branches would be far more error-prone than one shared
+    helper. `offset` is checked via `is None` (not falsiness) so a
+    legitimate `offset=0.0` is correctly treated as "set", not "empty"."""
+    empty = {
+        "face_refs": not face_refs,
+        "offset": offset is None,
+        "line_ref": line_ref is None,
+        "point_ref": point_ref is None,
+        "edge_ref": edge_ref is None,
+        "vertex_ref": vertex_ref is None,
+        "point_refs": not point_refs,
+    }
+    return all(is_empty for name, is_empty in empty.items() if name not in exclude)
+
+
+def _validate_plane_ref(part: Part, ref: PlaneRef) -> None:
+    """C5: enforces exactly one of `face_ref`/`fixed_plane`/`plane_feature_id`
+    is supplied on a single `face_refs` entry, matching `PlaneRef`'s own
+    "one of three" convention (see its docstring), and that whichever one is
+    supplied is itself well-formed: a `face_ref` must have `shape_type=FACE`
+    (the same typed-slot check `_validate_create_plane_payload` already made
+    for a bare `SubShapeRef` before C5), and a `plane_feature_id` must name
+    a real `CreatePlaneFeature` in this Part (same existence check
+    `_validate_sketch_feature_payload` already makes for its own
+    `plane_feature_id`) - this runs *before* `resolve_create_plane`, so a
+    malformed or dangling reference here is reported as this function's own
+    422/400 rather than surfacing as an `AttributeError`/`AssertionError`
+    out of `app.document.create_plane._resolve_plane_ref`. A `fixed_plane`
+    needs no further check - `Plane` is already a closed enum, so pydantic
+    itself rejects anything else."""
+    set_count = sum(x is not None for x in (ref.face_ref, ref.fixed_plane, ref.plane_feature_id))
+    if set_count != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Each face_refs entry must have exactly one of face_ref, fixed_plane, or "
+            "plane_feature_id",
+        )
+    if ref.face_ref is not None and ref.face_ref.shape_type != SubShapeType.FACE:
+        raise HTTPException(status_code=422, detail="face_refs face_ref entries must have shape_type=FACE")
+    if ref.plane_feature_id is not None:
+        plane_feature = part.get_feature(ref.plane_feature_id)
+        if not isinstance(plane_feature, CreatePlaneFeature):
+            raise HTTPException(
+                status_code=400,
+                detail="face_refs plane_feature_id does not refer to a CreatePlaneFeature in this Part",
+            )
+
+
+def _validate_create_plane_payload(
+    part: Part,
+    plane_type: PlaneType,
+    face_refs: list[PlaneRef],
+    offset: float | None,
+    line_ref: SketchEntityRef | None,
+    point_ref: SketchEntityRef | None,
+    edge_ref: SubShapeRef | None = None,
+    vertex_ref: SubShapeRef | None = None,
+    point_refs: list[PointRef] | None = None,
+) -> None:
+    """C2/C3/C4/C5: enforces exactly one combination of fields is supplied,
+    matching `plane_type` (see `app.document.schemas.CreatePlaneFeatureCreate`
+    for the full per-type field list) - a plain-string 422, same convention
+    as `_validate_target_body_ids`'s Cut-empty-list case, since (unlike
+    `missing_reference`/`non_planar_reference`/`point_not_on_line`/
+    `faces_not_parallel`/`non_linear_edge`/`collinear_points`) this doesn't
+    name a structured error type for a malformed combination of fields, only
+    for a resolvable-but-wrong reference. Also checks each ref's own
+    `shape_type`/`entity_type` tag matches its named role - these are typed
+    slots, not a generic reference, so a client sending e.g. a POINT ref as
+    `line_ref` is already malformed input, not merely an unresolvable-later
+    reference. Each `face_refs` entry is additionally checked by
+    `_validate_plane_ref` (C5), which is why this now needs `part`.
+
+    Takes the domain (`SubShapeRef`/`SketchEntityRef`/`PointRef`/`PlaneRef`)
+    types rather than their pydantic (`...Schema`) counterparts, even though
+    the create route below has schema instances on hand - both share the
+    same `shape_type`/`entity_type` attribute names, this function only ever
+    reads those, and accepting the domain type lets the update route reuse
+    this same function against a merged existing-plus-payload value without
+    a pointless schema round-trip."""
+    point_refs = point_refs or []
+
+    def other_fields_empty(exclude: set[str]) -> bool:
+        return _all_other_create_plane_fields_empty(
+            exclude,
+            face_refs=face_refs,
+            offset=offset,
+            line_ref=line_ref,
+            point_ref=point_ref,
+            edge_ref=edge_ref,
+            vertex_ref=vertex_ref,
+            point_refs=point_refs,
+        )
+
+    if plane_type == PlaneType.OFFSET_FACE:
+        if len(face_refs) != 1 or offset is None or not other_fields_empty({"face_refs", "offset"}):
+            raise HTTPException(
+                status_code=422,
+                detail="OFFSET_FACE requires exactly one face_refs entry and an offset, and nothing else",
+            )
+        _validate_plane_ref(part, face_refs[0])
+    elif plane_type == PlaneType.MIDPLANE:
+        if len(face_refs) != 2 or not other_fields_empty({"face_refs"}):
+            raise HTTPException(
+                status_code=422,
+                detail="MIDPLANE requires exactly two face_refs entries, and nothing else",
+            )
+        for ref in face_refs:
+            _validate_plane_ref(part, ref)
+    elif plane_type == PlaneType.NORMAL_TO_LINE_AT_POINT:
+        if line_ref is None or point_ref is None or not other_fields_empty({"line_ref", "point_ref"}):
+            raise HTTPException(
+                status_code=422,
+                detail="NORMAL_TO_LINE_AT_POINT requires both line_ref and point_ref, and nothing else",
+            )
+        if line_ref.entity_type != SketchEntityType.LINE:
+            raise HTTPException(status_code=422, detail="line_ref must have entity_type=LINE")
+        if point_ref.entity_type != SketchEntityType.POINT:
+            raise HTTPException(status_code=422, detail="point_ref must have entity_type=POINT")
+    elif plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
+        if edge_ref is None or vertex_ref is None or not other_fields_empty({"edge_ref", "vertex_ref"}):
+            raise HTTPException(
+                status_code=422,
+                detail="NORMAL_TO_EDGE_THROUGH_VERTEX requires both edge_ref and vertex_ref, and "
+                "nothing else",
+            )
+        if edge_ref.shape_type != SubShapeType.EDGE:
+            raise HTTPException(status_code=422, detail="edge_ref must have shape_type=EDGE")
+        if vertex_ref.shape_type != SubShapeType.VERTEX:
+            raise HTTPException(status_code=422, detail="vertex_ref must have shape_type=VERTEX")
+    elif plane_type == PlaneType.PARALLEL_TO_FACE_THROUGH_VERTEX:
+        if (
+            len(face_refs) != 1
+            or vertex_ref is None
+            or not other_fields_empty({"face_refs", "vertex_ref"})
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="PARALLEL_TO_FACE_THROUGH_VERTEX requires exactly one face_refs entry and a "
+                "vertex_ref, and nothing else",
+            )
+        _validate_plane_ref(part, face_refs[0])
+        if vertex_ref.shape_type != SubShapeType.VERTEX:
+            raise HTTPException(status_code=422, detail="vertex_ref must have shape_type=VERTEX")
+    else:
+        assert plane_type == PlaneType.THREE_POINTS
+        if len(point_refs) != 3 or not other_fields_empty({"point_refs"}):
+            raise HTTPException(
+                status_code=422,
+                detail="THREE_POINTS requires exactly three point_refs entries, and nothing else",
+            )
+        for entry in point_refs:
+            if (entry.vertex_ref is None) == (entry.sketch_point_ref is None):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Each point_refs entry must have exactly one of vertex_ref or "
+                    "sketch_point_ref",
+                )
+            if entry.vertex_ref is not None and entry.vertex_ref.shape_type != SubShapeType.VERTEX:
+                raise HTTPException(
+                    status_code=422, detail="point_refs vertex_ref entries must have shape_type=VERTEX"
+                )
+            if (
+                entry.sketch_point_ref is not None
+                and entry.sketch_point_ref.entity_type != SketchEntityType.POINT
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="point_refs sketch_point_ref entries must have entity_type=POINT",
+                )
+
+
+def _validate_sketch_feature_payload(
+    part: Part, plane: Plane | None, plane_feature_id: str | None
+) -> None:
+    """C3: enforces exactly one of `plane` (one of the three fixed reference
+    planes) or `plane_feature_id` (an existing `CreatePlaneFeature` in this
+    Part) is supplied. When `plane_feature_id` is given, it must resolve to
+    a real `CreatePlaneFeature` in this Part, and that Plane must currently
+    be resolvable (`resolve_create_plane`, discarding its result here - see
+    `create_create_plane_feature`'s own docstring for why re-resolving for
+    the response afterwards is simpler than threading a resolved value
+    through) - a Sketch can never anchor to a since-broken or otherwise
+    unresolvable Plane."""
+    if (plane is None) == (plane_feature_id is None):
+        raise HTTPException(
+            status_code=422, detail="Provide exactly one of plane or plane_feature_id"
+        )
+    if plane_feature_id is not None:
+        plane_feature = part.get_feature(plane_feature_id)
+        if not isinstance(plane_feature, CreatePlaneFeature):
+            raise HTTPException(
+                status_code=400,
+                detail="plane_feature_id does not refer to a CreatePlaneFeature in this Part",
+            )
+        resolve_create_plane(part, plane_feature)  # raises on an unresolvable reference
+
+
 @router.post("/parts", response_model=PartResponse, status_code=201)
 def create_part(payload: PartCreate) -> PartResponse:
     part = get_document().add_part(payload.name)
@@ -173,8 +588,11 @@ def get_feature(part_id: str, feature_id: str) -> FeatureResponse:
 )
 def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchFeatureResponse:
     part = get_part_or_404(part_id)
+    _validate_sketch_feature_payload(part, payload.plane, payload.plane_feature_id)
     sketch = create_sketch(payload.plane)
-    feature = SketchFeature(id=str(uuid.uuid4()), sketch_id=sketch.id)
+    feature = SketchFeature(
+        id=str(uuid.uuid4()), sketch_id=sketch.id, plane_feature_id=payload.plane_feature_id
+    )
     part.add_feature(feature)
     return _feature_response(part, feature)
 
@@ -222,7 +640,9 @@ def update_extrude_feature(
     fetched, via A1's existing graph-based recompute path, unchanged by
     this prompt - there is no separate "rollback" concept on this side at
     all, since suppressing downstream Features during an edit is purely a
-    client-side concern (`hidden_feature_ids`, already existed before B4)."""
+    client-side concern (`rollback_excluded_feature_ids`, already existed
+    before B4 under the `hidden_feature_ids` name it shared with plain
+    Hide/Show until the bug fix that split them - see `get_part_mesh`)."""
     part = get_part_or_404(part_id)
     feature = _get_extrude_feature_or_404(part, feature_id)
     new_start = payload.start_distance if payload.start_distance is not None else feature.start_distance
@@ -238,6 +658,264 @@ def update_extrude_feature(
     feature.start_distance = new_start
     feature.end_distance = new_end
     feature.target_body_ids = list(new_target_body_ids)
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/create-plane-features",
+    response_model=CreatePlaneFeatureResponse,
+    status_code=201,
+)
+def create_create_plane_feature(
+    part_id: str, payload: CreatePlaneFeatureCreate
+) -> CreatePlaneFeatureResponse:
+    """C2: never locked-editable-only-if-last from the start (per this
+    prompt's own explicit instruction) - unlike `ExtrudeFeatureUpdate`'s
+    B4 removal, there is no lock to remove here since this endpoint is new
+    after B4 already established "any Feature can be edited" generically.
+
+    Validates the payload shape (`_validate_create_plane_payload`) and then
+    resolvability (`resolve_create_plane`, discarding its result here - the
+    real geometry is (re)computed again for the response by
+    `_feature_response`/`_create_plane_feature_response`, since resolving
+    twice is simpler than threading a resolved value through construction,
+    and cheap next to the OCCT work `compute_part_bodies` already does)
+    *before* constructing the Feature - fails closed with `missing_
+    reference`/`non_planar_reference`/`point_not_on_line` rather than ever
+    persisting an unresolvable Plane."""
+    part = get_part_or_404(part_id)
+    face_refs = [_plane_ref_to_domain(ref) for ref in payload.face_refs]
+    line_ref = _sketch_entity_ref_to_domain(payload.line_ref) if payload.line_ref else None
+    point_ref = _sketch_entity_ref_to_domain(payload.point_ref) if payload.point_ref else None
+    edge_ref = _subshape_ref_to_domain(payload.edge_ref) if payload.edge_ref else None
+    vertex_ref = _subshape_ref_to_domain(payload.vertex_ref) if payload.vertex_ref else None
+    point_refs = [_point_ref_to_domain(ref) for ref in payload.point_refs]
+    _validate_create_plane_payload(
+        part,
+        payload.plane_type,
+        face_refs,
+        payload.offset,
+        line_ref,
+        point_ref,
+        edge_ref,
+        vertex_ref,
+        point_refs,
+    )
+    feature = CreatePlaneFeature(
+        id=str(uuid.uuid4()),
+        plane_type=payload.plane_type,
+        face_refs=face_refs,
+        offset=payload.offset,
+        line_ref=line_ref,
+        point_ref=point_ref,
+        edge_ref=edge_ref,
+        vertex_ref=vertex_ref,
+        point_refs=point_refs,
+    )
+    resolve_create_plane(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_create_plane_feature_or_404(part: Part, feature_id: str) -> CreatePlaneFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, CreatePlaneFeature):
+        raise HTTPException(status_code=404, detail="Create Plane feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/create-plane-features/{feature_id}",
+    response_model=CreatePlaneFeatureResponse,
+)
+def update_create_plane_feature(
+    part_id: str, feature_id: str, payload: CreatePlaneFeatureUpdate
+) -> CreatePlaneFeatureResponse:
+    """C2: `plane_type` itself is never revised (see `CreatePlaneFeatureUpdate`'s
+    own doc comment) - only the refs/offset for whichever type this Feature
+    already is. Same validate-before-mutate discipline as
+    `create_create_plane_feature`: the merged (existing-plus-payload)
+    values are checked (`_validate_create_plane_payload`,
+    `resolve_create_plane`) against a scratch Feature before anything on
+    the real, stored Feature is touched, so a failed PATCH never leaves it
+    half-updated."""
+    part = get_part_or_404(part_id)
+    feature = _get_create_plane_feature_or_404(part, feature_id)
+
+    new_face_refs = (
+        [_plane_ref_to_domain(ref) for ref in payload.face_refs]
+        if payload.face_refs is not None
+        else feature.face_refs
+    )
+    new_offset = payload.offset if payload.offset is not None else feature.offset
+    new_line_ref = (
+        _sketch_entity_ref_to_domain(payload.line_ref)
+        if payload.line_ref is not None
+        else feature.line_ref
+    )
+    new_point_ref = (
+        _sketch_entity_ref_to_domain(payload.point_ref)
+        if payload.point_ref is not None
+        else feature.point_ref
+    )
+    new_edge_ref = (
+        _subshape_ref_to_domain(payload.edge_ref) if payload.edge_ref is not None else feature.edge_ref
+    )
+    new_vertex_ref = (
+        _subshape_ref_to_domain(payload.vertex_ref)
+        if payload.vertex_ref is not None
+        else feature.vertex_ref
+    )
+    new_point_refs = (
+        [_point_ref_to_domain(ref) for ref in payload.point_refs]
+        if payload.point_refs is not None
+        else feature.point_refs
+    )
+
+    _validate_create_plane_payload(
+        part,
+        feature.plane_type,
+        new_face_refs,
+        new_offset,
+        new_line_ref,
+        new_point_ref,
+        new_edge_ref,
+        new_vertex_ref,
+        new_point_refs,
+    )
+    candidate = CreatePlaneFeature(
+        id=feature.id,
+        plane_type=feature.plane_type,
+        face_refs=new_face_refs,
+        offset=new_offset,
+        line_ref=new_line_ref,
+        point_ref=new_point_ref,
+        edge_ref=new_edge_ref,
+        vertex_ref=new_vertex_ref,
+        point_refs=new_point_refs,
+    )
+    resolve_create_plane(part, candidate)  # raises on an unresolvable reference
+
+    feature.face_refs = candidate.face_refs
+    feature.offset = candidate.offset
+    feature.line_ref = candidate.line_ref
+    feature.point_ref = candidate.point_ref
+    feature.edge_ref = candidate.edge_ref
+    feature.vertex_ref = candidate.vertex_ref
+    feature.point_refs = candidate.point_refs
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/fillet-features", response_model=FilletFeatureResponse, status_code=201
+)
+def create_fillet_feature(part_id: str, payload: FilletFeatureCreate) -> FilletFeatureResponse:
+    """Prompt D: never locked-editable-only-if-last from the start, same
+    instruction as C2/C5 - B4 already established "any Feature can be
+    edited" generically before this endpoint existed.
+
+    Validates the payload shape (`_validate_fillet_edge_refs`/
+    `_validate_fillet_radius`) and then resolvability
+    (`app.document.fillet.resolve_fillet`, discarding its result here - the
+    real geometry is recomputed again the next time `/mesh` is fetched, via
+    `compute_part_bodies`'s own Fillet handling) *before* constructing the
+    Feature - fails closed with `mixed_body_selection`/`fillet_failed`/
+    `missing_reference` rather than ever persisting an unresolvable
+    Fillet."""
+    part = get_part_or_404(part_id)
+    edge_refs = [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+    _validate_fillet_edge_refs(edge_refs)
+    _validate_fillet_radius(payload.radius)
+    feature = FilletFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, radius=payload.radius)
+    resolve_fillet(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_fillet_feature_or_404(part: Part, feature_id: str) -> FilletFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, FilletFeature):
+        raise HTTPException(status_code=404, detail="Fillet feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/fillet-features/{feature_id}", response_model=FilletFeatureResponse)
+def update_fillet_feature(
+    part_id: str, feature_id: str, payload: FilletFeatureUpdate
+) -> FilletFeatureResponse:
+    """Same validate-before-mutate discipline as `create_fillet_feature`:
+    the merged (existing-plus-payload) values are checked against a scratch
+    Feature (same `id` as the real one - `resolve_fillet` excludes that id
+    from its own "current bodies" computation for exactly this reason, see
+    its own doc comment) before anything on the real, stored Feature is
+    touched, so a failed PATCH never leaves it half-updated."""
+    part = get_part_or_404(part_id)
+    feature = _get_fillet_feature_or_404(part, feature_id)
+
+    new_edge_refs = (
+        [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+        if payload.edge_refs is not None
+        else feature.edge_refs
+    )
+    new_radius = payload.radius if payload.radius is not None else feature.radius
+    _validate_fillet_edge_refs(new_edge_refs)
+    _validate_fillet_radius(new_radius)
+
+    candidate = FilletFeature(id=feature.id, edge_refs=new_edge_refs, radius=new_radius)
+    resolve_fillet(part, candidate)  # raises on an unresolvable reference
+
+    feature.edge_refs = candidate.edge_refs
+    feature.radius = candidate.radius
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/chamfer-features", response_model=ChamferFeatureResponse, status_code=201
+)
+def create_chamfer_feature(part_id: str, payload: ChamferFeatureCreate) -> ChamferFeatureResponse:
+    """Prompt E: mirrors `create_fillet_feature` exactly - see that
+    function's own doc comment for the full reasoning (unlocked from the
+    start, fails closed before ever persisting an unresolvable Chamfer)."""
+    part = get_part_or_404(part_id)
+    edge_refs = [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+    _validate_chamfer_edge_refs(edge_refs)
+    _validate_chamfer_distance(payload.distance)
+    feature = ChamferFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, distance=payload.distance)
+    resolve_chamfer(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_chamfer_feature_or_404(part: Part, feature_id: str) -> ChamferFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, ChamferFeature):
+        raise HTTPException(status_code=404, detail="Chamfer feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/chamfer-features/{feature_id}", response_model=ChamferFeatureResponse)
+def update_chamfer_feature(
+    part_id: str, feature_id: str, payload: ChamferFeatureUpdate
+) -> ChamferFeatureResponse:
+    """Mirrors `update_fillet_feature` exactly - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_chamfer_feature_or_404(part, feature_id)
+
+    new_edge_refs = (
+        [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
+        if payload.edge_refs is not None
+        else feature.edge_refs
+    )
+    new_distance = payload.distance if payload.distance is not None else feature.distance
+    _validate_chamfer_edge_refs(new_edge_refs)
+    _validate_chamfer_distance(new_distance)
+
+    candidate = ChamferFeature(id=feature.id, edge_refs=new_edge_refs, distance=new_distance)
+    resolve_chamfer(part, candidate)  # raises on an unresolvable reference
+
+    feature.edge_refs = candidate.edge_refs
+    feature.distance = candidate.distance
     return _feature_response(part, feature)
 
 
@@ -305,7 +983,9 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
 
 @router.get("/parts/{part_id}/mesh", response_model=list[BodyMeshResponse])
 def get_part_mesh(
-    part_id: str, hidden_feature_ids: list[str] = Query(default=[])
+    part_id: str,
+    hidden_feature_ids: list[str] = Query(default=[]),
+    rollback_excluded_feature_ids: list[str] = Query(default=[]),
 ) -> list[BodyMeshResponse]:
     """A1: returns an array of Bodies rather than one combined mesh - each
     entry is one independently-tessellated Body, carrying its own stable
@@ -316,19 +996,44 @@ def get_part_mesh(
     Placeholder mesh (a fixed box, `body_id="placeholder"`) while the Part
     has no ExtrudeFeature yet, per `Part.produces_solid_geometry` - always
     exactly one entry in that case. Once it does, this instead recomputes
-    every non-hidden ExtrudeFeature's real OCCT geometry (Boss/Cut, in
-    dependency-graph order - see app.document.extrude.compute_part_bodies)
-    and tessellates each resulting Body independently. A Part whose
-    ExtrudeFeature(s) all skipped or whose Bodies were all hidden away
-    returns an empty array - there is no "real" geometry to show at all,
-    unlike the old single-mesh response which still returned an empty mesh
-    tagged `source="computed"` for this case.
+    every ExtrudeFeature's real OCCT geometry (Boss/Cut, in dependency-graph
+    order - see app.document.extrude.compute_part_bodies) and tessellates
+    each resulting Body independently, before the two exclusion params
+    below are applied. A Part whose ExtrudeFeature(s) all genuinely skipped
+    (e.g. a Cut with no target left after a real deletion) returns an empty
+    array - there is no "real" geometry to show at all, unlike the old
+    single-mesh response which still returned an empty mesh tagged
+    `source="computed"` for this case. A merely-*hidden* Body is never
+    omitted this way (see `hidden_feature_ids` below) - the Build Tree's
+    own Bodies section needs every Body's entry to keep listing it.
 
-    `hidden_feature_ids` is the client's Hide/Show state (see
-    PartScreen._hiddenFeatureIds) - purely client-side, never persisted here;
-    the client re-sends it on every mesh fetch so a hidden body's
-    contribution to the displayed solid (and so to its bounding box, used
-    for camera centering/zoom - see OrbitCamera) drops out immediately."""
+    Two distinct client-side exclusion sets, deliberately kept separate
+    (bug fix, post-C4 - see `compute_part_bodies`'s own docstring for the
+    full incident writeup of why conflating them broke Create Plane):
+
+    - `hidden_feature_ids` is the client's plain Hide/Show state
+      (`PartScreen._hiddenFeatureIds`) - purely cosmetic. Every Body is
+      still fully computed against the Part's real, unmodified history (so
+      a Plane anchored to a hidden Body's face, and anything built on that
+      Plane, keeps resolving normally) *and* still included in this
+      response - only `BodyMeshResponse.hidden` is set, by mapping the
+      Body's `body_id` back to the ExtrudeFeature that produced it
+      (`base_feature_id` - handles the `#N` multi-solid-split suffix) and
+      checking that id against this set. The client is responsible for not
+      rendering/hit-testing a `hidden` Body in the 3D viewport (and
+      excluding it from camera-fit bounds) - this endpoint's own job is
+      just to report the full, current state honestly.
+
+    - `rollback_excluded_feature_ids` is B4 true-rollback's "pretend these
+      Features (and hence anything depending on them) don't exist yet"
+      state - fed straight into `compute_part_bodies`, which skips a named
+      ExtrudeFeature's own computation entirely, exactly as before this fix
+      (correct for rollback: a downstream Feature genuinely should fail to
+      resolve if what it depends on is being edited out from under it, and
+      there is truly no Body to report at all - not even a hidden one).
+
+    Both are purely client-side and never persisted here; the client
+    re-sends whichever apply on every mesh fetch."""
     part = get_part_or_404(part_id)
 
     if not part.produces_solid_geometry:
@@ -340,12 +1045,14 @@ def get_part_mesh(
             )
         ]
 
-    bodies = compute_part_bodies(part, frozenset(hidden_feature_ids))
+    bodies = compute_part_bodies(part, frozenset(rollback_excluded_feature_ids))
+    hidden = frozenset(hidden_feature_ids)
     return [
         BodyMeshResponse(
             body_id=body_id,
             source="computed",
             mesh=_mesh_vertex_data(tessellate_shape(shape, DEFAULT_MESH_QUALITY)),
+            hidden=base_feature_id(body_id) in hidden,
         )
         for body_id, shape in bodies.items()
     ]
