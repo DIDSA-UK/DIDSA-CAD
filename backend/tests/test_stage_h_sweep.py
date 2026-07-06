@@ -64,6 +64,32 @@ def _add_square(sketch_id: str, x0: float, y0: float, size: float) -> list[dict]
     return lines
 
 
+def _add_circle(sketch_id: str, center: dict, radius_point: dict) -> dict:
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/circles",
+        json={"center_point_id": center["id"], "radius_point_id": radius_point["id"]},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def _create_annular_profile_sketch_feature(
+    part_id: str, *, outer_radius: float = 2.0, inner_radius: float = 1.0
+) -> dict:
+    """A pipe-wall (annular) Profile at the origin on the XY plane - two
+    concentric circles, the smaller one becoming the outer circle's own
+    `inner_loops` hole (see `app.sketch.profile._classify_nesting`) - the
+    common "sweep a hollow profile along a path" use case (a pipe with
+    wall thickness), not an edge case."""
+    feature = _create_sketch_feature(part_id, "XY")
+    center = _add_point(feature["sketch_id"], 0.0, 0.0)
+    outer_edge = _add_point(feature["sketch_id"], outer_radius, 0.0)
+    inner_edge = _add_point(feature["sketch_id"], inner_radius, 0.0)
+    _add_circle(feature["sketch_id"], center, outer_edge)
+    _add_circle(feature["sketch_id"], center, inner_edge)
+    return feature
+
+
 def _create_profile_sketch_feature(part_id: str, *, size: float = 2.0) -> dict:
     """A small square Profile at the origin on the XY plane - deliberately
     small relative to every path fixture below, so the swept solid never
@@ -195,6 +221,26 @@ def test_boss_sweep_along_a_closed_path_succeeds():
 
     path_refs = [_path_ref(path_feature["sketch_id"], line["id"]) for line in path_lines]
     response = _create_sweep(part["id"], profile["id"], path_refs)
+    assert response.status_code == 201
+
+    mesh = _mesh(part["id"])
+    assert len(mesh) == 1
+
+
+def test_boss_sweep_of_an_annular_pipe_wall_profile_succeeds():
+    """A Profile with a hole (the pipe-wall/annular case - see
+    `_create_annular_profile_sketch_feature`) is a common Sweep use case,
+    not an edge case - `resolve_sweep_from_bodies` sweeps the outer circle
+    and the inner (hole) circle independently, then boolean-cuts the inner
+    solid out of the outer one, rather than handing a single compound
+    outer+hole section to `BRepOffsetAPI_MakePipeShell`."""
+    part = _create_part()
+    profile = _create_annular_profile_sketch_feature(part["id"])
+    path_feature, path_line = _create_straight_path_sketch_feature(part["id"], length=20.0)
+
+    response = _create_sweep(
+        part["id"], profile["id"], [_path_ref(path_feature["sketch_id"], path_line["id"])]
+    )
     assert response.status_code == 201
 
     mesh = _mesh(part["id"])

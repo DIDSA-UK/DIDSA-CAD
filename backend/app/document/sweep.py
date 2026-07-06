@@ -24,6 +24,7 @@ import logging
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakePolygon, BRepBuilderAPI_RightCorner
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
 from OCC.Core.gp import gp_Pnt
@@ -105,19 +106,26 @@ def _sweep_failed() -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "sweep_failed"})
 
 
-def _sweep_profile_has_holes() -> HTTPException:
-    """On-device feedback: a Profile with one or more `inner_loops` (holes)
-    is not yet supported as a Sweep's profile - `BRepOffsetAPI_MakePipeShell.
-    Add` sweeps a single Wire (or Vertex/Edge) per section, not a Face, so
-    there is no already-verified way to carry a hole through a swept
-    section the way `app.document.extrude.face_for_profile` does for
-    Extrude/Revolve's own prism/revolve solids (which *can* consume a
-    Face directly). Rather than silently sweeping just the outer wire and
-    quietly dropping the hole from the result - wrong geometry, not caught
-    by anything - this fails closed and explicitly, until hole support is
-    deliberately added and verified. 422, matching this module's other
-    structured errors."""
-    return HTTPException(status_code=422, detail={"type": "sweep_profile_has_holes"})
+def _sweep_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> TopoDS_Shape:
+    """Sweeps one closed `wire` (a Profile's outer boundary, or one of its
+    holes - see `resolve_sweep_from_bodies`, which sweeps each of those
+    independently and boolean-cuts the results together rather than
+    handing `BRepOffsetAPI_MakePipeShell` a compound outer+hole section in
+    one call) along `path_wire`, producing a solid.
+
+    `BRepOffsetAPI_MakePipeShell.Add` only ever accepts a single Wire (or
+    Edge/Vertex) as one swept "section", not a Face - see this function's
+    caller for why a hole is instead handled as a second, independent
+    sweep of its own, boolean-cut out of the outer one afterward, rather
+    than attempting a not-yet-verified multi-wire single-section call
+    here."""
+    pipe_maker = BRepOffsetAPI_MakePipeShell(path_wire)
+    pipe_maker.SetTransitionMode(BRepBuilderAPI_RightCorner)
+    pipe_maker.Add(wire)
+    pipe_maker.Build()
+    if not pipe_maker.IsDone() or not pipe_maker.MakeSolid():
+        raise _sweep_failed()
+    return pipe_maker.Shape()
 
 
 def _resolve_path_segment_endpoints(
@@ -282,14 +290,24 @@ def resolve_sweep_from_bodies(
     `TopoDS_Face` outright (`BRepFill_Section: bad shape type of section`,
     an uncaught `RuntimeError` from OCCT, not a graceful `HTTPException` -
     a real crash the first round of this fix shipped with) - it only
-    accepts a Wire (or Edge/Vertex) as one swept "section", so this passes
-    `wire_for_profile`'s bare outer wire instead of `face_for_profile`'s
-    face. A Profile with holes (`inner_loops`) has no already-verified way
-    to carry those holes through a swept Wire section the way `face_for_
-    profile`'s Face-with-holes does for Extrude/Revolve, so that case is
-    explicitly rejected (`sweep_profile_has_holes`) rather than silently
-    swept without its hole - a real, currently-known limitation, not
-    forgotten scope."""
+    accepts a Wire (or Edge/Vertex) as one swept "section", so `_sweep_wire`
+    passes `wire_for_profile`'s bare wire instead of `face_for_profile`'s
+    face.
+
+    On-device feedback (third round): a Profile with holes (e.g. a pipe's
+    annular wall - a hole-carrying Profile is a completely ordinary,
+    common Sweep use case, not an edge case) is genuinely supported, just
+    not by handing `MakePipeShell` a single compound outer+hole section (a
+    real OCCT capability, but not one this could be verified against
+    without a real kernel, so not risked here) - instead, the outer wire
+    and each hole's own wire are swept *independently* via `_sweep_wire`
+    (both are plain single-wire sweeps, the case already proven working
+    above) and the hole solid(s) are boolean-cut out of the outer one
+    (`BRepAlgoAPI_Cut`, the exact same operation `app.document.extrude.
+    _apply_boss_or_cut` already relies on for every Cut-mode Boss/Cut in
+    this codebase) - a hollow pipe is exactly "outer tube minus inner
+    tube," so this reuses two already-independently-correct building
+    blocks instead of a single untested one."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
     if result.status not in EXTRUDABLE_STATUSES:
@@ -313,16 +331,13 @@ def resolve_sweep_from_bodies(
 
     solids = []
     for profile in profiles:
-        if profile.inner_loops:
-            raise _sweep_profile_has_holes()
         outer_wire = wire_for_profile(sketch, profile, basis)
-        pipe_maker = BRepOffsetAPI_MakePipeShell(path_wire)
-        pipe_maker.SetTransitionMode(BRepBuilderAPI_RightCorner)
-        pipe_maker.Add(outer_wire)
-        pipe_maker.Build()
-        if not pipe_maker.IsDone() or not pipe_maker.MakeSolid():
-            raise _sweep_failed()
-        solids.append(pipe_maker.Shape())
+        solid = _sweep_wire(path_wire, outer_wire)
+        for inner_loop in profile.inner_loops:
+            inner_wire = wire_for_profile(sketch, inner_loop, basis)
+            inner_solid = _sweep_wire(path_wire, inner_wire)
+            solid = BRepAlgoAPI_Cut(solid, inner_solid).Shape()
+        solids.append(solid)
 
     if len(solids) == 1:
         return solids[0]

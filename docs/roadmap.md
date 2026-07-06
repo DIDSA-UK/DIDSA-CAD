@@ -378,16 +378,34 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   making `app.document.extrude._wire_for_profile` public
   (`wire_for_profile`, mirroring how `face_for_profile` was already made
   public for Revolve's own reuse) and passing its outer-wire-only result
-  to `.Add()` instead. This also surfaces a real, currently-known
-  limitation rather than a silently-wrong one: a Profile with holes
-  (`inner_loops`) has no verified way to carry the hole through a swept
-  Wire section (unlike Extrude/Revolve, which consume a Face-with-holes
-  directly) - explicitly rejected now (`sweep_profile_has_holes`, 422)
-  rather than silently swept without its hole. Not verifiable against
-  real OCCT in this sandbox (same standing caveat, now hit twice in a
-  row for this one feature) - implemented from OCCT API documentation/
-  knowledge and the real traceback the user retrieved from the backend's
-  own container logs, flagged for on-device re-confirmation once rebuilt.
+  to `.Add()` instead. Not verifiable against real OCCT in this sandbox
+  (same standing caveat, now hit twice in a row for this one feature) -
+  implemented from OCCT API documentation/knowledge and the real traceback
+  the user retrieved from the backend's own container logs.
+
+  First-pass fix (above) also explicitly rejected a Profile with holes
+  (`inner_loops`) rather than risk silently sweeping without one - flagged
+  as a real, currently-known limitation. On follow-up, the user correctly
+  pushed back: a hollow swept profile (a pipe's annular wall) is a
+  completely ordinary, common Sweep use case, not an edge case worth
+  punting on. Revisited rather than left as a rejection: `BRepOffsetAPI_
+  MakePipeShell.Add` may well support a single compound outer+hole
+  section directly (a real OCCT capability), but that specific call
+  shape couldn't be verified without a real kernel, and guessing wrong a
+  third time in a row wasn't worth the risk. Instead, `resolve_sweep_
+  from_bodies` now sweeps the outer wire and each hole's own wire
+  *independently* (`_sweep_wire`, both are plain single-wire sweeps - the
+  exact case already proven working) and boolean-cuts the hole solid(s)
+  out of the outer one (`BRepAlgoAPI_Cut`, the same operation `app.
+  document.extrude._apply_boss_or_cut` already relies on for every
+  Cut-mode Boss/Cut in this codebase) - a hollow pipe is exactly "outer
+  tube minus inner tube," built from two already-independently-correct
+  building blocks rather than one untested one. New
+  `test_boss_sweep_of_an_annular_pipe_wall_profile_succeeds` (two
+  concentric circles, the common pipe-wall case) added to
+  `test_stage_h_sweep.py`. Same standing caveat - not verifiable against
+  real OCCT in this sandbox, flagged for on-device re-confirmation once
+  rebuilt.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what
