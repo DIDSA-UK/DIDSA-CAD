@@ -265,11 +265,29 @@ def resolve_midplane_from_bodies(
     (corrected) normal. Fails closed with `faces_not_parallel` (see
     `_faces_not_parallel`) unless the two references' normals are parallel
     or anti-parallel (`abs(dot) ~= 1`) - anything else has no single
-    well-defined midplane. C5: plain-tuple dot-product/vector math now that
-    `_resolve_plane_ref` always returns a `ResolvedPlane`, not raw OCCT
-    `gp_Pnt`/`gp_Dir` values - no OCCT construction needed in this function
-    at all anymore (resolving the references themselves may still need it,
-    for the Body-face case)."""
+    well-defined midplane.
+
+    The origin is the plain component-wise average of the two references'
+    own origins. This is always a point exactly on the true midplane
+    regardless of where within its own plane each reference's origin
+    happens to sit: if `dot(origin_a, n)` and `dot(origin_b, n)` are planes
+    A/B's own signed offsets along the shared normal `n`, their average
+    trivially satisfies the midpoint offset by linearity, with no
+    assumption needed about the two origins lining up on the other two
+    axes. That assumption-free property matters in practice - a real bug
+    shipped here originally by instead projecting from `resolved_a.origin`
+    along the normal by half the separation, which silently produces a
+    *different*, still-technically-on-plane point whenever the two
+    origins aren't already aligned off-axis. OCCT's own raw `Geom_Plane`
+    location has no guarantee of that alignment: confirmed via CI that a
+    box's four side faces each report their location at a *corner*, while
+    its top/bottom faces report a true face-center, so a pair of side
+    faces broke the old formula while a pair of top/bottom faces
+    coincidentally didn't. C5: plain-tuple math now that `_resolve_plane_
+    ref` always returns a `ResolvedPlane`, not raw OCCT `gp_Pnt`/`gp_Dir`
+    values - no OCCT construction needed in this function at all anymore
+    (resolving the references themselves may still need it, for the
+    Body-face case)."""
     resolved_a = _resolve_plane_ref(part, bodies, plane_ref_a, excluded_feature_ids)
     resolved_b = _resolve_plane_ref(part, bodies, plane_ref_b, excluded_feature_ids)
 
@@ -277,10 +295,7 @@ def resolve_midplane_from_bodies(
     if abs(abs(dot) - 1.0) > 1e-6:
         raise _faces_not_parallel(plane_ref_a, plane_ref_b)
 
-    separation = sum(
-        (b - a) * n for a, b, n in zip(resolved_a.origin, resolved_b.origin, resolved_a.normal)
-    )
-    origin = tuple(o + n * separation / 2.0 for o, n in zip(resolved_a.origin, resolved_a.normal))
+    origin = tuple((a + b) / 2.0 for a, b in zip(resolved_a.origin, resolved_b.origin))
     return ResolvedPlane(
         origin=origin, normal=resolved_a.normal, x_axis=resolved_a.x_axis, y_axis=resolved_a.y_axis
     )
