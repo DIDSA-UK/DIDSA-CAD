@@ -312,8 +312,33 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   curves, re-picking the path/profile when editing an existing Sweep,
   non-Line path segments (only Lines exist as Sketch entities today). No
   Dart SDK available in this sandbox to compile/run - verified via
-  brace-balance checks and manual review only. Pending on-device
-  confirmation.
+  brace-balance checks and manual review only.
+- **Bug fix (on-device feedback, post-Sweep): couldn't extend a path pick
+  past its first segment when the next tap connected to that segment's
+  *other* end.** Root cause: both `_resolve_path_wire` (backend) and
+  `_tracePathPoints`/`_togglePathPick` (client) tracked only a single
+  running "chain end," seeded from the first segment's own arbitrary
+  `(start, end)` order (whichever way its owning Line happened to store
+  its two endpoints) - once one segment was picked, only a tap connecting
+  to that one fixed endpoint could extend the path; a tap connecting to
+  the *other* endpoint of that same first segment (nothing fixes which end
+  is "the start" until a second segment actually commits to a direction -
+  a perfectly ordinary way to build a path) was wrongly rejected as
+  disconnected. Fixed in both places by tracking the chain's *two* open
+  ends (front and back) and extending from whichever one a new pick
+  actually touches (appending at the back, or inserting at the front) -
+  confirmed via a pure-Python re-implementation of the trace algorithm and
+  a new `test_stage_h_sweep.py` regression case (middle segment picked
+  first, then one extending its front, then one extending its back) that
+  would have failed `disconnected_path` under the old logic. Also caught,
+  in hindsight, that an *existing* test in the same file
+  (`test_path_segments_given_out_of_geometric_order_are_still_connected_
+  correctly`) had actually been asserting success against geometry that
+  the pre-fix algorithm would genuinely have rejected - never caught
+  because this whole test file is `ast.parse`-verified only in this
+  sandbox (no real OCCT to execute it against), a concrete reminder of
+  that verification gap's real cost. Pending on-device confirmation of
+  this fix.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

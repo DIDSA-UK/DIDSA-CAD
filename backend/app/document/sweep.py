@@ -167,10 +167,15 @@ def _resolve_path_wire(
     whatever order `_resolve_path_segment_endpoints` returned them (an
     open chain has no "correct" starting direction - either is equally
     valid). Each subsequent entry must have exactly one endpoint
-    coincident with the running chain's current open end - whichever one
+    coincident with *either* end of the chain built so far - the running
+    chain's front (`points[0]`) or its back (`points[-1]`), not just the
+    back - since the user may extend the pick in either direction from the
+    very first segment (nothing fixes which of its two ends is the
+    "start" until a second segment actually picks one). Whichever endpoint
     coincides is dropped (it's the same point already in the list), the
-    other extends the chain - raising `disconnected_path` (never silently
-    picking a nearest-guess connection) if neither does.
+    other extends the chain at that end (appended at the back, or inserted
+    at the front) - raising `disconnected_path` (never silently picking a
+    nearest-guess connection) if neither end matches.
 
     Builds the resulting ordered point list into a wire via
     `BRepBuilderAPI_MakePolygon` (the same idiom `app.document.extrude.
@@ -183,21 +188,23 @@ def _resolve_path_wire(
     continuous looping spine (confirmed explicitly as in-scope) instead of
     an open one - detected structurally, not by a separate flag."""
     points: list[gp_Pnt] = []
-    chain_end: gp_Pnt | None = None
     for index, ref in enumerate(path_refs):
         start_world, end_world = _resolve_path_segment_endpoints(
             part, ref, bodies_so_far, excluded_feature_ids
         )
-        if chain_end is None:
+        if not points:
             points.append(start_world)
             points.append(end_world)
-            chain_end = end_world
-        elif chain_end.Distance(start_world) < _PATH_POINT_TOLERANCE:
+            continue
+        front, back = points[0], points[-1]
+        if back.Distance(start_world) < _PATH_POINT_TOLERANCE:
             points.append(end_world)
-            chain_end = end_world
-        elif chain_end.Distance(end_world) < _PATH_POINT_TOLERANCE:
+        elif back.Distance(end_world) < _PATH_POINT_TOLERANCE:
             points.append(start_world)
-            chain_end = start_world
+        elif front.Distance(start_world) < _PATH_POINT_TOLERANCE:
+            points.insert(0, end_world)
+        elif front.Distance(end_world) < _PATH_POINT_TOLERANCE:
+            points.insert(0, start_world)
         else:
             raise _disconnected_path(ref, index)
 

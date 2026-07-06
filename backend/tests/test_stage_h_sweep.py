@@ -222,6 +222,41 @@ def test_path_segments_given_out_of_geometric_order_are_still_connected_correctl
     assert response.status_code == 201
 
 
+def test_a_pick_that_extends_the_first_segments_front_rather_than_its_back_is_accepted():
+    """On-device regression: `_resolve_path_wire` used to track only a
+    single running `chain_end`, seeded from the *first* segment's own
+    arbitrary `(start, end)` order - so once one segment was picked, only
+    taps connecting to that one fixed endpoint extended the path; a second
+    pick connecting to the *other* endpoint of that same first segment (a
+    perfectly valid, common way to build a path - nothing fixes which end
+    is "the start" until a second segment actually commits to a direction)
+    was wrongly rejected as `disconnected_path`. Three segments sharing a
+    single Sketch, picked in a middle-out order (the middle segment first,
+    then a segment extending its front, then one extending its back) -
+    this exact shape is what a real on-device path build looks like."""
+    part = _create_part()
+    profile = _create_profile_sketch_feature(part["id"])
+    path_feature = _create_sketch_feature(part["id"], "XZ")
+    p0 = _add_point(path_feature["sketch_id"], 0.0, 0.0)
+    p1 = _add_point(path_feature["sketch_id"], 0.0, 10.0)
+    p2 = _add_point(path_feature["sketch_id"], 0.0, 20.0)
+    p3 = _add_point(path_feature["sketch_id"], 5.0, 25.0)
+    middle_line = _add_line(path_feature["sketch_id"], p1["id"], p2["id"])
+    front_line = _add_line(path_feature["sketch_id"], p0["id"], p1["id"])
+    back_line = _add_line(path_feature["sketch_id"], p2["id"], p3["id"])
+
+    # Middle segment picked first; the second pick extends its *front*
+    # (shares p1, the middle segment's own start_point_id) rather than its
+    # back - exactly the tap the on-device repro found unresponsive.
+    path_refs = [
+        _path_ref(path_feature["sketch_id"], middle_line["id"]),
+        _path_ref(path_feature["sketch_id"], front_line["id"]),
+        _path_ref(path_feature["sketch_id"], back_line["id"]),
+    ]
+    response = _create_sweep(part["id"], profile["id"], path_refs)
+    assert response.status_code == 201
+
+
 def test_cut_sweep_merges_into_a_target_and_preserves_body_id():
     """Body-identity parity with Extrude/Revolve/Fillet/Chamfer: Cut must
     subtract from the named target Body, keeping its id."""

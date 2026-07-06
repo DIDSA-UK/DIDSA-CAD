@@ -1289,7 +1289,10 @@ class _PartScreenState extends State<PartScreen> {
   /// world-space point chain - mirrors the backend's own `app.document.
   /// sweep._resolve_path_wire` tracing logic exactly (each ref's own
   /// endpoint pair is resolved independently, then chained by matching
-  /// position against the running chain's open end, since cross-Sketch
+  /// position against *either* end of the chain built so far - its front
+  /// ([points.first]) or its back ([points.last]), not just the back, since
+  /// the very first pick has no "correct" direction fixed yet: the second
+  /// pick may connect to either of its two endpoints - since cross-Sketch
   /// entries have no shared Point id to chain by instead). Returns null if
   /// any ref's Line can no longer be resolved, or if two consecutive refs
   /// don't actually connect - shouldn't happen for anything
@@ -1297,22 +1300,26 @@ class _PartScreenState extends State<PartScreen> {
   /// the same way [_profileLoopIndexFor] already does.
   List<vm.Vector3>? _tracePathPoints(List<SketchEntityRefDto> refs) {
     final points = <vm.Vector3>[];
-    vm.Vector3? chainEnd;
     for (final ref in refs) {
       final sketchFeatureId = _sketchFeatureIdForSketchId(ref.sketchId);
       final segment = sketchFeatureId == null ? null : _lineWorldSegment(sketchFeatureId, ref.entityId);
       if (segment == null) return null;
       final (start, end) = segment;
-      if (chainEnd == null) {
+      if (points.isEmpty) {
         points.add(start);
         points.add(end);
-        chainEnd = end;
-      } else if (_pathPointsCoincide(chainEnd, start)) {
+        continue;
+      }
+      final front = points.first;
+      final back = points.last;
+      if (_pathPointsCoincide(back, start)) {
         points.add(end);
-        chainEnd = end;
-      } else if (_pathPointsCoincide(chainEnd, end)) {
+      } else if (_pathPointsCoincide(back, end)) {
         points.add(start);
-        chainEnd = start;
+      } else if (_pathPointsCoincide(front, start)) {
+        points.insert(0, end);
+      } else if (_pathPointsCoincide(front, end)) {
+        points.insert(0, start);
       } else {
         return null;
       }
@@ -1354,7 +1361,14 @@ class _PartScreenState extends State<PartScreen> {
       final segment = _lineWorldSegment(lineEntity.sketchFeatureId, lineEntity.sketchEntityId);
       if (points == null || segment == null) return;
       final (start, end) = segment;
-      if (_pathPointsCoincide(points.last, start) || _pathPointsCoincide(points.last, end)) {
+      // Checked against both ends of the chain built so far, not just its
+      // back - the very first pick has no "correct" direction fixed yet, so
+      // a second pick connecting to its *other* endpoint is just as valid
+      // (see [_tracePathPoints]'s own doc comment).
+      if (_pathPointsCoincide(points.last, start) ||
+          _pathPointsCoincide(points.last, end) ||
+          _pathPointsCoincide(points.first, start) ||
+          _pathPointsCoincide(points.first, end)) {
         nextRefs = [..._pathPickerRefs, ref];
       } else {
         _showSnack("That line doesn't connect to the current path - tap one touching either end");
