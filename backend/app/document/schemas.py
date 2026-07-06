@@ -2,7 +2,7 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
-from app.document.models import ExtrudeType, PlaneType, Produces, SubShapeType
+from app.document.models import ExtrudeType, PlaneType, Produces, RevolveMode, SubShapeType
 from app.sketch.models import Plane, SketchEntityType
 
 
@@ -291,12 +291,58 @@ class ChamferFeatureResponse(BaseModel):
     produces: Produces
 
 
+class RevolveFeatureCreate(BaseModel):
+    """Prompt F: creates a RevolveFeature from an existing SketchFeature's
+    closed Profile - mirrors `ExtrudeFeatureCreate` exactly (same
+    `sketch_feature_id`/`target_body_ids` Boss-vs-Cut shape, same 422-if-Cut-
+    is-empty check in `app.document.router._validate_target_body_ids`,
+    generalized to accept a Body from either an ExtrudeFeature or a
+    RevolveFeature), substituting `axis_ref`/`angle` for
+    `start_distance`/`end_distance`. `axis_ref`'s Sketch is not required to
+    be the same Sketch as `sketch_feature_id`'s (confirmed explicitly - see
+    `app.document.models.RevolveFeature`'s own docstring)."""
+
+    sketch_feature_id: str
+    axis_ref: SketchEntityRefSchema
+    angle: float
+    mode: RevolveMode
+    target_body_ids: list[str] = []
+
+
+class RevolveFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves, same omitted-vs-current-
+    value convention as `ExtrudeFeatureUpdate` - `sketch_feature_id` is never
+    revised (same as `ExtrudeFeatureUpdate` never revising its own source
+    Sketch), only the axis/angle/mode/targets of whichever Sketch this
+    Feature already revolves."""
+
+    axis_ref: SketchEntityRefSchema | None = None
+    angle: float | None = None
+    mode: RevolveMode | None = None
+    target_body_ids: list[str] | None = None
+
+
+class RevolveFeatureResponse(BaseModel):
+    type: Literal["revolve"] = "revolve"
+    id: str
+    sketch_feature_id: str
+    axis_ref: SketchEntityRefSchema
+    angle: float
+    mode: RevolveMode
+    locked: bool
+    target_body_ids: list[str] = []
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # RevolveFeature (Boss and Cut alike, mirroring ExtrudeFeature).
+    produces: Produces
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,
     CreatePlaneFeatureResponse,
     FilletFeatureResponse,
     ChamferFeatureResponse,
+    RevolveFeatureResponse,
 ]
 
 

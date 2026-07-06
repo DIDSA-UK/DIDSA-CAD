@@ -28,6 +28,7 @@ import 'part_viewport.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
+import 'revolve_panel.dart';
 import 'rollback.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
@@ -342,6 +343,15 @@ class _PartScreenState extends State<PartScreen> {
       _toggleChamferFaceEdges(entity);
       return;
     }
+    // Prompt F: a sketchLine tap while the Revolve panel is open sets (or
+    // clears, if it's the already-picked one) the axis - a single reference,
+    // replaced rather than accumulated the way target-body picks are - see
+    // [_setRevolveAxis]. A body tap falls through to the ordinary toggle
+    // below, same as Extrude's own target-body picking.
+    if (_revolveActive && entity.kind == SelectionEntityKind.sketchLine) {
+      _setRevolveAxis(entity);
+      return;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
@@ -350,6 +360,25 @@ class _PartScreenState extends State<PartScreen> {
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
     if (_chamferActive) _scheduleChamferPreview();
+    if (_revolveActive) _scheduleRevolvePreview();
+  }
+
+  /// Prompt F: [_toggleSelectedEntity]'s sketchLine special-case for the
+  /// Revolve flow - replaces whatever `sketchLine` entity (if any) is
+  /// currently in [_selectedEntities] with [axisEntity], unless [axisEntity]
+  /// was already the one picked, in which case it's cleared instead (tap the
+  /// current axis again to deselect it). Never touches any `body` entities
+  /// already in the set - those are a completely independent pick (see
+  /// [_revolveSelectionFilter]'s own doc comment).
+  void _setRevolveAxis(SelectionEntityRef axisEntity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final alreadyPicked = next.contains(axisEntity);
+      next.removeWhere((e) => e.kind == SelectionEntityKind.sketchLine);
+      if (!alreadyPicked) next.add(axisEntity);
+      _selectedEntities = next;
+    });
+    _scheduleRevolvePreview();
   }
 
   /// Item 4: "Empty space tap -> clears entire selection set" - passed to
@@ -362,6 +391,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
     if (_chamferActive) _scheduleChamferPreview();
+    if (_revolveActive) _scheduleRevolvePreview();
   }
 
   /// On-device feedback: [_toggleSelectedEntity]'s Face special-case for the
@@ -723,6 +753,83 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: false,
+    plane: false,
+  );
+
+  // --- Prompt F: Revolve state ---------------------------------------------
+  // A full separate mirror of the Extrude state block above, per this
+  // project's established separate-not-shared convention - Revolve is
+  // Boss/Cut-shaped like Extrude (simple `isPreviewMesh` live preview, no
+  // dual-mesh overlay - see docs/live-preview-pattern.md's decision tree:
+  // target_body_ids are Body-level picks, stable across re-solves, exactly
+  // like Extrude's own), just consuming a Sketch Line axis pick alongside
+  // Extrude's own target-body picking rather than instead of it.
+
+  /// Prompt F: true while the Feature tree is acting as a Sketch picker for
+  /// a pending Revolve - mirrors [_sketchPickerActive] exactly, entered by
+  /// [_revolveSelectedFeature] when no eligible Sketch is already selected.
+  bool _revolveSketchPickerActive = false;
+
+  /// Mirrors [_pickableSketchIds] exactly, for the Revolve picker.
+  Set<String> _pickableRevolveSketchIds = {};
+
+  /// The SketchFeature currently being revolved via [RevolvePanel], or null
+  /// when the panel is closed - mirrors [_extrudeSketchFeature].
+  FeatureDto? _revolveSketchFeature;
+
+  /// The RevolveFeature created by the panel's first live-preview update -
+  /// mirrors [_previewExtrudeFeatureId].
+  String? _previewRevolveFeatureId;
+
+  /// Mirrors [_meshBeforeExtrude].
+  List<BodyMeshDto>? _meshBeforeRevolve;
+
+  /// Mirrors [_entitiesBeforeExtrude] - while the panel is open,
+  /// [_selectedEntities] is dedicated to axis-Line + target-body picking
+  /// (see [_openRevolvePanel]) instead of the general Stage 23 selection.
+  Set<SelectionEntityRef>? _entitiesBeforeRevolve;
+
+  /// B4: non-null while [RevolvePanel] is editing an *existing*
+  /// RevolveFeature - mirrors [_editingExtrudeFeatureId].
+  String? _editingRevolveFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - mirrors [_extrudeEditSnapshot].
+  ({
+    RevolveMode mode,
+    double angle,
+    SketchEntityRefDto axisRef,
+    List<String> targetBodyIds,
+  })? _revolveEditSnapshot;
+
+  RevolveMode _revolveMode = RevolveMode.boss;
+  double _revolveAngle = 180.0;
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
+  /// [_extrudeDebounce].
+  Timer? _revolveDebounce;
+
+  /// Mirrors [_extrudeActive].
+  bool get _revolveActive => _revolveSketchFeature != null;
+
+  /// Prompt F: the axis-Line-picking + target-body-picking filter for the
+  /// whole Revolve flow - unlike Extrude's bodies-only override
+  /// ([_openExtrudePanel]), this allows *both* `sketchLine` (the axis) and
+  /// `body` (Boss/Cut targets) hits simultaneously, since a Revolve session
+  /// needs to pick one of each rather than only ever one kind - no separate
+  /// "picking mode" toggle is needed because [_selectedEntities] already
+  /// holds entities of both kinds side by side (a [SelectionEntityRef]'s own
+  /// `kind` tells them apart), and [_toggleSelectedEntity]'s Revolve
+  /// special-case (below) routes a `sketchLine` tap to axis-replacement while
+  /// a `body` tap falls through to the ordinary toggle-add/remove Extrude
+  /// itself already uses.
+  static const _revolveSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: true,
     plane: false,
   );
 
@@ -1158,6 +1265,8 @@ class _PartScreenState extends State<PartScreen> {
         _startFilletPicker();
       case FeaturePickerAction.chamfer:
         _startChamferPicker();
+      case FeaturePickerAction.revolve:
+        await _revolveSelectedFeature();
     }
   }
 
@@ -1274,6 +1383,78 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Prompt F: mirrors [_extrudeSelectedFeature] exactly, substituting
+  /// Revolve's own state/picker/panel - see that method's own doc comment
+  /// for the full reasoning. Reuses [_checkExtrudeEligibility] directly
+  /// (not a duplicate check) since a Revolve's Profile needs exactly the
+  /// same closed-profile eligibility an Extrude's does - that helper has no
+  /// Extrude-specific behaviour of its own, it just asks the Sketch API for
+  /// the Sketch's Profile.
+  Future<void> _revolveSelectedFeature() async {
+    final featureId = _selectedFeatureId;
+    final feature = featureId == null ? null : _featureById(featureId);
+    if (feature != null && feature.type == 'sketch') {
+      final reason = await _checkExtrudeEligibility(feature);
+      if (!mounted) return;
+      if (reason == null) {
+        _openRevolvePanel(feature);
+        return;
+      }
+    }
+    _startRevolveSketchPicker();
+  }
+
+  /// Mirrors [_startSketchPicker] exactly, for the Revolve picker.
+  void _startRevolveSketchPicker() {
+    setState(() {
+      _revolveSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _pickableRevolveSketchIds = {};
+    });
+    _refreshPickableRevolveSketchIds();
+  }
+
+  /// Mirrors [_refreshPickableSketchIds] exactly, for the Revolve picker.
+  Future<void> _refreshPickableRevolveSketchIds() async {
+    final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
+    final results = await Future.wait(sketchFeatures.map((feature) async {
+      final reason = await _checkExtrudeEligibility(feature);
+      return MapEntry(feature.id, reason == null);
+    }));
+    if (!mounted || !_revolveSketchPickerActive) return;
+    setState(() {
+      _pickableRevolveSketchIds = {for (final entry in results) if (entry.value) entry.key};
+    });
+  }
+
+  /// Mirrors [_onSketchPicked] exactly, for the Revolve picker.
+  Future<void> _onRevolveSketchPicked(FeatureDto feature) async {
+    final reason = await _checkExtrudeEligibility(feature);
+    if (!mounted || !_revolveSketchPickerActive) return;
+    if (reason != null) {
+      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
+      return;
+    }
+    setState(() {
+      _revolveSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _selectedFeatureId = feature.id;
+      _pickableRevolveSketchIds = {};
+    });
+    _openRevolvePanel(feature);
+  }
+
+  /// Mirrors [_cancelSketchPicker] exactly, for the Revolve picker.
+  void _cancelRevolveSketchPicker() {
+    setState(() {
+      _revolveSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableRevolveSketchIds = {};
+    });
+  }
+
   FeatureDto? _featureById(String id) {
     for (final feature in _features) {
       if (feature.id == id) return feature;
@@ -1351,6 +1532,14 @@ class _PartScreenState extends State<PartScreen> {
     } else if (feature.type == 'chamfer') {
       // Prompt E: mirrors the fillet branch above exactly.
       await _openChamferPanelForEdit(feature);
+    } else if (feature.type == 'revolve') {
+      // Prompt F: rollback is ended by _confirmRevolve/_cancelRevolve
+      // instead, same "stays engaged for the panel's whole lifetime"
+      // reasoning as the extrude branch above - mirrors that branch exactly,
+      // including the defensive "couldn't open, roll forward immediately"
+      // fallback.
+      final opened = _openRevolvePanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -1472,6 +1661,10 @@ class _PartScreenState extends State<PartScreen> {
     final isSketchFeature = feature.type == 'sketch';
     final extrudeDisabledReason = isSketchFeature ? await _checkExtrudeEligibility(feature) : null;
     final canExtrude = isSketchFeature && extrudeDisabledReason == null;
+    // Prompt F: Revolve's own eligibility check is the identical
+    // closed-profile check Extrude's own uses (see _checkExtrudeEligibility's
+    // doc comment) - reused directly rather than re-run separately.
+    final canRevolve = canExtrude;
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -1480,12 +1673,17 @@ class _PartScreenState extends State<PartScreen> {
       showExtrude: isSketchFeature,
       canExtrude: canExtrude,
       extrudeDisabledReason: extrudeDisabledReason,
+      showRevolve: isSketchFeature,
+      canRevolve: canRevolve,
+      revolveDisabledReason: extrudeDisabledReason,
     );
     if (!mounted || action == null) return;
 
     switch (action) {
       case FeatureContextMenuAction.extrude:
         _openExtrudePanel(feature);
+      case FeatureContextMenuAction.revolve:
+        _openRevolvePanel(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -1829,6 +2027,288 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     await _endRollback();
+  }
+
+  // --- Prompt F: Revolve ---------------------------------------------------
+  // A full separate mirror of the Extrude section directly above, per this
+  // project's established separate-not-shared convention - see that
+  // section's own doc comments for the reasoning behind each method; only
+  // pointed out below where Revolve's own shape genuinely differs (the axis
+  // pick alongside target-body picking).
+
+  /// Reverse of [_sketchIdForFeatureId] - the `sketch` SketchFeature id that
+  /// wraps Sketch [sketchId], or null if none is found (defensive only - a
+  /// real RevolveFeature's `axis_ref.sketch_id` always names a Sketch some
+  /// SketchFeature in this Part wraps). Needed (unlike Fillet/Chamfer's
+  /// `SubShapeRef`, whose `body_id` already *is* what [SelectionEntityRef.
+  /// bodyId] wants) because [FeatureDto.axisRef] carries the real Sketch id,
+  /// while [SelectionEntityRef.sketchFeatureId] wants the *Feature* id that
+  /// wraps it - the same two-different-ids distinction
+  /// [_sketchIdForFeatureId] already documents, just resolved in the other
+  /// direction.
+  String? _sketchFeatureIdForSketchId(String sketchId) {
+    for (final feature in _features) {
+      if (feature.type == 'sketch' && feature.sketchId == sketchId) return feature.id;
+    }
+    return null;
+  }
+
+  /// The `sketchLine` entity in [_selectedEntities] - the axis pick - or
+  /// null if none is picked yet. Mirrors [_currentFilletBodyId]'s own
+  /// manual-loop-with-early-return style.
+  SelectionEntityRef? get _revolveAxisEntity {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.sketchLine) return entity;
+    }
+    return null;
+  }
+
+  /// [_revolveAxisEntity] converted to the wire [SketchEntityRefDto] -
+  /// mirrors [_pointRefDtoFor]'s own sketchPoint branch, resolving the real
+  /// Sketch id via [_sketchIdForFeatureId]. Null whenever no axis is picked
+  /// yet, or (defensive only) its Sketch can no longer be resolved.
+  SketchEntityRefDto? _currentRevolveAxisRef() {
+    final entity = _revolveAxisEntity;
+    if (entity == null) return null;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return null;
+    return SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId);
+  }
+
+  /// Mirrors [_currentTargetBodyIds] exactly - every `body`-kind entity in
+  /// [_selectedEntities], deduplicated.
+  List<String> _currentRevolveTargetBodyIds() =>
+      _selectedEntities
+          .where((e) => e.kind == SelectionEntityKind.body)
+          .map((e) => e.bodyId)
+          .toSet()
+          .toList();
+
+  /// Mirrors [_openExtrudePanel] exactly, substituting Revolve's own state
+  /// fields/filter - pushes [_revolveSelectionFilter] (axis + target-body,
+  /// not bodies-only) instead of Extrude's own override.
+  void _openRevolvePanel(FeatureDto sketchFeature) {
+    setState(() {
+      _revolveSketchFeature = sketchFeature;
+      _previewRevolveFeatureId = null;
+      _meshBeforeRevolve = _bodies;
+      _revolveMode = RevolveMode.boss;
+      _revolveAngle = 180.0;
+      _entitiesBeforeRevolve = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_revolveSelectionFilter);
+    });
+  }
+
+  /// Mirrors [_openExtrudePanelForEdit] exactly, substituting Revolve's own
+  /// fields - prefills [_selectedEntities] with *both* the reconstructed axis
+  /// entity (via [_sketchFeatureIdForSketchId], the reverse mapping
+  /// [_openExtrudePanelForEdit] never needed) and the target-body entities,
+  /// so the live-edit session starts from exactly what's currently stored.
+  /// Returns false (doing nothing else) if [feature]'s own Sketch or axis_ref
+  /// can't be resolved (defensive only - a real RevolveFeature always has
+  /// both) - the caller ends true-rollback immediately in that case, same as
+  /// [_openExtrudePanelForEdit].
+  bool _openRevolvePanelForEdit(FeatureDto feature) {
+    final sketchFeatureId = feature.sketchFeatureId;
+    final sketchFeature = sketchFeatureId == null ? null : _featureById(sketchFeatureId);
+    final axisRef = feature.axisRef;
+    if (sketchFeature == null || axisRef == null) return false;
+
+    final mode = RevolveMode.fromApiValue(feature.mode ?? 'boss');
+    final angle = feature.angle ?? 180.0;
+    final targetBodyIds = feature.targetBodyIds;
+    final axisSketchFeatureId = _sketchFeatureIdForSketchId(axisRef.sketchId);
+
+    setState(() {
+      _revolveSketchFeature = sketchFeature;
+      _editingRevolveFeatureId = feature.id;
+      _previewRevolveFeatureId = feature.id;
+      _revolveEditSnapshot = (mode: mode, angle: angle, axisRef: axisRef, targetBodyIds: targetBodyIds);
+      _meshBeforeRevolve = _bodies;
+      _revolveMode = mode;
+      _revolveAngle = angle;
+      _entitiesBeforeRevolve = _selectedEntities;
+      _selectedEntities = {
+        if (axisSketchFeatureId != null)
+          SelectionEntityRef(
+            kind: SelectionEntityKind.sketchLine,
+            sketchFeatureId: axisSketchFeatureId,
+            sketchEntityId: axisRef.entityId,
+          ),
+        for (final bodyId in targetBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_revolveSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Mirrors [_ensureExtrudeFeatureExists] exactly (the simple pattern - no
+  /// preview-mesh overlay, no self-exclusion - see this section's own header
+  /// comment on why Revolve doesn't need either).
+  Future<void> _ensureRevolveFeatureExists(
+    RevolveMode mode,
+    double angle,
+    SketchEntityRefDto axisRef,
+    List<String> targetBodyIds,
+  ) async {
+    final part = _part;
+    final sketchFeature = _revolveSketchFeature;
+    if (part == null || sketchFeature == null) return;
+
+    final existingId = _previewRevolveFeatureId;
+    if (existingId == null) {
+      final created = await _api.createRevolveFeature(
+        part.id,
+        sketchFeatureId: sketchFeature.id,
+        axisRef: axisRef,
+        angle: angle,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+      );
+      _previewRevolveFeatureId = created.id;
+    } else {
+      await _api.updateRevolveFeature(
+        part.id,
+        existingId,
+        axisRef: axisRef,
+        angle: angle,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [RevolvePanel.onChanged] - mirrors [_onExtrudeValuesChanged].
+  void _onRevolveValuesChanged(RevolveMode mode, double angle) {
+    _revolveMode = mode;
+    _revolveAngle = angle;
+    _scheduleRevolvePreview();
+  }
+
+  /// Mirrors [_scheduleExtrudePreview] exactly, except the debounced re-solve
+  /// is skipped entirely whenever no axis is picked yet (mirrors Fillet/
+  /// Chamfer's own "nothing to solve without at least one edge" guard) -
+  /// re-checked at fire time, not at schedule time, same "always the current
+  /// value" convention every other debounced field in this file already
+  /// uses.
+  void _scheduleRevolvePreview() {
+    _revolveDebounce?.cancel();
+    _revolveDebounce = Timer(const Duration(milliseconds: 500), () {
+      final axisRef = _currentRevolveAxisRef();
+      if (axisRef == null) return;
+      _runGuarded(() => _ensureRevolveFeatureExists(
+            _revolveMode,
+            _revolveAngle,
+            axisRef,
+            _currentRevolveTargetBodyIds(),
+          ));
+    });
+  }
+
+  /// Mirrors [_confirmExtrude] exactly, including the auto-hide-the-
+  /// consumed-Sketch behaviour (a Revolve consumes its Sketch's Profile
+  /// exactly like an Extrude does) and the unconditional restore of
+  /// [_selectedEntities]/pop of the filter override.
+  Future<void> _confirmRevolve() async {
+    _revolveDebounce?.cancel();
+    final sketchFeature = _revolveSketchFeature;
+    final wasEditing = _editingRevolveFeatureId != null;
+    final axisRef = _currentRevolveAxisRef();
+    final targetBodyIds = _currentRevolveTargetBodyIds();
+    if (axisRef != null) {
+      await _runGuarded(() async {
+        await _ensureRevolveFeatureExists(_revolveMode, _revolveAngle, axisRef, targetBodyIds);
+        await _refreshFeatures();
+        await _refreshSketchGeometries();
+      });
+    }
+    if (!mounted) return;
+    setState(() {
+      if (sketchFeature != null && !wasEditing) {
+        _hiddenFeatureIds.add(sketchFeature.id);
+        _autoHiddenSketchFeatureIds.add(sketchFeature.id);
+      }
+      _recomputeVisibleSketchGeometries();
+      _revolveSketchFeature = null;
+      _previewRevolveFeatureId = null;
+      _meshBeforeRevolve = null;
+      _editingRevolveFeatureId = null;
+      _revolveEditSnapshot = null;
+      _selectedEntities = _entitiesBeforeRevolve ?? {};
+      _entitiesBeforeRevolve = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelExtrude] exactly.
+  Future<void> _cancelRevolve() async {
+    _revolveDebounce?.cancel();
+    final part = _part;
+    final sketchFeature = _revolveSketchFeature;
+    final previewId = _previewRevolveFeatureId;
+    final meshBefore = _meshBeforeRevolve;
+    final wasEditing = _editingRevolveFeatureId != null;
+    final editSnapshot = _revolveEditSnapshot;
+    setState(() {
+      _revolveSketchFeature = null;
+      _previewRevolveFeatureId = null;
+      _meshBeforeRevolve = null;
+      _editingRevolveFeatureId = null;
+      _revolveEditSnapshot = null;
+      _selectedEntities = _entitiesBeforeRevolve ?? {};
+      _entitiesBeforeRevolve = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateRevolveFeature(
+            part.id,
+            previewId,
+            axisRef: editSnapshot.axisRef,
+            angle: editSnapshot.angle,
+            mode: editSnapshot.mode.apiValue,
+            targetBodyIds: editSnapshot.targetBodyIds,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// Mirrors [_targetBodyPickerBannerText], prefixed with the axis-pick
+  /// status since Revolve's banner has two things to report rather than
+  /// Extrude's one.
+  String _revolvePickerBannerText() {
+    final axisText = _revolveAxisEntity == null ? 'Select an axis line' : 'Axis selected';
+    final count = _currentRevolveTargetBodyIds().length;
+    final bodyText = _revolveMode == RevolveMode.cut
+        ? (count == 0 ? 'select a target body' : '$count target body/bodies selected')
+        : (count == 0 ? 'tap bodies to merge into (optional)' : '$count target body/bodies selected');
+    return '$axisText, $bodyText';
   }
 
   // --- C2: Create Plane -----------------------------------------------------
@@ -2833,11 +3313,13 @@ class _PartScreenState extends State<PartScreen> {
       // doesn't intercept back here, consistent with Extrude/Create Plane's
       // own "Confirm/Cancel are the only way out" panels once open - see
       // [_openFilletPanel].
-      canPop: !_planeSelectionMode && !_sketchPickerActive,
+      canPop: !_planeSelectionMode && !_sketchPickerActive && !_revolveSketchPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_sketchPickerActive) {
           _cancelSketchPicker();
+        } else if (_revolveSketchPickerActive) {
+          _cancelRevolveSketchPicker();
         } else {
           _cancelPlaneSelectionMode();
         }
@@ -2879,7 +3361,12 @@ class _PartScreenState extends State<PartScreen> {
                   selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
-                  isPreviewMesh: _extrudeSketchFeature != null,
+                  // Prompt F: Revolve uses the same simple tinted-preview
+                  // convention Extrude does (see docs/live-preview-pattern.md's
+                  // decision tree - Boss/Cut target_body_ids are Body-level
+                  // picks, stable across re-solves) - an `||`, not a separate
+                  // overlay, since only one of the two is ever active at once.
+                  isPreviewMesh: _extrudeSketchFeature != null || _revolveSketchFeature != null,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -2958,7 +3445,11 @@ class _PartScreenState extends State<PartScreen> {
                 // empty-selection gate would already hide this too, but this
                 // stays explicit rather than relying on that as an implicit
                 // side effect).
-                if (!_extrudeActive && !_createPlaneActive && !_filletActive && !_chamferActive)
+                if (!_extrudeActive &&
+                    !_createPlaneActive &&
+                    !_filletActive &&
+                    !_chamferActive &&
+                    !_revolveActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -2979,7 +3470,8 @@ class _PartScreenState extends State<PartScreen> {
                         !_extrudeActive &&
                         !_createPlaneActive &&
                         !_filletActive &&
-                        !_chamferActive,
+                        !_chamferActive &&
+                        !_revolveActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -2988,13 +3480,22 @@ class _PartScreenState extends State<PartScreen> {
                     onClose: () {
                       if (_sketchPickerActive) {
                         _cancelSketchPicker();
+                      } else if (_revolveSketchPickerActive) {
+                        _cancelRevolveSketchPicker();
                       } else {
                         setState(() => _featureTreeVisible = false);
                       }
                     },
-                    isSketchPickerMode: _sketchPickerActive,
-                    pickableSketchIds: _pickableSketchIds,
-                    onSketchPicked: _onSketchPicked,
+                    // Prompt F: only one of _sketchPickerActive/
+                    // _revolveSketchPickerActive is ever true at a time (same
+                    // "one panel/picker active" invariant every other flow in
+                    // this file relies on), so a ternary picks whichever is
+                    // live - mirrors the previewOverlayBodyId/previewOverlayMesh
+                    // ternary above.
+                    isSketchPickerMode: _sketchPickerActive || _revolveSketchPickerActive,
+                    pickableSketchIds:
+                        _sketchPickerActive ? _pickableSketchIds : _pickableRevolveSketchIds,
+                    onSketchPicked: _sketchPickerActive ? _onSketchPicked : _onRevolveSketchPicked,
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
@@ -3077,6 +3578,20 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelChamfer,
                     ),
                   ),
+                if (_revolveActive)
+                  Positioned.fill(
+                    child: RevolvePanel(
+                      key: ValueKey(_editingRevolveFeatureId ?? _revolveSketchFeature!.id),
+                      title: _editingRevolveFeatureId != null ? 'Edit Revolve' : 'Revolve',
+                      initialMode: _revolveMode,
+                      initialAngle: _revolveAngle,
+                      hasAxis: _revolveAxisEntity != null,
+                      targetBodyCount: _currentRevolveTargetBodyIds().length,
+                      onChanged: _onRevolveValuesChanged,
+                      onConfirm: _confirmRevolve,
+                      onCancel: _cancelRevolve,
+                    ),
+                  ),
                 // Prompt A4: names the target-body picking mode live for the
                 // whole time the Extrude panel is open - same top-center
                 // pill convention as the plane-selection-mode banner below,
@@ -3129,6 +3644,48 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Prompt F: mirrors the Extrude banner directly above exactly,
+                // substituting Revolve's own axis-plus-target-body banner
+                // text and Cancel callback.
+                if (_revolveActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _revolvePickerBannerText(),
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelRevolve,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 // Always on top (last in the Stack) so it stays tappable
                 // regardless of whether the toolbar underneath is open -
                 // but hidden while the Feature tree is open since it sits
@@ -3145,7 +3702,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_extrudeActive &&
                     !_createPlaneActive &&
                     !_filletActive &&
-                    !_chamferActive)
+                    !_chamferActive &&
+                    !_revolveActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -3322,8 +3880,13 @@ class _PartScreenState extends State<PartScreen> {
           ? null
           : Padding(
               padding: EdgeInsets.only(
-                bottom:
-                    (_extrudeActive || _createPlaneActive || _filletActive || _chamferActive) ? 180 : 0,
+                bottom: (_extrudeActive ||
+                        _createPlaneActive ||
+                        _filletActive ||
+                        _chamferActive ||
+                        _revolveActive)
+                    ? 180
+                    : 0,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -3342,7 +3905,8 @@ class _PartScreenState extends State<PartScreen> {
                   if (!_extrudeActive &&
                       !_createPlaneActive &&
                       !_filletActive &&
-                      !_chamferActive) ...[
+                      !_chamferActive &&
+                      !_revolveActive) ...[
                     const SizedBox(height: 12),
                     FloatingActionButton(
                       heroTag: 'add-fab',

@@ -15,6 +15,7 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'create_plane' => 'Plane',
     'fillet' => 'Fillet',
     'chamfer' => 'Chamfer',
+    'revolve' => 'Revolve',
     _ => 'Sketch',
   };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
@@ -440,6 +441,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   'create_plane' => Icons.crop_din,
                   'fillet' => Icons.rounded_corner,
                   'chamfer' => Icons.change_history,
+                  'revolve' => Icons.rotate_right,
                   _ => Icons.edit,
                 },
           size: 20,

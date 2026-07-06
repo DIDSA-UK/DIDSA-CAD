@@ -39,6 +39,7 @@ from app.document.models import (
     Part,
     PlaneRef,
     PlaneType,
+    RevolveFeature,
     SketchFeature,
 )
 
@@ -193,6 +194,15 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     Prompt E: `ChamferFeature` gets the identical dependency rule, one
     branch down - see `app.document.chamfer._mixed_body_selection`.
 
+    Prompt F: a `RevolveFeature` depends on the SketchFeature wrapping its
+    Profile's Sketch (`sketch_feature_id`, same as `ExtrudeFeature`) *and*,
+    separately, the SketchFeature wrapping its `axis_ref`'s Sketch - the two
+    are not required to be the same Sketch (confirmed explicitly - see
+    `RevolveFeature`'s own docstring), so both edges are added, deduplicated
+    via a `set` in case they do happen to coincide (e.g. the axis is one of
+    the Profile's own entities). Also depends on every `target_body_ids`
+    entry for Cut mode, identical to `ExtrudeFeature`.
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -212,8 +222,25 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
         elif isinstance(feature, ChamferFeature):
             depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
+        elif isinstance(feature, RevolveFeature):
+            depends_on = _revolve_dependencies(part, feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
+
+
+def _revolve_dependencies(part: Part, feature: RevolveFeature) -> tuple[str, ...]:
+    """Prompt F: `build_feature_graph`'s `RevolveFeature` dependency-edge
+    logic, split out to keep `build_feature_graph` itself's per-type
+    dispatch readable - the Profile's own SketchFeature, the axis_ref's own
+    SketchFeature (possibly a different Sketch - see `RevolveFeature`'s own
+    docstring for why cross-Sketch is allowed), and every `target_body_ids`
+    entry's owning Feature for Cut mode, deduplicated via a `set`."""
+    deps: set[str] = {feature.sketch_feature_id}
+    axis_sketch_feature_id = sketch_feature_id_for_sketch(part, feature.axis_ref.sketch_id)
+    if axis_sketch_feature_id is not None:
+        deps.add(axis_sketch_feature_id)
+    deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
+    return tuple(deps)
 
 
 def _plane_ref_dependency(ref: PlaneRef) -> str | None:

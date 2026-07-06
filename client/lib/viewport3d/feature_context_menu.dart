@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 
 /// Actions available from a Feature's long-press context menu. Stage 8 adds
 /// [toggleVisibility] above the existing [delete]; Stage 9 adds [extrude]
-/// above both - later stages can add further entries here without changing
-/// how the menu itself is shown or wired up.
-enum FeatureContextMenuAction { extrude, toggleVisibility, delete }
+/// above both; Prompt F adds [revolve] alongside [extrude] - later stages
+/// can add further entries here without changing how the menu itself is
+/// shown or wired up.
+enum FeatureContextMenuAction { extrude, revolve, toggleVisibility, delete }
 
 /// Shows a bottom sheet of actions for a single Feature, opened by a
 /// long-press on its row in the tree. A bottom sheet - rather than wiring
@@ -21,12 +22,20 @@ enum FeatureContextMenuAction { extrude, toggleVisibility, delete }
 /// check the caller already ran when the menu was opened, not on every
 /// render) determines whether it's enabled; when disabled,
 /// [extrudeDisabledReason] is shown as its subtitle.
+///
+/// Prompt F: [showRevolve]/[canRevolve]/[revolveDisabledReason] mirror
+/// [showExtrude]/[canExtrude]/[extrudeDisabledReason] exactly - same
+/// closed-profile eligibility, same "only a SketchFeature gets this entry"
+/// gate.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
   bool showExtrude = false,
   bool canExtrude = false,
   String? extrudeDisabledReason,
+  bool showRevolve = false,
+  bool canRevolve = false,
+  String? revolveDisabledReason,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -42,6 +51,16 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
               subtitle: canExtrude ? null : Text(extrudeDisabledReason ?? 'Not available'),
               onTap: canExtrude
                   ? () => Navigator.of(context).pop(FeatureContextMenuAction.extrude)
+                  : null,
+            ),
+          if (showRevolve)
+            ListTile(
+              enabled: canRevolve,
+              leading: const Icon(Icons.rotate_right),
+              title: const Text('Revolve'),
+              subtitle: canRevolve ? null : Text(revolveDisabledReason ?? 'Not available'),
+              onTap: canRevolve
+                  ? () => Navigator.of(context).pop(FeatureContextMenuAction.revolve)
                   : null,
             ),
           ListTile(

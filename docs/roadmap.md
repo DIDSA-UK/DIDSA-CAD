@@ -79,8 +79,76 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   entry (alongside Shaded / Shaded+Edges / Wireframe) that renders
   occluded edges distinctly (e.g. dashed) rather than hiding or bleeding
   them through.
-- **Revolve, Sweep.** Disabled placeholders in the Feature picker sheet
-  since Stage 19b. Not implemented.
+- **Prompt F: Revolve — built, pending on-device confirmation.** Closest of
+  the three new C/D/E-successor prompts (Revolve → Sweep → Boolean) to
+  Extrude: consumes a closed Profile the same way, produces a solid the same
+  way, full Boss/Cut parity from day one (`mode: BOSS | CUT`,
+  `target_body_ids`, identical validation shape to `ExtrudeFeature`) - the
+  only new concept is the axis, a Sketch **Line** reference
+  (`SketchEntityRef`, restricted to Line; Point/Circle rejected as
+  `invalid_axis_ref`). Two flagged design decisions were resolved by asking
+  directly rather than assumed: the axis Line is **not** required to belong
+  to the same Sketch as the Profile (cross-sketch allowed, resolved via its
+  own owning SketchFeature's basis independently of the Profile's), and the
+  axis Line **is** allowed to be one of the Profile's own entities (no
+  self-reference rejection). The third flagged question (does Cut-mode need
+  Fillet/Chamfer's dual-mesh preview overlay?) was resolved by re-reading
+  `docs/live-preview-pattern.md`'s own decision tree, not by asking: Revolve's
+  Cut only ever does Body-level `target_body_ids` picks (never sub-shape
+  picks of the body being cut), so it uses Extrude's simple `isPreviewMesh`
+  pattern, not the dual-mesh overlay - the prompt text's own suggestion that
+  it "likely needs" the overlay didn't hold up against the documented
+  criterion. Backend: new `RevolveFeature`/`RevolveMode` (`app/document/
+  models.py`); new `app/document/revolve.py` (`BRepPrimAPI_MakeRevol`,
+  `invalid_axis_ref`/`revolve_failed` structured errors - the prompt's own
+  third error type, `mixed_body_selection`, was skipped as inapplicable:
+  Boss/Cut `target_body_ids` has no per-edge same-body constraint the way
+  Fillet/Chamfer's `edge_refs` does, and Extrude's own Cut has no such
+  concept either); `app/document/extrude.py` gained a shared
+  `_apply_boss_or_cut` helper (extracted from its own `compute_part_bodies`
+  ExtrudeFeature branch) so Revolve's identical Boss/Cut fuse/cut/
+  merge-tiebreak/body-split dispatch isn't duplicated, plus `face_for_profile`/
+  `EXTRUDABLE_STATUSES` made public for Revolve's own reuse; `graph.py` gained
+  `RevolveFeature` dependency edges (profile Sketch **and** axis Sketch,
+  separately, deduplicated - not the same edge every time, since cross-Sketch
+  axis is allowed); `router.py`/`schemas.py` gained
+  `RevolveFeatureCreate/Update/Response` and `POST/PATCH .../revolve-features
+  [/{id}]`, unlocked from the start, eagerly validating via `resolve_revolve`
+  before persisting (mirrors Fillet/Chamfer's fail-closed convention, stricter
+  than Extrude's own lazy-only validation, since the axis is genuinely new
+  and error-prone); `_validate_target_body_ids` generalized to accept a Body
+  from either an `ExtrudeFeature` or a `RevolveFeature`. 7 new pure-Python
+  graph tests (`test_stage_f_graph.py`) genuinely executed (47/47 passing
+  alongside every other pure-Python graph/geometry test file in this
+  sandbox); `test_stage_f_revolve.py` (real-OCCT HTTP surface) `ast.parse`/
+  `pyflakes`-verified only, per the standing sandbox caveat. Client:
+  `FeatureDto` gained `axisRef`/`angle`/`mode`; `createRevolveFeature`/
+  `updateRevolveFeature` mirror Extrude's own methods; new `RevolvePanel`
+  (Boss/Cut toggle + angle field + axis/target-body status lines, mirrors
+  `ExtrudePanel`'s session shape); `part_screen.dart` gained a full separate
+  Revolve state/method block (mirrors Extrude's, not shared) - notably a new
+  combined selection filter (`_revolveSelectionFilter`, allows both
+  `sketchLine` and `body` hits at once, unlike Extrude's bodies-only
+  override) since a Revolve session picks one axis Line *and* zero-or-more
+  target Bodies simultaneously, with `_toggleSelectedEntity`'s new
+  Revolve special-case routing a `sketchLine` tap to axis-replacement
+  (single reference, not accumulated) while a `body` tap falls through to
+  the ordinary toggle-add/remove Extrude's own target-body picking already
+  uses. Entry points: enabled via the same mechanism Extrude's own
+  "Extrude" action already uses (the Feature-tree long-press context menu,
+  `showFeatureContextMenu`'s new `showRevolve`/`canRevolve` params, same
+  closed-profile eligibility check reused directly) and the "Add" FAB's
+  Feature picker (previously a disabled placeholder); **note**: the prompt's
+  own text framed this as "`contextActionsFor`: enable Revolve from a Sketch
+  selection" - but `contextActionsFor` (`selection_actions.dart`) only ever
+  gates Body-sub-shape/plane/sketch-entity *viewport* selections, and
+  Extrude's real enabling condition was never there in the first place (it's
+  the tree long-press), so Revolve's own enabling mirrors Extrude's *actual*
+  mechanism instead of literally touching that function. **Not yet
+  confirmed on-device** - per this project's standing convention, no Sweep
+  work begins until Boss/Cut Revolve (partial angle and full 360°), axis-Line
+  picking, live angle preview, PATCH-edit-and-rollback, and cascade-delete
+  all pass on a real device.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

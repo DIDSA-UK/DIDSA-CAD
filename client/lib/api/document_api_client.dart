@@ -220,6 +220,21 @@ class FeatureDto {
   /// that actually differ between Fillet's and Chamfer's wire shape.
   final double? distance;
 
+  /// Prompt F: only present on a `"revolve"` Feature - the Sketch Line
+  /// reference the Profile is revolved around. Not required to belong to
+  /// the same Sketch as [sketchFeatureId] (confirmed decision - see the
+  /// backend's `RevolveFeature` docstring).
+  final SketchEntityRefDto? axisRef;
+
+  /// Prompt F: only present on a `"revolve"` Feature - the sweep angle in
+  /// degrees, `(0, 360]`.
+  final double? angle;
+
+  /// Prompt F: only present on a `"revolve"` Feature - `"boss"`/`"cut"`,
+  /// the same string convention [extrudeType] already uses (Boss/Cut parity
+  /// with Extrude is this Feature's own resolved design decision).
+  final String? mode;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -247,6 +262,9 @@ class FeatureDto {
     this.edgeRefs = const [],
     this.radius,
     this.distance,
+    this.axisRef,
+    this.angle,
+    this.mode,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -293,6 +311,11 @@ class FeatureDto {
             const [],
         radius: (json['radius'] as num?)?.toDouble(),
         distance: (json['distance'] as num?)?.toDouble(),
+        axisRef: json['axis_ref'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>),
+        angle: (json['angle'] as num?)?.toDouble(),
+        mode: json['mode'] as String?,
       );
 }
 
@@ -641,6 +664,61 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 if (distance != null) 'distance': distance,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Prompt F: creates a RevolveFeature from an existing SketchFeature's
+  /// closed Profile, revolved around [axisRef] (a Sketch Line, not required
+  /// to belong to the same Sketch as [sketchFeatureId]) by [angle] degrees -
+  /// mirrors [createExtrudeFeature] exactly, including [targetBodyIds]'
+  /// Boss/Cut semantics (Boss: empty starts a brand-new Body; Cut: must be
+  /// non-empty).
+  Future<FeatureDto> createRevolveFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required SketchEntityRefDto axisRef,
+    required double angle,
+    required String mode,
+    List<String> targetBodyIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/revolve-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'axis_ref': axisRef.toJson(),
+                'angle': angle,
+                'mode': mode,
+                'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing RevolveFeature - any subset of
+  /// [axisRef]/[angle]/[mode]/[targetBodyIds] may be supplied, mirroring
+  /// [updateExtrudeFeature]'s omitted-vs-current-value convention. Used for
+  /// the live-preview debounced re-solve.
+  Future<FeatureDto> updateRevolveFeature(
+    String partId,
+    String featureId, {
+    SketchEntityRefDto? axisRef,
+    double? angle,
+    String? mode,
+    List<String>? targetBodyIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/revolve-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (axisRef != null) 'axis_ref': axisRef.toJson(),
+                if (angle != null) 'angle': angle,
+                if (mode != null) 'mode': mode,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

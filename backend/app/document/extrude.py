@@ -35,6 +35,8 @@ from app.document.models import (
     FilletFeature,
     Part,
     ResolvedPlane,
+    RevolveFeature,
+    RevolveMode,
     SketchFeature,
     SubShapeRef,
     SubShapeType,
@@ -50,7 +52,12 @@ logger = logging.getLogger(__name__)
 # (holes folded in) or a MultiProfile of disjoint outer profiles (each with
 # its own holes). Every other status (NO_LOOP, BRANCH, INVALID_NESTING) has
 # nothing extrudable to offer.
-_EXTRUDABLE_STATUSES = frozenset({ProfileStatus.CLOSED_LOOP, ProfileStatus.MULTIPLE_LOOPS})
+#
+# Prompt F: public (no leading underscore) since app.document.revolve needs
+# the identical set for its own Profile-usability check - a RevolveFeature's
+# backing Sketch is "revolvable" under exactly the same condition an
+# ExtrudeFeature's is "extrudable" under.
+EXTRUDABLE_STATUSES = frozenset({ProfileStatus.CLOSED_LOOP, ProfileStatus.MULTIPLE_LOOPS})
 
 
 def basis_normal(basis: ResolvedPlane) -> gp_Dir:
@@ -119,7 +126,7 @@ def _wire_normal(wire: TopoDS_Wire) -> gp_Dir:
     return normal
 
 
-def _face_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
+def face_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
     """Builds `profile`'s face, punching a hole for each of its
     `inner_loops` (C1) via `BRepBuilderAPI_MakeFace.Add` - the standard
     OCCT idiom for a face-with-holes (BRepBuilderAPI_MakeFace(outerWire)
@@ -127,7 +134,12 @@ def _face_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
     BRepPrimAPI_MakePrism). Each inner wire is reversed relative to the
     outer one first (see `_wire_normal`) since `.Add` does not do this
     itself and Add-ing a hole wire with the same winding as the outer
-    produces an invalid/doubled face instead of a hole."""
+    produces an invalid/doubled face instead of a hole.
+
+    Prompt F: public (no leading underscore) since app.document.revolve also
+    builds a face-with-holes from a Profile before passing it to
+    `BRepPrimAPI_MakeRevol`, the same shape `_prism_for_profile` below
+    already needs before `BRepPrimAPI_MakePrism`."""
     outer_wire = _wire_for_profile(sketch, profile, basis)
     face_maker = BRepBuilderAPI_MakeFace(outer_wire)
     if profile.inner_loops:
@@ -155,7 +167,7 @@ def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature
     # then covers the remaining (end_distance - start_distance) span.
     start_transform = gp_Trsf()
     start_transform.SetTranslation(direction.Multiplied(feature.start_distance))
-    face = _face_for_profile(sketch, profile, basis)
+    face = face_for_profile(sketch, profile, basis)
     moved_face = BRepBuilderAPI_Transform(face, start_transform, True).Shape()
 
     prism_vector = direction.Multiplied(feature.end_distance - feature.start_distance)
@@ -196,7 +208,7 @@ def _solid_for_extrude_feature(
 
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
-    if result.status not in _EXTRUDABLE_STATUSES:
+    if result.status not in EXTRUDABLE_STATUSES:
         logger.warning(
             "Skipping ExtrudeFeature %s: sketch %s has no closed profile (status=%s)",
             feature.id,
@@ -265,6 +277,64 @@ def _register_solids(bodies: dict[str, TopoDS_Shape], base_id: str, shape: TopoD
     else:
         for i, solid in enumerate(solids):
             bodies[f"{base_id}#{i}"] = solid
+
+
+def _apply_boss_or_cut(
+    bodies: dict[str, TopoDS_Shape],
+    feature_id: str,
+    feature_index: dict[str, int],
+    is_cut: bool,
+    target_body_ids: list[str],
+    solid: TopoDS_Shape,
+) -> None:
+    """Prompt F: the Boss/Cut fuse-into-targets/cut-from-targets/register-
+    solids dispatch, extracted from `compute_part_bodies`'s own
+    `ExtrudeFeature` handling (previously inline there, the only Feature
+    type that needed it) so `RevolveFeature`'s identical Boss/Cut parity
+    (Prompt F's own explicit "Boss/Cut parity with Extrude from day one"
+    decision) can share the exact same fuse/cut/merge-tiebreak/body-split
+    logic rather than duplicating it - unlike Fillet/Chamfer's simpler
+    single-Body in-place modify, this merge logic (multi-target fuse, the
+    `feature_index`-based survivor tie-break, `_register_solids`' handling
+    of a multi-solid result) is intricate enough that copy-pasting it a
+    second time would be a real duplication-of-subtle-logic risk, not just
+    boilerplate.
+
+    `feature_id`/`is_cut`/`target_body_ids`/`solid` are whichever Feature
+    (Extrude or Revolve) just produced `solid` - see each call site in
+    `compute_part_bodies` below."""
+    if not is_cut:
+        target_ids = [tid for tid in target_body_ids if tid in bodies]
+        if target_body_ids and not target_ids:
+            logger.warning(
+                "Boss feature %s: none of its target_body_ids currently exist "
+                "(likely hidden) - starting a new Body instead",
+                feature_id,
+            )
+        if not target_ids:
+            _register_solids(bodies, feature_id, solid)
+            return
+
+        merged = solid
+        for target_id in target_ids:
+            merged = BRepAlgoAPI_Fuse(merged, bodies[target_id]).Shape()
+
+        survivor_id = min(target_ids, key=lambda tid: feature_index[base_feature_id(tid)])
+        for target_id in target_ids:
+            del bodies[target_id]
+        _register_solids(bodies, survivor_id, merged)
+    else:
+        for target_id in target_body_ids:
+            if target_id not in bodies:
+                logger.warning(
+                    "Skipping Cut feature %s: target body %s does not exist",
+                    feature_id,
+                    target_id,
+                )
+                continue
+            cut_result = BRepAlgoAPI_Cut(bodies[target_id], solid).Shape()
+            del bodies[target_id]
+            _register_solids(bodies, target_id, cut_result)
 
 
 def compute_part_bodies(
@@ -343,9 +413,22 @@ def compute_part_bodies(
     same in-place `bodies[body_id]` reassignment, same skip-with-warning
     resilience, same "router validates eagerly, this is only the topology-
     drift fallback" reasoning - see `app.document.chamfer.
-    resolve_chamfer_from_bodies`."""
+    resolve_chamfer_from_bodies`.
+
+    Prompt F: `RevolveFeature` gets the identical Boss/Cut handling
+    `ExtrudeFeature` does (see `_apply_boss_or_cut`, shared by both
+    branches) - a Revolve's raw solid comes from `app.document.revolve.
+    resolve_revolve_from_bodies` instead of `_solid_for_extrude_feature`,
+    but is then fused/cut/registered into `bodies` by the exact same code
+    path. Same resilience convention as Fillet/Chamfer: a Revolve that can't
+    currently be resolved (unresolvable axis, revolve geometry failure) is
+    skipped with a warning rather than raising - the router's own create/
+    update endpoints validate a Revolve eagerly instead (see
+    `app.document.revolve.resolve_revolve`), so this fallback only ever
+    matters for topology drift after the fact."""
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
+    from app.document.revolve import resolve_revolve_from_bodies
 
     feature_index = {feature.id: i for i, feature in enumerate(part.features)}
     bodies: dict[str, TopoDS_Shape] = {}
@@ -374,6 +457,30 @@ def compute_part_bodies(
             bodies[body_id] = chamfered_shape
             continue
 
+        if isinstance(feature, RevolveFeature):
+            sketch_feature = part.get_feature(feature.sketch_feature_id)
+            if not isinstance(sketch_feature, SketchFeature):
+                logger.warning(
+                    "Skipping RevolveFeature %s: referenced sketch feature %s not found",
+                    feature.id,
+                    feature.sketch_feature_id,
+                )
+                continue
+            try:
+                solid = resolve_revolve_from_bodies(
+                    feature, sketch_feature, part, bodies, excluded_feature_ids
+                )
+            except HTTPException:
+                logger.warning("Skipping RevolveFeature %s: could not be resolved", feature.id)
+                continue
+            if solid is None:
+                continue
+            _apply_boss_or_cut(
+                bodies, feature.id, feature_index, feature.mode == RevolveMode.CUT,
+                feature.target_body_ids, solid,
+            )
+            continue
+
         if not isinstance(feature, ExtrudeFeature):
             continue
 
@@ -390,38 +497,10 @@ def compute_part_bodies(
         if solid is None:
             continue
 
-        if feature.extrude_type == ExtrudeType.BOSS:
-            target_ids = [tid for tid in feature.target_body_ids if tid in bodies]
-            if feature.target_body_ids and not target_ids:
-                logger.warning(
-                    "Boss ExtrudeFeature %s: none of its target_body_ids currently exist "
-                    "(likely hidden) - starting a new Body instead",
-                    feature.id,
-                )
-            if not target_ids:
-                _register_solids(bodies, feature.id, solid)
-                continue
-
-            merged = solid
-            for target_id in target_ids:
-                merged = BRepAlgoAPI_Fuse(merged, bodies[target_id]).Shape()
-
-            survivor_id = min(target_ids, key=lambda tid: feature_index[base_feature_id(tid)])
-            for target_id in target_ids:
-                del bodies[target_id]
-            _register_solids(bodies, survivor_id, merged)
-        else:
-            for target_id in feature.target_body_ids:
-                if target_id not in bodies:
-                    logger.warning(
-                        "Skipping Cut ExtrudeFeature %s: target body %s does not exist",
-                        feature.id,
-                        target_id,
-                    )
-                    continue
-                cut_result = BRepAlgoAPI_Cut(bodies[target_id], solid).Shape()
-                del bodies[target_id]
-                _register_solids(bodies, target_id, cut_result)
+        _apply_boss_or_cut(
+            bodies, feature.id, feature_index, feature.extrude_type == ExtrudeType.CUT,
+            feature.target_body_ids, solid,
+        )
 
     return bodies
 

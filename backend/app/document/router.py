@@ -21,10 +21,13 @@ from app.document.models import (
     PlaneRef,
     PlaneType,
     PointRef,
+    RevolveFeature,
+    RevolveMode,
     SketchFeature,
     SubShapeRef,
     SubShapeType,
 )
+from app.document.revolve import resolve_revolve
 from app.document.schemas import (
     BodyMeshResponse,
     CascadeDeleteResponse,
@@ -46,6 +49,9 @@ from app.document.schemas import (
     PartResponse,
     PlaneRefSchema,
     PointRefSchema,
+    RevolveFeatureCreate,
+    RevolveFeatureResponse,
+    RevolveFeatureUpdate,
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
@@ -212,6 +218,17 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, RevolveFeature):
+        return RevolveFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            axis_ref=_sketch_entity_ref_to_schema(feature.axis_ref),
+            angle=feature.angle,
+            mode=feature.mode,
+            locked=part.is_locked(feature.id),
+            target_body_ids=feature.target_body_ids,
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -241,22 +258,27 @@ def _validate_extrude_distances(start_distance: float, end_distance: float) -> N
         )
 
 
-def _validate_target_body_ids(
-    part: Part, extrude_type: ExtrudeType, target_body_ids: list[str]
-) -> None:
+def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[str]) -> None:
     """A1: Cut must name at least one target Body - there is nothing to
     subtract from an empty list, so this is a structured-validation-error
     case (422, `{"detail": "..."}` - the same plain-HTTPException shape
     every other validation error in this API uses, e.g.
     `_validate_extrude_distances`'s 400). Every named id (Boss or Cut) must
-    resolve to an ExtrudeFeature already in this Part - a Body's id is
-    always derived from the id of the ExtrudeFeature that created (or,
-    after a merge, still identifies) it, possibly with a `#N` split-index
-    suffix (see app.document.graph.base_feature_id) if that operation
-    produced more than one disconnected solid - `base_feature_id` strips
-    that suffix before the lookup, so a composite id round-tripped from a
-    prior `/mesh` response validates the same way a plain one does."""
-    if extrude_type == ExtrudeType.CUT and not target_body_ids:
+    resolve to a Feature that produces a Body already in this Part - a
+    Body's id is always derived from the id of the ExtrudeFeature or (Prompt
+    F) RevolveFeature that created (or, after a merge, still identifies) it,
+    possibly with a `#N` split-index suffix (see app.document.graph.
+    base_feature_id) if that operation produced more than one disconnected
+    solid - `base_feature_id` strips that suffix before the lookup, so a
+    composite id round-tripped from a prior `/mesh` response validates the
+    same way a plain one does.
+
+    Takes `is_cut` (a plain bool) rather than a specific Feature type's own
+    mode enum (`ExtrudeType`/`RevolveMode`) since Prompt F's Boss/Cut parity
+    means this check is now shared by both Feature types - each caller
+    passes its own `... == ....CUT` comparison rather than this function
+    needing to know about every mode enum that might ever call it."""
+    if is_cut and not target_body_ids:
         raise HTTPException(
             status_code=422,
             detail="Cut requires at least one target_body_ids entry - there is nothing to cut "
@@ -264,11 +286,11 @@ def _validate_target_body_ids(
         )
     for target_id in target_body_ids:
         target_feature = part.get_feature(base_feature_id(target_id))
-        if not isinstance(target_feature, ExtrudeFeature):
+        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature)):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature "
-                "in this Part",
+                "or RevolveFeature in this Part",
             )
 
 
@@ -344,6 +366,16 @@ def _validate_chamfer_edge_refs(edge_refs: list[SubShapeRef]) -> None:
     for ref in edge_refs:
         if ref.shape_type != SubShapeType.EDGE:
             raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _validate_revolve_angle(angle: float) -> None:
+    """Prompt F: mirrors `_validate_fillet_radius`/`_validate_chamfer_
+    distance`'s own plain-400 convention for a bare numeric-field check -
+    `angle` must be in `(0, 360]` (see `app.document.models.RevolveFeature`'s
+    own docstring: 360 itself is valid, a full revolve; an arbitrary partial
+    angle is just as valid, not just 360-only)."""
+    if angle <= 0 or angle > 360:
+        raise HTTPException(status_code=400, detail="angle must be greater than 0 and at most 360")
 
 
 def _all_other_create_plane_fields_empty(
@@ -604,7 +636,7 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
     part = get_part_or_404(part_id)
     _require_closed_sketch_feature(part, payload.sketch_feature_id)
     _validate_extrude_distances(payload.start_distance, payload.end_distance)
-    _validate_target_body_ids(part, payload.extrude_type, payload.target_body_ids)
+    _validate_target_body_ids(part, payload.extrude_type == ExtrudeType.CUT, payload.target_body_ids)
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
@@ -652,7 +684,7 @@ def update_extrude_feature(
     new_target_body_ids = (
         payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
     )
-    _validate_target_body_ids(part, new_extrude_type, new_target_body_ids)
+    _validate_target_body_ids(part, new_extrude_type == ExtrudeType.CUT, new_target_body_ids)
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
@@ -916,6 +948,90 @@ def update_chamfer_feature(
 
     feature.edge_refs = candidate.edge_refs
     feature.distance = candidate.distance
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/revolve-features", response_model=RevolveFeatureResponse, status_code=201
+)
+def create_revolve_feature(part_id: str, payload: RevolveFeatureCreate) -> RevolveFeatureResponse:
+    """Prompt F: never locked-editable-only-if-last from the start, same
+    instruction as C2/C5/D/E - B4 already established "any Feature can be
+    edited" generically before this endpoint existed.
+
+    Validates the payload shape (`_require_closed_sketch_feature`, same
+    closed-profile check `ExtrudeFeatureCreate` uses; `_validate_revolve_
+    angle`; `_validate_target_body_ids`, generalized to accept a Body from
+    either an ExtrudeFeature or a RevolveFeature) and then resolvability
+    (`app.document.revolve.resolve_revolve`, discarding its result here - the
+    real geometry is recomputed again the next time `/mesh` is fetched, via
+    `compute_part_bodies`'s own RevolveFeature handling) *before*
+    constructing the Feature - fails closed with `invalid_axis_ref`/
+    `revolve_failed`/`missing_reference` rather than ever persisting an
+    unresolvable Revolve."""
+    part = get_part_or_404(part_id)
+    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    _validate_revolve_angle(payload.angle)
+    _validate_target_body_ids(part, payload.mode == RevolveMode.CUT, payload.target_body_ids)
+    feature = RevolveFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        axis_ref=_sketch_entity_ref_to_domain(payload.axis_ref),
+        angle=payload.angle,
+        mode=payload.mode,
+        target_body_ids=list(payload.target_body_ids),
+    )
+    resolve_revolve(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_revolve_feature_or_404(part: Part, feature_id: str) -> RevolveFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, RevolveFeature):
+        raise HTTPException(status_code=404, detail="Revolve feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/revolve-features/{feature_id}", response_model=RevolveFeatureResponse)
+def update_revolve_feature(
+    part_id: str, feature_id: str, payload: RevolveFeatureUpdate
+) -> RevolveFeatureResponse:
+    """Same validate-before-mutate discipline as `create_revolve_feature`:
+    the merged (existing-plus-payload) values are checked against a scratch
+    Feature sharing the real one's id (`resolve_revolve` excludes that id
+    from its own "current bodies" computation for exactly this reason, see
+    its own doc comment) before anything on the real, stored Feature is
+    touched, so a failed PATCH never leaves it half-updated. `sketch_
+    feature_id` is never revised, same as `update_extrude_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_revolve_feature_or_404(part, feature_id)
+
+    new_axis_ref = (
+        _sketch_entity_ref_to_domain(payload.axis_ref) if payload.axis_ref is not None else feature.axis_ref
+    )
+    new_angle = payload.angle if payload.angle is not None else feature.angle
+    new_mode = payload.mode if payload.mode is not None else feature.mode
+    new_target_body_ids = (
+        payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
+    )
+    _validate_revolve_angle(new_angle)
+    _validate_target_body_ids(part, new_mode == RevolveMode.CUT, new_target_body_ids)
+
+    candidate = RevolveFeature(
+        id=feature.id,
+        sketch_feature_id=feature.sketch_feature_id,
+        axis_ref=new_axis_ref,
+        angle=new_angle,
+        mode=new_mode,
+        target_body_ids=list(new_target_body_ids),
+    )
+    resolve_revolve(part, candidate)  # raises on an unresolvable reference
+
+    feature.axis_ref = candidate.axis_ref
+    feature.angle = candidate.angle
+    feature.mode = candidate.mode
+    feature.target_body_ids = candidate.target_body_ids
     return _feature_response(part, feature)
 
 

@@ -457,6 +457,69 @@ class ChamferFeature(Feature):
         return Produces.BODY
 
 
+class RevolveMode(str, Enum):
+    """Boss/Cut parity with `ExtrudeType` (Prompt F) - a `RevolveFeature`
+    combines its revolved solid with `target_body_ids` exactly the same way
+    an `ExtrudeFeature` does (see that type's own docstring), just built by
+    revolving a Profile around an axis instead of prismatically extruding
+    it. A separate enum (not a reuse of `ExtrudeType`) since a Revolve's
+    "mode" is conceptually its own field, even though the two enums share
+    identical values - matches this codebase's established "each Feature
+    type owns its own enum" convention (`ExtrudeType`/`SubShapeType`/
+    `PlaneType` are none of them reused across Feature types either)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class RevolveFeature(Feature):
+    """Prompt F: revolves the closed Profile of the SketchFeature referenced
+    by `sketch_feature_id` around `axis_ref` (a Sketch Line reference - see
+    `app.sketch.models.SketchEntityRef`, restricted to `SketchEntityType.LINE`
+    here; a Point/Circle `axis_ref` is invalid and rejected as
+    `invalid_axis_ref`, see `app.document.revolve`) by `angle` degrees, an
+    arbitrary value in `(0, 360]` (360 itself is valid - a full revolve),
+    then combines the resulting solid with `target_body_ids` exactly like
+    `ExtrudeFeature` does: Boss fuses into each named Body (or starts a new
+    one if empty), Cut subtracts from each named Body (non-empty required -
+    see `app.document.router._validate_target_body_ids`, generalized to
+    accept a Body originating from either an ExtrudeFeature or a
+    RevolveFeature).
+
+    `axis_ref`'s Sketch is *not* required to be the same Sketch as the
+    Profile being revolved (confirmed explicitly, not the prompt's own
+    "same-Sketch" default recommendation) - the axis Line can live in any
+    Sketch in the Part, resolved independently via its own owning
+    SketchFeature's basis (`app.document.create_plane.resolve_sketch_basis`)
+    the same way the Profile's own Sketch is. The axis Line is also allowed
+    to be one of the Profile's own entities (confirmed explicitly) - no
+    special-case rejection for a self-referencing axis.
+
+    The actual OCCT geometry construction (`BRepPrimAPI_MakeRevol`) lives in
+    `app.document.revolve`, not here - same separation `ExtrudeFeature`
+    keeps from `app.document.extrude`."""
+
+    id: str
+    sketch_feature_id: str
+    axis_ref: SketchEntityRef
+    angle: float
+    mode: RevolveMode
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "revolve"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
