@@ -406,6 +406,42 @@ def test_midplane_origin_is_equidistant_from_both_faces():
     assert midplane["origin"] == pytest.approx(expected_midpoint, abs=1e-6)
 
 
+def test_zzz_diagnostic_dump_all_face_planes():
+    """TEMPORARY - not a real test, forced-fail diagnostic to read real OCCT
+    plane data for every face of the standard 10x10x10 test box via CI (this
+    sandbox has no pythonocc-core to run this interactively). Remove once
+    the Midplane origin bug is diagnosed and fixed."""
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    _create_extrude_feature(part["id"], sketch_feature["id"])
+    body_id = _first_body_id(part["id"])
+
+    per_face = []
+    for i in range(6):
+        r = _create_offset_face_plane(part["id"], body_id, i, offset=0.0)
+        per_face.append(
+            {
+                "index": i,
+                "status": r.status_code,
+                "origin": r.json().get("origin") if r.status_code == 201 else None,
+                "normal": r.json().get("normal") if r.status_code == 201 else None,
+                "x_axis": r.json().get("x_axis") if r.status_code == 201 else None,
+                "y_axis": r.json().get("y_axis") if r.status_code == 201 else None,
+            }
+        )
+
+    pairs = []
+    for i in range(6):
+        for j in range(6):
+            if i == j:
+                continue
+            r = _create_midplane_plane(part["id"], body_id, i, j)
+            if r.status_code == 201:
+                pairs.append({"i": i, "j": j, "midplane_origin": r.json()["origin"]})
+
+    assert False, f"per_face={per_face}\npairs={pairs}"
+
+
 def test_midplane_between_non_parallel_faces_is_rejected():
     part = _create_part()
     sketch_feature = _create_square_sketch_feature(part["id"])
