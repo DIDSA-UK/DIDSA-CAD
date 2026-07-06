@@ -11,7 +11,10 @@ narrative logs, not meant to be searched for a recipe.
 
 Audited against this doc while writing it: Extrude (Boss/Cut) and Create
 Plane. Neither needs any change - see "Existing Features" below for why, so a
-future agent doesn't go looking for a bug that isn't there.
+future agent doesn't go looking for a bug that isn't there. Chamfer (Prompt
+E) was built after this doc existed and follows the stable-pick-body +
+preview-overlay pattern exactly, reusing `PartViewport`'s two generic fields
+with no changes - see "Existing Features" below for specifics.
 
 ## The problem, in one paragraph
 
@@ -61,11 +64,12 @@ faces/vertices) of the *same* Body the Feature is currently modifying?**
   `_scheduleExtrudePreview` directly.
 
 - Yes, sub-shape picks of the Body being modified (Fillet's `edge_refs`;
-  Chamfer will be identical; a future Shell/Draft that lets you pick faces
-  of the body it's shelling/drafting almost certainly will be too) - use
-  the **stable-pick-body + separate preview-overlay** pattern below. This is
-  the one Fillet just had to have a real bug fixed to get right - don't
-  skip straight to "just show the live result", it will eventually 422.
+  Chamfer's `edge_refs` is identical, and is in fact built this way already;
+  a future Shell/Draft that lets you pick faces of the body it's shelling/
+  drafting almost certainly will be too) - use the **stable-pick-body +
+  separate preview-overlay** pattern below. This is the one Fillet just had
+  to have a real bug fixed to get right - don't skip straight to "just show
+  the live result", it will eventually 422.
 
 ## The stable-pick-body + preview-overlay pattern (mirror Fillet exactly)
 
@@ -88,13 +92,16 @@ Two meshes, fetched separately, never conflated:
   self-exclusion line.
 
 - **A preview-only mesh** (`PartScreen._filletPreviewMesh`/
-  `_filletPreviewBodyId` - rename per-feature, e.g. `_chamferPreviewMesh`,
-  or generalize to one shared pair if only one live-edit panel is ever
-  active at a time, which is already true today) - the *same* `GET /mesh`
+  `_filletPreviewBodyId` - rename per-feature, e.g. Chamfer's own
+  `_chamferPreviewMesh`/`_chamferPreviewBodyId`, kept as a fully separate
+  field pair rather than a shared one even though only one live-edit panel
+  is ever active at a time, matching this codebase's existing
+  duplicate-rather-than-share convention) - the *same* `GET /mesh`
   endpoint, but with this Feature's id **not** excluded, so it reflects the
   actual current radius/edges/whatever. Fetched by
   `PartScreen._refreshFilletPreviewMesh` (mirror this function's shape
-  exactly for a new Feature type) - note it computes its exclusion set as
+  exactly for a new Feature type, e.g. `_refreshChamferPreviewMesh`) - note
+  it computes its exclusion set as
   `_rollbackExcludedFeatureIds.where((id) => id != featureId)`, i.e. "every
   exclusion currently active, minus this one Feature's self-exclusion",
   not just "no exclusions" - that matters once B4 rollback is *also*
@@ -104,16 +111,18 @@ Two meshes, fetched separately, never conflated:
 - **Rendering**: `PartViewport.previewOverlayBodyId`/`previewOverlayMesh`
   are already generic (not Fillet-specific in name or behavior) - a new
   Feature type reuses these two fields directly, no `PartViewport` changes
-  needed. `_syncMeshNode`/`_syncEdgesNode` substitute the preview mesh
-  (rendered with the same translucent orange tint `isPreviewMesh` uses)
-  for the rendered Node of the one Body whose id matches
-  `previewOverlayBodyId` - `bodies` itself, and everything reading from it
-  (hit-testing, selection highlights), is completely untouched. If two
-  different live-edit flows could ever be active in the same session
-  (not true today - `_extrudeActive`/`_createPlaneActive`/`_filletActive`
-  are already mutually exclusive), `previewOverlayBodyId`/`previewOverlayMesh`
-  would need to become a list instead of a single pair; don't build that
-  until it's an actual requirement.
+  needed; confirmed by Chamfer's own rollout, which wired
+  `previewOverlayBodyId`/`previewOverlayMesh` to a ternary
+  (`_filletActive ? filletPreview : chamferPreview`) with zero changes to
+  `PartViewport` itself. `_syncMeshNode`/`_syncEdgesNode` substitute the
+  preview mesh (rendered with the same translucent orange tint
+  `isPreviewMesh` uses) for the rendered Node of the one Body whose id
+  matches `previewOverlayBodyId` - `bodies` itself, and everything reading
+  from it (hit-testing, selection highlights), is completely untouched. If
+  a third concurrent live-edit flow is ever added on top of Fillet and
+  Chamfer, `previewOverlayBodyId`/`previewOverlayMesh` would need to become
+  a list instead of a single pair; don't build that until it's an actual
+  requirement.
 
 - **Concurrency**: run the stable-mesh refresh and the preview-mesh fetch
   together via `Future.wait` (see `_ensureFilletFeatureExists`), not one
@@ -148,3 +157,11 @@ Two meshes, fetched separately, never conflated:
   == False`) - see "Decision tree" step 1. Its own "preview" state
   (`_previewCreatePlaneFeatureId`) is unrelated to mesh rendering; nothing
   to change here either.
+- **Chamfer**: built after this doc, as a full mirror of Fillet's
+  implementation - same self-exclusion-on-create fix, same
+  `_chamferPreviewMesh`/`_chamferPreviewBodyId`/`_refreshChamferPreviewMesh`
+  trio, same `Future.wait` concurrency, same lifecycle cleanup in
+  `_confirmChamfer`/`_cancelChamfer`. Confirmed working on-device
+  (`docs/status.md`, 2026-07-06) - the first real-world validation that this
+  doc's pattern generalizes cleanly to a second consumer, not just a
+  one-off fix for Fillet alone.

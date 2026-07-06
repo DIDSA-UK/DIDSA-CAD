@@ -79,11 +79,6 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   entry (alongside Shaded / Shaded+Edges / Wireframe) that renders
   occluded edges distinctly (e.g. dashed) rather than hiding or bleeding
   them through.
-- **Chamfer, Fillet, Create Plane context actions.** Scaffolded end-to-end
-  (selection composition rules, disabled buttons with per-action
-  `// TODO: wire up <action>` comments) since the 3D-viewport
-  selection-mode work, but never implemented. Needs actual OCCT operations
-  behind each action.
 - **Revolve, Sweep.** Disabled placeholders in the Feature picker sheet
   since Stage 19b. Not implemented.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
@@ -300,12 +295,13 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   every time it's run in isolation, read as this sandbox's compiler
   struggling under the full ~30-file batch's resource pressure rather than
   a real defect - confirmed via a fresh `git worktree` diff against the
-  pre-C2 tree that no previously-passing file was newly broken. **Current
-  gate**: on-device confirmation (both plane types create/render correctly,
-  including offset direction; a curved-face attempt is cleanly rejected,
-  not a crash; the Planes tree section works; edit-via-rollback and Cancel
-  both behave correctly) is what Prompt D (Fillet) now waits on - same
-  gating discipline as every prior prompt group.
+  pre-C2 tree that no previously-passing file was newly broken. **This gate
+  has since passed**: Prompt D (Fillet) and Prompt E (Chamfer) have both
+  since been built and confirmed working on-device (see the Chamfer entry
+  below), which presupposes this stage's own on-device gate (both plane
+  types create/render correctly including offset direction, a curved-face
+  attempt is cleanly rejected not a crash, the Planes tree section works,
+  edit-via-rollback and Cancel both behave correctly) was satisfied too.
 - **Prompt C3 (informal, user feedback expanding C2's scope before its own
   on-device confirmation came back)**: "Plane" added as a Feature-picker
   entry; a third plane type, `PlaneType.MIDPLANE` (equidistant between two
@@ -330,9 +326,10 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `Quaternion.fromTwoVectors` guess; new `hitTestCreatePlanes`/
   `create_plane_context_sheet.dart` for the tap/context-menu flow. 80/80
   OCCT-free backend tests, 231 client tests passed, both confirmed
-  regression-free via `git worktree` diff against the pre-C3 commit. **Not
-  yet on-device confirmed** - same gating discipline before Prompt D
-  (Fillet) starts.
+  regression-free via `git worktree` diff against the pre-C3 commit.
+  **Superseded** - Prompt D (Fillet) and Prompt E (Chamfer) have both since
+  been built and confirmed working on-device, presupposing this stage's own
+  gate passed too.
 - **Prompt C4 (user feedback: "wire up other common methods of creating
   planes", scoped via explicit choice to "the two scaffolded ones + 3-point
   plane")**: three more `PlaneType`s - `NORMAL_TO_EDGE_THROUGH_VERTEX` (a
@@ -362,9 +359,10 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `test_stage_c4_create_plane.py`, the latter `ast.parse`-only per the usual
   OCCT-in-sandbox caveat), 242 client tests passed, both confirmed
   regression-free via `git worktree` diff against the pre-C4 commit (same
-  18/13-file OCCT/GPU-blocked sets, respectively, as before). **Not yet
-  on-device confirmed** - same gating discipline before Prompt D (Fillet)
-  starts.
+  18/13-file OCCT/GPU-blocked sets, respectively, as before). **Superseded**
+  - Prompt D (Fillet) and Prompt E (Chamfer) have both since been built and
+  confirmed working on-device, presupposing this stage's own gate passed
+  too.
 - **Bug fix (on-device report, post-C4)**: hiding a Body via plain Hide/Show
   and B4 true-rollback's own "pretend this Feature doesn't exist yet"
   exclusion were the same underlying mechanism (`hidden_feature_ids`) -
@@ -441,9 +439,10 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `test_stage_d_graph.py`, `test_stage_d_fillet.py` the latter `ast.parse`-
   only per the usual OCCT-in-sandbox caveat), `flutter analyze` clean, 44/44
   `document_api_client_test.dart` + 9/9 new `fillet_panel_test.dart` cases
-  genuinely executed. **Not yet on-device confirmed** - per the brief's own
-  stop condition, do not start Prompt E (Chamfer) until this comes back
-  positive.
+  genuinely executed. **Confirmed working on-device** (see the Chamfer
+  entry below for the final consolidated confirmation) - this Feature went
+  through several more rounds of on-device bug fixes before that
+  confirmation, all captured in the entries immediately below.
 - **Bug fixes from on-device feedback on the above**: live preview/post-
   confirm mesh never appeared (Fillet's create/edit/cancel flow only
   refetched Features, never the mesh - `_ensureExtrudeFeatureExists`'s
@@ -453,13 +452,18 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   excludes its own Feature id via `_beginRollback`, same mechanism B4
   already uses for downstream Features); Body row long-press now opens a
   context menu (new `showBodyContextMenu`) instead of directly toggling
-  Hide/Show, matching the Feature long-press pattern. **Still open, flagged
-  back as a v2-scope design question rather than guessed at**: corner
-  treatment when 2+ selected edges share a vertex - OCCT blends a shared
-  vertex smooth when all edges go through one builder call (today's
-  behavior); user wants this exposed as a selectable option in the
-  FilletPanel, which the original brief didn't specify. **Still not
-  on-device confirmed** - Prompt E (Chamfer) remains blocked until it is.
+  Hide/Show, matching the Feature long-press pattern. **Flagged back as a
+  v2-scope design question rather than guessed at**: corner treatment when
+  2+ selected edges share a vertex - OCCT blends a shared vertex smooth
+  when all edges go through one builder call (today's behavior); user
+  wanted this exposed as a selectable option in the FilletPanel, which the
+  original brief didn't specify. **Resolved, not as a UI toggle**: a later
+  investigation (see the "Follow-up" entry two below) found no kernel-level
+  "corner type" switch exists that could do this - `ChFi3d_FilletShape`
+  only affects cross-section profile, not vertex blending. The practical
+  answer shipped instead is reliable full-loop *selection* (tap a face to
+  select its whole boundary loop), not a corner-treatment option. **Confirmed
+  working on-device** (see the Chamfer entry below).
 - **Follow-up: Fillet selection filter, "Add" FAB entry, live edge editing,
   corner-treatment investigation**. Asked (per explicit permission) before
   guessing at two genuinely open questions: whether a Face-tap should select
@@ -486,8 +490,8 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `_ensureFilletFeatureExists(radius, edgeRefs)`. 95 OCCT-free backend tests
   still passing (5 new `face_edge_ids` cases `ast.parse`-only per the usual
   caveat), `flutter analyze` clean, 46/46 `document_api_client_test.dart` +
-  4/4 `feature_picker_sheet_test.dart` genuinely executed. **Not yet
-  on-device confirmed** - Prompt E (Chamfer) remains blocked.
+  4/4 `feature_picker_sheet_test.dart` genuinely executed. **Confirmed
+  working on-device** (see the Chamfer entry below).
 - **Follow-up bug fixes on the above**: reference/created Planes stayed
   selectable while picking edges for Fillet, since `SelectionFilterState`
   had no `plane` field at all - `_hoverHitTestPlanes` (`part_viewport.dart`)
@@ -503,7 +507,7 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `_ensureExtrudeFeatureExists`) since a Feature can't exist with zero edges
   yet. `flutter analyze` clean, `selection_filter_test.dart` +4 (now
   10/10), same 46/46 + 9/9 + 4/4 + 12/12 other Dart suites still passing.
-  **Not yet on-device confirmed.**
+  **Confirmed working on-device** (see the Chamfer entry below).
 - **Bug fix: live-editing a Fillet's edges after the first preview update
   crashed with `missing_reference`**. User's own diagnosis was correct: the
   create branch of `_ensureFilletFeatureExists` never excluded the newly-
@@ -517,8 +521,8 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   pre-fillet shape for the whole live-edit session, create or edit alike -
   at the cost of no longer showing a live rounded-corner visual while
   editing (the two asks were in direct tension; correctness of the edge
-  selection won per the user's own explicit preference). **Not yet
-  on-device confirmed.**
+  selection won per the user's own explicit preference). **Confirmed
+  working on-device** (see the Chamfer entry below).
 - **Live rounded-corner visual preview, built generically for Chamfer reuse
   later**. Reinstates the visual the previous fix traded away, without
   reintroducing the `missing_reference` bug - two meshes now, fetched
@@ -534,13 +538,16 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   hit-test/selection path reading from it, is untouched. `_refreshMesh()`
   and `_refreshFilletPreviewMesh()` now run concurrently (`Future.wait`) so
   the extra backend recompute doesn't double the round-trip latency, only
-  the backend's CPU cost per edit - flagged as a real trade-off worth
-  watching once Chamfer doubles the total live-preview traffic again.
+  the backend's CPU cost per edit - flagged as a real trade-off, now
+  actually in effect for both Fillet and Chamfer (each doubles its own
+  backend recompute per edit) since Chamfer's own rollout reused this exact
+  mechanism rather than inventing a second one; worth revisiting only if
+  on-device performance actually suffers, not preemptively.
   Backend unchanged (reuses the existing `rollback_excluded_feature_ids`
   param with a different exclusion set). `flutter analyze` clean, same 81
   Dart tests passing (unaffected - this touches `PartViewport`'s rendering
   internals, which no test file in this sandbox can exercise regardless).
-  **Not yet on-device confirmed.**
+  **Confirmed working on-device** (see the Chamfer entry below).
 - **Audit: brought every existing "preview" mechanism in line with the
   above, or documented why not**. Extrude (Boss/Cut) and Create Plane both
   audited and left unchanged - Extrude picks Body-level ids, which stay
@@ -577,9 +584,16 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   usual caveat, plus a new case for Prompt E's own on-device gate: a Body
   with both a Fillet and a Chamfer recomputes correctly), `flutter analyze`
   clean, 96 Dart tests genuinely executed across every touched/new
-  no-`flutter_scene`-dependency file. **Not yet on-device confirmed** - per
-  Prompt E's own stop condition, this closes out the C/D/E sequence (Create
-  Plane, Fillet, Chamfer) pending on-device confirmation of all three.
+  no-`flutter_scene`-dependency file. **Confirmed working on-device
+  (2026-07-06)** - user tested Chamfer directly and reported it "working
+  well on device." Per Prompt E's own stop condition, this closes out the
+  entire C/D/E sequence: Create Plane (C2-C5), Fillet (Prompt D, including
+  every on-device bug-fix round layered onto it), and Chamfer (Prompt E).
+  No CAD-feature work remains blocked on an on-device confirmation gate as
+  of this entry - see `docs/status.md`'s matching 2026-07-06 entry for the
+  consolidated closing note, and the "Other open items" section at the top
+  of this file for what's still genuinely open (Revolve/Sweep, the C3
+  rendering bug, etc.) now that this sequence is done.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not
