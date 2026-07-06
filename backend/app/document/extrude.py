@@ -83,11 +83,17 @@ def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
     return gp_Pnt(ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
 
 
-def _wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
+def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
     """A Profile is either a Line-chain polygon (the common case) or a
     standalone Circle (see app.sketch.profile._circle_profile, which packs
     the Circle's own entity id into `line_ids` rather than a Line chain) -
-    each needs a different OCCT wire construction."""
+    each needs a different OCCT wire construction.
+
+    On-device feedback: public (no leading underscore) since
+    `app.document.sweep` also needs a bare outer wire (not the full
+    `face_for_profile` face) - `BRepOffsetAPI_MakePipeShell.Add` rejects a
+    `TopoDS_Face` outright (`BRepFill_Section: bad shape type of section`),
+    it only accepts a Wire/Edge/Vertex as one swept "section"."""
     if len(profile.line_ids) == 1 and isinstance(sketch.entities.get(profile.line_ids[0]), Circle):
         circle = sketch.entities[profile.line_ids[0]]
         center = sketch.points[circle.center_point_id]
@@ -107,12 +113,12 @@ def _wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
 def _wire_normal(wire: TopoDS_Wire) -> gp_Dir:
     """The outward normal of the planar face `wire` alone would bound, used
     only to compare relative winding direction between an outer wire and a
-    candidate inner (hole) wire (see `_face_for_profile`) - not a
+    candidate inner (hole) wire (see `face_for_profile`) - not a
     meaningful normal on its own once wires are combined into one face.
 
     `BRepBuilderAPI_MakeFace.Add` does not reorient wires for you: the
     caller is responsible for making sure each inner wire winds the
-    opposite way around from the outer one. `_wire_for_profile` gives no
+    opposite way around from the outer one. `wire_for_profile` gives no
     such guarantee (a Line-chain loop's winding direction is whatever
     order `profile.py`'s graph walk happened to trace it in, and a Circle's
     is fixed by `plane_normal`), so rather than trying to reason about
@@ -142,12 +148,12 @@ def face_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
     builds a face-with-holes from a Profile before passing it to
     `BRepPrimAPI_MakeRevol`, the same shape `_prism_for_profile` below
     already needs before `BRepPrimAPI_MakePrism`."""
-    outer_wire = _wire_for_profile(sketch, profile, basis)
+    outer_wire = wire_for_profile(sketch, profile, basis)
     face_maker = BRepBuilderAPI_MakeFace(outer_wire)
     if profile.inner_loops:
         outer_normal = _wire_normal(outer_wire)
         for inner_loop in profile.inner_loops:
-            inner_wire = _wire_for_profile(sketch, inner_loop, basis)
+            inner_wire = wire_for_profile(sketch, inner_loop, basis)
             if _wire_normal(inner_wire).Dot(outer_normal) > 0:
                 inner_wire = inner_wire.Reversed()
             face_maker.Add(inner_wire)

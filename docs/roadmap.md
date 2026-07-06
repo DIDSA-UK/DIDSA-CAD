@@ -354,10 +354,40 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   already reorients the profile; `SetTransitionMode(BRepBuilderAPI_
   RightCorner)` now explicitly cuts each sharp corner with a flat planar
   face instead of leaving the transition undefined). `.Build()` +
-  `.MakeSolid()` replace the old single-constructor-call shape. Not
-  verifiable against real OCCT in this sandbox (same standing caveat) -
-  implemented from OCCT API documentation/knowledge, flagged for on-device
-  re-confirmation once rebuilt.
+  `.MakeSolid()` replace the old single-constructor-call shape. Design
+  question this raised - resolved by asking directly rather than guessed:
+  should Sweep expose a user-facing mitre-vs-round corner choice (OCCT
+  supports both, `BRepBuilderAPI_RightCorner`/`RoundCorner`)? Answer: no -
+  corner style should follow the path's own geometry (a sharp path vertex
+  mitres, a rounded/curved path corner would produce a smooth elbow with
+  no sharp transition at all, needing no special-casing), and since only
+  straight Line path segments exist today (no Arc/curved Sketch entity to
+  pick as a path segment yet), every path corner is necessarily sharp -
+  `RightCorner` is the only correct choice given current scope, not a
+  placeholder pending a toggle; a real "elbow" choice only becomes
+  meaningful once a curved path-segment entity exists.
+- **Bug fix (on-device feedback, second round on the fix directly above):
+  the corner fix itself 500'd instead of sweeping.** Real traceback this
+  time (`RuntimeError: OpenCASCADE Error [Standard_Failure]: BRepFill_
+  Section: bad shape type of section (in BRepOffsetAPI_MakePipeShell::
+  Add)`) - an uncaught crash, not a graceful `sweep_failed`, confirming a
+  genuine API-usage mistake rather than a geometric failure. Root cause:
+  `BRepOffsetAPI_MakePipeShell.Add` rejects a `TopoDS_Face` outright - it
+  only accepts a Wire (or Edge/Vertex) as one swept "section"; the fix
+  above was passing `face_for_profile`'s Face, not a bare Wire. Fixed by
+  making `app.document.extrude._wire_for_profile` public
+  (`wire_for_profile`, mirroring how `face_for_profile` was already made
+  public for Revolve's own reuse) and passing its outer-wire-only result
+  to `.Add()` instead. This also surfaces a real, currently-known
+  limitation rather than a silently-wrong one: a Profile with holes
+  (`inner_loops`) has no verified way to carry the hole through a swept
+  Wire section (unlike Extrude/Revolve, which consume a Face-with-holes
+  directly) - explicitly rejected now (`sweep_profile_has_holes`, 422)
+  rather than silently swept without its hole. Not verifiable against
+  real OCCT in this sandbox (same standing caveat, now hit twice in a
+  row for this one feature) - implemented from OCCT API documentation/
+  knowledge and the real traceback the user retrieved from the backend's
+  own container logs, flagged for on-device re-confirmation once rebuilt.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

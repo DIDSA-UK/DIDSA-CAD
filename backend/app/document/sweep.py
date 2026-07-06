@@ -15,7 +15,7 @@ backing Sketch has no sweepable/extrudable profile).
 Imported from app.document.extrude's own compute_part_bodies via a
 function-local import, the same circular-import avoidance app.document.
 fillet/chamfer/revolve already use: this module needs compute_part_bodies/
-face_for_profile/EXTRUDABLE_STATUSES/select_profiles from extrude.py at
+wire_for_profile/EXTRUDABLE_STATUSES/select_profiles from extrude.py at
 module level, so extrude.py cannot import this module back at its own
 module level.
 """
@@ -34,8 +34,8 @@ from app.document.extrude import (
     EXTRUDABLE_STATUSES,
     basis_point_to_world,
     compute_part_bodies,
-    face_for_profile,
     select_profiles,
+    wire_for_profile,
 )
 from app.document.graph import sketch_feature_id_for_sketch
 from app.document.models import Part, SketchFeature, SweepFeature
@@ -103,6 +103,21 @@ def _sweep_failed() -> HTTPException:
     matching `app.document.revolve._revolve_failed`'s identical "structured
     error, not an uncaught OCCT exception surfacing as a 500" convention."""
     return HTTPException(status_code=422, detail={"type": "sweep_failed"})
+
+
+def _sweep_profile_has_holes() -> HTTPException:
+    """On-device feedback: a Profile with one or more `inner_loops` (holes)
+    is not yet supported as a Sweep's profile - `BRepOffsetAPI_MakePipeShell.
+    Add` sweeps a single Wire (or Vertex/Edge) per section, not a Face, so
+    there is no already-verified way to carry a hole through a swept
+    section the way `app.document.extrude.face_for_profile` does for
+    Extrude/Revolve's own prism/revolve solids (which *can* consume a
+    Face directly). Rather than silently sweeping just the outer wire and
+    quietly dropping the hole from the result - wrong geometry, not caught
+    by anything - this fails closed and explicitly, until hole support is
+    deliberately added and verified. 422, matching this module's other
+    structured errors."""
+    return HTTPException(status_code=422, detail={"type": "sweep_profile_has_holes"})
 
 
 def _resolve_path_segment_endpoints(
@@ -261,7 +276,20 @@ def resolve_sweep_from_bodies(
     a sharp corner with a flat planar face rather than trying to round or
     stretch it) since every path segment is a straight Line - the standard
     choice for a polyline spine, avoiding the self-intersecting/pinched
-    corner artifact `MakePipe` itself was producing."""
+    corner artifact `MakePipe` itself was producing.
+
+    On-device feedback (second round): `MakePipeShell.Add` rejects a
+    `TopoDS_Face` outright (`BRepFill_Section: bad shape type of section`,
+    an uncaught `RuntimeError` from OCCT, not a graceful `HTTPException` -
+    a real crash the first round of this fix shipped with) - it only
+    accepts a Wire (or Edge/Vertex) as one swept "section", so this passes
+    `wire_for_profile`'s bare outer wire instead of `face_for_profile`'s
+    face. A Profile with holes (`inner_loops`) has no already-verified way
+    to carry those holes through a swept Wire section the way `face_for_
+    profile`'s Face-with-holes does for Extrude/Revolve, so that case is
+    explicitly rejected (`sweep_profile_has_holes`) rather than silently
+    swept without its hole - a real, currently-known limitation, not
+    forgotten scope."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
     if result.status not in EXTRUDABLE_STATUSES:
@@ -285,10 +313,12 @@ def resolve_sweep_from_bodies(
 
     solids = []
     for profile in profiles:
-        face = face_for_profile(sketch, profile, basis)
+        if profile.inner_loops:
+            raise _sweep_profile_has_holes()
+        outer_wire = wire_for_profile(sketch, profile, basis)
         pipe_maker = BRepOffsetAPI_MakePipeShell(path_wire)
         pipe_maker.SetTransitionMode(BRepBuilderAPI_RightCorner)
-        pipe_maker.Add(face)
+        pipe_maker.Add(outer_wire)
         pipe_maker.Build()
         if not pipe_maker.IsDone() or not pipe_maker.MakeSolid():
             raise _sweep_failed()
