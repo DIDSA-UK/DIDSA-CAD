@@ -235,12 +235,22 @@ class FeatureDto {
   /// with Extrude is this Feature's own resolved design decision).
   final String? mode;
 
-  /// Prompt G: present on `"extrude"`/`"revolve"` Features - which outer
-  /// profile(s) of the backing Sketch to use, each anchored by a Line/Circle
-  /// entity known to belong to it. Empty (the default) means every outer
-  /// profile currently detected, matching the backend's own
-  /// `ExtrudeFeature.profile_refs`/`RevolveFeature.profile_refs` default.
+  /// Prompt G: present on `"extrude"`/`"revolve"`/`"sweep"` Features - which
+  /// outer profile(s) of the backing Sketch to use, each anchored by a
+  /// Line/Circle entity known to belong to it. Empty (the default) means
+  /// every outer profile currently detected, matching the backend's own
+  /// `ExtrudeFeature.profile_refs`/`RevolveFeature.profile_refs`/
+  /// `SweepFeature.profile_refs` default.
   final List<SketchEntityRefDto> profileRefs;
+
+  /// Only present on a `"sweep"` Feature - the *ordered* list of Sketch Line
+  /// references the Profile is swept along, each possibly naming a
+  /// different Sketch (confirmed decision - see the backend's
+  /// `SweepFeature` docstring). Order matters (it is the path's own
+  /// traversal order); unlike [axisRef] this is a list, since a Sweep's
+  /// path can bend across multiple segments rather than being a single
+  /// straight reference.
+  final List<SketchEntityRefDto> pathRefs;
 
   FeatureDto({
     required this.type,
@@ -273,6 +283,7 @@ class FeatureDto {
     this.angle,
     this.mode,
     this.profileRefs = const [],
+    this.pathRefs = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -325,6 +336,10 @@ class FeatureDto {
         angle: (json['angle'] as num?)?.toDouble(),
         mode: json['mode'] as String?,
         profileRefs: (json['profile_refs'] as List?)
+                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        pathRefs: (json['path_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
             const [],
@@ -743,6 +758,61 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (axisRef != null) 'axis_ref': axisRef.toJson(),
                 if (angle != null) 'angle': angle,
+                if (mode != null) 'mode': mode,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a SweepFeature from an existing SketchFeature's closed Profile,
+  /// swept along [pathRefs] (an *ordered* list of Sketch Line references,
+  /// each possibly naming a different Sketch - confirmed decision, see the
+  /// backend's `SweepFeature` docstring) - mirrors [createRevolveFeature]
+  /// exactly, substituting [pathRefs] for [axisRef]/`angle`.
+  Future<FeatureDto> createSweepFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required List<SketchEntityRefDto> pathRefs,
+    required String mode,
+    List<String> targetBodyIds = const [],
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/sweep-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                'mode': mode,
+                'target_body_ids': targetBodyIds,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing SweepFeature - any subset of
+  /// [pathRefs]/[mode]/[targetBodyIds]/[profileRefs] may be supplied,
+  /// mirroring [updateRevolveFeature]'s omitted-vs-current-value
+  /// convention. Used for the live-preview debounced re-solve.
+  Future<FeatureDto> updateSweepFeature(
+    String partId,
+    String featureId, {
+    List<SketchEntityRefDto>? pathRefs,
+    String? mode,
+    List<String>? targetBodyIds,
+    List<SketchEntityRefDto>? profileRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/sweep-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (pathRefs != null) 'path_refs': pathRefs.map((r) => r.toJson()).toList(),
                 if (mode != null) 'mode': mode,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)

@@ -535,6 +535,73 @@ class RevolveFeature(Feature):
         return Produces.BODY
 
 
+class SweepMode(str, Enum):
+    """Boss/Cut parity with `ExtrudeType`/`RevolveMode` (the Sweep module) -
+    a `SweepFeature` combines its swept solid with `target_body_ids` exactly
+    the same way an `ExtrudeFeature`/`RevolveFeature` does. Its own separate
+    enum, matching this codebase's established "each Feature type owns its
+    own enum" convention."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class SweepFeature(Feature):
+    """Sweeps the closed Profile of the SketchFeature referenced by
+    `sketch_feature_id` along `path_refs` - an *ordered* list of Sketch Line
+    references (see `app.sketch.models.SketchEntityRef`, each restricted to
+    `SketchEntityType.LINE`; a Point/Circle entry is invalid and rejected as
+    `invalid_path_ref`, see `app.document.sweep`) forming one connected
+    chain, then combines the resulting solid with `target_body_ids` exactly
+    like `ExtrudeFeature`/`RevolveFeature` do: Boss fuses into each named
+    Body (or starts a new one if empty), Cut subtracts from each named Body
+    (non-empty required - see `app.document.router._validate_target_body_
+    ids`, generalized to accept a Body originating from any of Extrude/
+    Revolve/Sweep).
+
+    `path_refs` entries are explicit, user-ordered picks (confirmed
+    explicitly, not "the whole open chain of one Sketch") and may each name
+    a Line in a *different* Sketch (confirmed explicitly, not restricted to
+    one Sketch) - resolved independently via each entry's own owning
+    SketchFeature's basis (`app.document.create_plane.resolve_sketch_basis`),
+    then chained by matching 3D world-space endpoint position (not a shared
+    Point id, which cross-Sketch entries never have) within a small
+    tolerance - see `app.document.sweep._resolve_path_wire`. Consecutive
+    entries in list order must share a coincident endpoint (`disconnected_
+    path` otherwise); the first and last entries' endpoints may also
+    coincide, producing a closed (looping) path - both open and closed paths
+    are valid, confirmed explicitly, distinguished structurally rather than
+    by a separate flag.
+
+    The actual OCCT geometry construction (`BRepOffsetAPI_MakePipe`) lives
+    in `app.document.sweep`, not here - same separation `ExtrudeFeature`/
+    `RevolveFeature` keep from their own modules."""
+
+    id: str
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRef]
+    mode: SweepMode
+    target_body_ids: list[str] = field(default_factory=list)
+
+    # Mirrors ExtrudeFeature.profile_refs/RevolveFeature.profile_refs
+    # exactly - which outer profile(s) of the backing Sketch to sweep,
+    # empty meaning every one currently detected.
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "sweep"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.

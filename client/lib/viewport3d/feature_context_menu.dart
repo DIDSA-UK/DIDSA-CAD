@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 
 /// Actions available from a Feature's long-press context menu. Stage 8 adds
 /// [toggleVisibility] above the existing [delete]; Stage 9 adds [extrude]
-/// above both; Prompt F adds [revolve] alongside [extrude] - later stages
-/// can add further entries here without changing how the menu itself is
-/// shown or wired up.
-enum FeatureContextMenuAction { extrude, revolve, toggleVisibility, delete }
+/// above both; Prompt F adds [revolve] alongside [extrude]; Sweep adds
+/// [sweep] alongside both - later stages can add further entries here
+/// without changing how the menu itself is shown or wired up.
+enum FeatureContextMenuAction { extrude, revolve, sweep, toggleVisibility, delete }
 
 /// Shows a bottom sheet of actions for a single Feature, opened by a
 /// long-press on its row in the tree. A bottom sheet - rather than wiring
@@ -26,7 +26,8 @@ enum FeatureContextMenuAction { extrude, revolve, toggleVisibility, delete }
 /// Prompt F: [showRevolve]/[canRevolve]/[revolveDisabledReason] mirror
 /// [showExtrude]/[canExtrude]/[extrudeDisabledReason] exactly - same
 /// closed-profile eligibility, same "only a SketchFeature gets this entry"
-/// gate.
+/// gate. [showSweep]/[canSweep]/[sweepDisabledReason] mirror both the same
+/// way.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -36,6 +37,9 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool showRevolve = false,
   bool canRevolve = false,
   String? revolveDisabledReason,
+  bool showSweep = false,
+  bool canSweep = false,
+  String? sweepDisabledReason,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -61,6 +65,16 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
               subtitle: canRevolve ? null : Text(revolveDisabledReason ?? 'Not available'),
               onTap: canRevolve
                   ? () => Navigator.of(context).pop(FeatureContextMenuAction.revolve)
+                  : null,
+            ),
+          if (showSweep)
+            ListTile(
+              enabled: canSweep,
+              leading: const Icon(Icons.line_axis),
+              title: const Text('Sweep'),
+              subtitle: canSweep ? null : Text(sweepDisabledReason ?? 'Not available'),
+              onTap: canSweep
+                  ? () => Navigator.of(context).pop(FeatureContextMenuAction.sweep)
                   : null,
             ),
           ListTile(

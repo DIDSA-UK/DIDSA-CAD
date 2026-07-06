@@ -26,6 +26,8 @@ from app.document.models import (
     SketchFeature,
     SubShapeRef,
     SubShapeType,
+    SweepFeature,
+    SweepMode,
 )
 from app.document.revolve import resolve_revolve
 from app.document.schemas import (
@@ -56,7 +58,11 @@ from app.document.schemas import (
     SketchFeatureCreate,
     SketchFeatureResponse,
     SubShapeRefSchema,
+    SweepFeatureCreate,
+    SweepFeatureResponse,
+    SweepFeatureUpdate,
 )
+from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404
 from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
@@ -231,6 +237,17 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             produces=feature.produces,
         )
+    if isinstance(feature, SweepFeature):
+        return SweepFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            path_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.path_refs],
+            mode=feature.mode,
+            locked=part.is_locked(feature.id),
+            target_body_ids=feature.target_body_ids,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -276,10 +293,11 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
     same way a plain one does.
 
     Takes `is_cut` (a plain bool) rather than a specific Feature type's own
-    mode enum (`ExtrudeType`/`RevolveMode`) since Prompt F's Boss/Cut parity
-    means this check is now shared by both Feature types - each caller
-    passes its own `... == ....CUT` comparison rather than this function
-    needing to know about every mode enum that might ever call it."""
+    mode enum (`ExtrudeType`/`RevolveMode`/`SweepMode`) since Boss/Cut
+    parity means this check is now shared by all three Feature types - each
+    caller passes its own `... == ....CUT` comparison rather than this
+    function needing to know about every mode enum that might ever call
+    it."""
     if is_cut and not target_body_ids:
         raise HTTPException(
             status_code=422,
@@ -288,11 +306,11 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
         )
     for target_id in target_body_ids:
         target_feature = part.get_feature(base_feature_id(target_id))
-        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature)):
+        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature)):
             raise HTTPException(
                 status_code=400,
-                detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature "
-                "or RevolveFeature in this Part",
+                detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
+                "RevolveFeature, or SweepFeature in this Part",
             )
 
 
@@ -341,6 +359,27 @@ def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[Ske
     result = detect_profile(sketch)
     candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
     select_profiles(candidates, profile_refs)
+
+
+def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
+    """A SweepFeature must name at least one `path_refs` entry (422,
+    mirroring Cut's own "at least one target_body_ids entry" check in
+    `_validate_target_body_ids`) and every named ref must be a Line (422,
+    mirroring `_validate_fillet_edge_refs`'s own `shape_type == EDGE`
+    check) - these are payload-shape checks. Whether the named Lines
+    actually resolve and chain into one connected path (open or closed) is
+    a referential/geometric check made by `app.document.sweep.resolve_
+    sweep` instead (the same "payload shape in the router, resolution in
+    the OCCT module" split every other structured Feature error in this
+    codebase already uses)."""
+    if not path_refs:
+        raise HTTPException(
+            status_code=422,
+            detail="SweepFeature requires at least one path_refs entry",
+        )
+    for ref in path_refs:
+        if ref.entity_type != SketchEntityType.LINE:
+            raise HTTPException(status_code=422, detail="path_refs entries must have entity_type=line")
 
 
 def _validate_fillet_radius(radius: float) -> None:
@@ -1078,6 +1117,93 @@ def update_revolve_feature(
 
     feature.axis_ref = candidate.axis_ref
     feature.angle = candidate.angle
+    feature.mode = candidate.mode
+    feature.target_body_ids = candidate.target_body_ids
+    feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/sweep-features", response_model=SweepFeatureResponse, status_code=201)
+def create_sweep_feature(part_id: str, payload: SweepFeatureCreate) -> SweepFeatureResponse:
+    """Mirrors `create_revolve_feature` exactly, substituting `path_refs`
+    for `axis_ref`/`angle`: validates the payload shape (`_require_closed_
+    sketch_feature`; `_validate_sweep_path_refs`; `_validate_target_body_
+    ids`, generalized to accept a Body from any of Extrude/Revolve/Sweep)
+    and then resolvability (`app.document.sweep.resolve_sweep`, discarding
+    its result here - the real geometry is recomputed again the next time
+    `/mesh` is fetched, via `compute_part_bodies`'s own SweepFeature
+    handling) *before* constructing the Feature - fails closed with
+    `invalid_path_ref`/`disconnected_path`/`sweep_failed`/`missing_
+    reference` rather than ever persisting an unresolvable Sweep."""
+    part = get_part_or_404(part_id)
+    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    path_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+    _validate_sweep_path_refs(path_refs)
+    _validate_target_body_ids(part, payload.mode == SweepMode.CUT, payload.target_body_ids)
+    feature = SweepFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        path_refs=path_refs,
+        mode=payload.mode,
+        target_body_ids=list(payload.target_body_ids),
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
+    )
+    # profile_refs' own validity (invalid_profile_ref) is checked as part of
+    # this same resolve - resolve_sweep_from_bodies calls select_profiles
+    # internally, same as resolve_revolve_from_bodies already does.
+    resolve_sweep(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_sweep_feature_or_404(part: Part, feature_id: str) -> SweepFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SweepFeature):
+        raise HTTPException(status_code=404, detail="Sweep feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/sweep-features/{feature_id}", response_model=SweepFeatureResponse)
+def update_sweep_feature(part_id: str, feature_id: str, payload: SweepFeatureUpdate) -> SweepFeatureResponse:
+    """Same validate-before-mutate discipline as `create_sweep_feature`/
+    `update_revolve_feature`: the merged (existing-plus-payload) values are
+    checked against a scratch Feature sharing the real one's id
+    (`resolve_sweep` excludes that id from its own "current bodies"
+    computation for exactly this reason) before anything on the real,
+    stored Feature is touched, so a failed PATCH never leaves it
+    half-updated. `sketch_feature_id` is never revised, same as
+    `update_revolve_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_sweep_feature_or_404(part, feature_id)
+
+    new_path_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+        if payload.path_refs is not None
+        else feature.path_refs
+    )
+    new_mode = payload.mode if payload.mode is not None else feature.mode
+    new_target_body_ids = (
+        payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
+    )
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    _validate_sweep_path_refs(new_path_refs)
+    _validate_target_body_ids(part, new_mode == SweepMode.CUT, new_target_body_ids)
+
+    candidate = SweepFeature(
+        id=feature.id,
+        sketch_feature_id=feature.sketch_feature_id,
+        path_refs=new_path_refs,
+        mode=new_mode,
+        target_body_ids=list(new_target_body_ids),
+        profile_refs=new_profile_refs,
+    )
+    resolve_sweep(part, candidate)  # raises on an unresolvable reference
+
+    feature.path_refs = candidate.path_refs
     feature.mode = candidate.mode
     feature.target_body_ids = candidate.target_body_ids
     feature.profile_refs = candidate.profile_refs

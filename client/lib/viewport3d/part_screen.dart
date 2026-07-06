@@ -36,12 +36,13 @@ import 'selection_filter.dart';
 import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
+import 'sweep_panel.dart';
 import 'view_preferences.dart';
 
 /// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
 /// own "Prompt G: profile picking" state section) is gathering picks for -
 /// decides whether confirming opens [ExtrudePanel] or [RevolvePanel].
-enum _ProfilePickerTarget { extrude, revolve }
+enum _ProfilePickerTarget { extrude, revolve, sweep }
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -388,6 +389,14 @@ class _PartScreenState extends State<PartScreen> {
       _toggleProfileLoop(entity);
       return;
     }
+    // A sketchLine tap while the path picker is open extends/undoes the
+    // Sweep path being built - see [_togglePathPick]. Checked before the
+    // Revolve axis special-case below for the same reason the profile-picker
+    // check above is - the two modes are never active at the same time.
+    if (_pathPickerActive && entity.kind == SelectionEntityKind.sketchLine) {
+      _togglePathPick(entity);
+      return;
+    }
     // Prompt F: a sketchLine tap while the Revolve panel is open sets (or
     // clears, if it's the already-picked one) the axis - a single reference,
     // replaced rather than accumulated the way target-body picks are - see
@@ -406,6 +415,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_filletActive) _scheduleFilletPreview();
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
+    if (_sweepActive) _scheduleSweepPreview();
   }
 
   /// Prompt F: [_toggleSelectedEntity]'s sketchLine special-case for the
@@ -437,6 +447,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_filletActive) _scheduleFilletPreview();
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
+    if (_sweepActive) _scheduleSweepPreview();
   }
 
   /// On-device feedback: [_toggleSelectedEntity]'s Face special-case for the
@@ -1023,10 +1034,18 @@ class _PartScreenState extends State<PartScreen> {
     _ProfilePickerTarget target,
     List<SketchEntityRefDto> profileRefs,
   ) {
-    if (target == _ProfilePickerTarget.extrude) {
-      _openExtrudePanel(sketchFeature, profileRefs: profileRefs);
-    } else {
-      _openRevolvePanel(sketchFeature, profileRefs: profileRefs);
+    switch (target) {
+      case _ProfilePickerTarget.extrude:
+        _openExtrudePanel(sketchFeature, profileRefs: profileRefs);
+      case _ProfilePickerTarget.revolve:
+        _openRevolvePanel(sketchFeature, profileRefs: profileRefs);
+      case _ProfilePickerTarget.sweep:
+        // Unlike Extrude/Revolve, a Sweep's path is mandatory and picked
+        // once, up front - never live while its own panel is open (see
+        // the path-picking flow below) - so this enters that flow instead
+        // of opening SweepPanel directly; SweepPanel only ever opens once
+        // a path has actually been confirmed (see [_confirmPathPicker]).
+        _startPathPicker(sketchFeature, profileRefs);
     }
   }
 
@@ -1172,6 +1191,625 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = _entitiesBeforeProfilePicker ?? {};
       _entitiesBeforeProfilePicker = null;
       _selectionFilterOverrides.pop();
+    });
+  }
+
+  // --- Sweep: path picking -------------------------------------------------
+  // Sweep's own second picking step, entered automatically right after the
+  // profile step (see [_openPanelForTarget]'s `sweep` case) - unlike
+  // Revolve's axis (a single Line, picked live while its own panel is open),
+  // a Sweep's path is an *ordered*, possibly-multi-segment, possibly-cross-
+  // Sketch chain of Lines (confirmed decisions - see the backend's
+  // `SweepFeature` docstring), so it gets its own dedicated picking mode
+  // instead: tap Lines one at a time, in order, to build the chain; tap the
+  // most recently picked Line again to undo it; a checkmark FAB confirms
+  // once at least one segment is picked and opens [SweepPanel].
+
+  /// True while the path picker is open.
+  bool _pathPickerActive = false;
+
+  /// The Profile's own SketchFeature - carried through to [SweepPanel] once
+  /// picking confirms.
+  FeatureDto? _pathPickerSketchFeature;
+
+  /// [_profilePickerLoops]' Sweep counterpart - the Profile's own
+  /// profile_refs, resolved by the profile-picking step that ran just
+  /// before this one started (empty if that step was skipped, meaning
+  /// "every profile" - same convention every other profile_refs consumer in
+  /// this file already follows). Carried through to [SweepPanel] unchanged;
+  /// this picker never touches it.
+  List<SketchEntityRefDto> _pathPickerProfileRefs = [];
+
+  /// The path picked so far, in pick order - the single source of truth
+  /// this whole picker is built around; [_selectedEntities] is derived from
+  /// it (see [_togglePathPick]), not the other way around, so the two can
+  /// never drift out of sync.
+  List<SketchEntityRefDto> _pathPickerRefs = [];
+
+  /// [_selectedEntities]' value from just before picking started - restored
+  /// on confirm/cancel, same purpose every other picker's own
+  /// entitiesBeforeX field serves.
+  Set<SelectionEntityRef>? _entitiesBeforePathPicker;
+
+  /// Restricts the picker session to `sketchLine` hits only - a path
+  /// segment must be a Line (mirrors Revolve's own axis restriction;
+  /// Point/Circle are never valid path segments), and unlike the profile
+  /// picker's own filter, `body` stays off too - target-body picking only
+  /// happens later, once [SweepPanel] itself is open.
+  static const _pathPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  void _startPathPicker(FeatureDto sketchFeature, List<SketchEntityRefDto> profileRefs) {
+    setState(() {
+      _pathPickerActive = true;
+      _pathPickerSketchFeature = sketchFeature;
+      _pathPickerProfileRefs = profileRefs;
+      _pathPickerRefs = [];
+      _entitiesBeforePathPicker = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _planeSelectionModeStack.pop();
+      _selectionFilterOverrides.push(_pathPickerSelectionFilter);
+    });
+  }
+
+  /// World-space distance within which two points are treated as the same -
+  /// mirrors the backend's own `app.document.sweep._PATH_POINT_TOLERANCE`
+  /// exactly. Purely a client-side pre-check for immediate tap feedback;
+  /// the backend re-validates independently (and is the actual source of
+  /// truth) once the path is confirmed.
+  static const double _pathPointTolerance = 1e-4;
+
+  static bool _pathPointsCoincide(vm.Vector3 a, vm.Vector3 b) => (a - b).length < _pathPointTolerance;
+
+  /// World-space `(start, end)` for the Sketch Line named by
+  /// [sketchFeatureId]/[sketchEntityId] - looked up in
+  /// [_allSketchGeometries] (not [_visibleSketchGeometries], so an already-
+  /// picked segment's own endpoints stay resolvable even if its Sketch gets
+  /// hidden mid-pick) - null if that Sketch/Line can no longer be resolved.
+  (vm.Vector3, vm.Vector3)? _lineWorldSegment(String sketchFeatureId, String sketchEntityId) {
+    final geometry = _allSketchGeometries[sketchFeatureId];
+    if (geometry == null) return null;
+    final index = geometry.lineIds.indexOf(sketchEntityId);
+    if (index == -1) return null;
+    return geometry.lineSegments[index];
+  }
+
+  /// Traces [refs] (an ordered list of path picks) into its actual ordered
+  /// world-space point chain - mirrors the backend's own `app.document.
+  /// sweep._resolve_path_wire` tracing logic exactly (each ref's own
+  /// endpoint pair is resolved independently, then chained by matching
+  /// position against the running chain's open end, since cross-Sketch
+  /// entries have no shared Point id to chain by instead). Returns null if
+  /// any ref's Line can no longer be resolved, or if two consecutive refs
+  /// don't actually connect - shouldn't happen for anything
+  /// [_togglePathPick] itself built, but stays defensive against stale data
+  /// the same way [_profileLoopIndexFor] already does.
+  List<vm.Vector3>? _tracePathPoints(List<SketchEntityRefDto> refs) {
+    final points = <vm.Vector3>[];
+    vm.Vector3? chainEnd;
+    for (final ref in refs) {
+      final sketchFeatureId = _sketchFeatureIdForSketchId(ref.sketchId);
+      final segment = sketchFeatureId == null ? null : _lineWorldSegment(sketchFeatureId, ref.entityId);
+      if (segment == null) return null;
+      final (start, end) = segment;
+      if (chainEnd == null) {
+        points.add(start);
+        points.add(end);
+        chainEnd = end;
+      } else if (_pathPointsCoincide(chainEnd, start)) {
+        points.add(end);
+        chainEnd = end;
+      } else if (_pathPointsCoincide(chainEnd, end)) {
+        points.add(start);
+        chainEnd = start;
+      } else {
+        return null;
+      }
+    }
+    return points;
+  }
+
+  /// [_toggleSelectedEntity]'s path-picker special-case - a sketchLine tap
+  /// while the path picker is open either extends [_pathPickerRefs] (starting
+  /// a brand-new chain if none is picked yet, or appending to whichever end
+  /// of the current chain the tapped Line's own endpoint coincides with), or
+  /// - if the tapped Line is the *most recently* picked one - undoes it (tap
+  /// the last pick again to remove it, mirroring this app's "tap again to
+  /// deselect" convention elsewhere). A tap that neither connects to the
+  /// chain nor targets the last pick gets an explanatory SnackBar rather
+  /// than [_toggleProfileLoop]'s own silent "stale hit" ignore - unlike a
+  /// stale profile-loop hit, a disconnected path tap is an expected, regular
+  /// occurrence during normal picking, not just stale data, so it needs real
+  /// feedback. [_selectedEntities] is rebuilt from [_pathPickerRefs] on every
+  /// change (rather than toggled independently) so the two can never drift
+  /// out of sync.
+  void _togglePathPick(SelectionEntityRef lineEntity) {
+    final sketchId = _sketchIdForFeatureId(lineEntity.sketchFeatureId);
+    if (sketchId == null) return;
+    final ref = SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: lineEntity.sketchEntityId);
+
+    List<SketchEntityRefDto> nextRefs;
+    if (_pathPickerRefs.isNotEmpty &&
+        _pathPickerRefs.last.sketchId == ref.sketchId &&
+        _pathPickerRefs.last.entityId == ref.entityId) {
+      nextRefs = _pathPickerRefs.sublist(0, _pathPickerRefs.length - 1);
+    } else if (_pathPickerRefs.any((r) => r.sketchId == ref.sketchId && r.entityId == ref.entityId)) {
+      _showSnack('That line is already part of the path');
+      return;
+    } else if (_pathPickerRefs.isEmpty) {
+      nextRefs = [ref];
+    } else {
+      final points = _tracePathPoints(_pathPickerRefs);
+      final segment = _lineWorldSegment(lineEntity.sketchFeatureId, lineEntity.sketchEntityId);
+      if (points == null || segment == null) return;
+      final (start, end) = segment;
+      if (_pathPointsCoincide(points.last, start) || _pathPointsCoincide(points.last, end)) {
+        nextRefs = [..._pathPickerRefs, ref];
+      } else {
+        _showSnack("That line doesn't connect to the current path - tap one touching either end");
+        return;
+      }
+    }
+
+    setState(() {
+      _pathPickerRefs = nextRefs;
+      _selectedEntities = {
+        for (final r in nextRefs)
+          SelectionEntityRef(
+            kind: SelectionEntityKind.sketchLine,
+            sketchFeatureId: _sketchFeatureIdForSketchId(r.sketchId) ?? '',
+            sketchEntityId: r.entityId,
+          ),
+      };
+    });
+  }
+
+  /// Whether [refs] (an ordered list of path picks) traces a closed
+  /// (looping) path - its first and last points coincide - or an open one.
+  /// Shared by [_pathPickerBannerText] (the live picker banner) and
+  /// [SweepPanel]'s own `pathIsClosed` (via [_sweepPathIsClosed]) so the two
+  /// never disagree about the same path.
+  bool _pathIsClosed(List<SketchEntityRefDto> refs) {
+    final points = _tracePathPoints(refs);
+    return points != null && points.length > 2 && _pathPointsCoincide(points.first, points.last);
+  }
+
+  /// [SweepPanel.pathIsClosed] for the currently-open panel session's own
+  /// (already-confirmed, fixed) [_sweepPathRefs].
+  bool _sweepPathIsClosed() => _pathIsClosed(_sweepPathRefs);
+
+  /// The top banner's live status text - segment count plus open/closed,
+  /// mirroring [SweepPanel]'s own path summary line.
+  String _pathPickerBannerText() {
+    if (_pathPickerRefs.isEmpty) return 'Tap a line to start the path';
+    final isClosed = _pathIsClosed(_pathPickerRefs);
+    final count = _pathPickerRefs.length;
+    return '$count segment${count == 1 ? '' : 's'} picked'
+        '${isClosed ? ' (closed)' : ''} - tap checkmark to confirm';
+  }
+
+  /// The checkmark FAB - closes the picker and opens [SweepPanel] with the
+  /// confirmed path. Requires at least one segment (mirrors Cut's own
+  /// "at least one" rules elsewhere) - disabled otherwise, see the FAB's own
+  /// `onPressed` gating.
+  void _confirmPathPicker() {
+    final sketchFeature = _pathPickerSketchFeature;
+    if (sketchFeature == null || _pathPickerRefs.isEmpty) return;
+    final profileRefs = _pathPickerProfileRefs;
+    final pathRefs = _pathPickerRefs;
+
+    setState(() {
+      _pathPickerActive = false;
+      _pathPickerSketchFeature = null;
+      _pathPickerProfileRefs = [];
+      _pathPickerRefs = [];
+      _selectedEntities = _entitiesBeforePathPicker ?? {};
+      _entitiesBeforePathPicker = null;
+      _selectionFilterOverrides.pop();
+    });
+    _openSweepPanel(sketchFeature, pathRefs, profileRefs: profileRefs);
+  }
+
+  /// Exits the path picker without creating a Sweep - mirrors
+  /// [_cancelProfilePicker] exactly.
+  void _cancelPathPicker() {
+    setState(() {
+      _pathPickerActive = false;
+      _pathPickerSketchFeature = null;
+      _pathPickerProfileRefs = [];
+      _pathPickerRefs = [];
+      _selectedEntities = _entitiesBeforePathPicker ?? {};
+      _entitiesBeforePathPicker = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  // --- Prompt F-mirror: Sweep state ----------------------------------------
+  // A full separate mirror of the Revolve state block, per this project's
+  // established separate-not-shared convention - Sweep is Boss/Cut-shaped
+  // like Extrude/Revolve, just consuming an ordered path of Sketch Lines
+  // (picked once, up front - see the path-picking flow above) instead of a
+  // live-picked single axis Line.
+
+  /// True while the Feature tree is acting as a Sketch picker for a pending
+  /// Sweep - mirrors [_revolveSketchPickerActive] exactly, entered by
+  /// [_sweepSelectedFeature] when no eligible Sketch is already selected.
+  bool _sweepSketchPickerActive = false;
+
+  /// Mirrors [_pickableRevolveSketchIds] exactly, for the Sweep picker.
+  Set<String> _pickableSweepSketchIds = {};
+
+  /// The SketchFeature currently being swept via [SweepPanel], or null when
+  /// the panel is closed - mirrors [_revolveSketchFeature].
+  FeatureDto? _sweepSketchFeature;
+
+  /// The SweepFeature created by the panel's first live-preview update -
+  /// mirrors [_previewRevolveFeatureId].
+  String? _previewSweepFeatureId;
+
+  /// Mirrors [_meshBeforeRevolve].
+  List<BodyMeshDto>? _meshBeforeSweep;
+
+  /// Mirrors [_entitiesBeforeRevolve] - while the panel is open,
+  /// [_selectedEntities] is dedicated entirely to target-body picking (the
+  /// path is already fixed by the time this panel opens, unlike Revolve's
+  /// own live axis pick - see [_openSweepPanel]).
+  Set<SelectionEntityRef>? _entitiesBeforeSweep;
+
+  /// B4-style: non-null while [SweepPanel] is editing an *existing*
+  /// SweepFeature - mirrors [_editingRevolveFeatureId].
+  String? _editingSweepFeatureId;
+
+  /// The edited Feature's own stored values from just before editing
+  /// started - mirrors [_revolveEditSnapshot].
+  ({
+    SweepMode mode,
+    List<SketchEntityRefDto> pathRefs,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  })? _sweepEditSnapshot;
+
+  SweepMode _sweepMode = SweepMode.boss;
+
+  /// The path this session sweeps along - fixed once [SweepPanel] opens
+  /// (set by [_openSweepPanel]/[_openSweepPanelForEdit]) and never changed
+  /// again for the rest of the create/edit session, mirroring
+  /// [_extrudeProfileRefs]/[_revolveProfileRefs]'s own create-time-only
+  /// picking precedent - just applied to the path instead of the profile.
+  List<SketchEntityRefDto> _sweepPathRefs = [];
+
+  /// Mirrors [_revolveProfileRefs] exactly - which outer profile(s) of
+  /// [_sweepSketchFeature] to use.
+  List<SketchEntityRefDto> _sweepProfileRefs = [];
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
+  /// [_revolveDebounce].
+  Timer? _sweepDebounce;
+
+  /// Mirrors [_revolveActive].
+  bool get _sweepActive => _sweepSketchFeature != null;
+
+  /// The target-body-picking filter for the whole Sweep panel session -
+  /// unlike Revolve's own combined sketchLine+body filter (its axis is
+  /// picked live while the panel is open), a Sweep's path is already fixed
+  /// by the time this panel shows, so this only ever needs bodies, exactly
+  /// like Extrude's own bodies-only override.
+  static const _sweepSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// Mirrors [_currentRevolveTargetBodyIds] exactly.
+  List<String> _currentSweepTargetBodyIds() => _selectedEntities
+      .where((e) => e.kind == SelectionEntityKind.body)
+      .map((e) => e.bodyId)
+      .toSet()
+      .toList();
+
+  /// Prompt F-mirror: opens [SweepPanel] for [sketchFeature] with [pathRefs]
+  /// already confirmed (see [_confirmPathPicker]) - mirrors
+  /// [_openRevolvePanel] exactly, substituting the fixed [pathRefs] for a
+  /// live axis pick.
+  void _openSweepPanel(
+    FeatureDto sketchFeature,
+    List<SketchEntityRefDto> pathRefs, {
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) {
+    setState(() {
+      _sweepSketchFeature = sketchFeature;
+      _previewSweepFeatureId = null;
+      _meshBeforeSweep = _bodies;
+      _sweepMode = SweepMode.boss;
+      _sweepPathRefs = pathRefs;
+      _sweepProfileRefs = profileRefs;
+      _entitiesBeforeSweep = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_sweepSelectionFilter);
+    });
+  }
+
+  /// Mirrors [_openRevolvePanelForEdit] exactly, substituting [_sweepPathRefs]
+  /// for the reconstructed axis entity - a SweepFeature's own `path_refs`
+  /// round-trips directly (no reverse Feature-id lookup needed the axis
+  /// reconstruction does), so [_selectedEntities] only ever needs prefilling
+  /// with the target-body entities here.
+  bool _openSweepPanelForEdit(FeatureDto feature) {
+    final sketchFeatureId = feature.sketchFeatureId;
+    final sketchFeature = sketchFeatureId == null ? null : _featureById(sketchFeatureId);
+    if (sketchFeature == null) return false;
+
+    final mode = SweepMode.fromApiValue(feature.mode ?? 'boss');
+    final targetBodyIds = feature.targetBodyIds;
+    final profileRefs = feature.profileRefs;
+    final pathRefs = feature.pathRefs;
+
+    setState(() {
+      _sweepSketchFeature = sketchFeature;
+      _editingSweepFeatureId = feature.id;
+      _previewSweepFeatureId = feature.id;
+      _sweepEditSnapshot = (
+        mode: mode,
+        pathRefs: pathRefs,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+      _meshBeforeSweep = _bodies;
+      _sweepMode = mode;
+      _sweepPathRefs = pathRefs;
+      _sweepProfileRefs = profileRefs;
+      _entitiesBeforeSweep = _selectedEntities;
+      _selectedEntities = {
+        for (final bodyId in targetBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_sweepSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Mirrors [_ensureRevolveFeatureExists] exactly, substituting the fixed
+  /// [pathRefs] for a live axis pick.
+  Future<void> _ensureSweepFeatureExists(
+    SweepMode mode,
+    List<SketchEntityRefDto> pathRefs,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  ) async {
+    final part = _part;
+    final sketchFeature = _sweepSketchFeature;
+    if (part == null || sketchFeature == null) return;
+
+    final existingId = _previewSweepFeatureId;
+    if (existingId == null) {
+      final created = await _api.createSweepFeature(
+        part.id,
+        sketchFeatureId: sketchFeature.id,
+        pathRefs: pathRefs,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+      _previewSweepFeatureId = created.id;
+    } else {
+      await _api.updateSweepFeature(
+        part.id,
+        existingId,
+        pathRefs: pathRefs,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [SweepPanel.onChanged] - mirrors [_onRevolveValuesChanged], minus the
+  /// angle field Sweep has no equivalent of.
+  void _onSweepValuesChanged(SweepMode mode) {
+    _sweepMode = mode;
+    _scheduleSweepPreview();
+  }
+
+  /// Mirrors [_scheduleRevolvePreview], minus the "nothing to solve without
+  /// an axis" guard - a Sweep's path is always already valid by the time
+  /// this could ever fire (fixed at panel-open time), so there is nothing
+  /// equivalent to gate on here.
+  void _scheduleSweepPreview() {
+    _sweepDebounce?.cancel();
+    _sweepDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureSweepFeatureExists(
+            _sweepMode,
+            _sweepPathRefs,
+            _currentSweepTargetBodyIds(),
+            _sweepProfileRefs,
+          ));
+    });
+  }
+
+  /// Mirrors [_confirmRevolve] exactly, minus the "only if an axis is
+  /// picked" guard [_ensureSweepFeatureExists] call needs (unconditional
+  /// here - a Sweep's path is always already valid, unlike Revolve's axis,
+  /// which might never get picked at all).
+  Future<void> _confirmSweep() async {
+    _sweepDebounce?.cancel();
+    final sketchFeature = _sweepSketchFeature;
+    final wasEditing = _editingSweepFeatureId != null;
+    final targetBodyIds = _currentSweepTargetBodyIds();
+    await _runGuarded(() async {
+      await _ensureSweepFeatureExists(_sweepMode, _sweepPathRefs, targetBodyIds, _sweepProfileRefs);
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    setState(() {
+      if (sketchFeature != null && !wasEditing) {
+        _hiddenFeatureIds.add(sketchFeature.id);
+        _autoHiddenSketchFeatureIds.add(sketchFeature.id);
+      }
+      _recomputeVisibleSketchGeometries();
+      _sweepSketchFeature = null;
+      _previewSweepFeatureId = null;
+      _meshBeforeSweep = null;
+      _editingSweepFeatureId = null;
+      _sweepEditSnapshot = null;
+      _sweepPathRefs = [];
+      _sweepProfileRefs = [];
+      _selectedEntities = _entitiesBeforeSweep ?? {};
+      _entitiesBeforeSweep = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelRevolve] exactly.
+  Future<void> _cancelSweep() async {
+    _sweepDebounce?.cancel();
+    final part = _part;
+    final sketchFeature = _sweepSketchFeature;
+    final previewId = _previewSweepFeatureId;
+    final meshBefore = _meshBeforeSweep;
+    final wasEditing = _editingSweepFeatureId != null;
+    final editSnapshot = _sweepEditSnapshot;
+    setState(() {
+      _sweepSketchFeature = null;
+      _previewSweepFeatureId = null;
+      _meshBeforeSweep = null;
+      _editingSweepFeatureId = null;
+      _sweepEditSnapshot = null;
+      _sweepPathRefs = [];
+      _sweepProfileRefs = [];
+      _selectedEntities = _entitiesBeforeSweep ?? {};
+      _entitiesBeforeSweep = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateSweepFeature(
+            part.id,
+            previewId,
+            pathRefs: editSnapshot.pathRefs,
+            mode: editSnapshot.mode.apiValue,
+            targetBodyIds: editSnapshot.targetBodyIds,
+            profileRefs: editSnapshot.profileRefs,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// Mirrors [_targetBodyPickerBannerText] - Sweep's panel-session banner
+  /// only ever reports target-body status (the path is already fixed by
+  /// the time this panel shows, unlike Revolve's own two-part banner).
+  String _sweepPickerBannerText() {
+    final count = _currentSweepTargetBodyIds().length;
+    return _sweepMode == SweepMode.cut
+        ? (count == 0 ? 'select a target body' : '$count target body/bodies selected')
+        : (count == 0 ? 'tap bodies to merge into (optional)' : '$count target body/bodies selected');
+  }
+
+  /// Mirrors [_revolveSelectedFeature] exactly, substituting Sweep's own
+  /// state/picker/panel.
+  Future<void> _sweepSelectedFeature() async {
+    final featureId = _selectedFeatureId;
+    final feature = featureId == null ? null : _featureById(featureId);
+    if (feature != null && feature.type == 'sketch') {
+      final reason = await _checkExtrudeEligibility(feature);
+      if (!mounted) return;
+      if (reason == null) {
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
+        return;
+      }
+    }
+    _startSweepSketchPicker();
+  }
+
+  /// Mirrors [_startRevolveSketchPicker] exactly, for the Sweep picker.
+  void _startSweepSketchPicker() {
+    setState(() {
+      _sweepSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _pickableSweepSketchIds = {};
+    });
+    _refreshPickableSweepSketchIds();
+  }
+
+  /// Mirrors [_refreshPickableRevolveSketchIds] exactly, for the Sweep
+  /// picker.
+  Future<void> _refreshPickableSweepSketchIds() async {
+    final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
+    final results = await Future.wait(sketchFeatures.map((feature) async {
+      final reason = await _checkExtrudeEligibility(feature);
+      return MapEntry(feature.id, reason == null);
+    }));
+    if (!mounted || !_sweepSketchPickerActive) return;
+    setState(() {
+      _pickableSweepSketchIds = {for (final entry in results) if (entry.value) entry.key};
+    });
+  }
+
+  /// Mirrors [_onRevolveSketchPicked] exactly, for the Sweep picker.
+  Future<void> _onSweepSketchPicked(FeatureDto feature) async {
+    final reason = await _checkExtrudeEligibility(feature);
+    if (!mounted || !_sweepSketchPickerActive) return;
+    if (reason != null) {
+      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
+      return;
+    }
+    setState(() {
+      _sweepSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _selectedFeatureId = feature.id;
+      _pickableSweepSketchIds = {};
+    });
+    await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
+  }
+
+  /// Mirrors [_cancelRevolveSketchPicker] exactly, for the Sweep picker.
+  void _cancelSweepSketchPicker() {
+    setState(() {
+      _sweepSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableSweepSketchIds = {};
     });
   }
 
@@ -1647,6 +2285,8 @@ class _PartScreenState extends State<PartScreen> {
         _startChamferPicker();
       case FeaturePickerAction.revolve:
         await _revolveSelectedFeature();
+      case FeaturePickerAction.sweep:
+        await _sweepSelectedFeature();
     }
   }
 
@@ -1920,6 +2560,11 @@ class _PartScreenState extends State<PartScreen> {
       // fallback.
       final opened = _openRevolvePanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'sweep') {
+      // Rollback is ended by _confirmSweep/_cancelSweep instead - mirrors
+      // the revolve branch above exactly.
+      final opened = _openSweepPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -2043,8 +2688,11 @@ class _PartScreenState extends State<PartScreen> {
     final canExtrude = isSketchFeature && extrudeDisabledReason == null;
     // Prompt F: Revolve's own eligibility check is the identical
     // closed-profile check Extrude's own uses (see _checkExtrudeEligibility's
-    // doc comment) - reused directly rather than re-run separately.
+    // doc comment) - reused directly rather than re-run separately. Sweep's
+    // own Profile eligibility mirrors both the same way (its path is
+    // checked live during path-picking, not here).
     final canRevolve = canExtrude;
+    final canSweep = canExtrude;
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -2056,6 +2704,9 @@ class _PartScreenState extends State<PartScreen> {
       showRevolve: isSketchFeature,
       canRevolve: canRevolve,
       revolveDisabledReason: extrudeDisabledReason,
+      showSweep: isSketchFeature,
+      canSweep: canSweep,
+      sweepDisabledReason: extrudeDisabledReason,
     );
     if (!mounted || action == null) return;
 
@@ -2064,6 +2715,8 @@ class _PartScreenState extends State<PartScreen> {
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
       case FeatureContextMenuAction.revolve:
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
+      case FeatureContextMenuAction.sweep:
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -3759,15 +4412,21 @@ class _PartScreenState extends State<PartScreen> {
       canPop: !_planeSelectionMode &&
           !_sketchPickerActive &&
           !_revolveSketchPickerActive &&
-          !_profilePickerActive,
+          !_sweepSketchPickerActive &&
+          !_profilePickerActive &&
+          !_pathPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_sketchPickerActive) {
           _cancelSketchPicker();
         } else if (_revolveSketchPickerActive) {
           _cancelRevolveSketchPicker();
+        } else if (_sweepSketchPickerActive) {
+          _cancelSweepSketchPicker();
         } else if (_profilePickerActive) {
           _cancelProfilePicker();
+        } else if (_pathPickerActive) {
+          _cancelPathPicker();
         } else {
           _cancelPlaneSelectionMode();
         }
@@ -3813,8 +4472,11 @@ class _PartScreenState extends State<PartScreen> {
                   // convention Extrude does (see docs/live-preview-pattern.md's
                   // decision tree - Boss/Cut target_body_ids are Body-level
                   // picks, stable across re-solves) - an `||`, not a separate
-                  // overlay, since only one of the two is ever active at once.
-                  isPreviewMesh: _extrudeSketchFeature != null || _revolveSketchFeature != null,
+                  // overlay, since only one of the three is ever active at
+                  // once. Sweep (also Body-level picks) joins the same `||`.
+                  isPreviewMesh: _extrudeSketchFeature != null ||
+                      _revolveSketchFeature != null ||
+                      _sweepSketchFeature != null,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -3899,7 +4561,9 @@ class _PartScreenState extends State<PartScreen> {
                     !_filletActive &&
                     !_chamferActive &&
                     !_revolveActive &&
-                    !_profilePickerActive)
+                    !_sweepActive &&
+                    !_profilePickerActive &&
+                    !_pathPickerActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -3922,7 +4586,9 @@ class _PartScreenState extends State<PartScreen> {
                         !_filletActive &&
                         !_chamferActive &&
                         !_revolveActive &&
-                        !_profilePickerActive,
+                        !_sweepActive &&
+                        !_profilePickerActive &&
+                        !_pathPickerActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -3933,20 +4599,30 @@ class _PartScreenState extends State<PartScreen> {
                         _cancelSketchPicker();
                       } else if (_revolveSketchPickerActive) {
                         _cancelRevolveSketchPicker();
+                      } else if (_sweepSketchPickerActive) {
+                        _cancelSweepSketchPicker();
                       } else {
                         setState(() => _featureTreeVisible = false);
                       }
                     },
                     // Prompt F: only one of _sketchPickerActive/
-                    // _revolveSketchPickerActive is ever true at a time (same
-                    // "one panel/picker active" invariant every other flow in
-                    // this file relies on), so a ternary picks whichever is
-                    // live - mirrors the previewOverlayBodyId/previewOverlayMesh
-                    // ternary above.
-                    isSketchPickerMode: _sketchPickerActive || _revolveSketchPickerActive,
-                    pickableSketchIds:
-                        _sketchPickerActive ? _pickableSketchIds : _pickableRevolveSketchIds,
-                    onSketchPicked: _sketchPickerActive ? _onSketchPicked : _onRevolveSketchPicked,
+                    // _revolveSketchPickerActive/_sweepSketchPickerActive is
+                    // ever true at a time (same "one panel/picker active"
+                    // invariant every other flow in this file relies on), so a
+                    // chain of ternaries picks whichever is live - mirrors the
+                    // previewOverlayBodyId/previewOverlayMesh ternary above.
+                    isSketchPickerMode:
+                        _sketchPickerActive || _revolveSketchPickerActive || _sweepSketchPickerActive,
+                    pickableSketchIds: _sketchPickerActive
+                        ? _pickableSketchIds
+                        : _revolveSketchPickerActive
+                            ? _pickableRevolveSketchIds
+                            : _pickableSweepSketchIds,
+                    onSketchPicked: _sketchPickerActive
+                        ? _onSketchPicked
+                        : _revolveSketchPickerActive
+                            ? _onRevolveSketchPicked
+                            : _onSweepSketchPicked,
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
@@ -4043,6 +4719,20 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelRevolve,
                     ),
                   ),
+                if (_sweepActive)
+                  Positioned.fill(
+                    child: SweepPanel(
+                      key: ValueKey(_editingSweepFeatureId ?? _sweepSketchFeature!.id),
+                      title: _editingSweepFeatureId != null ? 'Edit Sweep' : 'Sweep',
+                      initialMode: _sweepMode,
+                      pathSegmentCount: _sweepPathRefs.length,
+                      pathIsClosed: _sweepPathIsClosed(),
+                      targetBodyCount: _currentSweepTargetBodyIds().length,
+                      onChanged: _onSweepValuesChanged,
+                      onConfirm: _confirmSweep,
+                      onCancel: _cancelSweep,
+                    ),
+                  ),
                 // Prompt A4: names the target-body picking mode live for the
                 // whole time the Extrude panel is open - same top-center
                 // pill convention as the plane-selection-mode banner below,
@@ -4137,6 +4827,95 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Mirrors the Revolve banner directly above exactly,
+                // substituting Sweep's own target-body-only banner text
+                // (its path is already fixed by the time this panel shows -
+                // see [_sweepPickerBannerText]'s own doc comment) and Cancel
+                // callback.
+                if (_sweepActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _sweepPickerBannerText(),
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelSweep,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Names the path-picking mode live - same top-center pill
+                // convention as the plane-selection-mode/target-body-picking
+                // banners above. Tap a line to extend the path (or the most
+                // recently picked one again to undo it); the checkmark FAB
+                // (see floatingActionButton below) confirms once at least one
+                // segment is picked and opens SweepPanel.
+                if (_pathPickerActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _pathPickerBannerText(),
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelPathPicker,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 // Prompt G: names the profile-picking mode live - same
                 // top-center pill convention as the plane-selection-mode/
                 // target-body-picking banners above. Tap a line or circle to
@@ -4202,7 +4981,9 @@ class _PartScreenState extends State<PartScreen> {
                     !_filletActive &&
                     !_chamferActive &&
                     !_revolveActive &&
-                    !_profilePickerActive)
+                    !_sweepActive &&
+                    !_profilePickerActive &&
+                    !_pathPickerActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -4383,7 +5164,8 @@ class _PartScreenState extends State<PartScreen> {
                         _createPlaneActive ||
                         _filletActive ||
                         _chamferActive ||
-                        _revolveActive)
+                        _revolveActive ||
+                        _sweepActive)
                     ? 180
                     : 0,
               ),
@@ -4406,7 +5188,9 @@ class _PartScreenState extends State<PartScreen> {
                       !_filletActive &&
                       !_chamferActive &&
                       !_revolveActive &&
-                      !_profilePickerActive) ...[
+                      !_sweepActive &&
+                      !_profilePickerActive &&
+                      !_pathPickerActive) ...[
                     const SizedBox(height: 12),
                     FloatingActionButton(
                       heroTag: 'add-fab',
@@ -4426,6 +5210,21 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'confirm-profile-picker-fab',
                       tooltip: 'Confirm profile selection',
                       onPressed: _busy ? null : _confirmProfilePicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  ],
+                  // The path picker's own "confirm" FAB, mirroring the
+                  // profile picker's own directly above - ticks off the
+                  // currently-picked path and opens SweepPanel (see
+                  // [_confirmPathPicker]). Disabled until at least one
+                  // segment is picked, same "requires 1+" rule Cut's own
+                  // target-body picking already enforces elsewhere.
+                  if (_pathPickerActive) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'confirm-path-picker-fab',
+                      tooltip: 'Confirm path selection',
+                      onPressed: _busy || _pathPickerRefs.isEmpty ? null : _confirmPathPicker,
                       child: const Icon(Icons.check),
                     ),
                   ],

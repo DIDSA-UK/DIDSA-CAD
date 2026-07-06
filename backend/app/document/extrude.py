@@ -40,6 +40,8 @@ from app.document.models import (
     SketchFeature,
     SubShapeRef,
     SubShapeType,
+    SweepFeature,
+    SweepMode,
 )
 from app.sketch.models import Circle, Line, Sketch, SketchEntityRef, SketchEntityType
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
@@ -507,10 +509,19 @@ def compute_part_bodies(
     skipped with a warning rather than raising - the router's own create/
     update endpoints validate a Revolve eagerly instead (see
     `app.document.revolve.resolve_revolve`), so this fallback only ever
-    matters for topology drift after the fact."""
+    matters for topology drift after the fact.
+
+    `SweepFeature` gets the identical Boss/Cut handling one branch further
+    down - a Sweep's raw solid comes from `app.document.sweep.resolve_
+    sweep_from_bodies` instead, same resilience convention (unresolvable
+    path/disconnected path/sweep geometry failure is skipped with a
+    warning rather than raising - the router's own create/update endpoints
+    validate a Sweep eagerly instead, see `app.document.sweep.
+    resolve_sweep`)."""
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.revolve import resolve_revolve_from_bodies
+    from app.document.sweep import resolve_sweep_from_bodies
 
     feature_index = {feature.id: i for i, feature in enumerate(part.features)}
     bodies: dict[str, TopoDS_Shape] = {}
@@ -559,6 +570,30 @@ def compute_part_bodies(
                 continue
             _apply_boss_or_cut(
                 bodies, feature.id, feature_index, feature.mode == RevolveMode.CUT,
+                feature.target_body_ids, solid,
+            )
+            continue
+
+        if isinstance(feature, SweepFeature):
+            sketch_feature = part.get_feature(feature.sketch_feature_id)
+            if not isinstance(sketch_feature, SketchFeature):
+                logger.warning(
+                    "Skipping SweepFeature %s: referenced sketch feature %s not found",
+                    feature.id,
+                    feature.sketch_feature_id,
+                )
+                continue
+            try:
+                solid = resolve_sweep_from_bodies(
+                    feature, sketch_feature, part, bodies, excluded_feature_ids
+                )
+            except HTTPException:
+                logger.warning("Skipping SweepFeature %s: could not be resolved", feature.id)
+                continue
+            if solid is None:
+                continue
+            _apply_boss_or_cut(
+                bodies, feature.id, feature_index, feature.mode == SweepMode.CUT,
                 feature.target_body_ids, solid,
             )
             continue

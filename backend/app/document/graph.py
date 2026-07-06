@@ -41,6 +41,7 @@ from app.document.models import (
     PlaneType,
     RevolveFeature,
     SketchFeature,
+    SweepFeature,
 )
 
 
@@ -203,6 +204,12 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     the Profile's own entities). Also depends on every `target_body_ids`
     entry for Cut mode, identical to `ExtrudeFeature`.
 
+    A `SweepFeature` gets the same treatment, generalized: it depends on the
+    Profile's own SketchFeature plus the SketchFeature wrapping *every*
+    distinct Sketch named across its `path_refs` (each entry may name a
+    different Sketch - see `SweepFeature`'s own docstring), not just one
+    axis Sketch - see `_sweep_dependencies`.
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -224,6 +231,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
         elif isinstance(feature, RevolveFeature):
             depends_on = _revolve_dependencies(part, feature)
+        elif isinstance(feature, SweepFeature):
+            depends_on = _sweep_dependencies(part, feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -239,6 +248,25 @@ def _revolve_dependencies(part: Part, feature: RevolveFeature) -> tuple[str, ...
     axis_sketch_feature_id = sketch_feature_id_for_sketch(part, feature.axis_ref.sketch_id)
     if axis_sketch_feature_id is not None:
         deps.add(axis_sketch_feature_id)
+    deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
+    return tuple(deps)
+
+
+def _sweep_dependencies(part: Part, feature: SweepFeature) -> tuple[str, ...]:
+    """`build_feature_graph`'s `SweepFeature` dependency-edge logic, split
+    out to keep `build_feature_graph` itself's per-type dispatch readable -
+    mirrors `_revolve_dependencies` exactly, generalized from one axis_ref
+    Sketch to every distinct Sketch named across `path_refs` (each entry
+    may name a different Sketch - see `SweepFeature`'s own docstring for
+    why cross-Sketch path segments are allowed): the Profile's own
+    SketchFeature, every `path_refs` entry's own owning SketchFeature, and
+    every `target_body_ids` entry's owning Feature for Cut mode, all
+    deduplicated via a `set`."""
+    deps: set[str] = {feature.sketch_feature_id}
+    for ref in feature.path_refs:
+        path_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
+        if path_sketch_feature_id is not None:
+            deps.add(path_sketch_feature_id)
     deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
     return tuple(deps)
 

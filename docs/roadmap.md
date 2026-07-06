@@ -254,6 +254,66 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   statements weren't exhaustive over the new `sketchCircle` variant (fixed
   in a same-day follow-up commit). **Confirmed working on-device** by the
   user after that follow-up fix.
+- **Sweep, the third of the Revolve → Sweep → Boolean sequence.** Scoped via
+  an explicit back-and-forth (mirroring Prompt F/G's own scoping rounds)
+  rather than assumed, since the project brief never detailed this module:
+  the path is built from *explicit, ordered, individually-tapped* Sketch
+  Line picks (not "the whole open chain of one Sketch," which was the
+  simpler recommended default) - each pick may name a Line in a *different*
+  Sketch, chained by 3D world-space endpoint position rather than a shared
+  Point id (which cross-Sketch entries never have); a closed (looping) path
+  is explicitly in scope alongside an open one, distinguished structurally
+  (first/last picked points coincide) rather than by a separate flag.
+  Boss/Cut parity with Extrude/Revolve throughout. Backend: new
+  `SweepFeature`/`SweepMode` (`app/document/models.py`) with an ordered
+  `path_refs: list[SketchEntityRef]`; new `app/document/sweep.py`
+  (`BRepOffsetAPI_MakePipe` swept along the picked-path wire, built via the
+  same `face_for_profile` Extrude/Revolve already share) - `_resolve_path_
+  wire` traces `path_refs` into an ordered world-space point chain by
+  resolving each entry's own Sketch/basis independently (mirrors
+  `app.document.revolve._resolve_axis`) then chaining consecutive entries
+  by coincident-endpoint-position (a `_PATH_POINT_TOLERANCE` world-space
+  check, since cross-Sketch entries have no shared Point id to chain by
+  instead) - `invalid_path_ref`/`disconnected_path`/`sweep_failed`
+  structured errors mirror Revolve's own `invalid_axis_ref`/`revolve_failed`
+  shape. `graph.py` gained `SweepFeature` dependency edges (the profile's
+  own SketchFeature plus *every* distinct SketchFeature named across
+  `path_refs`, deduplicated - generalizes Revolve's single axis-Sketch edge
+  to N path Sketches). `schemas.py`/`router.py` gained `SweepFeatureCreate/
+  Update/Response` and `POST/PATCH .../sweep-features[/{id}]`, eagerly
+  validated via `resolve_sweep` before persisting; `_validate_target_body_
+  ids` generalized once more to accept a Body from any of Extrude/Revolve/
+  Sweep. `compute_part_bodies` gained a `SweepFeature` branch reusing
+  `_apply_boss_or_cut`. 7 new pure-Python `test_stage_h_graph.py` tests
+  genuinely executed (103/103 passing across every pure-Python graph/
+  geometry/profile test file in this sandbox); `test_stage_h_sweep.py` (the
+  real-OCCT HTTP surface) `ast.parse`/`pyflakes`-verified only, per the
+  standing sandbox caveat - its own header note flags one real open
+  question that couldn't be checked without a real OCCT build: whether
+  `BRepOffsetAPI_MakePipe` auto-translates a profile positioned away from
+  its spine's start point, or requires the caller to. Client: `FeatureDto`
+  gained an ordered `pathRefs`; `createSweepFeature`/`updateSweepFeature`
+  API client methods; new `SweepPanel` (Boss/Cut + target-body status +
+  read-only path summary - no live path re-picking inside the panel, since
+  the path is fixed before it ever opens, unlike Revolve's live axis pick).
+  New path-picking mode in `part_screen.dart` (entered automatically right
+  after the profile-picking step, since a Sweep's path is mandatory unlike
+  Revolve's optional-until-panel-closes axis): tap a Line anywhere to
+  extend the chain (client-side connectivity pre-check against the same
+  world-space segment endpoints already used for rendering, mirroring the
+  backend's own trace logic so the two never disagree), tap the most
+  recently picked Line again to undo it, checkmark FAB confirms once 1+
+  segments are picked and opens `SweepPanel`. Entry points: Feature-tree
+  long-press context menu (`showFeatureContextMenu`'s new `showSweep`/
+  `canSweep` params) and the "Add" FAB's Feature picker (previously a
+  disabled placeholder, per the original Stage 19b brief). Explicitly
+  deferred, none requested for this pass: twist/roll control along the
+  path, multiple profiles swept along one path simultaneously, guide
+  curves, re-picking the path/profile when editing an existing Sweep,
+  non-Line path segments (only Lines exist as Sketch entities today). No
+  Dart SDK available in this sandbox to compile/run - verified via
+  brace-balance checks and manual review only. Pending on-device
+  confirmation.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

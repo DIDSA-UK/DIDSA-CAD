@@ -2,7 +2,7 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
-from app.document.models import ExtrudeType, PlaneType, Produces, RevolveMode, SubShapeType
+from app.document.models import ExtrudeType, PlaneType, Produces, RevolveMode, SubShapeType, SweepMode
 from app.sketch.models import Plane, SketchEntityType
 
 
@@ -355,6 +355,61 @@ class RevolveFeatureResponse(BaseModel):
     produces: Produces
 
 
+class SweepFeatureCreate(BaseModel):
+    """Creates a SweepFeature from an existing SketchFeature's closed
+    Profile - mirrors `ExtrudeFeatureCreate`/`RevolveFeatureCreate` exactly
+    (same `sketch_feature_id`/`target_body_ids` Boss-vs-Cut shape, same
+    422-if-Cut-is-empty check in `app.document.router._validate_target_
+    body_ids`, generalized to accept a Body from any of Extrude/Revolve/
+    Sweep), substituting `path_refs` for `start_distance`/`end_distance`/
+    `axis_ref`/`angle`.
+
+    `path_refs` is an *ordered* list of Sketch Line references, each
+    possibly naming a different Sketch (confirmed explicitly - not
+    restricted to one Sketch the way a single `axis_ref` is one Line) -
+    must name at least one entry (see `app.document.router._validate_
+    sweep_path_refs`); whether the named Lines actually resolve and chain
+    into one connected path (open or closed) is checked by
+    `app.document.sweep.resolve_sweep` instead, mirroring every other
+    structured Feature error in this codebase's "payload shape in the
+    router, resolution in the OCCT module" split.
+
+    `profile_refs` mirrors `ExtrudeFeatureCreate.profile_refs` exactly."""
+
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRefSchema]
+    mode: SweepMode
+    target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class SweepFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves, same omitted-vs-current-
+    value convention as `ExtrudeFeatureUpdate`/`RevolveFeatureUpdate` -
+    `sketch_feature_id` is never revised, only the path/mode/targets/
+    profile selection of whichever Sketch this Feature already sweeps."""
+
+    path_refs: list[SketchEntityRefSchema] | None = None
+    mode: SweepMode | None = None
+    target_body_ids: list[str] | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
+
+
+class SweepFeatureResponse(BaseModel):
+    type: Literal["sweep"] = "sweep"
+    id: str
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRefSchema] = []
+    mode: SweepMode
+    locked: bool
+    target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # SweepFeature (Boss and Cut alike, mirroring ExtrudeFeature/
+    # RevolveFeature).
+    produces: Produces
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,
@@ -362,6 +417,7 @@ FeatureResponse = Union[
     FilletFeatureResponse,
     ChamferFeatureResponse,
     RevolveFeatureResponse,
+    SweepFeatureResponse,
 ]
 
 
