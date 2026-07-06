@@ -41,9 +41,9 @@ from app.document.models import (
     SubShapeRef,
     SubShapeType,
 )
-from app.sketch.models import Circle, Sketch
+from app.sketch.models import Circle, Line, Sketch, SketchEntityRef, SketchEntityType
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
-from app.sketch.store import get_sketch_or_404
+from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +174,82 @@ def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature
     return BRepPrimAPI_MakePrism(moved_face, prism_vector).Shape()
 
 
+def invalid_profile_ref(ref: SketchEntityRef) -> HTTPException:
+    """Prompt G: the structured `invalid_profile_ref` error for a
+    `profile_refs` anchor that cannot select a real outer profile - covers
+    every way this can fail: the entity doesn't exist, isn't a Line/Circle
+    (only those two can anchor a profile - a Point can't), or exists but
+    isn't part of any of `detect_profile`'s current outer profiles (it
+    belongs to a hole, or to an unusable open-chain/branch component
+    `detect_profile` already excluded). Public (no leading underscore) since
+    `app.document.revolve` raises it too - a Revolve's Profile selection
+    needs the identical check an Extrude's does.
+
+    Mirrors `app.document.revolve._invalid_axis_ref`'s envelope shape
+    exactly (422, a structured `detail` dict) - see that function's own
+    doc comment for the general "structured, not generic missing_reference"
+    reasoning."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "type": "invalid_profile_ref",
+            "sketch_id": ref.sketch_id,
+            "entity_type": ref.entity_type.value,
+            "entity_id": ref.entity_id,
+        },
+    )
+
+
+def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRef]) -> list[Profile]:
+    """Prompt G: filters `candidates` - every outer profile `detect_profile`
+    currently reports for one Sketch (either the single CLOSED_LOOP
+    `profile`, wrapped in a list, or MULTIPLE_LOOPS' own `loops`) - down to
+    just the ones named by `profile_refs`, or returns `candidates` unchanged
+    when `profile_refs` is empty (the default: use every detected outer
+    profile, exactly `compute_part_bodies`'s pre-Prompt-G behaviour - a
+    Sketch with a stray open chain or branch alongside a genuinely closed
+    loop is no longer an error at all, see `detect_profile`'s own Prompt G
+    update, and picking a subset of 2+ closed loops is now possible instead
+    of always using all of them).
+
+    Each `profile_refs` entry names one anchor entity (a Line or Circle)
+    expected to belong to one of `candidates`' own `line_ids` - resolved via
+    `app.sketch.store.resolve_sketch_entity`, then matched by scanning each
+    candidate's `line_ids` (a Circle profile's `line_ids` holds its own
+    single entity id - see `app.sketch.profile._circle_profile` - so the
+    same membership check works uniformly for both profile shapes). Fails
+    closed with `invalid_profile_ref` (never a generic `missing_reference`
+    or an uncaught lookup error) for every way an anchor can fail to select
+    a real outer profile - see `invalid_profile_ref`'s own doc comment.
+
+    Selected profiles are deduplicated (two refs naming the same loop select
+    it once) and returned in `candidates`' own order, not `profile_refs`'
+    order, so the resulting compound's sub-shape ordering never depends on
+    the order the caller happened to list its picks in."""
+    if not profile_refs:
+        return candidates
+
+    selected_indices: set[int] = set()
+    for ref in profile_refs:
+        if ref.entity_type not in (SketchEntityType.LINE, SketchEntityType.CIRCLE):
+            raise invalid_profile_ref(ref)
+        try:
+            entity = resolve_sketch_entity(ref)
+        except HTTPException:
+            raise invalid_profile_ref(ref) from None
+        if not isinstance(entity, (Line, Circle)):
+            raise invalid_profile_ref(ref)
+
+        match_index = next(
+            (i for i, candidate in enumerate(candidates) if entity.id in candidate.line_ids), None
+        )
+        if match_index is None:
+            raise invalid_profile_ref(ref)
+        selected_indices.add(match_index)
+
+    return [candidates[i] for i in sorted(selected_indices)]
+
+
 def _solid_for_extrude_feature(
     feature: ExtrudeFeature,
     sketch_feature: SketchFeature,
@@ -191,6 +267,11 @@ def _solid_for_extrude_feature(
     per sub-profile, combined into a single TopoDS_Compound - transparent
     to every caller of this function, which already only cares that it
     gets back one TopoDS_Shape.
+
+    Prompt G: `feature.profile_refs`, if non-empty, narrows the MultiProfile
+    case down to just the named outer profile(s) instead of always using
+    every one detected (see `select_profiles`) - empty (the default)
+    preserves the exact pre-Prompt-G "use all of them" behaviour.
 
     C3: `sketch_feature`'s own anchor plane (fixed, or a custom Plane via
     `sketch_feature.plane_feature_id`) is resolved via `app.document.
@@ -220,9 +301,10 @@ def _solid_for_extrude_feature(
     basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
     if result.status == ProfileStatus.CLOSED_LOOP:
         assert result.profile is not None
-        profiles = [result.profile]
+        candidates = [result.profile]
     else:
-        profiles = result.loops
+        candidates = result.loops
+    profiles = select_profiles(candidates, feature.profile_refs)
     solids = [_prism_for_profile(sketch, profile, feature, basis) for profile in profiles]
 
     if len(solids) == 1:
@@ -493,7 +575,15 @@ def compute_part_bodies(
             )
             continue
 
-        solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, excluded_feature_ids)
+        try:
+            solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            # Prompt G: profile_refs can now raise invalid_profile_ref (e.g.
+            # topology drift since creation) - same resilience the
+            # Fillet/Chamfer/Revolve branches above already have, so one bad
+            # ExtrudeFeature doesn't take down every other Body's response.
+            logger.warning("Skipping ExtrudeFeature %s: could not be resolved", feature.id)
+            continue
         if solid is None:
             continue
 

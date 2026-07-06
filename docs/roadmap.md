@@ -79,7 +79,7 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   entry (alongside Shaded / Shaded+Edges / Wireframe) that renders
   occluded edges distinctly (e.g. dashed) rather than hiding or bleeding
   them through.
-- **Prompt F: Revolve — built, pending on-device confirmation.** Closest of
+- **Prompt F: Revolve — confirmed working on-device.** Closest of
   the three new C/D/E-successor prompts (Revolve → Sweep → Boolean) to
   Extrude: consumes a closed Profile the same way, produces a solid the same
   way, full Boss/Cut parity from day one (`mode: BOSS | CUT`,
@@ -144,11 +144,68 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   gates Body-sub-shape/plane/sketch-entity *viewport* selections, and
   Extrude's real enabling condition was never there in the first place (it's
   the tree long-press), so Revolve's own enabling mirrors Extrude's *actual*
-  mechanism instead of literally touching that function. **Not yet
-  confirmed on-device** - per this project's standing convention, no Sweep
-  work begins until Boss/Cut Revolve (partial angle and full 360°), axis-Line
-  picking, live angle preview, PATCH-edit-and-rollback, and cascade-delete
-  all pass on a real device.
+  mechanism instead of literally touching that function. **Confirmed working
+  on-device** by the user directly.
+- **Bug fix (on-device feedback, post-Revolve): mesh display could go stale
+  after Fillet/Chamfer/Extrude/Revolve/Sketch operations.** Reported
+  scenario: creating a Fillet on a Body that already had a Chamfer left the
+  viewport showing the pre-Fillet shape until an unrelated later action
+  (adding a second Chamfer) happened to trigger a repaint - hover
+  hit-testing already reflected the new Fillet's topology correctly (it
+  reads `_bodies` directly, not through the last-painted frame), proving
+  the fetch itself succeeded; only the repaint never happened. Root cause:
+  `_refreshMesh`/`_refreshFeatures`/`_refreshSketchGeometries`/
+  `_refreshFilletPreviewMesh`/`_refreshChamferPreviewMesh` all mutated
+  their target state fields directly, with no `setState` of their own -
+  relying entirely on whichever caller happened to `setState` afterward
+  (usually `_runGuarded`'s own `_busy` bookkeeping) to trigger a repaint by
+  accident. Fixed by wrapping each one's own field mutation in its own
+  `setState` (with a `mounted` guard for the async gap) so a repaint is
+  never left to chance - a pre-existing pattern across the whole file, not
+  something Revolve introduced, so this also makes Revolve's own live
+  preview more reliable.
+- **Prompt G: multi-profile Sketch selection for Extrude/Revolve.** Two
+  related gaps closed together, scoped via an explicit back-and-forth
+  rather than assumed: (1) a Sketch with a mix of open and closed profiles
+  used to fail the *entire* Sketch as `NO_LOOP`/`BRANCH`, even past a
+  genuinely usable closed loop, since `detect_profile` walked the whole
+  sketch as one connectivity graph rather than classifying each connected
+  component independently; (2) a Sketch with 2+ closed profiles always
+  used *all* of them (an implicit MultiProfile compound), with no way to
+  pick a subset. Backend: `detect_profile` (`app/sketch/profile.py`)
+  relaxed to per-connected-component classification - a component is a
+  usable closed loop exactly when every point in it has degree 2, anything
+  else (an open end, a branch) is simply excluded rather than erroring the
+  whole sketch; `NO_LOOP`/`BRANCH` now only fire when zero usable loops
+  exist anywhere (`BRANCH` still takes detail-message priority in that
+  fully-unusable case, matching the old behaviour's own precedent). New
+  `profile_refs: list[SketchEntityRef]` on both `ExtrudeFeature` and
+  `RevolveFeature` - empty means every outer profile currently detected
+  (the old default, unchanged), non-empty names anchor Line/Circle entities
+  identifying which outer profile(s) to use, resolved via a new
+  `app.document.extrude.select_profiles` (shared by both Feature types) and
+  a new `invalid_profile_ref` structured error. Client: `RevolvePanel`'s
+  own decisions carried over (create-time-only picking, chosen over
+  edit-time re-picking per explicit instruction); a new profile-picking
+  mode entered automatically whenever the chosen Sketch has 2+ usable
+  closed loops (skipped entirely for the common single-loop case) -
+  designed via explicit user answers rather than assumed: cursor-based
+  selection directly in the 3D viewport (not a list picker, not the 2D
+  sketch canvas), hovering any Line highlights its whole containing loop
+  (`PartViewport.sketchLineLoopGroup`, a new callback generalizing the
+  existing single-entity hover highlight), click toggles a whole loop
+  in/out of the pick set (mirrors Fillet's own "tap a face, select its
+  whole edge loop" convenience), and a checkmark FAB confirms and opens the
+  target panel. Known limitation carried over, not newly introduced:
+  Circle-only loops aren't individually tappable yet (Circle picking in the
+  3D viewport has been out of scope since Prompt C1) - a Circle profile
+  among others can still only be included via the "pick nothing = use
+  every profile" default, not individually selected. 7 new pure-Python
+  `detect_profile` tests (`test_stage_g_profile.py`) genuinely executed
+  (68/68 passing across every pure-Python graph/geometry/profile test file
+  in this sandbox); the real-OCCT HTTP surface tests
+  (`test_stage_g_profile_refs.py`) `ast.parse`/`pyflakes`-verified only,
+  per the standing sandbox caveat. Pending on-device confirmation.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what

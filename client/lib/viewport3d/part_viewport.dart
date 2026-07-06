@@ -170,6 +170,27 @@ class PartViewport extends StatefulWidget {
   /// can update its slider to the new value.
   final void Function(double farClip)? onFarClipChanged;
 
+  /// Prompt G: when non-null, expands a hovered `sketchLine` entity's
+  /// highlight from "just this one Line" to every Line/Circle entity
+  /// sharing a closed-loop profile with it - the profile-picking flow's
+  /// "hover any line in a loop, the whole loop lights up" convenience,
+  /// mirroring [PartScreen]'s existing "tap a face, select its whole
+  /// boundary edge loop" convenience for Fillet/Chamfer, just at hover time
+  /// rather than only on toggle. [PartScreen] owns the actual profile-loop
+  /// data (fetched from the Sketch's Profile-detection response) and
+  /// resolves the lookup; this widget stays opaque to what a "loop" even is,
+  /// same "backend-shaped predicate injected as a callback" pattern
+  /// `selection_actions.dart`'s `PointOnLineChecker` already uses. Returns
+  /// the full set of `sketchEntityId`s sharing a loop with [sketchEntityId]
+  /// (always including it itself), or null to fall back to the ordinary
+  /// single-entity hover highlight (every other mode). Only ever consulted
+  /// for the *hover* highlight ([_buildEntityHighlightNode] via
+  /// [_syncHoverNode]) - the *selected* (picked) highlight already shows
+  /// every constituent entity because [PartScreen] adds all of a picked
+  /// loop's entities into [selectedEntities] at once (see
+  /// [PartScreen._toggleProfileLoop]), needing no expansion here.
+  final Set<String>? Function(String sketchFeatureId, String sketchEntityId)? sketchLineLoopGroup;
+
   const PartViewport({
     super.key,
     this.bodies = const [],
@@ -196,6 +217,7 @@ class PartViewport extends StatefulWidget {
     this.isPerspective = false,
     this.farClip,
     this.onFarClipChanged,
+    this.sketchLineLoopGroup,
   });
 
   @override
@@ -1217,9 +1239,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       case SelectionEntityKind.sketchLine:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
+        // Prompt G: expands to the whole containing loop when
+        // [sketchLineLoopGroup] is supplied (the profile-picking flow) -
+        // see that field's own doc comment.
+        final group = widget.sketchLineLoopGroup?.call(entity.sketchFeatureId, entity.sketchEntityId);
+        final entityIds = group ?? {entity.sketchEntityId};
         final segments = [
           for (var i = 0; i < geometry.lineIds.length; i++)
-            if (geometry.lineIds[i] == entity.sketchEntityId) geometry.lineSegments[i],
+            if (entityIds.contains(geometry.lineIds[i])) geometry.lineSegments[i],
         ];
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);

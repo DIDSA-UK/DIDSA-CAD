@@ -6,7 +6,7 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import resolve_create_plane
-from app.document.extrude import compute_part_bodies
+from app.document.extrude import compute_part_bodies, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
@@ -198,6 +198,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             end_distance=feature.end_distance,
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             produces=feature.produces,
         )
     if isinstance(feature, CreatePlaneFeature):
@@ -227,6 +228,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             mode=feature.mode,
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             produces=feature.produces,
         )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
@@ -316,6 +318,29 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
             detail=f"Sketch does not contain a closed profile (status: {result.status.value})",
         )
     return feature
+
+
+def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> None:
+    """Prompt G: eagerly validates `profile_refs` against `sketch_feature`'s
+    *current* Profile detection, discarding the result - fails closed with
+    `invalid_profile_ref` (see `app.document.extrude.select_profiles`)
+    before ever persisting an Extrude/RevolveFeature with an unusable
+    profile selection. Cheap (pure-Python, no OCCT) unlike the rest of
+    Extrude's own validation, which stays lazy-only (`_require_closed_
+    sketch_feature` above never calls into OCCT either) - `profile_refs` is
+    new and error-prone enough to warrant this eager check regardless,
+    mirroring Revolve's own `axis_ref`/`resolve_revolve` precedent rather
+    than Extrude's older, more permissive convention.
+
+    Called after `_require_closed_sketch_feature` has already confirmed
+    `sketch_feature` resolves to a real, currently-extrudable SketchFeature -
+    this re-runs `detect_profile` once more (cheap) rather than threading
+    that call's own result through, keeping this a standalone, reusable
+    check for both Extrude's and Revolve's create/update endpoints."""
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    result = detect_profile(sketch)
+    candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
+    select_profiles(candidates, profile_refs)
 
 
 def _validate_fillet_radius(radius: float) -> None:
@@ -634,9 +659,11 @@ def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchF
 )
 def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> ExtrudeFeatureResponse:
     part = get_part_or_404(part_id)
-    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    sketch_feature = _require_closed_sketch_feature(part, payload.sketch_feature_id)
     _validate_extrude_distances(payload.start_distance, payload.end_distance)
     _validate_target_body_ids(part, payload.extrude_type == ExtrudeType.CUT, payload.target_body_ids)
+    profile_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+    _validate_profile_refs(sketch_feature, profile_refs)
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
@@ -644,6 +671,7 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
         start_distance=payload.start_distance,
         end_distance=payload.end_distance,
         target_body_ids=list(payload.target_body_ids),
+        profile_refs=profile_refs,
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -685,11 +713,19 @@ def update_extrude_feature(
         payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
     )
     _validate_target_body_ids(part, new_extrude_type == ExtrudeType.CUT, new_target_body_ids)
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    sketch_feature = _require_closed_sketch_feature(part, feature.sketch_feature_id)
+    _validate_profile_refs(sketch_feature, new_profile_refs)
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
     feature.end_distance = new_end
     feature.target_body_ids = list(new_target_body_ids)
+    feature.profile_refs = new_profile_refs
     return _feature_response(part, feature)
 
 
@@ -980,7 +1016,13 @@ def create_revolve_feature(part_id: str, payload: RevolveFeatureCreate) -> Revol
         angle=payload.angle,
         mode=payload.mode,
         target_body_ids=list(payload.target_body_ids),
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
     )
+    # Prompt G: profile_refs' own validity (invalid_profile_ref) is checked
+    # as part of this same resolve - resolve_revolve_from_bodies calls
+    # select_profiles internally, so no separate eager check is needed here
+    # the way Extrude's own _validate_profile_refs is (Extrude has no
+    # equivalent full-resolve step at create time).
     resolve_revolve(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -1015,6 +1057,11 @@ def update_revolve_feature(
     new_target_body_ids = (
         payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
     )
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
     _validate_revolve_angle(new_angle)
     _validate_target_body_ids(part, new_mode == RevolveMode.CUT, new_target_body_ids)
 
@@ -1025,6 +1072,7 @@ def update_revolve_feature(
         angle=new_angle,
         mode=new_mode,
         target_body_ids=list(new_target_body_ids),
+        profile_refs=new_profile_refs,
     )
     resolve_revolve(part, candidate)  # raises on an unresolvable reference
 
@@ -1032,6 +1080,7 @@ def update_revolve_feature(
     feature.angle = candidate.angle
     feature.mode = candidate.mode
     feature.target_body_ids = candidate.target_body_ids
+    feature.profile_refs = candidate.profile_refs
     return _feature_response(part, feature)
 
 

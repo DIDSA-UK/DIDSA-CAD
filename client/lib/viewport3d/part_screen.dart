@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../api/sketch_api_client.dart' show ApiException, LineDto, SketchApiClient;
+import '../api/sketch_api_client.dart'
+    show ApiException, LineDto, ProfileDetectionDto, ProfileLoopDto, SketchApiClient;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
@@ -36,6 +37,11 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'view_preferences.dart';
+
+/// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
+/// own "Prompt G: profile picking" state section) is gathering picks for -
+/// decides whether confirming opens [ExtrudePanel] or [RevolvePanel].
+enum _ProfilePickerTarget { extrude, revolve }
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -343,6 +349,15 @@ class _PartScreenState extends State<PartScreen> {
       _toggleChamferFaceEdges(entity);
       return;
     }
+    // Prompt G: a sketchLine tap while the profile picker is open toggles
+    // its whole containing loop, not just the one tapped Line - see
+    // [_toggleProfileLoop]. Checked before the Revolve axis special-case
+    // below since the two modes are never active at the same time, but
+    // this ordering costs nothing either way.
+    if (_profilePickerActive && entity.kind == SelectionEntityKind.sketchLine) {
+      _toggleProfileLoop(entity);
+      return;
+    }
     // Prompt F: a sketchLine tap while the Revolve panel is open sets (or
     // clears, if it's the already-picked one) the axis - a single reference,
     // replaced rather than accumulated the way target-body picks are - see
@@ -543,7 +558,24 @@ class _PartScreenState extends State<PartScreen> {
   /// flow, where Cancel deletes the just-created preview Feature) an
   /// already-existing Feature must never be deleted just because its edit
   /// was cancelled.
-  ({ExtrudeType type, double start, double end, List<String> targetBodyIds})? _extrudeEditSnapshot;
+  ({
+    ExtrudeType type,
+    double start,
+    double end,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  })? _extrudeEditSnapshot;
+
+  /// Prompt G: which outer profile(s) of [_extrudeSketchFeature] to use -
+  /// set once, either to `[]` (no profile picker shown - a single-loop
+  /// Sketch) or to whatever [_confirmProfilePicker] resolved, and never
+  /// changed again for the rest of this create/edit session (create-time-
+  /// only picking - see `_ProfilePickerTarget`'s own doc comment for why
+  /// re-picking mid-edit is out of scope for this pass). Threaded into
+  /// every [_ensureExtrudeFeatureExists] call the same way
+  /// [_extrudeStartDistance] etc. are, so a live-preview re-solve never
+  /// silently reverts it to "every profile".
+  List<SketchEntityRefDto> _extrudeProfileRefs = [];
 
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
@@ -800,10 +832,15 @@ class _PartScreenState extends State<PartScreen> {
     double angle,
     SketchEntityRefDto axisRef,
     List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
   })? _revolveEditSnapshot;
 
   RevolveMode _revolveMode = RevolveMode.boss;
   double _revolveAngle = 180.0;
+
+  /// Prompt G: mirrors [_extrudeProfileRefs] exactly - which outer
+  /// profile(s) of [_revolveSketchFeature] to use.
+  List<SketchEntityRefDto> _revolveProfileRefs = [];
 
   /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
   /// [_extrudeDebounce].
@@ -832,6 +869,252 @@ class _PartScreenState extends State<PartScreen> {
     sketchLine: true,
     plane: false,
   );
+
+  // --- Prompt G: profile picking -------------------------------------------
+  // Lets the user choose which closed profile(s) of a Sketch to extrude/
+  // revolve, instead of always using every one detected (or erroring on a
+  // mix of open/closed profiles - see app.sketch.profile.detect_profile's
+  // own Prompt G relaxation). Entered from _extrudeSelectedFeature/
+  // _onSketchPicked/_revolveSelectedFeature/_onRevolveSketchPicked once an
+  // eligible Sketch is chosen and turns out to have 2+ usable closed loops -
+  // a single-loop Sketch skips straight to the panel exactly as before this
+  // prompt, so the common case gets zero added friction. Create-time-only:
+  // editing an already-existing Extrude/Revolve keeps whatever profile_refs
+  // it already has for the whole edit session (no re-picking UI yet - see
+  // _openExtrudePanelForEdit/_openRevolvePanelForEdit, which just prefill
+  // _extrudeProfileRefs/_revolveProfileRefs from the stored Feature and
+  // never change them again).
+
+  /// True while the profile picker is open.
+  bool _profilePickerActive = false;
+
+  /// Which Feature type the picker is gathering picks for - decides what
+  /// [_confirmProfilePicker] opens once the checkmark FAB is tapped.
+  _ProfilePickerTarget? _profilePickerTarget;
+
+  /// The SketchFeature being picked from.
+  FeatureDto? _profilePickerSketchFeature;
+
+  /// Every outer profile loop `detect_profile` currently reports for
+  /// [_profilePickerSketchFeature] (fetched once, when picking starts, via
+  /// `SketchApiClient.getProfile`) - each entry is one loop's own set of
+  /// Line/Circle entity ids. Used both to resolve "which loop does this
+  /// tapped/hovered Line belong to" ([_profileLoopIndexFor], driving
+  /// [_toggleProfileLoop] and [PartViewport.sketchLineLoopGroup]) and to
+  /// build the anchor [SketchEntityRefDto] list once the user confirms (one
+  /// anchor per picked loop, any member of it - see [_confirmProfilePicker]).
+  List<Set<String>> _profilePickerLoops = [];
+
+  /// [_selectedEntities]' value from just before picking started - restored
+  /// on confirm/cancel, same purpose every other picker's own
+  /// entitiesBeforeX field serves.
+  Set<SelectionEntityRef>? _entitiesBeforeProfilePicker;
+
+  /// Restricts the picker session to `sketchLine` hits only - Circle-only
+  /// loops aren't independently tappable via this mechanism yet (Circle
+  /// picking in the 3D viewport is a pre-existing gap, out of scope since
+  /// C1 - see that prompt's own boundary note) - a sketch with only Circle
+  /// profiles never has more than the picker would auto-skip anyway once
+  /// it's genuinely just one loop, but a mix of Circle and Line-chain
+  /// profiles would leave the Circle one un-pickable by tap; it's still
+  /// included via the "pick nothing = use every profile" default.
+  static const _profilePickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    plane: false,
+  );
+
+  /// The loop index in [_profilePickerLoops] containing [sketchEntityId], or
+  /// null if it belongs to none (shouldn't happen for a real hit against a
+  /// Sketch this picker fetched its loops from, but stays defensive against
+  /// stale data the same way every other by-id lookup in this file does).
+  int? _profileLoopIndexFor(String sketchEntityId) {
+    for (var i = 0; i < _profilePickerLoops.length; i++) {
+      if (_profilePickerLoops[i].contains(sketchEntityId)) return i;
+    }
+    return null;
+  }
+
+  /// [PartViewport.sketchLineLoopGroup] - see that field's own doc comment.
+  /// Only ever returns non-null while [_profilePickerActive] and for the
+  /// specific Sketch Feature being picked from - every other hover in this
+  /// file falls back to the single-entity default.
+  Set<String>? _sketchLineLoopGroup(String sketchFeatureId, String sketchEntityId) {
+    if (!_profilePickerActive || _profilePickerSketchFeature?.id != sketchFeatureId) return null;
+    final index = _profileLoopIndexFor(sketchEntityId);
+    return index == null ? null : _profilePickerLoops[index];
+  }
+
+  /// Shared by every "a Sketch was just chosen for Extrude/Revolve" entry
+  /// point ([_extrudeSelectedFeature]/[_onSketchPicked]/
+  /// [_revolveSelectedFeature]/[_onRevolveSketchPicked]) - fetches the
+  /// Sketch's current Profile detection and either opens the target panel
+  /// directly with no profile selection (0 or 1 usable loop - nothing to
+  /// disambiguate, exactly the pre-Prompt-G behaviour) or enters the picker
+  /// (2+ loops).
+  Future<void> _proceedToSketchConsumingFeature(
+    FeatureDto sketchFeature,
+    _ProfilePickerTarget target,
+  ) async {
+    final sketchId = sketchFeature.sketchId;
+    if (sketchId == null) {
+      _openPanelForTarget(sketchFeature, target, const []);
+      return;
+    }
+    ProfileDetectionDto? profile;
+    try {
+      profile = await _sketchApi.getProfile(sketchId);
+    } catch (_) {
+      // Defensive - the caller's own eligibility check already confirmed
+      // this Sketch resolves; fall back to "no picking, just proceed"
+      // rather than getting stuck on a transient fetch failure.
+    }
+    if (!mounted) return;
+    final loops = [
+      for (final loop in profile?.fillableLoops ?? const <ProfileLoopDto>[]) loop.lineIds.toSet(),
+    ];
+    if (loops.length <= 1) {
+      _openPanelForTarget(sketchFeature, target, const []);
+      return;
+    }
+    _startProfilePicker(sketchFeature, target, loops);
+  }
+
+  void _openPanelForTarget(
+    FeatureDto sketchFeature,
+    _ProfilePickerTarget target,
+    List<SketchEntityRefDto> profileRefs,
+  ) {
+    if (target == _ProfilePickerTarget.extrude) {
+      _openExtrudePanel(sketchFeature, profileRefs: profileRefs);
+    } else {
+      _openRevolvePanel(sketchFeature, profileRefs: profileRefs);
+    }
+  }
+
+  void _startProfilePicker(
+    FeatureDto sketchFeature,
+    _ProfilePickerTarget target,
+    List<Set<String>> loops,
+  ) {
+    setState(() {
+      _profilePickerActive = true;
+      _profilePickerTarget = target;
+      _profilePickerSketchFeature = sketchFeature;
+      _profilePickerLoops = loops;
+      _entitiesBeforeProfilePicker = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _planeSelectionModeStack.pop();
+      _selectionFilterOverrides.push(_profilePickerSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s profile-picker special-case - toggles every
+  /// entity in [lineEntity]'s whole containing loop in/out of
+  /// [_selectedEntities] as one unit, mirroring [_toggleFilletFaceEdges]'s
+  /// own "grow a partial pick to the complete loop, or clear a complete one"
+  /// convenience. A no-op if [lineEntity] doesn't resolve to any of
+  /// [_profilePickerLoops] (stale hit against data that's since changed).
+  void _toggleProfileLoop(SelectionEntityRef lineEntity) {
+    final index = _profileLoopIndexFor(lineEntity.sketchEntityId);
+    if (index == null) return;
+    final loopEntities = {
+      for (final entityId in _profilePickerLoops[index])
+        SelectionEntityRef(
+          kind: SelectionEntityKind.sketchLine,
+          sketchFeatureId: lineEntity.sketchFeatureId,
+          sketchEntityId: entityId,
+        ),
+    };
+    final allSelected = loopEntities.every(_selectedEntities.contains);
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (allSelected) {
+        next.removeAll(loopEntities);
+      } else {
+        next.addAll(loopEntities);
+      }
+      _selectedEntities = next;
+    });
+  }
+
+  /// How many distinct loops are currently picked - the top banner's own
+  /// live count, derived from [_selectedEntities] the same way
+  /// [_confirmProfilePicker] itself resolves the final pick.
+  int _profilePickedCount() {
+    final pickedLoopIndices = <int>{};
+    for (final entity in _selectedEntities) {
+      if (entity.kind != SelectionEntityKind.sketchLine) continue;
+      final index = _profileLoopIndexFor(entity.sketchEntityId);
+      if (index != null) pickedLoopIndices.add(index);
+    }
+    return pickedLoopIndices.length;
+  }
+
+  /// The checkmark FAB - resolves every currently-picked loop (derived from
+  /// [_selectedEntities], not a separately-tracked index set, since the
+  /// selection set is already the single source of truth for "which loops
+  /// are picked") into one anchor [SketchEntityRefDto] per loop (any member
+  /// entity id - `select_profiles` on the backend only needs *a* member, not
+  /// a specific one), then closes the picker and opens the target panel.
+  /// Picking nothing is valid and simply means "use every profile" (an
+  /// empty `profile_refs` list) - the backend's own default, so no special-
+  /// casing is needed for a zero-pick confirm.
+  void _confirmProfilePicker() {
+    final sketchFeature = _profilePickerSketchFeature;
+    final target = _profilePickerTarget;
+    if (sketchFeature == null || target == null) return;
+
+    final pickedLoopIndices = <int>{};
+    for (final entity in _selectedEntities) {
+      if (entity.kind != SelectionEntityKind.sketchLine) continue;
+      final index = _profileLoopIndexFor(entity.sketchEntityId);
+      if (index != null) pickedLoopIndices.add(index);
+    }
+    final sketchId = sketchFeature.sketchId!;
+    final profileRefs = [
+      for (final index in pickedLoopIndices)
+        SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'line',
+          entityId: _profilePickerLoops[index].first,
+        ),
+    ];
+
+    setState(() {
+      _profilePickerActive = false;
+      _profilePickerTarget = null;
+      _profilePickerSketchFeature = null;
+      _profilePickerLoops = [];
+      _selectedEntities = _entitiesBeforeProfilePicker ?? {};
+      _entitiesBeforeProfilePicker = null;
+      _selectionFilterOverrides.pop();
+    });
+    _openPanelForTarget(sketchFeature, target, profileRefs);
+  }
+
+  /// Exits the picker without opening anything - the picker's own Cancel
+  /// button and the device back gesture (see [build]'s `PopScope`) both
+  /// lead here, mirroring every other guided picker's "dismissing cancels
+  /// the pending operation" rule.
+  void _cancelProfilePicker() {
+    setState(() {
+      _profilePickerActive = false;
+      _profilePickerTarget = null;
+      _profilePickerSketchFeature = null;
+      _profilePickerLoops = [];
+      _selectedEntities = _entitiesBeforeProfilePicker ?? {};
+      _entitiesBeforeProfilePicker = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
 
   /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
   /// recomputed from [_features] directly (no extra network call - the
@@ -1005,11 +1288,27 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  ///
+  /// Bug fix (on-device feedback): the fetch itself used to mutate
+  /// [_features] directly, with no `setState` of its own - relying entirely
+  /// on whatever the *caller* happened to `setState` afterward (often
+  /// [_runGuarded]'s own bookkeeping `_busy` flip) to actually trigger a
+  /// repaint. That's exactly backwards for a Flutter `State` object: a field
+  /// read by `build` must be mutated inside `setState` at the point it
+  /// changes, not left to some unrelated later call to coincidentally flush
+  /// it - when the timing lined up this was invisible, but it made the
+  /// screen only ever "catch up" on the *next* unrelated `setState` (see
+  /// [_refreshMesh]'s own matching fix for the reported symptom this
+  /// caused).
   Future<void> _refreshFeatures() async {
     final part = _part;
     if (part == null) return;
-    _features = await _api.listFeatures(part.id);
-    _recomputeCreatePlaneGeometries();
+    final features = await _api.listFeatures(part.id);
+    if (!mounted) return;
+    setState(() {
+      _features = features;
+      _recomputeCreatePlaneGeometries();
+    });
   }
 
   /// Re-fetches the Part's mesh with [_hiddenFeatureIds]/
@@ -1029,6 +1328,21 @@ class _PartScreenState extends State<PartScreen> {
   /// a backend implementation detail to keep the mesh endpoint's response
   /// shape uniform, not real geometry the user created, and showing it as a
   /// stray cube in an otherwise-empty viewport was confusing on-device.
+  ///
+  /// Bug fix (on-device feedback): creating a Fillet on a Body that already
+  /// had a Chamfer left the viewport showing the pre-Fillet shape until an
+  /// unrelated later action (e.g. adding a second Chamfer) happened to
+  /// trigger some *other* `setState` call - hover hit-testing already
+  /// reflected the new Fillet topology (it reads [_bodies] directly, not
+  /// through `build`'s last-painted frame), proving the fetch itself
+  /// succeeded and [_bodies] held the right value; only the repaint never
+  /// happened. Root cause: this method mutated [_bodies] with no `setState`
+  /// of its own, relying entirely on whichever caller happened to
+  /// `setState` afterward (most callers go through [_runGuarded], whose own
+  /// `_busy` bookkeeping `setState` in its `finally` block was doing this
+  /// job by accident) - fragile the moment that incidental timing didn't
+  /// line up. Now self-contained: every real change to [_bodies] happens
+  /// inside its own `setState`, so a repaint is never left to chance.
   Future<void> _refreshMesh() async {
     final part = _part;
     if (part == null) return;
@@ -1037,8 +1351,9 @@ class _PartScreenState extends State<PartScreen> {
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
     );
+    if (!mounted) return;
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
-    _bodies = isPlaceholder ? [] : response;
+    setState(() => _bodies = isPlaceholder ? [] : response);
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -1047,6 +1362,9 @@ class _PartScreenState extends State<PartScreen> {
   /// backend state. A single Feature's fetch failing (e.g. a test fixture
   /// that only stubs `GET /sketch/sketches/{id}`, or a transient network
   /// issue) only drops that Feature's geometry, not the whole viewport.
+  ///
+  /// Bug fix (on-device feedback): mirrors [_refreshMesh]'s own fix - the
+  /// rebuilt maps used to be assigned with no `setState` of their own.
   Future<void> _refreshSketchGeometries() async {
     final updated = <String, SketchGeometry3D>{};
     final updatedLines = <String, List<LineDto>>{};
@@ -1067,9 +1385,12 @@ class _PartScreenState extends State<PartScreen> {
         // Swallow - see doc comment above.
       }
     }
-    _allSketchGeometries = updated;
-    _linesByFeatureId = updatedLines;
-    _recomputeVisibleSketchGeometries();
+    if (!mounted) return;
+    setState(() {
+      _allSketchGeometries = updated;
+      _linesByFeatureId = updatedLines;
+      _recomputeVisibleSketchGeometries();
+    });
   }
 
   /// Filters [_allSketchGeometries] down to [_visibleSketchGeometries] by
@@ -1310,7 +1631,7 @@ class _PartScreenState extends State<PartScreen> {
       final reason = await _checkExtrudeEligibility(feature);
       if (!mounted) return;
       if (reason == null) {
-        _openExtrudePanel(feature);
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
         return;
       }
     }
@@ -1368,7 +1689,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedFeatureId = feature.id;
       _pickableSketchIds = {};
     });
-    _openExtrudePanel(feature);
+    await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
   }
 
   /// Exits picker mode without creating an Extrude - the Feature tree's own
@@ -1397,7 +1718,7 @@ class _PartScreenState extends State<PartScreen> {
       final reason = await _checkExtrudeEligibility(feature);
       if (!mounted) return;
       if (reason == null) {
-        _openRevolvePanel(feature);
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
         return;
       }
     }
@@ -1443,7 +1764,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedFeatureId = feature.id;
       _pickableRevolveSketchIds = {};
     });
-    _openRevolvePanel(feature);
+    await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
   }
 
   /// Mirrors [_cancelSketchPicker] exactly, for the Revolve picker.
@@ -1681,9 +2002,9 @@ class _PartScreenState extends State<PartScreen> {
 
     switch (action) {
       case FeatureContextMenuAction.extrude:
-        _openExtrudePanel(feature);
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
       case FeatureContextMenuAction.revolve:
-        _openRevolvePanel(feature);
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -1716,7 +2037,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [_selectionFilterOverrides] override so every viewport tap while the
   /// panel is open can only ever produce a [SelectionEntityKind.body] hit
   /// (see `selection_hit_test.dart`'s `hitTestBodies`).
-  void _openExtrudePanel(FeatureDto sketchFeature) {
+  void _openExtrudePanel(FeatureDto sketchFeature, {List<SketchEntityRefDto> profileRefs = const []}) {
     setState(() {
       _extrudeSketchFeature = sketchFeature;
       _previewExtrudeFeatureId = null;
@@ -1724,6 +2045,7 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeType = ExtrudeType.boss;
       _extrudeStartDistance = 0.0;
       _extrudeEndDistance = 10.0;
+      _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
       // On-device feedback: a one-time default rather than the permanent
@@ -1768,16 +2090,24 @@ class _PartScreenState extends State<PartScreen> {
     final start = feature.startDistance ?? 0.0;
     final end = feature.endDistance ?? 10.0;
     final targetBodyIds = feature.targetBodyIds;
+    final profileRefs = feature.profileRefs;
 
     setState(() {
       _extrudeSketchFeature = sketchFeature;
       _editingExtrudeFeatureId = feature.id;
       _previewExtrudeFeatureId = feature.id;
-      _extrudeEditSnapshot = (type: type, start: start, end: end, targetBodyIds: targetBodyIds);
+      _extrudeEditSnapshot = (
+        type: type,
+        start: start,
+        end: end,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
       _meshBeforeExtrude = _bodies;
       _extrudeType = type;
       _extrudeStartDistance = start;
       _extrudeEndDistance = end;
+      _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {
         for (final bodyId in targetBodyIds)
@@ -1814,6 +2144,7 @@ class _PartScreenState extends State<PartScreen> {
     double start,
     double end,
     List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
   ) async {
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
@@ -1828,6 +2159,7 @@ class _PartScreenState extends State<PartScreen> {
         startDistance: start,
         endDistance: end,
         targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
       );
       _previewExtrudeFeatureId = created.id;
     } else {
@@ -1838,6 +2170,7 @@ class _PartScreenState extends State<PartScreen> {
         startDistance: start,
         endDistance: end,
         targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
       );
     }
     await _refreshMesh();
@@ -1877,6 +2210,7 @@ class _PartScreenState extends State<PartScreen> {
             _extrudeStartDistance,
             _extrudeEndDistance,
             _currentTargetBodyIds(),
+            _extrudeProfileRefs,
           ));
     });
   }
@@ -1927,6 +2261,7 @@ class _PartScreenState extends State<PartScreen> {
         _extrudeStartDistance,
         _extrudeEndDistance,
         targetBodyIds,
+        _extrudeProfileRefs,
       );
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -1946,6 +2281,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeExtrude = null;
       _editingExtrudeFeatureId = null;
       _extrudeEditSnapshot = null;
+      _extrudeProfileRefs = [];
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -1994,6 +2330,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeExtrude = null;
       _editingExtrudeFeatureId = null;
       _extrudeEditSnapshot = null;
+      _extrudeProfileRefs = [];
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -2011,6 +2348,7 @@ class _PartScreenState extends State<PartScreen> {
             startDistance: editSnapshot.start,
             endDistance: editSnapshot.end,
             targetBodyIds: editSnapshot.targetBodyIds,
+            profileRefs: editSnapshot.profileRefs,
           );
           await _refreshFeatures();
         });
@@ -2087,13 +2425,14 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_openExtrudePanel] exactly, substituting Revolve's own state
   /// fields/filter - pushes [_revolveSelectionFilter] (axis + target-body,
   /// not bodies-only) instead of Extrude's own override.
-  void _openRevolvePanel(FeatureDto sketchFeature) {
+  void _openRevolvePanel(FeatureDto sketchFeature, {List<SketchEntityRefDto> profileRefs = const []}) {
     setState(() {
       _revolveSketchFeature = sketchFeature;
       _previewRevolveFeatureId = null;
       _meshBeforeRevolve = _bodies;
       _revolveMode = RevolveMode.boss;
       _revolveAngle = 180.0;
+      _revolveProfileRefs = profileRefs;
       _entitiesBeforeRevolve = _selectedEntities;
       _selectedEntities = {};
       _selectionMode = true;
@@ -2119,16 +2458,24 @@ class _PartScreenState extends State<PartScreen> {
     final mode = RevolveMode.fromApiValue(feature.mode ?? 'boss');
     final angle = feature.angle ?? 180.0;
     final targetBodyIds = feature.targetBodyIds;
+    final profileRefs = feature.profileRefs;
     final axisSketchFeatureId = _sketchFeatureIdForSketchId(axisRef.sketchId);
 
     setState(() {
       _revolveSketchFeature = sketchFeature;
       _editingRevolveFeatureId = feature.id;
       _previewRevolveFeatureId = feature.id;
-      _revolveEditSnapshot = (mode: mode, angle: angle, axisRef: axisRef, targetBodyIds: targetBodyIds);
+      _revolveEditSnapshot = (
+        mode: mode,
+        angle: angle,
+        axisRef: axisRef,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
       _meshBeforeRevolve = _bodies;
       _revolveMode = mode;
       _revolveAngle = angle;
+      _revolveProfileRefs = profileRefs;
       _entitiesBeforeRevolve = _selectedEntities;
       _selectedEntities = {
         if (axisSketchFeatureId != null)
@@ -2154,6 +2501,7 @@ class _PartScreenState extends State<PartScreen> {
     double angle,
     SketchEntityRefDto axisRef,
     List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
   ) async {
     final part = _part;
     final sketchFeature = _revolveSketchFeature;
@@ -2168,6 +2516,7 @@ class _PartScreenState extends State<PartScreen> {
         angle: angle,
         mode: mode.apiValue,
         targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
       );
       _previewRevolveFeatureId = created.id;
     } else {
@@ -2178,6 +2527,7 @@ class _PartScreenState extends State<PartScreen> {
         angle: angle,
         mode: mode.apiValue,
         targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
       );
     }
     await _refreshMesh();
@@ -2206,6 +2556,7 @@ class _PartScreenState extends State<PartScreen> {
             _revolveAngle,
             axisRef,
             _currentRevolveTargetBodyIds(),
+            _revolveProfileRefs,
           ));
     });
   }
@@ -2222,7 +2573,13 @@ class _PartScreenState extends State<PartScreen> {
     final targetBodyIds = _currentRevolveTargetBodyIds();
     if (axisRef != null) {
       await _runGuarded(() async {
-        await _ensureRevolveFeatureExists(_revolveMode, _revolveAngle, axisRef, targetBodyIds);
+        await _ensureRevolveFeatureExists(
+          _revolveMode,
+          _revolveAngle,
+          axisRef,
+          targetBodyIds,
+          _revolveProfileRefs,
+        );
         await _refreshFeatures();
         await _refreshSketchGeometries();
       });
@@ -2239,6 +2596,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeRevolve = null;
       _editingRevolveFeatureId = null;
       _revolveEditSnapshot = null;
+      _revolveProfileRefs = [];
       _selectedEntities = _entitiesBeforeRevolve ?? {};
       _entitiesBeforeRevolve = null;
       _selectionFilterOverrides.pop();
@@ -2264,6 +2622,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeRevolve = null;
       _editingRevolveFeatureId = null;
       _revolveEditSnapshot = null;
+      _revolveProfileRefs = [];
       _selectedEntities = _entitiesBeforeRevolve ?? {};
       _entitiesBeforeRevolve = null;
       _selectionFilterOverrides.pop();
@@ -2281,6 +2640,7 @@ class _PartScreenState extends State<PartScreen> {
             angle: editSnapshot.angle,
             mode: editSnapshot.mode.apiValue,
             targetBodyIds: editSnapshot.targetBodyIds,
+            profileRefs: editSnapshot.profileRefs,
           );
           await _refreshFeatures();
         });
@@ -2859,13 +3219,22 @@ class _PartScreenState extends State<PartScreen> {
   /// [_ensureFilletFeatureExists]) rather than after it, so this doesn't
   /// double the live-preview round-trip latency on top of doubling the
   /// backend's recompute work.
+  ///
+  /// Bug fix (on-device feedback): mirrors [_refreshMesh]'s own fix - this
+  /// used to mutate [_filletPreviewBodyId]/[_filletPreviewMesh] with no
+  /// `setState` of its own, so the live rounded-corner visual could just as
+  /// easily be left stale pending an unrelated later repaint. Now
+  /// self-contained.
   Future<void> _refreshFilletPreviewMesh() async {
     final part = _part;
     final featureId = _previewFilletFeatureId;
     final bodyId = _currentFilletBodyId();
     if (part == null || featureId == null || bodyId == null) {
-      _filletPreviewBodyId = null;
-      _filletPreviewMesh = null;
+      if (!mounted) return;
+      setState(() {
+        _filletPreviewBodyId = null;
+        _filletPreviewMesh = null;
+      });
       return;
     }
     final response = await _api.getPartMesh(
@@ -2874,6 +3243,7 @@ class _PartScreenState extends State<PartScreen> {
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
     );
+    if (!mounted) return;
     BodyMeshDto? match;
     for (final body in response) {
       if (body.bodyId == bodyId) {
@@ -2881,8 +3251,10 @@ class _PartScreenState extends State<PartScreen> {
         break;
       }
     }
-    _filletPreviewBodyId = bodyId;
-    _filletPreviewMesh = match?.mesh;
+    setState(() {
+      _filletPreviewBodyId = bodyId;
+      _filletPreviewMesh = match?.mesh;
+    });
   }
 
   /// Keeps the just-created/edited Feature, restores whatever was selected
@@ -3065,13 +3437,20 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Mirrors [_refreshFilletPreviewMesh] exactly.
+  ///
+  /// Bug fix (on-device feedback): mirrors [_refreshFilletPreviewMesh]'s own
+  /// fix - self-contained `setState` now, rather than relying on an
+  /// unrelated later repaint to flush it.
   Future<void> _refreshChamferPreviewMesh() async {
     final part = _part;
     final featureId = _previewChamferFeatureId;
     final bodyId = _currentChamferBodyId();
     if (part == null || featureId == null || bodyId == null) {
-      _chamferPreviewBodyId = null;
-      _chamferPreviewMesh = null;
+      if (!mounted) return;
+      setState(() {
+        _chamferPreviewBodyId = null;
+        _chamferPreviewMesh = null;
+      });
       return;
     }
     final response = await _api.getPartMesh(
@@ -3080,6 +3459,7 @@ class _PartScreenState extends State<PartScreen> {
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
     );
+    if (!mounted) return;
     BodyMeshDto? match;
     for (final body in response) {
       if (body.bodyId == bodyId) {
@@ -3087,8 +3467,10 @@ class _PartScreenState extends State<PartScreen> {
         break;
       }
     }
-    _chamferPreviewBodyId = bodyId;
-    _chamferPreviewMesh = match?.mesh;
+    setState(() {
+      _chamferPreviewBodyId = bodyId;
+      _chamferPreviewMesh = match?.mesh;
+    });
   }
 
   /// Mirrors [_confirmFillet] exactly.
@@ -3313,13 +3695,18 @@ class _PartScreenState extends State<PartScreen> {
       // doesn't intercept back here, consistent with Extrude/Create Plane's
       // own "Confirm/Cancel are the only way out" panels once open - see
       // [_openFilletPanel].
-      canPop: !_planeSelectionMode && !_sketchPickerActive && !_revolveSketchPickerActive,
+      canPop: !_planeSelectionMode &&
+          !_sketchPickerActive &&
+          !_revolveSketchPickerActive &&
+          !_profilePickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_sketchPickerActive) {
           _cancelSketchPicker();
         } else if (_revolveSketchPickerActive) {
           _cancelRevolveSketchPicker();
+        } else if (_profilePickerActive) {
+          _cancelProfilePicker();
         } else {
           _cancelPlaneSelectionMode();
         }
@@ -3398,6 +3785,7 @@ class _PartScreenState extends State<PartScreen> {
                   isPerspective: _isPerspective,
                   farClip: _farClip,
                   onFarClipChanged: _onFarClipChanged,
+                  sketchLineLoopGroup: _sketchLineLoopGroup,
                 ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
@@ -3449,7 +3837,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_createPlaneActive &&
                     !_filletActive &&
                     !_chamferActive &&
-                    !_revolveActive)
+                    !_revolveActive &&
+                    !_profilePickerActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -3471,7 +3860,8 @@ class _PartScreenState extends State<PartScreen> {
                         !_createPlaneActive &&
                         !_filletActive &&
                         !_chamferActive &&
-                        !_revolveActive,
+                        !_revolveActive &&
+                        !_profilePickerActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -3686,6 +4076,53 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Prompt G: names the profile-picking mode live - same
+                // top-center pill convention as the plane-selection-mode/
+                // target-body-picking banners above. Tap a line to toggle
+                // its whole loop; the checkmark FAB (see floatingActionButton
+                // below) confirms and opens the target panel.
+                if (_profilePickerActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _profilePickedCount() == 0
+                                          ? 'Tap profiles to include, or confirm to use all'
+                                          : '${_profilePickedCount()} profile(s) selected - tap '
+                                              'checkmark to confirm',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelProfilePicker,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 // Always on top (last in the Stack) so it stays tappable
                 // regardless of whether the toolbar underneath is open -
                 // but hidden while the Feature tree is open since it sits
@@ -3703,7 +4140,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_createPlaneActive &&
                     !_filletActive &&
                     !_chamferActive &&
-                    !_revolveActive)
+                    !_revolveActive &&
+                    !_profilePickerActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -3906,13 +4344,28 @@ class _PartScreenState extends State<PartScreen> {
                       !_createPlaneActive &&
                       !_filletActive &&
                       !_chamferActive &&
-                      !_revolveActive) ...[
+                      !_revolveActive &&
+                      !_profilePickerActive) ...[
                     const SizedBox(height: 12),
                     FloatingActionButton(
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
                       child: const Icon(Icons.add),
+                    ),
+                  ],
+                  // Prompt G: the profile picker's own "confirm" FAB, in the
+                  // Add FAB's place (never both at once, same "one FAB slot"
+                  // convention every other mode here follows) - ticks off
+                  // the currently-picked loops and opens the target panel
+                  // (see [_confirmProfilePicker]).
+                  if (_profilePickerActive) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'confirm-profile-picker-fab',
+                      tooltip: 'Confirm profile selection',
+                      onPressed: _busy ? null : _confirmProfilePicker,
+                      child: const Icon(Icons.check),
                     ),
                   ],
                 ],

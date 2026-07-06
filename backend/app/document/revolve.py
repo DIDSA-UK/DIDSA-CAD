@@ -35,6 +35,7 @@ from app.document.extrude import (
     basis_point_to_world,
     compute_part_bodies,
     face_for_profile,
+    select_profiles,
 )
 from app.document.graph import sketch_feature_id_for_sketch
 from app.document.models import Part, RevolveFeature, SketchFeature
@@ -147,7 +148,12 @@ def resolve_revolve_from_bodies(
     A MultiProfile Sketch (disjoint outer loops, C2) produces one revolved
     solid per sub-profile, combined into a `TopoDS_Compound` - transparent to
     every caller, exactly like `_solid_for_extrude_feature`'s own MultiProfile
-    handling."""
+    handling.
+
+    Prompt G: `feature.profile_refs`, if non-empty, narrows the MultiProfile
+    case down to just the named outer profile(s) - see `app.document.
+    extrude.select_profiles`, reused directly rather than re-derived (can
+    raise `invalid_profile_ref`, same as Extrude's own resolver)."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
     if result.status not in EXTRUDABLE_STATUSES:
@@ -165,9 +171,10 @@ def resolve_revolve_from_bodies(
 
     if result.status == ProfileStatus.CLOSED_LOOP:
         assert result.profile is not None
-        profiles = [result.profile]
+        candidates = [result.profile]
     else:
-        profiles = result.loops
+        candidates = result.loops
+    profiles = select_profiles(candidates, feature.profile_refs)
 
     solids = []
     for profile in profiles:

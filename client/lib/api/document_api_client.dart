@@ -235,6 +235,13 @@ class FeatureDto {
   /// with Extrude is this Feature's own resolved design decision).
   final String? mode;
 
+  /// Prompt G: present on `"extrude"`/`"revolve"` Features - which outer
+  /// profile(s) of the backing Sketch to use, each anchored by a Line/Circle
+  /// entity known to belong to it. Empty (the default) means every outer
+  /// profile currently detected, matching the backend's own
+  /// `ExtrudeFeature.profile_refs`/`RevolveFeature.profile_refs` default.
+  final List<SketchEntityRefDto> profileRefs;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -265,6 +272,7 @@ class FeatureDto {
     this.axisRef,
     this.angle,
     this.mode,
+    this.profileRefs = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -316,6 +324,10 @@ class FeatureDto {
             : SketchEntityRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>),
         angle: (json['angle'] as num?)?.toDouble(),
         mode: json['mode'] as String?,
+        profileRefs: (json['profile_refs'] as List?)
+                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
       );
 }
 
@@ -531,6 +543,11 @@ class DocumentApiClient {
   /// Prompt A4: [targetBodyIds] names which existing Body/Bodies (by id)
   /// this Extrude combines with - see A1's `ExtrudeFeatureCreate.target_body_ids`
   /// docstring (Boss: empty starts a brand-new Body; Cut: must be non-empty).
+  ///
+  /// Prompt G: [profileRefs] names which outer profile(s) of the Sketch to
+  /// use - empty (the default) means every outer profile currently
+  /// detected, matching the backend's own `ExtrudeFeatureCreate.
+  /// profile_refs` default.
   Future<FeatureDto> createExtrudeFeature(
     String partId, {
     required String sketchFeatureId,
@@ -538,6 +555,7 @@ class DocumentApiClient {
     required double startDistance,
     required double endDistance,
     List<String> targetBodyIds = const [],
+    List<SketchEntityRefDto> profileRefs = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -549,18 +567,20 @@ class DocumentApiClient {
                 'start_distance': startDistance,
                 'end_distance': endDistance,
                 'target_body_ids': targetBodyIds,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing ExtrudeFeature - any subset of
-  /// [extrudeType]/[startDistance]/[endDistance]/[targetBodyIds] may be
-  /// supplied, mirroring the backend's `ExtrudeFeatureUpdate` (omitted
-  /// fields keep their current value - [targetBodyIds] null omits it,
-  /// matching the others, so a live-preview re-solve that never touched
-  /// target-body picking doesn't accidentally clear it). Used for the
-  /// live-preview debounced re-solve.
+  /// [extrudeType]/[startDistance]/[endDistance]/[targetBodyIds]/
+  /// [profileRefs] may be supplied, mirroring the backend's
+  /// `ExtrudeFeatureUpdate` (omitted fields keep their current value -
+  /// [targetBodyIds]/[profileRefs] null omits it, matching the others, so a
+  /// live-preview re-solve that never touched target-body/profile picking
+  /// doesn't accidentally clear it). Used for the live-preview debounced
+  /// re-solve.
   Future<FeatureDto> updateExtrudeFeature(
     String partId,
     String featureId, {
@@ -568,6 +588,7 @@ class DocumentApiClient {
     double? startDistance,
     double? endDistance,
     List<String>? targetBodyIds,
+    List<SketchEntityRefDto>? profileRefs,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -578,6 +599,8 @@ class DocumentApiClient {
                 if (startDistance != null) 'start_distance': startDistance,
                 if (endDistance != null) 'end_distance': endDistance,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -682,6 +705,7 @@ class DocumentApiClient {
     required double angle,
     required String mode,
     List<String> targetBodyIds = const [],
+    List<SketchEntityRefDto> profileRefs = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -693,15 +717,16 @@ class DocumentApiClient {
                 'angle': angle,
                 'mode': mode,
                 'target_body_ids': targetBodyIds,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing RevolveFeature - any subset of
-  /// [axisRef]/[angle]/[mode]/[targetBodyIds] may be supplied, mirroring
-  /// [updateExtrudeFeature]'s omitted-vs-current-value convention. Used for
-  /// the live-preview debounced re-solve.
+  /// [axisRef]/[angle]/[mode]/[targetBodyIds]/[profileRefs] may be supplied,
+  /// mirroring [updateExtrudeFeature]'s omitted-vs-current-value convention.
+  /// Used for the live-preview debounced re-solve.
   Future<FeatureDto> updateRevolveFeature(
     String partId,
     String featureId, {
@@ -709,6 +734,7 @@ class DocumentApiClient {
     double? angle,
     String? mode,
     List<String>? targetBodyIds,
+    List<SketchEntityRefDto>? profileRefs,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -719,6 +745,8 @@ class DocumentApiClient {
                 if (angle != null) 'angle': angle,
                 if (mode != null) 'mode': mode,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

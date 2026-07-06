@@ -146,6 +146,16 @@ class ExtrudeFeature(Feature):
     end_distance: float
     target_body_ids: list[str] = field(default_factory=list)
 
+    # Prompt G: which outer profile(s) of the backing Sketch to extrude -
+    # each entry anchors one desired profile via any Line/Circle entity
+    # known to belong to it (see app.document.extrude.select_profiles).
+    # Empty (the default) means "every outer profile currently detected",
+    # exactly the pre-Prompt-G behaviour (a MultiProfile Sketch extrudes
+    # all of its disjoint outer loops) - this field only ever narrows that
+    # set, never widens it beyond what app.sketch.profile.detect_profile
+    # itself reports as usable.
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
     @property
     def type(self) -> str:
         return "extrude"
@@ -506,6 +516,11 @@ class RevolveFeature(Feature):
     angle: float
     mode: RevolveMode
     target_body_ids: list[str] = field(default_factory=list)
+
+    # Prompt G: mirrors ExtrudeFeature.profile_refs exactly - which outer
+    # profile(s) of the backing Sketch to revolve, empty meaning every one
+    # currently detected.
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
 
     @property
     def type(self) -> str:

@@ -47,6 +47,21 @@ class SketchFeatureResponse(BaseModel):
     produces: Produces
 
 
+class SketchEntityRefSchema(BaseModel):
+    """C2: the wire counterpart to `app.sketch.models.SketchEntityRef` (C1)
+    - same "no schema until a real consumer exists" story as
+    `SubShapeRefSchema` below. Moved above the Extrude/Revolve schemas
+    (Prompt G) since `ExtrudeFeatureCreate`/`RevolveFeatureCreate`'s own new
+    `profile_refs` field needs it defined first - Pydantic resolves
+    annotations at class-creation time in this file (no `from __future__
+    import annotations`), so forward-referencing a not-yet-defined class
+    would raise `NameError` at import."""
+
+    sketch_id: str
+    entity_type: SketchEntityType
+    entity_id: str
+
+
 class ExtrudeFeatureCreate(BaseModel):
     """Creates an ExtrudeFeature from an existing SketchFeature's closed
     Profile - the API layer validates `sketch_feature_id` resolves to a
@@ -58,13 +73,19 @@ class ExtrudeFeatureCreate(BaseModel):
     derived) this Feature combines with. Boss: empty starts a brand-new
     Body; non-empty fuses into each named Body. Cut: must be non-empty -
     see app.document.router._validate_target_body_ids, which raises 422 for
-    an empty Cut list."""
+    an empty Cut list.
+
+    Prompt G: `profile_refs` names which outer profile(s) of the Sketch to
+    use - empty (the default) means every outer profile currently detected,
+    exactly the pre-Prompt-G behaviour; see
+    app.document.extrude.select_profiles."""
 
     sketch_feature_id: str
     extrude_type: ExtrudeType
     start_distance: float
     end_distance: float
     target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
 
 
 class ExtrudeFeatureUpdate(BaseModel):
@@ -73,12 +94,15 @@ class ExtrudeFeatureUpdate(BaseModel):
     follows the same omitted-vs-empty-list distinction as the other
     fields: omitted (None) leaves the Feature's current targets untouched;
     an explicit `[]` replaces them with an empty list (rejected for Cut,
-    same as on create)."""
+    same as on create). Prompt G: `profile_refs` follows the identical
+    omitted-vs-empty-list convention - omitted keeps the Feature's current
+    selection, an explicit `[]` reverts to "every outer profile"."""
 
     extrude_type: ExtrudeType | None = None
     start_distance: float | None = None
     end_distance: float | None = None
     target_body_ids: list[str] | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
 
 
 class ExtrudeFeatureResponse(BaseModel):
@@ -90,6 +114,7 @@ class ExtrudeFeatureResponse(BaseModel):
     end_distance: float
     locked: bool
     target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ExtrudeFeature today (Boss and Cut alike).
     produces: Produces
@@ -107,16 +132,6 @@ class SubShapeRefSchema(BaseModel):
     body_id: str
     shape_type: SubShapeType
     index: int
-
-
-class SketchEntityRefSchema(BaseModel):
-    """C2: the wire counterpart to `app.sketch.models.SketchEntityRef` (C1)
-    - same "no schema until a real consumer exists" story as
-    `SubShapeRefSchema` above."""
-
-    sketch_id: str
-    entity_type: SketchEntityType
-    entity_id: str
 
 
 class PointRefSchema(BaseModel):
@@ -300,26 +315,29 @@ class RevolveFeatureCreate(BaseModel):
     RevolveFeature), substituting `axis_ref`/`angle` for
     `start_distance`/`end_distance`. `axis_ref`'s Sketch is not required to
     be the same Sketch as `sketch_feature_id`'s (confirmed explicitly - see
-    `app.document.models.RevolveFeature`'s own docstring)."""
+    `app.document.models.RevolveFeature`'s own docstring). Prompt G:
+    `profile_refs` mirrors `ExtrudeFeatureCreate.profile_refs` exactly."""
 
     sketch_feature_id: str
     axis_ref: SketchEntityRefSchema
     angle: float
     mode: RevolveMode
     target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
 
 
 class RevolveFeatureUpdate(BaseModel):
     """Partial update for live-preview re-solves, same omitted-vs-current-
     value convention as `ExtrudeFeatureUpdate` - `sketch_feature_id` is never
     revised (same as `ExtrudeFeatureUpdate` never revising its own source
-    Sketch), only the axis/angle/mode/targets of whichever Sketch this
-    Feature already revolves."""
+    Sketch), only the axis/angle/mode/targets/profile selection of whichever
+    Sketch this Feature already revolves."""
 
     axis_ref: SketchEntityRefSchema | None = None
     angle: float | None = None
     mode: RevolveMode | None = None
     target_body_ids: list[str] | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
 
 
 class RevolveFeatureResponse(BaseModel):
@@ -331,6 +349,7 @@ class RevolveFeatureResponse(BaseModel):
     mode: RevolveMode
     locked: bool
     target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # RevolveFeature (Boss and Cut alike, mirroring ExtrudeFeature).
     produces: Produces
