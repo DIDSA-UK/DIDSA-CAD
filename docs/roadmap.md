@@ -436,6 +436,11 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   test currently exercises it and it's an established, working, Prompt-F-
   era decision, not something this pass introduced or was asked to
   revisit; flagged here as a known parallel risk if it's ever picked up.
+  CI green (526/526) after this fix, and **confirmed working on-device**
+  by the user - closes out Sweep. Per the roadmap's own framing at the top
+  of this entry, this completes Revolve → Sweep of the three-module
+  sequence; Boolean operations (union/subtract/intersect) remain the one
+  piece of that sequence not yet started.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what
