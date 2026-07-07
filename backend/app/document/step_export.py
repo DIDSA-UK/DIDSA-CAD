@@ -23,8 +23,16 @@ def export_step(bodies: dict[str, object]) -> bytes:
     return shape) - takes it directly rather than a `Part`, so the router
     can reuse the one `compute_part_bodies` call it already needs to check
     "does this Part have anything to export" before ever reaching here."""
-    Interface_Static.SetCVal("write.step.schema", "AP242DIS")
+    # STEPControl_Writer() must be constructed *before* SetCVal - it's the
+    # writer's own controller init that registers "write.step.schema" into
+    # OCCT's static-parameter table in the first place; setting it any
+    # earlier is a silent no-op and the writer falls back to its default
+    # schema (AP214) rather than raising, which is exactly the bug this
+    # comment is guarding against (caught by CI: the exported file's own
+    # FILE_SCHEMA said AUTOMOTIVE_DESIGN/AP214, not AP242, despite this same
+    # call appearing to run without error).
     writer = STEPControl_Writer()
+    Interface_Static.SetCVal("write.step.schema", "AP242DIS")
     for shape in bodies.values():
         status = writer.Transfer(shape, STEPControl_AsIs)
         if status != IFSelect_RetDone:
