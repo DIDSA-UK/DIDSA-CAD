@@ -393,6 +393,144 @@ void main() {
     });
   });
 
+  group('decodeGltf node transforms', () {
+    // A single triangle: (0,0,0), (1,0,0), (0,1,0), with a matching per-vertex
+    // normal (0,0,1) so rotation's effect on normals can be checked too.
+    Map<String, dynamic> gltfWithRootNode(Map<String, dynamic> node) {
+      final positions = Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      final normals = Float32List.fromList([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+      final posBytes = positions.buffer.asUint8List();
+      final normalBytes = normals.buffer.asUint8List();
+      final combined = Uint8List.fromList([...posBytes, ...normalBytes]);
+      return {
+        'asset': {'version': '2.0'},
+        'scene': 0,
+        'scenes': [
+          {'nodes': [0]},
+        ],
+        'nodes': [node],
+        'buffers': [
+          {
+            'byteLength': combined.length,
+            'uri': 'data:application/octet-stream;base64,${base64.encode(combined)}',
+          },
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': posBytes.length},
+          {'buffer': 0, 'byteOffset': posBytes.length, 'byteLength': normalBytes.length},
+        ],
+        'accessors': [
+          {'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+          {'bufferView': 1, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0, 'NORMAL': 1},
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    test('applies a root node translation to vertex positions', () {
+      final gltf = gltfWithRootNode({'mesh': 0, 'translation': [10.0, 20.0, 30.0]});
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      expect(
+        mesh.positions.sublist(0, 9),
+        [10.0, 20.0, 30.0, 11.0, 20.0, 30.0, 10.0, 21.0, 30.0],
+      );
+      // Translation must not affect normals.
+      expect(mesh.normals.sublist(0, 3), [0.0, 0.0, 1.0]);
+    });
+
+    test('applies a root node scale to vertex positions', () {
+      final gltf = gltfWithRootNode({'mesh': 0, 'scale': [2.0, 3.0, 4.0]});
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      expect(
+        mesh.positions.sublist(0, 9),
+        [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0, 0.0],
+      );
+    });
+
+    test('applies a root node rotation to both positions and normals', () {
+      // 90-degree rotation about the X axis: (x, y, z) -> (x, -z, y).
+      const half = 0.70710678;
+      final gltf = gltfWithRootNode({
+        'mesh': 0,
+        'rotation': [half, 0.0, 0.0, half],
+      });
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      final positions = mesh.positions.sublist(0, 9);
+      expect(positions[0], closeTo(0.0, 1e-6));
+      expect(positions[1], closeTo(0.0, 1e-6));
+      expect(positions[2], closeTo(0.0, 1e-6));
+      expect(positions[3], closeTo(1.0, 1e-6));
+      expect(positions[4], closeTo(0.0, 1e-6));
+      expect(positions[5], closeTo(0.0, 1e-6));
+      expect(positions[6], closeTo(0.0, 1e-6));
+      expect(positions[7], closeTo(0.0, 1e-6));
+      expect(positions[8], closeTo(1.0, 1e-6));
+      final normal = mesh.normals.sublist(0, 3);
+      expect(normal[0], closeTo(0.0, 1e-6));
+      expect(normal[1], closeTo(-1.0, 1e-6));
+      expect(normal[2], closeTo(0.0, 1e-6));
+    });
+
+    test('rejects a root node that uses a raw matrix transform', () {
+      final gltf = gltfWithRootNode({
+        'mesh': 0,
+        'matrix': [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0],
+      });
+      expect(
+        () => decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf)))),
+        throwsA(isA<MeshImportError>()),
+      );
+    });
+
+    test('a node with no mesh reference is skipped rather than erroring', () {
+      final positions = Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      final bufferBytes = positions.buffer.asUint8List();
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'scene': 0,
+        'scenes': [
+          {'nodes': [0, 1]},
+        ],
+        'nodes': [
+          {'name': 'empty group'},
+          {'mesh': 0, 'translation': [5.0, 0.0, 0.0]},
+        ],
+        'buffers': [
+          {
+            'byteLength': bufferBytes.length,
+            'uri': 'data:application/octet-stream;base64,${base64.encode(bufferBytes)}',
+          },
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': bufferBytes.length},
+        ],
+        'accessors': [
+          {'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+              },
+            ],
+          },
+        ],
+      };
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      expect(mesh.triangleCount, 1);
+      expect(mesh.positions.sublist(0, 3), [5.0, 0.0, 0.0]);
+    });
+  });
+
   group('decimateToTriangleBudget', () {
     DecodedMesh meshWithTriangles(int count) => DecodedMesh(
           positions: Float32List(count * 9),

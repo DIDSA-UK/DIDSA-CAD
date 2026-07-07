@@ -38,3 +38,19 @@ project spec, see `docs/project-brief.md`.
   (platform-specific binaries). Whether to pursue this, versus relying on
   re-exporting without mesh compression (available in most pipelines that
   use it, including ODM's), is an open question for the user - not decided.
+- **glTF node transforms: only root-level nodes, no `matrix`-based nodes.**
+  Fixed for the real case that motivated it (a Blender-exported file's
+  Z-up-to-Y-up axis correction, applied as a single root node's TRS - see
+  `docs/status.md`'s "glTF node transforms" entry), but a deeper
+  multi-level scene-graph hierarchy (a transformed node nested under
+  another transformed node) is not composed, and a node using a raw
+  `matrix` instead of separate translation/rotation/scale fields is
+  rejected with a clear error rather than decomposed. Not decided whether
+  either is worth building without a real file that needs it.
+- **Larger Blender-exported `.glb` still crashes** - reported alongside the
+  mirrored-geometry/bad-shading issue the node-transform fix above
+  addresses, but not yet separately diagnosed. Could be the same
+  node-transform gap (a `matrix`-based root node would now fail with the
+  new clear error instead of whatever it was doing before), a
+  scale/complexity issue, or something else - needs its own on-device
+  report once the user has re-tested with the node-transform fix in place.

@@ -482,6 +482,99 @@ Uint8List _resolveDataUri(String? uri, String what) {
   return base64.decode(uri.substring(commaIndex + 1));
 }
 
+/// A glTF node's TRS (translation/rotation/scale) - rotation as an
+/// `(x, y, z, w)` quaternion, per spec. See `_decodeGltfDocument`'s own doc
+/// comment on `meshInstances` for the scope cut this supports (root nodes
+/// only, no `matrix`-based nodes).
+typedef _NodeTransform = ({
+  (double, double, double) translation,
+  (double, double, double, double) rotation,
+  (double, double, double) scale,
+});
+
+const _identityNodeTransform = (
+  translation: (0.0, 0.0, 0.0),
+  rotation: (0.0, 0.0, 0.0, 1.0),
+  scale: (1.0, 1.0, 1.0),
+);
+
+_NodeTransform _nodeTransform(Map<String, dynamic> node) {
+  if (node['matrix'] != null) {
+    throw MeshImportError(
+      'This glTF node uses a raw matrix transform, which this viewer cannot decompose - '
+      're-export using separate translation/rotation/scale (most tools default to this).',
+    );
+  }
+  (double, double, double) vec3(String key, (double, double, double) fallback) {
+    final raw = node[key] as List?;
+    if (raw == null) return fallback;
+    return (
+      (raw[0] as num).toDouble(),
+      (raw[1] as num).toDouble(),
+      (raw[2] as num).toDouble(),
+    );
+  }
+
+  final rotationRaw = node['rotation'] as List?;
+  final rotation = rotationRaw == null
+      ? (0.0, 0.0, 0.0, 1.0)
+      : (
+          (rotationRaw[0] as num).toDouble(),
+          (rotationRaw[1] as num).toDouble(),
+          (rotationRaw[2] as num).toDouble(),
+          (rotationRaw[3] as num).toDouble(),
+        );
+  return (
+    translation: vec3('translation', (0.0, 0.0, 0.0)),
+    rotation: rotation,
+    scale: vec3('scale', (1.0, 1.0, 1.0)),
+  );
+}
+
+/// Applies [transform]'s scale then rotation to [v], then (only for a
+/// position, not a direction/normal - see [isDirection]) its translation -
+/// the standard glTF `T * R * S` node-transform order. A direction is
+/// scaled by the *reciprocal* of [transform]'s scale before rotating (the
+/// correct treatment for a normal under a diagonal, shear-free scale - true
+/// for every TRS-decomposed glTF node, since T/R/S can't express shear) and
+/// renormalized afterward, rather than reusing the position transform
+/// as-is, which would leave normals wrong under non-uniform scale.
+(double, double, double) _applyNodeTransform(
+  (double, double, double) v,
+  _NodeTransform transform, {
+  required bool isDirection,
+}) {
+  final (x, y, z, w) = transform.rotation;
+  final xx = x * x, yy = y * y, zz = z * z;
+  final xy = x * y, xz = x * z, yz = y * z;
+  final wx = w * x, wy = w * y, wz = w * z;
+  // Standard right-handed quaternion-to-rotation-matrix formula (glTF spec
+  // convention), applied as R * scaledV below.
+  final r00 = 1 - 2 * (yy + zz), r01 = 2 * (xy - wz), r02 = 2 * (xz + wy);
+  final r10 = 2 * (xy + wz), r11 = 1 - 2 * (xx + zz), r12 = 2 * (yz - wx);
+  final r20 = 2 * (xz - wy), r21 = 2 * (yz + wx), r22 = 1 - 2 * (xx + yy);
+
+  final (sx, sy, sz) = transform.scale;
+  final (vx, vy, vz) = isDirection ? (v.$1 / sx, v.$2 / sy, v.$3 / sz) : (v.$1 * sx, v.$2 * sy, v.$3 * sz);
+
+  var rx = r00 * vx + r01 * vy + r02 * vz;
+  var ry = r10 * vx + r11 * vy + r12 * vz;
+  var rz = r20 * vx + r21 * vy + r22 * vz;
+
+  if (isDirection) {
+    final len = math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (len > 1e-12) {
+      rx /= len;
+      ry /= len;
+      rz /= len;
+    }
+    return (rx, ry, rz);
+  }
+
+  final (tx, ty, tz) = transform.translation;
+  return (rx + tx, ry + ty, rz + tz);
+}
+
 /// Extensions this decoder cannot read the real geometry of - if any of
 /// these appear in the document's spec-mandated `extensionsUsed` list, every
 /// accessor lacking a `bufferView` is almost certainly *compressed* data
@@ -518,14 +611,51 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
   final meshes = (gltf['meshes'] as List?) ?? const [];
   if (meshes.isEmpty) throw MeshImportError('glTF file has no meshes');
 
-  // Pre-count the total triangle count from each primitive's own accessor
+  // Every (meshIndex, transform) instance to actually process - one entry
+  // per *root* scene node that references a mesh, or (if the document has
+  // no scene graph at all - true of every fixture in this file's own test
+  // suite, and of any minimal/synthetic glTF) one identity-transform entry
+  // per mesh, matching this decoder's pre-node-transform behaviour exactly.
+  //
+  // Deliberately root-nodes-only, not a full recursive scene-graph walk:
+  // the real case this fixes (see decodeGltf's own doc comment) is a
+  // Blender-exported file's Z-up-to-Y-up axis correction, which Blender's
+  // exporter applies as a single root node's own TRS - a deeper multi-level
+  // hierarchy (a transformed node nested under another transformed node)
+  // is not composed here. A node using a raw `matrix` instead of separate
+  // translation/rotation/scale fields is rejected with a clear error
+  // rather than silently ignored (which would just reproduce the same
+  // wrong-orientation bug in a different disguise) - decomposing an
+  // arbitrary matrix into TRS correctly (handling non-uniform scale and
+  // reflection) is real complexity not attempted here.
+  final meshInstances = <(int, _NodeTransform)>[];
+  final nodes = (gltf['nodes'] as List?) ?? const [];
+  final scenes = (gltf['scenes'] as List?) ?? const [];
+  final sceneIndex = (gltf['scene'] as int?) ?? 0;
+  final rootNodeIndices = (scenes.isNotEmpty && nodes.isNotEmpty)
+      ? ((scenes[sceneIndex] as Map<String, dynamic>)['nodes'] as List?)?.cast<int>() ?? const []
+      : const <int>[];
+  if (rootNodeIndices.isEmpty) {
+    for (var i = 0; i < meshes.length; i++) {
+      meshInstances.add((i, _identityNodeTransform));
+    }
+  } else {
+    for (final rootIndex in rootNodeIndices) {
+      final node = nodes[rootIndex] as Map<String, dynamic>;
+      final meshIndex = node['mesh'] as int?;
+      if (meshIndex == null) continue;
+      meshInstances.add((meshIndex, _nodeTransform(node)));
+    }
+  }
+
+  // Pre-count the total triangle count from each instance's own accessor
   // `count` field - no vertex-attribute bytes decoded yet - so the
   // decimation stride is known before the real assembly loop below ever
   // runs. Mirrors decodeStl's binary-header pre-count; see decodeGltf's own
   // doc comment for why this matters at photogrammetry scale.
   var totalTriangles = 0;
-  for (final meshRaw in meshes) {
-    final mesh = meshRaw as Map<String, dynamic>;
+  for (final (meshIndex, _) in meshInstances) {
+    final mesh = meshes[meshIndex] as Map<String, dynamic>;
     for (final primitiveRaw in mesh['primitives'] as List) {
       final primitive = primitiveRaw as Map<String, dynamic>;
       final attributes = primitive['attributes'] as Map<String, dynamic>;
@@ -637,8 +767,9 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
   final uvs = <double>[];
   var triangleIndex = 0;
 
-  for (final meshRaw in meshes) {
-    final mesh = meshRaw as Map<String, dynamic>;
+  for (final (meshIndex, transform) in meshInstances) {
+    final mesh = meshes[meshIndex] as Map<String, dynamic>;
+    final isIdentity = identical(transform, _identityNodeTransform);
     for (final primitiveRaw in mesh['primitives'] as List) {
       final primitive = primitiveRaw as Map<String, dynamic>;
       final attributes = primitive['attributes'] as Map<String, dynamic>;
@@ -662,9 +793,13 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
         triangleIndex++;
         if (!keep) continue;
         for (final vi in [indices[i], indices[i + 1], indices[i + 2]]) {
-          positions.addAll([rawPositions[vi * 3], rawPositions[vi * 3 + 1], rawPositions[vi * 3 + 2]]);
+          var p = (rawPositions[vi * 3], rawPositions[vi * 3 + 1], rawPositions[vi * 3 + 2]);
+          if (!isIdentity) p = _applyNodeTransform(p, transform, isDirection: false);
+          positions.addAll([p.$1, p.$2, p.$3]);
           if (rawNormals != null) {
-            normals.addAll([rawNormals[vi * 3], rawNormals[vi * 3 + 1], rawNormals[vi * 3 + 2]]);
+            var n = (rawNormals[vi * 3], rawNormals[vi * 3 + 1], rawNormals[vi * 3 + 2]);
+            if (!isIdentity) n = _applyNodeTransform(n, transform, isDirection: true);
+            normals.addAll([n.$1, n.$2, n.$3]);
           }
           if (rawUvs != null) {
             uvs.addAll([rawUvs[vi * 2], rawUvs[vi * 2 + 1]]);
