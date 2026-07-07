@@ -92,6 +92,12 @@ def test_importing_an_stl_file_creates_a_new_body():
     bodies = mesh_response.json()
     assert len(bodies) == 1
     assert len(bodies[0]["mesh"]["triangle_indices"]) == 1
+    # On-device feedback: a mesh-imported Body has no real B-rep edges at
+    # all (a bare, surface-less triangulated face) - without the
+    # synthesize_wireframe_edges_from_triangles fallback, `edges` comes
+    # back empty and the imported mesh renders with no wireframe in any
+    # render mode.
+    assert len(bodies[0]["mesh"]["edges"]) == 18  # one triangle's own 3 sides, 6 floats each
 
 
 def test_import_rejects_invalid_base64():

@@ -17,7 +17,7 @@ from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Face, TopoDS_Shape
 
 from app.document.mesh_data import MeshData
-from app.document.mesh_import import MeshImportError, decode_glb, decode_obj, decode_stl
+from app.document.mesh_import import MeshImportError, decode_gltf, decode_obj, decode_stl
 from app.document.models import ImportFeature, ImportSourceFormat
 
 
@@ -106,7 +106,7 @@ def resolve_import(feature: ImportFeature) -> TopoDS_Shape:
             mesh = decode_obj(feature.source_data.decode("utf-8"))
         else:
             assert feature.source_format == ImportSourceFormat.GLTF
-            mesh = decode_glb(feature.source_data)
+            mesh = decode_gltf(feature.source_data)
     except (MeshImportError, UnicodeDecodeError) as exc:
         raise _invalid_import_data(str(exc)) from exc
 

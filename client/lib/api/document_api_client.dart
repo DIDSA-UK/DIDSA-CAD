@@ -945,6 +945,19 @@ class DocumentApiClient {
         (body) => CascadeDeleteResultDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// On-device feedback: read-only preview of exactly which Feature ids
+  /// [cascadeDeleteFeature] would remove - the real dependency-graph
+  /// cascade, not "everything after this one in the list" (a stale
+  /// assumption [PartScreen._cascadeDeleteFeature] used to bake into its
+  /// own confirmation dialog before this existed). Mutates nothing.
+  Future<List<String>> previewCascadeDelete(String partId, String featureId) => _send(
+        () => _httpClient.get(
+              _uri('/document/parts/$partId/features/$featureId/cascade-preview'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['feature_ids'] as List).cast<String>(),
+      );
+
   /// Bug fix (post-C4): [hiddenFeatureIds] and [rollbackExcludedFeatureIds]
   /// are two deliberately separate sets, both re-sent on every fetch, both
   /// purely client-side and never persisted on the backend - see

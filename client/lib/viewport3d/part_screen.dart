@@ -85,12 +85,21 @@ class PartScreen extends StatefulWidget {
   /// matching a Part that opened with nothing hidden.
   final List<String> initialHiddenFeatureIds;
 
+  /// Native Load/Save: the filename Open just read this Part from (see
+  /// [_PartScreenState._openNativeFile]), or null for a brand-new (never
+  /// Opened) Part - remembered as [_PartScreenState._lastSavedFileName]'s
+  /// own starting point, so a subsequent plain Save on the fresh screen
+  /// re-suggests the same file instead of falling back to a generic
+  /// "&lt;Part name&gt;.DIDSAprt" default.
+  final String? initialFileName;
+
   const PartScreen({
     super.key,
     this.documentApi,
     this.sketchApiFactory,
     this.initialPartId,
     this.initialHiddenFeatureIds = const [],
+    this.initialFileName,
   });
 
   @override
@@ -325,6 +334,16 @@ class _PartScreenState extends State<PartScreen> {
   /// `hidden_feature_ids` array the backend's own `export_native`/
   /// `import_native` know nothing about and simply pass through unexamined.
   final Set<String> _hiddenFeatureIds = {};
+
+  /// Native Save/Load: the filename most recently Opened-from or Saved-to
+  /// this session (see [PartScreen.initialFileName]'s own doc comment for
+  /// why a fresh Open-triggered screen starts with one already) - the
+  /// default [_saveNativeFile] suggests, so a quick re-save doesn't fall
+  /// back to a generic "&lt;Part name&gt;.DIDSAprt" name every time.
+  /// [_saveAsNativeFile] always ignores this for its own initial suggestion
+  /// (a deliberate fresh prompt), but still updates it from whatever the
+  /// user actually saves to, same as a plain Save does.
+  String? _lastSavedFileName;
 
   /// B4 true-rollback's own "pretend these Features (and hence everything
   /// depending on them) don't exist yet" state (see [_beginRollback]/
@@ -1957,6 +1976,7 @@ class _PartScreenState extends State<PartScreen> {
     // `hidden_feature_ids` named - see [PartScreen.initialHiddenFeatureIds]'s
     // own doc comment. A no-op (empty) for every non-native-Load launch.
     _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
+    _lastSavedFileName = widget.initialFileName;
     _loadPart();
     _loadViewPreferences();
   }
@@ -2016,14 +2036,17 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
-  /// Native Save: exports the whole Document (every Part's ordered Feature
-  /// list, plus every Sketch it references - no cached mesh/geometry) as
-  /// this app's own native project file format, and hands the bytes to the
-  /// platform's save-file dialog. Client-owned files (locked-in scope): the
-  /// backend has no project storage of its own, this is this app's one
-  /// point of contact with the device's actual filesystem for Save.
-  Future<void> _saveNativeFile() async {
-    setState(() => _toolbarOpen = false);
+  /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
+  /// Document (every Part's ordered Feature list, plus every Sketch it
+  /// references - no cached mesh/geometry) as this app's own native
+  /// project file format, and hands the bytes to the platform's save-file
+  /// dialog under [suggestedFileName]. Client-owned files (locked-in
+  /// scope): the backend has no project storage of its own, this is this
+  /// app's one point of contact with the device's actual filesystem for
+  /// Save/Save As. Remembers whatever filename the user actually saved to
+  /// (the dialog lets them rename even the suggestion) as
+  /// [_lastSavedFileName], so a later plain Save reuses it.
+  Future<void> _exportAndSaveNativeFile(String suggestedFileName) async {
     await _runGuarded(() async {
       final data = await _api.exportNative();
       // On-device feedback: the backend's own export knows nothing about
@@ -2033,12 +2056,75 @@ class _PartScreenState extends State<PartScreen> {
       // elsewhere restores it too instead of silently losing it.
       data['hidden_feature_ids'] = _hiddenFeatureIds.toList();
       final bytes = Uint8List.fromList(utf8.encode(jsonEncode(data)));
-      await FilePicker.platform.saveFile(
+      final savedPath = await FilePicker.platform.saveFile(
         dialogTitle: 'Save Project',
-        fileName: '${_part?.name ?? 'part'}.DIDSAprt',
+        fileName: suggestedFileName,
         bytes: bytes,
       );
+      if (savedPath != null) {
+        _lastSavedFileName = savedPath.split('/').last;
+      }
     });
+  }
+
+  /// Native Save: re-suggests [_lastSavedFileName] (whatever this session
+  /// last Opened-from or Saved-to) as the dialog's default, so a quick
+  /// re-save doesn't fall back to a generic name every time - see
+  /// [_lastSavedFileName]'s own doc comment for why this can't be a truly
+  /// silent overwrite (Android's Storage Access Framework has no such
+  /// concept without deeper persisted-URI-permission integration; every
+  /// save, Save or Save As alike, goes through the same platform dialog).
+  Future<void> _saveNativeFile() async {
+    setState(() => _toolbarOpen = false);
+    await _exportAndSaveNativeFile(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt');
+  }
+
+  /// Native Save As: always suggests a fresh, generic name (never
+  /// [_lastSavedFileName]) - the deliberate difference from plain Save,
+  /// given both otherwise go through the identical save-file dialog (see
+  /// [_saveNativeFile]'s own doc comment).
+  Future<void> _saveAsNativeFile() async {
+    setState(() => _toolbarOpen = false);
+    await _exportAndSaveNativeFile('${_part?.name ?? 'part'}.DIDSAprt');
+  }
+
+  /// File > New: starts a brand-new, blank Part - the same "always start
+  /// fresh" pattern this app already uses at first launch (see
+  /// [PartScreen]'s own doc comment) - after confirming, since whatever is
+  /// currently open (if not yet saved) would otherwise be lost with no way
+  /// back. Pushes a fresh [PartScreen]/State pair with no `initialPartId`/
+  /// `initialHiddenFeatureIds`/`initialFileName` rather than resetting this
+  /// screen's own state in place - see [PartScreen.initialPartId]'s own
+  /// doc comment for why that's deliberate.
+  Future<void> _startNewPart() async {
+    setState(() => _toolbarOpen = false);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Start a new project?'),
+        content: const Text(
+          'Any changes since your last Save will be lost. This does not delete the current '
+          'project - it will still be there if you open it again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('New Project'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PartScreen(
+          documentApi: widget.documentApi,
+          sketchApiFactory: widget.sketchApiFactory,
+        ),
+      ),
+    );
   }
 
   /// Native Load: reads a native project file the user picks and imports it
@@ -2089,6 +2175,7 @@ class _PartScreenState extends State<PartScreen> {
           sketchApiFactory: widget.sketchApiFactory,
           initialPartId: imported!.partIds.first,
           initialHiddenFeatureIds: hiddenFeatureIds,
+          initialFileName: result.files.single.name,
         ),
       ),
     );
@@ -4489,18 +4576,34 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(_refreshMesh);
   }
 
-  /// Cascade-deletes [feature] and every Feature after it, once the user
-  /// confirms exactly which ones will go. The Feature tree is already in
-  /// creation order, so the Features at and after [feature]'s index are
-  /// precisely the ones the backend's cascade-delete will remove.
+  /// Cascade-deletes [feature] and every Feature that actually transitively
+  /// depends on it (the real dependency graph - B2), once the user
+  /// confirms exactly which ones will go.
+  ///
+  /// On-device feedback: this used to assume "every Feature at and after
+  /// [feature]'s index in the list" - true only for the pre-B2 world where
+  /// list order and dependency order always coincided (every single-body
+  /// Part before A1's multi-body model). A Sketch feeding two independent
+  /// Extrudes, or a Feature with no real dependents at all, could already
+  /// show the wrong warning - naming Features that would in fact survive.
+  /// [DocumentApiClient.previewCascadeDelete] asks the backend for the
+  /// exact same computation the delete itself performs, instead.
   Future<void> _cascadeDeleteFeature(FeatureDto feature) async {
     final part = _part;
     if (part == null || _busy) return;
 
-    final index = _features.indexWhere((f) => f.id == feature.id);
-    if (index == -1) return;
+    List<String> toDeleteIds;
+    try {
+      toDeleteIds = await _api.previewCascadeDelete(part.id, feature.id);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+      return;
+    }
+    if (!mounted) return;
     final namesToDelete = [
-      for (var i = index; i < _features.length; i++) featureDisplayName(_features, i),
+      for (var i = 0; i < _features.length; i++)
+        if (toDeleteIds.contains(_features[i].id)) featureDisplayName(_features, i),
     ];
 
     final confirmed = await showCascadeDeleteDialog(context, namesToDelete);
@@ -4841,7 +4944,9 @@ class _PartScreenState extends State<PartScreen> {
                     onRenderModeChanged: _onRenderModeChanged,
                     onOpenConnectionSettings: _openConnectionSettings,
                     onSaveNative: _saveNativeFile,
+                    onSaveAsNative: _saveAsNativeFile,
                     onOpenNative: _openNativeFile,
+                    onStartNew: _startNewPart,
                     onExportPart: _exportPart,
                     onImportGeometry: _importGeometry,
                     bgColourHex: _bgColourHex,

@@ -8,6 +8,7 @@ fan-triangulating any polygon face; glTF with or without an index buffer,
 falling back to a computed face normal wherever NORMAL is absent.
 """
 
+import base64
 import json
 import struct
 
@@ -168,27 +169,34 @@ def decode_obj(text: str) -> MeshData:
 _GLTF_INDEX_FORMAT_FOR_COMPONENT_TYPE = {5121: "B", 5123: "H", 5125: "I"}
 
 
-def _read_vec3_accessor(gltf: dict, bin_chunk: bytes, accessor_index: int) -> list[tuple[float, float, float]]:
+def _read_vec3_accessor(
+    gltf: dict, buffers: list[bytes], accessor_index: int
+) -> list[tuple[float, float, float]]:
     accessor = gltf["accessors"][accessor_index]
     view = gltf["bufferViews"][accessor["bufferView"]]
+    buffer_bytes = buffers[view.get("buffer", 0)]
     offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
     count = accessor["count"]
-    values = struct.unpack_from(f"<{3 * count}f", bin_chunk, offset)
+    values = struct.unpack_from(f"<{3 * count}f", buffer_bytes, offset)
     return [(values[i], values[i + 1], values[i + 2]) for i in range(0, len(values), 3)]
 
 
-def _read_index_accessor(gltf: dict, bin_chunk: bytes, accessor_index: int) -> list[int]:
+def _read_index_accessor(gltf: dict, buffers: list[bytes], accessor_index: int) -> list[int]:
     accessor = gltf["accessors"][accessor_index]
     view = gltf["bufferViews"][accessor["bufferView"]]
+    buffer_bytes = buffers[view.get("buffer", 0)]
     offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
     count = accessor["count"]
     fmt = _GLTF_INDEX_FORMAT_FOR_COMPONENT_TYPE.get(accessor["componentType"])
     if fmt is None:
         raise MeshImportError(f"Unsupported glTF index componentType: {accessor['componentType']}")
-    return list(struct.unpack_from(f"<{count}{fmt}", bin_chunk, offset))
+    return list(struct.unpack_from(f"<{count}{fmt}", buffer_bytes, offset))
 
 
-def decode_glb(data: bytes) -> MeshData:
+def _parse_glb_container(data: bytes) -> tuple[dict, list[bytes]]:
+    """Binary glTF (.glb): a JSON chunk plus (at most) one BIN chunk,
+    which is `buffers[0]`'s own bytes - glb never has more than one
+    binary buffer."""
     if len(data) < 12:
         raise MeshImportError("Not a valid glb file: too short")
     magic, _version, total_length = struct.unpack_from("<4sII", data, 0)
@@ -213,21 +221,68 @@ def decode_glb(data: bytes) -> MeshData:
         raise MeshImportError("Not a valid glb file: missing JSON chunk")
     try:
         gltf = json.loads(json_chunk)
+    except json.JSONDecodeError as exc:
+        raise MeshImportError(f"Not a valid glb file: {exc}") from exc
+    return gltf, [bin_chunk]
+
+
+def _resolve_json_gltf_buffers(gltf: dict) -> list[bytes]:
+    """Plain-JSON `.gltf` (not `.glb`) - by far the more common real-world
+    form (most authoring tools default to it), but each `buffers[i].uri`
+    is either a `data:` URI (the whole buffer embedded as base64 right in
+    the JSON - the "self-contained" export option most tools also offer)
+    or a relative path to a separate `.bin` file next to the `.gltf` one.
+    Only the former can be resolved from these bytes alone - a single file
+    picked in the client has no access to a sibling file on disk, so an
+    external URI is rejected with a clear, actionable error rather than
+    silently producing an incomplete/wrong mesh."""
+    buffers = []
+    for i, buffer in enumerate(gltf.get("buffers", [])):
+        uri = buffer.get("uri")
+        if not uri or not uri.startswith("data:"):
+            raise MeshImportError(
+                f"glTF buffer {i} references an external file - only a self-contained "
+                "(embedded data: URI) .gltf, or the binary .glb form, can be imported as a "
+                "single file"
+            )
+        header, _, encoded = uri.partition(",")
+        if "base64" not in header:
+            raise MeshImportError(f"glTF buffer {i}'s data URI is not base64-encoded")
+        buffers.append(base64.b64decode(encoded))
+    return buffers
+
+
+def decode_gltf(data: bytes) -> MeshData:
+    """Accepts both binary glTF (`.glb`) and plain-JSON glTF (`.gltf`) -
+    sniffed by the same magic-bytes check every glb reader uses. Only the
+    single-file-resolvable case is supported either way (see
+    `_resolve_json_gltf_buffers`'s own docstring for the JSON case's
+    limitation)."""
+    if data[:4] == b"glTF":
+        gltf, buffers = _parse_glb_container(data)
+    else:
+        try:
+            gltf = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MeshImportError(f"Not a valid glTF file: {exc}") from exc
+        buffers = _resolve_json_gltf_buffers(gltf)
+
+    try:
         primitive = gltf["meshes"][0]["primitives"][0]
         position_accessor_index = primitive["attributes"]["POSITION"]
         normal_accessor_index = primitive["attributes"].get("NORMAL")
         indices_accessor_index = primitive.get("indices")
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-        raise MeshImportError(f"Not a valid glb file: {exc}") from exc
+    except (KeyError, IndexError, TypeError) as exc:
+        raise MeshImportError(f"Not a valid glTF file: {exc}") from exc
 
-    positions = _read_vec3_accessor(gltf, bin_chunk, position_accessor_index)
+    positions = _read_vec3_accessor(gltf, buffers, position_accessor_index)
     normals = (
-        _read_vec3_accessor(gltf, bin_chunk, normal_accessor_index)
+        _read_vec3_accessor(gltf, buffers, normal_accessor_index)
         if normal_accessor_index is not None
         else None
     )
     indices = (
-        _read_index_accessor(gltf, bin_chunk, indices_accessor_index)
+        _read_index_accessor(gltf, buffers, indices_accessor_index)
         if indices_accessor_index is not None
         else list(range(len(positions)))
     )
@@ -247,5 +302,5 @@ def decode_glb(data: bytes) -> MeshData:
         mesh.triangles.append(Triangle(a=base, b=base + 1, c=base + 2))
 
     if not mesh.vertices:
-        raise MeshImportError("glb file has no triangles")
+        raise MeshImportError("glTF file has no triangles")
     return mesh

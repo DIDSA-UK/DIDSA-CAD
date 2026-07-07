@@ -12,7 +12,13 @@ from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 # app.document.mesh_data's own docstring for why they live there instead,
 # re-exported here unchanged so every existing call site importing them
 # from this module keeps working as before.
-from app.document.mesh_data import DEFAULT_MESH_QUALITY, MeshData, MeshQuality, Triangle
+from app.document.mesh_data import (
+    DEFAULT_MESH_QUALITY,
+    MeshData,
+    MeshQuality,
+    Triangle,
+    synthesize_wireframe_edges_from_triangles,
+)
 
 __all__ = [
     "DEFAULT_MESH_QUALITY",
@@ -71,6 +77,11 @@ def tessellate_shape(shape, quality: MeshQuality = DEFAULT_MESH_QUALITY) -> Mesh
         explorer.Next()
 
     mesh.edges, mesh.edge_ids = _extract_edges(shape)
+    if not mesh.edges and mesh.triangles:
+        # On-device feedback: a shape with a triangulation but no real
+        # B-rep edges at all (an ImportFeature's own mesh-format Body) -
+        # see synthesize_wireframe_edges_from_triangles's own docstring.
+        mesh.edges, mesh.edge_ids = synthesize_wireframe_edges_from_triangles(mesh)
     mesh.topology_vertices, mesh.topology_vertex_ids = _extract_topology_vertices(shape)
     mesh.face_edge_ids = _extract_face_edge_ids(shape)
     return mesh

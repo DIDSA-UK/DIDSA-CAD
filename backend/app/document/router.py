@@ -41,6 +41,7 @@ from app.document.models import (
 from app.document.revolve import resolve_revolve
 from app.document.schemas import (
     BodyMeshResponse,
+    CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
     ChamferFeatureCreate,
     ChamferFeatureResponse,
@@ -1316,6 +1317,23 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
         deleted_feature_ids=[f.id for f in deleted_features],
         deleted_sketch_ids=deleted_sketch_ids,
     )
+
+
+@router.get(
+    "/parts/{part_id}/features/{feature_id}/cascade-preview",
+    response_model=CascadeDeletePreviewResponse,
+)
+def preview_cascade_delete(part_id: str, feature_id: str) -> CascadeDeletePreviewResponse:
+    """On-device feedback: read-only preview of exactly what `DELETE .../
+    cascade` above would remove - the same `transitive_dependents` call,
+    mutating nothing - so a confirmation dialog can name the real Features
+    at risk instead of the stale "everything after this one in the list"
+    assumption the client used to make on its own (see `CascadeDeletePreviewResponse`'s
+    own docstring)."""
+    part = get_part_or_404(part_id)
+    _get_feature_or_404(part, feature_id)
+    to_delete = transitive_dependents(build_feature_graph(part), feature_id)
+    return CascadeDeletePreviewResponse(feature_ids=[f.id for f in part.features if f.id in to_delete])
 
 
 @router.get("/parts/{part_id}/mesh", response_model=list[BodyMeshResponse])

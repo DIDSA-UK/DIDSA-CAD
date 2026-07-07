@@ -1114,8 +1114,72 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   of its own anyway, so it now always registers as exactly one Body keyed
   by its own Feature id directly, whatever `resolve_import` returned (real
   solid or bare face alike), never split even if a STEP import happens to
-  contain multiple disjoint solids. Not yet confirmed on-device; CI status
-  on the fix itself pending as of this entry.
+  contain multiple disjoint solids. Confirmed green in CI.
+- **On-device feedback round: five fixes after real device testing of the
+  whole Save/Load/Import/Export phase.**
+  1. **"Editable" wrongly shown for `ImportFeature`.** The Build Tree's
+     locked/unlocked subtitle was a blanket `feature.locked ? 'Locked' :
+     'Editable'`, predating any Feature type without a real edit panel -
+     `ImportFeature` has none (a fixed, non-parametric Body, see its own
+     docstring), so tapping it while unlocked did nothing despite the row
+     claiming otherwise. `feature_tree_panel.dart` gained a `_hasEditPanel`
+     check (a negative check against `'import'`, not an allow-list, so it
+     doesn't need updating for every future Feature type that keeps
+     following the same "real edit panel" pattern) - shows "Imported"
+     instead when there isn't one.
+  2. **Cascade-delete confirmation named the wrong Features.** `_cascade
+     DeleteFeature` assumed "every Feature at and after this index in the
+     list" - true only in the pre-B2 world where list order and dependency
+     order always coincided; a Sketch feeding two independent Extrudes (or
+     any Feature with no real dependents) could already show the wrong
+     warning. The backend's `CascadeDeleteResponse`'s own docstring carried
+     the identical stale description. New read-only `GET .../cascade-
+     preview` endpoint (`CascadeDeletePreviewResponse`) runs the exact same
+     `transitive_dependents` computation the real delete does, mutating
+     nothing; the client now calls it instead of assuming.
+  3. **Mesh-imported Bodies had no visible wireframe in any render mode.**
+     An `ImportFeature`'s own mesh-format shape (STL/OBJ/glTF) is a bare,
+     surface-less triangulated face with zero real `TopoDS_Edge`s -
+     `_extract_edges` (which only ever samples real OCCT curves) came back
+     empty, so the existing edge-rendering pipeline had nothing to draw
+     regardless of render mode. New `synthesize_wireframe_edges_from_
+     triangles` (OCCT-free, in `mesh_data.py`) - each triangle's own 3
+     sides become one segment apiece - `tessellate_shape` falls back to it
+     whenever real-edge extraction comes back empty (only reachable for
+     exactly this shape; every other Feature's own OCCT geometry always
+     has real edges). No new client toggle needed - the existing render-
+     mode picker (View menu) already provides "hide/show the mesh
+     [wireframe]" once edges are populated.
+  4. **glTF import didn't work for real-world `.gltf` files.** `decode_glb`
+     only understood the binary `.glb` container; the far more common
+     form most authoring tools default to is plain-JSON `.gltf` with
+     buffers referenced by URI. Renamed to `decode_gltf` and widened to
+     also accept the JSON form - buffers with an embedded `data:` URI (the
+     "self-contained export" option most tools also offer) are decoded
+     inline; a buffer referencing an external `.bin` file is rejected with
+     a clear, actionable error rather than silently producing an
+     incomplete mesh (a single picked file has no access to a sibling file
+     on disk).
+  5. **Save As/New wired up.** Both were disabled File-menu placeholders.
+     `New` confirms, then pushes a fresh blank `PartScreen` (no
+     `initialPartId`/`initialHiddenFeatureIds`/`initialFileName`) - the
+     same "always start fresh" pattern this app already uses at first
+     launch. `Save`/`Save As` share one `_exportAndSaveNativeFile` helper;
+     Android's Storage Access Framework has no true silent-overwrite
+     without deeper persisted-URI-permission integration (out of scope
+     here, flagged rather than faked), so both still go through the same
+     platform save dialog - the real, honest distinction is which filename
+     each suggests: Save reuses `_lastSavedFileName` (whatever this session
+     last Opened-from or Saved-to, threaded through a fresh screen via a
+     new `PartScreen.initialFileName` the same way `initialPartId` already
+     is), Save As always resets to a fresh generic name.
+
+  17 new genuinely-executable pure-Python tests across items 2-4 (2
+  cascade-preview HTTP tests, CI-only; 3 wireframe-synthesis tests, no
+  OCCT; 2 new glTF-JSON tests, no OCCT) plus one existing CI-only import
+  test extended to also assert the synthesized wireframe is present. Items
+  1 and 5 are client-only Dart, unverifiable in this sandbox (no Flutter
+  SDK) - manually reviewed plus brace-balance checks only.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

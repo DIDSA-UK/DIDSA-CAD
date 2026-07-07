@@ -24,6 +24,17 @@ String featureDisplayName(List<FeatureDto> features, int index) {
   return '$label $ordinal';
 }
 
+/// On-device feedback: whether the last (unlocked) Feature of [type] has an
+/// actual edit panel to open - an `ImportFeature` has none (a fixed,
+/// non-parametric Body wrapping whatever file it imported, see the
+/// backend's own docstring for why), so it was showing "Editable" in the
+/// tree despite tapping it doing nothing editable at all. Every other type
+/// today does have a real edit panel (see `PartScreen._onFeatureTap`'s own
+/// per-type dispatch) - this stays a plain negative check rather than an
+/// allow-list so it doesn't need updating for every future Feature type
+/// that keeps following that same pattern.
+bool _hasEditPanel(String type) => type != 'import';
+
 /// The "Build Tree": a Part's currently-computed Bodies (top, collapsible)
 /// followed by its user-authored Features (Sketch/Extrude/etc, also
 /// collapsible), in creation order. B3 revision, off on-device feedback:
@@ -458,7 +469,11 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           style: _rowTitleStyle,
         ),
         subtitle: Text(
-          feature.locked ? 'Locked' : 'Editable',
+          feature.locked
+              ? 'Locked'
+              : _hasEditPanel(feature.type)
+                  ? 'Editable'
+                  : 'Imported',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: _rowSubtitleStyle,

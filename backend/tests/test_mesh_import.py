@@ -7,11 +7,15 @@ on each format's own byte layout. A few cases exercise decoder-only paths
 accessor) that the encoders never themselves produce.
 """
 
+import base64
+import json
+import struct
+
 import pytest
 
 from app.document.mesh_data import MeshData, Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
-from app.document.mesh_import import MeshImportError, decode_glb, decode_obj, decode_stl
+from app.document.mesh_import import MeshImportError, decode_gltf, decode_obj, decode_stl
 
 
 def _two_triangle_mesh() -> MeshData:
@@ -111,20 +115,54 @@ def test_decode_obj_rejects_a_file_with_no_vertices():
         decode_obj("# just a comment\n")
 
 
-def test_decode_glb_round_trips_through_encode_glb():
+def test_decode_gltf_round_trips_through_encode_glb():
     original = _two_triangle_mesh()
-    decoded = decode_glb(encode_glb(original))
+    decoded = decode_gltf(encode_glb(original))
     _assert_same_geometry(decoded, original)
 
 
-def test_decode_glb_rejects_bad_magic():
+def test_decode_gltf_rejects_bad_magic():
     with pytest.raises(MeshImportError):
-        decode_glb(b"not a glb file" + b"\0" * 20)
+        decode_gltf(b"not a glb file" + b"\0" * 20)
 
 
-def test_decode_glb_rejects_length_mismatch():
+def test_decode_gltf_rejects_length_mismatch():
     data = bytearray(encode_glb(_two_triangle_mesh()))
     # Corrupt the declared total length (bytes 8:12) so it no longer matches.
     data[8:12] = (len(data) + 4).to_bytes(4, "little")
     with pytest.raises(MeshImportError):
-        decode_glb(bytes(data))
+        decode_gltf(bytes(data))
+
+
+def _embedded_json_gltf_bytes(mesh: MeshData) -> bytes:
+    """A self-contained, plain-JSON `.gltf` (not `.glb`) - the common
+    real-world form most authoring tools default to - built by unwrapping
+    `encode_glb`'s own glb container and re-embedding its BIN chunk as a
+    `data:` URI instead, exactly the "export embedded" option those same
+    tools offer."""
+    glb = encode_glb(mesh)
+    json_len, = struct.unpack_from("<I", glb, 12)
+    gltf = json.loads(glb[20 : 20 + json_len])
+    bin_offset = 20 + json_len
+    bin_len, = struct.unpack_from("<I", glb, bin_offset)
+    bin_bytes = glb[bin_offset + 8 : bin_offset + 8 + bin_len]
+    gltf["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64.b64encode(
+        bin_bytes
+    ).decode("ascii")
+    return json.dumps(gltf).encode("utf-8")
+
+
+def test_decode_gltf_accepts_a_plain_json_gltf_with_an_embedded_data_uri_buffer():
+    original = _two_triangle_mesh()
+    decoded = decode_gltf(_embedded_json_gltf_bytes(original))
+    _assert_same_geometry(decoded, original)
+
+
+def test_decode_gltf_rejects_a_json_gltf_referencing_an_external_buffer_file():
+    original = _two_triangle_mesh()
+    glb = encode_glb(original)
+    json_len, = struct.unpack_from("<I", glb, 12)
+    gltf = json.loads(glb[20 : 20 + json_len])
+    gltf["buffers"][0]["uri"] = "geometry.bin"
+    with pytest.raises(MeshImportError):
+        decode_gltf(json.dumps(gltf).encode("utf-8"))

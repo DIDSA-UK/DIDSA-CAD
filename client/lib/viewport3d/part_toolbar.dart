@@ -58,9 +58,14 @@ class PartToolbar extends StatelessWidget {
   /// Native Save/Load: reads/writes the whole Document (every Part's
   /// ordered Feature list, plus every Sketch it references) as this app's
   /// own native project file - see `PartScreen._saveNativeFile`/
-  /// `_openNativeFile`.
+  /// `_openNativeFile`. `onSaveAsNative` always prompts a fresh filename
+  /// (see `PartScreen._saveAsNativeFile`'s own doc comment for how this
+  /// differs from plain Save); `onStartNew` abandons the current Part for
+  /// a brand-new blank one, after confirming (see `PartScreen._startNewPart`).
   final VoidCallback? onSaveNative;
+  final VoidCallback? onSaveAsNative;
   final VoidCallback? onOpenNative;
+  final VoidCallback? onStartNew;
 
   /// Export: writes the current Part's geometry out to one of four
   /// interchange formats (`'step'`/`'stl'`/`'obj'`/`'glb'`) - see
@@ -114,7 +119,9 @@ class PartToolbar extends StatelessWidget {
     this.onRenderModeChanged,
     this.onOpenConnectionSettings,
     this.onSaveNative,
+    this.onSaveAsNative,
     this.onOpenNative,
+    this.onStartNew,
     this.onExportPart,
     this.onImportGeometry,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
@@ -183,8 +190,6 @@ class PartToolbar extends StatelessWidget {
     );
   }
 
-  static const List<String> _filePlaceholders = ['New', 'Save As…'];
-
   // format, label, icon - each drives one Export ListTile below.
   static const List<(String, String, IconData)> _exportFormats = [
     ('step', 'Export STEP', Icons.view_in_ar_outlined),
@@ -194,11 +199,15 @@ class PartToolbar extends StatelessWidget {
   ];
 
   Widget _buildFileMenu(BuildContext context) {
-    final disabledColor = Theme.of(context).disabledColor;
     return ExpansionTile(
       leading: const Icon(Icons.folder_outlined),
       title: const Text('File'),
       children: [
+        ListTile(
+          leading: const Icon(Icons.note_add_outlined),
+          title: const Text('New'),
+          onTap: onStartNew,
+        ),
         ListTile(
           leading: const Icon(Icons.folder_open_outlined),
           title: const Text('Open…'),
@@ -210,15 +219,15 @@ class PartToolbar extends StatelessWidget {
           onTap: onSaveNative,
         ),
         ListTile(
+          leading: const Icon(Icons.save_as_outlined),
+          title: const Text('Save As…'),
+          onTap: onSaveAsNative,
+        ),
+        ListTile(
           leading: const Icon(Icons.file_upload_outlined),
           title: const Text('Import…'),
           onTap: onImportGeometry,
         ),
-        for (final label in _filePlaceholders)
-          ListTile(
-            enabled: false,
-            title: Text(label, style: TextStyle(color: disabledColor)),
-          ),
         for (final (format, label, icon) in _exportFormats)
           ListTile(
             leading: Icon(icon),

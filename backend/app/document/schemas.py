@@ -525,9 +525,28 @@ class NativeImportResponse(BaseModel):
 
 class CascadeDeleteResponse(BaseModel):
     """What got deleted by a cascade-delete: the target Feature and every
-    Feature after it, plus the Sketch each deleted SketchFeature owned -
-    in deletion order, so a client can confirm the backend's view matches
-    what it just asked for (or refresh from it directly)."""
+    Feature that actually transitively depends on it per the real
+    dependency graph (B2) - not "every Feature after it in the list", a
+    stale pre-B2 description this docstring itself used to carry (on-device
+    feedback: the client's own confirmation dialog had the identical stale
+    assumption baked in, see `CascadeDeletePreviewResponse` below for the
+    fix) - plus the Sketch each deleted SketchFeature owned, in deletion
+    order, so a client can confirm the backend's view matches what it just
+    asked for (or refresh from it directly)."""
 
     deleted_feature_ids: list[str]
     deleted_sketch_ids: list[str]
+
+
+class CascadeDeletePreviewResponse(BaseModel):
+    """On-device feedback: a client confirming a cascade delete needs to
+    show the user exactly which Features will go *before* they commit -
+    the delete endpoint itself is the only place that ran `transitive_
+    dependents` previously, so the client's own confirmation dialog had
+    fallen back to the stale pre-B2 "every Feature after this one in the
+    list" assumption instead. This is a read-only preview of the exact
+    same `transitive_dependents(build_feature_graph(part), feature_id)`
+    computation `delete_feature_cascade` itself performs, in `part.
+    features`' own natural order, mutating nothing."""
+
+    feature_ids: list[str]
