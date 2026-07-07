@@ -214,6 +214,68 @@ void main() {
       expect(mesh.triangleCount, 1);
       expect(mesh.positions.sublist(0, 9), [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
     });
+
+    test('a vertex accessor with no bufferView decodes as all-zero data instead of crashing', () {
+      // Real ODM/OpenDroneMap .glb export hit this on-device: bufferView is
+      // legally optional per spec (all-zero data), but was force-cast
+      // straight to int, crashing with a raw "type 'Null' is not a subtype
+      // of type 'int'" instead of handling the spec-legal case.
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'buffers': <Map<String, dynamic>>[],
+        'bufferViews': <Map<String, dynamic>>[],
+        'accessors': [
+          {'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+              },
+            ],
+          },
+        ],
+      };
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      expect(mesh.triangleCount, 1);
+      expect(mesh.positions, everyElement(0.0));
+    });
+
+    test('an index accessor with no bufferView is rejected with a clear error', () {
+      final positions = Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      final bufferBytes = positions.buffer.asUint8List();
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'buffers': [
+          {
+            'byteLength': bufferBytes.length,
+            'uri': 'data:application/octet-stream;base64,${base64.encode(bufferBytes)}',
+          },
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': bufferBytes.length},
+        ],
+        'accessors': [
+          {'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+          {'componentType': 5123, 'count': 3, 'type': 'SCALAR'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+                'indices': 1,
+              },
+            ],
+          },
+        ],
+      };
+      expect(
+        () => decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf)))),
+        throwsA(isA<MeshImportError>()),
+      );
+    });
   });
 
   group('decimateToTriangleBudget', () {

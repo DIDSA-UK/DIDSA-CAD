@@ -399,11 +399,21 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
   /// use FLOAT for TEXCOORD_0 too, so this is a real but low-probability gap
   /// rather than a silently-assumed-correct one: a normalized-integer
   /// TEXCOORD_0 would read as raw 0-255/0-65535 values instead of 0-1.
+  ///
+  /// An accessor's `bufferView` is legally optional per spec (means
+  /// "all-zero data" unless a `sparse` accessor is also given, which this
+  /// decoder doesn't support) - a real ODM/OpenDroneMap `.glb` export hit
+  /// this on-device, previously crashing with a raw, unhelpful "type 'Null'
+  /// is not a subtype of type 'int'" the moment `bufferView` was force-cast.
+  /// Handled here by returning the spec-correct zero-filled data instead.
   List<double> readAccessor(int accessorIndex, int expectedComponents) {
     final accessor = accessors[accessorIndex] as Map<String, dynamic>;
     final count = accessor['count'] as int;
+    final bufferViewIndex = accessor['bufferView'] as int?;
+    if (bufferViewIndex == null) {
+      return List.filled(count * expectedComponents, 0.0);
+    }
     final componentType = accessor['componentType'] as int;
-    final bufferViewIndex = accessor['bufferView'] as int;
     final accessorByteOffset = (accessor['byteOffset'] as int?) ?? 0;
     final bufferView = bufferViews[bufferViewIndex] as Map<String, dynamic>;
     final bufferIndex = bufferView['buffer'] as int;
@@ -436,11 +446,19 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
     return out;
   }
 
+  /// See [readAccessor]'s own doc comment on `bufferView` being legally
+  /// optional - unlike a vertex accessor, there's no useful "all zeros"
+  /// interpretation for an *index* accessor (every triangle would collapse
+  /// onto vertex 0), so this rejects that case with a clear error instead
+  /// of either crashing or silently producing a degenerate mesh.
   List<int> readIndices(int accessorIndex) {
     final accessor = accessors[accessorIndex] as Map<String, dynamic>;
     final count = accessor['count'] as int;
+    final bufferViewIndex = accessor['bufferView'] as int?;
+    if (bufferViewIndex == null) {
+      throw MeshImportError('glTF index accessor has no bufferView (sparse/all-zero indices are not supported)');
+    }
     final componentType = accessor['componentType'] as int;
-    final bufferViewIndex = accessor['bufferView'] as int;
     final accessorByteOffset = (accessor['byteOffset'] as int?) ?? 0;
     final bufferView = bufferViews[bufferViewIndex] as Map<String, dynamic>;
     final bufferIndex = bufferView['buffer'] as int;
