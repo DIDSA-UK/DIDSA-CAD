@@ -43,17 +43,21 @@ class _DecodeRequest {
 
 /// Runs off the main isolate via [compute] - decode alone can be a
 /// multi-second, main-thread-blocking operation for a large photogrammetry
-/// file, and decimating immediately afterwards (still inside the background
-/// isolate) means only the *bounded*, already-shrunk result ever has to cross
-/// back over the isolate boundary, not the full raw mesh.
+/// file. `maxTriangles: kMaxViewerTriangles` decimates *during* decode (see
+/// `mesh_data.dart`'s own doc comment on `decodeStl`) rather than fully
+/// decoding then shrinking afterward - a real on-device crash-to-home-screen
+/// on a very large `.glb` confirmed the old "decode everything, decimate
+/// after" approach could exhaust memory before decimation ever got a chance
+/// to run. Only the already-bounded result ever has to cross back over the
+/// isolate boundary either way.
 (DecodedMesh mesh, int originalTriangleCount) _decodeAndDecimate(_DecodeRequest request) {
   final mesh = switch (request.extension) {
-    'stl' => decodeStl(request.bytes),
-    'obj' => decodeObj(String.fromCharCodes(request.bytes)),
-    'gltf' || 'glb' => decodeGltf(request.bytes),
+    'stl' => decodeStl(request.bytes, maxTriangles: kMaxViewerTriangles),
+    'obj' => decodeObj(String.fromCharCodes(request.bytes), maxTriangles: kMaxViewerTriangles),
+    'gltf' || 'glb' => decodeGltf(request.bytes, maxTriangles: kMaxViewerTriangles),
     _ => throw MeshImportError('Unsupported file extension: ${request.extension}'),
   };
-  return (decimateToTriangleBudget(mesh, kMaxViewerTriangles), mesh.triangleCount);
+  return (mesh, mesh.sourceTriangleCount);
 }
 
 class _MeshViewerScreenState extends State<MeshViewerScreen> {

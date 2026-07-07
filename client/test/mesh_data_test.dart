@@ -42,6 +42,33 @@ void main() {
           throwsA(isA<MeshImportError>()));
     });
 
+    test('maxTriangles decimates a binary STL during decode and reports sourceTriangleCount', () {
+      final bytes = _binaryStl([
+        for (var i = 0; i < 10; i++)
+          ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, i.toDouble(), 0.0]),
+      ]);
+      final mesh = decodeStl(bytes, maxTriangles: 3);
+      expect(mesh.sourceTriangleCount, 10);
+      expect(mesh.triangleCount, lessThanOrEqualTo(3));
+      expect(mesh.triangleCount, greaterThan(0));
+    });
+
+    test('maxTriangles decimates an ASCII STL during decode and reports sourceTriangleCount', () {
+      final buffer = StringBuffer('solid test\n');
+      for (var i = 0; i < 10; i++) {
+        buffer.write(
+          'facet normal 0 0 1\nouter loop\n'
+          'vertex 0 0 0\nvertex 1 0 0\nvertex 0 $i 0\n'
+          'endloop\nendfacet\n',
+        );
+      }
+      buffer.write('endsolid test\n');
+      final mesh = decodeStl(Uint8List.fromList(utf8.encode(buffer.toString())), maxTriangles: 3);
+      expect(mesh.sourceTriangleCount, 10);
+      expect(mesh.triangleCount, lessThanOrEqualTo(3));
+      expect(mesh.triangleCount, greaterThan(0));
+    });
+
     test('decodes an ASCII STL', () {
       const text = 'solid test\n'
           'facet normal 0 0 1\n'
@@ -94,6 +121,21 @@ void main() {
 
     test('rejects a file with no vertices', () {
       expect(() => decodeObj('# just a comment\n'), throwsA(isA<MeshImportError>()));
+    });
+
+    test('maxTriangles decimates during decode and reports sourceTriangleCount', () {
+      final buffer = StringBuffer();
+      for (var i = 0; i < 10; i++) {
+        buffer.write('v 0 0 0\nv 1 0 0\nv 0 $i 0\n');
+      }
+      for (var i = 0; i < 10; i++) {
+        final base = i * 3 + 1;
+        buffer.write('f $base ${base + 1} ${base + 2}\n');
+      }
+      final mesh = decodeObj(buffer.toString(), maxTriangles: 3);
+      expect(mesh.sourceTriangleCount, 10);
+      expect(mesh.triangleCount, lessThanOrEqualTo(3));
+      expect(mesh.triangleCount, greaterThan(0));
     });
   });
 
@@ -275,6 +317,41 @@ void main() {
         () => decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf)))),
         throwsA(isA<MeshImportError>()),
       );
+    });
+
+    test('maxTriangles decimates during decode and reports sourceTriangleCount', () {
+      final positions = Float32List.fromList([
+        for (var i = 0; i < 10; i++) ...[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, i.toDouble(), 0.0],
+      ]);
+      final bufferBytes = positions.buffer.asUint8List();
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'buffers': [
+          {
+            'byteLength': bufferBytes.length,
+            'uri': 'data:application/octet-stream;base64,${base64.encode(bufferBytes)}',
+          },
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': bufferBytes.length},
+        ],
+        'accessors': [
+          {'bufferView': 0, 'componentType': 5126, 'count': 30, 'type': 'VEC3'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+              },
+            ],
+          },
+        ],
+      };
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))), maxTriangles: 3);
+      expect(mesh.sourceTriangleCount, 10);
+      expect(mesh.triangleCount, lessThanOrEqualTo(3));
+      expect(mesh.triangleCount, greaterThan(0));
     });
   });
 

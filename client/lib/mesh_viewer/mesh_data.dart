@@ -47,6 +47,7 @@ class DecodedMesh {
   final Float32List uvs;
   final Uint8List? textureBytes;
   final String? textureMimeType;
+  final int? _sourceTriangleCountOverride;
 
   DecodedMesh({
     required this.positions,
@@ -54,10 +55,28 @@ class DecodedMesh {
     required this.uvs,
     this.textureBytes,
     this.textureMimeType,
-  });
+    int? sourceTriangleCount,
+  }) : _sourceTriangleCountOverride = sourceTriangleCount;
 
   int get triangleCount => positions.length ~/ 9;
   int get vertexCount => triangleCount * 3;
+
+  /// The file's true triangle count before any in-decode decimation (see
+  /// `decodeStl`/`decodeObj`/`decodeGltf`'s `maxTriangles` parameter) - equal
+  /// to [triangleCount] unless decimation actually dropped triangles while
+  /// building this instance. Drives the mesh viewer's "showing X of Y
+  /// triangles" banner without needing a separate, full-size mesh kept
+  /// around just to know what Y was.
+  int get sourceTriangleCount => _sourceTriangleCountOverride ?? triangleCount;
+}
+
+/// Shared by every decoder's in-decode decimation (STL/OBJ/glTF all call
+/// this the same way) - `1` (keep everything) when [maxTriangles] is null
+/// or [totalTriangles] is already within budget, otherwise the smallest
+/// stride that brings the kept count at or under [maxTriangles].
+int _decimationStride(int totalTriangles, int? maxTriangles) {
+  if (maxTriangles == null || totalTriangles <= maxTriangles) return 1;
+  return (totalTriangles / maxTriangles).ceil();
 }
 
 // ---------------------------------------------------------------------------
@@ -73,22 +92,40 @@ class DecodedMesh {
 /// `decode_stl` fallback rule (an ASCII STL that happens to start with bytes
 /// resembling a binary header is the classic false-positive this guards
 /// against).
-DecodedMesh decodeStl(Uint8List bytes) {
+///
+/// [maxTriangles], if given, decimates *during* decode (stride-skip - see
+/// `_decimationStride`) rather than fully decoding every triangle and
+/// shrinking afterward (the original approach, since replaced - see
+/// `decimateToTriangleBudget`'s own doc comment): a photogrammetry-scale
+/// file can be large enough that materializing its *full* triangle count as
+/// decoded `Float32List`s, even briefly, risks exhausting memory before
+/// decimation ever gets a chance to shrink it down - confirmed by a real
+/// on-device crash-to-home-screen loading a very large `.glb`. Bounding peak
+/// memory to the *target* budget instead of the *source* size is the fix,
+/// applied uniformly across all three formats this file decodes.
+DecodedMesh decodeStl(Uint8List bytes, {int? maxTriangles}) {
   if (bytes.length >= 84) {
     final byteData = ByteData.sublistView(bytes);
     final declaredCount = byteData.getUint32(80, Endian.little);
     if (bytes.length == 84 + declaredCount * 50) {
-      return _decodeBinaryStl(byteData, declaredCount);
+      return _decodeBinaryStl(byteData, declaredCount, maxTriangles);
     }
   }
-  return _decodeAsciiStl(utf8.decode(bytes, allowMalformed: true));
+  return _decodeAsciiStl(utf8.decode(bytes, allowMalformed: true), maxTriangles);
 }
 
-DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount) {
-  final positions = Float32List(triangleCount * 9);
-  final normals = Float32List(triangleCount * 9);
+DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount, int? maxTriangles) {
+  final stride = _decimationStride(triangleCount, maxTriangles);
+  final keptCount = (triangleCount / stride).ceil();
+  final positions = Float32List(keptCount * 9);
+  final normals = Float32List(keptCount * 9);
+  var outTriangle = 0;
   var offset = 84;
   for (var t = 0; t < triangleCount; t++) {
+    if (t % stride != 0) {
+      offset += 50; // skip this record entirely - no float decode, no storage
+      continue;
+    }
     var nx = byteData.getFloat32(offset, Endian.little);
     var ny = byteData.getFloat32(offset + 4, Endian.little);
     var nz = byteData.getFloat32(offset + 8, Endian.little);
@@ -109,7 +146,7 @@ DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount) {
       ny = computed.$2;
       nz = computed.$3;
     }
-    final base = t * 9;
+    final base = outTriangle * 9;
     for (var i = 0; i < 3; i++) {
       positions[base + i * 3] = verts[i].$1;
       positions[base + i * 3 + 1] = verts[i].$2;
@@ -118,20 +155,44 @@ DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount) {
       normals[base + i * 3 + 1] = ny;
       normals[base + i * 3 + 2] = nz;
     }
+    outTriangle++;
   }
-  return DecodedMesh(positions: positions, normals: normals, uvs: Float32List(triangleCount * 6));
+  return DecodedMesh(
+    positions: Float32List.sublistView(positions, 0, outTriangle * 9),
+    normals: Float32List.sublistView(normals, 0, outTriangle * 9),
+    uvs: Float32List(outTriangle * 6),
+    sourceTriangleCount: triangleCount,
+  );
 }
 
-DecodedMesh _decodeAsciiStl(String text) {
+DecodedMesh _decodeAsciiStl(String text, int? maxTriangles) {
+  final lines = const LineSplitter().convert(text);
+
+  // Cheap pre-count so the decimation stride is known before any vertex
+  // data is parsed/stored - see decodeStl's own doc comment for why this
+  // matters at photogrammetry scale.
+  var totalFacets = 0;
+  for (final rawLine in lines) {
+    if (rawLine.trim().startsWith('endfacet')) totalFacets++;
+  }
+  final stride = _decimationStride(totalFacets, maxTriangles);
+
   final positions = <double>[];
   final normals = <double>[];
   double nx = 0, ny = 0, nz = 0;
   final verts = <(double, double, double)>[];
+  var facetIndex = 0;
   final normalRegex = RegExp(r'facet\s+normal\s+(\S+)\s+(\S+)\s+(\S+)');
   final vertexRegex = RegExp(r'vertex\s+(\S+)\s+(\S+)\s+(\S+)');
 
   void flushFacet() {
     if (verts.length != 3) return;
+    final keep = facetIndex % stride == 0;
+    facetIndex++;
+    if (!keep) {
+      verts.clear();
+      return;
+    }
     var (fnx, fny, fnz) = (nx, ny, nz);
     if (fnx == 0 && fny == 0 && fnz == 0) {
       final computed = _faceNormal(verts[0], verts[1], verts[2]);
@@ -146,7 +207,7 @@ DecodedMesh _decodeAsciiStl(String text) {
     verts.clear();
   }
 
-  for (final rawLine in const LineSplitter().convert(text)) {
+  for (final rawLine in lines) {
     final line = rawLine.trim();
     final normalMatch = normalRegex.firstMatch(line);
     if (normalMatch != null) {
@@ -173,6 +234,7 @@ DecodedMesh _decodeAsciiStl(String text) {
     positions: Float32List.fromList(positions),
     normals: Float32List.fromList(normals),
     uvs: Float32List(positions.length ~/ 3 * 2),
+    sourceTriangleCount: totalFacets,
   );
 }
 
@@ -208,13 +270,39 @@ DecodedMesh _decodeAsciiStl(String text) {
 /// for a JSON `.gltf`'s external buffer references). Geometry (and UVs, if
 /// present, passed straight through unused until a texture-wiring follow-up
 /// resolves this) still decodes and renders untextured.
-DecodedMesh decodeObj(String text) {
+///
+/// [maxTriangles], if given, decimates during decode - see `decodeStl`'s
+/// own doc comment for why. Unlike STL/glTF, OBJ has no upfront triangle
+/// count declared anywhere in the format, so this does a cheap first pass
+/// over just the `f` lines' own fan-triangulated counts (`vertsInFace - 2`
+/// each) to compute the stride *before* the real parse - which still has to
+/// fully populate the `vertices`/`normals`/`uvs` *pools* below regardless of
+/// decimation (a face can reference any earlier-or-later `v`/`vn`/`vt` line
+/// by index, so which ones end up used isn't known until every face is
+/// read) - what decimation actually bounds here is the triangle-soup
+/// *output* arrays, which is where the real 3x-per-triangle expansion (and
+/// so the real memory cost) lives.
+DecodedMesh decodeObj(String text, {int? maxTriangles}) {
+  final lines = const LineSplitter().convert(text);
+
+  var totalTriangles = 0;
+  for (final rawLine in lines) {
+    final line = rawLine.trim();
+    if (!line.startsWith('f')) continue;
+    final tokens = line.split(RegExp(r'\s+'));
+    if (tokens[0] != 'f') continue;
+    final vertCount = tokens.length - 1;
+    if (vertCount >= 3) totalTriangles += vertCount - 2;
+  }
+  final stride = _decimationStride(totalTriangles, maxTriangles);
+
   final vertices = <(double, double, double)>[];
   final normals = <(double, double, double)>[];
   final uvs = <(double, double)>[];
   final positions = <double>[];
   final outNormals = <double>[];
   final outUvs = <double>[];
+  var triangleIndex = 0;
 
   (int, int?, int?) parseFaceVertex(String token) {
     final parts = token.split('/');
@@ -226,7 +314,7 @@ DecodedMesh decodeObj(String text) {
 
   int resolveIndex(int rawIndex, int count) => rawIndex > 0 ? rawIndex - 1 : count + rawIndex;
 
-  for (final rawLine in const LineSplitter().convert(text)) {
+  for (final rawLine in lines) {
     final line = rawLine.trim();
     if (line.isEmpty || line.startsWith('#')) continue;
     final tokens = line.split(RegExp(r'\s+'));
@@ -247,6 +335,9 @@ DecodedMesh decodeObj(String text) {
           }
         }
         for (var i = 1; i + 1 < faceVerts.length; i++) {
+          final keep = triangleIndex % stride == 0;
+          triangleIndex++;
+          if (!keep) continue;
           final triangleVerts = [faceVerts[0], faceVerts[i], faceVerts[i + 1]];
           var needsNormal = false;
           for (final (vi, ti, ni) in triangleVerts) {
@@ -288,6 +379,7 @@ DecodedMesh decodeObj(String text) {
     positions: Float32List.fromList(positions),
     normals: Float32List.fromList(outNormals),
     uvs: Float32List.fromList(outUvs),
+    sourceTriangleCount: totalTriangles,
   );
 }
 
@@ -318,18 +410,23 @@ const int _kComponentFloat = 5126;
 /// multi-node hierarchy. Only the first material's `baseColorTexture` (if
 /// any) is used, applied to the whole concatenated mesh - a multi-material
 /// GLB would need per-primitive materials, not attempted here.
-DecodedMesh decodeGltf(Uint8List bytes) {
+///
+/// [maxTriangles], if given, decimates during decode - see `decodeStl`'s own
+/// doc comment for why. glTF accessors declare their `count` upfront, so
+/// (unlike OBJ) the total triangle count - and so the decimation stride -
+/// is known before any vertex-attribute bytes are ever decoded into floats.
+DecodedMesh decodeGltf(Uint8List bytes, {int? maxTriangles}) {
   if (bytes.length >= 4 &&
       bytes[0] == 0x67 &&
       bytes[1] == 0x6c &&
       bytes[2] == 0x54 &&
       bytes[3] == 0x46) {
-    return _decodeGlb(bytes);
+    return _decodeGlb(bytes, maxTriangles);
   }
-  return _decodeGltfJson(bytes);
+  return _decodeGltfJson(bytes, maxTriangles);
 }
 
-DecodedMesh _decodeGlb(Uint8List bytes) {
+DecodedMesh _decodeGlb(Uint8List bytes, int? maxTriangles) {
   final byteData = ByteData.sublistView(bytes);
   if (bytes.length < 12) throw MeshImportError('GLB file is too short to contain a header');
   final totalLength = byteData.getUint32(8, Endian.little);
@@ -354,10 +451,10 @@ DecodedMesh _decodeGlb(Uint8List bytes) {
     offset = chunkStart + chunkLength;
   }
   if (gltf == null) throw MeshImportError('GLB file has no JSON chunk');
-  return _decodeGltfDocument(gltf, buffers);
+  return _decodeGltfDocument(gltf, buffers, maxTriangles);
 }
 
-DecodedMesh _decodeGltfJson(Uint8List bytes) {
+DecodedMesh _decodeGltfJson(Uint8List bytes, int? maxTriangles) {
   final Map<String, dynamic> gltf;
   try {
     gltf = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
@@ -368,7 +465,7 @@ DecodedMesh _decodeGltfJson(Uint8List bytes) {
   final buffers = <Uint8List>[
     for (final buffer in rawBuffers) _resolveDataUri((buffer as Map<String, dynamic>)['uri'] as String?, 'buffer'),
   ];
-  return _decodeGltfDocument(gltf, buffers);
+  return _decodeGltfDocument(gltf, buffers, maxTriangles);
 }
 
 Uint8List _resolveDataUri(String? uri, String what) {
@@ -385,11 +482,33 @@ Uint8List _resolveDataUri(String? uri, String what) {
   return base64.decode(uri.substring(commaIndex + 1));
 }
 
-DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffers) {
+DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffers, int? maxTriangles) {
   final accessors = (gltf['accessors'] as List?) ?? const [];
   final bufferViews = (gltf['bufferViews'] as List?) ?? const [];
   final meshes = (gltf['meshes'] as List?) ?? const [];
   if (meshes.isEmpty) throw MeshImportError('glTF file has no meshes');
+
+  // Pre-count the total triangle count from each primitive's own accessor
+  // `count` field - no vertex-attribute bytes decoded yet - so the
+  // decimation stride is known before the real assembly loop below ever
+  // runs. Mirrors decodeStl's binary-header pre-count; see decodeGltf's own
+  // doc comment for why this matters at photogrammetry scale.
+  var totalTriangles = 0;
+  for (final meshRaw in meshes) {
+    final mesh = meshRaw as Map<String, dynamic>;
+    for (final primitiveRaw in mesh['primitives'] as List) {
+      final primitive = primitiveRaw as Map<String, dynamic>;
+      final attributes = primitive['attributes'] as Map<String, dynamic>;
+      final positionAccessor = attributes['POSITION'] as int?;
+      if (positionAccessor == null) continue;
+      final indicesAccessor = primitive['indices'] as int?;
+      final elementCount = indicesAccessor != null
+          ? (accessors[indicesAccessor] as Map<String, dynamic>)['count'] as int
+          : (accessors[positionAccessor] as Map<String, dynamic>)['count'] as int;
+      totalTriangles += elementCount ~/ 3;
+    }
+  }
+  final stride = _decimationStride(totalTriangles, maxTriangles);
 
   /// Reads a POSITION/NORMAL/TEXCOORD_0-style vertex accessor. Does not
   /// apply glTF's "normalized integer" rescaling (dividing an
@@ -486,6 +605,7 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
   final positions = <double>[];
   final normals = <double>[];
   final uvs = <double>[];
+  var triangleIndex = 0;
 
   for (final meshRaw in meshes) {
     final mesh = meshRaw as Map<String, dynamic>;
@@ -508,6 +628,9 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
           : List.generate(vertexCount, (i) => i);
 
       for (var i = 0; i + 2 < indices.length; i += 3) {
+        final keep = triangleIndex % stride == 0;
+        triangleIndex++;
+        if (!keep) continue;
         for (final vi in [indices[i], indices[i + 1], indices[i + 2]]) {
           positions.addAll([rawPositions[vi * 3], rawPositions[vi * 3 + 1], rawPositions[vi * 3 + 2]]);
           if (rawNormals != null) {
@@ -541,6 +664,7 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
     uvs: Float32List.fromList(uvs),
     textureBytes: texture?.$1,
     textureMimeType: texture?.$2,
+    sourceTriangleCount: totalTriangles,
   );
 }
 
@@ -594,6 +718,16 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
 /// for texture correctness - an accepted trade-off for a viewer, not a
 /// numerically-optimal decimation.
 ///
+/// No longer the mesh viewer's primary decimation mechanism - `decodeStl`/
+/// `decodeObj`/`decodeGltf` all now decimate *during* decode via their own
+/// `maxTriangles` parameter, so peak memory is bounded by the target budget
+/// rather than the full source mesh (a real on-device crash-to-home-screen
+/// on a very large `.glb` motivated that change - operating on an
+/// *already-fully-decoded* [mesh] here can't help with that, since the
+/// expensive part already happened by the time this runs). Kept as a
+/// standalone utility for a caller that already has a full [DecodedMesh]
+/// from somewhere else and wants it shrunk further.
+///
 /// Returns [mesh] unchanged (same instance) if it's already within budget.
 DecodedMesh decimateToTriangleBudget(DecodedMesh mesh, int maxTriangles) {
   final triangleCount = mesh.triangleCount;
@@ -616,5 +750,6 @@ DecodedMesh decimateToTriangleBudget(DecodedMesh mesh, int maxTriangles) {
     uvs: Float32List.sublistView(uvs, 0, outTriangle * 6),
     textureBytes: mesh.textureBytes,
     textureMimeType: mesh.textureMimeType,
+    sourceTriangleCount: mesh.sourceTriangleCount,
   );
 }
