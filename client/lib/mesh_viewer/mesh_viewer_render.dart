@@ -95,10 +95,12 @@ Future<gpu.Texture> uploadTexture(ui.Image image) async {
   return texture;
 }
 
-/// See this file's top-of-file doc comment - the one call in this file that
-/// needs on-device confirmation against the real `flutter_scene` package.
+/// Confirmed against the real installed `flutter_scene` 0.18.1 source
+/// (`UnlitMaterial`'s own `set baseColorTexture` - see
+/// `package:flutter_scene/src/material/unlit_material.dart`) after the
+/// original unverified guess (`colorTexture`) failed a real on-device build.
 void _bindBaseColorTexture(UnlitMaterial material, gpu.Texture texture) {
-  material.colorTexture = texture;
+  material.baseColorTexture = texture;
 }
 
 /// Splits [mesh] into `flutter_scene` [Node]s, batched to stay under
