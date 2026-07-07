@@ -3,6 +3,7 @@ import 'package:flutter/services.dart' show TextInput;
 import 'package:http/http.dart' as http;
 
 import 'config.dart';
+import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'viewport3d/part_screen.dart';
 
 /// Stage 18's splash/connection screen - shown on cold launch before
@@ -184,6 +185,27 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   if (_error != null) ...[
                     const SizedBox(height: 16),
                     Text(_error!, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
+                  ],
+                  // On-device feedback: "View Complex Mesh" (see
+                  // mesh_viewer/mesh_viewer_screen.dart) decodes and renders
+                  // an STL/OBJ/glTF file entirely on-device, with no server
+                  // round-trip at all - so it makes no sense to gate it
+                  // behind a successful server Connect. Only shown on cold
+                  // launch, not when this screen is reached as a mid-session
+                  // "Connection Settings" revisit (there's already a working
+                  // PartScreen underneath in that case).
+                  if (!widget.isSettingsRevisit) ...[
+                    const SizedBox(height: 24),
+                    TextButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const MeshViewerScreen()),
+                      ),
+                      icon: const Icon(Icons.view_in_ar_outlined, color: Colors.white70),
+                      label: const Text(
+                        'View a mesh file (no server needed)',
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                    ),
                   ],
                 ],
               ),

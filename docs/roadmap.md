@@ -1189,3 +1189,88 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   newly *visible* (not newly introduced) once a missing import let that
   test file load for the first time in a sandbox. Still open as of the
   last time it was checked.
+- **"View Complex Mesh" - a fully on-device, backend-free viewer for
+  photogrammetry-scale meshes.** Root cause of the trigger: real on-device
+  testing hit a client-side `TimeoutException after 0:00:15` importing a
+  large mesh through the normal `ImportFeature` pipeline. Rather than just
+  raising the timeout, the actual fix is architectural: a mesh this large
+  (millions of triangles, hundreds of MB) has no business surviving a
+  base64-JSON HTTP round-trip or an OCCT `Poly_Triangulation` Python-loop
+  construction at all when all the user wants is to *look* at it, not add
+  it to the Feature/Body graph. `client/lib/mesh_viewer/` is a second,
+  parallel path that never talks to the server:
+  - `mesh_data.dart` (OCCT-free, GPU-free, pure Dart): `decodeStl`/
+    `decodeObj`/`decodeGltf` re-implement the same STL/OBJ/glTF formats
+    `backend/app/document/mesh_import.py` already decodes server-side, but
+    entirely client-side, and `decimateToTriangleBudget` (stride/skip -
+    drops whole triangles rather than clustering vertices, so it never
+    merges vertices with different UVs and so never distorts/seams a
+    texture) caps the viewed mesh at `kMaxViewerTriangles`. Every decoder
+    de-indexes straight into a flat "triangle soup" - one convention
+    shared with `backend/app/document/mesh.py`'s own `MeshDto` - which
+    makes both decimation and GPU batching (below) trivial.
+  - `mesh_viewer_render.dart` (GPU-touching): `flutter_scene` 0.18.1 only
+    takes 16-bit vertex indices (see `mesh_geometry.dart`'s own
+    `MeshBuffers` doc comment) - far below a photogrammetry mesh's vertex
+    count - so `buildMeshViewerNodes` splits the decimated mesh into
+    multiple `MeshPrimitive`s, each an independent ≤65535-vertex range
+    (a few hundred draw calls is cheap on the Adreno-740-class hardware
+    this was tuned for; vertex/fragment throughput, not draw-call count,
+    is the real ceiling at this triangle scale). A base-color texture (if
+    the file has one) is downsampled *during* decode via
+    `ui.ImageDescriptor.instantiateCodec(targetWidth/targetHeight)` -
+    never fully materializing a 4K-16K source atlas - then uploaded to a
+    `flutter_gpu` `Texture` and bound to a shared `UnlitMaterial`.
+  - `mesh_viewer_screen.dart`: a standalone screen with its own minimal
+    `OrbitCamera` viewport (not `PartViewport` - that widget is built
+    entirely around `MeshDto`/the Feature/Body selection model, neither of
+    which apply here), reachable straight from `ConnectionScreen`'s cold-
+    launch screen via a new "View a mesh file (no server needed)" button -
+    deliberately *not* gated behind a successful Connect, since this path
+    never needs one. Decode runs via `compute()` on a background isolate
+    so a large file never blocks the UI thread; only the already-
+    decimated (bounded-size) result crosses back over the isolate
+    boundary, not the full raw mesh.
+
+  Scope cuts, documented rather than silently assumed away: GLB was built
+  and tested first (self-contained - geometry, UVs, and an embedded
+  texture image can all live in one file), then binary/ASCII STL
+  (geometry only - STL has no standard UV/texture concept); OBJ decodes
+  geometry (+ UV passthrough) but does not yet resolve a `.mtl`'s
+  `map_Kd` texture image, since that's normally a *separate* file next to
+  the `.obj`, and a single file picked through a mobile SAF-style picker
+  has no reliable path back to a sibling file - the same constraint
+  `decode_gltf` already documents for a JSON `.gltf`'s external buffer
+  references. A GLB/glTF's node transforms/scene graph are not walked -
+  every mesh primitive is concatenated as if untransformed at the origin,
+  true for the common single-mesh photogrammetry export this targets.
+  Only the first material's texture is used, applied to the whole
+  concatenated mesh. `kMaxViewerTriangles` (3,000,000) and
+  `kMaxTextureDimension` (4096px) in `mesh_viewer_render.dart` are starting
+  points tuned for the originally-specified target device (a Snapdragon 8
+  Gen 2 / Adreno 740 flagship), not benchmarked results - this sandbox has
+  no on-device Flutter test capability, so these need real-device tuning,
+  not just a one-time guess.
+
+  **Flagged, not yet on-device-confirmed**: `mesh_viewer_render.dart`'s
+  `_bindBaseColorTexture` (the call that attaches a decoded texture to
+  `UnlitMaterial`'s base-color slot) is the one genuinely new
+  `flutter_scene` API surface in this codebase - every existing
+  `UnlitMaterial` use elsewhere only ever sets `baseColorFactor`, never a
+  texture. `Texture.overwrite`/`GpuContext.createTexture` are confirmed
+  against `flutter_gpu`'s own published API; the exact property/method for
+  binding that texture onto `UnlitMaterial` was not directly confirmed
+  against `flutter_scene` 0.18.1's actual source (no Flutter SDK/pub cache
+  in this sandbox, so nothing in `mesh_viewer_render.dart` has actually
+  been compiled). If `material.colorTexture = texture` doesn't compile,
+  check `UnlitMaterial`'s real fields in an IDE - the most likely
+  alternative, per flutter_scene's own custom-material docs, is
+  `material.parameters.setTexture('base_color_texture', texture)`.
+
+  New pure-Dart tests in `client/test/mesh_data_test.dart` (STL binary/
+  ASCII, OBJ incl. quad fan-triangulation and unknown-vertex rejection,
+  GLB binary container, JSON `.gltf` incl. external-buffer rejection,
+  decimation) - all logic-only, no GPU/Flutter SDK needed to reason about
+  correctness, but not actually run in this sandbox either (no Flutter
+  SDK installed here at all - same caveat as every other Dart change this
+  session).
