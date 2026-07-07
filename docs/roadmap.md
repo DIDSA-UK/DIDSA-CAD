@@ -1103,12 +1103,19 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   to a new `PartScreen._importGeometry` (`FileType.any`, same Android MIME-
   filtering-bug workaround as native Open, mapping the picked file's own
   extension to a source_format); `feature_tree_panel.dart` gained an
-  "Import" display name/icon. Not yet confirmed on-device or in CI as of
-  this entry (pending push) - the mesh-to-shape triangulation-only-face
-  construction in particular is the one piece of this pass with no prior
-  precedent anywhere else in this codebase to lean on, so it's the most
-  likely spot for a real CI surprise, same as STEP export's own AP242 bug
-  was.
+  "Import" display name/icon. **CI caught a real bug on the first push, as
+  predicted**: STEP import worked first try, but STL import's new Body
+  vanished from `/mesh` entirely (`assert 0 == 1`) - `compute_part_bodies`
+  had routed ImportFeature through `_apply_boss_or_cut`/`_register_solids`,
+  which splits a Boss result by walking its `TopAbs_SOLID` count; a mesh
+  import's own shape (a bare, surface-less face) has zero `TopoDS_Solid`s,
+  so that path silently registered zero Bodies for it. Fixed by not routing
+  ImportFeature through that path at all - it has no Boss/Cut merge concept
+  of its own anyway, so it now always registers as exactly one Body keyed
+  by its own Feature id directly, whatever `resolve_import` returned (real
+  solid or bare face alike), never split even if a STEP import happens to
+  contain multiple disjoint solids. Not yet confirmed on-device; CI status
+  on the fix itself pending as of this entry.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

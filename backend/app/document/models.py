@@ -657,7 +657,16 @@ class ImportFeature(Feature):
     Boolean operation the way a genuine B-rep solid does; no attempt is made
     here to sew/heal it into a watertight solid - that remains a real,
     separate limitation flagged for whoever needs true CSG on an ingested
-    mesh next."""
+    mesh next.
+
+    Always registers as exactly one Body, keyed by this Feature's own id -
+    unlike Extrude/Revolve/Sweep's Boss path, `compute_part_bodies` never
+    splits an ImportFeature's result by its `TopAbs_SOLID` count (see
+    `app.document.extrude`'s own ImportFeature branch): the multi-solid
+    split exists for a multi-profile Sketch boss, a scenario that doesn't
+    apply here, and a mesh import's own shape has no `TopoDS_Solid` at all
+    to split by in the first place - splitting is skipped unconditionally
+    for both source kinds instead of only when it would find nothing."""
 
     id: str
     source_format: ImportSourceFormat

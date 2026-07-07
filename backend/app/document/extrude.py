@@ -574,7 +574,20 @@ def compute_part_bodies(
                     raise
                 logger.warning("Skipping ImportFeature %s: could not be resolved", feature.id)
                 continue
-            _apply_boss_or_cut(bodies, feature.id, feature_index, False, [], solid)
+            # Deliberately not `_apply_boss_or_cut` (which registers via
+            # `_register_solids`, splitting a result by walking its
+            # `TopAbs_SOLID`s - correct for a real Extrude/Revolve/Sweep
+            # boss, wrong here): a mesh import's own shape (see
+            # `_shape_from_mesh_data`) is a bare, surface-less face with no
+            # `TopoDS_Solid` at all, so that path would silently register
+            # zero Bodies for it (caught by CI - an imported STL vanished
+            # from `/mesh` entirely). ImportFeature has no Boss/Cut merge
+            # concept of its own anyway (see its own docstring) - always
+            # exactly one Body, keyed by this Feature's own id, whatever
+            # `resolve_import` returned (a real B-rep solid for STEP, a
+            # bare face for a mesh format) - never split even if a STEP
+            # import happens to contain multiple disjoint solids.
+            bodies[feature.id] = solid
             continue
 
         if isinstance(feature, RevolveFeature):
