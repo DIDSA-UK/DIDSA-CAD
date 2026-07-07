@@ -412,12 +412,21 @@ class SolveResultDto {
 /// an even-odd sub-path (see `SketchCanvas._paintClosedProfileFill`).
 class ProfileLoopDto {
   final List<String> pointIds;
+
+  /// Prompt G: this loop's own Line/Circle entity ids (a Circle-only loop
+  /// has exactly one, its own id - see the backend's `_circle_profile`) -
+  /// needed to resolve "which loop does this tapped Sketch Line/Circle
+  /// belong to" for the profile-picking flow's anchor-ref/whole-loop-
+  /// highlight mechanism (see `PartScreen`'s new profile-picking state).
+  /// Previously unparsed since nothing needed it before this prompt.
+  final List<String> lineIds;
   final List<ProfileLoopDto> innerLoops;
 
-  ProfileLoopDto({required this.pointIds, this.innerLoops = const []});
+  ProfileLoopDto({required this.pointIds, this.lineIds = const [], this.innerLoops = const []});
 
   factory ProfileLoopDto.fromJson(Map<String, dynamic> json) => ProfileLoopDto(
         pointIds: (json['point_ids'] as List<dynamic>).cast<String>(),
+        lineIds: (json['line_ids'] as List<dynamic>? ?? []).cast<String>(),
         innerLoops: (json['inner_loops'] as List<dynamic>? ?? [])
             .map((loop) => ProfileLoopDto.fromJson(loop as Map<String, dynamic>))
             .toList(),

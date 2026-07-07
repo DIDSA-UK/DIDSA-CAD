@@ -2,7 +2,15 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
-from app.document.models import ExtrudeType, PlaneType, Produces, SubShapeType
+from app.document.models import (
+    ExtrudeType,
+    ImportSourceFormat,
+    PlaneType,
+    Produces,
+    RevolveMode,
+    SubShapeType,
+    SweepMode,
+)
 from app.sketch.models import Plane, SketchEntityType
 
 
@@ -47,6 +55,21 @@ class SketchFeatureResponse(BaseModel):
     produces: Produces
 
 
+class SketchEntityRefSchema(BaseModel):
+    """C2: the wire counterpart to `app.sketch.models.SketchEntityRef` (C1)
+    - same "no schema until a real consumer exists" story as
+    `SubShapeRefSchema` below. Moved above the Extrude/Revolve schemas
+    (Prompt G) since `ExtrudeFeatureCreate`/`RevolveFeatureCreate`'s own new
+    `profile_refs` field needs it defined first - Pydantic resolves
+    annotations at class-creation time in this file (no `from __future__
+    import annotations`), so forward-referencing a not-yet-defined class
+    would raise `NameError` at import."""
+
+    sketch_id: str
+    entity_type: SketchEntityType
+    entity_id: str
+
+
 class ExtrudeFeatureCreate(BaseModel):
     """Creates an ExtrudeFeature from an existing SketchFeature's closed
     Profile - the API layer validates `sketch_feature_id` resolves to a
@@ -58,13 +81,19 @@ class ExtrudeFeatureCreate(BaseModel):
     derived) this Feature combines with. Boss: empty starts a brand-new
     Body; non-empty fuses into each named Body. Cut: must be non-empty -
     see app.document.router._validate_target_body_ids, which raises 422 for
-    an empty Cut list."""
+    an empty Cut list.
+
+    Prompt G: `profile_refs` names which outer profile(s) of the Sketch to
+    use - empty (the default) means every outer profile currently detected,
+    exactly the pre-Prompt-G behaviour; see
+    app.document.extrude.select_profiles."""
 
     sketch_feature_id: str
     extrude_type: ExtrudeType
     start_distance: float
     end_distance: float
     target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
 
 
 class ExtrudeFeatureUpdate(BaseModel):
@@ -73,12 +102,15 @@ class ExtrudeFeatureUpdate(BaseModel):
     follows the same omitted-vs-empty-list distinction as the other
     fields: omitted (None) leaves the Feature's current targets untouched;
     an explicit `[]` replaces them with an empty list (rejected for Cut,
-    same as on create)."""
+    same as on create). Prompt G: `profile_refs` follows the identical
+    omitted-vs-empty-list convention - omitted keeps the Feature's current
+    selection, an explicit `[]` reverts to "every outer profile"."""
 
     extrude_type: ExtrudeType | None = None
     start_distance: float | None = None
     end_distance: float | None = None
     target_body_ids: list[str] | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
 
 
 class ExtrudeFeatureResponse(BaseModel):
@@ -90,6 +122,7 @@ class ExtrudeFeatureResponse(BaseModel):
     end_distance: float
     locked: bool
     target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ExtrudeFeature today (Boss and Cut alike).
     produces: Produces
@@ -107,16 +140,6 @@ class SubShapeRefSchema(BaseModel):
     body_id: str
     shape_type: SubShapeType
     index: int
-
-
-class SketchEntityRefSchema(BaseModel):
-    """C2: the wire counterpart to `app.sketch.models.SketchEntityRef` (C1)
-    - same "no schema until a real consumer exists" story as
-    `SubShapeRefSchema` above."""
-
-    sketch_id: str
-    entity_type: SketchEntityType
-    entity_id: str
 
 
 class PointRefSchema(BaseModel):
@@ -291,12 +314,145 @@ class ChamferFeatureResponse(BaseModel):
     produces: Produces
 
 
+class RevolveFeatureCreate(BaseModel):
+    """Prompt F: creates a RevolveFeature from an existing SketchFeature's
+    closed Profile - mirrors `ExtrudeFeatureCreate` exactly (same
+    `sketch_feature_id`/`target_body_ids` Boss-vs-Cut shape, same 422-if-Cut-
+    is-empty check in `app.document.router._validate_target_body_ids`,
+    generalized to accept a Body from either an ExtrudeFeature or a
+    RevolveFeature), substituting `axis_ref`/`angle` for
+    `start_distance`/`end_distance`. `axis_ref`'s Sketch is not required to
+    be the same Sketch as `sketch_feature_id`'s (confirmed explicitly - see
+    `app.document.models.RevolveFeature`'s own docstring). Prompt G:
+    `profile_refs` mirrors `ExtrudeFeatureCreate.profile_refs` exactly."""
+
+    sketch_feature_id: str
+    axis_ref: SketchEntityRefSchema
+    angle: float
+    mode: RevolveMode
+    target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class RevolveFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves, same omitted-vs-current-
+    value convention as `ExtrudeFeatureUpdate` - `sketch_feature_id` is never
+    revised (same as `ExtrudeFeatureUpdate` never revising its own source
+    Sketch), only the axis/angle/mode/targets/profile selection of whichever
+    Sketch this Feature already revolves."""
+
+    axis_ref: SketchEntityRefSchema | None = None
+    angle: float | None = None
+    mode: RevolveMode | None = None
+    target_body_ids: list[str] | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
+
+
+class RevolveFeatureResponse(BaseModel):
+    type: Literal["revolve"] = "revolve"
+    id: str
+    sketch_feature_id: str
+    axis_ref: SketchEntityRefSchema
+    angle: float
+    mode: RevolveMode
+    locked: bool
+    target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # RevolveFeature (Boss and Cut alike, mirroring ExtrudeFeature).
+    produces: Produces
+
+
+class SweepFeatureCreate(BaseModel):
+    """Creates a SweepFeature from an existing SketchFeature's closed
+    Profile - mirrors `ExtrudeFeatureCreate`/`RevolveFeatureCreate` exactly
+    (same `sketch_feature_id`/`target_body_ids` Boss-vs-Cut shape, same
+    422-if-Cut-is-empty check in `app.document.router._validate_target_
+    body_ids`, generalized to accept a Body from any of Extrude/Revolve/
+    Sweep), substituting `path_refs` for `start_distance`/`end_distance`/
+    `axis_ref`/`angle`.
+
+    `path_refs` is an *ordered* list of Sketch Line references, each
+    possibly naming a different Sketch (confirmed explicitly - not
+    restricted to one Sketch the way a single `axis_ref` is one Line) -
+    must name at least one entry (see `app.document.router._validate_
+    sweep_path_refs`); whether the named Lines actually resolve and chain
+    into one connected path (open or closed) is checked by
+    `app.document.sweep.resolve_sweep` instead, mirroring every other
+    structured Feature error in this codebase's "payload shape in the
+    router, resolution in the OCCT module" split.
+
+    `profile_refs` mirrors `ExtrudeFeatureCreate.profile_refs` exactly."""
+
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRefSchema]
+    mode: SweepMode
+    target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class SweepFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves, same omitted-vs-current-
+    value convention as `ExtrudeFeatureUpdate`/`RevolveFeatureUpdate` -
+    `sketch_feature_id` is never revised, only the path/mode/targets/
+    profile selection of whichever Sketch this Feature already sweeps."""
+
+    path_refs: list[SketchEntityRefSchema] | None = None
+    mode: SweepMode | None = None
+    target_body_ids: list[str] | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
+
+
+class SweepFeatureResponse(BaseModel):
+    type: Literal["sweep"] = "sweep"
+    id: str
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRefSchema] = []
+    mode: SweepMode
+    locked: bool
+    target_body_ids: list[str] = []
+    profile_refs: list[SketchEntityRefSchema] = []
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # SweepFeature (Boss and Cut alike, mirroring ExtrudeFeature/
+    # RevolveFeature).
+    produces: Produces
+
+
+class ImportFeatureCreate(BaseModel):
+    """Creates an ImportFeature (locked-in scope: import as a fixed,
+    non-parametric Body) - `data_base64` is the uploaded file's own raw
+    bytes, base64-encoded into the JSON body rather than a multipart
+    upload, matching this API's existing all-JSON convention (no other
+    endpoint here uses multipart) and mirroring how the native file format
+    itself already carries binary-ish data as a plain JSON string."""
+
+    source_format: ImportSourceFormat
+    data_base64: str
+
+
+class ImportFeatureResponse(BaseModel):
+    type: Literal["import"] = "import"
+    id: str
+    source_format: ImportSourceFormat
+    # The uploaded file's own byte count, for display purposes only - the
+    # raw `source_data` itself is never echoed back (no client need for it,
+    # and it can be large).
+    source_byte_count: int
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for an
+    # ImportFeature.
+    produces: Produces
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,
     CreatePlaneFeatureResponse,
     FilletFeatureResponse,
     ChamferFeatureResponse,
+    RevolveFeatureResponse,
+    SweepFeatureResponse,
+    ImportFeatureResponse,
 ]
 
 
@@ -357,11 +513,40 @@ class BodyMeshResponse(BaseModel):
     hidden: bool = False
 
 
+class NativeImportResponse(BaseModel):
+    """What `POST /document/import/native` hands back once the full-replace
+    import succeeds - just enough for the client to confirm the new state
+    (which Parts now exist) without re-fetching, mirroring
+    `CascadeDeleteResponse`'s own "confirm what just happened" purpose."""
+
+    document_id: str
+    part_ids: list[str]
+
+
 class CascadeDeleteResponse(BaseModel):
     """What got deleted by a cascade-delete: the target Feature and every
-    Feature after it, plus the Sketch each deleted SketchFeature owned -
-    in deletion order, so a client can confirm the backend's view matches
-    what it just asked for (or refresh from it directly)."""
+    Feature that actually transitively depends on it per the real
+    dependency graph (B2) - not "every Feature after it in the list", a
+    stale pre-B2 description this docstring itself used to carry (on-device
+    feedback: the client's own confirmation dialog had the identical stale
+    assumption baked in, see `CascadeDeletePreviewResponse` below for the
+    fix) - plus the Sketch each deleted SketchFeature owned, in deletion
+    order, so a client can confirm the backend's view matches what it just
+    asked for (or refresh from it directly)."""
 
     deleted_feature_ids: list[str]
     deleted_sketch_ids: list[str]
+
+
+class CascadeDeletePreviewResponse(BaseModel):
+    """On-device feedback: a client confirming a cascade delete needs to
+    show the user exactly which Features will go *before* they commit -
+    the delete endpoint itself is the only place that ran `transitive_
+    dependents` previously, so the client's own confirmation dialog had
+    fallen back to the stale pre-B2 "every Feature after this one in the
+    list" assumption instead. This is a read-only preview of the exact
+    same `transitive_dependents(build_feature_graph(part), feature_id)`
+    computation `delete_feature_cascade` itself performs, in `part.
+    features`' own natural order, mutating nothing."""
+
+    feature_ids: list[str]

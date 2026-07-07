@@ -104,6 +104,45 @@ def test_deleting_a_sketch_feeding_two_independent_extrudes_removes_both():
     assert bodies[0]["source"] == "placeholder"
 
 
+def test_cascade_preview_matches_what_the_real_cascade_delete_removes_without_mutating_anything():
+    """On-device feedback: the client's cascade-delete confirmation dialog
+    used to assume "everything after this Feature in the list" - stale
+    since B2's real dependency-graph cascade delete. This is the read-only
+    preview endpoint that fix now calls instead."""
+    part = _create_part()
+    sketch = _create_sketch_feature(part["id"])
+    _add_square(sketch["sketch_id"], 0.0, 0.0, 10.0)
+    boss_a = _create_extrude_feature(part["id"], sketch["id"])
+    boss_b = _create_extrude_feature(part["id"], sketch["id"])
+
+    preview_response = client.get(f"/document/parts/{part['id']}/features/{sketch['id']}/cascade-preview")
+    assert preview_response.status_code == 200
+    assert set(preview_response.json()["feature_ids"]) == {sketch["id"], boss_a["id"], boss_b["id"]}
+
+    # Read-only - a second preview call gives the identical answer, and
+    # every Feature is still there afterward.
+    second_preview = client.get(f"/document/parts/{part['id']}/features/{sketch['id']}/cascade-preview")
+    assert second_preview.json() == preview_response.json()
+    assert set(_remaining_feature_ids(part["id"])) == {sketch["id"], boss_a["id"], boss_b["id"]}
+
+    # The real cascade delete removes exactly what the preview promised.
+    delete_response = client.delete(f"/document/parts/{part['id']}/features/{sketch['id']}/cascade")
+    assert set(delete_response.json()["deleted_feature_ids"]) == set(preview_response.json()["feature_ids"])
+
+
+def test_cascade_preview_of_a_leaf_feature_names_only_itself():
+    part = _create_part()
+    sketch = _create_sketch_feature(part["id"])
+    _add_square(sketch["sketch_id"], 0.0, 0.0, 10.0)
+    boss_a = _create_extrude_feature(part["id"], sketch["id"])
+    boss_b = _create_extrude_feature(part["id"], sketch["id"])
+
+    preview_response = client.get(f"/document/parts/{part['id']}/features/{boss_a['id']}/cascade-preview")
+    assert preview_response.status_code == 200
+    assert preview_response.json()["feature_ids"] == [boss_a["id"]]
+    assert set(_remaining_feature_ids(part["id"])) == {sketch["id"], boss_a["id"], boss_b["id"]}
+
+
 def test_deleting_one_of_two_sibling_extrudes_off_a_shared_sketch_leaves_the_other_intact():
     part = _create_part()
     sketch = _create_sketch_feature(part["id"])

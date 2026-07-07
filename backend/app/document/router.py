@@ -1,15 +1,22 @@
+import base64
+import binascii
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import resolve_create_plane
-from app.document.extrude import compute_part_bodies
+from app.document.extrude import compute_part_bodies, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
+from app.document.import_geometry import resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
+from app.document.mesh_data import Triangle
+from app.document.mesh_export import encode_glb, encode_obj, encode_stl
+from app.document.native_format import NativeFormatError, export_native, import_native
+from app.document.step_export import export_step
 from app.document.models import (
     ChamferFeature,
     CreatePlaneFeature,
@@ -17,16 +24,24 @@ from app.document.models import (
     ExtrudeType,
     Feature,
     FilletFeature,
+    ImportFeature,
+    ImportSourceFormat,
     Part,
     PlaneRef,
     PlaneType,
     PointRef,
+    RevolveFeature,
+    RevolveMode,
     SketchFeature,
     SubShapeRef,
     SubShapeType,
+    SweepFeature,
+    SweepMode,
 )
+from app.document.revolve import resolve_revolve
 from app.document.schemas import (
     BodyMeshResponse,
+    CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
     ChamferFeatureCreate,
     ChamferFeatureResponse,
@@ -41,20 +56,30 @@ from app.document.schemas import (
     FilletFeatureCreate,
     FilletFeatureResponse,
     FilletFeatureUpdate,
+    ImportFeatureCreate,
+    ImportFeatureResponse,
     MeshVertexData,
+    NativeImportResponse,
     PartCreate,
     PartResponse,
     PlaneRefSchema,
     PointRefSchema,
+    RevolveFeatureCreate,
+    RevolveFeatureResponse,
+    RevolveFeatureUpdate,
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
     SubShapeRefSchema,
+    SweepFeatureCreate,
+    SweepFeatureResponse,
+    SweepFeatureUpdate,
 )
-from app.document.store import get_document, get_part_or_404
+from app.document.sweep import resolve_sweep
+from app.document.store import get_document, get_part_or_404, replace_document
 from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
-from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
+from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +217,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             end_distance=feature.end_distance,
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             produces=feature.produces,
         )
     if isinstance(feature, CreatePlaneFeature):
@@ -209,6 +235,37 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             id=feature.id,
             edge_refs=[_subshape_ref_to_schema(ref) for ref in feature.edge_refs],
             distance=feature.distance,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, RevolveFeature):
+        return RevolveFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            axis_ref=_sketch_entity_ref_to_schema(feature.axis_ref),
+            angle=feature.angle,
+            mode=feature.mode,
+            locked=part.is_locked(feature.id),
+            target_body_ids=feature.target_body_ids,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            produces=feature.produces,
+        )
+    if isinstance(feature, SweepFeature):
+        return SweepFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            path_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.path_refs],
+            mode=feature.mode,
+            locked=part.is_locked(feature.id),
+            target_body_ids=feature.target_body_ids,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            produces=feature.produces,
+        )
+    if isinstance(feature, ImportFeature):
+        return ImportFeatureResponse(
+            id=feature.id,
+            source_format=feature.source_format,
+            source_byte_count=len(feature.source_data),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -241,22 +298,28 @@ def _validate_extrude_distances(start_distance: float, end_distance: float) -> N
         )
 
 
-def _validate_target_body_ids(
-    part: Part, extrude_type: ExtrudeType, target_body_ids: list[str]
-) -> None:
+def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[str]) -> None:
     """A1: Cut must name at least one target Body - there is nothing to
     subtract from an empty list, so this is a structured-validation-error
     case (422, `{"detail": "..."}` - the same plain-HTTPException shape
     every other validation error in this API uses, e.g.
     `_validate_extrude_distances`'s 400). Every named id (Boss or Cut) must
-    resolve to an ExtrudeFeature already in this Part - a Body's id is
-    always derived from the id of the ExtrudeFeature that created (or,
-    after a merge, still identifies) it, possibly with a `#N` split-index
-    suffix (see app.document.graph.base_feature_id) if that operation
-    produced more than one disconnected solid - `base_feature_id` strips
-    that suffix before the lookup, so a composite id round-tripped from a
-    prior `/mesh` response validates the same way a plain one does."""
-    if extrude_type == ExtrudeType.CUT and not target_body_ids:
+    resolve to a Feature that produces a Body already in this Part - a
+    Body's id is always derived from the id of the ExtrudeFeature or (Prompt
+    F) RevolveFeature that created (or, after a merge, still identifies) it,
+    possibly with a `#N` split-index suffix (see app.document.graph.
+    base_feature_id) if that operation produced more than one disconnected
+    solid - `base_feature_id` strips that suffix before the lookup, so a
+    composite id round-tripped from a prior `/mesh` response validates the
+    same way a plain one does.
+
+    Takes `is_cut` (a plain bool) rather than a specific Feature type's own
+    mode enum (`ExtrudeType`/`RevolveMode`/`SweepMode`) since Boss/Cut
+    parity means this check is now shared by all three Feature types - each
+    caller passes its own `... == ....CUT` comparison rather than this
+    function needing to know about every mode enum that might ever call
+    it."""
+    if is_cut and not target_body_ids:
         raise HTTPException(
             status_code=422,
             detail="Cut requires at least one target_body_ids entry - there is nothing to cut "
@@ -264,11 +327,11 @@ def _validate_target_body_ids(
         )
     for target_id in target_body_ids:
         target_feature = part.get_feature(base_feature_id(target_id))
-        if not isinstance(target_feature, ExtrudeFeature):
+        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
             raise HTTPException(
                 status_code=400,
-                detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature "
-                "in this Part",
+                detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
+                "RevolveFeature, SweepFeature, or ImportFeature in this Part",
             )
 
 
@@ -294,6 +357,50 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
             detail=f"Sketch does not contain a closed profile (status: {result.status.value})",
         )
     return feature
+
+
+def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> None:
+    """Prompt G: eagerly validates `profile_refs` against `sketch_feature`'s
+    *current* Profile detection, discarding the result - fails closed with
+    `invalid_profile_ref` (see `app.document.extrude.select_profiles`)
+    before ever persisting an Extrude/RevolveFeature with an unusable
+    profile selection. Cheap (pure-Python, no OCCT) unlike the rest of
+    Extrude's own validation, which stays lazy-only (`_require_closed_
+    sketch_feature` above never calls into OCCT either) - `profile_refs` is
+    new and error-prone enough to warrant this eager check regardless,
+    mirroring Revolve's own `axis_ref`/`resolve_revolve` precedent rather
+    than Extrude's older, more permissive convention.
+
+    Called after `_require_closed_sketch_feature` has already confirmed
+    `sketch_feature` resolves to a real, currently-extrudable SketchFeature -
+    this re-runs `detect_profile` once more (cheap) rather than threading
+    that call's own result through, keeping this a standalone, reusable
+    check for both Extrude's and Revolve's create/update endpoints."""
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    result = detect_profile(sketch)
+    candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
+    select_profiles(candidates, profile_refs)
+
+
+def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
+    """A SweepFeature must name at least one `path_refs` entry (422,
+    mirroring Cut's own "at least one target_body_ids entry" check in
+    `_validate_target_body_ids`) and every named ref must be a Line (422,
+    mirroring `_validate_fillet_edge_refs`'s own `shape_type == EDGE`
+    check) - these are payload-shape checks. Whether the named Lines
+    actually resolve and chain into one connected path (open or closed) is
+    a referential/geometric check made by `app.document.sweep.resolve_
+    sweep` instead (the same "payload shape in the router, resolution in
+    the OCCT module" split every other structured Feature error in this
+    codebase already uses)."""
+    if not path_refs:
+        raise HTTPException(
+            status_code=422,
+            detail="SweepFeature requires at least one path_refs entry",
+        )
+    for ref in path_refs:
+        if ref.entity_type != SketchEntityType.LINE:
+            raise HTTPException(status_code=422, detail="path_refs entries must have entity_type=line")
 
 
 def _validate_fillet_radius(radius: float) -> None:
@@ -344,6 +451,16 @@ def _validate_chamfer_edge_refs(edge_refs: list[SubShapeRef]) -> None:
     for ref in edge_refs:
         if ref.shape_type != SubShapeType.EDGE:
             raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _validate_revolve_angle(angle: float) -> None:
+    """Prompt F: mirrors `_validate_fillet_radius`/`_validate_chamfer_
+    distance`'s own plain-400 convention for a bare numeric-field check -
+    `angle` must be in `(0, 360]` (see `app.document.models.RevolveFeature`'s
+    own docstring: 360 itself is valid, a full revolve; an arbitrary partial
+    angle is just as valid, not just 360-only)."""
+    if angle <= 0 or angle > 360:
+        raise HTTPException(status_code=400, detail="angle must be greater than 0 and at most 360")
 
 
 def _all_other_create_plane_fields_empty(
@@ -602,9 +719,11 @@ def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchF
 )
 def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> ExtrudeFeatureResponse:
     part = get_part_or_404(part_id)
-    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    sketch_feature = _require_closed_sketch_feature(part, payload.sketch_feature_id)
     _validate_extrude_distances(payload.start_distance, payload.end_distance)
-    _validate_target_body_ids(part, payload.extrude_type, payload.target_body_ids)
+    _validate_target_body_ids(part, payload.extrude_type == ExtrudeType.CUT, payload.target_body_ids)
+    profile_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+    _validate_profile_refs(sketch_feature, profile_refs)
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
@@ -612,6 +731,7 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
         start_distance=payload.start_distance,
         end_distance=payload.end_distance,
         target_body_ids=list(payload.target_body_ids),
+        profile_refs=profile_refs,
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -652,12 +772,20 @@ def update_extrude_feature(
     new_target_body_ids = (
         payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
     )
-    _validate_target_body_ids(part, new_extrude_type, new_target_body_ids)
+    _validate_target_body_ids(part, new_extrude_type == ExtrudeType.CUT, new_target_body_ids)
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    sketch_feature = _require_closed_sketch_feature(part, feature.sketch_feature_id)
+    _validate_profile_refs(sketch_feature, new_profile_refs)
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
     feature.end_distance = new_end
     feature.target_body_ids = list(new_target_body_ids)
+    feature.profile_refs = new_profile_refs
     return _feature_response(part, feature)
 
 
@@ -919,6 +1047,216 @@ def update_chamfer_feature(
     return _feature_response(part, feature)
 
 
+@router.post(
+    "/parts/{part_id}/revolve-features", response_model=RevolveFeatureResponse, status_code=201
+)
+def create_revolve_feature(part_id: str, payload: RevolveFeatureCreate) -> RevolveFeatureResponse:
+    """Prompt F: never locked-editable-only-if-last from the start, same
+    instruction as C2/C5/D/E - B4 already established "any Feature can be
+    edited" generically before this endpoint existed.
+
+    Validates the payload shape (`_require_closed_sketch_feature`, same
+    closed-profile check `ExtrudeFeatureCreate` uses; `_validate_revolve_
+    angle`; `_validate_target_body_ids`, generalized to accept a Body from
+    either an ExtrudeFeature or a RevolveFeature) and then resolvability
+    (`app.document.revolve.resolve_revolve`, discarding its result here - the
+    real geometry is recomputed again the next time `/mesh` is fetched, via
+    `compute_part_bodies`'s own RevolveFeature handling) *before*
+    constructing the Feature - fails closed with `invalid_axis_ref`/
+    `revolve_failed`/`missing_reference` rather than ever persisting an
+    unresolvable Revolve."""
+    part = get_part_or_404(part_id)
+    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    _validate_revolve_angle(payload.angle)
+    _validate_target_body_ids(part, payload.mode == RevolveMode.CUT, payload.target_body_ids)
+    feature = RevolveFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        axis_ref=_sketch_entity_ref_to_domain(payload.axis_ref),
+        angle=payload.angle,
+        mode=payload.mode,
+        target_body_ids=list(payload.target_body_ids),
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
+    )
+    # Prompt G: profile_refs' own validity (invalid_profile_ref) is checked
+    # as part of this same resolve - resolve_revolve_from_bodies calls
+    # select_profiles internally, so no separate eager check is needed here
+    # the way Extrude's own _validate_profile_refs is (Extrude has no
+    # equivalent full-resolve step at create time).
+    resolve_revolve(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_revolve_feature_or_404(part: Part, feature_id: str) -> RevolveFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, RevolveFeature):
+        raise HTTPException(status_code=404, detail="Revolve feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/revolve-features/{feature_id}", response_model=RevolveFeatureResponse)
+def update_revolve_feature(
+    part_id: str, feature_id: str, payload: RevolveFeatureUpdate
+) -> RevolveFeatureResponse:
+    """Same validate-before-mutate discipline as `create_revolve_feature`:
+    the merged (existing-plus-payload) values are checked against a scratch
+    Feature sharing the real one's id (`resolve_revolve` excludes that id
+    from its own "current bodies" computation for exactly this reason, see
+    its own doc comment) before anything on the real, stored Feature is
+    touched, so a failed PATCH never leaves it half-updated. `sketch_
+    feature_id` is never revised, same as `update_extrude_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_revolve_feature_or_404(part, feature_id)
+
+    new_axis_ref = (
+        _sketch_entity_ref_to_domain(payload.axis_ref) if payload.axis_ref is not None else feature.axis_ref
+    )
+    new_angle = payload.angle if payload.angle is not None else feature.angle
+    new_mode = payload.mode if payload.mode is not None else feature.mode
+    new_target_body_ids = (
+        payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
+    )
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    _validate_revolve_angle(new_angle)
+    _validate_target_body_ids(part, new_mode == RevolveMode.CUT, new_target_body_ids)
+
+    candidate = RevolveFeature(
+        id=feature.id,
+        sketch_feature_id=feature.sketch_feature_id,
+        axis_ref=new_axis_ref,
+        angle=new_angle,
+        mode=new_mode,
+        target_body_ids=list(new_target_body_ids),
+        profile_refs=new_profile_refs,
+    )
+    resolve_revolve(part, candidate)  # raises on an unresolvable reference
+
+    feature.axis_ref = candidate.axis_ref
+    feature.angle = candidate.angle
+    feature.mode = candidate.mode
+    feature.target_body_ids = candidate.target_body_ids
+    feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/sweep-features", response_model=SweepFeatureResponse, status_code=201)
+def create_sweep_feature(part_id: str, payload: SweepFeatureCreate) -> SweepFeatureResponse:
+    """Mirrors `create_revolve_feature` exactly, substituting `path_refs`
+    for `axis_ref`/`angle`: validates the payload shape (`_require_closed_
+    sketch_feature`; `_validate_sweep_path_refs`; `_validate_target_body_
+    ids`, generalized to accept a Body from any of Extrude/Revolve/Sweep)
+    and then resolvability (`app.document.sweep.resolve_sweep`, discarding
+    its result here - the real geometry is recomputed again the next time
+    `/mesh` is fetched, via `compute_part_bodies`'s own SweepFeature
+    handling) *before* constructing the Feature - fails closed with
+    `invalid_path_ref`/`disconnected_path`/`sweep_failed`/`missing_
+    reference` rather than ever persisting an unresolvable Sweep."""
+    part = get_part_or_404(part_id)
+    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    path_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+    _validate_sweep_path_refs(path_refs)
+    _validate_target_body_ids(part, payload.mode == SweepMode.CUT, payload.target_body_ids)
+    feature = SweepFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        path_refs=path_refs,
+        mode=payload.mode,
+        target_body_ids=list(payload.target_body_ids),
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
+    )
+    # profile_refs' own validity (invalid_profile_ref) is checked as part of
+    # this same resolve - resolve_sweep_from_bodies calls select_profiles
+    # internally, same as resolve_revolve_from_bodies already does.
+    resolve_sweep(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_sweep_feature_or_404(part: Part, feature_id: str) -> SweepFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SweepFeature):
+        raise HTTPException(status_code=404, detail="Sweep feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/sweep-features/{feature_id}", response_model=SweepFeatureResponse)
+def update_sweep_feature(part_id: str, feature_id: str, payload: SweepFeatureUpdate) -> SweepFeatureResponse:
+    """Same validate-before-mutate discipline as `create_sweep_feature`/
+    `update_revolve_feature`: the merged (existing-plus-payload) values are
+    checked against a scratch Feature sharing the real one's id
+    (`resolve_sweep` excludes that id from its own "current bodies"
+    computation for exactly this reason) before anything on the real,
+    stored Feature is touched, so a failed PATCH never leaves it
+    half-updated. `sketch_feature_id` is never revised, same as
+    `update_revolve_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_sweep_feature_or_404(part, feature_id)
+
+    new_path_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+        if payload.path_refs is not None
+        else feature.path_refs
+    )
+    new_mode = payload.mode if payload.mode is not None else feature.mode
+    new_target_body_ids = (
+        payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
+    )
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    _validate_sweep_path_refs(new_path_refs)
+    _validate_target_body_ids(part, new_mode == SweepMode.CUT, new_target_body_ids)
+
+    candidate = SweepFeature(
+        id=feature.id,
+        sketch_feature_id=feature.sketch_feature_id,
+        path_refs=new_path_refs,
+        mode=new_mode,
+        target_body_ids=list(new_target_body_ids),
+        profile_refs=new_profile_refs,
+    )
+    resolve_sweep(part, candidate)  # raises on an unresolvable reference
+
+    feature.path_refs = candidate.path_refs
+    feature.mode = candidate.mode
+    feature.target_body_ids = candidate.target_body_ids
+    feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/import-features", response_model=ImportFeatureResponse, status_code=201)
+def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportFeatureResponse:
+    """Brings an external file's geometry in as a fixed, non-parametric
+    Body (locked-in scope - see `app.document.models.ImportFeature`'s own
+    docstring). Never locked-editable-only-if-last from the start, same
+    instruction as every other post-B4 Feature endpoint; there is also no
+    corresponding PATCH - a dumb, no-parameters Feature has nothing to
+    revise, only delete-and-recreate.
+
+    Decodes `data_base64` and validates resolvability (`resolve_import`,
+    discarding its result here - the real geometry is recomputed again the
+    next time `/mesh` is fetched, via `compute_part_bodies`'s own
+    ImportFeature handling) *before* constructing the Feature - fails
+    closed with `invalid_import_data`/`import_failed` rather than ever
+    persisting an unimportable file."""
+    part = get_part_or_404(part_id)
+    try:
+        source_data = base64.b64decode(payload.data_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="data_base64 is not valid base64")
+    feature = ImportFeature(id=str(uuid.uuid4()), source_format=payload.source_format, source_data=source_data)
+    resolve_import(feature)  # raises on an unimportable file; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
 @router.delete("/parts/{part_id}/features/{feature_id}", status_code=204)
 def delete_feature(part_id: str, feature_id: str) -> None:
     part = get_part_or_404(part_id)
@@ -979,6 +1317,23 @@ def delete_feature_cascade(part_id: str, feature_id: str) -> CascadeDeleteRespon
         deleted_feature_ids=[f.id for f in deleted_features],
         deleted_sketch_ids=deleted_sketch_ids,
     )
+
+
+@router.get(
+    "/parts/{part_id}/features/{feature_id}/cascade-preview",
+    response_model=CascadeDeletePreviewResponse,
+)
+def preview_cascade_delete(part_id: str, feature_id: str) -> CascadeDeletePreviewResponse:
+    """On-device feedback: read-only preview of exactly what `DELETE .../
+    cascade` above would remove - the same `transitive_dependents` call,
+    mutating nothing - so a confirmation dialog can name the real Features
+    at risk instead of the stale "everything after this one in the list"
+    assumption the client used to make on its own (see `CascadeDeletePreviewResponse`'s
+    own docstring)."""
+    part = get_part_or_404(part_id)
+    _get_feature_or_404(part, feature_id)
+    to_delete = transitive_dependents(build_feature_graph(part), feature_id)
+    return CascadeDeletePreviewResponse(feature_ids=[f.id for f in part.features if f.id in to_delete])
 
 
 @router.get("/parts/{part_id}/mesh", response_model=list[BodyMeshResponse])
@@ -1056,3 +1411,118 @@ def get_part_mesh(
         )
         for body_id, shape in bodies.items()
     ]
+
+
+@router.get("/export/native")
+def export_native_document() -> dict:
+    """Native Save: hands back the whole in-memory Document (every Part's
+    ordered Feature list) plus every Sketch referenced by any SketchFeature
+    in it, as a plain JSON dict - no cached mesh/geometry (see
+    `app.document.native_format.export_native`'s own docstring for the full
+    "pure parametric tree" rationale). Client-owned files (locked-in scope):
+    the backend has no project storage of its own, this is the client's one
+    chance to read the full state out before it writes the actual file to
+    disk."""
+    return export_native(get_document(), all_sketches())
+
+
+@router.post("/import/native", response_model=NativeImportResponse)
+def import_native_document(payload: dict) -> NativeImportResponse:
+    """Native Load: the inverse of `export_native_document` - a full
+    replace, not a merge (client-owned files, locked-in scope): whatever
+    Document/Sketches were open before this call are discarded entirely in
+    favor of exactly what `payload` describes. Fails closed with a 422 for
+    anything malformed (`NativeFormatError` - an unsupported schema_version,
+    an unknown Feature/entity/constraint type, a missing required field)
+    *before* either store is touched, so a bad import can never leave the
+    process in a half-replaced state."""
+    try:
+        document, sketches = import_native(payload)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid native file: {exc}")
+    replace_document(document)
+    replace_all_sketches(sketches)
+    return NativeImportResponse(document_id=document.id, part_ids=list(document.parts.keys()))
+
+
+def _export_bodies_or_400(part: Part) -> dict[str, object]:
+    """The current Body map every export format below shares (per
+    `compute_part_bodies`, the same source of truth `/mesh` tessellates
+    from) - 400s up front for a Part with nothing to export, rather than
+    each format silently emitting an empty/invalid file."""
+    if not part.produces_solid_geometry:
+        raise HTTPException(status_code=400, detail="Part has no solid geometry to export")
+    bodies = compute_part_bodies(part)
+    if not bodies:
+        raise HTTPException(status_code=400, detail="Part has no solid geometry to export")
+    return bodies
+
+
+def _merged_body_mesh_data(bodies: dict[str, object]) -> MeshData:
+    """Tessellates every Body in `bodies` and concatenates them into one
+    flat `MeshData`, offsetting each Body's own triangle indices past
+    whatever's already been appended - a single combined mesh per Part,
+    matching a single exported STL/OBJ/glb file (unlike `/mesh`, which
+    deliberately keeps Bodies separate for the viewport's own per-Body
+    hit-testing - export has no such need)."""
+    merged = MeshData()
+    for shape in bodies.values():
+        body_mesh = tessellate_shape(shape, DEFAULT_MESH_QUALITY)
+        offset = len(merged.vertices)
+        merged.vertices.extend(body_mesh.vertices)
+        merged.normals.extend(body_mesh.normals)
+        merged.triangles.extend(
+            Triangle(a=t.a + offset, b=t.b + offset, c=t.c + offset) for t in body_mesh.triangles
+        )
+    return merged
+
+
+@router.get("/parts/{part_id}/export/step")
+def export_part_step(part_id: str) -> Response:
+    """AP242 STEP export (locked-in scope) of every current Body in this
+    Part - see `app.document.step_export.export_step`'s own docstring for
+    why AP242 is written now even with no PMI/MBD populated yet."""
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = export_step(bodies)
+    return Response(
+        content=data,
+        media_type="application/step",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.step"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/stl")
+def export_part_stl(part_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = encode_stl(_merged_body_mesh_data(bodies))
+    return Response(
+        content=data,
+        media_type="model/stl",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.stl"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/obj")
+def export_part_obj(part_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = encode_obj(_merged_body_mesh_data(bodies)).encode("utf-8")
+    return Response(
+        content=data,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.obj"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/glb")
+def export_part_glb(part_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = encode_glb(_merged_body_mesh_data(bodies))
+    return Response(
+        content=data,
+        media_type="model/gltf-binary",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.glb"'},
+    )

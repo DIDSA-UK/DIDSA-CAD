@@ -80,6 +80,26 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     Line or Circle that would otherwise close a loop is invisible to
     profile detection, full stop, rather than being a special case threaded
     through the adjacency/branch/loop-tracing/nesting logic.
+
+    Prompt G: classifies each *connected component* of the entity graph
+    independently, rather than requiring the whole sketch to be one clean
+    degree-2-everywhere structure - a stray open chain or a branch/
+    T-junction sitting elsewhere in the sketch no longer fails detection
+    for closed loops that exist independently of it (previously, *any*
+    degree-1 or degree-3+ point anywhere in the sketch reported BRANCH/
+    NO_LOOP for the entire sketch, even past a genuinely closed, usable
+    loop). A connected component is a usable closed loop exactly when every
+    point in it has degree exactly 2 (a connected 2-regular graph is always
+    a single simple cycle) - any other component (containing a degree-1
+    "open end" point, a degree-3+ branch point, or both) is simply not a
+    candidate profile and is excluded, not reported as an error, as long as
+    *some* other component (or Circle) yields a usable loop. `BRANCH` is
+    still reported (with `branch_point_ids`, for a more specific message
+    than the generic `NO_LOOP`) when a branch point exists *and* no usable
+    closed loop exists anywhere in the sketch - see the bottom of this
+    function - matching this module's existing "branch takes priority over
+    open-chain" message-detail precedent for the fully-unusable case, the
+    only case previously distinguishable.
     """
     real_entities = [entity for entity in sketch.entities.values() if not entity.construction]
 
@@ -90,35 +110,27 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     ]
 
     line_loops: list[Profile] = []
+    any_branch_point = False
     if connections:
         adjacency: dict[str, list[tuple[str, str]]] = {}
         for entity_id, (a, b) in connections:
             adjacency.setdefault(a, []).append((entity_id, b))
             adjacency.setdefault(b, []).append((entity_id, a))
 
-        branch_point_ids = sorted(point_id for point_id, edges in adjacency.items() if len(edges) > 2)
-        if branch_point_ids:
-            return ProfileDetectionResult(
-                status=ProfileStatus.BRANCH,
-                detail=f"{len(branch_point_ids)} point(s) are used by more than two entities.",
-                branch_point_ids=branch_point_ids,
-            )
+        any_branch_point = any(len(edges) > 2 for edges in adjacency.values())
 
-        if any(len(edges) == 1 for edges in adjacency.values()):
-            return ProfileDetectionResult(
-                status=ProfileStatus.NO_LOOP,
-                detail="Entities do not connect into a closed loop (open chain).",
-            )
-
-        # Every point now has degree exactly 2, so every connected component
-        # is a simple cycle - trace each one out.
         visited: set[str] = set()
         for start_point_id in adjacency:
             if start_point_id in visited:
                 continue
-            point_ids, line_ids = _trace_loop(start_point_id, adjacency)
-            visited.update(point_ids)
-            line_loops.append(Profile(sketch_id=sketch.id, point_ids=point_ids, line_ids=line_ids))
+            component = _connected_component(start_point_id, adjacency)
+            visited.update(component)
+            if all(len(adjacency[point_id]) == 2 for point_id in component):
+                point_ids, line_ids = _trace_loop(start_point_id, adjacency)
+                line_loops.append(Profile(sketch_id=sketch.id, point_ids=point_ids, line_ids=line_ids))
+            # else: this component has an open end and/or a branch point -
+            # not a candidate profile, simply excluded (not an error) as
+            # long as some other component/Circle yields a usable loop.
 
     # C1: standalone Circles are now folded in alongside Line-chain loops
     # (previously only considered when there were no Lines at all - see
@@ -129,6 +141,15 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     loops = line_loops + circle_loops
 
     if not loops:
+        if any_branch_point:
+            branch_point_ids = sorted(
+                point_id for point_id, edges in adjacency.items() if len(edges) > 2
+            )
+            return ProfileDetectionResult(
+                status=ProfileStatus.BRANCH,
+                detail=f"{len(branch_point_ids)} point(s) are used by more than two entities.",
+                branch_point_ids=branch_point_ids,
+            )
         return ProfileDetectionResult(
             status=ProfileStatus.NO_LOOP,
             detail="Sketch has no connectable entities (e.g. lines or circles).",
@@ -142,6 +163,22 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
         )
 
     return _classify_nesting(sketch, loops)
+
+
+def _connected_component(start_point_id: str, adjacency: dict[str, list[tuple[str, str]]]) -> set[str]:
+    """Every point id reachable from `start_point_id` via any entity in
+    `adjacency` - a plain point-to-point BFS, ignoring which entity connects
+    them (entity identity doesn't matter for component membership, only for
+    tracing the loop itself afterward - see `_trace_loop`)."""
+    visited = {start_point_id}
+    frontier = [start_point_id]
+    while frontier:
+        current = frontier.pop()
+        for _entity_id, neighbor in adjacency[current]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                frontier.append(neighbor)
+    return visited
 
 
 def _classify_nesting(sketch: Sketch, loops: list[Profile]) -> ProfileDetectionResult:

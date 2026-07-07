@@ -55,6 +55,27 @@ class PartToolbar extends StatelessWidget {
   /// isn't a disabled placeholder.
   final VoidCallback? onOpenConnectionSettings;
 
+  /// Native Save/Load: reads/writes the whole Document (every Part's
+  /// ordered Feature list, plus every Sketch it references) as this app's
+  /// own native project file - see `PartScreen._saveNativeFile`/
+  /// `_openNativeFile`. `onSaveAsNative` always prompts a fresh filename
+  /// (see `PartScreen._saveAsNativeFile`'s own doc comment for how this
+  /// differs from plain Save); `onStartNew` abandons the current Part for
+  /// a brand-new blank one, after confirming (see `PartScreen._startNewPart`).
+  final VoidCallback? onSaveNative;
+  final VoidCallback? onSaveAsNative;
+  final VoidCallback? onOpenNative;
+  final VoidCallback? onStartNew;
+
+  /// Export: writes the current Part's geometry out to one of four
+  /// interchange formats (`'step'`/`'stl'`/`'obj'`/`'glb'`) - see
+  /// `PartScreen._exportPart`.
+  final void Function(String format)? onExportPart;
+
+  /// Import: brings an external STEP/STL/OBJ/glTF file in as a fixed,
+  /// non-parametric Body - see `PartScreen._importGeometry`.
+  final VoidCallback? onImportGeometry;
+
   /// Stage 18: current 3D-viewport appearance preferences (see
   /// [ViewPreferences]) and their change callbacks - [PartScreen] owns the
   /// state and persistence, this just renders the entries that open each
@@ -97,6 +118,12 @@ class PartToolbar extends StatelessWidget {
     this.renderMode = ViewportRenderMode.shaded,
     this.onRenderModeChanged,
     this.onOpenConnectionSettings,
+    this.onSaveNative,
+    this.onSaveAsNative,
+    this.onOpenNative,
+    this.onStartNew,
+    this.onExportPart,
+    this.onImportGeometry,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
@@ -163,26 +190,49 @@ class PartToolbar extends StatelessWidget {
     );
   }
 
-  static const List<String> _filePlaceholders = [
-    'New',
-    'Open…',
-    'Save',
-    'Save As…',
-    'Import…',
-    'Export STEP',
-    'Export STL',
+  // format, label, icon - each drives one Export ListTile below.
+  static const List<(String, String, IconData)> _exportFormats = [
+    ('step', 'Export STEP', Icons.view_in_ar_outlined),
+    ('stl', 'Export STL', Icons.view_in_ar_outlined),
+    ('obj', 'Export OBJ', Icons.view_in_ar_outlined),
+    ('glb', 'Export glTF', Icons.view_in_ar_outlined),
   ];
 
   Widget _buildFileMenu(BuildContext context) {
-    final disabledColor = Theme.of(context).disabledColor;
     return ExpansionTile(
       leading: const Icon(Icons.folder_outlined),
       title: const Text('File'),
       children: [
-        for (final label in _filePlaceholders)
+        ListTile(
+          leading: const Icon(Icons.note_add_outlined),
+          title: const Text('New'),
+          onTap: onStartNew,
+        ),
+        ListTile(
+          leading: const Icon(Icons.folder_open_outlined),
+          title: const Text('Open…'),
+          onTap: onOpenNative,
+        ),
+        ListTile(
+          leading: const Icon(Icons.save_outlined),
+          title: const Text('Save'),
+          onTap: onSaveNative,
+        ),
+        ListTile(
+          leading: const Icon(Icons.save_as_outlined),
+          title: const Text('Save As…'),
+          onTap: onSaveAsNative,
+        ),
+        ListTile(
+          leading: const Icon(Icons.file_upload_outlined),
+          title: const Text('Import…'),
+          onTap: onImportGeometry,
+        ),
+        for (final (format, label, icon) in _exportFormats)
           ListTile(
-            enabled: false,
-            title: Text(label, style: TextStyle(color: disabledColor)),
+            leading: Icon(icon),
+            title: Text(label),
+            onTap: onExportPart == null ? null : () => onExportPart!(format),
           ),
         ListTile(
           leading: const Icon(Icons.settings_ethernet),

@@ -11,6 +11,18 @@ def get_document() -> Document:
     return _document
 
 
+def replace_document(document: Document) -> None:
+    """Native file import's "full replace, not merge" (client-owned files,
+    locked-in scope): swaps out the whole in-memory Document for `document`.
+    Only intended to be called by `app.document.router`'s native-import
+    endpoint, immediately followed by `app.sketch.store.replace_all_sketches`
+    doing the same for the Sketch side - together they make an import a
+    clean, atomic full replacement rather than a merge with whatever
+    Document/Sketches were open before."""
+    global _document
+    _document = document
+
+
 def get_part_or_404(part_id: str) -> Part:
     part = _document.parts.get(part_id)
     if part is None:

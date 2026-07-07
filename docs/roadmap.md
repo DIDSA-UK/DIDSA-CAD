@@ -79,8 +79,368 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   entry (alongside Shaded / Shaded+Edges / Wireframe) that renders
   occluded edges distinctly (e.g. dashed) rather than hiding or bleeding
   them through.
-- **Revolve, Sweep.** Disabled placeholders in the Feature picker sheet
-  since Stage 19b. Not implemented.
+- **Prompt F: Revolve — confirmed working on-device.** Closest of
+  the three new C/D/E-successor prompts (Revolve → Sweep → Boolean) to
+  Extrude: consumes a closed Profile the same way, produces a solid the same
+  way, full Boss/Cut parity from day one (`mode: BOSS | CUT`,
+  `target_body_ids`, identical validation shape to `ExtrudeFeature`) - the
+  only new concept is the axis, a Sketch **Line** reference
+  (`SketchEntityRef`, restricted to Line; Point/Circle rejected as
+  `invalid_axis_ref`). Two flagged design decisions were resolved by asking
+  directly rather than assumed: the axis Line is **not** required to belong
+  to the same Sketch as the Profile (cross-sketch allowed, resolved via its
+  own owning SketchFeature's basis independently of the Profile's), and the
+  axis Line **is** allowed to be one of the Profile's own entities (no
+  self-reference rejection). The third flagged question (does Cut-mode need
+  Fillet/Chamfer's dual-mesh preview overlay?) was resolved by re-reading
+  `docs/live-preview-pattern.md`'s own decision tree, not by asking: Revolve's
+  Cut only ever does Body-level `target_body_ids` picks (never sub-shape
+  picks of the body being cut), so it uses Extrude's simple `isPreviewMesh`
+  pattern, not the dual-mesh overlay - the prompt text's own suggestion that
+  it "likely needs" the overlay didn't hold up against the documented
+  criterion. Backend: new `RevolveFeature`/`RevolveMode` (`app/document/
+  models.py`); new `app/document/revolve.py` (`BRepPrimAPI_MakeRevol`,
+  `invalid_axis_ref`/`revolve_failed` structured errors - the prompt's own
+  third error type, `mixed_body_selection`, was skipped as inapplicable:
+  Boss/Cut `target_body_ids` has no per-edge same-body constraint the way
+  Fillet/Chamfer's `edge_refs` does, and Extrude's own Cut has no such
+  concept either); `app/document/extrude.py` gained a shared
+  `_apply_boss_or_cut` helper (extracted from its own `compute_part_bodies`
+  ExtrudeFeature branch) so Revolve's identical Boss/Cut fuse/cut/
+  merge-tiebreak/body-split dispatch isn't duplicated, plus `face_for_profile`/
+  `EXTRUDABLE_STATUSES` made public for Revolve's own reuse; `graph.py` gained
+  `RevolveFeature` dependency edges (profile Sketch **and** axis Sketch,
+  separately, deduplicated - not the same edge every time, since cross-Sketch
+  axis is allowed); `router.py`/`schemas.py` gained
+  `RevolveFeatureCreate/Update/Response` and `POST/PATCH .../revolve-features
+  [/{id}]`, unlocked from the start, eagerly validating via `resolve_revolve`
+  before persisting (mirrors Fillet/Chamfer's fail-closed convention, stricter
+  than Extrude's own lazy-only validation, since the axis is genuinely new
+  and error-prone); `_validate_target_body_ids` generalized to accept a Body
+  from either an `ExtrudeFeature` or a `RevolveFeature`. 7 new pure-Python
+  graph tests (`test_stage_f_graph.py`) genuinely executed (47/47 passing
+  alongside every other pure-Python graph/geometry test file in this
+  sandbox); `test_stage_f_revolve.py` (real-OCCT HTTP surface) `ast.parse`/
+  `pyflakes`-verified only, per the standing sandbox caveat. Client:
+  `FeatureDto` gained `axisRef`/`angle`/`mode`; `createRevolveFeature`/
+  `updateRevolveFeature` mirror Extrude's own methods; new `RevolvePanel`
+  (Boss/Cut toggle + angle field + axis/target-body status lines, mirrors
+  `ExtrudePanel`'s session shape); `part_screen.dart` gained a full separate
+  Revolve state/method block (mirrors Extrude's, not shared) - notably a new
+  combined selection filter (`_revolveSelectionFilter`, allows both
+  `sketchLine` and `body` hits at once, unlike Extrude's bodies-only
+  override) since a Revolve session picks one axis Line *and* zero-or-more
+  target Bodies simultaneously, with `_toggleSelectedEntity`'s new
+  Revolve special-case routing a `sketchLine` tap to axis-replacement
+  (single reference, not accumulated) while a `body` tap falls through to
+  the ordinary toggle-add/remove Extrude's own target-body picking already
+  uses. Entry points: enabled via the same mechanism Extrude's own
+  "Extrude" action already uses (the Feature-tree long-press context menu,
+  `showFeatureContextMenu`'s new `showRevolve`/`canRevolve` params, same
+  closed-profile eligibility check reused directly) and the "Add" FAB's
+  Feature picker (previously a disabled placeholder); **note**: the prompt's
+  own text framed this as "`contextActionsFor`: enable Revolve from a Sketch
+  selection" - but `contextActionsFor` (`selection_actions.dart`) only ever
+  gates Body-sub-shape/plane/sketch-entity *viewport* selections, and
+  Extrude's real enabling condition was never there in the first place (it's
+  the tree long-press), so Revolve's own enabling mirrors Extrude's *actual*
+  mechanism instead of literally touching that function. **Confirmed working
+  on-device** by the user directly.
+- **Bug fix (on-device feedback, post-Revolve): mesh display could go stale
+  after Fillet/Chamfer/Extrude/Revolve/Sketch operations.** Reported
+  scenario: creating a Fillet on a Body that already had a Chamfer left the
+  viewport showing the pre-Fillet shape until an unrelated later action
+  (adding a second Chamfer) happened to trigger a repaint - hover
+  hit-testing already reflected the new Fillet's topology correctly (it
+  reads `_bodies` directly, not through the last-painted frame), proving
+  the fetch itself succeeded; only the repaint never happened. Root cause:
+  `_refreshMesh`/`_refreshFeatures`/`_refreshSketchGeometries`/
+  `_refreshFilletPreviewMesh`/`_refreshChamferPreviewMesh` all mutated
+  their target state fields directly, with no `setState` of their own -
+  relying entirely on whichever caller happened to `setState` afterward
+  (usually `_runGuarded`'s own `_busy` bookkeeping) to trigger a repaint by
+  accident. Fixed by wrapping each one's own field mutation in its own
+  `setState` (with a `mounted` guard for the async gap) so a repaint is
+  never left to chance - a pre-existing pattern across the whole file, not
+  something Revolve introduced, so this also makes Revolve's own live
+  preview more reliable.
+- **Prompt G: multi-profile Sketch selection for Extrude/Revolve.** Two
+  related gaps closed together, scoped via an explicit back-and-forth
+  rather than assumed: (1) a Sketch with a mix of open and closed profiles
+  used to fail the *entire* Sketch as `NO_LOOP`/`BRANCH`, even past a
+  genuinely usable closed loop, since `detect_profile` walked the whole
+  sketch as one connectivity graph rather than classifying each connected
+  component independently; (2) a Sketch with 2+ closed profiles always
+  used *all* of them (an implicit MultiProfile compound), with no way to
+  pick a subset. Backend: `detect_profile` (`app/sketch/profile.py`)
+  relaxed to per-connected-component classification - a component is a
+  usable closed loop exactly when every point in it has degree 2, anything
+  else (an open end, a branch) is simply excluded rather than erroring the
+  whole sketch; `NO_LOOP`/`BRANCH` now only fire when zero usable loops
+  exist anywhere (`BRANCH` still takes detail-message priority in that
+  fully-unusable case, matching the old behaviour's own precedent). New
+  `profile_refs: list[SketchEntityRef]` on both `ExtrudeFeature` and
+  `RevolveFeature` - empty means every outer profile currently detected
+  (the old default, unchanged), non-empty names anchor Line/Circle entities
+  identifying which outer profile(s) to use, resolved via a new
+  `app.document.extrude.select_profiles` (shared by both Feature types) and
+  a new `invalid_profile_ref` structured error. Client: `RevolvePanel`'s
+  own decisions carried over (create-time-only picking, chosen over
+  edit-time re-picking per explicit instruction); a new profile-picking
+  mode entered automatically whenever the chosen Sketch has 2+ usable
+  closed loops (skipped entirely for the common single-loop case) -
+  designed via explicit user answers rather than assumed: cursor-based
+  selection directly in the 3D viewport (not a list picker, not the 2D
+  sketch canvas), hovering any Line highlights its whole containing loop
+  (`PartViewport.sketchLineLoopGroup`, a new callback generalizing the
+  existing single-entity hover highlight), click toggles a whole loop
+  in/out of the pick set (mirrors Fillet's own "tap a face, select its
+  whole edge loop" convenience), and a checkmark FAB confirms and opens the
+  target panel. 7 new pure-Python `detect_profile` tests
+  (`test_stage_g_profile.py`) genuinely executed (68/68 passing across
+  every pure-Python graph/geometry/profile test file in this sandbox); the
+  real-OCCT HTTP surface tests (`test_stage_g_profile_refs.py`)
+  `ast.parse`/`pyflakes`-verified only, per the standing sandbox caveat.
+  On-device testing surfaced three follow-up bugs, all fixed in the same
+  round - see the entry directly below.
+- **Bug fixes (on-device feedback, post-Prompt-G): viewport camera jump,
+  profile picker not appearing, Sketch Circles not selectable.** Three
+  issues reported from the same on-device test pass, all fixed:
+  (1) *Viewport jumped when switching Orbit/Selection mode, and after
+  selecting an entity.* Root cause: `PartScreen._visibleBodies` was a plain
+  `_bodies.where(...).toList()` getter, allocating a brand-new `List`
+  instance on every access - since `PartViewport.bodies`'s own contract
+  requires a new instance only when the content actually changes (so
+  `didUpdateWidget` can tell "unrelated rebuild" from "the mesh changed"),
+  *every* unrelated `setState` in `PartScreen` (mode toggle, entity
+  selection, anything) looked like a Body change to `PartViewport`, which
+  re-ran `_syncMeshNode` and unconditionally snapped `OrbitCamera.target`
+  back to the mesh bounds' centre, discarding any pan the user had done.
+  Fixed by memoizing `_visibleBodies` against `_bodies`' own identity (only
+  reassigned on a genuine mesh refetch), restoring the documented contract.
+  (2) *Revolve's profile picker never appeared for a multi-closed-profile
+  Sketch.* Traced to (3) below in the common case (a test sketch mixing a
+  Line-chain profile with a Circle profile) - the picker itself entered
+  correctly (`detect_profile`/`select_profiles` already handled this case
+  server-side, confirmed via a synthetic pure-Python repro), but a
+  Circle-only loop had nothing tappable to toggle it with, reading as "no
+  option to pick" even though the banner/confirm-FAB were showing.
+  (3) *Sketch Circles weren't a selectable/tappable entity in the 3D
+  viewport*, despite being drawable there since C1 and just as valid a
+  closed Profile as a Line-chain loop (`app.sketch.profile._circle_profile`).
+  Fixed by adding a full `SelectionEntityKind.sketchCircle` kind end to end:
+  `SketchGeometry3D` gained a `circleIds` array parallel to `circlePolygons`
+  (previously absent - a deliberately deferred C1 gap); new
+  `hitTestSketchCircles` (tests every segment of a Circle's tessellated
+  outline, same convention as `hitTestSketchLines`) wired into
+  `hitTestBodies`; new `SelectionFilterState.sketchCircle` field (mirrors
+  `sketchLine`, on by default; explicitly off for Revolve's axis filter -
+  a Circle is never a valid axis - and for the body-only/Fillet/Chamfer
+  filters, on for the profile picker's own filter); `PartViewport`'s
+  hover/selected-entity highlight rendering gained matching
+  `sketchCircle` cases. This also surfaced (and fixed) a latent bug in
+  `PartScreen._confirmProfilePicker`: it hardcoded `SketchEntityRefDto.
+  entityType: 'line'` for every picked loop's anchor id, which would have
+  422'd (`resolve_sketch_entity` validates the declared type against the
+  real entity via `isinstance`) the first time a Circle-only loop's anchor
+  was actually confirmed - now resolved per-anchor via a new
+  `_isProfileCircleEntity` helper. No backend changes were needed for any
+  of the three; `_toggleProfileLoop`/`_confirmProfilePicker` now build the
+  correct `SelectionEntityKind`/`entityType` per member id instead of
+  assuming every loop member is a Line. No Dart SDK available in this
+  sandbox to compile/run - verified via brace-balance checks and manual
+  review only, which missed one real build break a subsequent user build
+  caught: `selection_list_drawer.dart`'s `_iconFor`/`_labelFor` switch
+  statements weren't exhaustive over the new `sketchCircle` variant (fixed
+  in a same-day follow-up commit). **Confirmed working on-device** by the
+  user after that follow-up fix.
+- **Sweep, the third of the Revolve → Sweep → Boolean sequence.** Scoped via
+  an explicit back-and-forth (mirroring Prompt F/G's own scoping rounds)
+  rather than assumed, since the project brief never detailed this module:
+  the path is built from *explicit, ordered, individually-tapped* Sketch
+  Line picks (not "the whole open chain of one Sketch," which was the
+  simpler recommended default) - each pick may name a Line in a *different*
+  Sketch, chained by 3D world-space endpoint position rather than a shared
+  Point id (which cross-Sketch entries never have); a closed (looping) path
+  is explicitly in scope alongside an open one, distinguished structurally
+  (first/last picked points coincide) rather than by a separate flag.
+  Boss/Cut parity with Extrude/Revolve throughout. Backend: new
+  `SweepFeature`/`SweepMode` (`app/document/models.py`) with an ordered
+  `path_refs: list[SketchEntityRef]`; new `app/document/sweep.py`
+  (`BRepOffsetAPI_MakePipe` swept along the picked-path wire, built via the
+  same `face_for_profile` Extrude/Revolve already share) - `_resolve_path_
+  wire` traces `path_refs` into an ordered world-space point chain by
+  resolving each entry's own Sketch/basis independently (mirrors
+  `app.document.revolve._resolve_axis`) then chaining consecutive entries
+  by coincident-endpoint-position (a `_PATH_POINT_TOLERANCE` world-space
+  check, since cross-Sketch entries have no shared Point id to chain by
+  instead) - `invalid_path_ref`/`disconnected_path`/`sweep_failed`
+  structured errors mirror Revolve's own `invalid_axis_ref`/`revolve_failed`
+  shape. `graph.py` gained `SweepFeature` dependency edges (the profile's
+  own SketchFeature plus *every* distinct SketchFeature named across
+  `path_refs`, deduplicated - generalizes Revolve's single axis-Sketch edge
+  to N path Sketches). `schemas.py`/`router.py` gained `SweepFeatureCreate/
+  Update/Response` and `POST/PATCH .../sweep-features[/{id}]`, eagerly
+  validated via `resolve_sweep` before persisting; `_validate_target_body_
+  ids` generalized once more to accept a Body from any of Extrude/Revolve/
+  Sweep. `compute_part_bodies` gained a `SweepFeature` branch reusing
+  `_apply_boss_or_cut`. 7 new pure-Python `test_stage_h_graph.py` tests
+  genuinely executed (103/103 passing across every pure-Python graph/
+  geometry/profile test file in this sandbox); `test_stage_h_sweep.py` (the
+  real-OCCT HTTP surface) `ast.parse`/`pyflakes`-verified only, per the
+  standing sandbox caveat - its own header note flags one real open
+  question that couldn't be checked without a real OCCT build: whether
+  `BRepOffsetAPI_MakePipe` auto-translates a profile positioned away from
+  its spine's start point, or requires the caller to. Client: `FeatureDto`
+  gained an ordered `pathRefs`; `createSweepFeature`/`updateSweepFeature`
+  API client methods; new `SweepPanel` (Boss/Cut + target-body status +
+  read-only path summary - no live path re-picking inside the panel, since
+  the path is fixed before it ever opens, unlike Revolve's live axis pick).
+  New path-picking mode in `part_screen.dart` (entered automatically right
+  after the profile-picking step, since a Sweep's path is mandatory unlike
+  Revolve's optional-until-panel-closes axis): tap a Line anywhere to
+  extend the chain (client-side connectivity pre-check against the same
+  world-space segment endpoints already used for rendering, mirroring the
+  backend's own trace logic so the two never disagree), tap the most
+  recently picked Line again to undo it, checkmark FAB confirms once 1+
+  segments are picked and opens `SweepPanel`. Entry points: Feature-tree
+  long-press context menu (`showFeatureContextMenu`'s new `showSweep`/
+  `canSweep` params) and the "Add" FAB's Feature picker (previously a
+  disabled placeholder, per the original Stage 19b brief). Explicitly
+  deferred, none requested for this pass: twist/roll control along the
+  path, multiple profiles swept along one path simultaneously, guide
+  curves, re-picking the path/profile when editing an existing Sweep,
+  non-Line path segments (only Lines exist as Sketch entities today). No
+  Dart SDK available in this sandbox to compile/run - verified via
+  brace-balance checks and manual review only.
+- **Bug fix (on-device feedback, post-Sweep): couldn't extend a path pick
+  past its first segment when the next tap connected to that segment's
+  *other* end.** Root cause: both `_resolve_path_wire` (backend) and
+  `_tracePathPoints`/`_togglePathPick` (client) tracked only a single
+  running "chain end," seeded from the first segment's own arbitrary
+  `(start, end)` order (whichever way its owning Line happened to store
+  its two endpoints) - once one segment was picked, only a tap connecting
+  to that one fixed endpoint could extend the path; a tap connecting to
+  the *other* endpoint of that same first segment (nothing fixes which end
+  is "the start" until a second segment actually commits to a direction -
+  a perfectly ordinary way to build a path) was wrongly rejected as
+  disconnected. Fixed in both places by tracking the chain's *two* open
+  ends (front and back) and extending from whichever one a new pick
+  actually touches (appending at the back, or inserting at the front) -
+  confirmed via a pure-Python re-implementation of the trace algorithm and
+  a new `test_stage_h_sweep.py` regression case (middle segment picked
+  first, then one extending its front, then one extending its back) that
+  would have failed `disconnected_path` under the old logic. Also caught,
+  in hindsight, that an *existing* test in the same file
+  (`test_path_segments_given_out_of_geometric_order_are_still_connected_
+  correctly`) had actually been asserting success against geometry that
+  the pre-fix algorithm would genuinely have rejected - never caught
+  because this whole test file is `ast.parse`-verified only in this
+  sandbox (no real OCCT to execute it against), a concrete reminder of
+  that verification gap's real cost. **Confirmed working on-device** -
+  user rebuilt and picked a multi-segment path successfully.
+- **Bug fix (on-device feedback): Sweep's profile wasn't staying normal to
+  the path.** Reported/screenshotted symptom: a non-circular (rectangular)
+  profile swept along a bent path pinched to a wedge at the sharp corner
+  instead of keeping its cross-section shape throughout; a circular
+  profile looked fine (radially symmetric, so it visually hides the same
+  underlying issue). Root cause: `resolve_sweep_from_bodies` used the
+  simpler `BRepOffsetAPI_MakePipe(spine, profile)` - which does not
+  reorient the profile's cross-section to stay normal to the spine's
+  local tangent as its direction changes, and has no explicit handling for
+  a polyline spine's sharp (non-tangent-continuous) corners - instead of
+  `BRepOffsetAPI_MakePipeShell`, OCCT's more general "generalized sweep"
+  API built specifically for both of those (its default trihedron mode
+  already reorients the profile; `SetTransitionMode(BRepBuilderAPI_
+  RightCorner)` now explicitly cuts each sharp corner with a flat planar
+  face instead of leaving the transition undefined). `.Build()` +
+  `.MakeSolid()` replace the old single-constructor-call shape. Design
+  question this raised - resolved by asking directly rather than guessed:
+  should Sweep expose a user-facing mitre-vs-round corner choice (OCCT
+  supports both, `BRepBuilderAPI_RightCorner`/`RoundCorner`)? Answer: no -
+  corner style should follow the path's own geometry (a sharp path vertex
+  mitres, a rounded/curved path corner would produce a smooth elbow with
+  no sharp transition at all, needing no special-casing), and since only
+  straight Line path segments exist today (no Arc/curved Sketch entity to
+  pick as a path segment yet), every path corner is necessarily sharp -
+  `RightCorner` is the only correct choice given current scope, not a
+  placeholder pending a toggle; a real "elbow" choice only becomes
+  meaningful once a curved path-segment entity exists.
+- **Bug fix (on-device feedback, second round on the fix directly above):
+  the corner fix itself 500'd instead of sweeping.** Real traceback this
+  time (`RuntimeError: OpenCASCADE Error [Standard_Failure]: BRepFill_
+  Section: bad shape type of section (in BRepOffsetAPI_MakePipeShell::
+  Add)`) - an uncaught crash, not a graceful `sweep_failed`, confirming a
+  genuine API-usage mistake rather than a geometric failure. Root cause:
+  `BRepOffsetAPI_MakePipeShell.Add` rejects a `TopoDS_Face` outright - it
+  only accepts a Wire (or Edge/Vertex) as one swept "section"; the fix
+  above was passing `face_for_profile`'s Face, not a bare Wire. Fixed by
+  making `app.document.extrude._wire_for_profile` public
+  (`wire_for_profile`, mirroring how `face_for_profile` was already made
+  public for Revolve's own reuse) and passing its outer-wire-only result
+  to `.Add()` instead. Not verifiable against real OCCT in this sandbox
+  (same standing caveat, now hit twice in a row for this one feature) -
+  implemented from OCCT API documentation/knowledge and the real traceback
+  the user retrieved from the backend's own container logs.
+
+  First-pass fix (above) also explicitly rejected a Profile with holes
+  (`inner_loops`) rather than risk silently sweeping without one - flagged
+  as a real, currently-known limitation. On follow-up, the user correctly
+  pushed back: a hollow swept profile (a pipe's annular wall) is a
+  completely ordinary, common Sweep use case, not an edge case worth
+  punting on. Revisited rather than left as a rejection: `BRepOffsetAPI_
+  MakePipeShell.Add` may well support a single compound outer+hole
+  section directly (a real OCCT capability), but that specific call
+  shape couldn't be verified without a real kernel, and guessing wrong a
+  third time in a row wasn't worth the risk. Instead, `resolve_sweep_
+  from_bodies` now sweeps the outer wire and each hole's own wire
+  *independently* (`_sweep_wire`, both are plain single-wire sweeps - the
+  exact case already proven working) and boolean-cuts the hole solid(s)
+  out of the outer one (`BRepAlgoAPI_Cut`, the same operation `app.
+  document.extrude._apply_boss_or_cut` already relies on for every
+  Cut-mode Boss/Cut in this codebase) - a hollow pipe is exactly "outer
+  tube minus inner tube," built from two already-independently-correct
+  building blocks rather than one untested one. New
+  `test_boss_sweep_of_an_annular_pipe_wall_profile_succeeds` (two
+  concentric circles, the common pipe-wall case) added to
+  `test_stage_h_sweep.py`. Same standing caveat - not verifiable against
+  real OCCT in this sandbox.
+
+  **CI actually runs these against real OCCT** (a Docker-based backend
+  build+test workflow this whole Sweep implementation round didn't realize
+  existed/was checking every push) - asked to check it directly, and every
+  one of the 21 new Sweep tests genuinely passed against a real kernel,
+  confirming the corner-orientation fix, the wire-not-face fix, and the
+  annular-profile (pipe-wall) support all actually work, not just
+  "implemented from documentation." One unrelated failure surfaced:
+  `test_bugfix_hide_vs_rollback_exclusion.py::test_rollback_excluded_
+  feature_ids_still_breaks_a_downstream_plane_as_intended` regressed
+  (200 instead of the expected 422) - a real bug introduced back in the
+  Prompt G round, not by Sweep. Root cause: Prompt G's own `compute_part_
+  bodies` fix (wrapping `_solid_for_extrude_feature` in a blanket `except
+  HTTPException` so a stale `invalid_profile_ref` pick doesn't take down
+  the whole `/mesh` response) was too broad - it also swallowed a
+  `missing_reference` raised by `resolve_sketch_basis` when B4's true
+  rollback deliberately excludes an upstream Feature a Sketch's custom
+  plane depends on, which must still propagate and fail the whole request
+  (that is the entire point of true rollback, and was the pre-Prompt-G
+  behavior this test guards). Fixed by narrowing the catch to only
+  `invalid_profile_ref` specifically, re-raising anything else - applied
+  to both the `ExtrudeFeature` branch (the one CI actually caught) and the
+  brand-new `SweepFeature` branch (identical latent risk, caught
+  proactively since it was written in this same session and not yet
+  "shipped" anywhere). `RevolveFeature`'s own branch has the identical
+  latent risk too (its blanket catch predates Prompt G, from Prompt F,
+  and is by its own doc comment *deliberately* broad enough to tolerate
+  an unresolvable axis or geometry failure) - left untouched since no
+  test currently exercises it and it's an established, working, Prompt-F-
+  era decision, not something this pass introduced or was asked to
+  revisit; flagged here as a known parallel risk if it's ever picked up.
+  CI green (526/526) after this fix, and **confirmed working on-device**
+  by the user - closes out Sweep. Per the roadmap's own framing at the top
+  of this entry, this completes Revolve → Sweep of the three-module
+  sequence; Boolean operations (union/subtract/intersect) remain the one
+  piece of that sequence not yet started.
 - **No redo in the sketcher.** Undo (Stage 19b) is a command/inverse-action
   stack with an explicit `// TODO: redo` left in `sketch_controller.dart`.
 - **Sketcher constraint options still unwired for creation beyond what
@@ -594,6 +954,232 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   consolidated closing note, and the "Other open items" section at the top
   of this file for what's still genuinely open (Revolve/Sweep, the C3
   rendering bug, etc.) now that this sequence is done.
+- **Native Save/Load (first slice of the Save/Load/Import/Export phase,
+  "native first" per explicit user instruction deferring STEP/STL/OBJ/glTF
+  export to a later pass).** Scoped via 4 rounds of AskUserQuestion, all
+  "Recommended" except STEP's own schema: client-owned files (backend has
+  no project storage of its own - the client owns the actual file on disk);
+  pure parametric tree (no cached mesh/geometry in the file - reopening
+  recomputes Bodies via the existing `compute_part_bodies`, same as any
+  other recompute); STEP deferred to AP242 later; mesh-export formats
+  deferred to reusing existing `MeshData` later. Backend: new
+  `app/document/native_format.py` - `export_native(document, sketches) ->
+  dict`/`import_native(data) -> (Document, sketches)`, a standalone dict
+  mapping (not a reuse of the HTTP API's own pydantic response schemas,
+  which carry API-only fields like `locked`/`produces`/resolved plane
+  geometry that have no place in a save file) covering every Feature type
+  (Sketch/Extrude/CreatePlane/Fillet/Chamfer/Revolve/Sweep) and every
+  Sketch entity/constraint kind, keyed by a `schema_version` that rejects
+  anything unrecognized outright rather than guessing. New `GET
+  /document/export/native`/`POST /document/import/native` endpoints; new
+  `replace_document`/`all_sketches`/`replace_all_sketches` store functions
+  for the "full replace, not merge" import semantics client-owned files
+  calls for. 8 new genuinely-executable pure-Python round-trip tests (this
+  is the first Feature-adjacent work this session where the serialization
+  logic itself needs no OCCT at all, unlike almost everything else in this
+  codebase) plus one CI-only HTTP smoke test that saves/restores the
+  process-global Document/Sketch store around itself, since this test
+  suite otherwise shares that global state across every test module in one
+  pytest session and a native import is a deliberate full replace. Client:
+  new `file_picker` dependency (the first file-system-access dependency
+  this app has needed); `DocumentApiClient.exportNative`/`importNative`;
+  wired into the File menu's pre-existing "Open…"/"Save" placeholder
+  entries (left "Save As…"/"New"/"Import…"/"Export STEP"/"Export STL"
+  disabled, matching what's still out of scope). `PartScreen` gained an
+  `initialPartId` constructor param - Open pushes a brand-new `PartScreen`
+  instance pointed at the imported Part rather than mutating the current
+  screen's state in place, deliberately sidestepping the need to manually
+  reset this screen's many transient fields (selection, hidden/rollback
+  sets, in-progress picker/panel state) against Feature/Body ids that
+  belong to a different Part after a full-document-replace import. Not yet
+  confirmed on-device - the client changes (new dependency, file-picker
+  wiring) could not be compiled/run in this sandbox (no Flutter SDK), only
+  manually reviewed plus a brace-balance check against the pre-edit file.
+  **On-device follow-up round (three fixes, all confirmed working except
+  the last, still pending re-test):** (1) CI's real run caught the one new
+  HTTP test asserting `part_ids == [part_id]` - too strict against the
+  process-global Document this suite shares across every test module in
+  one pytest session, which by that point legitimately held Parts from
+  earlier-run files too; fixed to assert containment instead, verified via
+  a second green CI run. (2) On-device: the in-app Open picker
+  (`FilePicker.platform.pickFiles`) greyed out a just-saved file entirely -
+  `FileType.custom` + `allowedExtensions` filters by OS-guessed MIME type,
+  and Android has no MIME mapping for a made-up extension, so a save
+  written under it couldn't be confirmed as a match; switched to
+  `FileType.any`, since content is already validated right after (JSON
+  decode, then the backend's own `schema_version` check) regardless. (3)
+  On-device: Hide/Show state (`_hiddenFeatureIds`) is purely client-side
+  and was never included in the exported file at all, so it was silently
+  dropped by every Save/Load round-trip - fixed by having the client stash
+  it directly into the same JSON object under a `hidden_feature_ids` key
+  the backend's own `export_native`/`import_native` know nothing about and
+  simply pass through unexamined, restored via a new `PartScreen.
+  initialHiddenFeatureIds` constructor param on the fresh screen Open
+  pushes. Also renamed the saved file's extension from `.didsacad` to
+  `.DIDSAprt` per explicit user request. Fixes (1)/(2) confirmed working
+  on-device; (3) and the extension rename not yet re-tested as of this
+  entry.
+- **Export: STEP/STL/OBJ/glTF (second slice of the Save/Load/Import/Export
+  phase).** Per-Part `GET /document/parts/{id}/export/{step|stl|obj|glb}`.
+  STL/OBJ/glb (locked-in scope: reuse existing `MeshData`, not OCCT's own
+  writers) are hand-rolled in new `app/document/mesh_export.py`
+  (`encode_stl`/`encode_obj`/`encode_glb`) - binary STL, ASCII OBJ, and a
+  minimal valid glTF 2.0 `.glb` container (one mesh/primitive,
+  POSITION+NORMAL only, no index buffer since `MeshData`'s flat triangle
+  soup is already unindexed). `MeshQuality`/`Triangle`/`MeshData` themselves
+  had zero OCCT dependency but lived in `app.document.mesh` alongside
+  `tessellate_shape`, which does - split into a new OCCT-free
+  `app/document/mesh_data.py` (re-exported unchanged from `mesh.py`) so
+  `mesh_export.py`'s own encoders, and their tests, can import just the data
+  shape without OCC.Core, which has no install in this sandbox. STEP export
+  (new `app/document/step_export.py`) writes AP242 (locked-in scope, even
+  with no PMI/MBD populated yet) via `STEPControl_Writer`, one `Transfer`
+  per current Body so each stays its own distinct STEP product rather than
+  one fused compound; round-trips through a temp file since pythonocc-core's
+  writer only writes to a real path. All four formats combine every Body's
+  tessellation into one merged mesh per Part (`_merged_body_mesh_data`,
+  offsetting each Body's own triangle indices) - unlike `/mesh`, which keeps
+  Bodies separate for the viewport's own per-Body hit-testing, export has no
+  such need. A Part with no solid geometry yet 400s up front rather than
+  emitting an empty/invalid file. 9 new genuinely-executable pure-Python
+  encoder tests (synthetic `MeshData`, no OCCT at all) plus a new CI-only
+  HTTP test file covering all four formats against a real extruded box and
+  the no-solid-geometry 400 case. Client: `DocumentApiClient.exportPart`
+  (a new `_sendBytes` helper, since raw STEP/STL/glb bytes aren't JSON the
+  way every other endpoint's response is); File menu gained real "Export
+  STEP"/"Export STL"/"Export OBJ"/"Export glTF" entries (previously two
+  disabled placeholders, now four real ones) calling `PartScreen._exportPart`,
+  which hands the bytes to the same `file_picker` save-file dialog Native
+  Save already uses. **Confirmed green in CI** after one real bug fix
+  (`Interface_Static.SetCVal("write.step.schema", ...)` was called before
+  `STEPControl_Writer()` existed, so it was a silent no-op and the file was
+  actually AP214, not the requested AP242 - CI's own STEP-export test caught
+  this by asserting on the file's real `FILE_SCHEMA`, not just a 200 status;
+  fixed by constructing the writer first).
+- **Import: STEP/STL/OBJ/glTF as a fixed, non-parametric Body (third slice
+  of the Save/Load/Import/Export phase).** Locked in via AskUserQuestion:
+  STL/OBJ/glTF are export-only formats (no parametric history to
+  reconstruct from a mesh), so import only ever means a file becoming a
+  fixed reference Body - "import as a dumb body, future features will be
+  able to edit existing bodies (scale, move face, delete face, move
+  body)... also import mesh bodies (STL, obj, gltf) to view, measure,
+  model around" (user's own answer). Backend: new `ImportFeature`/
+  `ImportSourceFormat` (`app/document/models.py`) - no Boss/Cut `mode`, no
+  `target_body_ids` of its own (importing always starts a brand-new Body,
+  mirroring a fresh Boss with an empty target list), no dependency edges
+  (`app/document/graph.py` needed no change at all - it already falls
+  through to the default `depends_on = ()` for any unmatched Feature
+  type) - but *is* now a valid `target_body_ids` entry for a later Extrude/
+  Revolve/Sweep's own Boss/Cut (`_validate_target_body_ids` widened). New
+  OCCT-free `app/document/mesh_import.py` (`decode_stl`/`decode_obj`/
+  `decode_glb`, the inverse of `mesh_export`'s encoders - binary+ASCII STL,
+  OBJ with fan-triangulation and optional normals, glTF with or without an
+  index buffer) and OCCT-dependent `app/document/import_geometry.py`
+  (`resolve_import`): STEP goes through `STEPControl_Reader` into a real
+  B-rep solid, usable everywhere a Body already is; STL/OBJ/glTF get
+  rebuilt into a single surface-less, triangulation-only `TopoDS_Face` (the
+  same convention OCCT's own STL import uses - `tessellate_shape` already
+  reads a face's triangulation directly when present, so this needs no
+  separate meshing step) - sufficient for "view, measure, model around",
+  explicitly *not* guaranteed to survive a Boolean operation the way a real
+  solid does, flagged as a known limitation rather than silently assumed
+  away. New `POST /document/parts/{id}/import-features` (base64-in-JSON,
+  not multipart - no other endpoint here uses multipart and there's no
+  `python-multipart` dependency, so this matches the native file format's
+  own "binary data as a plain JSON string" convention instead of adding
+  one). `native_format.py` gained ImportFeature (de)serialization the same
+  way (`source_data` is the Feature's own true source of truth - re-parsed
+  every recompute, "re-derive, don't cache" - persisted as base64). 25 new
+  genuinely-executable pure-Python tests (12 mesh_import decoder round-
+  trips against mesh_export's own encoders, needing zero OCCT; 4 graph
+  dependency/cascade-delete cases; 1 native-format base64 round-trip - by
+  far the best sandbox-test coverage any Feature type has had all session,
+  since decode/encode and dependency-graph logic are both genuinely
+  OCCT-free here) plus a new CI-only HTTP test file (STEP import round-
+  tripped through the export endpoint just built; STL import via
+  mesh_export's own `encode_stl`; malformed-file rejection; an Extrude Cut
+  successfully targeting an imported Body). Client: `DocumentApiClient.
+  createImportFeature`; File menu's "Import…" placeholder now real, wired
+  to a new `PartScreen._importGeometry` (`FileType.any`, same Android MIME-
+  filtering-bug workaround as native Open, mapping the picked file's own
+  extension to a source_format); `feature_tree_panel.dart` gained an
+  "Import" display name/icon. **CI caught a real bug on the first push, as
+  predicted**: STEP import worked first try, but STL import's new Body
+  vanished from `/mesh` entirely (`assert 0 == 1`) - `compute_part_bodies`
+  had routed ImportFeature through `_apply_boss_or_cut`/`_register_solids`,
+  which splits a Boss result by walking its `TopAbs_SOLID` count; a mesh
+  import's own shape (a bare, surface-less face) has zero `TopoDS_Solid`s,
+  so that path silently registered zero Bodies for it. Fixed by not routing
+  ImportFeature through that path at all - it has no Boss/Cut merge concept
+  of its own anyway, so it now always registers as exactly one Body keyed
+  by its own Feature id directly, whatever `resolve_import` returned (real
+  solid or bare face alike), never split even if a STEP import happens to
+  contain multiple disjoint solids. Confirmed green in CI.
+- **On-device feedback round: five fixes after real device testing of the
+  whole Save/Load/Import/Export phase.**
+  1. **"Editable" wrongly shown for `ImportFeature`.** The Build Tree's
+     locked/unlocked subtitle was a blanket `feature.locked ? 'Locked' :
+     'Editable'`, predating any Feature type without a real edit panel -
+     `ImportFeature` has none (a fixed, non-parametric Body, see its own
+     docstring), so tapping it while unlocked did nothing despite the row
+     claiming otherwise. `feature_tree_panel.dart` gained a `_hasEditPanel`
+     check (a negative check against `'import'`, not an allow-list, so it
+     doesn't need updating for every future Feature type that keeps
+     following the same "real edit panel" pattern) - shows "Imported"
+     instead when there isn't one.
+  2. **Cascade-delete confirmation named the wrong Features.** `_cascade
+     DeleteFeature` assumed "every Feature at and after this index in the
+     list" - true only in the pre-B2 world where list order and dependency
+     order always coincided; a Sketch feeding two independent Extrudes (or
+     any Feature with no real dependents) could already show the wrong
+     warning. The backend's `CascadeDeleteResponse`'s own docstring carried
+     the identical stale description. New read-only `GET .../cascade-
+     preview` endpoint (`CascadeDeletePreviewResponse`) runs the exact same
+     `transitive_dependents` computation the real delete does, mutating
+     nothing; the client now calls it instead of assuming.
+  3. **Mesh-imported Bodies had no visible wireframe in any render mode.**
+     An `ImportFeature`'s own mesh-format shape (STL/OBJ/glTF) is a bare,
+     surface-less triangulated face with zero real `TopoDS_Edge`s -
+     `_extract_edges` (which only ever samples real OCCT curves) came back
+     empty, so the existing edge-rendering pipeline had nothing to draw
+     regardless of render mode. New `synthesize_wireframe_edges_from_
+     triangles` (OCCT-free, in `mesh_data.py`) - each triangle's own 3
+     sides become one segment apiece - `tessellate_shape` falls back to it
+     whenever real-edge extraction comes back empty (only reachable for
+     exactly this shape; every other Feature's own OCCT geometry always
+     has real edges). No new client toggle needed - the existing render-
+     mode picker (View menu) already provides "hide/show the mesh
+     [wireframe]" once edges are populated.
+  4. **glTF import didn't work for real-world `.gltf` files.** `decode_glb`
+     only understood the binary `.glb` container; the far more common
+     form most authoring tools default to is plain-JSON `.gltf` with
+     buffers referenced by URI. Renamed to `decode_gltf` and widened to
+     also accept the JSON form - buffers with an embedded `data:` URI (the
+     "self-contained export" option most tools also offer) are decoded
+     inline; a buffer referencing an external `.bin` file is rejected with
+     a clear, actionable error rather than silently producing an
+     incomplete mesh (a single picked file has no access to a sibling file
+     on disk).
+  5. **Save As/New wired up.** Both were disabled File-menu placeholders.
+     `New` confirms, then pushes a fresh blank `PartScreen` (no
+     `initialPartId`/`initialHiddenFeatureIds`/`initialFileName`) - the
+     same "always start fresh" pattern this app already uses at first
+     launch. `Save`/`Save As` share one `_exportAndSaveNativeFile` helper;
+     Android's Storage Access Framework has no true silent-overwrite
+     without deeper persisted-URI-permission integration (out of scope
+     here, flagged rather than faked), so both still go through the same
+     platform save dialog - the real, honest distinction is which filename
+     each suggests: Save reuses `_lastSavedFileName` (whatever this session
+     last Opened-from or Saved-to, threaded through a fresh screen via a
+     new `PartScreen.initialFileName` the same way `initialPartId` already
+     is), Save As always resets to a fresh generic name.
+
+  17 new genuinely-executable pure-Python tests across items 2-4 (2
+  cascade-preview HTTP tests, CI-only; 3 wireframe-synthesis tests, no
+  OCCT; 2 new glTF-JSON tests, no OCCT) plus one existing CI-only import
+  test extended to also assert the synthesized wireframe is present. Items
+  1 and 5 are client-only Dart, unverifiable in this sandbox (no Flutter
+  SDK) - manually reviewed plus brace-balance checks only.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not
@@ -603,3 +1189,137 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   newly *visible* (not newly introduced) once a missing import let that
   test file load for the first time in a sandbox. Still open as of the
   last time it was checked.
+- **"View Complex Mesh" - a fully on-device, backend-free viewer for
+  photogrammetry-scale meshes.** Root cause of the trigger: real on-device
+  testing hit a client-side `TimeoutException after 0:00:15` importing a
+  large mesh through the normal `ImportFeature` pipeline. Rather than just
+  raising the timeout, the actual fix is architectural: a mesh this large
+  (millions of triangles, hundreds of MB) has no business surviving a
+  base64-JSON HTTP round-trip or an OCCT `Poly_Triangulation` Python-loop
+  construction at all when all the user wants is to *look* at it, not add
+  it to the Feature/Body graph. `client/lib/mesh_viewer/` is a second,
+  parallel path that never talks to the server:
+  - `mesh_data.dart` (OCCT-free, GPU-free, pure Dart): `decodeStl`/
+    `decodeObj`/`decodeGltf` re-implement the same STL/OBJ/glTF formats
+    `backend/app/document/mesh_import.py` already decodes server-side, but
+    entirely client-side, and `decimateToTriangleBudget` (stride/skip -
+    drops whole triangles rather than clustering vertices, so it never
+    merges vertices with different UVs and so never distorts/seams a
+    texture) caps the viewed mesh at `kMaxViewerTriangles`. Every decoder
+    de-indexes straight into a flat "triangle soup" - one convention
+    shared with `backend/app/document/mesh.py`'s own `MeshDto` - which
+    makes both decimation and GPU batching (below) trivial.
+  - `mesh_viewer_render.dart` (GPU-touching): `flutter_scene` 0.18.1 only
+    takes 16-bit vertex indices (see `mesh_geometry.dart`'s own
+    `MeshBuffers` doc comment) - far below a photogrammetry mesh's vertex
+    count - so `buildMeshViewerNodes` splits the decimated mesh into
+    multiple `MeshPrimitive`s, each an independent ≤65535-vertex range
+    (a few hundred draw calls is cheap on the Adreno-740-class hardware
+    this was tuned for; vertex/fragment throughput, not draw-call count,
+    is the real ceiling at this triangle scale). A base-color texture (if
+    the file has one) is downsampled *during* decode via
+    `ui.ImageDescriptor.instantiateCodec(targetWidth/targetHeight)` -
+    never fully materializing a 4K-16K source atlas - then uploaded to a
+    `flutter_gpu` `Texture` and bound to a shared `UnlitMaterial`.
+  - `mesh_viewer_screen.dart`: a standalone screen with its own minimal
+    `OrbitCamera` viewport (not `PartViewport` - that widget is built
+    entirely around `MeshDto`/the Feature/Body selection model, neither of
+    which apply here), reachable straight from `ConnectionScreen`'s cold-
+    launch screen via a new "View a mesh file (no server needed)" button -
+    deliberately *not* gated behind a successful Connect, since this path
+    never needs one. Decode runs via `compute()` on a background isolate
+    so a large file never blocks the UI thread; only the already-
+    decimated (bounded-size) result crosses back over the isolate
+    boundary, not the full raw mesh.
+
+  Scope cuts, documented rather than silently assumed away: GLB was built
+  and tested first (self-contained - geometry, UVs, and an embedded
+  texture image can all live in one file), then binary/ASCII STL
+  (geometry only - STL has no standard UV/texture concept); OBJ decodes
+  geometry (+ UV passthrough) but does not yet resolve a `.mtl`'s
+  `map_Kd` texture image, since that's normally a *separate* file next to
+  the `.obj`, and a single file picked through a mobile SAF-style picker
+  has no reliable path back to a sibling file - the same constraint
+  `decode_gltf` already documents for a JSON `.gltf`'s external buffer
+  references. A GLB/glTF's node transforms/scene graph are not walked -
+  every mesh primitive is concatenated as if untransformed at the origin,
+  true for the common single-mesh photogrammetry export this targets.
+  Only the first material's texture is used, applied to the whole
+  concatenated mesh. `kMaxViewerTriangles` (3,000,000) and
+  `kMaxTextureDimension` (4096px) in `mesh_viewer_render.dart` are starting
+  points tuned for the originally-specified target device (a Snapdragon 8
+  Gen 2 / Adreno 740 flagship), not benchmarked results - this sandbox has
+  no on-device Flutter test capability, so these need real-device tuning,
+  not just a one-time guess.
+
+  **Fixed after a real first on-device build** (this sandbox has no
+  Flutter SDK, so this was always going to need a real compile to catch):
+  `Texture.overwrite` takes the `ByteData` from `toByteData` directly, not
+  a `Uint8List` view of it, and returns `void`, not a success flag; and
+  `UnlitMaterial`'s real texture slot (confirmed against the actual
+  installed `flutter_scene` 0.18.1 source) is `baseColorTexture`, not the
+  originally-guessed `colorTexture`. A second real-device crash surfaced a
+  genuine ordering bug, not a wrong-guess one: `UnlitMaterial`'s
+  constructor touches the base shader library immediately, which throws
+  until `Scene.initializeStaticResources()` has completed at least once -
+  but `buildMeshViewerMaterial` ran from `MeshViewerScreen` as soon as a
+  file was picked, before `_MeshViewerViewport` (whose `initState` is what
+  actually calls `initializeStaticResources`) had ever been mounted. Fixed
+  with `ensureSceneResourcesLoaded()` - a single memoized `Future` both
+  `MeshViewerScreen` (before building the material) and
+  `_MeshViewerViewport` (before building the Scene) now await, so the real
+  call happens exactly once regardless of which one gets there first.
+
+  New pure-Dart tests in `client/test/mesh_data_test.dart` (STL binary/
+  ASCII, OBJ incl. quad fan-triangulation and unknown-vertex rejection,
+  GLB binary container, JSON `.gltf` incl. external-buffer rejection,
+  decimation) - all logic-only, no GPU/Flutter SDK needed to reason about
+  correctness, but not actually run in this sandbox either (no Flutter
+  SDK installed here at all - same caveat as every other Dart change this
+  session).
+
+## OPEN — Real lighting/shading across the whole app (next active work)
+
+**Trigger**: user loaded a real STL in "View Complex Mesh" and reported it's
+"impossible to make out features as it's single colour, no shading,
+textures or lighting." Root cause: every rendered Body in this app
+(`PartViewport` and the new mesh viewer alike) uses `flutter_scene`'s
+`UnlitMaterial`, which - per its own doc comment - "draws geometry with a
+flat color or texture, ignoring scene lighting" entirely. This isn't a bug
+introduced by the mesh viewer; it's a standing limitation already flagged
+in `mesh_geometry.dart`'s own `TODO` on `buildMeshEdgesNode`'s neighboring
+code ("`UnlitMaterial` has no roughness/metallic... revisit if/when a PBR
+material type ships"). Confirmed via a fresh web search that a PBR
+material type has, in fact, already shipped in `flutter_scene`: the
+installed 0.18.1 already includes `PhysicallyBasedMaterial` plus
+environment-map/image-based-lighting support (referenced directly inside
+the real `unlit_material.dart` source pulled from this project's own
+`flutter_scene` install this session). This is being scoped as a
+whole-app upgrade, not a mesh-viewer-only patch, since `PartViewport` has
+the identical limitation and would benefit from the same fix.
+
+**Important constraint surfaced by research, not yet reconciled with this
+project's setup**: per `flutter_scene`'s own package description, its
+newest features (current prefiltered-radiance IBL improvements, certain
+web-backend fixes) require the Flutter **master** channel, not stable -
+"Flutter Scene requires the Flutter master channel, rather than the
+stable channel" for some recent capability. This project's current
+Flutter channel/toolchain has not yet been checked against that
+requirement - needs confirming before committing to "pull in the latest
+flutter_scene build," since master-channel Flutter is a materially bigger
+commitment (pre-release, less stable) than staying on 0.18.1/stable.
+
+**Plan**: work happens on a new branch off `main` (this branch,
+`claude/docs-folder-context-yzj5r7`, is being merged to `main` first, via
+PR, closing out the whole Save/Load/Export/Import + View Complex Mesh
+phase). Scope still being defined - candidates identified so far: adopt
+`PhysicallyBasedMaterial` (in `mesh_geometry.dart` for the main viewport
+and/or `mesh_viewer_render.dart` for the mesh viewer) plus at least one
+real Light node in the Scene; evaluate whether upgrading `flutter_scene`
+past 0.18.1 is warranted/possible without a Flutter channel change; decide
+whether `PartViewport` and the mesh viewer should share one lighting setup
+or diverge (a CAD Part's own colored-plastic look vs. a photogrammetry
+scan's captured-texture look may want different treatment). Not yet
+started - this entry exists to make the roadmap accurately reflect the
+next piece of active work, per this user's explicit request to check
+docs are current before merging to `main`.

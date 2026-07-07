@@ -146,6 +146,16 @@ class ExtrudeFeature(Feature):
     end_distance: float
     target_body_ids: list[str] = field(default_factory=list)
 
+    # Prompt G: which outer profile(s) of the backing Sketch to extrude -
+    # each entry anchors one desired profile via any Line/Circle entity
+    # known to belong to it (see app.document.extrude.select_profiles).
+    # Empty (the default) means "every outer profile currently detected",
+    # exactly the pre-Prompt-G behaviour (a MultiProfile Sketch extrudes
+    # all of its disjoint outer loops) - this field only ever narrows that
+    # set, never widens it beyond what app.sketch.profile.detect_profile
+    # itself reports as usable.
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
     @property
     def type(self) -> str:
         return "extrude"
@@ -447,6 +457,224 @@ class ChamferFeature(Feature):
     @property
     def type(self) -> str:
         return "chamfer"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class RevolveMode(str, Enum):
+    """Boss/Cut parity with `ExtrudeType` (Prompt F) - a `RevolveFeature`
+    combines its revolved solid with `target_body_ids` exactly the same way
+    an `ExtrudeFeature` does (see that type's own docstring), just built by
+    revolving a Profile around an axis instead of prismatically extruding
+    it. A separate enum (not a reuse of `ExtrudeType`) since a Revolve's
+    "mode" is conceptually its own field, even though the two enums share
+    identical values - matches this codebase's established "each Feature
+    type owns its own enum" convention (`ExtrudeType`/`SubShapeType`/
+    `PlaneType` are none of them reused across Feature types either)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class RevolveFeature(Feature):
+    """Prompt F: revolves the closed Profile of the SketchFeature referenced
+    by `sketch_feature_id` around `axis_ref` (a Sketch Line reference - see
+    `app.sketch.models.SketchEntityRef`, restricted to `SketchEntityType.LINE`
+    here; a Point/Circle `axis_ref` is invalid and rejected as
+    `invalid_axis_ref`, see `app.document.revolve`) by `angle` degrees, an
+    arbitrary value in `(0, 360]` (360 itself is valid - a full revolve),
+    then combines the resulting solid with `target_body_ids` exactly like
+    `ExtrudeFeature` does: Boss fuses into each named Body (or starts a new
+    one if empty), Cut subtracts from each named Body (non-empty required -
+    see `app.document.router._validate_target_body_ids`, generalized to
+    accept a Body originating from either an ExtrudeFeature or a
+    RevolveFeature).
+
+    `axis_ref`'s Sketch is *not* required to be the same Sketch as the
+    Profile being revolved (confirmed explicitly, not the prompt's own
+    "same-Sketch" default recommendation) - the axis Line can live in any
+    Sketch in the Part, resolved independently via its own owning
+    SketchFeature's basis (`app.document.create_plane.resolve_sketch_basis`)
+    the same way the Profile's own Sketch is. The axis Line is also allowed
+    to be one of the Profile's own entities (confirmed explicitly) - no
+    special-case rejection for a self-referencing axis.
+
+    The actual OCCT geometry construction (`BRepPrimAPI_MakeRevol`) lives in
+    `app.document.revolve`, not here - same separation `ExtrudeFeature`
+    keeps from `app.document.extrude`."""
+
+    id: str
+    sketch_feature_id: str
+    axis_ref: SketchEntityRef
+    angle: float
+    mode: RevolveMode
+    target_body_ids: list[str] = field(default_factory=list)
+
+    # Prompt G: mirrors ExtrudeFeature.profile_refs exactly - which outer
+    # profile(s) of the backing Sketch to revolve, empty meaning every one
+    # currently detected.
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "revolve"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class SweepMode(str, Enum):
+    """Boss/Cut parity with `ExtrudeType`/`RevolveMode` (the Sweep module) -
+    a `SweepFeature` combines its swept solid with `target_body_ids` exactly
+    the same way an `ExtrudeFeature`/`RevolveFeature` does. Its own separate
+    enum, matching this codebase's established "each Feature type owns its
+    own enum" convention."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class SweepFeature(Feature):
+    """Sweeps the closed Profile of the SketchFeature referenced by
+    `sketch_feature_id` along `path_refs` - an *ordered* list of Sketch Line
+    references (see `app.sketch.models.SketchEntityRef`, each restricted to
+    `SketchEntityType.LINE`; a Point/Circle entry is invalid and rejected as
+    `invalid_path_ref`, see `app.document.sweep`) forming one connected
+    chain, then combines the resulting solid with `target_body_ids` exactly
+    like `ExtrudeFeature`/`RevolveFeature` do: Boss fuses into each named
+    Body (or starts a new one if empty), Cut subtracts from each named Body
+    (non-empty required - see `app.document.router._validate_target_body_
+    ids`, generalized to accept a Body originating from any of Extrude/
+    Revolve/Sweep).
+
+    `path_refs` entries are explicit, user-ordered picks (confirmed
+    explicitly, not "the whole open chain of one Sketch") and may each name
+    a Line in a *different* Sketch (confirmed explicitly, not restricted to
+    one Sketch) - resolved independently via each entry's own owning
+    SketchFeature's basis (`app.document.create_plane.resolve_sketch_basis`),
+    then chained by matching 3D world-space endpoint position (not a shared
+    Point id, which cross-Sketch entries never have) within a small
+    tolerance - see `app.document.sweep._resolve_path_wire`. Consecutive
+    entries in list order must share a coincident endpoint (`disconnected_
+    path` otherwise); the first and last entries' endpoints may also
+    coincide, producing a closed (looping) path - both open and closed paths
+    are valid, confirmed explicitly, distinguished structurally rather than
+    by a separate flag.
+
+    The actual OCCT geometry construction (`BRepOffsetAPI_MakePipe`) lives
+    in `app.document.sweep`, not here - same separation `ExtrudeFeature`/
+    `RevolveFeature` keep from their own modules."""
+
+    id: str
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRef]
+    mode: SweepMode
+    target_body_ids: list[str] = field(default_factory=list)
+
+    # Mirrors ExtrudeFeature.profile_refs/RevolveFeature.profile_refs
+    # exactly - which outer profile(s) of the backing Sketch to sweep,
+    # empty meaning every one currently detected.
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "sweep"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class ImportSourceFormat(str, Enum):
+    """Which interchange format an `ImportFeature`'s own `source_data` bytes
+    are - mirrors `ExtrudeType`/`SweepMode`'s str-Enum pattern. `STEP` reads
+    real B-rep geometry (`STEPControl_Reader`); `STL`/`OBJ`/`GLTF` are all
+    triangle-soup mesh formats, decoded by `app.document.mesh_import` into
+    the same `MeshData` shape `app.document.mesh_export`'s encoders produce
+    on the way out, then rebuilt into a single surface-less, triangulation-
+    only `TopoDS_Face` (the same convention OCCT's own STL import uses) -
+    see `app.document.import_geometry` for both paths."""
+
+    STEP = "step"
+    STL = "stl"
+    OBJ = "obj"
+    GLTF = "gltf"
+
+
+@dataclass
+class ImportFeature(Feature):
+    """Brings an external file's geometry into the Part as a fixed,
+    non-parametric Body (locked-in scope, AskUserQuestion round: "import as
+    a dumb body, future features will be able to edit existing bodies
+    (scale, move face, delete face, move body)" - this Feature itself has
+    no editable parameters of its own beyond which file it wraps).
+
+    `source_data` is the actual uploaded file's raw bytes - the true source
+    of truth (there is no simpler parametric representation to derive from,
+    unlike every other Feature type here), re-parsed via `app.document.
+    import_geometry.resolve_import` on every recompute, matching this
+    codebase's "re-derive, don't cache" philosophy. Persisted as-is (base64
+    inside JSON) by both the native file format and this Feature's own
+    create payload.
+
+    Unlike Extrude/Revolve/Sweep, there is no Boss/Cut `mode` and no
+    `target_body_ids` here - importing a file always starts a brand-new
+    Body (mirroring a fresh Boss with an empty `target_body_ids`), never
+    fuses/cuts into an existing one on its own. The imported Body can still
+    be *targeted* by a later Extrude/Revolve/Sweep's own `target_body_ids`
+    exactly like any other Body (see `app.document.router._validate_target_
+    body_ids`, widened to accept `ImportFeature`-originated ids too) - e.g.
+    "Cut my extruded solid using the imported STEP body" is a normal,
+    supported combination, just expressed via the *other* Feature's own
+    Cut, not this one.
+
+    A STEP import is a real B-rep solid (whatever `STEPControl_Reader`
+    transferred), usable everywhere a Body already is (Boss/Cut target,
+    Fillet/Chamfer edge source, Create Plane face reference) exactly like
+    an Extrude/Revolve/Sweep result - no compromise there. A mesh import
+    (STL/OBJ/glTF) is a surface-less, triangulation-only shape instead (the
+    same shape OCCT itself builds for a bare STL file) - sufficient for the
+    requested "view, measure, model around" use case (it renders, and its
+    own vertices/edges are real topology other Features can already
+    reference the same way any Body's are), but not guaranteed to survive a
+    Boolean operation the way a genuine B-rep solid does; no attempt is made
+    here to sew/heal it into a watertight solid - that remains a real,
+    separate limitation flagged for whoever needs true CSG on an ingested
+    mesh next.
+
+    Always registers as exactly one Body, keyed by this Feature's own id -
+    unlike Extrude/Revolve/Sweep's Boss path, `compute_part_bodies` never
+    splits an ImportFeature's result by its `TopAbs_SOLID` count (see
+    `app.document.extrude`'s own ImportFeature branch): the multi-solid
+    split exists for a multi-profile Sketch boss, a scenario that doesn't
+    apply here, and a mesh import's own shape has no `TopoDS_Solid` at all
+    to split by in the first place - splitting is skipped unconditionally
+    for both source kinds instead of only when it would find nothing."""
+
+    id: str
+    source_format: ImportSourceFormat
+    source_data: bytes
+
+    @property
+    def type(self) -> str:
+        return "import"
 
     @property
     def produces_solid_geometry(self) -> bool:

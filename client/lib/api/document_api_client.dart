@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -220,6 +221,38 @@ class FeatureDto {
   /// that actually differ between Fillet's and Chamfer's wire shape.
   final double? distance;
 
+  /// Prompt F: only present on a `"revolve"` Feature - the Sketch Line
+  /// reference the Profile is revolved around. Not required to belong to
+  /// the same Sketch as [sketchFeatureId] (confirmed decision - see the
+  /// backend's `RevolveFeature` docstring).
+  final SketchEntityRefDto? axisRef;
+
+  /// Prompt F: only present on a `"revolve"` Feature - the sweep angle in
+  /// degrees, `(0, 360]`.
+  final double? angle;
+
+  /// Prompt F: only present on a `"revolve"` Feature - `"boss"`/`"cut"`,
+  /// the same string convention [extrudeType] already uses (Boss/Cut parity
+  /// with Extrude is this Feature's own resolved design decision).
+  final String? mode;
+
+  /// Prompt G: present on `"extrude"`/`"revolve"`/`"sweep"` Features - which
+  /// outer profile(s) of the backing Sketch to use, each anchored by a
+  /// Line/Circle entity known to belong to it. Empty (the default) means
+  /// every outer profile currently detected, matching the backend's own
+  /// `ExtrudeFeature.profile_refs`/`RevolveFeature.profile_refs`/
+  /// `SweepFeature.profile_refs` default.
+  final List<SketchEntityRefDto> profileRefs;
+
+  /// Only present on a `"sweep"` Feature - the *ordered* list of Sketch Line
+  /// references the Profile is swept along, each possibly naming a
+  /// different Sketch (confirmed decision - see the backend's
+  /// `SweepFeature` docstring). Order matters (it is the path's own
+  /// traversal order); unlike [axisRef] this is a list, since a Sweep's
+  /// path can bend across multiple segments rather than being a single
+  /// straight reference.
+  final List<SketchEntityRefDto> pathRefs;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -247,6 +280,11 @@ class FeatureDto {
     this.edgeRefs = const [],
     this.radius,
     this.distance,
+    this.axisRef,
+    this.angle,
+    this.mode,
+    this.profileRefs = const [],
+    this.pathRefs = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -293,6 +331,19 @@ class FeatureDto {
             const [],
         radius: (json['radius'] as num?)?.toDouble(),
         distance: (json['distance'] as num?)?.toDouble(),
+        axisRef: json['axis_ref'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>),
+        angle: (json['angle'] as num?)?.toDouble(),
+        mode: json['mode'] as String?,
+        profileRefs: (json['profile_refs'] as List?)
+                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        pathRefs: (json['path_refs'] as List?)
+                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
       );
 }
 
@@ -417,6 +468,24 @@ class CascadeDeleteResultDto {
       );
 }
 
+/// What `POST /document/import/native` hands back once the full-replace
+/// native-file import succeeds - the freshly-imported Document's id and
+/// every Part id now in it. This app has no "pick an existing Part" UI (see
+/// `PartScreen`'s own doc comment - a single Part is always created on
+/// startup), so a native Open just points the current screen at
+/// [partIds].first.
+class NativeImportResultDto {
+  final String documentId;
+  final List<String> partIds;
+
+  NativeImportResultDto({required this.documentId, required this.partIds});
+
+  factory NativeImportResultDto.fromJson(Map<String, dynamic> json) => NativeImportResultDto(
+        documentId: json['document_id'] as String,
+        partIds: (json['part_ids'] as List).cast<String>(),
+      );
+}
+
 /// Thin wrapper over the backend's `/document` REST API - same shape and
 /// conventions as [SketchApiClient], kept as a separate client rather than
 /// merged into it because it talks to a different backend router
@@ -448,6 +517,23 @@ class DocumentApiClient {
     }
     final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
     return onSuccess(decoded);
+  }
+
+  /// Same request/error handling as [_send], but for an endpoint whose
+  /// success body is raw binary (STEP/STL/glb) rather than JSON -
+  /// [http.Response.bodyBytes] instead of [_send]'s `jsonDecode(response.
+  /// body)`, which would corrupt or throw on arbitrary binary content.
+  Future<Uint8List> _sendBytes(Future<http.Response> Function() request) async {
+    http.Response response;
+    try {
+      response = await request().timeout(ApiConfig.requestTimeout);
+    } on Exception catch (e) {
+      throw ApiException('Could not reach the server: $e');
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}');
+    }
+    return response.bodyBytes;
   }
 
   String _detailOf(http.Response response) {
@@ -508,6 +594,11 @@ class DocumentApiClient {
   /// Prompt A4: [targetBodyIds] names which existing Body/Bodies (by id)
   /// this Extrude combines with - see A1's `ExtrudeFeatureCreate.target_body_ids`
   /// docstring (Boss: empty starts a brand-new Body; Cut: must be non-empty).
+  ///
+  /// Prompt G: [profileRefs] names which outer profile(s) of the Sketch to
+  /// use - empty (the default) means every outer profile currently
+  /// detected, matching the backend's own `ExtrudeFeatureCreate.
+  /// profile_refs` default.
   Future<FeatureDto> createExtrudeFeature(
     String partId, {
     required String sketchFeatureId,
@@ -515,6 +606,7 @@ class DocumentApiClient {
     required double startDistance,
     required double endDistance,
     List<String> targetBodyIds = const [],
+    List<SketchEntityRefDto> profileRefs = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -526,18 +618,20 @@ class DocumentApiClient {
                 'start_distance': startDistance,
                 'end_distance': endDistance,
                 'target_body_ids': targetBodyIds,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing ExtrudeFeature - any subset of
-  /// [extrudeType]/[startDistance]/[endDistance]/[targetBodyIds] may be
-  /// supplied, mirroring the backend's `ExtrudeFeatureUpdate` (omitted
-  /// fields keep their current value - [targetBodyIds] null omits it,
-  /// matching the others, so a live-preview re-solve that never touched
-  /// target-body picking doesn't accidentally clear it). Used for the
-  /// live-preview debounced re-solve.
+  /// [extrudeType]/[startDistance]/[endDistance]/[targetBodyIds]/
+  /// [profileRefs] may be supplied, mirroring the backend's
+  /// `ExtrudeFeatureUpdate` (omitted fields keep their current value -
+  /// [targetBodyIds]/[profileRefs] null omits it, matching the others, so a
+  /// live-preview re-solve that never touched target-body/profile picking
+  /// doesn't accidentally clear it). Used for the live-preview debounced
+  /// re-solve.
   Future<FeatureDto> updateExtrudeFeature(
     String partId,
     String featureId, {
@@ -545,6 +639,7 @@ class DocumentApiClient {
     double? startDistance,
     double? endDistance,
     List<String>? targetBodyIds,
+    List<SketchEntityRefDto>? profileRefs,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -555,6 +650,8 @@ class DocumentApiClient {
                 if (startDistance != null) 'start_distance': startDistance,
                 if (endDistance != null) 'end_distance': endDistance,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -641,6 +738,121 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 if (distance != null) 'distance': distance,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Prompt F: creates a RevolveFeature from an existing SketchFeature's
+  /// closed Profile, revolved around [axisRef] (a Sketch Line, not required
+  /// to belong to the same Sketch as [sketchFeatureId]) by [angle] degrees -
+  /// mirrors [createExtrudeFeature] exactly, including [targetBodyIds]'
+  /// Boss/Cut semantics (Boss: empty starts a brand-new Body; Cut: must be
+  /// non-empty).
+  Future<FeatureDto> createRevolveFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required SketchEntityRefDto axisRef,
+    required double angle,
+    required String mode,
+    List<String> targetBodyIds = const [],
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/revolve-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'axis_ref': axisRef.toJson(),
+                'angle': angle,
+                'mode': mode,
+                'target_body_ids': targetBodyIds,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing RevolveFeature - any subset of
+  /// [axisRef]/[angle]/[mode]/[targetBodyIds]/[profileRefs] may be supplied,
+  /// mirroring [updateExtrudeFeature]'s omitted-vs-current-value convention.
+  /// Used for the live-preview debounced re-solve.
+  Future<FeatureDto> updateRevolveFeature(
+    String partId,
+    String featureId, {
+    SketchEntityRefDto? axisRef,
+    double? angle,
+    String? mode,
+    List<String>? targetBodyIds,
+    List<SketchEntityRefDto>? profileRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/revolve-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (axisRef != null) 'axis_ref': axisRef.toJson(),
+                if (angle != null) 'angle': angle,
+                if (mode != null) 'mode': mode,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a SweepFeature from an existing SketchFeature's closed Profile,
+  /// swept along [pathRefs] (an *ordered* list of Sketch Line references,
+  /// each possibly naming a different Sketch - confirmed decision, see the
+  /// backend's `SweepFeature` docstring) - mirrors [createRevolveFeature]
+  /// exactly, substituting [pathRefs] for [axisRef]/`angle`.
+  Future<FeatureDto> createSweepFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required List<SketchEntityRefDto> pathRefs,
+    required String mode,
+    List<String> targetBodyIds = const [],
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/sweep-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                'mode': mode,
+                'target_body_ids': targetBodyIds,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing SweepFeature - any subset of
+  /// [pathRefs]/[mode]/[targetBodyIds]/[profileRefs] may be supplied,
+  /// mirroring [updateRevolveFeature]'s omitted-vs-current-value
+  /// convention. Used for the live-preview debounced re-solve.
+  Future<FeatureDto> updateSweepFeature(
+    String partId,
+    String featureId, {
+    List<SketchEntityRefDto>? pathRefs,
+    String? mode,
+    List<String>? targetBodyIds,
+    List<SketchEntityRefDto>? profileRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/sweep-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (pathRefs != null) 'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                if (mode != null) 'mode': mode,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -733,6 +945,19 @@ class DocumentApiClient {
         (body) => CascadeDeleteResultDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// On-device feedback: read-only preview of exactly which Feature ids
+  /// [cascadeDeleteFeature] would remove - the real dependency-graph
+  /// cascade, not "everything after this one in the list" (a stale
+  /// assumption [PartScreen._cascadeDeleteFeature] used to bake into its
+  /// own confirmation dialog before this existed). Mutates nothing.
+  Future<List<String>> previewCascadeDelete(String partId, String featureId) => _send(
+        () => _httpClient.get(
+              _uri('/document/parts/$partId/features/$featureId/cascade-preview'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['feature_ids'] as List).cast<String>(),
+      );
+
   /// Bug fix (post-C4): [hiddenFeatureIds] and [rollbackExcludedFeatureIds]
   /// are two deliberately separate sets, both re-sent on every fetch, both
   /// purely client-side and never persisted on the backend - see
@@ -780,6 +1005,65 @@ class DocumentApiClient {
             ),
         (body) =>
             (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
+      );
+
+  /// Native Save: the whole in-memory Document (every Part's ordered
+  /// Feature list) plus every Sketch referenced by any SketchFeature in it,
+  /// as a plain JSON object - no cached mesh/geometry (see the backend's
+  /// `app.document.native_format.export_native` docstring for the full
+  /// "pure parametric tree" rationale). The caller is responsible for
+  /// writing this to an actual file - client-owned files, this app has no
+  /// project storage of its own.
+  Future<Map<String, dynamic>> exportNative() => _send(
+        () => _httpClient.get(_uri('/document/export/native'), headers: _headers),
+        (body) => body as Map<String, dynamic>,
+      );
+
+  /// Native Load: the inverse of [exportNative] - a full replace, not a
+  /// merge (client-owned files, locked-in scope): whatever Document/Sketches
+  /// were open on the backend before this call are discarded entirely in
+  /// favor of exactly what [nativeFileContents] describes. Throws
+  /// [ApiException] (422) for anything malformed - an unsupported
+  /// schema_version, an unknown Feature/entity/constraint type, a missing
+  /// required field.
+  Future<NativeImportResultDto> importNative(Map<String, dynamic> nativeFileContents) => _send(
+        () => _httpClient.post(
+              _uri('/document/import/native'),
+              headers: _headers,
+              body: jsonEncode(nativeFileContents),
+            ),
+        (body) => NativeImportResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Export: raw file bytes for `format` (`'step'`/`'stl'`/`'obj'`/`'glb'`)
+  /// - the backend 400s if `partId` has no solid geometry yet (surfaced as
+  /// an [ApiException] here, same as any other error response).
+  Future<Uint8List> exportPart(String partId, String format) => _sendBytes(
+        () => _httpClient.get(_uri('/document/parts/$partId/export/$format'), headers: _headers),
+      );
+
+  /// Import: brings [bytes] in as a fixed, non-parametric Body (locked-in
+  /// scope - see the backend's `app.document.models.ImportFeature` own
+  /// docstring). [sourceFormat] is `'step'`/`'stl'`/`'obj'`/`'gltf'`, base64-
+  /// encoded into the JSON body rather than a multipart upload (no other
+  /// endpoint here uses multipart - this mirrors the native file format's
+  /// own "binary data as a plain JSON string" convention instead). The
+  /// backend 422s (`invalid_import_data`/`import_failed`, surfaced as an
+  /// [ApiException] here) for a file it can't turn into usable geometry.
+  Future<FeatureDto> createImportFeature(String partId, {
+    required String sourceFormat,
+    required Uint8List bytes,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/import-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_format': sourceFormat,
+                'data_base64': base64Encode(bytes),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   void close() => _httpClient.close();

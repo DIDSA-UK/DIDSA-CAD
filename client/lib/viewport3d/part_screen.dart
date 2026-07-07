@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../api/sketch_api_client.dart' show ApiException, LineDto, SketchApiClient;
+import '../api/sketch_api_client.dart'
+    show ApiException, LineDto, ProfileDetectionDto, ProfileLoopDto, SketchApiClient;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
@@ -28,13 +32,20 @@ import 'part_viewport.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
+import 'revolve_panel.dart';
 import 'rollback.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
+import 'sweep_panel.dart';
 import 'view_preferences.dart';
+
+/// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
+/// own "Prompt G: profile picking" state section) is gathering picks for -
+/// decides whether confirming opens [ExtrudePanel] or [RevolvePanel].
+enum _ProfilePickerTarget { extrude, revolve, sweep }
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -52,7 +63,44 @@ class PartScreen extends StatefulWidget {
   /// calls in a test either.
   final SketchApiClient Function()? sketchApiFactory;
 
-  const PartScreen({super.key, this.documentApi, this.sketchApiFactory});
+  /// Native Load: when set, [_loadPart] opens this existing Part (via
+  /// [DocumentApiClient.getPart]) instead of the default "always start
+  /// fresh" `createPart` call - set by [_PartScreenState._openNativeFile]
+  /// when it pushes a brand-new [PartScreen] onto whichever Part a native
+  /// file import just replaced the backend's Document with. A fresh
+  /// [PartScreen]/State pair (rather than mutating the current one in
+  /// place) is deliberate: it's the simplest way to guarantee every one of
+  /// this screen's many transient fields (selection, hidden/rollback sets,
+  /// in-progress picker/panel state) starts clean against Feature/Body ids
+  /// that belong to the newly-opened Part, not the one that was open a
+  /// moment ago.
+  final String? initialPartId;
+
+  /// Native Load: the Hide/Show feature-id set a native file's own
+  /// `hidden_feature_ids` entry carried (see [_PartScreenState._saveNativeFile]/
+  /// [_PartScreenState._openNativeFile]) - restored into the fresh screen's
+  /// [_PartScreenState._hiddenFeatureIds] at [_PartScreenState.initState],
+  /// same reasoning as [initialPartId] for why this is a constructor param
+  /// on a brand-new screen rather than mutated in place. Empty by default,
+  /// matching a Part that opened with nothing hidden.
+  final List<String> initialHiddenFeatureIds;
+
+  /// Native Load/Save: the filename Open just read this Part from (see
+  /// [_PartScreenState._openNativeFile]), or null for a brand-new (never
+  /// Opened) Part - remembered as [_PartScreenState._lastSavedFileName]'s
+  /// own starting point, so a subsequent plain Save on the fresh screen
+  /// re-suggests the same file instead of falling back to a generic
+  /// "&lt;Part name&gt;.DIDSAprt" default.
+  final String? initialFileName;
+
+  const PartScreen({
+    super.key,
+    this.documentApi,
+    this.sketchApiFactory,
+    this.initialPartId,
+    this.initialHiddenFeatureIds = const [],
+    this.initialFileName,
+  });
 
   @override
   State<PartScreen> createState() => _PartScreenState();
@@ -93,13 +141,39 @@ class _PartScreenState extends State<PartScreen> {
   List<String> get _computedBodyIds =>
       _bodies.where((b) => b.source == 'computed').map((b) => b.bodyId).toList();
 
+  /// Memoization for [_visibleBodies] - `identical(_visibleBodiesCacheSource,
+  /// _bodies)` tells us the last computed [_visibleBodiesCache] is still
+  /// valid, so unrelated rebuilds (toggling selection mode, picking an
+  /// entity, anything that calls `setState` without touching [_bodies]
+  /// itself) don't hand `PartViewport` a freshly-allocated `List` each time.
+  List<BodyMeshDto>? _visibleBodiesCache;
+  List<BodyMeshDto>? _visibleBodiesCacheSource;
+
   /// [_bodies] filtered down to what should actually render/hit-test in the
   /// 3D viewport - everything that isn't [BodyMeshDto.hidden]. Use this
   /// (never [_bodies] directly) for [PartViewport.bodies] and anything else
   /// that projects/derives from real Body geometry (e.g. the ghost-edge
   /// reference in [_openSketch]) - [_computedBodyIds]/[_bodyNames] are the
   /// deliberate exception, since the Build Tree wants the unfiltered list.
-  List<BodyMeshDto> get _visibleBodies => _bodies.where((b) => !b.hidden).toList();
+  ///
+  /// On-device feedback: this used to be a plain `.where(...).toList()`
+  /// getter, building a brand-new `List` instance on *every* access - since
+  /// [PartViewport.bodies]'s own doc comment requires a new instance only
+  /// when the content actually changes (so [PartViewport.didUpdateWidget]
+  /// can tell "unrelated rebuild" from "the mesh changed"), that meant every
+  /// unrelated `setState` in this widget (selection-mode toggle, picking an
+  /// entity, etc.) looked like a body change to `PartViewport`, which
+  /// re-ran `_syncMeshNode` and snapped the camera's target back to the
+  /// mesh bounds' centre - discarding any pan the user had done. Caching
+  /// against [_bodies]' own identity (only reassigned where [_bodies] itself
+  /// is, i.e. on a genuine mesh refetch) restores the contract.
+  List<BodyMeshDto> get _visibleBodies {
+    if (!identical(_visibleBodiesCacheSource, _bodies)) {
+      _visibleBodiesCacheSource = _bodies;
+      _visibleBodiesCache = _bodies.where((b) => !b.hidden).toList();
+    }
+    return _visibleBodiesCache!;
+  }
 
   /// Stable "Body 1"/"Body 2"... names shared between the Build Tree's
   /// Bodies section and [SelectionListDrawer] - see `body_naming.dart`.
@@ -227,6 +301,7 @@ class _PartScreenState extends State<PartScreen> {
               body: true,
               sketchPoint: false,
               sketchLine: false,
+              sketchCircle: false,
             )
           : _selectionFilterBase.copyWith(
               vertex: true,
@@ -235,6 +310,7 @@ class _PartScreenState extends State<PartScreen> {
               body: false,
               sketchPoint: true,
               sketchLine: true,
+              sketchCircle: true,
             );
     });
   }
@@ -250,7 +326,24 @@ class _PartScreenState extends State<PartScreen> {
   /// afterward. See `app.document.router.get_part_mesh`'s own docstring for
   /// the full incident writeup of why this and [_rollbackExcludedFeatureIds]
   /// used to be the same set, and why that broke Create Plane.
+  ///
+  /// On-device feedback: purely client-side state means a native Save/Load
+  /// round-trip lost it entirely (the backend never sees it outside a
+  /// single `/mesh` request's query param) - [_saveNativeFile]/
+  /// [_openNativeFile] now carry it through the file's own JSON as a
+  /// `hidden_feature_ids` array the backend's own `export_native`/
+  /// `import_native` know nothing about and simply pass through unexamined.
   final Set<String> _hiddenFeatureIds = {};
+
+  /// Native Save/Load: the filename most recently Opened-from or Saved-to
+  /// this session (see [PartScreen.initialFileName]'s own doc comment for
+  /// why a fresh Open-triggered screen starts with one already) - the
+  /// default [_saveNativeFile] suggests, so a quick re-save doesn't fall
+  /// back to a generic "&lt;Part name&gt;.DIDSAprt" name every time.
+  /// [_saveAsNativeFile] always ignores this for its own initial suggestion
+  /// (a deliberate fresh prompt), but still updates it from whatever the
+  /// user actually saves to, same as a plain Save does.
+  String? _lastSavedFileName;
 
   /// B4 true-rollback's own "pretend these Features (and hence everything
   /// depending on them) don't exist yet" state (see [_beginRollback]/
@@ -342,6 +435,34 @@ class _PartScreenState extends State<PartScreen> {
       _toggleChamferFaceEdges(entity);
       return;
     }
+    // Prompt G: a sketchLine/sketchCircle tap while the profile picker is
+    // open toggles its whole containing loop, not just the one tapped
+    // entity - see [_toggleProfileLoop]. Checked before the Revolve axis
+    // special-case below since the two modes are never active at the same
+    // time, but this ordering costs nothing either way.
+    if (_profilePickerActive &&
+        (entity.kind == SelectionEntityKind.sketchLine ||
+            entity.kind == SelectionEntityKind.sketchCircle)) {
+      _toggleProfileLoop(entity);
+      return;
+    }
+    // A sketchLine tap while the path picker is open extends/undoes the
+    // Sweep path being built - see [_togglePathPick]. Checked before the
+    // Revolve axis special-case below for the same reason the profile-picker
+    // check above is - the two modes are never active at the same time.
+    if (_pathPickerActive && entity.kind == SelectionEntityKind.sketchLine) {
+      _togglePathPick(entity);
+      return;
+    }
+    // Prompt F: a sketchLine tap while the Revolve panel is open sets (or
+    // clears, if it's the already-picked one) the axis - a single reference,
+    // replaced rather than accumulated the way target-body picks are - see
+    // [_setRevolveAxis]. A body tap falls through to the ordinary toggle
+    // below, same as Extrude's own target-body picking.
+    if (_revolveActive && entity.kind == SelectionEntityKind.sketchLine) {
+      _setRevolveAxis(entity);
+      return;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
@@ -350,6 +471,26 @@ class _PartScreenState extends State<PartScreen> {
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
     if (_chamferActive) _scheduleChamferPreview();
+    if (_revolveActive) _scheduleRevolvePreview();
+    if (_sweepActive) _scheduleSweepPreview();
+  }
+
+  /// Prompt F: [_toggleSelectedEntity]'s sketchLine special-case for the
+  /// Revolve flow - replaces whatever `sketchLine` entity (if any) is
+  /// currently in [_selectedEntities] with [axisEntity], unless [axisEntity]
+  /// was already the one picked, in which case it's cleared instead (tap the
+  /// current axis again to deselect it). Never touches any `body` entities
+  /// already in the set - those are a completely independent pick (see
+  /// [_revolveSelectionFilter]'s own doc comment).
+  void _setRevolveAxis(SelectionEntityRef axisEntity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final alreadyPicked = next.contains(axisEntity);
+      next.removeWhere((e) => e.kind == SelectionEntityKind.sketchLine);
+      if (!alreadyPicked) next.add(axisEntity);
+      _selectedEntities = next;
+    });
+    _scheduleRevolvePreview();
   }
 
   /// Item 4: "Empty space tap -> clears entire selection set" - passed to
@@ -362,6 +503,8 @@ class _PartScreenState extends State<PartScreen> {
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
     if (_chamferActive) _scheduleChamferPreview();
+    if (_revolveActive) _scheduleRevolvePreview();
+    if (_sweepActive) _scheduleSweepPreview();
   }
 
   /// On-device feedback: [_toggleSelectedEntity]'s Face special-case for the
@@ -513,7 +656,24 @@ class _PartScreenState extends State<PartScreen> {
   /// flow, where Cancel deletes the just-created preview Feature) an
   /// already-existing Feature must never be deleted just because its edit
   /// was cancelled.
-  ({ExtrudeType type, double start, double end, List<String> targetBodyIds})? _extrudeEditSnapshot;
+  ({
+    ExtrudeType type,
+    double start,
+    double end,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  })? _extrudeEditSnapshot;
+
+  /// Prompt G: which outer profile(s) of [_extrudeSketchFeature] to use -
+  /// set once, either to `[]` (no profile picker shown - a single-loop
+  /// Sketch) or to whatever [_confirmProfilePicker] resolved, and never
+  /// changed again for the rest of this create/edit session (create-time-
+  /// only picking - see `_ProfilePickerTarget`'s own doc comment for why
+  /// re-picking mid-edit is out of scope for this pass). Threaded into
+  /// every [_ensureExtrudeFeatureExists] call the same way
+  /// [_extrudeStartDistance] etc. are, so a live-preview re-solve never
+  /// silently reverts it to "every profile".
+  List<SketchEntityRefDto> _extrudeProfileRefs = [];
 
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
@@ -669,6 +829,7 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: false,
+    sketchCircle: false,
     plane: false,
   );
 
@@ -723,8 +884,1005 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: false,
+    sketchCircle: false,
     plane: false,
   );
+
+  // --- Prompt F: Revolve state ---------------------------------------------
+  // A full separate mirror of the Extrude state block above, per this
+  // project's established separate-not-shared convention - Revolve is
+  // Boss/Cut-shaped like Extrude (simple `isPreviewMesh` live preview, no
+  // dual-mesh overlay - see docs/live-preview-pattern.md's decision tree:
+  // target_body_ids are Body-level picks, stable across re-solves, exactly
+  // like Extrude's own), just consuming a Sketch Line axis pick alongside
+  // Extrude's own target-body picking rather than instead of it.
+
+  /// Prompt F: true while the Feature tree is acting as a Sketch picker for
+  /// a pending Revolve - mirrors [_sketchPickerActive] exactly, entered by
+  /// [_revolveSelectedFeature] when no eligible Sketch is already selected.
+  bool _revolveSketchPickerActive = false;
+
+  /// Mirrors [_pickableSketchIds] exactly, for the Revolve picker.
+  Set<String> _pickableRevolveSketchIds = {};
+
+  /// The SketchFeature currently being revolved via [RevolvePanel], or null
+  /// when the panel is closed - mirrors [_extrudeSketchFeature].
+  FeatureDto? _revolveSketchFeature;
+
+  /// The RevolveFeature created by the panel's first live-preview update -
+  /// mirrors [_previewExtrudeFeatureId].
+  String? _previewRevolveFeatureId;
+
+  /// Mirrors [_meshBeforeExtrude].
+  List<BodyMeshDto>? _meshBeforeRevolve;
+
+  /// Mirrors [_entitiesBeforeExtrude] - while the panel is open,
+  /// [_selectedEntities] is dedicated to axis-Line + target-body picking
+  /// (see [_openRevolvePanel]) instead of the general Stage 23 selection.
+  Set<SelectionEntityRef>? _entitiesBeforeRevolve;
+
+  /// B4: non-null while [RevolvePanel] is editing an *existing*
+  /// RevolveFeature - mirrors [_editingExtrudeFeatureId].
+  String? _editingRevolveFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - mirrors [_extrudeEditSnapshot].
+  ({
+    RevolveMode mode,
+    double angle,
+    SketchEntityRefDto axisRef,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  })? _revolveEditSnapshot;
+
+  RevolveMode _revolveMode = RevolveMode.boss;
+  double _revolveAngle = 180.0;
+
+  /// Prompt G: mirrors [_extrudeProfileRefs] exactly - which outer
+  /// profile(s) of [_revolveSketchFeature] to use.
+  List<SketchEntityRefDto> _revolveProfileRefs = [];
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
+  /// [_extrudeDebounce].
+  Timer? _revolveDebounce;
+
+  /// Mirrors [_extrudeActive].
+  bool get _revolveActive => _revolveSketchFeature != null;
+
+  /// Prompt F: the axis-Line-picking + target-body-picking filter for the
+  /// whole Revolve flow - unlike Extrude's bodies-only override
+  /// ([_openExtrudePanel]), this allows *both* `sketchLine` (the axis) and
+  /// `body` (Boss/Cut targets) hits simultaneously, since a Revolve session
+  /// needs to pick one of each rather than only ever one kind - no separate
+  /// "picking mode" toggle is needed because [_selectedEntities] already
+  /// holds entities of both kinds side by side (a [SelectionEntityRef]'s own
+  /// `kind` tells them apart), and [_toggleSelectedEntity]'s Revolve
+  /// special-case (below) routes a `sketchLine` tap to axis-replacement while
+  /// a `body` tap falls through to the ordinary toggle-add/remove Extrude
+  /// itself already uses.
+  static const _revolveSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: true,
+    // On-device feedback: a Circle is never a valid Revolve axis (no
+    // meaningful "axis direction" - see this project's already-resolved
+    // Prompt F decision that the axis stays a Line reference), so this
+    // stays off even though sketchLine (axis picking) is on.
+    sketchCircle: false,
+    plane: false,
+  );
+
+  // --- Prompt G: profile picking -------------------------------------------
+  // Lets the user choose which closed profile(s) of a Sketch to extrude/
+  // revolve, instead of always using every one detected (or erroring on a
+  // mix of open/closed profiles - see app.sketch.profile.detect_profile's
+  // own Prompt G relaxation). Entered from _extrudeSelectedFeature/
+  // _onSketchPicked/_revolveSelectedFeature/_onRevolveSketchPicked once an
+  // eligible Sketch is chosen and turns out to have 2+ usable closed loops -
+  // a single-loop Sketch skips straight to the panel exactly as before this
+  // prompt, so the common case gets zero added friction. Create-time-only:
+  // editing an already-existing Extrude/Revolve keeps whatever profile_refs
+  // it already has for the whole edit session (no re-picking UI yet - see
+  // _openExtrudePanelForEdit/_openRevolvePanelForEdit, which just prefill
+  // _extrudeProfileRefs/_revolveProfileRefs from the stored Feature and
+  // never change them again).
+
+  /// True while the profile picker is open.
+  bool _profilePickerActive = false;
+
+  /// Which Feature type the picker is gathering picks for - decides what
+  /// [_confirmProfilePicker] opens once the checkmark FAB is tapped.
+  _ProfilePickerTarget? _profilePickerTarget;
+
+  /// The SketchFeature being picked from.
+  FeatureDto? _profilePickerSketchFeature;
+
+  /// Every outer profile loop `detect_profile` currently reports for
+  /// [_profilePickerSketchFeature] (fetched once, when picking starts, via
+  /// `SketchApiClient.getProfile`) - each entry is one loop's own set of
+  /// Line/Circle entity ids. Used both to resolve "which loop does this
+  /// tapped/hovered Line belong to" ([_profileLoopIndexFor], driving
+  /// [_toggleProfileLoop] and [PartViewport.sketchLineLoopGroup]) and to
+  /// build the anchor [SketchEntityRefDto] list once the user confirms (one
+  /// anchor per picked loop, any member of it - see [_confirmProfilePicker]).
+  List<Set<String>> _profilePickerLoops = [];
+
+  /// [_selectedEntities]' value from just before picking started - restored
+  /// on confirm/cancel, same purpose every other picker's own
+  /// entitiesBeforeX field serves.
+  Set<SelectionEntityRef>? _entitiesBeforeProfilePicker;
+
+  /// Restricts the picker session to `sketchLine`/`sketchCircle` hits only -
+  /// a tap on either toggles that entity's whole containing loop (see
+  /// [_toggleProfileLoop]), a Circle-only loop being a single-entity "loop"
+  /// of exactly one Circle (see `app.sketch.profile._circle_profile`).
+  static const _profilePickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: true,
+    plane: false,
+  );
+
+  /// The loop index in [_profilePickerLoops] containing [sketchEntityId], or
+  /// null if it belongs to none (shouldn't happen for a real hit against a
+  /// Sketch this picker fetched its loops from, but stays defensive against
+  /// stale data the same way every other by-id lookup in this file does).
+  int? _profileLoopIndexFor(String sketchEntityId) {
+    for (var i = 0; i < _profilePickerLoops.length; i++) {
+      if (_profilePickerLoops[i].contains(sketchEntityId)) return i;
+    }
+    return null;
+  }
+
+  /// [PartViewport.sketchLineLoopGroup] - see that field's own doc comment.
+  /// Only ever returns non-null while [_profilePickerActive] and for the
+  /// specific Sketch Feature being picked from - every other hover in this
+  /// file falls back to the single-entity default.
+  Set<String>? _sketchLineLoopGroup(String sketchFeatureId, String sketchEntityId) {
+    if (!_profilePickerActive || _profilePickerSketchFeature?.id != sketchFeatureId) return null;
+    final index = _profileLoopIndexFor(sketchEntityId);
+    return index == null ? null : _profilePickerLoops[index];
+  }
+
+  /// Shared by every "a Sketch was just chosen for Extrude/Revolve" entry
+  /// point ([_extrudeSelectedFeature]/[_onSketchPicked]/
+  /// [_revolveSelectedFeature]/[_onRevolveSketchPicked]) - fetches the
+  /// Sketch's current Profile detection and either opens the target panel
+  /// directly with no profile selection (0 or 1 usable loop - nothing to
+  /// disambiguate, exactly the pre-Prompt-G behaviour) or enters the picker
+  /// (2+ loops).
+  Future<void> _proceedToSketchConsumingFeature(
+    FeatureDto sketchFeature,
+    _ProfilePickerTarget target,
+  ) async {
+    final sketchId = sketchFeature.sketchId;
+    if (sketchId == null) {
+      _openPanelForTarget(sketchFeature, target, const []);
+      return;
+    }
+    ProfileDetectionDto? profile;
+    try {
+      profile = await _sketchApi.getProfile(sketchId);
+    } catch (_) {
+      // Defensive - the caller's own eligibility check already confirmed
+      // this Sketch resolves; fall back to "no picking, just proceed"
+      // rather than getting stuck on a transient fetch failure.
+    }
+    if (!mounted) return;
+    final loops = [
+      for (final loop in profile?.fillableLoops ?? const <ProfileLoopDto>[]) loop.lineIds.toSet(),
+    ];
+    if (loops.length <= 1) {
+      _openPanelForTarget(sketchFeature, target, const []);
+      return;
+    }
+    _startProfilePicker(sketchFeature, target, loops);
+  }
+
+  void _openPanelForTarget(
+    FeatureDto sketchFeature,
+    _ProfilePickerTarget target,
+    List<SketchEntityRefDto> profileRefs,
+  ) {
+    switch (target) {
+      case _ProfilePickerTarget.extrude:
+        _openExtrudePanel(sketchFeature, profileRefs: profileRefs);
+      case _ProfilePickerTarget.revolve:
+        _openRevolvePanel(sketchFeature, profileRefs: profileRefs);
+      case _ProfilePickerTarget.sweep:
+        // Unlike Extrude/Revolve, a Sweep's path is mandatory and picked
+        // once, up front - never live while its own panel is open (see
+        // the path-picking flow below) - so this enters that flow instead
+        // of opening SweepPanel directly; SweepPanel only ever opens once
+        // a path has actually been confirmed (see [_confirmPathPicker]).
+        _startPathPicker(sketchFeature, profileRefs);
+    }
+  }
+
+  void _startProfilePicker(
+    FeatureDto sketchFeature,
+    _ProfilePickerTarget target,
+    List<Set<String>> loops,
+  ) {
+    setState(() {
+      _profilePickerActive = true;
+      _profilePickerTarget = target;
+      _profilePickerSketchFeature = sketchFeature;
+      _profilePickerLoops = loops;
+      _entitiesBeforeProfilePicker = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _planeSelectionModeStack.pop();
+      _selectionFilterOverrides.push(_profilePickerSelectionFilter);
+    });
+  }
+
+  /// Whether [entityId] (one of [_profilePickerLoops]' member ids, for
+  /// [sketchFeatureId]) is a Circle rather than a Line - a Circle-only loop
+  /// is exactly one Circle id (see `app.sketch.profile._circle_profile`),
+  /// so this is what tells [_toggleProfileLoop]/[_confirmProfilePicker]
+  /// which [SelectionEntityKind]/`SketchEntityRefDto.entityType` to build
+  /// for a given member id, instead of assuming every member is a Line.
+  bool _isProfileCircleEntity(String sketchFeatureId, String entityId) =>
+      _allSketchGeometries[sketchFeatureId]?.circleIds.contains(entityId) ?? false;
+
+  /// [_toggleSelectedEntity]'s profile-picker special-case - toggles every
+  /// entity in [tappedEntity]'s whole containing loop in/out of
+  /// [_selectedEntities] as one unit, mirroring [_toggleFilletFaceEdges]'s
+  /// own "grow a partial pick to the complete loop, or clear a complete one"
+  /// convenience. A no-op if [tappedEntity] doesn't resolve to any of
+  /// [_profilePickerLoops] (stale hit against data that's since changed).
+  void _toggleProfileLoop(SelectionEntityRef tappedEntity) {
+    final index = _profileLoopIndexFor(tappedEntity.sketchEntityId);
+    if (index == null) return;
+    final loopEntities = {
+      for (final entityId in _profilePickerLoops[index])
+        SelectionEntityRef(
+          kind: _isProfileCircleEntity(tappedEntity.sketchFeatureId, entityId)
+              ? SelectionEntityKind.sketchCircle
+              : SelectionEntityKind.sketchLine,
+          sketchFeatureId: tappedEntity.sketchFeatureId,
+          sketchEntityId: entityId,
+        ),
+    };
+    final allSelected = loopEntities.every(_selectedEntities.contains);
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (allSelected) {
+        next.removeAll(loopEntities);
+      } else {
+        next.addAll(loopEntities);
+      }
+      _selectedEntities = next;
+    });
+  }
+
+  /// How many distinct loops are currently picked - the top banner's own
+  /// live count, derived from [_selectedEntities] the same way
+  /// [_confirmProfilePicker] itself resolves the final pick.
+  int _profilePickedCount() {
+    final pickedLoopIndices = <int>{};
+    for (final entity in _selectedEntities) {
+      if (entity.kind != SelectionEntityKind.sketchLine &&
+          entity.kind != SelectionEntityKind.sketchCircle) {
+        continue;
+      }
+      final index = _profileLoopIndexFor(entity.sketchEntityId);
+      if (index != null) pickedLoopIndices.add(index);
+    }
+    return pickedLoopIndices.length;
+  }
+
+  /// The checkmark FAB - resolves every currently-picked loop (derived from
+  /// [_selectedEntities], not a separately-tracked index set, since the
+  /// selection set is already the single source of truth for "which loops
+  /// are picked") into one anchor [SketchEntityRefDto] per loop (any member
+  /// entity id - `select_profiles` on the backend only needs *a* member, not
+  /// a specific one), then closes the picker and opens the target panel.
+  /// Picking nothing is valid and simply means "use every profile" (an
+  /// empty `profile_refs` list) - the backend's own default, so no special-
+  /// casing is needed for a zero-pick confirm.
+  void _confirmProfilePicker() {
+    final sketchFeature = _profilePickerSketchFeature;
+    final target = _profilePickerTarget;
+    if (sketchFeature == null || target == null) return;
+
+    final pickedLoopIndices = <int>{};
+    for (final entity in _selectedEntities) {
+      if (entity.kind != SelectionEntityKind.sketchLine &&
+          entity.kind != SelectionEntityKind.sketchCircle) {
+        continue;
+      }
+      final index = _profileLoopIndexFor(entity.sketchEntityId);
+      if (index != null) pickedLoopIndices.add(index);
+    }
+    final sketchId = sketchFeature.sketchId!;
+    // On-device feedback: `entityType` used to be hardcoded to `'line'`,
+    // which broke the moment a picked loop's anchor member was actually a
+    // Circle's own id (a Circle-only loop, per `_circle_profile`) - the
+    // backend's `resolve_sketch_entity` validates `entity_type` against the
+    // real entity's type (`isinstance(entity, expected_type)`) and 422s a
+    // mismatch, so this now reports whichever type the anchor id really is.
+    final profileRefs = [
+      for (final index in pickedLoopIndices)
+        SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: _isProfileCircleEntity(sketchFeature.id, _profilePickerLoops[index].first)
+              ? 'circle'
+              : 'line',
+          entityId: _profilePickerLoops[index].first,
+        ),
+    ];
+
+    setState(() {
+      _profilePickerActive = false;
+      _profilePickerTarget = null;
+      _profilePickerSketchFeature = null;
+      _profilePickerLoops = [];
+      _selectedEntities = _entitiesBeforeProfilePicker ?? {};
+      _entitiesBeforeProfilePicker = null;
+      _selectionFilterOverrides.pop();
+    });
+    _openPanelForTarget(sketchFeature, target, profileRefs);
+  }
+
+  /// Exits the picker without opening anything - the picker's own Cancel
+  /// button and the device back gesture (see [build]'s `PopScope`) both
+  /// lead here, mirroring every other guided picker's "dismissing cancels
+  /// the pending operation" rule.
+  void _cancelProfilePicker() {
+    setState(() {
+      _profilePickerActive = false;
+      _profilePickerTarget = null;
+      _profilePickerSketchFeature = null;
+      _profilePickerLoops = [];
+      _selectedEntities = _entitiesBeforeProfilePicker ?? {};
+      _entitiesBeforeProfilePicker = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  // --- Sweep: path picking -------------------------------------------------
+  // Sweep's own second picking step, entered automatically right after the
+  // profile step (see [_openPanelForTarget]'s `sweep` case) - unlike
+  // Revolve's axis (a single Line, picked live while its own panel is open),
+  // a Sweep's path is an *ordered*, possibly-multi-segment, possibly-cross-
+  // Sketch chain of Lines (confirmed decisions - see the backend's
+  // `SweepFeature` docstring), so it gets its own dedicated picking mode
+  // instead: tap Lines one at a time, in order, to build the chain; tap the
+  // most recently picked Line again to undo it; a checkmark FAB confirms
+  // once at least one segment is picked and opens [SweepPanel].
+
+  /// True while the path picker is open.
+  bool _pathPickerActive = false;
+
+  /// The Profile's own SketchFeature - carried through to [SweepPanel] once
+  /// picking confirms.
+  FeatureDto? _pathPickerSketchFeature;
+
+  /// [_profilePickerLoops]' Sweep counterpart - the Profile's own
+  /// profile_refs, resolved by the profile-picking step that ran just
+  /// before this one started (empty if that step was skipped, meaning
+  /// "every profile" - same convention every other profile_refs consumer in
+  /// this file already follows). Carried through to [SweepPanel] unchanged;
+  /// this picker never touches it.
+  List<SketchEntityRefDto> _pathPickerProfileRefs = [];
+
+  /// The path picked so far, in pick order - the single source of truth
+  /// this whole picker is built around; [_selectedEntities] is derived from
+  /// it (see [_togglePathPick]), not the other way around, so the two can
+  /// never drift out of sync.
+  List<SketchEntityRefDto> _pathPickerRefs = [];
+
+  /// [_selectedEntities]' value from just before picking started - restored
+  /// on confirm/cancel, same purpose every other picker's own
+  /// entitiesBeforeX field serves.
+  Set<SelectionEntityRef>? _entitiesBeforePathPicker;
+
+  /// Restricts the picker session to `sketchLine` hits only - a path
+  /// segment must be a Line (mirrors Revolve's own axis restriction;
+  /// Point/Circle are never valid path segments), and unlike the profile
+  /// picker's own filter, `body` stays off too - target-body picking only
+  /// happens later, once [SweepPanel] itself is open.
+  static const _pathPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  void _startPathPicker(FeatureDto sketchFeature, List<SketchEntityRefDto> profileRefs) {
+    setState(() {
+      _pathPickerActive = true;
+      _pathPickerSketchFeature = sketchFeature;
+      _pathPickerProfileRefs = profileRefs;
+      _pathPickerRefs = [];
+      _entitiesBeforePathPicker = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _planeSelectionModeStack.pop();
+      _selectionFilterOverrides.push(_pathPickerSelectionFilter);
+    });
+  }
+
+  /// World-space distance within which two points are treated as the same -
+  /// mirrors the backend's own `app.document.sweep._PATH_POINT_TOLERANCE`
+  /// exactly. Purely a client-side pre-check for immediate tap feedback;
+  /// the backend re-validates independently (and is the actual source of
+  /// truth) once the path is confirmed.
+  static const double _pathPointTolerance = 1e-4;
+
+  static bool _pathPointsCoincide(vm.Vector3 a, vm.Vector3 b) => (a - b).length < _pathPointTolerance;
+
+  /// World-space `(start, end)` for the Sketch Line named by
+  /// [sketchFeatureId]/[sketchEntityId] - looked up in
+  /// [_allSketchGeometries] (not [_visibleSketchGeometries], so an already-
+  /// picked segment's own endpoints stay resolvable even if its Sketch gets
+  /// hidden mid-pick) - null if that Sketch/Line can no longer be resolved.
+  (vm.Vector3, vm.Vector3)? _lineWorldSegment(String sketchFeatureId, String sketchEntityId) {
+    final geometry = _allSketchGeometries[sketchFeatureId];
+    if (geometry == null) return null;
+    final index = geometry.lineIds.indexOf(sketchEntityId);
+    if (index == -1) return null;
+    return geometry.lineSegments[index];
+  }
+
+  /// Traces [refs] (an ordered list of path picks) into its actual ordered
+  /// world-space point chain - mirrors the backend's own `app.document.
+  /// sweep._resolve_path_wire` tracing logic exactly (each ref's own
+  /// endpoint pair is resolved independently, then chained by matching
+  /// position against *either* end of the chain built so far - its front
+  /// ([points.first]) or its back ([points.last]), not just the back, since
+  /// the very first pick has no "correct" direction fixed yet: the second
+  /// pick may connect to either of its two endpoints - since cross-Sketch
+  /// entries have no shared Point id to chain by instead). Returns null if
+  /// any ref's Line can no longer be resolved, or if two consecutive refs
+  /// don't actually connect - shouldn't happen for anything
+  /// [_togglePathPick] itself built, but stays defensive against stale data
+  /// the same way [_profileLoopIndexFor] already does.
+  List<vm.Vector3>? _tracePathPoints(List<SketchEntityRefDto> refs) {
+    final points = <vm.Vector3>[];
+    for (final ref in refs) {
+      final sketchFeatureId = _sketchFeatureIdForSketchId(ref.sketchId);
+      final segment = sketchFeatureId == null ? null : _lineWorldSegment(sketchFeatureId, ref.entityId);
+      if (segment == null) return null;
+      final (start, end) = segment;
+      if (points.isEmpty) {
+        points.add(start);
+        points.add(end);
+        continue;
+      }
+      final front = points.first;
+      final back = points.last;
+      if (_pathPointsCoincide(back, start)) {
+        points.add(end);
+      } else if (_pathPointsCoincide(back, end)) {
+        points.add(start);
+      } else if (_pathPointsCoincide(front, start)) {
+        points.insert(0, end);
+      } else if (_pathPointsCoincide(front, end)) {
+        points.insert(0, start);
+      } else {
+        return null;
+      }
+    }
+    return points;
+  }
+
+  /// [_toggleSelectedEntity]'s path-picker special-case - a sketchLine tap
+  /// while the path picker is open either extends [_pathPickerRefs] (starting
+  /// a brand-new chain if none is picked yet, or appending to whichever end
+  /// of the current chain the tapped Line's own endpoint coincides with), or
+  /// - if the tapped Line is the *most recently* picked one - undoes it (tap
+  /// the last pick again to remove it, mirroring this app's "tap again to
+  /// deselect" convention elsewhere). A tap that neither connects to the
+  /// chain nor targets the last pick gets an explanatory SnackBar rather
+  /// than [_toggleProfileLoop]'s own silent "stale hit" ignore - unlike a
+  /// stale profile-loop hit, a disconnected path tap is an expected, regular
+  /// occurrence during normal picking, not just stale data, so it needs real
+  /// feedback. [_selectedEntities] is rebuilt from [_pathPickerRefs] on every
+  /// change (rather than toggled independently) so the two can never drift
+  /// out of sync.
+  void _togglePathPick(SelectionEntityRef lineEntity) {
+    final sketchId = _sketchIdForFeatureId(lineEntity.sketchFeatureId);
+    if (sketchId == null) return;
+    final ref = SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: lineEntity.sketchEntityId);
+
+    List<SketchEntityRefDto> nextRefs;
+    if (_pathPickerRefs.isNotEmpty &&
+        _pathPickerRefs.last.sketchId == ref.sketchId &&
+        _pathPickerRefs.last.entityId == ref.entityId) {
+      nextRefs = _pathPickerRefs.sublist(0, _pathPickerRefs.length - 1);
+    } else if (_pathPickerRefs.any((r) => r.sketchId == ref.sketchId && r.entityId == ref.entityId)) {
+      _showSnack('That line is already part of the path');
+      return;
+    } else if (_pathPickerRefs.isEmpty) {
+      nextRefs = [ref];
+    } else {
+      final points = _tracePathPoints(_pathPickerRefs);
+      final segment = _lineWorldSegment(lineEntity.sketchFeatureId, lineEntity.sketchEntityId);
+      if (points == null || segment == null) return;
+      final (start, end) = segment;
+      // Checked against both ends of the chain built so far, not just its
+      // back - the very first pick has no "correct" direction fixed yet, so
+      // a second pick connecting to its *other* endpoint is just as valid
+      // (see [_tracePathPoints]'s own doc comment).
+      if (_pathPointsCoincide(points.last, start) ||
+          _pathPointsCoincide(points.last, end) ||
+          _pathPointsCoincide(points.first, start) ||
+          _pathPointsCoincide(points.first, end)) {
+        nextRefs = [..._pathPickerRefs, ref];
+      } else {
+        _showSnack("That line doesn't connect to the current path - tap one touching either end");
+        return;
+      }
+    }
+
+    setState(() {
+      _pathPickerRefs = nextRefs;
+      _selectedEntities = {
+        for (final r in nextRefs)
+          SelectionEntityRef(
+            kind: SelectionEntityKind.sketchLine,
+            sketchFeatureId: _sketchFeatureIdForSketchId(r.sketchId) ?? '',
+            sketchEntityId: r.entityId,
+          ),
+      };
+    });
+  }
+
+  /// Whether [refs] (an ordered list of path picks) traces a closed
+  /// (looping) path - its first and last points coincide - or an open one.
+  /// Shared by [_pathPickerBannerText] (the live picker banner) and
+  /// [SweepPanel]'s own `pathIsClosed` (via [_sweepPathIsClosed]) so the two
+  /// never disagree about the same path.
+  bool _pathIsClosed(List<SketchEntityRefDto> refs) {
+    final points = _tracePathPoints(refs);
+    return points != null && points.length > 2 && _pathPointsCoincide(points.first, points.last);
+  }
+
+  /// [SweepPanel.pathIsClosed] for the currently-open panel session's own
+  /// (already-confirmed, fixed) [_sweepPathRefs].
+  bool _sweepPathIsClosed() => _pathIsClosed(_sweepPathRefs);
+
+  /// The top banner's live status text - segment count plus open/closed,
+  /// mirroring [SweepPanel]'s own path summary line.
+  String _pathPickerBannerText() {
+    if (_pathPickerRefs.isEmpty) return 'Tap a line to start the path';
+    final isClosed = _pathIsClosed(_pathPickerRefs);
+    final count = _pathPickerRefs.length;
+    return '$count segment${count == 1 ? '' : 's'} picked'
+        '${isClosed ? ' (closed)' : ''} - tap checkmark to confirm';
+  }
+
+  /// The checkmark FAB - closes the picker and opens [SweepPanel] with the
+  /// confirmed path. Requires at least one segment (mirrors Cut's own
+  /// "at least one" rules elsewhere) - disabled otherwise, see the FAB's own
+  /// `onPressed` gating.
+  void _confirmPathPicker() {
+    final sketchFeature = _pathPickerSketchFeature;
+    if (sketchFeature == null || _pathPickerRefs.isEmpty) return;
+    final profileRefs = _pathPickerProfileRefs;
+    final pathRefs = _pathPickerRefs;
+
+    setState(() {
+      _pathPickerActive = false;
+      _pathPickerSketchFeature = null;
+      _pathPickerProfileRefs = [];
+      _pathPickerRefs = [];
+      _selectedEntities = _entitiesBeforePathPicker ?? {};
+      _entitiesBeforePathPicker = null;
+      _selectionFilterOverrides.pop();
+    });
+    _openSweepPanel(sketchFeature, pathRefs, profileRefs: profileRefs);
+  }
+
+  /// Exits the path picker without creating a Sweep - mirrors
+  /// [_cancelProfilePicker] exactly.
+  void _cancelPathPicker() {
+    setState(() {
+      _pathPickerActive = false;
+      _pathPickerSketchFeature = null;
+      _pathPickerProfileRefs = [];
+      _pathPickerRefs = [];
+      _selectedEntities = _entitiesBeforePathPicker ?? {};
+      _entitiesBeforePathPicker = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  // --- Prompt F-mirror: Sweep state ----------------------------------------
+  // A full separate mirror of the Revolve state block, per this project's
+  // established separate-not-shared convention - Sweep is Boss/Cut-shaped
+  // like Extrude/Revolve, just consuming an ordered path of Sketch Lines
+  // (picked once, up front - see the path-picking flow above) instead of a
+  // live-picked single axis Line.
+
+  /// True while the Feature tree is acting as a Sketch picker for a pending
+  /// Sweep - mirrors [_revolveSketchPickerActive] exactly, entered by
+  /// [_sweepSelectedFeature] when no eligible Sketch is already selected.
+  bool _sweepSketchPickerActive = false;
+
+  /// Mirrors [_pickableRevolveSketchIds] exactly, for the Sweep picker.
+  Set<String> _pickableSweepSketchIds = {};
+
+  /// The SketchFeature currently being swept via [SweepPanel], or null when
+  /// the panel is closed - mirrors [_revolveSketchFeature].
+  FeatureDto? _sweepSketchFeature;
+
+  /// The SweepFeature created by the panel's first live-preview update -
+  /// mirrors [_previewRevolveFeatureId].
+  String? _previewSweepFeatureId;
+
+  /// Mirrors [_meshBeforeRevolve].
+  List<BodyMeshDto>? _meshBeforeSweep;
+
+  /// Mirrors [_entitiesBeforeRevolve] - while the panel is open,
+  /// [_selectedEntities] is dedicated entirely to target-body picking (the
+  /// path is already fixed by the time this panel opens, unlike Revolve's
+  /// own live axis pick - see [_openSweepPanel]).
+  Set<SelectionEntityRef>? _entitiesBeforeSweep;
+
+  /// B4-style: non-null while [SweepPanel] is editing an *existing*
+  /// SweepFeature - mirrors [_editingRevolveFeatureId].
+  String? _editingSweepFeatureId;
+
+  /// The edited Feature's own stored values from just before editing
+  /// started - mirrors [_revolveEditSnapshot].
+  ({
+    SweepMode mode,
+    List<SketchEntityRefDto> pathRefs,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  })? _sweepEditSnapshot;
+
+  SweepMode _sweepMode = SweepMode.boss;
+
+  /// The path this session sweeps along - fixed once [SweepPanel] opens
+  /// (set by [_openSweepPanel]/[_openSweepPanelForEdit]) and never changed
+  /// again for the rest of the create/edit session, mirroring
+  /// [_extrudeProfileRefs]/[_revolveProfileRefs]'s own create-time-only
+  /// picking precedent - just applied to the path instead of the profile.
+  List<SketchEntityRefDto> _sweepPathRefs = [];
+
+  /// Mirrors [_revolveProfileRefs] exactly - which outer profile(s) of
+  /// [_sweepSketchFeature] to use.
+  List<SketchEntityRefDto> _sweepProfileRefs = [];
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
+  /// [_revolveDebounce].
+  Timer? _sweepDebounce;
+
+  /// Mirrors [_revolveActive].
+  bool get _sweepActive => _sweepSketchFeature != null;
+
+  /// The target-body-picking filter for the whole Sweep panel session -
+  /// unlike Revolve's own combined sketchLine+body filter (its axis is
+  /// picked live while the panel is open), a Sweep's path is already fixed
+  /// by the time this panel shows, so this only ever needs bodies, exactly
+  /// like Extrude's own bodies-only override.
+  static const _sweepSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// Mirrors [_currentRevolveTargetBodyIds] exactly.
+  List<String> _currentSweepTargetBodyIds() => _selectedEntities
+      .where((e) => e.kind == SelectionEntityKind.body)
+      .map((e) => e.bodyId)
+      .toSet()
+      .toList();
+
+  /// Prompt F-mirror: opens [SweepPanel] for [sketchFeature] with [pathRefs]
+  /// already confirmed (see [_confirmPathPicker]) - mirrors
+  /// [_openRevolvePanel] exactly, substituting the fixed [pathRefs] for a
+  /// live axis pick.
+  void _openSweepPanel(
+    FeatureDto sketchFeature,
+    List<SketchEntityRefDto> pathRefs, {
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) {
+    setState(() {
+      _sweepSketchFeature = sketchFeature;
+      _previewSweepFeatureId = null;
+      _meshBeforeSweep = _bodies;
+      _sweepMode = SweepMode.boss;
+      _sweepPathRefs = pathRefs;
+      _sweepProfileRefs = profileRefs;
+      _entitiesBeforeSweep = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_sweepSelectionFilter);
+    });
+  }
+
+  /// Mirrors [_openRevolvePanelForEdit] exactly, substituting [_sweepPathRefs]
+  /// for the reconstructed axis entity - a SweepFeature's own `path_refs`
+  /// round-trips directly (no reverse Feature-id lookup needed the axis
+  /// reconstruction does), so [_selectedEntities] only ever needs prefilling
+  /// with the target-body entities here.
+  bool _openSweepPanelForEdit(FeatureDto feature) {
+    final sketchFeatureId = feature.sketchFeatureId;
+    final sketchFeature = sketchFeatureId == null ? null : _featureById(sketchFeatureId);
+    if (sketchFeature == null) return false;
+
+    final mode = SweepMode.fromApiValue(feature.mode ?? 'boss');
+    final targetBodyIds = feature.targetBodyIds;
+    final profileRefs = feature.profileRefs;
+    final pathRefs = feature.pathRefs;
+
+    setState(() {
+      _sweepSketchFeature = sketchFeature;
+      _editingSweepFeatureId = feature.id;
+      _previewSweepFeatureId = feature.id;
+      _sweepEditSnapshot = (
+        mode: mode,
+        pathRefs: pathRefs,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+      _meshBeforeSweep = _bodies;
+      _sweepMode = mode;
+      _sweepPathRefs = pathRefs;
+      _sweepProfileRefs = profileRefs;
+      _entitiesBeforeSweep = _selectedEntities;
+      _selectedEntities = {
+        for (final bodyId in targetBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_sweepSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Mirrors [_ensureRevolveFeatureExists] exactly, substituting the fixed
+  /// [pathRefs] for a live axis pick.
+  Future<void> _ensureSweepFeatureExists(
+    SweepMode mode,
+    List<SketchEntityRefDto> pathRefs,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  ) async {
+    final part = _part;
+    final sketchFeature = _sweepSketchFeature;
+    if (part == null || sketchFeature == null) return;
+
+    final existingId = _previewSweepFeatureId;
+    if (existingId == null) {
+      final created = await _api.createSweepFeature(
+        part.id,
+        sketchFeatureId: sketchFeature.id,
+        pathRefs: pathRefs,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+      _previewSweepFeatureId = created.id;
+    } else {
+      await _api.updateSweepFeature(
+        part.id,
+        existingId,
+        pathRefs: pathRefs,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [SweepPanel.onChanged] - mirrors [_onRevolveValuesChanged], minus the
+  /// angle field Sweep has no equivalent of.
+  void _onSweepValuesChanged(SweepMode mode) {
+    _sweepMode = mode;
+    _scheduleSweepPreview();
+  }
+
+  /// Mirrors [_scheduleRevolvePreview], minus the "nothing to solve without
+  /// an axis" guard - a Sweep's path is always already valid by the time
+  /// this could ever fire (fixed at panel-open time), so there is nothing
+  /// equivalent to gate on here.
+  void _scheduleSweepPreview() {
+    _sweepDebounce?.cancel();
+    _sweepDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureSweepFeatureExists(
+            _sweepMode,
+            _sweepPathRefs,
+            _currentSweepTargetBodyIds(),
+            _sweepProfileRefs,
+          ));
+    });
+  }
+
+  /// Mirrors [_confirmRevolve] exactly, minus the "only if an axis is
+  /// picked" guard [_ensureSweepFeatureExists] call needs (unconditional
+  /// here - a Sweep's path is always already valid, unlike Revolve's axis,
+  /// which might never get picked at all).
+  Future<void> _confirmSweep() async {
+    _sweepDebounce?.cancel();
+    final sketchFeature = _sweepSketchFeature;
+    final wasEditing = _editingSweepFeatureId != null;
+    final targetBodyIds = _currentSweepTargetBodyIds();
+    await _runGuarded(() async {
+      await _ensureSweepFeatureExists(_sweepMode, _sweepPathRefs, targetBodyIds, _sweepProfileRefs);
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    setState(() {
+      if (sketchFeature != null && !wasEditing) {
+        _hiddenFeatureIds.add(sketchFeature.id);
+        _autoHiddenSketchFeatureIds.add(sketchFeature.id);
+      }
+      _recomputeVisibleSketchGeometries();
+      _sweepSketchFeature = null;
+      _previewSweepFeatureId = null;
+      _meshBeforeSweep = null;
+      _editingSweepFeatureId = null;
+      _sweepEditSnapshot = null;
+      _sweepPathRefs = [];
+      _sweepProfileRefs = [];
+      _selectedEntities = _entitiesBeforeSweep ?? {};
+      _entitiesBeforeSweep = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelRevolve] exactly.
+  Future<void> _cancelSweep() async {
+    _sweepDebounce?.cancel();
+    final part = _part;
+    final sketchFeature = _sweepSketchFeature;
+    final previewId = _previewSweepFeatureId;
+    final meshBefore = _meshBeforeSweep;
+    final wasEditing = _editingSweepFeatureId != null;
+    final editSnapshot = _sweepEditSnapshot;
+    setState(() {
+      _sweepSketchFeature = null;
+      _previewSweepFeatureId = null;
+      _meshBeforeSweep = null;
+      _editingSweepFeatureId = null;
+      _sweepEditSnapshot = null;
+      _sweepPathRefs = [];
+      _sweepProfileRefs = [];
+      _selectedEntities = _entitiesBeforeSweep ?? {};
+      _entitiesBeforeSweep = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateSweepFeature(
+            part.id,
+            previewId,
+            pathRefs: editSnapshot.pathRefs,
+            mode: editSnapshot.mode.apiValue,
+            targetBodyIds: editSnapshot.targetBodyIds,
+            profileRefs: editSnapshot.profileRefs,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// Mirrors [_targetBodyPickerBannerText] - Sweep's panel-session banner
+  /// only ever reports target-body status (the path is already fixed by
+  /// the time this panel shows, unlike Revolve's own two-part banner).
+  String _sweepPickerBannerText() {
+    final count = _currentSweepTargetBodyIds().length;
+    return _sweepMode == SweepMode.cut
+        ? (count == 0 ? 'select a target body' : '$count target body/bodies selected')
+        : (count == 0 ? 'tap bodies to merge into (optional)' : '$count target body/bodies selected');
+  }
+
+  /// Mirrors [_revolveSelectedFeature] exactly, substituting Sweep's own
+  /// state/picker/panel.
+  Future<void> _sweepSelectedFeature() async {
+    final featureId = _selectedFeatureId;
+    final feature = featureId == null ? null : _featureById(featureId);
+    if (feature != null && feature.type == 'sketch') {
+      final reason = await _checkExtrudeEligibility(feature);
+      if (!mounted) return;
+      if (reason == null) {
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
+        return;
+      }
+    }
+    _startSweepSketchPicker();
+  }
+
+  /// Mirrors [_startRevolveSketchPicker] exactly, for the Sweep picker.
+  void _startSweepSketchPicker() {
+    setState(() {
+      _sweepSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _pickableSweepSketchIds = {};
+    });
+    _refreshPickableSweepSketchIds();
+  }
+
+  /// Mirrors [_refreshPickableRevolveSketchIds] exactly, for the Sweep
+  /// picker.
+  Future<void> _refreshPickableSweepSketchIds() async {
+    final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
+    final results = await Future.wait(sketchFeatures.map((feature) async {
+      final reason = await _checkExtrudeEligibility(feature);
+      return MapEntry(feature.id, reason == null);
+    }));
+    if (!mounted || !_sweepSketchPickerActive) return;
+    setState(() {
+      _pickableSweepSketchIds = {for (final entry in results) if (entry.value) entry.key};
+    });
+  }
+
+  /// Mirrors [_onRevolveSketchPicked] exactly, for the Sweep picker.
+  Future<void> _onSweepSketchPicked(FeatureDto feature) async {
+    final reason = await _checkExtrudeEligibility(feature);
+    if (!mounted || !_sweepSketchPickerActive) return;
+    if (reason != null) {
+      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
+      return;
+    }
+    setState(() {
+      _sweepSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _selectedFeatureId = feature.id;
+      _pickableSweepSketchIds = {};
+    });
+    await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
+  }
+
+  /// Mirrors [_cancelRevolveSketchPicker] exactly, for the Sweep picker.
+  void _cancelSweepSketchPicker() {
+    setState(() {
+      _sweepSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableSweepSketchIds = {};
+    });
+  }
 
   /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
   /// recomputed from [_features] directly (no extra network call - the
@@ -814,6 +1972,11 @@ class _PartScreenState extends State<PartScreen> {
     super.initState();
     _api = widget.documentApi ?? DocumentApiClient();
     _sketchApi = widget.sketchApiFactory?.call() ?? SketchApiClient();
+    // Native Load: restores whichever Features a just-opened file's own
+    // `hidden_feature_ids` named - see [PartScreen.initialHiddenFeatureIds]'s
+    // own doc comment. A no-op (empty) for every non-native-Load launch.
+    _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
+    _lastSavedFileName = widget.initialFileName;
     _loadPart();
     _loadViewPreferences();
   }
@@ -873,6 +2036,212 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
+  /// Document (every Part's ordered Feature list, plus every Sketch it
+  /// references - no cached mesh/geometry) as this app's own native
+  /// project file format, and hands the bytes to the platform's save-file
+  /// dialog under [suggestedFileName]. Client-owned files (locked-in
+  /// scope): the backend has no project storage of its own, this is this
+  /// app's one point of contact with the device's actual filesystem for
+  /// Save/Save As. Remembers whatever filename the user actually saved to
+  /// (the dialog lets them rename even the suggestion) as
+  /// [_lastSavedFileName], so a later plain Save reuses it.
+  Future<void> _exportAndSaveNativeFile(String suggestedFileName) async {
+    await _runGuarded(() async {
+      final data = await _api.exportNative();
+      // On-device feedback: the backend's own export knows nothing about
+      // Hide/Show (purely client-side, see [_hiddenFeatureIds]'s own doc
+      // comment) - stash it directly into the same JSON object under a key
+      // the backend's `import_native` simply ignores, so opening this file
+      // elsewhere restores it too instead of silently losing it.
+      data['hidden_feature_ids'] = _hiddenFeatureIds.toList();
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(data)));
+      final savedPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save Project',
+        fileName: suggestedFileName,
+        bytes: bytes,
+      );
+      if (savedPath != null) {
+        _lastSavedFileName = savedPath.split('/').last;
+      }
+    });
+  }
+
+  /// Native Save: re-suggests [_lastSavedFileName] (whatever this session
+  /// last Opened-from or Saved-to) as the dialog's default, so a quick
+  /// re-save doesn't fall back to a generic name every time - see
+  /// [_lastSavedFileName]'s own doc comment for why this can't be a truly
+  /// silent overwrite (Android's Storage Access Framework has no such
+  /// concept without deeper persisted-URI-permission integration; every
+  /// save, Save or Save As alike, goes through the same platform dialog).
+  Future<void> _saveNativeFile() async {
+    setState(() => _toolbarOpen = false);
+    await _exportAndSaveNativeFile(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt');
+  }
+
+  /// Native Save As: always suggests a fresh, generic name (never
+  /// [_lastSavedFileName]) - the deliberate difference from plain Save,
+  /// given both otherwise go through the identical save-file dialog (see
+  /// [_saveNativeFile]'s own doc comment).
+  Future<void> _saveAsNativeFile() async {
+    setState(() => _toolbarOpen = false);
+    await _exportAndSaveNativeFile('${_part?.name ?? 'part'}.DIDSAprt');
+  }
+
+  /// File > New: starts a brand-new, blank Part - the same "always start
+  /// fresh" pattern this app already uses at first launch (see
+  /// [PartScreen]'s own doc comment) - after confirming, since whatever is
+  /// currently open (if not yet saved) would otherwise be lost with no way
+  /// back. Pushes a fresh [PartScreen]/State pair with no `initialPartId`/
+  /// `initialHiddenFeatureIds`/`initialFileName` rather than resetting this
+  /// screen's own state in place - see [PartScreen.initialPartId]'s own
+  /// doc comment for why that's deliberate.
+  Future<void> _startNewPart() async {
+    setState(() => _toolbarOpen = false);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Start a new project?'),
+        content: const Text(
+          'Any changes since your last Save will be lost. This does not delete the current '
+          'project - it will still be there if you open it again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('New Project'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PartScreen(
+          documentApi: widget.documentApi,
+          sketchApiFactory: widget.sketchApiFactory,
+        ),
+      ),
+    );
+  }
+
+  /// Native Load: reads a native project file the user picks and imports it
+  /// - a full replace of the backend's whole Document/Sketch store (see
+  /// [DocumentApiClient.importNative]'s own docstring) - then pushes a
+  /// brand-new [PartScreen] pointed at whichever Part the import returned
+  /// (this app has no "pick an existing Part" UI, see [PartScreen]'s own
+  /// doc comment, so the first one is simply which Part opens). Pushing a
+  /// fresh screen rather than reloading in place is deliberate - see
+  /// [PartScreen.initialPartId]'s own doc comment for why.
+  Future<void> _openNativeFile() async {
+    setState(() => _toolbarOpen = false);
+    // On-device feedback: `FileType.custom` + `allowedExtensions` filters by
+    // OS-guessed MIME type - Android has no MIME mapping for a made-up
+    // extension like `.didsacad`, so a saved file shows up greyed out/
+    // unselectable in the picker even though it's visible. `FileType.any`
+    // sidesteps that entirely; content is already validated just below
+    // (JSON decode, then the backend's own schema_version check), so the
+    // extension filter was a UX nicety only, never load-bearing.
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final bytes = result.files.single.bytes;
+    if (bytes == null) return;
+
+    Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    } catch (_) {
+      setState(() => _errorMessage = 'Not a valid native project file');
+      return;
+    }
+
+    // On-device feedback: the file's own Hide/Show state (see
+    // [_saveNativeFile]) - the backend's `import_native` doesn't know this
+    // key exists and simply ignores it, so it's read back here instead.
+    final hiddenFeatureIds = (decoded['hidden_feature_ids'] as List?)?.cast<String>() ?? const [];
+
+    NativeImportResultDto? imported;
+    await _runGuarded(() async {
+      imported = await _api.importNative(decoded);
+    });
+    if (imported == null || imported!.partIds.isEmpty || !mounted) return;
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PartScreen(
+          documentApi: widget.documentApi,
+          sketchApiFactory: widget.sketchApiFactory,
+          initialPartId: imported!.partIds.first,
+          initialHiddenFeatureIds: hiddenFeatureIds,
+          initialFileName: result.files.single.name,
+        ),
+      ),
+    );
+  }
+
+  /// Import: brings an external STEP/STL/OBJ/glTF file in as a fixed,
+  /// non-parametric Body (locked-in scope - see the backend's
+  /// `app.document.models.ImportFeature` own docstring) via
+  /// [DocumentApiClient.createImportFeature]. `type: FileType.any` for the
+  /// same reason [_openNativeFile] uses it, not an extension allow-list -
+  /// see that method's own doc comment for the Android MIME-type-filtering
+  /// bug this sidesteps.
+  static const Map<String, String> _importSourceFormatByExtension = {
+    'step': 'step',
+    'stp': 'step',
+    'stl': 'stl',
+    'obj': 'obj',
+    'gltf': 'gltf',
+    'glb': 'gltf',
+  };
+
+  Future<void> _importGeometry() async {
+    setState(() => _toolbarOpen = false);
+    final part = _part;
+    if (part == null) return;
+
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final picked = result.files.single;
+    final bytes = picked.bytes;
+    if (bytes == null) return;
+
+    final extension = (picked.extension ?? picked.name.split('.').last).toLowerCase();
+    final sourceFormat = _importSourceFormatByExtension[extension];
+    if (sourceFormat == null) {
+      setState(() => _errorMessage = 'Unrecognized file type: .$extension (expected STEP/STL/OBJ/glTF)');
+      return;
+    }
+
+    await _runGuarded(() async {
+      await _api.createImportFeature(part.id, sourceFormat: sourceFormat, bytes: bytes);
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// Export: writes the current Part's geometry out to one of four
+  /// interchange formats (`format` is `'step'`/`'stl'`/`'obj'`/`'glb'`,
+  /// matching both the backend endpoint's own path segment and the saved
+  /// file's extension) via [DocumentApiClient.exportPart]. The backend 400s
+  /// (surfaced as [_errorMessage] by [_runGuarded]) if the Part has no
+  /// solid geometry yet - there is nothing to export before a first Boss.
+  Future<void> _exportPart(String format) async {
+    setState(() => _toolbarOpen = false);
+    final part = _part;
+    if (part == null) return;
+    await _runGuarded(() async {
+      final bytes = await _api.exportPart(part.id, format);
+      await FilePicker.platform.saveFile(
+        dialogTitle: 'Export Part',
+        fileName: '${part.name}.$format',
+        bytes: bytes,
+      );
+    });
+  }
+
   @override
   void dispose() {
     _extrudeDebounce?.cancel();
@@ -885,9 +2254,16 @@ class _PartScreenState extends State<PartScreen> {
 
   Future<void> _loadPart() async {
     await _runGuarded(() async {
-      debugPrint('[PartScreen] createPart...');
-      final part = await _api.createPart('Part 1');
-      debugPrint('[PartScreen] createPart done: ${part.id}');
+      final PartDto part;
+      if (widget.initialPartId != null) {
+        debugPrint('[PartScreen] getPart(${widget.initialPartId})...');
+        part = await _api.getPart(widget.initialPartId!);
+        debugPrint('[PartScreen] getPart done: ${part.id}');
+      } else {
+        debugPrint('[PartScreen] createPart...');
+        part = await _api.createPart('Part 1');
+        debugPrint('[PartScreen] createPart done: ${part.id}');
+      }
       _part = part;
       debugPrint('[PartScreen] getPartMesh...');
       await _refreshMesh();
@@ -898,11 +2274,27 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  ///
+  /// Bug fix (on-device feedback): the fetch itself used to mutate
+  /// [_features] directly, with no `setState` of its own - relying entirely
+  /// on whatever the *caller* happened to `setState` afterward (often
+  /// [_runGuarded]'s own bookkeeping `_busy` flip) to actually trigger a
+  /// repaint. That's exactly backwards for a Flutter `State` object: a field
+  /// read by `build` must be mutated inside `setState` at the point it
+  /// changes, not left to some unrelated later call to coincidentally flush
+  /// it - when the timing lined up this was invisible, but it made the
+  /// screen only ever "catch up" on the *next* unrelated `setState` (see
+  /// [_refreshMesh]'s own matching fix for the reported symptom this
+  /// caused).
   Future<void> _refreshFeatures() async {
     final part = _part;
     if (part == null) return;
-    _features = await _api.listFeatures(part.id);
-    _recomputeCreatePlaneGeometries();
+    final features = await _api.listFeatures(part.id);
+    if (!mounted) return;
+    setState(() {
+      _features = features;
+      _recomputeCreatePlaneGeometries();
+    });
   }
 
   /// Re-fetches the Part's mesh with [_hiddenFeatureIds]/
@@ -922,6 +2314,21 @@ class _PartScreenState extends State<PartScreen> {
   /// a backend implementation detail to keep the mesh endpoint's response
   /// shape uniform, not real geometry the user created, and showing it as a
   /// stray cube in an otherwise-empty viewport was confusing on-device.
+  ///
+  /// Bug fix (on-device feedback): creating a Fillet on a Body that already
+  /// had a Chamfer left the viewport showing the pre-Fillet shape until an
+  /// unrelated later action (e.g. adding a second Chamfer) happened to
+  /// trigger some *other* `setState` call - hover hit-testing already
+  /// reflected the new Fillet topology (it reads [_bodies] directly, not
+  /// through `build`'s last-painted frame), proving the fetch itself
+  /// succeeded and [_bodies] held the right value; only the repaint never
+  /// happened. Root cause: this method mutated [_bodies] with no `setState`
+  /// of its own, relying entirely on whichever caller happened to
+  /// `setState` afterward (most callers go through [_runGuarded], whose own
+  /// `_busy` bookkeeping `setState` in its `finally` block was doing this
+  /// job by accident) - fragile the moment that incidental timing didn't
+  /// line up. Now self-contained: every real change to [_bodies] happens
+  /// inside its own `setState`, so a repaint is never left to chance.
   Future<void> _refreshMesh() async {
     final part = _part;
     if (part == null) return;
@@ -930,8 +2337,9 @@ class _PartScreenState extends State<PartScreen> {
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
     );
+    if (!mounted) return;
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
-    _bodies = isPlaceholder ? [] : response;
+    setState(() => _bodies = isPlaceholder ? [] : response);
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -940,6 +2348,9 @@ class _PartScreenState extends State<PartScreen> {
   /// backend state. A single Feature's fetch failing (e.g. a test fixture
   /// that only stubs `GET /sketch/sketches/{id}`, or a transient network
   /// issue) only drops that Feature's geometry, not the whole viewport.
+  ///
+  /// Bug fix (on-device feedback): mirrors [_refreshMesh]'s own fix - the
+  /// rebuilt maps used to be assigned with no `setState` of their own.
   Future<void> _refreshSketchGeometries() async {
     final updated = <String, SketchGeometry3D>{};
     final updatedLines = <String, List<LineDto>>{};
@@ -960,9 +2371,12 @@ class _PartScreenState extends State<PartScreen> {
         // Swallow - see doc comment above.
       }
     }
-    _allSketchGeometries = updated;
-    _linesByFeatureId = updatedLines;
-    _recomputeVisibleSketchGeometries();
+    if (!mounted) return;
+    setState(() {
+      _allSketchGeometries = updated;
+      _linesByFeatureId = updatedLines;
+      _recomputeVisibleSketchGeometries();
+    });
   }
 
   /// Filters [_allSketchGeometries] down to [_visibleSketchGeometries] by
@@ -1158,6 +2572,10 @@ class _PartScreenState extends State<PartScreen> {
         _startFilletPicker();
       case FeaturePickerAction.chamfer:
         _startChamferPicker();
+      case FeaturePickerAction.revolve:
+        await _revolveSelectedFeature();
+      case FeaturePickerAction.sweep:
+        await _sweepSelectedFeature();
     }
   }
 
@@ -1201,7 +2619,7 @@ class _PartScreenState extends State<PartScreen> {
       final reason = await _checkExtrudeEligibility(feature);
       if (!mounted) return;
       if (reason == null) {
-        _openExtrudePanel(feature);
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
         return;
       }
     }
@@ -1259,7 +2677,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedFeatureId = feature.id;
       _pickableSketchIds = {};
     });
-    _openExtrudePanel(feature);
+    await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
   }
 
   /// Exits picker mode without creating an Extrude - the Feature tree's own
@@ -1271,6 +2689,78 @@ class _PartScreenState extends State<PartScreen> {
       _sketchPickerActive = false;
       _featureTreeVisible = false;
       _pickableSketchIds = {};
+    });
+  }
+
+  /// Prompt F: mirrors [_extrudeSelectedFeature] exactly, substituting
+  /// Revolve's own state/picker/panel - see that method's own doc comment
+  /// for the full reasoning. Reuses [_checkExtrudeEligibility] directly
+  /// (not a duplicate check) since a Revolve's Profile needs exactly the
+  /// same closed-profile eligibility an Extrude's does - that helper has no
+  /// Extrude-specific behaviour of its own, it just asks the Sketch API for
+  /// the Sketch's Profile.
+  Future<void> _revolveSelectedFeature() async {
+    final featureId = _selectedFeatureId;
+    final feature = featureId == null ? null : _featureById(featureId);
+    if (feature != null && feature.type == 'sketch') {
+      final reason = await _checkExtrudeEligibility(feature);
+      if (!mounted) return;
+      if (reason == null) {
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
+        return;
+      }
+    }
+    _startRevolveSketchPicker();
+  }
+
+  /// Mirrors [_startSketchPicker] exactly, for the Revolve picker.
+  void _startRevolveSketchPicker() {
+    setState(() {
+      _revolveSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _pickableRevolveSketchIds = {};
+    });
+    _refreshPickableRevolveSketchIds();
+  }
+
+  /// Mirrors [_refreshPickableSketchIds] exactly, for the Revolve picker.
+  Future<void> _refreshPickableRevolveSketchIds() async {
+    final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
+    final results = await Future.wait(sketchFeatures.map((feature) async {
+      final reason = await _checkExtrudeEligibility(feature);
+      return MapEntry(feature.id, reason == null);
+    }));
+    if (!mounted || !_revolveSketchPickerActive) return;
+    setState(() {
+      _pickableRevolveSketchIds = {for (final entry in results) if (entry.value) entry.key};
+    });
+  }
+
+  /// Mirrors [_onSketchPicked] exactly, for the Revolve picker.
+  Future<void> _onRevolveSketchPicked(FeatureDto feature) async {
+    final reason = await _checkExtrudeEligibility(feature);
+    if (!mounted || !_revolveSketchPickerActive) return;
+    if (reason != null) {
+      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
+      return;
+    }
+    setState(() {
+      _revolveSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _selectedFeatureId = feature.id;
+      _pickableRevolveSketchIds = {};
+    });
+    await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
+  }
+
+  /// Mirrors [_cancelSketchPicker] exactly, for the Revolve picker.
+  void _cancelRevolveSketchPicker() {
+    setState(() {
+      _revolveSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableRevolveSketchIds = {};
     });
   }
 
@@ -1351,6 +2841,19 @@ class _PartScreenState extends State<PartScreen> {
     } else if (feature.type == 'chamfer') {
       // Prompt E: mirrors the fillet branch above exactly.
       await _openChamferPanelForEdit(feature);
+    } else if (feature.type == 'revolve') {
+      // Prompt F: rollback is ended by _confirmRevolve/_cancelRevolve
+      // instead, same "stays engaged for the panel's whole lifetime"
+      // reasoning as the extrude branch above - mirrors that branch exactly,
+      // including the defensive "couldn't open, roll forward immediately"
+      // fallback.
+      final opened = _openRevolvePanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'sweep') {
+      // Rollback is ended by _confirmSweep/_cancelSweep instead - mirrors
+      // the revolve branch above exactly.
+      final opened = _openSweepPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -1472,6 +2975,13 @@ class _PartScreenState extends State<PartScreen> {
     final isSketchFeature = feature.type == 'sketch';
     final extrudeDisabledReason = isSketchFeature ? await _checkExtrudeEligibility(feature) : null;
     final canExtrude = isSketchFeature && extrudeDisabledReason == null;
+    // Prompt F: Revolve's own eligibility check is the identical
+    // closed-profile check Extrude's own uses (see _checkExtrudeEligibility's
+    // doc comment) - reused directly rather than re-run separately. Sweep's
+    // own Profile eligibility mirrors both the same way (its path is
+    // checked live during path-picking, not here).
+    final canRevolve = canExtrude;
+    final canSweep = canExtrude;
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -1480,12 +2990,22 @@ class _PartScreenState extends State<PartScreen> {
       showExtrude: isSketchFeature,
       canExtrude: canExtrude,
       extrudeDisabledReason: extrudeDisabledReason,
+      showRevolve: isSketchFeature,
+      canRevolve: canRevolve,
+      revolveDisabledReason: extrudeDisabledReason,
+      showSweep: isSketchFeature,
+      canSweep: canSweep,
+      sweepDisabledReason: extrudeDisabledReason,
     );
     if (!mounted || action == null) return;
 
     switch (action) {
       case FeatureContextMenuAction.extrude:
-        _openExtrudePanel(feature);
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
+      case FeatureContextMenuAction.revolve:
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
+      case FeatureContextMenuAction.sweep:
+        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -1518,7 +3038,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [_selectionFilterOverrides] override so every viewport tap while the
   /// panel is open can only ever produce a [SelectionEntityKind.body] hit
   /// (see `selection_hit_test.dart`'s `hitTestBodies`).
-  void _openExtrudePanel(FeatureDto sketchFeature) {
+  void _openExtrudePanel(FeatureDto sketchFeature, {List<SketchEntityRefDto> profileRefs = const []}) {
     setState(() {
       _extrudeSketchFeature = sketchFeature;
       _previewExtrudeFeatureId = null;
@@ -1526,6 +3046,7 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeType = ExtrudeType.boss;
       _extrudeStartDistance = 0.0;
       _extrudeEndDistance = 10.0;
+      _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
       // On-device feedback: a one-time default rather than the permanent
@@ -1543,6 +3064,7 @@ class _PartScreenState extends State<PartScreen> {
           body: true,
           sketchPoint: false,
           sketchLine: false,
+          sketchCircle: false,
         ),
       );
     });
@@ -1570,16 +3092,24 @@ class _PartScreenState extends State<PartScreen> {
     final start = feature.startDistance ?? 0.0;
     final end = feature.endDistance ?? 10.0;
     final targetBodyIds = feature.targetBodyIds;
+    final profileRefs = feature.profileRefs;
 
     setState(() {
       _extrudeSketchFeature = sketchFeature;
       _editingExtrudeFeatureId = feature.id;
       _previewExtrudeFeatureId = feature.id;
-      _extrudeEditSnapshot = (type: type, start: start, end: end, targetBodyIds: targetBodyIds);
+      _extrudeEditSnapshot = (
+        type: type,
+        start: start,
+        end: end,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
       _meshBeforeExtrude = _bodies;
       _extrudeType = type;
       _extrudeStartDistance = start;
       _extrudeEndDistance = end;
+      _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {
         for (final bodyId in targetBodyIds)
@@ -1595,6 +3125,7 @@ class _PartScreenState extends State<PartScreen> {
           body: true,
           sketchPoint: false,
           sketchLine: false,
+          sketchCircle: false,
         ),
       );
     });
@@ -1616,6 +3147,7 @@ class _PartScreenState extends State<PartScreen> {
     double start,
     double end,
     List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
   ) async {
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
@@ -1630,6 +3162,7 @@ class _PartScreenState extends State<PartScreen> {
         startDistance: start,
         endDistance: end,
         targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
       );
       _previewExtrudeFeatureId = created.id;
     } else {
@@ -1640,6 +3173,7 @@ class _PartScreenState extends State<PartScreen> {
         startDistance: start,
         endDistance: end,
         targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
       );
     }
     await _refreshMesh();
@@ -1679,6 +3213,7 @@ class _PartScreenState extends State<PartScreen> {
             _extrudeStartDistance,
             _extrudeEndDistance,
             _currentTargetBodyIds(),
+            _extrudeProfileRefs,
           ));
     });
   }
@@ -1729,6 +3264,7 @@ class _PartScreenState extends State<PartScreen> {
         _extrudeStartDistance,
         _extrudeEndDistance,
         targetBodyIds,
+        _extrudeProfileRefs,
       );
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -1748,6 +3284,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeExtrude = null;
       _editingExtrudeFeatureId = null;
       _extrudeEditSnapshot = null;
+      _extrudeProfileRefs = [];
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -1796,6 +3333,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeExtrude = null;
       _editingExtrudeFeatureId = null;
       _extrudeEditSnapshot = null;
+      _extrudeProfileRefs = [];
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -1813,6 +3351,7 @@ class _PartScreenState extends State<PartScreen> {
             startDistance: editSnapshot.start,
             endDistance: editSnapshot.end,
             targetBodyIds: editSnapshot.targetBodyIds,
+            profileRefs: editSnapshot.profileRefs,
           );
           await _refreshFeatures();
         });
@@ -1829,6 +3368,310 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     await _endRollback();
+  }
+
+  // --- Prompt F: Revolve ---------------------------------------------------
+  // A full separate mirror of the Extrude section directly above, per this
+  // project's established separate-not-shared convention - see that
+  // section's own doc comments for the reasoning behind each method; only
+  // pointed out below where Revolve's own shape genuinely differs (the axis
+  // pick alongside target-body picking).
+
+  /// Reverse of [_sketchIdForFeatureId] - the `sketch` SketchFeature id that
+  /// wraps Sketch [sketchId], or null if none is found (defensive only - a
+  /// real RevolveFeature's `axis_ref.sketch_id` always names a Sketch some
+  /// SketchFeature in this Part wraps). Needed (unlike Fillet/Chamfer's
+  /// `SubShapeRef`, whose `body_id` already *is* what [SelectionEntityRef.
+  /// bodyId] wants) because [FeatureDto.axisRef] carries the real Sketch id,
+  /// while [SelectionEntityRef.sketchFeatureId] wants the *Feature* id that
+  /// wraps it - the same two-different-ids distinction
+  /// [_sketchIdForFeatureId] already documents, just resolved in the other
+  /// direction.
+  String? _sketchFeatureIdForSketchId(String sketchId) {
+    for (final feature in _features) {
+      if (feature.type == 'sketch' && feature.sketchId == sketchId) return feature.id;
+    }
+    return null;
+  }
+
+  /// The `sketchLine` entity in [_selectedEntities] - the axis pick - or
+  /// null if none is picked yet. Mirrors [_currentFilletBodyId]'s own
+  /// manual-loop-with-early-return style.
+  SelectionEntityRef? get _revolveAxisEntity {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.sketchLine) return entity;
+    }
+    return null;
+  }
+
+  /// [_revolveAxisEntity] converted to the wire [SketchEntityRefDto] -
+  /// mirrors [_pointRefDtoFor]'s own sketchPoint branch, resolving the real
+  /// Sketch id via [_sketchIdForFeatureId]. Null whenever no axis is picked
+  /// yet, or (defensive only) its Sketch can no longer be resolved.
+  SketchEntityRefDto? _currentRevolveAxisRef() {
+    final entity = _revolveAxisEntity;
+    if (entity == null) return null;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return null;
+    return SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId);
+  }
+
+  /// Mirrors [_currentTargetBodyIds] exactly - every `body`-kind entity in
+  /// [_selectedEntities], deduplicated.
+  List<String> _currentRevolveTargetBodyIds() =>
+      _selectedEntities
+          .where((e) => e.kind == SelectionEntityKind.body)
+          .map((e) => e.bodyId)
+          .toSet()
+          .toList();
+
+  /// Mirrors [_openExtrudePanel] exactly, substituting Revolve's own state
+  /// fields/filter - pushes [_revolveSelectionFilter] (axis + target-body,
+  /// not bodies-only) instead of Extrude's own override.
+  void _openRevolvePanel(FeatureDto sketchFeature, {List<SketchEntityRefDto> profileRefs = const []}) {
+    setState(() {
+      _revolveSketchFeature = sketchFeature;
+      _previewRevolveFeatureId = null;
+      _meshBeforeRevolve = _bodies;
+      _revolveMode = RevolveMode.boss;
+      _revolveAngle = 180.0;
+      _revolveProfileRefs = profileRefs;
+      _entitiesBeforeRevolve = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_revolveSelectionFilter);
+    });
+  }
+
+  /// Mirrors [_openExtrudePanelForEdit] exactly, substituting Revolve's own
+  /// fields - prefills [_selectedEntities] with *both* the reconstructed axis
+  /// entity (via [_sketchFeatureIdForSketchId], the reverse mapping
+  /// [_openExtrudePanelForEdit] never needed) and the target-body entities,
+  /// so the live-edit session starts from exactly what's currently stored.
+  /// Returns false (doing nothing else) if [feature]'s own Sketch or axis_ref
+  /// can't be resolved (defensive only - a real RevolveFeature always has
+  /// both) - the caller ends true-rollback immediately in that case, same as
+  /// [_openExtrudePanelForEdit].
+  bool _openRevolvePanelForEdit(FeatureDto feature) {
+    final sketchFeatureId = feature.sketchFeatureId;
+    final sketchFeature = sketchFeatureId == null ? null : _featureById(sketchFeatureId);
+    final axisRef = feature.axisRef;
+    if (sketchFeature == null || axisRef == null) return false;
+
+    final mode = RevolveMode.fromApiValue(feature.mode ?? 'boss');
+    final angle = feature.angle ?? 180.0;
+    final targetBodyIds = feature.targetBodyIds;
+    final profileRefs = feature.profileRefs;
+    final axisSketchFeatureId = _sketchFeatureIdForSketchId(axisRef.sketchId);
+
+    setState(() {
+      _revolveSketchFeature = sketchFeature;
+      _editingRevolveFeatureId = feature.id;
+      _previewRevolveFeatureId = feature.id;
+      _revolveEditSnapshot = (
+        mode: mode,
+        angle: angle,
+        axisRef: axisRef,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+      _meshBeforeRevolve = _bodies;
+      _revolveMode = mode;
+      _revolveAngle = angle;
+      _revolveProfileRefs = profileRefs;
+      _entitiesBeforeRevolve = _selectedEntities;
+      _selectedEntities = {
+        if (axisSketchFeatureId != null)
+          SelectionEntityRef(
+            kind: SelectionEntityKind.sketchLine,
+            sketchFeatureId: axisSketchFeatureId,
+            sketchEntityId: axisRef.entityId,
+          ),
+        for (final bodyId in targetBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_revolveSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Mirrors [_ensureExtrudeFeatureExists] exactly (the simple pattern - no
+  /// preview-mesh overlay, no self-exclusion - see this section's own header
+  /// comment on why Revolve doesn't need either).
+  Future<void> _ensureRevolveFeatureExists(
+    RevolveMode mode,
+    double angle,
+    SketchEntityRefDto axisRef,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto> profileRefs,
+  ) async {
+    final part = _part;
+    final sketchFeature = _revolveSketchFeature;
+    if (part == null || sketchFeature == null) return;
+
+    final existingId = _previewRevolveFeatureId;
+    if (existingId == null) {
+      final created = await _api.createRevolveFeature(
+        part.id,
+        sketchFeatureId: sketchFeature.id,
+        axisRef: axisRef,
+        angle: angle,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+      _previewRevolveFeatureId = created.id;
+    } else {
+      await _api.updateRevolveFeature(
+        part.id,
+        existingId,
+        axisRef: axisRef,
+        angle: angle,
+        mode: mode.apiValue,
+        targetBodyIds: targetBodyIds,
+        profileRefs: profileRefs,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [RevolvePanel.onChanged] - mirrors [_onExtrudeValuesChanged].
+  void _onRevolveValuesChanged(RevolveMode mode, double angle) {
+    _revolveMode = mode;
+    _revolveAngle = angle;
+    _scheduleRevolvePreview();
+  }
+
+  /// Mirrors [_scheduleExtrudePreview] exactly, except the debounced re-solve
+  /// is skipped entirely whenever no axis is picked yet (mirrors Fillet/
+  /// Chamfer's own "nothing to solve without at least one edge" guard) -
+  /// re-checked at fire time, not at schedule time, same "always the current
+  /// value" convention every other debounced field in this file already
+  /// uses.
+  void _scheduleRevolvePreview() {
+    _revolveDebounce?.cancel();
+    _revolveDebounce = Timer(const Duration(milliseconds: 500), () {
+      final axisRef = _currentRevolveAxisRef();
+      if (axisRef == null) return;
+      _runGuarded(() => _ensureRevolveFeatureExists(
+            _revolveMode,
+            _revolveAngle,
+            axisRef,
+            _currentRevolveTargetBodyIds(),
+            _revolveProfileRefs,
+          ));
+    });
+  }
+
+  /// Mirrors [_confirmExtrude] exactly, including the auto-hide-the-
+  /// consumed-Sketch behaviour (a Revolve consumes its Sketch's Profile
+  /// exactly like an Extrude does) and the unconditional restore of
+  /// [_selectedEntities]/pop of the filter override.
+  Future<void> _confirmRevolve() async {
+    _revolveDebounce?.cancel();
+    final sketchFeature = _revolveSketchFeature;
+    final wasEditing = _editingRevolveFeatureId != null;
+    final axisRef = _currentRevolveAxisRef();
+    final targetBodyIds = _currentRevolveTargetBodyIds();
+    if (axisRef != null) {
+      await _runGuarded(() async {
+        await _ensureRevolveFeatureExists(
+          _revolveMode,
+          _revolveAngle,
+          axisRef,
+          targetBodyIds,
+          _revolveProfileRefs,
+        );
+        await _refreshFeatures();
+        await _refreshSketchGeometries();
+      });
+    }
+    if (!mounted) return;
+    setState(() {
+      if (sketchFeature != null && !wasEditing) {
+        _hiddenFeatureIds.add(sketchFeature.id);
+        _autoHiddenSketchFeatureIds.add(sketchFeature.id);
+      }
+      _recomputeVisibleSketchGeometries();
+      _revolveSketchFeature = null;
+      _previewRevolveFeatureId = null;
+      _meshBeforeRevolve = null;
+      _editingRevolveFeatureId = null;
+      _revolveEditSnapshot = null;
+      _revolveProfileRefs = [];
+      _selectedEntities = _entitiesBeforeRevolve ?? {};
+      _entitiesBeforeRevolve = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelExtrude] exactly.
+  Future<void> _cancelRevolve() async {
+    _revolveDebounce?.cancel();
+    final part = _part;
+    final sketchFeature = _revolveSketchFeature;
+    final previewId = _previewRevolveFeatureId;
+    final meshBefore = _meshBeforeRevolve;
+    final wasEditing = _editingRevolveFeatureId != null;
+    final editSnapshot = _revolveEditSnapshot;
+    setState(() {
+      _revolveSketchFeature = null;
+      _previewRevolveFeatureId = null;
+      _meshBeforeRevolve = null;
+      _editingRevolveFeatureId = null;
+      _revolveEditSnapshot = null;
+      _revolveProfileRefs = [];
+      _selectedEntities = _entitiesBeforeRevolve ?? {};
+      _entitiesBeforeRevolve = null;
+      _selectionFilterOverrides.pop();
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateRevolveFeature(
+            part.id,
+            previewId,
+            axisRef: editSnapshot.axisRef,
+            angle: editSnapshot.angle,
+            mode: editSnapshot.mode.apiValue,
+            targetBodyIds: editSnapshot.targetBodyIds,
+            profileRefs: editSnapshot.profileRefs,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// Mirrors [_targetBodyPickerBannerText], prefixed with the axis-pick
+  /// status since Revolve's banner has two things to report rather than
+  /// Extrude's one.
+  String _revolvePickerBannerText() {
+    final axisText = _revolveAxisEntity == null ? 'Select an axis line' : 'Axis selected';
+    final count = _currentRevolveTargetBodyIds().length;
+    final bodyText = _revolveMode == RevolveMode.cut
+        ? (count == 0 ? 'select a target body' : '$count target body/bodies selected')
+        : (count == 0 ? 'tap bodies to merge into (optional)' : '$count target body/bodies selected');
+    return '$axisText, $bodyText';
   }
 
   // --- C2: Create Plane -----------------------------------------------------
@@ -2379,13 +4222,22 @@ class _PartScreenState extends State<PartScreen> {
   /// [_ensureFilletFeatureExists]) rather than after it, so this doesn't
   /// double the live-preview round-trip latency on top of doubling the
   /// backend's recompute work.
+  ///
+  /// Bug fix (on-device feedback): mirrors [_refreshMesh]'s own fix - this
+  /// used to mutate [_filletPreviewBodyId]/[_filletPreviewMesh] with no
+  /// `setState` of its own, so the live rounded-corner visual could just as
+  /// easily be left stale pending an unrelated later repaint. Now
+  /// self-contained.
   Future<void> _refreshFilletPreviewMesh() async {
     final part = _part;
     final featureId = _previewFilletFeatureId;
     final bodyId = _currentFilletBodyId();
     if (part == null || featureId == null || bodyId == null) {
-      _filletPreviewBodyId = null;
-      _filletPreviewMesh = null;
+      if (!mounted) return;
+      setState(() {
+        _filletPreviewBodyId = null;
+        _filletPreviewMesh = null;
+      });
       return;
     }
     final response = await _api.getPartMesh(
@@ -2394,6 +4246,7 @@ class _PartScreenState extends State<PartScreen> {
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
     );
+    if (!mounted) return;
     BodyMeshDto? match;
     for (final body in response) {
       if (body.bodyId == bodyId) {
@@ -2401,8 +4254,10 @@ class _PartScreenState extends State<PartScreen> {
         break;
       }
     }
-    _filletPreviewBodyId = bodyId;
-    _filletPreviewMesh = match?.mesh;
+    setState(() {
+      _filletPreviewBodyId = bodyId;
+      _filletPreviewMesh = match?.mesh;
+    });
   }
 
   /// Keeps the just-created/edited Feature, restores whatever was selected
@@ -2585,13 +4440,20 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Mirrors [_refreshFilletPreviewMesh] exactly.
+  ///
+  /// Bug fix (on-device feedback): mirrors [_refreshFilletPreviewMesh]'s own
+  /// fix - self-contained `setState` now, rather than relying on an
+  /// unrelated later repaint to flush it.
   Future<void> _refreshChamferPreviewMesh() async {
     final part = _part;
     final featureId = _previewChamferFeatureId;
     final bodyId = _currentChamferBodyId();
     if (part == null || featureId == null || bodyId == null) {
-      _chamferPreviewBodyId = null;
-      _chamferPreviewMesh = null;
+      if (!mounted) return;
+      setState(() {
+        _chamferPreviewBodyId = null;
+        _chamferPreviewMesh = null;
+      });
       return;
     }
     final response = await _api.getPartMesh(
@@ -2600,6 +4462,7 @@ class _PartScreenState extends State<PartScreen> {
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
     );
+    if (!mounted) return;
     BodyMeshDto? match;
     for (final body in response) {
       if (body.bodyId == bodyId) {
@@ -2607,8 +4470,10 @@ class _PartScreenState extends State<PartScreen> {
         break;
       }
     }
-    _chamferPreviewBodyId = bodyId;
-    _chamferPreviewMesh = match?.mesh;
+    setState(() {
+      _chamferPreviewBodyId = bodyId;
+      _chamferPreviewMesh = match?.mesh;
+    });
   }
 
   /// Mirrors [_confirmFillet] exactly.
@@ -2711,18 +4576,34 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(_refreshMesh);
   }
 
-  /// Cascade-deletes [feature] and every Feature after it, once the user
-  /// confirms exactly which ones will go. The Feature tree is already in
-  /// creation order, so the Features at and after [feature]'s index are
-  /// precisely the ones the backend's cascade-delete will remove.
+  /// Cascade-deletes [feature] and every Feature that actually transitively
+  /// depends on it (the real dependency graph - B2), once the user
+  /// confirms exactly which ones will go.
+  ///
+  /// On-device feedback: this used to assume "every Feature at and after
+  /// [feature]'s index in the list" - true only for the pre-B2 world where
+  /// list order and dependency order always coincided (every single-body
+  /// Part before A1's multi-body model). A Sketch feeding two independent
+  /// Extrudes, or a Feature with no real dependents at all, could already
+  /// show the wrong warning - naming Features that would in fact survive.
+  /// [DocumentApiClient.previewCascadeDelete] asks the backend for the
+  /// exact same computation the delete itself performs, instead.
   Future<void> _cascadeDeleteFeature(FeatureDto feature) async {
     final part = _part;
     if (part == null || _busy) return;
 
-    final index = _features.indexWhere((f) => f.id == feature.id);
-    if (index == -1) return;
+    List<String> toDeleteIds;
+    try {
+      toDeleteIds = await _api.previewCascadeDelete(part.id, feature.id);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+      return;
+    }
+    if (!mounted) return;
     final namesToDelete = [
-      for (var i = index; i < _features.length; i++) featureDisplayName(_features, i),
+      for (var i = 0; i < _features.length; i++)
+        if (toDeleteIds.contains(_features[i].id)) featureDisplayName(_features, i),
     ];
 
     final confirmed = await showCascadeDeleteDialog(context, namesToDelete);
@@ -2833,11 +4714,24 @@ class _PartScreenState extends State<PartScreen> {
       // doesn't intercept back here, consistent with Extrude/Create Plane's
       // own "Confirm/Cancel are the only way out" panels once open - see
       // [_openFilletPanel].
-      canPop: !_planeSelectionMode && !_sketchPickerActive,
+      canPop: !_planeSelectionMode &&
+          !_sketchPickerActive &&
+          !_revolveSketchPickerActive &&
+          !_sweepSketchPickerActive &&
+          !_profilePickerActive &&
+          !_pathPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_sketchPickerActive) {
           _cancelSketchPicker();
+        } else if (_revolveSketchPickerActive) {
+          _cancelRevolveSketchPicker();
+        } else if (_sweepSketchPickerActive) {
+          _cancelSweepSketchPicker();
+        } else if (_profilePickerActive) {
+          _cancelProfilePicker();
+        } else if (_pathPickerActive) {
+          _cancelPathPicker();
         } else {
           _cancelPlaneSelectionMode();
         }
@@ -2879,7 +4773,15 @@ class _PartScreenState extends State<PartScreen> {
                   selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
-                  isPreviewMesh: _extrudeSketchFeature != null,
+                  // Prompt F: Revolve uses the same simple tinted-preview
+                  // convention Extrude does (see docs/live-preview-pattern.md's
+                  // decision tree - Boss/Cut target_body_ids are Body-level
+                  // picks, stable across re-solves) - an `||`, not a separate
+                  // overlay, since only one of the three is ever active at
+                  // once. Sweep (also Body-level picks) joins the same `||`.
+                  isPreviewMesh: _extrudeSketchFeature != null ||
+                      _revolveSketchFeature != null ||
+                      _sweepSketchFeature != null,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -2911,6 +4813,7 @@ class _PartScreenState extends State<PartScreen> {
                   isPerspective: _isPerspective,
                   farClip: _farClip,
                   onFarClipChanged: _onFarClipChanged,
+                  sketchLineLoopGroup: _sketchLineLoopGroup,
                 ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
@@ -2958,7 +4861,14 @@ class _PartScreenState extends State<PartScreen> {
                 // empty-selection gate would already hide this too, but this
                 // stays explicit rather than relying on that as an implicit
                 // side effect).
-                if (!_extrudeActive && !_createPlaneActive && !_filletActive && !_chamferActive)
+                if (!_extrudeActive &&
+                    !_createPlaneActive &&
+                    !_filletActive &&
+                    !_chamferActive &&
+                    !_revolveActive &&
+                    !_sweepActive &&
+                    !_profilePickerActive &&
+                    !_pathPickerActive)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -2979,7 +4889,11 @@ class _PartScreenState extends State<PartScreen> {
                         !_extrudeActive &&
                         !_createPlaneActive &&
                         !_filletActive &&
-                        !_chamferActive,
+                        !_chamferActive &&
+                        !_revolveActive &&
+                        !_sweepActive &&
+                        !_profilePickerActive &&
+                        !_pathPickerActive,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -2988,13 +4902,32 @@ class _PartScreenState extends State<PartScreen> {
                     onClose: () {
                       if (_sketchPickerActive) {
                         _cancelSketchPicker();
+                      } else if (_revolveSketchPickerActive) {
+                        _cancelRevolveSketchPicker();
+                      } else if (_sweepSketchPickerActive) {
+                        _cancelSweepSketchPicker();
                       } else {
                         setState(() => _featureTreeVisible = false);
                       }
                     },
-                    isSketchPickerMode: _sketchPickerActive,
-                    pickableSketchIds: _pickableSketchIds,
-                    onSketchPicked: _onSketchPicked,
+                    // Prompt F: only one of _sketchPickerActive/
+                    // _revolveSketchPickerActive/_sweepSketchPickerActive is
+                    // ever true at a time (same "one panel/picker active"
+                    // invariant every other flow in this file relies on), so a
+                    // chain of ternaries picks whichever is live - mirrors the
+                    // previewOverlayBodyId/previewOverlayMesh ternary above.
+                    isSketchPickerMode:
+                        _sketchPickerActive || _revolveSketchPickerActive || _sweepSketchPickerActive,
+                    pickableSketchIds: _sketchPickerActive
+                        ? _pickableSketchIds
+                        : _revolveSketchPickerActive
+                            ? _pickableRevolveSketchIds
+                            : _pickableSweepSketchIds,
+                    onSketchPicked: _sketchPickerActive
+                        ? _onSketchPicked
+                        : _revolveSketchPickerActive
+                            ? _onRevolveSketchPicked
+                            : _onSweepSketchPicked,
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
@@ -3010,6 +4943,12 @@ class _PartScreenState extends State<PartScreen> {
                     renderMode: _renderMode,
                     onRenderModeChanged: _onRenderModeChanged,
                     onOpenConnectionSettings: _openConnectionSettings,
+                    onSaveNative: _saveNativeFile,
+                    onSaveAsNative: _saveAsNativeFile,
+                    onOpenNative: _openNativeFile,
+                    onStartNew: _startNewPart,
+                    onExportPart: _exportPart,
+                    onImportGeometry: _importGeometry,
                     bgColourHex: _bgColourHex,
                     bodyColourHex: _bodyColourHex,
                     bodyOpacity: _bodyOpacity,
@@ -3077,6 +5016,34 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelChamfer,
                     ),
                   ),
+                if (_revolveActive)
+                  Positioned.fill(
+                    child: RevolvePanel(
+                      key: ValueKey(_editingRevolveFeatureId ?? _revolveSketchFeature!.id),
+                      title: _editingRevolveFeatureId != null ? 'Edit Revolve' : 'Revolve',
+                      initialMode: _revolveMode,
+                      initialAngle: _revolveAngle,
+                      hasAxis: _revolveAxisEntity != null,
+                      targetBodyCount: _currentRevolveTargetBodyIds().length,
+                      onChanged: _onRevolveValuesChanged,
+                      onConfirm: _confirmRevolve,
+                      onCancel: _cancelRevolve,
+                    ),
+                  ),
+                if (_sweepActive)
+                  Positioned.fill(
+                    child: SweepPanel(
+                      key: ValueKey(_editingSweepFeatureId ?? _sweepSketchFeature!.id),
+                      title: _editingSweepFeatureId != null ? 'Edit Sweep' : 'Sweep',
+                      initialMode: _sweepMode,
+                      pathSegmentCount: _sweepPathRefs.length,
+                      pathIsClosed: _sweepPathIsClosed(),
+                      targetBodyCount: _currentSweepTargetBodyIds().length,
+                      onChanged: _onSweepValuesChanged,
+                      onConfirm: _confirmSweep,
+                      onCancel: _cancelSweep,
+                    ),
+                  ),
                 // Prompt A4: names the target-body picking mode live for the
                 // whole time the Extrude panel is open - same top-center
                 // pill convention as the plane-selection-mode banner below,
@@ -3129,6 +5096,184 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Prompt F: mirrors the Extrude banner directly above exactly,
+                // substituting Revolve's own axis-plus-target-body banner
+                // text and Cancel callback.
+                if (_revolveActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _revolvePickerBannerText(),
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelRevolve,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Mirrors the Revolve banner directly above exactly,
+                // substituting Sweep's own target-body-only banner text
+                // (its path is already fixed by the time this panel shows -
+                // see [_sweepPickerBannerText]'s own doc comment) and Cancel
+                // callback.
+                if (_sweepActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _sweepPickerBannerText(),
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelSweep,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Names the path-picking mode live - same top-center pill
+                // convention as the plane-selection-mode/target-body-picking
+                // banners above. Tap a line to extend the path (or the most
+                // recently picked one again to undo it); the checkmark FAB
+                // (see floatingActionButton below) confirms once at least one
+                // segment is picked and opens SweepPanel.
+                if (_pathPickerActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _pathPickerBannerText(),
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelPathPicker,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Prompt G: names the profile-picking mode live - same
+                // top-center pill convention as the plane-selection-mode/
+                // target-body-picking banners above. Tap a line or circle to
+                // toggle its whole loop; the checkmark FAB (see floatingActionButton
+                // below) confirms and opens the target panel.
+                if (_profilePickerActive)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _profilePickedCount() == 0
+                                          ? 'Tap profiles to include, or confirm to use all'
+                                          : '${_profilePickedCount()} profile(s) selected - tap '
+                                              'checkmark to confirm',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelProfilePicker,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 // Always on top (last in the Stack) so it stays tappable
                 // regardless of whether the toolbar underneath is open -
                 // but hidden while the Feature tree is open since it sits
@@ -3145,7 +5290,11 @@ class _PartScreenState extends State<PartScreen> {
                     !_extrudeActive &&
                     !_createPlaneActive &&
                     !_filletActive &&
-                    !_chamferActive)
+                    !_chamferActive &&
+                    !_revolveActive &&
+                    !_sweepActive &&
+                    !_profilePickerActive &&
+                    !_pathPickerActive)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -3322,8 +5471,14 @@ class _PartScreenState extends State<PartScreen> {
           ? null
           : Padding(
               padding: EdgeInsets.only(
-                bottom:
-                    (_extrudeActive || _createPlaneActive || _filletActive || _chamferActive) ? 180 : 0,
+                bottom: (_extrudeActive ||
+                        _createPlaneActive ||
+                        _filletActive ||
+                        _chamferActive ||
+                        _revolveActive ||
+                        _sweepActive)
+                    ? 180
+                    : 0,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -3342,13 +5497,46 @@ class _PartScreenState extends State<PartScreen> {
                   if (!_extrudeActive &&
                       !_createPlaneActive &&
                       !_filletActive &&
-                      !_chamferActive) ...[
+                      !_chamferActive &&
+                      !_revolveActive &&
+                      !_sweepActive &&
+                      !_profilePickerActive &&
+                      !_pathPickerActive) ...[
                     const SizedBox(height: 12),
                     FloatingActionButton(
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
                       child: const Icon(Icons.add),
+                    ),
+                  ],
+                  // Prompt G: the profile picker's own "confirm" FAB, in the
+                  // Add FAB's place (never both at once, same "one FAB slot"
+                  // convention every other mode here follows) - ticks off
+                  // the currently-picked loops and opens the target panel
+                  // (see [_confirmProfilePicker]).
+                  if (_profilePickerActive) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'confirm-profile-picker-fab',
+                      tooltip: 'Confirm profile selection',
+                      onPressed: _busy ? null : _confirmProfilePicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  ],
+                  // The path picker's own "confirm" FAB, mirroring the
+                  // profile picker's own directly above - ticks off the
+                  // currently-picked path and opens SweepPanel (see
+                  // [_confirmPathPicker]). Disabled until at least one
+                  // segment is picked, same "requires 1+" rule Cut's own
+                  // target-body picking already enforces elsewhere.
+                  if (_pathPickerActive) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'confirm-path-picker-fab',
+                      tooltip: 'Confirm path selection',
+                      onPressed: _busy || _pathPickerRefs.isEmpty ? null : _confirmPathPicker,
+                      child: const Icon(Icons.check),
                     ),
                   ],
                 ],
