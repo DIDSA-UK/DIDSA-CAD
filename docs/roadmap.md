@@ -1309,17 +1309,74 @@ requirement - needs confirming before committing to "pull in the latest
 flutter_scene build," since master-channel Flutter is a materially bigger
 commitment (pre-release, less stable) than staying on 0.18.1/stable.
 
-**Plan**: work happens on a new branch off `main` (this branch,
-`claude/docs-folder-context-yzj5r7`, is being merged to `main` first, via
-PR, closing out the whole Save/Load/Export/Import + View Complex Mesh
-phase). Scope still being defined - candidates identified so far: adopt
-`PhysicallyBasedMaterial` (in `mesh_geometry.dart` for the main viewport
-and/or `mesh_viewer_render.dart` for the mesh viewer) plus at least one
-real Light node in the Scene; evaluate whether upgrading `flutter_scene`
-past 0.18.1 is warranted/possible without a Flutter channel change; decide
-whether `PartViewport` and the mesh viewer should share one lighting setup
-or diverge (a CAD Part's own colored-plastic look vs. a photogrammetry
-scan's captured-texture look may want different treatment). Not yet
-started - this entry exists to make the roadmap accurately reflect the
-next piece of active work, per this user's explicit request to check
-docs are current before merging to `main`.
+**Plan**: work happens on a new branch off `main` (`claude/lighting-shading-upgrade`,
+branched after `claude/docs-folder-context-yzj5r7` merged via PR #93,
+closing out the whole Save/Load/Export/Import + View Complex Mesh phase).
+No `flutter_scene` version upgrade needed after all - 0.18.1 (already
+pinned) is confirmed to be the current latest pub.dev release, and it
+already includes everything this needed (`PhysicallyBasedMaterial`,
+`Scene.directionalLight`, `EnvironmentMap.studio()`, SSAO). The "requires
+Flutter master channel" line above turned out to be moot - the user's
+`flutter pub get`/`flutter run` already succeeded against 0.18.1, so their
+toolchain already satisfies whatever that constraint was about.
+
+**Built so far** (not yet on-device confirmed):
+- Both `PartViewport` (`part_viewport.dart`'s `_syncMeshNode`) and the
+  mesh viewer (`mesh_viewer_render.dart`'s `buildMeshViewerMaterial`) now
+  build a real `PhysicallyBasedMaterial` for a confirmed Body/mesh instead
+  of `UnlitMaterial` - `alphaMode`/`baseColorFactor` carried over unchanged,
+  plus new `roughnessFactor`/`emissiveFactor`; `metallicFactor` is fixed at
+  `ScenePreferences.fixedMetallic` (non-metal/plastic), not user-adjustable.
+  Live-operation preview overlays (Extrude/Fillet/Chamfer's translucent
+  orange tint) deliberately stay on `UnlitMaterial` - they're meant to read
+  as a flat "in-progress" indicator, not real lit geometry.
+- Both viewports now set `Scene.environment = EnvironmentMap.studio()`
+  (a procedural, no-asset-required ambient/IBL fill, always on,
+  unconditional - not a user control) and `Scene.directionalLight` (a
+  single fixed-direction "sun" light, intensity driven by the new "mid
+  lighting" control) - see `PartViewport._applyLighting`/
+  `mesh_viewer_render.dart`'s `applySceneLighting`.
+- New `ScenePreferences` (`viewport3d/scene_preferences.dart`,
+  `shared_preferences`-backed, mirrors `ViewPreferences`'s own pattern):
+  `roughness` (default 0.35, "light roughness" per the user's requested
+  default), `lightIntensity` (default 1.5 of a 0-3 range, "mid lighting"),
+  `emissiveIntensity` (default 0, "luminescence" - named as an available
+  control, not one of the three explicit defaults). Base colour
+  deliberately isn't duplicated here - it reuses the pre-existing
+  `ViewPreferences.bodyColourHex`/"Body Colour" picker, whose own default
+  was changed from `#B0B8C1` ("Aluminium", kept as its own named swatch)
+  to mid-grey `#808080` per the user's explicit requested default.
+- New `SceneControlsPanel`/`showScenePrefsSheet`
+  (`viewport3d/scene_controls_panel.dart`) - shared UI, embedded live
+  (drag-and-see, no Apply step) two different ways: `PartToolbar` nests it
+  as a new "Scene" `ExpansionTile` under the existing View menu (colour
+  omitted there - "Body Colour" is already a separate entry right above
+  it); `MeshViewerScreen` (which had no colour picker at all before this)
+  wraps it in a modal sheet, reached via a brand-new File/View `AppBar`
+  menu (`File > Open/Exit`, `View > Scene`) - the mesh viewer previously
+  had no menu structure at all, just a single folder-open icon button.
+- Fixed, unrelated to lighting: the mesh viewer's file picker was greying
+  out every format but `.stl` on-device - Android's SAF filters by MIME
+  type, and none of STL/OBJ/glTF/GLB map to a standard registered MIME
+  type, so `file_picker`'s extension-to-MIME lookup only reliably enabled
+  the first extension in the list. Switched from `FileType.custom` +
+  `allowedExtensions` to `FileType.any` with the extension validated after
+  picking instead (the decoder already rejected an unsupported one with a
+  clear error).
+
+**Deliberately not built this pass**: SSAO and the post-processing chain
+(bloom/tone-mapping/color grading) - real shading/lighting first, polish
+later, per the original scoping conversation.
+
+**Flagged, not yet on-device-confirmed** (same "no Flutter SDK in this
+sandbox" caveat as every Dart change all session): `PhysicallyBasedMaterial`/
+`DirectionalLight`/`EnvironmentMap` are all genuinely new `flutter_scene`
+API surface in this codebase (every prior use was `UnlitMaterial` only).
+Their field/constructor shapes were confirmed against real `flutter_scene`
+0.18.1 source, but whether they're all reachable through the
+`package:flutter_scene/scene.dart` barrel import already used throughout
+`part_viewport.dart`/`mesh_viewer_render.dart` (as opposed to needing a
+more specific import path) was not directly confirmed - see
+`part_viewport.dart`'s own doc comment on `_applyLighting` for the full
+note. If either file fails to compile on the next on-device build, it's
+very likely the same fix needed in both places.

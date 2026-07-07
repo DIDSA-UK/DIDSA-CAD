@@ -12,6 +12,7 @@ import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
+import 'scene_preferences.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_geometry_3d.dart';
@@ -128,6 +129,17 @@ class PartViewport extends StatefulWidget {
   final String bodyColourHex;
   final double bodyOpacity;
 
+  /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls (see
+  /// `ScenePreferences`) - same controlled-widget/next-rebuild-only
+  /// convention as [bodyColourHex]/[bodyOpacity] just above for
+  /// [roughness]/[emissiveIntensity] (baked into each Body's material);
+  /// [lightIntensity] instead drives the single Scene-wide
+  /// `Scene.directionalLight`, reapplied whenever it changes (see
+  /// [didUpdateWidget]) rather than per Body.
+  final double roughness;
+  final double lightIntensity;
+  final double emissiveIntensity;
+
   /// Stage 23: true while the viewport is in selection mode (as opposed to
   /// the default orbit mode) - [PartScreen] owns the toggle. Per Item 7 of
   /// the brief, this only ever gates the *new* cursor/hover/selection
@@ -209,6 +221,9 @@ class PartViewport extends StatefulWidget {
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
+    this.roughness = ScenePreferences.defaultRoughness,
+    this.lightIntensity = ScenePreferences.defaultLightIntensity,
+    this.emissiveIntensity = ScenePreferences.defaultEmissiveIntensity,
     this.selectionMode = false,
     this.selectedEntities = const {},
     this.onSelectionToggle,
@@ -371,7 +386,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // if this doesn't help; `Scene`'s default (`AntiAliasingMode.auto`)
           // already only enables MSAA when `doesSupportOffscreenMSAA` is
           // true, which this device does report.
-          ..antiAliasingMode = AntiAliasingMode.none;
+          ..antiAliasingMode = AntiAliasingMode.none
+          // Lighting/shading upgrade: a procedural, no-asset-required
+          // ambient/IBL fill so a PhysicallyBasedMaterial's unlit side isn't
+          // pure black - see ScenePreferences' own doc comment for why this
+          // is unconditional/not a user-adjustable control.
+          ..environment = EnvironmentMap.studio();
+        _applyLighting();
         // See the `print` comment above: same reasoning applies here.
         print(
           '[PartViewport][RenderDebug] scene: antiAliasingMode=${_scene!.antiAliasingMode} '
@@ -399,8 +420,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodyColourHex != oldWidget.bodyColourHex ||
-        widget.bodyOpacity != oldWidget.bodyOpacity) {
+        widget.bodyOpacity != oldWidget.bodyOpacity ||
+        widget.roughness != oldWidget.roughness ||
+        widget.emissiveIntensity != oldWidget.emissiveIntensity) {
       setState(_syncMeshNode);
+    }
+    if (widget.lightIntensity != oldWidget.lightIntensity) {
+      setState(_applyLighting);
     }
     if (widget.bodies != oldWidget.bodies ||
         widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
@@ -471,6 +497,36 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
   }
 
+  /// Sets the Scene's single directional "sun" light from
+  /// [PartViewport.lightIntensity] - the "mid lighting" control. A fixed
+  /// direction/colour is used (not user-adjustable - the user asked for a
+  /// lighting *intensity* control, not a full light-rig editor); the
+  /// default direction/colour below matches `DirectionalLight`'s own
+  /// constructor defaults per the real `flutter_scene` source consulted for
+  /// this upgrade.
+  ///
+  /// FLAGGED FOR ON-DEVICE VERIFICATION: `PhysicallyBasedMaterial`/
+  /// `DirectionalLight`/`EnvironmentMap` (all three genuinely new to this
+  /// codebase - every prior use of `flutter_scene` here was `UnlitMaterial`
+  /// only) were confirmed to exist and confirmed their field/constructor
+  /// shapes against real `flutter_scene` 0.18.1 source, but *not* confirmed
+  /// to be exported from the `package:flutter_scene/scene.dart` barrel
+  /// import already used throughout this file (as opposed to needing a more
+  /// specific import path) - this sandbox has no Flutter SDK, so nothing in
+  /// this upgrade has actually been compiled. The mesh viewer's own
+  /// `PhysicallyBasedMaterial`/lighting adoption (`mesh_viewer_render.dart`)
+  /// shares this exact same risk; if either fails to compile, it's very
+  /// likely the same fix in both places.
+  void _applyLighting() {
+    final scene = _scene;
+    if (scene == null) return;
+    scene.directionalLight = DirectionalLight(
+      direction: vm.Vector3(-0.3, -1.0, -0.2),
+      color: vm.Vector3(1, 1, 1),
+      intensity: widget.lightIntensity,
+    );
+  }
+
   void _syncMeshNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -518,17 +574,29 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           '${mesh.vertices.length} verts)...',
         );
         final geometry = geometryFromMesh(mesh);
+        // Live-operation preview overlays stay a flat, translucent tint -
+        // they're meant to read as a distinct "in-progress" indicator, not
+        // real lit geometry, so they're deliberately left on UnlitMaterial.
         final material = (widget.isPreviewMesh || isPreviewOverlay)
             ? (UnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
-            // TODO: flutter_scene's UnlitMaterial has no roughness/metallic
-            // (or any other lit-shading) parameter to give the body a
-            // "subtle specular highlight"/matte-metallic finish per the
-            // brief - revisit if/when a PBR material type ships.
-            : (UnlitMaterial()
+            // Lighting/shading upgrade: a confirmed Body now gets a real,
+            // lit PBR material (see ScenePreferences/_applyLighting) instead
+            // of a flat UnlitMaterial tint - metallicFactor is fixed at
+            // ScenePreferences.fixedMetallic (see its own doc comment for
+            // why this isn't a user-adjustable slider).
+            : (PhysicallyBasedMaterial()
               ..alphaMode = widget.bodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
-              ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: widget.bodyOpacity));
+              ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: widget.bodyOpacity)
+              ..roughnessFactor = widget.roughness
+              ..metallicFactor = ScenePreferences.fixedMetallic
+              ..emissiveFactor = vm.Vector4(
+                widget.emissiveIntensity,
+                widget.emissiveIntensity,
+                widget.emissiveIntensity,
+                1,
+              ));
         final node = Node(mesh: Mesh(geometry, material));
         scene.add(node);
         _meshNodes[body.bodyId] = node;

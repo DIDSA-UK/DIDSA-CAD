@@ -19,7 +19,10 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../viewport3d/orbit_camera.dart';
+import '../viewport3d/scene_controls_panel.dart';
+import '../viewport3d/scene_preferences.dart';
 import '../viewport3d/triad.dart';
+import '../viewport3d/view_preferences.dart';
 import 'mesh_data.dart';
 import 'mesh_viewer_render.dart';
 
@@ -60,15 +63,118 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   int? _originalTriangleCount;
   String? _fileName;
 
-  Future<void> _pickAndLoad() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['stl', 'obj', 'gltf', 'glb'],
-      withData: true,
+  /// Scene/material appearance controls - shared with the main Part viewport
+  /// via [ViewPreferences]/[ScenePreferences] (see `scene_preferences.dart`'s
+  /// own doc comment for why base colour reuses [ViewPreferences] rather than
+  /// a separate field), loaded in [initState] below.
+  String _bodyColourHex = ViewPreferences.defaultBodyColourHex;
+  double _roughness = ScenePreferences.defaultRoughness;
+  double _lightIntensity = ScenePreferences.defaultLightIntensity;
+  double _emissiveIntensity = ScenePreferences.defaultEmissiveIntensity;
+
+  static const _supportedExtensions = ['stl', 'obj', 'gltf', 'glb'];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadScenePrefs();
+  }
+
+  /// Mirrors `PartScreen._loadViewPreferences`'s own "don't block the first
+  /// frame on a shared_preferences read" pattern - not awaited from
+  /// [initState].
+  Future<void> _loadScenePrefs() async {
+    await ViewPreferences.load();
+    await ScenePreferences.load();
+    if (!mounted) return;
+    setState(() {
+      _bodyColourHex = ViewPreferences.bodyColourHex;
+      _roughness = ScenePreferences.roughness;
+      _lightIntensity = ScenePreferences.lightIntensity;
+      _emissiveIntensity = ScenePreferences.emissiveIntensity;
+    });
+  }
+
+  /// Applied both when the Scene sheet changes a value live and once right
+  /// after a new mesh's material is built, so a file picked *after* the user
+  /// already dialed in a look doesn't reset to plain white/defaults - unlike
+  /// `PartViewport` (which rebuilds a fresh material every `_syncMeshNode`
+  /// call), this viewer holds one long-lived [PhysicallyBasedMaterial]
+  /// instance per loaded mesh and mutates its fields directly, since nothing
+  /// else about the Node/geometry needs to change when only the material's
+  /// appearance does.
+  void _applyMaterialParams() {
+    final material = _material;
+    if (material == null) return;
+    final hasTexture = _mesh?.textureBytes != null;
+    material
+      ..baseColorFactor = hasTexture ? vm.Vector4(1, 1, 1, 1) : vector4FromHex(_bodyColourHex)
+      ..roughnessFactor = _roughness
+      ..metallicFactor = ScenePreferences.fixedMetallic
+      ..emissiveFactor = vm.Vector4(_emissiveIntensity, _emissiveIntensity, _emissiveIntensity, 1);
+  }
+
+  Future<void> _onBaseColourChanged(String hex) async {
+    setState(() {
+      _bodyColourHex = hex;
+      _applyMaterialParams();
+    });
+    await ViewPreferences.setBodyColourHex(hex);
+  }
+
+  Future<void> _onRoughnessChanged(double value) async {
+    setState(() {
+      _roughness = value;
+      _applyMaterialParams();
+    });
+    await ScenePreferences.setRoughness(value);
+  }
+
+  Future<void> _onLightIntensityChanged(double value) async {
+    setState(() => _lightIntensity = value);
+    await ScenePreferences.setLightIntensity(value);
+  }
+
+  Future<void> _onEmissiveIntensityChanged(double value) async {
+    setState(() {
+      _emissiveIntensity = value;
+      _applyMaterialParams();
+    });
+    await ScenePreferences.setEmissiveIntensity(value);
+  }
+
+  void _openScenePanel() {
+    showScenePrefsSheet(
+      context,
+      baseColourHex: _bodyColourHex,
+      onBaseColourChanged: _onBaseColourChanged,
+      roughness: _roughness,
+      onRoughnessChanged: _onRoughnessChanged,
+      lightIntensity: _lightIntensity,
+      onLightIntensityChanged: _onLightIntensityChanged,
+      emissiveIntensity: _emissiveIntensity,
+      onEmissiveIntensityChanged: _onEmissiveIntensityChanged,
     );
+  }
+
+  /// `FileType.custom` + `allowedExtensions` was greying out everything but
+  /// `.stl` on-device - Android's SAF file-picker filters by MIME type, and
+  /// none of these four extensions map to a standard registered MIME type,
+  /// so `file_picker`'s extension-to-MIME lookup only reliably enables the
+  /// first one. `FileType.any` shows every file (nothing greyed out), and
+  /// the extension is validated after picking instead - `_decodeAndDecimate`
+  /// already rejects an unsupported one with a clear `MeshImportError`, so
+  /// this trades a slightly less curated OS picker dialog for actually being
+  /// able to select the other three formats at all.
+  Future<void> _pickAndLoad() async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.any, withData: true);
     if (result == null || result.files.single.bytes == null) return;
     final file = result.files.single;
     final extension = (file.extension ?? '').toLowerCase();
+    if (!_supportedExtensions.contains(extension)) {
+      setState(() => _error = 'Unsupported file type ".$extension" - pick an STL, OBJ, glTF, or GLB file.');
+      return;
+    }
 
     setState(() {
       _stage = _LoadStage.decoding;
@@ -82,14 +188,20 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
           await compute(_decodeAndDecimate, _DecodeRequest(file.bytes!, extension));
       if (!mounted) return;
       setState(() => _stage = _LoadStage.buildingMaterial);
-      final material = await buildMeshViewerMaterial(decoded);
+      final material = await buildMeshViewerMaterial(
+        decoded,
+        baseColourHex: _bodyColourHex,
+        roughness: _roughness,
+        emissiveIntensity: _emissiveIntensity,
+        fixedMetallic: ScenePreferences.fixedMetallic,
+      );
       if (!mounted) return;
       setState(() {
         _mesh = decoded;
         _originalTriangleCount = originalTriangleCount;
         _stage = _LoadStage.ready;
+        _material = material;
       });
-      _material = material;
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -99,20 +211,52 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     }
   }
 
-  UnlitMaterial? _material;
+  PhysicallyBasedMaterial? _material;
 
   @override
   Widget build(BuildContext context) {
+    final busy = _stage == _LoadStage.decoding || _stage == _LoadStage.buildingMaterial;
     return Scaffold(
       appBar: AppBar(
         title: Text(_fileName == null ? 'View Complex Mesh' : _fileName!),
         actions: [
-          IconButton(
-            tooltip: 'Open a different file',
-            icon: const Icon(Icons.folder_open),
-            onPressed: _stage == _LoadStage.decoding || _stage == _LoadStage.buildingMaterial
-                ? null
-                : _pickAndLoad,
+          // File > Open, File > Exit - this viewer has no Document/Part
+          // model to save, so "File" here is just navigation, unlike
+          // PartToolbar's much larger File menu.
+          PopupMenuButton<String>(
+            tooltip: 'File',
+            icon: const Icon(Icons.folder_outlined),
+            onSelected: (value) {
+              if (value == 'open') _pickAndLoad();
+              if (value == 'exit') Navigator.of(context).pop();
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'open',
+                enabled: !busy,
+                child: const ListTile(leading: Icon(Icons.folder_open), title: Text('Open')),
+              ),
+              const PopupMenuItem(
+                value: 'exit',
+                child: ListTile(leading: Icon(Icons.close), title: Text('Exit')),
+              ),
+            ],
+          ),
+          // View > Scene - the only View entry this viewer has; a full
+          // ExpansionTile-based View menu (mirroring PartToolbar's) would be
+          // overkill for one entry.
+          PopupMenuButton<String>(
+            tooltip: 'View',
+            icon: const Icon(Icons.visibility_outlined),
+            onSelected: (value) {
+              if (value == 'scene') _openScenePanel();
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'scene',
+                child: ListTile(leading: Icon(Icons.wb_incandescent_outlined), title: Text('Scene')),
+              ),
+            ],
           ),
         ],
       ),
@@ -176,7 +320,9 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
         final material = _material!;
         return Stack(
           children: [
-            Positioned.fill(child: _MeshViewerViewport(mesh: mesh, material: material)),
+            Positioned.fill(
+              child: _MeshViewerViewport(mesh: mesh, material: material, lightIntensity: _lightIntensity),
+            ),
             if (_originalTriangleCount != null && _originalTriangleCount != mesh.triangleCount)
               Positioned(
                 top: 8,
@@ -217,9 +363,15 @@ class _InfoBanner extends StatelessWidget {
 /// to a single client-decoded mesh with no server behind it at all.
 class _MeshViewerViewport extends StatefulWidget {
   final DecodedMesh mesh;
-  final UnlitMaterial material;
+  final PhysicallyBasedMaterial material;
 
-  const _MeshViewerViewport({required this.mesh, required this.material});
+  /// The "mid lighting" control (see `ScenePreferences`) - drives the
+  /// Scene-wide directional light, reapplied whenever it changes (see
+  /// [_MeshViewerViewportState.didUpdateWidget]), same controlled-widget
+  /// convention `PartViewport.lightIntensity` uses.
+  final double lightIntensity;
+
+  const _MeshViewerViewport({required this.mesh, required this.material, required this.lightIntensity});
 
   @override
   State<_MeshViewerViewport> createState() => _MeshViewerViewportState();
@@ -238,6 +390,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
       if (!mounted) return;
       setState(() {
         _scene = Scene();
+        applySceneLighting(_scene!, widget.lightIntensity);
         for (final node in buildMeshViewerNodes(widget.mesh, widget.material)) {
           _scene!.add(node);
         }
@@ -249,6 +402,15 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
       if (!mounted) return;
       setState(() => _error = error.toString());
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant _MeshViewerViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.lightIntensity != oldWidget.lightIntensity) {
+      final scene = _scene;
+      if (scene != null) setState(() => applySceneLighting(scene, widget.lightIntensity));
+    }
   }
 
   ({vm.Vector3 center, double radius}) _boundsOf(DecodedMesh mesh) {

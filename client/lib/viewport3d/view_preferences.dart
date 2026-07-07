@@ -25,7 +25,15 @@ class ViewPreferences {
   /// who already has that stored keeps it (see [load]); this only changes
   /// the fallback for new installs / cleared preferences.
   static const String defaultBgColourHex = '#F5F5F0';
-  static const String defaultBodyColourHex = '#B0B8C1';
+
+  /// Was `#B0B8C1` ("Aluminium") through the `UnlitMaterial`-only rendering
+  /// era - changed to mid-grey alongside the `PhysicallyBasedMaterial`
+  /// lighting/shading upgrade (see `scene_preferences.dart`), per the user's
+  /// explicit requested default for the new Scene menu. Anyone with an
+  /// existing stored value keeps it (see [load]) - this only changes the
+  /// fallback for new installs / cleared preferences, same non-destructive
+  /// convention as [defaultBgColourHex]'s own past change.
+  static const String defaultBodyColourHex = '#808080';
   static const double defaultBodyOpacity = 1.0;
 
   /// Stage 19a Item 5: the most common default render mode in professional

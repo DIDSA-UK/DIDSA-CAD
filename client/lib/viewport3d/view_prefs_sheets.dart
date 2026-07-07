@@ -19,7 +19,11 @@ const List<ColourSwatch> backgroundColourSwatches = [
 ];
 
 const List<ColourSwatch> bodyColourSwatches = [
-  ColourSwatch('Aluminium', ViewPreferences.defaultBodyColourHex),
+  ColourSwatch('Mid Grey', ViewPreferences.defaultBodyColourHex),
+  // The pre-PBR-upgrade default - kept as its own named swatch so it's still
+  // reachable, just no longer the fallback for new installs (see
+  // ViewPreferences.defaultBodyColourHex's own doc comment).
+  ColourSwatch('Aluminium', '#B0B8C1'),
   ColourSwatch('Steel Blue', '#6C8EAD'),
   ColourSwatch('Teal', '#4A9B8E'),
   ColourSwatch('Warm Grey', '#C4B9A8'),

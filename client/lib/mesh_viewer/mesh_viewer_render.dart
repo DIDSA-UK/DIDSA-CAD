@@ -3,11 +3,12 @@
 /// already uses for the server-backed viewport (`MeshBuffers` vs
 /// `geometryFromMesh`). Nothing here can run in a headless `flutter test`.
 ///
-/// `UnlitMaterial`'s constructor (see [buildMeshViewerMaterial]) calls
-/// `setFragmentShader(baseShaderLibrary['UnlitFragment']!)` immediately, which
-/// throws until `Scene.initializeStaticResources()` has completed at least
-/// once - confirmed by a real on-device crash the first time a mesh was
-/// picked, since the material was built (in `MeshViewerScreen`) before
+/// A material's constructor (`UnlitMaterial` originally; `PhysicallyBasedMaterial`
+/// since the lighting/shading upgrade - see [buildMeshViewerMaterial]) calls
+/// `setFragmentShader(...)` immediately, which throws until
+/// `Scene.initializeStaticResources()` has completed at least once -
+/// confirmed by a real on-device crash the first time a mesh was picked,
+/// since the material was built (in `MeshViewerScreen`) before
 /// `_MeshViewerViewport` (whose own `initState` is what calls
 /// `initializeStaticResources`) had ever been mounted. [ensureSceneResourcesLoaded]
 /// fixes this by memoizing the one real call behind a single shared Future,
@@ -23,7 +24,9 @@ import 'dart:ui' as ui;
 
 import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
+import '../viewport3d/view_preferences.dart' show vector4FromHex;
 import 'mesh_data.dart';
 
 Future<void>? _staticResourcesFuture;
@@ -100,11 +103,30 @@ Future<gpu.Texture> uploadTexture(ui.Image image) async {
   return texture;
 }
 
+/// Sets up this viewer's Scene-wide lighting - a procedural, no-asset ambient
+/// fill (so the unlit side of the mesh isn't pure black) plus the single
+/// directional "sun" light driven by [lightIntensity] (the "mid lighting"
+/// control - see `ScenePreferences`). Mirrors `PartViewport`'s own
+/// `_applyLighting`/`EnvironmentMap.studio()` setup exactly, so both
+/// viewers in this app look lit the same way.
+void applySceneLighting(Scene scene, double lightIntensity) {
+  scene.environment = EnvironmentMap.studio();
+  scene.directionalLight = DirectionalLight(
+    direction: vm.Vector3(-0.3, -1.0, -0.2),
+    color: vm.Vector3(1, 1, 1),
+    intensity: lightIntensity,
+  );
+}
+
 /// Confirmed against the real installed `flutter_scene` 0.18.1 source
 /// (`UnlitMaterial`'s own `set baseColorTexture` - see
 /// `package:flutter_scene/src/material/unlit_material.dart`) after the
 /// original unverified guess (`colorTexture`) failed a real on-device build.
-void _bindBaseColorTexture(UnlitMaterial material, gpu.Texture texture) {
+/// `PhysicallyBasedMaterial` (adopted for the lighting/shading upgrade, see
+/// [buildMeshViewerMaterial]) exposes the identically-named
+/// `baseColorTexture` setter - both materials share the same base-color
+/// texture-slot convention.
+void _bindBaseColorTexture(PhysicallyBasedMaterial material, gpu.Texture texture) {
   material.baseColorTexture = texture;
 }
 
@@ -113,7 +135,7 @@ void _bindBaseColorTexture(UnlitMaterial material, gpu.Texture texture) {
 /// batches share the one [material] (and so the one texture, if any), since
 /// [DecodedMesh] only ever carries a single base-color texture (see its own
 /// doc comment on the single-material scope cut).
-List<Node> buildMeshViewerNodes(DecodedMesh mesh, UnlitMaterial material) {
+List<Node> buildMeshViewerNodes(DecodedMesh mesh, PhysicallyBasedMaterial material) {
   final nodes = <Node>[];
   final triangleCount = mesh.triangleCount;
   for (var start = 0; start < triangleCount; start += _kMaxTrianglesPerBatch) {
@@ -153,18 +175,41 @@ List<Node> buildMeshViewerNodes(DecodedMesh mesh, UnlitMaterial material) {
   return nodes;
 }
 
-/// Builds the shared [UnlitMaterial] for [mesh] - textured if [mesh] carries
-/// a base-color texture, plain white otherwise (so geometry is always
-/// visible even before/without a texture, matching this viewer's "grey
-/// geometry is an acceptable fallback" scope decision). Caller awaits this
-/// once, then passes the result into [buildMeshViewerNodes].
+/// Builds the shared [PhysicallyBasedMaterial] for [mesh] - textured if
+/// [mesh] carries a base-color texture, a flat tint from [baseColourHex]
+/// otherwise (so geometry is always visible even before/without a texture,
+/// matching this viewer's "grey geometry is an acceptable fallback" scope
+/// decision). When a texture *is* present, [baseColourHex] is deliberately
+/// ignored (left at white) - a PBR base color factor multiplies the texture,
+/// so tinting it by the user's chosen swatch would just darken/recolor a
+/// real captured photogrammetry texture for no good reason; the swatch is
+/// meant for the untextured (plain geometry) case. Caller awaits this once,
+/// then passes the result into [buildMeshViewerNodes]; [roughness]/
+/// [emissiveIntensity] map directly to [PhysicallyBasedMaterial]'s own
+/// `roughnessFactor`/`emissiveFactor` (see `ScenePreferences` for what these
+/// controls mean and their defaults) - `metallicFactor` is fixed at
+/// `ScenePreferences.fixedMetallic`, not a caller-supplied parameter, same
+/// as the main Part viewport's identical choice.
 ///
-/// Awaits [ensureSceneResourcesLoaded] first - `UnlitMaterial`'s constructor
-/// touches the base shader library immediately, which throws until that's
-/// done at least once (see this file's top-of-file doc comment).
-Future<UnlitMaterial> buildMeshViewerMaterial(DecodedMesh mesh) async {
+/// Awaits [ensureSceneResourcesLoaded] first - `PhysicallyBasedMaterial`'s
+/// constructor touches the base shader library immediately, which throws
+/// until that's done at least once (see this file's top-of-file doc
+/// comment - originally documented for `UnlitMaterial`, applies identically
+/// here).
+Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
+  DecodedMesh mesh, {
+  required String baseColourHex,
+  required double roughness,
+  required double emissiveIntensity,
+  required double fixedMetallic,
+}) async {
   await ensureSceneResourcesLoaded();
-  final material = UnlitMaterial();
+  final hasTexture = mesh.textureBytes != null;
+  final material = PhysicallyBasedMaterial()
+    ..baseColorFactor = hasTexture ? vm.Vector4(1, 1, 1, 1) : vector4FromHex(baseColourHex)
+    ..roughnessFactor = roughness
+    ..metallicFactor = fixedMetallic
+    ..emissiveFactor = vm.Vector4(emissiveIntensity, emissiveIntensity, emissiveIntensity, 1);
   final textureBytes = mesh.textureBytes;
   if (textureBytes != null) {
     final image = await decodeTextureImage(textureBytes);

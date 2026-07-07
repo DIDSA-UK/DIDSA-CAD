@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
+import 'scene_controls_panel.dart';
+import 'scene_preferences.dart';
 import 'selection_filter.dart';
 import 'view_prefs_sheets.dart';
 import 'view_preferences.dart';
@@ -87,6 +89,18 @@ class PartToolbar extends StatelessWidget {
   final void Function(String hex)? onBodyColourChanged;
   final void Function(double opacity)? onBodyOpacityChanged;
 
+  /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls (see
+  /// [ScenePreferences]) - nested under View as its own "Scene" sub-menu
+  /// (see [_buildViewMenu]), rather than flat entries alongside Body
+  /// Colour/Transparency above, per the user's explicit request for a
+  /// dedicated Scene menu.
+  final double sceneRoughness;
+  final double sceneLightIntensity;
+  final double sceneEmissiveIntensity;
+  final void Function(double value)? onSceneRoughnessChanged;
+  final void Function(double value)? onSceneLightIntensityChanged;
+  final void Function(double value)? onSceneEmissiveIntensityChanged;
+
   // A4: perspective toggle (off = orthographic default per A4 brief).
   final bool isPerspective;
   final void Function(bool isPerspective)? onPerspectiveChanged;
@@ -130,6 +144,12 @@ class PartToolbar extends StatelessWidget {
     this.onBgColourChanged,
     this.onBodyColourChanged,
     this.onBodyOpacityChanged,
+    this.sceneRoughness = ScenePreferences.defaultRoughness,
+    this.sceneLightIntensity = ScenePreferences.defaultLightIntensity,
+    this.sceneEmissiveIntensity = ScenePreferences.defaultEmissiveIntensity,
+    this.onSceneRoughnessChanged,
+    this.onSceneLightIntensityChanged,
+    this.onSceneEmissiveIntensityChanged,
     this.isPerspective = ViewPreferences.defaultIsPerspective,
     this.onPerspectiveChanged,
     this.farClip = kDefaultFarClip,
@@ -317,6 +337,24 @@ class PartToolbar extends StatelessWidget {
           leading: const Icon(Icons.opacity_outlined),
           title: const Text('Body Transparency'),
           onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
+        ),
+        const Divider(height: 1),
+        ExpansionTile(
+          leading: const Icon(Icons.wb_incandescent_outlined),
+          title: const Text('Scene'),
+          children: [
+            SceneControlsPanel(
+              // Body Colour above already covers base colour - no need to
+              // show the swatch row a second time here (see
+              // SceneControlsPanel's own doc comment).
+              roughness: sceneRoughness,
+              onRoughnessChanged: onSceneRoughnessChanged,
+              lightIntensity: sceneLightIntensity,
+              onLightIntensityChanged: onSceneLightIntensityChanged,
+              emissiveIntensity: sceneEmissiveIntensity,
+              onEmissiveIntensityChanged: onSceneEmissiveIntensityChanged,
+            ),
+          ],
         ),
       ],
     );

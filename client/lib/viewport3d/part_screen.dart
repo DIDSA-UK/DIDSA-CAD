@@ -40,6 +40,7 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'sweep_panel.dart';
+import 'scene_preferences.dart';
 import 'view_preferences.dart';
 
 /// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
@@ -213,6 +214,12 @@ class _PartScreenState extends State<PartScreen> {
   String _bgColourHex = ViewPreferences.defaultBgColourHex;
   String _bodyColourHex = ViewPreferences.defaultBodyColourHex;
   double _bodyOpacity = ViewPreferences.defaultBodyOpacity;
+
+  /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls - see
+  /// [ScenePreferences], loaded/persisted the same way as the block above.
+  double _sceneRoughness = ScenePreferences.defaultRoughness;
+  double _sceneLightIntensity = ScenePreferences.defaultLightIntensity;
+  double _sceneEmissiveIntensity = ScenePreferences.defaultEmissiveIntensity;
 
   /// A4: perspective vs orthographic toggle - false = orthographic default.
   bool _isPerspective = ViewPreferences.defaultIsPerspective;
@@ -1987,6 +1994,7 @@ class _PartScreenState extends State<PartScreen> {
   /// once this completes.
   Future<void> _loadViewPreferences() async {
     await ViewPreferences.load();
+    await ScenePreferences.load();
     if (!mounted) return;
     setState(() {
       _bgColourHex = ViewPreferences.bgColourHex;
@@ -1995,12 +2003,30 @@ class _PartScreenState extends State<PartScreen> {
       _renderMode = ViewPreferences.renderMode;
       _isPerspective = ViewPreferences.isPerspective;
       _farClip = ViewPreferences.farClip;
+      _sceneRoughness = ScenePreferences.roughness;
+      _sceneLightIntensity = ScenePreferences.lightIntensity;
+      _sceneEmissiveIntensity = ScenePreferences.emissiveIntensity;
     });
   }
 
   Future<void> _onBgColourChanged(String hex) async {
     setState(() => _bgColourHex = hex);
     await ViewPreferences.setBgColourHex(hex);
+  }
+
+  Future<void> _onSceneRoughnessChanged(double value) async {
+    setState(() => _sceneRoughness = value);
+    await ScenePreferences.setRoughness(value);
+  }
+
+  Future<void> _onSceneLightIntensityChanged(double value) async {
+    setState(() => _sceneLightIntensity = value);
+    await ScenePreferences.setLightIntensity(value);
+  }
+
+  Future<void> _onSceneEmissiveIntensityChanged(double value) async {
+    setState(() => _sceneEmissiveIntensity = value);
+    await ScenePreferences.setEmissiveIntensity(value);
   }
 
   Future<void> _onBodyColourChanged(String hex) async {
@@ -4795,6 +4821,9 @@ class _PartScreenState extends State<PartScreen> {
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
                   bodyOpacity: _bodyOpacity,
+                  roughness: _sceneRoughness,
+                  lightIntensity: _sceneLightIntensity,
+                  emissiveIntensity: _sceneEmissiveIntensity,
                   // On-device feedback: this used to be forced true for the
                   // whole Extrude panel lifetime, unconditionally overriding
                   // the mode-toggle FAB (itself hidden while the panel was
@@ -4955,6 +4984,12 @@ class _PartScreenState extends State<PartScreen> {
                     onBgColourChanged: _onBgColourChanged,
                     onBodyColourChanged: _onBodyColourChanged,
                     onBodyOpacityChanged: _onBodyOpacityChanged,
+                    sceneRoughness: _sceneRoughness,
+                    sceneLightIntensity: _sceneLightIntensity,
+                    sceneEmissiveIntensity: _sceneEmissiveIntensity,
+                    onSceneRoughnessChanged: _onSceneRoughnessChanged,
+                    onSceneLightIntensityChanged: _onSceneLightIntensityChanged,
+                    onSceneEmissiveIntensityChanged: _onSceneEmissiveIntensityChanged,
                     isPerspective: _isPerspective,
                     onPerspectiveChanged: _onPerspectiveChanged,
                     farClip: _farClip,
