@@ -1252,20 +1252,23 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   no on-device Flutter test capability, so these need real-device tuning,
   not just a one-time guess.
 
-  **Flagged, not yet on-device-confirmed**: `mesh_viewer_render.dart`'s
-  `_bindBaseColorTexture` (the call that attaches a decoded texture to
-  `UnlitMaterial`'s base-color slot) is the one genuinely new
-  `flutter_scene` API surface in this codebase - every existing
-  `UnlitMaterial` use elsewhere only ever sets `baseColorFactor`, never a
-  texture. `Texture.overwrite`/`GpuContext.createTexture` are confirmed
-  against `flutter_gpu`'s own published API; the exact property/method for
-  binding that texture onto `UnlitMaterial` was not directly confirmed
-  against `flutter_scene` 0.18.1's actual source (no Flutter SDK/pub cache
-  in this sandbox, so nothing in `mesh_viewer_render.dart` has actually
-  been compiled). If `material.colorTexture = texture` doesn't compile,
-  check `UnlitMaterial`'s real fields in an IDE - the most likely
-  alternative, per flutter_scene's own custom-material docs, is
-  `material.parameters.setTexture('base_color_texture', texture)`.
+  **Fixed after a real first on-device build** (this sandbox has no
+  Flutter SDK, so this was always going to need a real compile to catch):
+  `Texture.overwrite` takes the `ByteData` from `toByteData` directly, not
+  a `Uint8List` view of it, and returns `void`, not a success flag; and
+  `UnlitMaterial`'s real texture slot (confirmed against the actual
+  installed `flutter_scene` 0.18.1 source) is `baseColorTexture`, not the
+  originally-guessed `colorTexture`. A second real-device crash surfaced a
+  genuine ordering bug, not a wrong-guess one: `UnlitMaterial`'s
+  constructor touches the base shader library immediately, which throws
+  until `Scene.initializeStaticResources()` has completed at least once -
+  but `buildMeshViewerMaterial` ran from `MeshViewerScreen` as soon as a
+  file was picked, before `_MeshViewerViewport` (whose `initState` is what
+  actually calls `initializeStaticResources`) had ever been mounted. Fixed
+  with `ensureSceneResourcesLoaded()` - a single memoized `Future` both
+  `MeshViewerScreen` (before building the material) and
+  `_MeshViewerViewport` (before building the Scene) now await, so the real
+  call happens exactly once regardless of which one gets there first.
 
   New pure-Dart tests in `client/test/mesh_data_test.dart` (STL binary/
   ASCII, OBJ incl. quad fan-triangulation and unknown-vertex rejection,

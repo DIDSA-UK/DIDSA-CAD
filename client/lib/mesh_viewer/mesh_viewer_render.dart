@@ -3,21 +3,18 @@
 /// already uses for the server-backed viewport (`MeshBuffers` vs
 /// `geometryFromMesh`). Nothing here can run in a headless `flutter test`.
 ///
-/// FLAGGED FOR ON-DEVICE VERIFICATION: [_bindBaseColorTexture] is the one
-/// genuinely new piece of `flutter_scene`/`flutter_gpu` API surface in this
-/// file - texture binding is not used anywhere else in this codebase (every
-/// existing `UnlitMaterial` use, see `mesh_geometry.dart`, sets
-/// `baseColorFactor` only, uv always `(0, 0)`). `Texture.overwrite`/
-/// `GpuContext.createTexture` are confirmed against `flutter_gpu`'s published
-/// API; the exact call for attaching a decoded texture to `UnlitMaterial`'s
-/// base color slot was not directly confirmed against `flutter_scene` 0.18.1's
-/// source (this project's sandbox has no Flutter SDK/pub cache installed, so
-/// nothing in this file has actually been compiled - see this repo's other
-/// Dart changes for the same caveat). If `material.colorTexture = texture`
-/// doesn't compile, check `UnlitMaterial`'s actual fields/methods in your IDE
-/// - the most likely alternative shape, per flutter_scene's own custom-
-/// material docs, is `material.parameters.setTexture('base_color_texture',
-/// texture)`.
+/// `UnlitMaterial`'s constructor (see [buildMeshViewerMaterial]) calls
+/// `setFragmentShader(baseShaderLibrary['UnlitFragment']!)` immediately, which
+/// throws until `Scene.initializeStaticResources()` has completed at least
+/// once - confirmed by a real on-device crash the first time a mesh was
+/// picked, since the material was built (in `MeshViewerScreen`) before
+/// `_MeshViewerViewport` (whose own `initState` is what calls
+/// `initializeStaticResources`) had ever been mounted. [ensureSceneResourcesLoaded]
+/// fixes this by memoizing the one real call behind a single shared Future,
+/// so every caller - `MeshViewerScreen` before building the material, and
+/// `_MeshViewerViewport` before building the Scene - can safely await it as
+/// often as needed without knowing (or caring) whether `initializeStaticResources`
+/// itself tolerates being called twice.
 library;
 
 import 'dart:math' as math;
@@ -28,6 +25,14 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
 
 import 'mesh_data.dart';
+
+Future<void>? _staticResourcesFuture;
+
+/// Awaits `Scene.initializeStaticResources()`, calling it for real only once
+/// no matter how many times/places this is awaited from - see this file's
+/// top-of-file doc comment for why that matters here specifically.
+Future<void> ensureSceneResourcesLoaded() =>
+    _staticResourcesFuture ??= Scene.initializeStaticResources();
 
 /// `flutter_scene` 0.18.1 only takes 16-bit vertex indices (see
 /// `mesh_geometry.dart`'s `MeshBuffers` doc comment) - a photogrammetry-scale
@@ -153,7 +158,12 @@ List<Node> buildMeshViewerNodes(DecodedMesh mesh, UnlitMaterial material) {
 /// visible even before/without a texture, matching this viewer's "grey
 /// geometry is an acceptable fallback" scope decision). Caller awaits this
 /// once, then passes the result into [buildMeshViewerNodes].
+///
+/// Awaits [ensureSceneResourcesLoaded] first - `UnlitMaterial`'s constructor
+/// touches the base shader library immediately, which throws until that's
+/// done at least once (see this file's top-of-file doc comment).
 Future<UnlitMaterial> buildMeshViewerMaterial(DecodedMesh mesh) async {
+  await ensureSceneResourcesLoaded();
   final material = UnlitMaterial();
   final textureBytes = mesh.textureBytes;
   if (textureBytes != null) {

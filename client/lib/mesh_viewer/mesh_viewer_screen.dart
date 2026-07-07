@@ -234,7 +234,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
   @override
   void initState() {
     super.initState();
-    Scene.initializeStaticResources().then((_) {
+    ensureSceneResourcesLoaded().then((_) {
       if (!mounted) return;
       setState(() {
         _scene = Scene();
