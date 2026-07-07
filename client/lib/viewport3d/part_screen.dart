@@ -2052,13 +2052,38 @@ class _PartScreenState extends State<PartScreen> {
     await ViewPreferences.setFarClip(value);
   }
 
-  /// Opens [ConnectionScreen] from the File menu's "Connection Settings"
-  /// entry - [ConnectionScreen.isSettingsRevisit] tells it to pop back here
-  /// on success rather than pushing a brand new [PartScreen].
-  Future<void> _openConnectionSettings() async {
+  /// File > Exit: abandons the current Part and returns all the way back to
+  /// the first splash/[ConnectionScreen] - a fresh, non-revisit instance
+  /// (so its "View a mesh file" entry is present, same as cold launch),
+  /// with [Navigator.pushAndRemoveUntil] clearing this and every other
+  /// route underneath so there's no way back to the abandoned [PartScreen]
+  /// via the system back gesture. Confirms first, mirroring
+  /// [_startNewPart]'s identical "unsaved work would be lost" dialog -
+  /// exiting is just as destructive to unsaved changes as starting new.
+  Future<void> _exitToConnectionScreen() async {
     setState(() => _toolbarOpen = false);
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (context) => const ConnectionScreen(isSettingsRevisit: true)),
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Exit this project?'),
+        content: const Text(
+          'Any changes since your last Save will be lost. This does not delete the current '
+          'project - it will still be there if you open it again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Exit'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const ConnectionScreen()),
+      (route) => false,
     );
   }
 
@@ -4971,7 +4996,7 @@ class _PartScreenState extends State<PartScreen> {
                     onToggleReferencePlanes: _onToggleReferencePlanes,
                     renderMode: _renderMode,
                     onRenderModeChanged: _onRenderModeChanged,
-                    onOpenConnectionSettings: _openConnectionSettings,
+                    onExit: _exitToConnectionScreen,
                     onSaveNative: _saveNativeFile,
                     onSaveAsNative: _saveAsNativeFile,
                     onOpenNative: _openNativeFile,

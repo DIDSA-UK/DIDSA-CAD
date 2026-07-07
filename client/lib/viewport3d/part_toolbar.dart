@@ -53,9 +53,15 @@ class PartToolbar extends StatelessWidget {
   final ViewportRenderMode renderMode;
   final void Function(ViewportRenderMode mode)? onRenderModeChanged;
 
-  /// Stage 18: navigates to [ConnectionScreen] - the one File entry that
-  /// isn't a disabled placeholder.
-  final VoidCallback? onOpenConnectionSettings;
+  /// File > Exit: abandons the current Part and returns all the way back to
+  /// the first splash/[ConnectionScreen] (not a "revisit" - the same
+  /// cold-launch instance, "View a mesh file" entry included) - see
+  /// `PartScreen._exitToConnectionScreen`. Replaces the previous
+  /// "Connection Settings" entry, which only ever let the user edit the
+  /// server URL/API key in place; the same net effect is still reachable
+  /// via Exit then Connect again with different details on the screen this
+  /// lands on.
+  final VoidCallback? onExit;
 
   /// Native Save/Load: reads/writes the whole Document (every Part's
   /// ordered Feature list, plus every Sketch it references) as this app's
@@ -131,7 +137,7 @@ class PartToolbar extends StatelessWidget {
     this.onToggleReferencePlanes,
     this.renderMode = ViewportRenderMode.shaded,
     this.onRenderModeChanged,
-    this.onOpenConnectionSettings,
+    this.onExit,
     this.onSaveNative,
     this.onSaveAsNative,
     this.onOpenNative,
@@ -255,9 +261,9 @@ class PartToolbar extends StatelessWidget {
             onTap: onExportPart == null ? null : () => onExportPart!(format),
           ),
         ListTile(
-          leading: const Icon(Icons.settings_ethernet),
-          title: const Text('Connection Settings'),
-          onTap: onOpenConnectionSettings,
+          leading: const Icon(Icons.exit_to_app),
+          title: const Text('Exit'),
+          onTap: onExit,
         ),
       ],
     );

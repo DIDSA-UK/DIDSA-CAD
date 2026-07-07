@@ -1409,17 +1409,38 @@ work above (both fixed, neither yet re-confirmed on-device):
   inconsistent triangle winding - `mesh_geometry.dart`'s own
   `triangleHighlightBuffers` doc comment already confirms `flutter_scene`/
   Impeller does cull backfaces, worked around there (for highlight
-  overlays only) by emitting every triangle with both windings. A real
-  OCCT-tessellated Body's winding is reliably consistent (`geometryFromMesh`
-  has never needed that workaround), but an arbitrary external STL/OBJ/glTF
-  file - especially photogrammetry output - has no such guarantee, and this
-  viewer has no way to detect or repair bad winding in someone else's file.
-  Fixed by setting `PhysicallyBasedMaterial.doubleSided = true` in
-  `buildMeshViewerMaterial` - disables culling entirely for the mesh
-  viewer specifically (not touched in `part_viewport.dart`/the main Part
-  viewport, which has never shown this symptom), so every triangle renders
-  from both sides regardless of the source file's own winding correctness.
-  `doubleSided` itself is inferred from a real `flutter_scene` changelog
-  line ("Fixed material.doubleSided being ignored by runtime importer")
-  rather than confirmed directly against this project's installed source -
-  flagged in `mesh_viewer_render.dart`'s own top-of-file doc comment.
+  overlays only) by emitting every triangle with both windings. Fixed in
+  the mesh viewer by setting `PhysicallyBasedMaterial.doubleSided = true`
+  in `buildMeshViewerMaterial`. This was first assumed to be an
+  externally-authored-file-specific problem (a real OCCT-tessellated
+  Body's winding assumed reliably consistent, since `geometryFromMesh` had
+  never needed the workaround) and left untouched in `part_viewport.dart` -
+  **that assumption turned out to be wrong**: the user reported the
+  identical symptom on an ordinary Extrude Cut Body in the main Part
+  viewport (a cylinder with a square hole cut through it) immediately
+  after this same on-device build. `doubleSided = true` was applied to
+  `part_viewport.dart`'s own `PhysicallyBasedMaterial` construction too,
+  confirming backface culling is a general `PhysicallyBasedMaterial`
+  behaviour in this engine, not an external-mesh-winding-specific one -
+  `UnlitMaterial` (used everywhere prior to this upgrade) apparently never
+  culled at all, which is why this was never visible in this app before
+  now regardless of geometry source. `doubleSided` itself is inferred from
+  a real `flutter_scene` changelog line ("Fixed material.doubleSided being
+  ignored by runtime importer") rather than confirmed directly against
+  this project's installed source - flagged in both
+  `mesh_viewer_render.dart`'s and `part_viewport.dart`'s own doc comments.
+
+## Other UI fixes: mesh viewer file picker, File > Exit
+
+- **File > Exit** replaces the main app's old File-menu "Connection
+  Settings" entry (which only ever let the user edit the server URL/API
+  key in place) - per explicit request. Confirms first (mirrors
+  `_startNewPart`'s identical "unsaved work would be lost" dialog - exiting
+  is just as destructive to unsaved changes as starting new), then
+  `Navigator.pushAndRemoveUntil`s back to a *fresh, non-revisit*
+  `ConnectionScreen` (so its "View a mesh file" entry is present, same as
+  cold launch) with the entire navigation stack cleared underneath - no way
+  back to the abandoned `PartScreen` via the system back gesture. The same
+  net effect as the old entry (changing connection details) is still
+  reachable, just via Exit then Connect again with different details on
+  the screen this lands on, rather than an in-place edit.

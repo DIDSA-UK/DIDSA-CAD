@@ -585,7 +585,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // lit PBR material (see ScenePreferences/_applyLighting) instead
             // of a flat UnlitMaterial tint - metallicFactor is fixed at
             // ScenePreferences.fixedMetallic (see its own doc comment for
-            // why this isn't a user-adjustable slider).
+            // why this isn't a user-adjustable slider). doubleSided: real
+            // on-device testing showed the exact same "one side opaque, the
+            // other see-through" backface-culling symptom the mesh viewer
+            // hit (see mesh_viewer_render.dart's buildMeshViewerMaterial) -
+            // this disproves this file's own earlier assumption that real
+            // OCCT-tessellated geometry's winding is always culling-safe;
+            // apparently it isn't always, so the same fix applies here too.
             : (PhysicallyBasedMaterial()
               ..alphaMode = widget.bodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
               ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: widget.bodyOpacity)
@@ -596,7 +602,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 widget.emissiveIntensity,
                 widget.emissiveIntensity,
                 1,
-              ));
+              )
+              ..doubleSided = true);
         final node = Node(mesh: Mesh(geometry, material));
         scene.add(node);
         _meshNodes[body.bodyId] = node;
