@@ -1277,3 +1277,49 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   correctness, but not actually run in this sandbox either (no Flutter
   SDK installed here at all - same caveat as every other Dart change this
   session).
+
+## OPEN — Real lighting/shading across the whole app (next active work)
+
+**Trigger**: user loaded a real STL in "View Complex Mesh" and reported it's
+"impossible to make out features as it's single colour, no shading,
+textures or lighting." Root cause: every rendered Body in this app
+(`PartViewport` and the new mesh viewer alike) uses `flutter_scene`'s
+`UnlitMaterial`, which - per its own doc comment - "draws geometry with a
+flat color or texture, ignoring scene lighting" entirely. This isn't a bug
+introduced by the mesh viewer; it's a standing limitation already flagged
+in `mesh_geometry.dart`'s own `TODO` on `buildMeshEdgesNode`'s neighboring
+code ("`UnlitMaterial` has no roughness/metallic... revisit if/when a PBR
+material type ships"). Confirmed via a fresh web search that a PBR
+material type has, in fact, already shipped in `flutter_scene`: the
+installed 0.18.1 already includes `PhysicallyBasedMaterial` plus
+environment-map/image-based-lighting support (referenced directly inside
+the real `unlit_material.dart` source pulled from this project's own
+`flutter_scene` install this session). This is being scoped as a
+whole-app upgrade, not a mesh-viewer-only patch, since `PartViewport` has
+the identical limitation and would benefit from the same fix.
+
+**Important constraint surfaced by research, not yet reconciled with this
+project's setup**: per `flutter_scene`'s own package description, its
+newest features (current prefiltered-radiance IBL improvements, certain
+web-backend fixes) require the Flutter **master** channel, not stable -
+"Flutter Scene requires the Flutter master channel, rather than the
+stable channel" for some recent capability. This project's current
+Flutter channel/toolchain has not yet been checked against that
+requirement - needs confirming before committing to "pull in the latest
+flutter_scene build," since master-channel Flutter is a materially bigger
+commitment (pre-release, less stable) than staying on 0.18.1/stable.
+
+**Plan**: work happens on a new branch off `main` (this branch,
+`claude/docs-folder-context-yzj5r7`, is being merged to `main` first, via
+PR, closing out the whole Save/Load/Export/Import + View Complex Mesh
+phase). Scope still being defined - candidates identified so far: adopt
+`PhysicallyBasedMaterial` (in `mesh_geometry.dart` for the main viewport
+and/or `mesh_viewer_render.dart` for the mesh viewer) plus at least one
+real Light node in the Scene; evaluate whether upgrading `flutter_scene`
+past 0.18.1 is warranted/possible without a Flutter channel change; decide
+whether `PartViewport` and the mesh viewer should share one lighting setup
+or diverge (a CAD Part's own colored-plastic look vs. a photogrammetry
+scan's captured-texture look may want different treatment). Not yet
+started - this entry exists to make the roadmap accurately reflect the
+next piece of active work, per this user's explicit request to check
+docs are current before merging to `main`.
