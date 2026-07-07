@@ -1050,16 +1050,65 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   STEP"/"Export STL"/"Export OBJ"/"Export glTF" entries (previously two
   disabled placeholders, now four real ones) calling `PartScreen._exportPart`,
   which hands the bytes to the same `file_picker` save-file dialog Native
-  Save already uses. Import (STEP as a dumb, non-parametric Body; STL/OBJ/
-  glTF likewise for view/measure/model-around) is explicitly the next,
-  not-yet-started slice - locked in via AskUserQuestion: STL/OBJ/glTF are
-  export-only formats (no parametric history to reconstruct), so import
-  only ever means STEP (or a mesh format) becoming a fixed reference Body a
-  future prompt can add direct-editing (scale/move face/delete face/move
-  body) to, not a new parametric Feature type of its own. Not yet confirmed
-  on-device - client changes unverifiable in this sandbox (no Flutter SDK),
-  only manually reviewed plus brace-balance checks; STEP/STL/OBJ/glb export
-  itself not yet confirmed green in CI as of this entry (pending push).
+  Save already uses. **Confirmed green in CI** after one real bug fix
+  (`Interface_Static.SetCVal("write.step.schema", ...)` was called before
+  `STEPControl_Writer()` existed, so it was a silent no-op and the file was
+  actually AP214, not the requested AP242 - CI's own STEP-export test caught
+  this by asserting on the file's real `FILE_SCHEMA`, not just a 200 status;
+  fixed by constructing the writer first).
+- **Import: STEP/STL/OBJ/glTF as a fixed, non-parametric Body (third slice
+  of the Save/Load/Import/Export phase).** Locked in via AskUserQuestion:
+  STL/OBJ/glTF are export-only formats (no parametric history to
+  reconstruct from a mesh), so import only ever means a file becoming a
+  fixed reference Body - "import as a dumb body, future features will be
+  able to edit existing bodies (scale, move face, delete face, move
+  body)... also import mesh bodies (STL, obj, gltf) to view, measure,
+  model around" (user's own answer). Backend: new `ImportFeature`/
+  `ImportSourceFormat` (`app/document/models.py`) - no Boss/Cut `mode`, no
+  `target_body_ids` of its own (importing always starts a brand-new Body,
+  mirroring a fresh Boss with an empty target list), no dependency edges
+  (`app/document/graph.py` needed no change at all - it already falls
+  through to the default `depends_on = ()` for any unmatched Feature
+  type) - but *is* now a valid `target_body_ids` entry for a later Extrude/
+  Revolve/Sweep's own Boss/Cut (`_validate_target_body_ids` widened). New
+  OCCT-free `app/document/mesh_import.py` (`decode_stl`/`decode_obj`/
+  `decode_glb`, the inverse of `mesh_export`'s encoders - binary+ASCII STL,
+  OBJ with fan-triangulation and optional normals, glTF with or without an
+  index buffer) and OCCT-dependent `app/document/import_geometry.py`
+  (`resolve_import`): STEP goes through `STEPControl_Reader` into a real
+  B-rep solid, usable everywhere a Body already is; STL/OBJ/glTF get
+  rebuilt into a single surface-less, triangulation-only `TopoDS_Face` (the
+  same convention OCCT's own STL import uses - `tessellate_shape` already
+  reads a face's triangulation directly when present, so this needs no
+  separate meshing step) - sufficient for "view, measure, model around",
+  explicitly *not* guaranteed to survive a Boolean operation the way a real
+  solid does, flagged as a known limitation rather than silently assumed
+  away. New `POST /document/parts/{id}/import-features` (base64-in-JSON,
+  not multipart - no other endpoint here uses multipart and there's no
+  `python-multipart` dependency, so this matches the native file format's
+  own "binary data as a plain JSON string" convention instead of adding
+  one). `native_format.py` gained ImportFeature (de)serialization the same
+  way (`source_data` is the Feature's own true source of truth - re-parsed
+  every recompute, "re-derive, don't cache" - persisted as base64). 25 new
+  genuinely-executable pure-Python tests (12 mesh_import decoder round-
+  trips against mesh_export's own encoders, needing zero OCCT; 4 graph
+  dependency/cascade-delete cases; 1 native-format base64 round-trip - by
+  far the best sandbox-test coverage any Feature type has had all session,
+  since decode/encode and dependency-graph logic are both genuinely
+  OCCT-free here) plus a new CI-only HTTP test file (STEP import round-
+  tripped through the export endpoint just built; STL import via
+  mesh_export's own `encode_stl`; malformed-file rejection; an Extrude Cut
+  successfully targeting an imported Body). Client: `DocumentApiClient.
+  createImportFeature`; File menu's "Import…" placeholder now real, wired
+  to a new `PartScreen._importGeometry` (`FileType.any`, same Android MIME-
+  filtering-bug workaround as native Open, mapping the picked file's own
+  extension to a source_format); `feature_tree_panel.dart` gained an
+  "Import" display name/icon. Not yet confirmed on-device or in CI as of
+  this entry (pending push) - the mesh-to-shape triangulation-only-face
+  construction in particular is the one piece of this pass with no prior
+  precedent anywhere else in this codebase to lean on, so it's the most
+  likely spot for a real CI surprise, same as STEP export's own AP242 bug
+  was.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

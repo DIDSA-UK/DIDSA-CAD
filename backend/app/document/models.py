@@ -602,6 +602,80 @@ class SweepFeature(Feature):
         return Produces.BODY
 
 
+class ImportSourceFormat(str, Enum):
+    """Which interchange format an `ImportFeature`'s own `source_data` bytes
+    are - mirrors `ExtrudeType`/`SweepMode`'s str-Enum pattern. `STEP` reads
+    real B-rep geometry (`STEPControl_Reader`); `STL`/`OBJ`/`GLTF` are all
+    triangle-soup mesh formats, decoded by `app.document.mesh_import` into
+    the same `MeshData` shape `app.document.mesh_export`'s encoders produce
+    on the way out, then rebuilt into a single surface-less, triangulation-
+    only `TopoDS_Face` (the same convention OCCT's own STL import uses) -
+    see `app.document.import_geometry` for both paths."""
+
+    STEP = "step"
+    STL = "stl"
+    OBJ = "obj"
+    GLTF = "gltf"
+
+
+@dataclass
+class ImportFeature(Feature):
+    """Brings an external file's geometry into the Part as a fixed,
+    non-parametric Body (locked-in scope, AskUserQuestion round: "import as
+    a dumb body, future features will be able to edit existing bodies
+    (scale, move face, delete face, move body)" - this Feature itself has
+    no editable parameters of its own beyond which file it wraps).
+
+    `source_data` is the actual uploaded file's raw bytes - the true source
+    of truth (there is no simpler parametric representation to derive from,
+    unlike every other Feature type here), re-parsed via `app.document.
+    import_geometry.resolve_import` on every recompute, matching this
+    codebase's "re-derive, don't cache" philosophy. Persisted as-is (base64
+    inside JSON) by both the native file format and this Feature's own
+    create payload.
+
+    Unlike Extrude/Revolve/Sweep, there is no Boss/Cut `mode` and no
+    `target_body_ids` here - importing a file always starts a brand-new
+    Body (mirroring a fresh Boss with an empty `target_body_ids`), never
+    fuses/cuts into an existing one on its own. The imported Body can still
+    be *targeted* by a later Extrude/Revolve/Sweep's own `target_body_ids`
+    exactly like any other Body (see `app.document.router._validate_target_
+    body_ids`, widened to accept `ImportFeature`-originated ids too) - e.g.
+    "Cut my extruded solid using the imported STEP body" is a normal,
+    supported combination, just expressed via the *other* Feature's own
+    Cut, not this one.
+
+    A STEP import is a real B-rep solid (whatever `STEPControl_Reader`
+    transferred), usable everywhere a Body already is (Boss/Cut target,
+    Fillet/Chamfer edge source, Create Plane face reference) exactly like
+    an Extrude/Revolve/Sweep result - no compromise there. A mesh import
+    (STL/OBJ/glTF) is a surface-less, triangulation-only shape instead (the
+    same shape OCCT itself builds for a bare STL file) - sufficient for the
+    requested "view, measure, model around" use case (it renders, and its
+    own vertices/edges are real topology other Features can already
+    reference the same way any Body's are), but not guaranteed to survive a
+    Boolean operation the way a genuine B-rep solid does; no attempt is made
+    here to sew/heal it into a watertight solid - that remains a real,
+    separate limitation flagged for whoever needs true CSG on an ingested
+    mesh next."""
+
+    id: str
+    source_format: ImportSourceFormat
+    source_data: bytes
+
+    @property
+    def type(self) -> str:
+        return "import"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.

@@ -17,6 +17,7 @@ this process's in-memory Document/Sketch store and one JSON-serializable
 dict; the client is the one that writes/reads the actual file to/from disk.
 """
 
+import base64
 import dataclasses
 
 from app.document.models import (
@@ -27,6 +28,8 @@ from app.document.models import (
     ExtrudeType,
     Feature,
     FilletFeature,
+    ImportFeature,
+    ImportSourceFormat,
     Part,
     PlaneRef,
     PlaneType,
@@ -330,6 +333,15 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
         }
+    if isinstance(feature, ImportFeature):
+        return {
+            "type": "import",
+            "id": feature.id,
+            "source_format": feature.source_format.value,
+            # The Feature's own true source of truth (see its docstring) -
+            # base64 inside JSON, same as the create payload over HTTP.
+            "source_data_base64": base64.b64encode(feature.source_data).decode("ascii"),
+        }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
 
@@ -394,6 +406,16 @@ def _feature_from_dict(data: dict) -> Feature:
             mode=SweepMode(_require(data, "mode")),
             target_body_ids=list(data.get("target_body_ids", [])),
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
+        )
+    if feature_type == "import":
+        try:
+            source_data = base64.b64decode(_require(data, "source_data_base64"), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise NativeFormatError(f"Malformed import feature source_data_base64: {exc}") from exc
+        return ImportFeature(
+            id=feature_id,
+            source_format=ImportSourceFormat(_require(data, "source_format")),
+            source_data=source_data,
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 

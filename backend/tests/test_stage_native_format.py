@@ -25,6 +25,8 @@ from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
     FilletFeature,
+    ImportFeature,
+    ImportSourceFormat,
     Part,
     PlaneRef,
     PlaneType,
@@ -362,6 +364,23 @@ def test_import_rejects_unknown_constraint_type():
         raise AssertionError("expected NativeFormatError")
     except NativeFormatError as exc:
         assert "not_a_real_constraint" in str(exc)
+
+
+def test_import_feature_round_trips_source_bytes_through_base64():
+    part = Part(id="part-import", name="Import Part")
+    raw_bytes = bytes(range(256)) * 4  # arbitrary binary content, not valid UTF-8
+    feature = ImportFeature(id="feat-import", source_format=ImportSourceFormat.STEP, source_data=raw_bytes)
+    part.add_feature(feature)
+
+    document = Document(id="doc-import")
+    document.parts[part.id] = part
+
+    exported = json.loads(json.dumps(export_native(document, {})))
+    imported_document, _ = import_native(exported)
+    imported_feature = imported_document.parts["part-import"].get_feature("feat-import")
+
+    assert imported_feature.source_format == ImportSourceFormat.STEP
+    assert imported_feature.source_data == raw_bytes
 
 
 def test_export_import_native_over_http():

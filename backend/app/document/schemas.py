@@ -2,7 +2,15 @@ from typing import Literal, Union
 
 from pydantic import BaseModel
 
-from app.document.models import ExtrudeType, PlaneType, Produces, RevolveMode, SubShapeType, SweepMode
+from app.document.models import (
+    ExtrudeType,
+    ImportSourceFormat,
+    PlaneType,
+    Produces,
+    RevolveMode,
+    SubShapeType,
+    SweepMode,
+)
 from app.sketch.models import Plane, SketchEntityType
 
 
@@ -410,6 +418,32 @@ class SweepFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ImportFeatureCreate(BaseModel):
+    """Creates an ImportFeature (locked-in scope: import as a fixed,
+    non-parametric Body) - `data_base64` is the uploaded file's own raw
+    bytes, base64-encoded into the JSON body rather than a multipart
+    upload, matching this API's existing all-JSON convention (no other
+    endpoint here uses multipart) and mirroring how the native file format
+    itself already carries binary-ish data as a plain JSON string."""
+
+    source_format: ImportSourceFormat
+    data_base64: str
+
+
+class ImportFeatureResponse(BaseModel):
+    type: Literal["import"] = "import"
+    id: str
+    source_format: ImportSourceFormat
+    # The uploaded file's own byte count, for display purposes only - the
+    # raw `source_data` itself is never echoed back (no client need for it,
+    # and it can be large).
+    source_byte_count: int
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for an
+    # ImportFeature.
+    produces: Produces
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,
@@ -418,6 +452,7 @@ FeatureResponse = Union[
     ChamferFeatureResponse,
     RevolveFeatureResponse,
     SweepFeatureResponse,
+    ImportFeatureResponse,
 ]
 
 

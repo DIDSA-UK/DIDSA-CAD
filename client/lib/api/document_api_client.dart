@@ -1029,5 +1029,29 @@ class DocumentApiClient {
         () => _httpClient.get(_uri('/document/parts/$partId/export/$format'), headers: _headers),
       );
 
+  /// Import: brings [bytes] in as a fixed, non-parametric Body (locked-in
+  /// scope - see the backend's `app.document.models.ImportFeature` own
+  /// docstring). [sourceFormat] is `'step'`/`'stl'`/`'obj'`/`'gltf'`, base64-
+  /// encoded into the JSON body rather than a multipart upload (no other
+  /// endpoint here uses multipart - this mirrors the native file format's
+  /// own "binary data as a plain JSON string" convention instead). The
+  /// backend 422s (`invalid_import_data`/`import_failed`, surfaced as an
+  /// [ApiException] here) for a file it can't turn into usable geometry.
+  Future<FeatureDto> createImportFeature(String partId, {
+    required String sourceFormat,
+    required Uint8List bytes,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/import-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_format': sourceFormat,
+                'data_base64': base64Encode(bytes),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
   void close() => _httpClient.close();
 }

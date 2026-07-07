@@ -64,9 +64,12 @@ class PartToolbar extends StatelessWidget {
 
   /// Export: writes the current Part's geometry out to one of four
   /// interchange formats (`'step'`/`'stl'`/`'obj'`/`'glb'`) - see
-  /// `PartScreen._exportPart`. A foreign-format Import remains a disabled
-  /// placeholder until a later pass.
+  /// `PartScreen._exportPart`.
   final void Function(String format)? onExportPart;
+
+  /// Import: brings an external STEP/STL/OBJ/glTF file in as a fixed,
+  /// non-parametric Body - see `PartScreen._importGeometry`.
+  final VoidCallback? onImportGeometry;
 
   /// Stage 18: current 3D-viewport appearance preferences (see
   /// [ViewPreferences]) and their change callbacks - [PartScreen] owns the
@@ -113,6 +116,7 @@ class PartToolbar extends StatelessWidget {
     this.onSaveNative,
     this.onOpenNative,
     this.onExportPart,
+    this.onImportGeometry,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
@@ -179,7 +183,7 @@ class PartToolbar extends StatelessWidget {
     );
   }
 
-  static const List<String> _filePlaceholders = ['New', 'Save As…', 'Import…'];
+  static const List<String> _filePlaceholders = ['New', 'Save As…'];
 
   // format, label, icon - each drives one Export ListTile below.
   static const List<(String, String, IconData)> _exportFormats = [
@@ -204,6 +208,11 @@ class PartToolbar extends StatelessWidget {
           leading: const Icon(Icons.save_outlined),
           title: const Text('Save'),
           onTap: onSaveNative,
+        ),
+        ListTile(
+          leading: const Icon(Icons.file_upload_outlined),
+          title: const Text('Import…'),
+          onTap: onImportGeometry,
         ),
         for (final label in _filePlaceholders)
           ListTile(

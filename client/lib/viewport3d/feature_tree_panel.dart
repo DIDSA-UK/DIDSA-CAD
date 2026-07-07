@@ -17,6 +17,7 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'chamfer' => 'Chamfer',
     'revolve' => 'Revolve',
     'sweep' => 'Sweep',
+    'import' => 'Import',
     _ => 'Sketch',
   };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
@@ -444,6 +445,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   'chamfer' => Icons.change_history,
                   'revolve' => Icons.rotate_right,
                   'sweep' => Icons.gesture,
+                  'import' => Icons.file_upload_outlined,
                   _ => Icons.edit,
                 },
           size: 20,

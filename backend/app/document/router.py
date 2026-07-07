@@ -1,3 +1,5 @@
+import base64
+import binascii
 import logging
 import uuid
 
@@ -9,6 +11,7 @@ from app.document.create_plane import resolve_create_plane
 from app.document.extrude import compute_part_bodies, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
+from app.document.import_geometry import resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.mesh_data import Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
@@ -21,6 +24,8 @@ from app.document.models import (
     ExtrudeType,
     Feature,
     FilletFeature,
+    ImportFeature,
+    ImportSourceFormat,
     Part,
     PlaneRef,
     PlaneType,
@@ -50,6 +55,8 @@ from app.document.schemas import (
     FilletFeatureCreate,
     FilletFeatureResponse,
     FilletFeatureUpdate,
+    ImportFeatureCreate,
+    ImportFeatureResponse,
     MeshVertexData,
     NativeImportResponse,
     PartCreate,
@@ -253,6 +260,14 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             produces=feature.produces,
         )
+    if isinstance(feature, ImportFeature):
+        return ImportFeatureResponse(
+            id=feature.id,
+            source_format=feature.source_format,
+            source_byte_count=len(feature.source_data),
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -311,11 +326,11 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
         )
     for target_id in target_body_ids:
         target_feature = part.get_feature(base_feature_id(target_id))
-        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature)):
+        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
-                "RevolveFeature, or SweepFeature in this Part",
+                "RevolveFeature, SweepFeature, or ImportFeature in this Part",
             )
 
 
@@ -1212,6 +1227,32 @@ def update_sweep_feature(part_id: str, feature_id: str, payload: SweepFeatureUpd
     feature.mode = candidate.mode
     feature.target_body_ids = candidate.target_body_ids
     feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/import-features", response_model=ImportFeatureResponse, status_code=201)
+def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportFeatureResponse:
+    """Brings an external file's geometry in as a fixed, non-parametric
+    Body (locked-in scope - see `app.document.models.ImportFeature`'s own
+    docstring). Never locked-editable-only-if-last from the start, same
+    instruction as every other post-B4 Feature endpoint; there is also no
+    corresponding PATCH - a dumb, no-parameters Feature has nothing to
+    revise, only delete-and-recreate.
+
+    Decodes `data_base64` and validates resolvability (`resolve_import`,
+    discarding its result here - the real geometry is recomputed again the
+    next time `/mesh` is fetched, via `compute_part_bodies`'s own
+    ImportFeature handling) *before* constructing the Feature - fails
+    closed with `invalid_import_data`/`import_failed` rather than ever
+    persisting an unimportable file."""
+    part = get_part_or_404(part_id)
+    try:
+        source_data = base64.b64decode(payload.data_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="data_base64 is not valid base64")
+    feature = ImportFeature(id=str(uuid.uuid4()), source_format=payload.source_format, source_data=source_data)
+    resolve_import(feature)  # raises on an unimportable file; result unused here
+    part.add_feature(feature)
     return _feature_response(part, feature)
 
 

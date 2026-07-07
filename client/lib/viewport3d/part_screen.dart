@@ -2094,6 +2094,47 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// Import: brings an external STEP/STL/OBJ/glTF file in as a fixed,
+  /// non-parametric Body (locked-in scope - see the backend's
+  /// `app.document.models.ImportFeature` own docstring) via
+  /// [DocumentApiClient.createImportFeature]. `type: FileType.any` for the
+  /// same reason [_openNativeFile] uses it, not an extension allow-list -
+  /// see that method's own doc comment for the Android MIME-type-filtering
+  /// bug this sidesteps.
+  static const Map<String, String> _importSourceFormatByExtension = {
+    'step': 'step',
+    'stp': 'step',
+    'stl': 'stl',
+    'obj': 'obj',
+    'gltf': 'gltf',
+    'glb': 'gltf',
+  };
+
+  Future<void> _importGeometry() async {
+    setState(() => _toolbarOpen = false);
+    final part = _part;
+    if (part == null) return;
+
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final picked = result.files.single;
+    final bytes = picked.bytes;
+    if (bytes == null) return;
+
+    final extension = (picked.extension ?? picked.name.split('.').last).toLowerCase();
+    final sourceFormat = _importSourceFormatByExtension[extension];
+    if (sourceFormat == null) {
+      setState(() => _errorMessage = 'Unrecognized file type: .$extension (expected STEP/STL/OBJ/glTF)');
+      return;
+    }
+
+    await _runGuarded(() async {
+      await _api.createImportFeature(part.id, sourceFormat: sourceFormat, bytes: bytes);
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
   /// Export: writes the current Part's geometry out to one of four
   /// interchange formats (`format` is `'step'`/`'stl'`/`'obj'`/`'glb'`,
   /// matching both the backend endpoint's own path segment and the saved
@@ -4802,6 +4843,7 @@ class _PartScreenState extends State<PartScreen> {
                     onSaveNative: _saveNativeFile,
                     onOpenNative: _openNativeFile,
                     onExportPart: _exportPart,
+                    onImportGeometry: _importGeometry,
                     bgColourHex: _bgColourHex,
                     bodyColourHex: _bodyColourHex,
                     bodyOpacity: _bodyOpacity,

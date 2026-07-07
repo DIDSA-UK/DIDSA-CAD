@@ -33,6 +33,7 @@ from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
     FilletFeature,
+    ImportFeature,
     Part,
     ResolvedPlane,
     RevolveFeature,
@@ -526,6 +527,7 @@ def compute_part_bodies(
     resolve_sweep`)."""
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
+    from app.document.import_geometry import resolve_import
     from app.document.revolve import resolve_revolve_from_bodies
     from app.document.sweep import resolve_sweep_from_bodies
 
@@ -554,6 +556,25 @@ def compute_part_bodies(
                 logger.warning("Skipping ChamferFeature %s: could not be resolved", feature.id)
                 continue
             bodies[body_id] = chamfered_shape
+            continue
+
+        if isinstance(feature, ImportFeature):
+            try:
+                solid = resolve_import(feature)
+            except HTTPException as exc:
+                # Mirrors the Sweep/Extrude branches' own narrow-catch fix:
+                # only this Feature's own "bad file" failures are tolerated
+                # (the router's create endpoint already validates eagerly,
+                # so this only matters for a hand-crafted/legacy document);
+                # anything else must still propagate.
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "import_failed",
+                    "invalid_import_data",
+                ):
+                    raise
+                logger.warning("Skipping ImportFeature %s: could not be resolved", feature.id)
+                continue
+            _apply_boss_or_cut(bodies, feature.id, feature_index, False, [], solid)
             continue
 
         if isinstance(feature, RevolveFeature):
