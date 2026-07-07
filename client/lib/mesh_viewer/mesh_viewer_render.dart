@@ -78,19 +78,20 @@ Future<ui.Image> decodeTextureImage(Uint8List bytes, {int maxDimension = kMaxTex
 }
 
 /// Uploads [image]'s pixels to a new `flutter_gpu` [gpu.Texture] -
-/// `Texture.overwrite` requires `StorageMode.hostVisible` and exactly
-/// `width * height * 4` bytes for an RGBA8 texture (`createTexture`'s
-/// default `PixelFormat`), matching `toByteData(format: rawRgba)`'s layout.
+/// `Texture.overwrite` takes the `ByteData` from `toByteData` directly (not
+/// a `Uint8List` view of it) and returns `void`, not a success flag - both
+/// corrected here after a real on-device build caught them (see this file's
+/// git history for the earlier, wrong assumptions). Requires
+/// `StorageMode.hostVisible` and exactly `width * height * 4` bytes for an
+/// RGBA8 texture (`createTexture`'s default `PixelFormat`), matching
+/// `toByteData(format: rawRgba)`'s layout.
 Future<gpu.Texture> uploadTexture(ui.Image image) async {
   final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
   if (byteData == null) {
     throw StateError('Could not extract RGBA pixels from decoded texture image');
   }
   final texture = gpu.gpuContext.createTexture(gpu.StorageMode.hostVisible, image.width, image.height);
-  final wrote = texture.overwrite(byteData.buffer.asUint8List());
-  if (!wrote) {
-    throw StateError('GPU texture upload failed (Texture.overwrite returned false)');
-  }
+  texture.overwrite(byteData);
   return texture;
 }
 
