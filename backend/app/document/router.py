@@ -1,7 +1,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.chamfer import resolve_chamfer
@@ -10,7 +10,10 @@ from app.document.extrude import compute_part_bodies, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
+from app.document.mesh_data import Triangle
+from app.document.mesh_export import encode_glb, encode_obj, encode_stl
 from app.document.native_format import NativeFormatError, export_native, import_native
+from app.document.step_export import export_step
 from app.document.models import (
     ChamferFeature,
     CreatePlaneFeature,
@@ -1381,3 +1384,86 @@ def import_native_document(payload: dict) -> NativeImportResponse:
     replace_document(document)
     replace_all_sketches(sketches)
     return NativeImportResponse(document_id=document.id, part_ids=list(document.parts.keys()))
+
+
+def _export_bodies_or_400(part: Part) -> dict[str, object]:
+    """The current Body map every export format below shares (per
+    `compute_part_bodies`, the same source of truth `/mesh` tessellates
+    from) - 400s up front for a Part with nothing to export, rather than
+    each format silently emitting an empty/invalid file."""
+    if not part.produces_solid_geometry:
+        raise HTTPException(status_code=400, detail="Part has no solid geometry to export")
+    bodies = compute_part_bodies(part)
+    if not bodies:
+        raise HTTPException(status_code=400, detail="Part has no solid geometry to export")
+    return bodies
+
+
+def _merged_body_mesh_data(bodies: dict[str, object]) -> MeshData:
+    """Tessellates every Body in `bodies` and concatenates them into one
+    flat `MeshData`, offsetting each Body's own triangle indices past
+    whatever's already been appended - a single combined mesh per Part,
+    matching a single exported STL/OBJ/glb file (unlike `/mesh`, which
+    deliberately keeps Bodies separate for the viewport's own per-Body
+    hit-testing - export has no such need)."""
+    merged = MeshData()
+    for shape in bodies.values():
+        body_mesh = tessellate_shape(shape, DEFAULT_MESH_QUALITY)
+        offset = len(merged.vertices)
+        merged.vertices.extend(body_mesh.vertices)
+        merged.normals.extend(body_mesh.normals)
+        merged.triangles.extend(
+            Triangle(a=t.a + offset, b=t.b + offset, c=t.c + offset) for t in body_mesh.triangles
+        )
+    return merged
+
+
+@router.get("/parts/{part_id}/export/step")
+def export_part_step(part_id: str) -> Response:
+    """AP242 STEP export (locked-in scope) of every current Body in this
+    Part - see `app.document.step_export.export_step`'s own docstring for
+    why AP242 is written now even with no PMI/MBD populated yet."""
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = export_step(bodies)
+    return Response(
+        content=data,
+        media_type="application/step",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.step"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/stl")
+def export_part_stl(part_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = encode_stl(_merged_body_mesh_data(bodies))
+    return Response(
+        content=data,
+        media_type="model/stl",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.stl"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/obj")
+def export_part_obj(part_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = encode_obj(_merged_body_mesh_data(bodies)).encode("utf-8")
+    return Response(
+        content=data,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.obj"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/glb")
+def export_part_glb(part_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    data = encode_glb(_merged_body_mesh_data(bodies))
+    return Response(
+        content=data,
+        media_type="model/gltf-binary",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.glb"'},
+    )

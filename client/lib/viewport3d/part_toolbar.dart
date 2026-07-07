@@ -58,11 +58,15 @@ class PartToolbar extends StatelessWidget {
   /// Native Save/Load: reads/writes the whole Document (every Part's
   /// ordered Feature list, plus every Sketch it references) as this app's
   /// own native project file - see `PartScreen._saveNativeFile`/
-  /// `_openNativeFile`. The only other real (non-placeholder) File entries
-  /// besides Connection Settings; STEP/STL/OBJ/glTF export and a foreign-
-  /// format Import remain disabled placeholders until a later pass.
+  /// `_openNativeFile`.
   final VoidCallback? onSaveNative;
   final VoidCallback? onOpenNative;
+
+  /// Export: writes the current Part's geometry out to one of four
+  /// interchange formats (`'step'`/`'stl'`/`'obj'`/`'glb'`) - see
+  /// `PartScreen._exportPart`. A foreign-format Import remains a disabled
+  /// placeholder until a later pass.
+  final void Function(String format)? onExportPart;
 
   /// Stage 18: current 3D-viewport appearance preferences (see
   /// [ViewPreferences]) and their change callbacks - [PartScreen] owns the
@@ -108,6 +112,7 @@ class PartToolbar extends StatelessWidget {
     this.onOpenConnectionSettings,
     this.onSaveNative,
     this.onOpenNative,
+    this.onExportPart,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
@@ -174,12 +179,14 @@ class PartToolbar extends StatelessWidget {
     );
   }
 
-  static const List<String> _filePlaceholders = [
-    'New',
-    'Save As…',
-    'Import…',
-    'Export STEP',
-    'Export STL',
+  static const List<String> _filePlaceholders = ['New', 'Save As…', 'Import…'];
+
+  // format, label, icon - each drives one Export ListTile below.
+  static const List<(String, String, IconData)> _exportFormats = [
+    ('step', 'Export STEP', Icons.view_in_ar_outlined),
+    ('stl', 'Export STL', Icons.view_in_ar_outlined),
+    ('obj', 'Export OBJ', Icons.view_in_ar_outlined),
+    ('glb', 'Export glTF', Icons.view_in_ar_outlined),
   ];
 
   Widget _buildFileMenu(BuildContext context) {
@@ -202,6 +209,12 @@ class PartToolbar extends StatelessWidget {
           ListTile(
             enabled: false,
             title: Text(label, style: TextStyle(color: disabledColor)),
+          ),
+        for (final (format, label, icon) in _exportFormats)
+          ListTile(
+            leading: Icon(icon),
+            title: Text(label),
+            onTap: onExportPart == null ? null : () => onExportPart!(format),
           ),
         ListTile(
           leading: const Icon(Icons.settings_ethernet),

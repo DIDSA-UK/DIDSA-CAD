@@ -2094,6 +2094,26 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// Export: writes the current Part's geometry out to one of four
+  /// interchange formats (`format` is `'step'`/`'stl'`/`'obj'`/`'glb'`,
+  /// matching both the backend endpoint's own path segment and the saved
+  /// file's extension) via [DocumentApiClient.exportPart]. The backend 400s
+  /// (surfaced as [_errorMessage] by [_runGuarded]) if the Part has no
+  /// solid geometry yet - there is nothing to export before a first Boss.
+  Future<void> _exportPart(String format) async {
+    setState(() => _toolbarOpen = false);
+    final part = _part;
+    if (part == null) return;
+    await _runGuarded(() async {
+      final bytes = await _api.exportPart(part.id, format);
+      await FilePicker.platform.saveFile(
+        dialogTitle: 'Export Part',
+        fileName: '${part.name}.$format',
+        bytes: bytes,
+      );
+    });
+  }
+
   @override
   void dispose() {
     _extrudeDebounce?.cancel();
@@ -4781,6 +4801,7 @@ class _PartScreenState extends State<PartScreen> {
                     onOpenConnectionSettings: _openConnectionSettings,
                     onSaveNative: _saveNativeFile,
                     onOpenNative: _openNativeFile,
+                    onExportPart: _exportPart,
                     bgColourHex: _bgColourHex,
                     bodyColourHex: _bodyColourHex,
                     bodyOpacity: _bodyOpacity,

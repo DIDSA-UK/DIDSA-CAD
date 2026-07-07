@@ -1019,6 +1019,47 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   `.DIDSAprt` per explicit user request. Fixes (1)/(2) confirmed working
   on-device; (3) and the extension rename not yet re-tested as of this
   entry.
+- **Export: STEP/STL/OBJ/glTF (second slice of the Save/Load/Import/Export
+  phase).** Per-Part `GET /document/parts/{id}/export/{step|stl|obj|glb}`.
+  STL/OBJ/glb (locked-in scope: reuse existing `MeshData`, not OCCT's own
+  writers) are hand-rolled in new `app/document/mesh_export.py`
+  (`encode_stl`/`encode_obj`/`encode_glb`) - binary STL, ASCII OBJ, and a
+  minimal valid glTF 2.0 `.glb` container (one mesh/primitive,
+  POSITION+NORMAL only, no index buffer since `MeshData`'s flat triangle
+  soup is already unindexed). `MeshQuality`/`Triangle`/`MeshData` themselves
+  had zero OCCT dependency but lived in `app.document.mesh` alongside
+  `tessellate_shape`, which does - split into a new OCCT-free
+  `app/document/mesh_data.py` (re-exported unchanged from `mesh.py`) so
+  `mesh_export.py`'s own encoders, and their tests, can import just the data
+  shape without OCC.Core, which has no install in this sandbox. STEP export
+  (new `app/document/step_export.py`) writes AP242 (locked-in scope, even
+  with no PMI/MBD populated yet) via `STEPControl_Writer`, one `Transfer`
+  per current Body so each stays its own distinct STEP product rather than
+  one fused compound; round-trips through a temp file since pythonocc-core's
+  writer only writes to a real path. All four formats combine every Body's
+  tessellation into one merged mesh per Part (`_merged_body_mesh_data`,
+  offsetting each Body's own triangle indices) - unlike `/mesh`, which keeps
+  Bodies separate for the viewport's own per-Body hit-testing, export has no
+  such need. A Part with no solid geometry yet 400s up front rather than
+  emitting an empty/invalid file. 9 new genuinely-executable pure-Python
+  encoder tests (synthetic `MeshData`, no OCCT at all) plus a new CI-only
+  HTTP test file covering all four formats against a real extruded box and
+  the no-solid-geometry 400 case. Client: `DocumentApiClient.exportPart`
+  (a new `_sendBytes` helper, since raw STEP/STL/glb bytes aren't JSON the
+  way every other endpoint's response is); File menu gained real "Export
+  STEP"/"Export STL"/"Export OBJ"/"Export glTF" entries (previously two
+  disabled placeholders, now four real ones) calling `PartScreen._exportPart`,
+  which hands the bytes to the same `file_picker` save-file dialog Native
+  Save already uses. Import (STEP as a dumb, non-parametric Body; STL/OBJ/
+  glTF likewise for view/measure/model-around) is explicitly the next,
+  not-yet-started slice - locked in via AskUserQuestion: STL/OBJ/glTF are
+  export-only formats (no parametric history to reconstruct), so import
+  only ever means STEP (or a mesh format) becoming a fixed reference Body a
+  future prompt can add direct-editing (scale/move face/delete face/move
+  body) to, not a new parametric Feature type of its own. Not yet confirmed
+  on-device - client changes unverifiable in this sandbox (no Flutter SDK),
+  only manually reviewed plus brace-balance checks; STEP/STL/OBJ/glb export
+  itself not yet confirmed green in CI as of this entry (pending push).
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not

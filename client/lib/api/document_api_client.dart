@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -518,6 +519,23 @@ class DocumentApiClient {
     return onSuccess(decoded);
   }
 
+  /// Same request/error handling as [_send], but for an endpoint whose
+  /// success body is raw binary (STEP/STL/glb) rather than JSON -
+  /// [http.Response.bodyBytes] instead of [_send]'s `jsonDecode(response.
+  /// body)`, which would corrupt or throw on arbitrary binary content.
+  Future<Uint8List> _sendBytes(Future<http.Response> Function() request) async {
+    http.Response response;
+    try {
+      response = await request().timeout(ApiConfig.requestTimeout);
+    } on Exception catch (e) {
+      throw ApiException('Could not reach the server: $e');
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}');
+    }
+    return response.bodyBytes;
+  }
+
   String _detailOf(http.Response response) {
     try {
       final decoded = jsonDecode(response.body);
@@ -1002,6 +1020,13 @@ class DocumentApiClient {
               body: jsonEncode(nativeFileContents),
             ),
         (body) => NativeImportResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Export: raw file bytes for `format` (`'step'`/`'stl'`/`'obj'`/`'glb'`)
+  /// - the backend 400s if `partId` has no solid geometry yet (surfaced as
+  /// an [ApiException] here, same as any other error response).
+  Future<Uint8List> exportPart(String partId, String format) => _sendBytes(
+        () => _httpClient.get(_uri('/document/parts/$partId/export/$format'), headers: _headers),
       );
 
   void close() => _httpClient.close();
