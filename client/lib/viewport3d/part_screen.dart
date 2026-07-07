@@ -76,7 +76,22 @@ class PartScreen extends StatefulWidget {
   /// moment ago.
   final String? initialPartId;
 
-  const PartScreen({super.key, this.documentApi, this.sketchApiFactory, this.initialPartId});
+  /// Native Load: the Hide/Show feature-id set a native file's own
+  /// `hidden_feature_ids` entry carried (see [_PartScreenState._saveNativeFile]/
+  /// [_PartScreenState._openNativeFile]) - restored into the fresh screen's
+  /// [_PartScreenState._hiddenFeatureIds] at [_PartScreenState.initState],
+  /// same reasoning as [initialPartId] for why this is a constructor param
+  /// on a brand-new screen rather than mutated in place. Empty by default,
+  /// matching a Part that opened with nothing hidden.
+  final List<String> initialHiddenFeatureIds;
+
+  const PartScreen({
+    super.key,
+    this.documentApi,
+    this.sketchApiFactory,
+    this.initialPartId,
+    this.initialHiddenFeatureIds = const [],
+  });
 
   @override
   State<PartScreen> createState() => _PartScreenState();
@@ -302,6 +317,13 @@ class _PartScreenState extends State<PartScreen> {
   /// afterward. See `app.document.router.get_part_mesh`'s own docstring for
   /// the full incident writeup of why this and [_rollbackExcludedFeatureIds]
   /// used to be the same set, and why that broke Create Plane.
+  ///
+  /// On-device feedback: purely client-side state means a native Save/Load
+  /// round-trip lost it entirely (the backend never sees it outside a
+  /// single `/mesh` request's query param) - [_saveNativeFile]/
+  /// [_openNativeFile] now carry it through the file's own JSON as a
+  /// `hidden_feature_ids` array the backend's own `export_native`/
+  /// `import_native` know nothing about and simply pass through unexamined.
   final Set<String> _hiddenFeatureIds = {};
 
   /// B4 true-rollback's own "pretend these Features (and hence everything
@@ -1931,6 +1953,10 @@ class _PartScreenState extends State<PartScreen> {
     super.initState();
     _api = widget.documentApi ?? DocumentApiClient();
     _sketchApi = widget.sketchApiFactory?.call() ?? SketchApiClient();
+    // Native Load: restores whichever Features a just-opened file's own
+    // `hidden_feature_ids` named - see [PartScreen.initialHiddenFeatureIds]'s
+    // own doc comment. A no-op (empty) for every non-native-Load launch.
+    _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
     _loadPart();
     _loadViewPreferences();
   }
@@ -2000,10 +2026,16 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _toolbarOpen = false);
     await _runGuarded(() async {
       final data = await _api.exportNative();
+      // On-device feedback: the backend's own export knows nothing about
+      // Hide/Show (purely client-side, see [_hiddenFeatureIds]'s own doc
+      // comment) - stash it directly into the same JSON object under a key
+      // the backend's `import_native` simply ignores, so opening this file
+      // elsewhere restores it too instead of silently losing it.
+      data['hidden_feature_ids'] = _hiddenFeatureIds.toList();
       final bytes = Uint8List.fromList(utf8.encode(jsonEncode(data)));
       await FilePicker.platform.saveFile(
         dialogTitle: 'Save Project',
-        fileName: '${_part?.name ?? 'part'}.didsacad',
+        fileName: '${_part?.name ?? 'part'}.DIDSAprt',
         bytes: bytes,
       );
     });
@@ -2039,6 +2071,11 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
 
+    // On-device feedback: the file's own Hide/Show state (see
+    // [_saveNativeFile]) - the backend's `import_native` doesn't know this
+    // key exists and simply ignores it, so it's read back here instead.
+    final hiddenFeatureIds = (decoded['hidden_feature_ids'] as List?)?.cast<String>() ?? const [];
+
     NativeImportResultDto? imported;
     await _runGuarded(() async {
       imported = await _api.importNative(decoded);
@@ -2051,6 +2088,7 @@ class _PartScreenState extends State<PartScreen> {
           documentApi: widget.documentApi,
           sketchApiFactory: widget.sketchApiFactory,
           initialPartId: imported!.partIds.first,
+          initialHiddenFeatureIds: hiddenFeatureIds,
         ),
       ),
     );

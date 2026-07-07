@@ -995,6 +995,30 @@ bug; reverting either would only reintroduce previously-fixed regressions.
   confirmed on-device - the client changes (new dependency, file-picker
   wiring) could not be compiled/run in this sandbox (no Flutter SDK), only
   manually reviewed plus a brace-balance check against the pre-edit file.
+  **On-device follow-up round (three fixes, all confirmed working except
+  the last, still pending re-test):** (1) CI's real run caught the one new
+  HTTP test asserting `part_ids == [part_id]` - too strict against the
+  process-global Document this suite shares across every test module in
+  one pytest session, which by that point legitimately held Parts from
+  earlier-run files too; fixed to assert containment instead, verified via
+  a second green CI run. (2) On-device: the in-app Open picker
+  (`FilePicker.platform.pickFiles`) greyed out a just-saved file entirely -
+  `FileType.custom` + `allowedExtensions` filters by OS-guessed MIME type,
+  and Android has no MIME mapping for a made-up extension, so a save
+  written under it couldn't be confirmed as a match; switched to
+  `FileType.any`, since content is already validated right after (JSON
+  decode, then the backend's own `schema_version` check) regardless. (3)
+  On-device: Hide/Show state (`_hiddenFeatureIds`) is purely client-side
+  and was never included in the exported file at all, so it was silently
+  dropped by every Save/Load round-trip - fixed by having the client stash
+  it directly into the same JSON object under a `hidden_feature_ids` key
+  the backend's own `export_native`/`import_native` know nothing about and
+  simply pass through unexamined, restored via a new `PartScreen.
+  initialHiddenFeatureIds` constructor param on the fresh screen Open
+  pushes. Also renamed the saved file's extension from `.didsacad` to
+  `.DIDSAprt` per explicit user request. Fixes (1)/(2) confirmed working
+  on-device; (3) and the extension rename not yet re-tested as of this
+  entry.
 - **Pre-existing, unrelated test failures flagged but not fixed** across
   several status entries (e.g. `addCollinearConstraint`/
   `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not
