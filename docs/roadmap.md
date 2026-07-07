@@ -1380,3 +1380,46 @@ more specific import path) was not directly confirmed - see
 `part_viewport.dart`'s own doc comment on `_applyLighting` for the full
 note. If either file fails to compile on the next on-device build, it's
 very likely the same fix needed in both places.
+
+## Bug fixes: real on-device feedback on the lighting/shading upgrade
+
+Two issues reported after the first on-device build of the PBR/lighting
+work above (both fixed, neither yet re-confirmed on-device):
+
+- **Scene sheet's sliders/colour tick didn't visually move while
+  dragging/tapping - only updated after closing and reopening the menu.**
+  The mesh viewer's `showScenePrefsSheet` (`scene_controls_panel.dart`)
+  used a `StatefulBuilder` with `var currentX = x;` declared *inside* the
+  builder callback - which looked reasonable but silently resets every
+  time `setSheetState` runs (the callback re-executes from scratch on each
+  rebuild), snapping the displayed value straight back to the sheet's
+  original opening value before the next frame painted the just-changed
+  one. The underlying persisted state was actually updating correctly the
+  whole time (via the `onXChanged` callbacks, called unconditionally
+  either way) - only the sheet's own *visual* reflection of it was broken.
+  Fixed by converting to a real `StatefulWidget`/`State` class
+  (`_ScenePrefsSheet`/`_ScenePrefsSheetState`), whose fields persist across
+  its own `setState` calls - the same shape `view_prefs_sheets.dart`'s
+  pre-existing `_BodyOpacitySheet` already uses, for exactly this reason.
+  `PartToolbar`'s own embedded Scene submenu (plain props from real
+  `PartScreen` state, no `StatefulBuilder` involved) was never affected.
+- **Some meshes rendered with one side opaque and the other see-through -
+  internal faces visible, an external face missing, flipping depending on
+  view angle.** The textbook symptom of backface culling combined with
+  inconsistent triangle winding - `mesh_geometry.dart`'s own
+  `triangleHighlightBuffers` doc comment already confirms `flutter_scene`/
+  Impeller does cull backfaces, worked around there (for highlight
+  overlays only) by emitting every triangle with both windings. A real
+  OCCT-tessellated Body's winding is reliably consistent (`geometryFromMesh`
+  has never needed that workaround), but an arbitrary external STL/OBJ/glTF
+  file - especially photogrammetry output - has no such guarantee, and this
+  viewer has no way to detect or repair bad winding in someone else's file.
+  Fixed by setting `PhysicallyBasedMaterial.doubleSided = true` in
+  `buildMeshViewerMaterial` - disables culling entirely for the mesh
+  viewer specifically (not touched in `part_viewport.dart`/the main Part
+  viewport, which has never shown this symptom), so every triangle renders
+  from both sides regardless of the source file's own winding correctness.
+  `doubleSided` itself is inferred from a real `flutter_scene` changelog
+  line ("Fixed material.doubleSided being ignored by runtime importer")
+  rather than confirmed directly against this project's installed source -
+  flagged in `mesh_viewer_render.dart`'s own top-of-file doc comment.

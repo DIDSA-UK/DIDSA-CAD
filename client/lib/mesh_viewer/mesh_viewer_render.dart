@@ -16,6 +16,14 @@
 /// `_MeshViewerViewport` before building the Scene - can safely await it as
 /// often as needed without knowing (or caring) whether `initializeStaticResources`
 /// itself tolerates being called twice.
+///
+/// FLAGGED FOR ON-DEVICE VERIFICATION: `PhysicallyBasedMaterial`'s
+/// `doubleSided` field (see [buildMeshViewerMaterial]) is inferred from a
+/// real `flutter_scene` changelog line ("Fixed material.doubleSided being
+/// ignored by runtime importer") rather than confirmed directly against
+/// this file's own installed source the way `baseColorTexture` was after
+/// the earlier `colorTexture` mistake - same "no Flutter SDK in this
+/// sandbox" caveat as everything else in this upgrade.
 library;
 
 import 'dart:math' as math;
@@ -196,6 +204,23 @@ List<Node> buildMeshViewerNodes(DecodedMesh mesh, PhysicallyBasedMaterial materi
 /// until that's done at least once (see this file's top-of-file doc
 /// comment - originally documented for `UnlitMaterial`, applies identically
 /// here).
+///
+/// Sets `doubleSided = true` - real on-device testing showed some meshes
+/// rendering with one side opaque and the other see-through (internal
+/// faces visible where an external one should be, flipping depending on
+/// view angle): the textbook symptom of backface culling combined with
+/// inconsistent triangle winding, which `mesh_geometry.dart`'s own
+/// `triangleHighlightBuffers` doc comment already confirms is real in this
+/// engine ("flutter_scene/Impeller's back-face culling", worked around
+/// there by emitting every highlight triangle with both windings). A real
+/// OCCT-tessellated Body's winding is reliably consistent (`geometryFromMesh`
+/// has never needed this workaround), but an arbitrary external STL/OBJ/glTF
+/// file - especially photogrammetry output - has no such guarantee, and
+/// this viewer has no way to detect or repair bad winding in someone else's
+/// file. Disabling culling entirely is the robust fix: every triangle
+/// renders from both sides regardless of the source file's own winding
+/// correctness, at a modest fill-rate cost this viewer's target hardware
+/// (see `kMaxViewerTriangles`'s own doc comment) can afford.
 Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
   DecodedMesh mesh, {
   required String baseColourHex,
@@ -209,7 +234,8 @@ Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
     ..baseColorFactor = hasTexture ? vm.Vector4(1, 1, 1, 1) : vector4FromHex(baseColourHex)
     ..roughnessFactor = roughness
     ..metallicFactor = fixedMetallic
-    ..emissiveFactor = vm.Vector4(emissiveIntensity, emissiveIntensity, emissiveIntensity, 1);
+    ..emissiveFactor = vm.Vector4(emissiveIntensity, emissiveIntensity, emissiveIntensity, 1)
+    ..doubleSided = true;
   final textureBytes = mesh.textureBytes;
   if (textureBytes != null) {
     final image = await decodeTextureImage(textureBytes);

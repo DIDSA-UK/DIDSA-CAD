@@ -179,51 +179,114 @@ Future<void> showScenePrefsSheet(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    builder: (sheetContext) => StatefulBuilder(
-      builder: (sheetContext, setSheetState) {
-        var currentColour = baseColourHex;
-        var currentRoughness = roughness;
-        var currentLight = lightIntensity;
-        var currentEmissive = emissiveIntensity;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: Text('Scene', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                ),
-                const SizedBox(height: 8),
-                SceneControlsPanel(
-                  baseColourHex: currentColour,
-                  onBaseColourChanged: (hex) {
-                    setSheetState(() => currentColour = hex);
-                    onBaseColourChanged(hex);
-                  },
-                  roughness: currentRoughness,
-                  onRoughnessChanged: (value) {
-                    setSheetState(() => currentRoughness = value);
-                    onRoughnessChanged(value);
-                  },
-                  lightIntensity: currentLight,
-                  onLightIntensityChanged: (value) {
-                    setSheetState(() => currentLight = value);
-                    onLightIntensityChanged(value);
-                  },
-                  emissiveIntensity: currentEmissive,
-                  onEmissiveIntensityChanged: (value) {
-                    setSheetState(() => currentEmissive = value);
-                    onEmissiveIntensityChanged(value);
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+    builder: (sheetContext) => _ScenePrefsSheet(
+      baseColourHex: baseColourHex,
+      onBaseColourChanged: onBaseColourChanged,
+      roughness: roughness,
+      onRoughnessChanged: onRoughnessChanged,
+      lightIntensity: lightIntensity,
+      onLightIntensityChanged: onLightIntensityChanged,
+      emissiveIntensity: emissiveIntensity,
+      onEmissiveIntensityChanged: onEmissiveIntensityChanged,
     ),
   );
+}
+
+/// A real [State] (not a [StatefulBuilder] with local `var`s captured in its
+/// builder closure) - a first attempt at this sheet used `StatefulBuilder`
+/// with `var currentX = x;` declared *inside* the builder callback, which
+/// looked reasonable but re-executes on every `setSheetState` call, silently
+/// resetting each `currentX` straight back to the sheet's original opening
+/// value before the next frame ever painted the just-changed one. On-device
+/// testing caught this exactly as the bug predicts: sliders/the colour
+/// swatch tick visually snapped back and never appeared to move while
+/// dragging/tapping, even though the *real*, persisted state (via the
+/// `onXChanged` callbacks, called correctly either way) was updating fine -
+/// only reflected once the sheet was closed and reopened with a fresh
+/// initial value. A proper `State` class's fields persist across its own
+/// `setState` calls (unlike a rebuilt closure's locals), which is what
+/// actually fixes it - the same `StatefulWidget`/`State` shape
+/// `view_prefs_sheets.dart`'s own `_BodyOpacitySheet` already uses for
+/// exactly this reason.
+class _ScenePrefsSheet extends StatefulWidget {
+  final String baseColourHex;
+  final ValueChanged<String> onBaseColourChanged;
+  final double roughness;
+  final ValueChanged<double> onRoughnessChanged;
+  final double lightIntensity;
+  final ValueChanged<double> onLightIntensityChanged;
+  final double emissiveIntensity;
+  final ValueChanged<double> onEmissiveIntensityChanged;
+
+  const _ScenePrefsSheet({
+    required this.baseColourHex,
+    required this.onBaseColourChanged,
+    required this.roughness,
+    required this.onRoughnessChanged,
+    required this.lightIntensity,
+    required this.onLightIntensityChanged,
+    required this.emissiveIntensity,
+    required this.onEmissiveIntensityChanged,
+  });
+
+  @override
+  State<_ScenePrefsSheet> createState() => _ScenePrefsSheetState();
+}
+
+class _ScenePrefsSheetState extends State<_ScenePrefsSheet> {
+  late String _colour;
+  late double _roughness;
+  late double _light;
+  late double _emissive;
+
+  @override
+  void initState() {
+    super.initState();
+    _colour = widget.baseColourHex;
+    _roughness = widget.roughness;
+    _light = widget.lightIntensity;
+    _emissive = widget.emissiveIntensity;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Text('Scene', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            const SizedBox(height: 8),
+            SceneControlsPanel(
+              baseColourHex: _colour,
+              onBaseColourChanged: (hex) {
+                setState(() => _colour = hex);
+                widget.onBaseColourChanged(hex);
+              },
+              roughness: _roughness,
+              onRoughnessChanged: (value) {
+                setState(() => _roughness = value);
+                widget.onRoughnessChanged(value);
+              },
+              lightIntensity: _light,
+              onLightIntensityChanged: (value) {
+                setState(() => _light = value);
+                widget.onLightIntensityChanged(value);
+              },
+              emissiveIntensity: _emissive,
+              onEmissiveIntensityChanged: (value) {
+                setState(() => _emissive = value);
+                widget.onEmissiveIntensityChanged(value);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
