@@ -482,7 +482,37 @@ Uint8List _resolveDataUri(String? uri, String what) {
   return base64.decode(uri.substring(commaIndex + 1));
 }
 
+/// Extensions this decoder cannot read the real geometry of - if any of
+/// these appear in the document's spec-mandated `extensionsUsed` list, every
+/// accessor lacking a `bufferView` is almost certainly *compressed* data
+/// this decoder doesn't understand, not a legitimate spec-legal "all zero"
+/// accessor (see `readAccessor`'s own doc comment on that legal case). A
+/// real ODM/OpenDroneMap `.glb` export hit exactly this on-device - Draco
+/// mesh compression is a common way photogrammetry tools shrink large
+/// exports. Checked once, up front, rather than discovered accessor-by-
+/// accessor: a Draco file's POSITION/NORMAL/TEXCOORD_0 accessors still
+/// declare their real (potentially huge) vertex `count` even though the
+/// actual bytes are compressed elsewhere, so blindly zero-filling each one
+/// as "legitimately all zero" risks a multi-gigabyte allocation attempt
+/// before ever reaching an indices accessor that would otherwise fail
+/// cleanly - the likely explanation for a separate, real on-device
+/// crash-to-home-screen report on a larger file from the same export
+/// pipeline.
+const _kUnsupportedGltfExtensions = {
+  'KHR_draco_mesh_compression',
+  'EXT_meshopt_compression',
+};
+
 DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffers, int? maxTriangles) {
+  final extensionsUsed = ((gltf['extensionsUsed'] as List?) ?? const []).cast<String>();
+  final unsupported = extensionsUsed.where(_kUnsupportedGltfExtensions.contains);
+  if (unsupported.isNotEmpty) {
+    throw MeshImportError(
+      'This glTF/GLB uses ${unsupported.join(', ')}, which this viewer cannot decode - '
+      're-export without mesh compression (most tools that use it offer an uncompressed option).',
+    );
+  }
+
   final accessors = (gltf['accessors'] as List?) ?? const [];
   final bufferViews = (gltf['bufferViews'] as List?) ?? const [];
   final meshes = (gltf['meshes'] as List?) ?? const [];

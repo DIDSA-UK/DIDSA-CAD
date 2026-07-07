@@ -319,6 +319,44 @@ void main() {
       );
     });
 
+    test('a Draco-compressed glTF is rejected with a clear, specific error', () {
+      // Real ODM/OpenDroneMap .glb export hit this on-device: its
+      // extensionsUsed declares KHR_draco_mesh_compression, and its
+      // accessors have no bufferView at all (the real data is compressed
+      // inside a KHR_draco_mesh_compression extension block this decoder
+      // doesn't implement) - this must fail fast with a specific message,
+      // not the generic "no bufferView" error, and specifically before any
+      // attempt to zero-fill a vertex accessor's (potentially huge) declared
+      // count as if it were legitimately all-zero data.
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'extensionsUsed': ['KHR_draco_mesh_compression'],
+        'buffers': <Map<String, dynamic>>[],
+        'bufferViews': <Map<String, dynamic>>[],
+        'accessors': [
+          {'componentType': 5126, 'count': 1000000, 'type': 'VEC3'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+                'extensions': {
+                  'KHR_draco_mesh_compression': {'bufferView': 0, 'attributes': {'POSITION': 0}},
+                },
+              },
+            ],
+          },
+        ],
+      };
+      expect(
+        () => decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf)))),
+        throwsA(
+          isA<MeshImportError>().having((e) => e.message, 'message', contains('KHR_draco_mesh_compression')),
+        ),
+      );
+    });
+
     test('maxTriangles decimates during decode and reports sourceTriangleCount', () {
       final positions = Float32List.fromList([
         for (var i = 0; i < 10; i++) ...[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, i.toDouble(), 0.0],

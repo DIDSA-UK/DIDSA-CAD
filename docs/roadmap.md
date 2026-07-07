@@ -25,3 +25,16 @@ project spec, see `docs/project-brief.md`.
   newly *visible* (not newly introduced) once a missing import let that
   test file load for the first time in a sandbox. Still open as of the
   last time it was checked.
+- **Draco-compressed glTF/GLB support (`KHR_draco_mesh_compression`) - not
+  implemented.** A real ODM/OpenDroneMap `.glb` export uses it; the mesh
+  viewer currently detects it up front and fails with a clear, specific
+  error rather than crashing (see `docs/status.md`'s "Same ODM file, real
+  root cause found: Draco mesh compression" entry) - it does not actually
+  decode the compressed geometry. Real Draco decoding needs an
+  entropy/range decoder plus edgebreaker-style connectivity
+  reconstruction - a genuine binary-codec implementation, not a small
+  addition - and there's no ready-made pure-Dart package to lean on; a
+  native/FFI Draco library would be a materially bigger dependency change
+  (platform-specific binaries). Whether to pursue this, versus relying on
+  re-exporting without mesh compression (available in most pipelines that
+  use it, including ODM's), is an open question for the user - not decided.
