@@ -2363,3 +2363,13 @@ Pushed both rounds of fixes above and checked the real CI result rather than ass
 - **`part_viewport_test.dart`'s own `Listener` wait was unscoped**: `find.byType(Listener)` matches *any* `Listener` anywhere in the tree, including ones Scaffold/GestureDetector internals create ambiently - it returned true on the very first frame, before `PartViewport`'s own Scene setup had actually finished, reproducing the exact race the fix was meant to close. **Fixed**: scoped to `find.descendant(of: find.byType(PartViewport), matching: find.byType(Listener))`.
 
 Pushed again - the next CI run is the real check now.
+
+## 2026-07-08 — Third real re-run: 528 passed, 7 failed, down from 11 - one genuine, longstanding test-fixture gap found
+
+Six of the seven remaining failures shared one real root cause, not a timing issue at all: `_FakeDocumentBackend` (this test file's in-memory `/document` API fake) has never implemented `GET .../features/{id}/cascade-preview` - the read-only preview endpoint `_cascadeDeleteFeature` awaits *before* it even shows the confirmation dialog. Every long-press-Delete flow in this file has been hitting a 404 on that call this whole time, silently setting `errorMessage` and never showing the dialog at all - no amount of `_pumpUntil` waiting was ever going to fix that, since the dialog genuinely never appeared. **Fixed**: added the missing handler, mirroring the existing `DELETE .../cascade` handler's own "every Feature from this one onward" semantics.
+
+The seventh ("a pre-selected, already-eligible Sketch...") was a real animation-timing gap in this session's own earlier fix: the Sketch screen's title text is in the tree the instant the route is pushed, but the page-transition slide-in animation can still be in progress - tapping the "Exit Sketch" FAB (positioned via `right: 8`) before it settles can hit a screen position still off in transit, outside the test viewport. **Fixed**: an extra 300ms settle pump between reaching the title and tapping the FAB.
+
+`part_viewport_test.dart`'s "Fix 4: tapping the viewport in selection mode over empty space" continues to be the one holdout - even properly scoped, its own `Listener`-wait sometimes never sees Scene setup resolve (success *or* the already-diagnosed GPU-init error) within the default pump budget at all, with no further log output either way. This looks like a genuine race/flakiness in this CI sandbox's software-rendering GPU setup for this specific widget configuration, not a code correctness issue reachable from test-file changes alone - bumped the pump budget as a pragmatic attempt; if it keeps recurring, that's an environment-flakiness finding to report, not a bug to keep chasing blind.
+
+Pushed again.

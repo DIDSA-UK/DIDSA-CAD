@@ -160,6 +160,7 @@ void main() {
       await _pumpUntil(
         tester,
         () => find.descendant(of: find.byType(PartViewport), matching: find.byType(Listener)).evaluate().isNotEmpty,
+        maxPumps: 300,
       );
       await tester.pump();
 

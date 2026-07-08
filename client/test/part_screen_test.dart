@@ -86,6 +86,19 @@ class _FakeDocumentBackend {
       return _json(feature, 201);
     }
 
+    final cascadePreviewMatch =
+        RegExp(r'^/document/parts/part-1/features/([^/]+)/cascade-preview$').firstMatch(path);
+    if (cascadePreviewMatch != null && method == 'GET') {
+      final featureId = cascadePreviewMatch.group(1);
+      final index = features.indexWhere((f) => f['id'] == featureId);
+      if (index == -1) {
+        return http.Response('not found: feature', 404);
+      }
+      return _json({
+        'feature_ids': features.sublist(index).map((f) => f['id']).toList(),
+      }, 200);
+    }
+
     final cascadeMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)/cascade$').firstMatch(path);
     if (cascadeMatch != null && method == 'DELETE') {
       final featureId = cascadeMatch.group(1);
@@ -1226,6 +1239,11 @@ void main() {
       // PartScreen's own State is never rebuilt, just covered/uncovered.
       await tester.tap(find.text('Sketch 1'));
       await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+      // The title text is in the tree as soon as the route is pushed, but
+      // the page-transition slide-in animation may still be in progress -
+      // a FAB positioned via right:8 during that slide can genuinely sit
+      // outside the test viewport's bounds until it settles.
+      await tester.pump(const Duration(milliseconds: 300));
 
       // find.byTooltip resolves to the tooltip overlay's own positioning
       // surrogate here, not the actual FAB - which can sit outside the test
