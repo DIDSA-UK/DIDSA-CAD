@@ -416,6 +416,11 @@ void main() {
         ViewportRenderMode.shadedWithEdges,
       );
 
+      // The toolbar's own SingleChildScrollView means "Wireframe" (the third
+      // render-mode entry) can sit below the test's fixed 600px viewport - a
+      // plain tap() would land off-screen and silently miss.
+      await tester.ensureVisible(find.text('Wireframe'));
+      await tester.pump();
       await tester.tap(find.text('Wireframe'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -427,6 +432,8 @@ void main() {
       expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Wireframe')).trailing, isNotNull);
       expect(tester.takeException(), isNull);
 
+      await tester.ensureVisible(find.text('Shaded'));
+      await tester.pump();
       await tester.tap(find.text('Shaded'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -580,7 +587,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Delete'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    // The cascade-delete preview is an awaited network round trip before the
+    // confirmation dialog even shows - pump past it rather than a single
+    // fixed-duration frame.
+    await _pumpUntil(tester, () => find.text('Delete all').evaluate().isNotEmpty);
 
     // Must name every Feature from it onward - all three - not just itself
     // or a generic message.
@@ -630,7 +640,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Delete'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    // The cascade-delete preview is an awaited network round trip before the
+    // confirmation dialog even shows - pump past it rather than a single
+    // fixed-duration frame.
+    await _pumpUntil(tester, () => find.text('Delete all').evaluate().isNotEmpty);
 
     await tester.tap(find.text('Delete all'));
     await tester.pump();
@@ -687,7 +700,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Delete'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    // The cascade-delete preview is an awaited network round trip before the
+    // confirmation dialog even shows - pump past it rather than a single
+    // fixed-duration frame.
+    await _pumpUntil(tester, () => find.text('Delete').evaluate().isNotEmpty);
     await tester.tap(find.text('Delete'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -1211,7 +1227,11 @@ void main() {
       await tester.tap(find.text('Sketch 1'));
       await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Exit Sketch'));
+      // find.byTooltip resolves to the tooltip overlay's own positioning
+      // surrogate here, not the actual FAB - which can sit outside the test
+      // viewport's bounds and silently miss. find.widgetWithIcon targets the
+      // real rendered button directly.
+      await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.logout));
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
       expect(find.text('Part 1'), findsOneWidget);
 
@@ -1269,7 +1289,10 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.text('Delete'));
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        // The cascade-delete preview is an awaited network round trip before
+        // the confirmation dialog even shows - pump past it rather than a
+        // single fixed-duration frame.
+        await _pumpUntil(tester, () => find.text('Delete').evaluate().isNotEmpty);
         await tester.tap(find.text('Delete'));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
@@ -1330,7 +1353,10 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.text('Delete'));
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        // The cascade-delete preview is an awaited network round trip before
+        // the confirmation dialog even shows - pump past it rather than a
+        // single fixed-duration frame.
+        await _pumpUntil(tester, () => find.text('Delete').evaluate().isNotEmpty);
         await tester.tap(find.text('Delete'));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);

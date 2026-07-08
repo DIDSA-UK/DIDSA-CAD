@@ -2158,15 +2158,18 @@ void main() {
   test('dragTargetPointIdAt returns a directly-hit Point once the sketch is under-constrained',
       () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    // Away from the origin (0, 0) - that's covered by its own dedicated
+    // "never offers the origin" test below, since the origin is never a
+    // valid drag target regardless of how directly it's hit.
+    await controller.handleCanvasTap(20, 20);
     backend.dof = 1;
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(30, 20);
     controller.finishChain();
     controller.exitToSelectMode();
     final line = controller.lines.values.last;
 
     expect(controller.isUnderConstrained, isTrue);
-    expect(controller.dragTargetPointIdAt(0, 0, 1), line.startPointId);
+    expect(controller.dragTargetPointIdAt(20, 20, 1), line.startPointId);
   });
 
   test('dragTargetPointIdAt is null outside select mode even when under-constrained', () async {
@@ -2182,15 +2185,17 @@ void main() {
 
   test('dragTargetPointIdAt resolves a Line to whichever endpoint is nearer the hit', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    // Away from the origin (0, 0) - see the identical reasoning in the test
+    // above.
+    await controller.handleCanvasTap(20, 20);
     backend.dof = 1;
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(30, 20);
     controller.finishChain();
     controller.exitToSelectMode();
     final line = controller.lines.values.last;
 
-    expect(controller.dragTargetPointIdAt(8, 0, 1), line.endPointId);
-    expect(controller.dragTargetPointIdAt(2, 0, 1), line.startPointId);
+    expect(controller.dragTargetPointIdAt(28, 20, 1), line.endPointId);
+    expect(controller.dragTargetPointIdAt(22, 20, 1), line.startPointId);
   });
 
   test('beginPointDrag sets draggingPointId for a known Point and rejects an unknown id', () async {
