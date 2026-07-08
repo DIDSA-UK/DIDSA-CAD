@@ -158,7 +158,13 @@ void main() {
       // '_dependents.isEmpty' assertion.
       await tester.enterText(find.byType(TextField), '25.00');
       await tester.tap(find.widgetWithIcon(IconButton, Icons.check));
-      await tester.pumpAndSettle();
+      // pumpAndSettle can't be used here: SketchCanvas starts its own
+      // edge-pan Ticker unconditionally in initState (for edge-panning
+      // during a drag), which keeps scheduling frames indefinitely - the
+      // same reason part_screen_test.dart's _pumpUntil helper avoids it for
+      // PartViewport's own loading spinner.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
       expect(tester.takeException(), isNull);
       expect(controller.activeGhostKey, isNull);

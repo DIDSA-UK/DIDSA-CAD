@@ -86,6 +86,19 @@ class _FakeDocumentBackend {
       return _json(feature, 201);
     }
 
+    final cascadePreviewMatch =
+        RegExp(r'^/document/parts/part-1/features/([^/]+)/cascade-preview$').firstMatch(path);
+    if (cascadePreviewMatch != null && method == 'GET') {
+      final featureId = cascadePreviewMatch.group(1);
+      final index = features.indexWhere((f) => f['id'] == featureId);
+      if (index == -1) {
+        return http.Response('not found: feature', 404);
+      }
+      return _json({
+        'feature_ids': features.sublist(index).map((f) => f['id']).toList(),
+      }, 200);
+    }
+
     final cascadeMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)/cascade$').firstMatch(path);
     if (cascadeMatch != null && method == 'DELETE') {
       final featureId = cascadeMatch.group(1);
@@ -348,6 +361,14 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
+    // The toolbar's "View" section is an ExpansionTile, collapsed by
+    // default - its children (including "Hide Reference Planes") aren't
+    // in the render tree at all until it's expanded, matching the
+    // already-passing "A4: Perspective toggle" test's own pattern below.
+    await tester.tap(find.text('View'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
     expect(find.text('Hide Reference Planes'), findsOneWidget);
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isFalse);
 
@@ -391,6 +412,13 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
+      // The toolbar's "View" section is an ExpansionTile, collapsed by
+      // default - its children (including the render-mode entries) aren't
+      // in the render tree at all until it's expanded.
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
       expect(find.text('Shaded'), findsOneWidget);
       expect(find.text('Shaded + Edges'), findsOneWidget);
       expect(find.text('Wireframe'), findsOneWidget);
@@ -401,6 +429,11 @@ void main() {
         ViewportRenderMode.shadedWithEdges,
       );
 
+      // The toolbar's own SingleChildScrollView means "Wireframe" (the third
+      // render-mode entry) can sit below the test's fixed 600px viewport - a
+      // plain tap() would land off-screen and silently miss.
+      await tester.ensureVisible(find.text('Wireframe'));
+      await tester.pump();
       await tester.tap(find.text('Wireframe'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -412,6 +445,8 @@ void main() {
       expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Wireframe')).trailing, isNotNull);
       expect(tester.takeException(), isNull);
 
+      await tester.ensureVisible(find.text('Shaded'));
+      await tester.pump();
       await tester.tap(find.text('Shaded'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -462,14 +497,20 @@ void main() {
     expect(find.byTooltip('Add'), findsNothing);
     expect(tester.takeException(), isNull);
 
-    await tester.tap(find.text('Cancel'));
+    // Prompt A4's target-body-picker banner adds its own Cancel button
+    // (top of the screen) alongside ExtrudePanel's own - both wired to the
+    // same _cancelExtrude, so either one works; `.last` picks a single
+    // widget rather than leaving the finder ambiguous.
+    await tester.tap(find.text('Cancel').last);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.byTooltip('Add'), findsOneWidget);
   });
 
-  testWidgets('tapping a locked Feature only selects it, and does not navigate to its Sketch', (tester) async {
+  testWidgets('tapping a locked Feature still selects it and opens its Sketch (B4: no longer gated on lock state)', (
+    tester,
+  ) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
@@ -511,13 +552,16 @@ void main() {
     expect(find.byTooltip('Close toolbar'), findsNothing);
 
     await tester.tap(find.text('Sketch 1'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    // B4: true SolidWorks-style rollback means a tap on a locked Feature no
+    // longer does nothing - it always selects and opens it for editing (see
+    // _onFeatureTap's doc comment), mirroring "tapping an unlocked (editable)
+    // Feature..." below exactly, since lock state no longer gates this at
+    // all. _pumpUntil (not a fixed pump) carries the tester through both the
+    // camera animation into the Sketch plane and the eventual SketchScreen
+    // load.
+    await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
 
-    // Still on PartScreen - a tap on a locked Feature must not open its
-    // Sketch, per the project brief.
-    expect(find.text('Part 1'), findsOneWidget);
-    expect(find.text('DIDSA-CAD Sketch'), findsNothing);
+    expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -556,7 +600,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Delete'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    // The cascade-delete preview is an awaited network round trip before the
+    // confirmation dialog even shows - pump past it rather than a single
+    // fixed-duration frame.
+    await _pumpUntil(tester, () => find.text('Delete all').evaluate().isNotEmpty);
 
     // Must name every Feature from it onward - all three - not just itself
     // or a generic message.
@@ -606,7 +653,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Delete'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    // The cascade-delete preview is an awaited network round trip before the
+    // confirmation dialog even shows - pump past it rather than a single
+    // fixed-duration frame.
+    await _pumpUntil(tester, () => find.text('Delete all').evaluate().isNotEmpty);
 
     await tester.tap(find.text('Delete all'));
     await tester.pump();
@@ -654,15 +704,23 @@ void main() {
     expect(iconFor('Sketch 1').icon, Icons.lock);
     expect(iconFor('Sketch 2').color, isNot(Colors.grey));
 
-    // Long-press the last (unlocked) Feature and delete just it - a
-    // "cascade" of one, same as any other delete through this dialog.
+    // Long-press the last (unlocked) Feature and delete just it - nothing
+    // depends on the last Feature, so this cascades to exactly one Feature
+    // and the dialog's confirm button reads "Delete" (not "Delete all") -
+    // see showCascadeDeleteDialog's own count == 1 branch.
     await tester.longPress(find.text('Sketch 2'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Delete'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Delete all'));
+    // The cascade-delete preview is an awaited network round trip before the
+    // confirmation dialog even shows - pump past it rather than a single
+    // fixed-duration frame. Waits for the AlertDialog itself (not just any
+    // "Delete" text) since the closing context-menu sheet's own ListTile can
+    // still be mid-exit-animation and briefly coexist with the dialog,
+    // making a plain text search ambiguous.
+    await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
+    await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await _pumpUntil(tester, () => find.text('Sketch 2').evaluate().isEmpty);
@@ -893,7 +951,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(find.text('Confirm'), findsOneWidget);
-      expect(find.text('Cancel'), findsOneWidget);
+      // Prompt A4's target-body-picker banner adds its own Cancel button
+      // alongside ExtrudePanel's own - both wired to the same
+      // _cancelExtrude, so two is the real, current count.
+      expect(find.text('Cancel'), findsNWidgets(2));
 
       await tester.tap(find.text('Confirm'));
       await tester.pump();
@@ -938,7 +999,10 @@ void main() {
       final extrudeTile = find.widgetWithText(ListTile, 'Extrude');
       expect(extrudeTile, findsOneWidget);
       expect(tester.widget<ListTile>(extrudeTile).enabled, isFalse);
-      expect(find.text('Sketch does not contain a closed profile'), findsOneWidget);
+      // Revolve/Sweep share Extrude's own eligibility check (see
+      // _onFeatureLongPress) and so show the identical disabled-reason
+      // subtitle alongside it - three, not one.
+      expect(find.text('Sketch does not contain a closed profile'), findsNWidgets(3));
       expect(tester.takeException(), isNull);
     },
   );
@@ -988,7 +1052,13 @@ void main() {
     /// second-level picker's "Extrude" entry - the trigger every test below
     /// shares.
     Future<void> tapAddFeatureExtrude(WidgetTester tester) async {
-      await tester.tap(find.byTooltip('Add'));
+      // find.byTooltip taps at the Tooltip's own computed showing position,
+      // not necessarily the wrapped FAB's actual center - unreliable enough
+      // in this file (see the identical "Exit Sketch" fix above) that the
+      // "one pre-selected Sketch" test in this group, which reaches this
+      // helper after a full push/pop through the Sketch screen, kept
+      // missing. find.widgetWithIcon targets the real rendered button.
+      await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.add));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Feature'));
@@ -1056,7 +1126,10 @@ void main() {
 
       expect(find.text('Select a sketch to extrude'), findsNothing);
       expect(find.text('Confirm'), findsOneWidget);
-      expect(find.text('Cancel'), findsOneWidget);
+      // Prompt A4's target-body-picker banner adds its own Cancel button
+      // alongside ExtrudePanel's own - both wired to the same
+      // _cancelExtrude, so two is the real, current count.
+      expect(find.text('Cancel'), findsNWidgets(2));
 
       await tester.tap(find.text('Confirm'));
       await tester.pump();
@@ -1167,11 +1240,36 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      // Sketch 1 is locked, so this tap only selects it - it does not
-      // navigate away to its Sketch screen.
+      // B4: tapping Sketch 1 (locked or not) always selects it and now also
+      // opens its Sketch screen - so getting back to a "pre-selected but on
+      // PartScreen" state means exiting that Sketch afterward, the same way
+      // a real user would; _selectedFeatureId (all _extrudeSelectedFeature
+      // actually reads) stays set to feature-1 across the round trip since
+      // PartScreen's own State is never rebuilt, just covered/uncovered.
       await tester.tap(find.text('Sketch 1'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+      // The title text is in the tree as soon as the route is pushed, but
+      // the page-transition slide-in animation may still be in progress -
+      // a FAB positioned via right:8 during that slide can genuinely sit
+      // outside the test viewport's bounds until it settles.
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // find.byTooltip resolves to the tooltip overlay's own positioning
+      // surrogate here, not the actual FAB - which can sit outside the test
+      // viewport's bounds and silently miss. find.widgetWithIcon targets the
+      // real rendered button directly.
+      await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.logout));
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      // The "Add" FAB carries heroTag: 'add-fab' - while the pop's Hero
+      // flight is still in progress, a temporary in-flight copy coexists
+      // with the destination route's own static FAB, so a plain fixed pump
+      // isn't reliable (this ambiguity showed up intermittently at 300ms).
+      // Wait for the flight to actually finish - exactly one Icons.add FAB
+      // left - rather than guessing a duration.
+      await _pumpUntil(
+        tester,
+        () => find.widgetWithIcon(FloatingActionButton, Icons.add).evaluate().length == 1,
+      );
       expect(find.text('Part 1'), findsOneWidget);
 
       await tapAddFeatureExtrude(tester);
@@ -1228,8 +1326,14 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.text('Delete'));
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
-        await tester.tap(find.text('Delete'));
+        // The cascade-delete preview is an awaited network round trip before
+        // the confirmation dialog even shows - pump past it rather than a
+        // single fixed-duration frame. Waits for the AlertDialog itself (not
+        // just any "Delete" text), since the closing context-menu sheet's
+        // own ListTile can still be mid-exit-animation and briefly coexist
+        // with the dialog, making a plain text search ambiguous.
+        await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
+        await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
         expect(backend.features.where((f) => f['type'] == 'extrude'), isEmpty);
@@ -1289,10 +1393,21 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.text('Delete'));
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
-        await tester.tap(find.text('Delete'));
+        // The cascade-delete preview is an awaited network round trip before
+        // the confirmation dialog even shows - pump past it rather than a
+        // single fixed-duration frame. Waits for the AlertDialog itself (not
+        // just any "Delete" text), since the closing context-menu sheet's
+        // own ListTile can still be mid-exit-animation and briefly coexist
+        // with the dialog, making a plain text search ambiguous.
+        await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
+        await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
+        // "Extrude 1" disappears as soon as _refreshFeatures's own rebuild
+        // lands, but the un-hide bookkeeping right after it in the same
+        // guarded body (see _cascadeDeleteFeature) can still land on a later
+        // frame - an extra settle pump avoids reading the icon mid-update.
+        await tester.pump(const Duration(milliseconds: 250));
 
         expect(find.byIcon(Icons.visibility_off), findsNothing);
         expect(tester.takeException(), isNull);
@@ -1339,7 +1454,10 @@ void main() {
 
     expect(backend.features.where((f) => f['type'] == 'extrude'), hasLength(1));
 
-    await tester.tap(find.text('Cancel'));
+    // Prompt A4's target-body-picker banner adds its own Cancel button
+    // alongside ExtrudePanel's own - both wired to the same _cancelExtrude,
+    // so `.last` just needs to pick one, not the specific one.
+    await tester.tap(find.text('Cancel').last);
     await _pumpUntil(tester, () => backend.features.every((f) => f['type'] != 'extrude'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));

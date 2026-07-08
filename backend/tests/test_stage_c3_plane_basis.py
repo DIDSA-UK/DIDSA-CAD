@@ -54,15 +54,25 @@ def test_xy_basis_reproduces_the_existing_sketch_point_to_world_convention():
 
 
 def test_xz_basis_reproduces_the_existing_sketch_point_to_world_convention():
-    # XZ: local (x, y) -> world (x, 0, y) - origin + x*x_axis + y*y_axis must
-    # reproduce that mapping exactly.
+    # XZ: local (x, y) -> world (-x, 0, y) - origin + x*x_axis + y*y_axis
+    # must reproduce that mapping exactly. The x-negation is the fix for a
+    # real bug (see `_PLANE_BASIS`'s own doc comment): the plane's basis used
+    # to be left-handed, the only one of the three fixed planes that was,
+    # which built every XZ-plane Sketch with inverted chirality.
     basis = sketch_basis_for_plane(Plane.XZ)
     for x, y in [(0.0, 0.0), (3.0, 0.0), (0.0, 4.0), (2.0, 5.0)]:
         ox, oy, oz = basis.origin
         xx, xy, xz = basis.x_axis
         yx, yy, yz = basis.y_axis
         world = (ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
-        assert world == pytest.approx((x, 0.0, y))
+        assert world == pytest.approx((-x, 0.0, y))
+
+
+def test_xz_basis_is_now_right_handed():
+    # Regression guard for the fix above - XZ used to be the one exception
+    # to this among the three fixed planes.
+    basis = sketch_basis_for_plane(Plane.XZ)
+    assert _is_orthonormal_right_handed(basis.x_axis, basis.y_axis, basis.normal)
 
 
 def test_yz_basis_reproduces_the_existing_sketch_point_to_world_convention():

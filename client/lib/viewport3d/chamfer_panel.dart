@@ -49,6 +49,13 @@ class _ChamferPanelState extends State<ChamferPanel> {
     super.initState();
     _distanceController = TextEditingController(text: _formatDistance(widget.initialDistance));
     _distance = widget.initialDistance > 0 ? widget.initialDistance : null;
+    // Without this, the live preview underneath this panel doesn't appear
+    // until the user actually edits the distance field - onDistanceChanged
+    // was only ever wired to that callback, never fired for the initial
+    // value this panel opens with (mirrors ExtrudePanel's identical fix).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _distance != null) widget.onDistanceChanged?.call(_distance!);
+    });
   }
 
   @override

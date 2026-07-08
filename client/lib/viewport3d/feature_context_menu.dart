@@ -43,51 +43,56 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
+    // Revolve/Sweep joining Extrude means up to 5 entries (3 of them with a
+    // wrapping subtitle) can appear at once - a plain Column overflows a
+    // short screen/test surface, so this needs to scroll rather than clip.
     builder: (context) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (showExtrude)
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (showExtrude)
+              ListTile(
+                enabled: canExtrude,
+                leading: const Icon(Icons.view_in_ar),
+                title: const Text('Extrude'),
+                subtitle: canExtrude ? null : Text(extrudeDisabledReason ?? 'Not available'),
+                onTap: canExtrude
+                    ? () => Navigator.of(context).pop(FeatureContextMenuAction.extrude)
+                    : null,
+              ),
+            if (showRevolve)
+              ListTile(
+                enabled: canRevolve,
+                leading: const Icon(Icons.rotate_right),
+                title: const Text('Revolve'),
+                subtitle: canRevolve ? null : Text(revolveDisabledReason ?? 'Not available'),
+                onTap: canRevolve
+                    ? () => Navigator.of(context).pop(FeatureContextMenuAction.revolve)
+                    : null,
+              ),
+            if (showSweep)
+              ListTile(
+                enabled: canSweep,
+                leading: const Icon(Icons.line_axis),
+                title: const Text('Sweep'),
+                subtitle: canSweep ? null : Text(sweepDisabledReason ?? 'Not available'),
+                onTap: canSweep
+                    ? () => Navigator.of(context).pop(FeatureContextMenuAction.sweep)
+                    : null,
+              ),
             ListTile(
-              enabled: canExtrude,
-              leading: const Icon(Icons.view_in_ar),
-              title: const Text('Extrude'),
-              subtitle: canExtrude ? null : Text(extrudeDisabledReason ?? 'Not available'),
-              onTap: canExtrude
-                  ? () => Navigator.of(context).pop(FeatureContextMenuAction.extrude)
-                  : null,
+              leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
+              title: Text(isHidden ? 'Show' : 'Hide'),
+              onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.toggleVisibility),
             ),
-          if (showRevolve)
             ListTile(
-              enabled: canRevolve,
-              leading: const Icon(Icons.rotate_right),
-              title: const Text('Revolve'),
-              subtitle: canRevolve ? null : Text(revolveDisabledReason ?? 'Not available'),
-              onTap: canRevolve
-                  ? () => Navigator.of(context).pop(FeatureContextMenuAction.revolve)
-                  : null,
+              leading: const Icon(Icons.delete, color: Colors.red),
+              title: const Text('Delete'),
+              onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.delete),
             ),
-          if (showSweep)
-            ListTile(
-              enabled: canSweep,
-              leading: const Icon(Icons.line_axis),
-              title: const Text('Sweep'),
-              subtitle: canSweep ? null : Text(sweepDisabledReason ?? 'Not available'),
-              onTap: canSweep
-                  ? () => Navigator.of(context).pop(FeatureContextMenuAction.sweep)
-                  : null,
-            ),
-          ListTile(
-            leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
-            title: Text(isHidden ? 'Show' : 'Hide'),
-            onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.toggleVisibility),
-          ),
-          ListTile(
-            leading: const Icon(Icons.delete, color: Colors.red),
-            title: const Text('Delete'),
-            onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.delete),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );

@@ -3,11 +3,12 @@
 /// already uses for the server-backed viewport (`MeshBuffers` vs
 /// `geometryFromMesh`). Nothing here can run in a headless `flutter test`.
 ///
-/// `UnlitMaterial`'s constructor (see [buildMeshViewerMaterial]) calls
-/// `setFragmentShader(baseShaderLibrary['UnlitFragment']!)` immediately, which
-/// throws until `Scene.initializeStaticResources()` has completed at least
-/// once - confirmed by a real on-device crash the first time a mesh was
-/// picked, since the material was built (in `MeshViewerScreen`) before
+/// A material's constructor (`UnlitMaterial` originally; `PhysicallyBasedMaterial`
+/// since the lighting/shading upgrade - see [buildMeshViewerMaterial]) calls
+/// `setFragmentShader(...)` immediately, which throws until
+/// `Scene.initializeStaticResources()` has completed at least once -
+/// confirmed by a real on-device crash the first time a mesh was picked,
+/// since the material was built (in `MeshViewerScreen`) before
 /// `_MeshViewerViewport` (whose own `initState` is what calls
 /// `initializeStaticResources`) had ever been mounted. [ensureSceneResourcesLoaded]
 /// fixes this by memoizing the one real call behind a single shared Future,
@@ -15,6 +16,14 @@
 /// `_MeshViewerViewport` before building the Scene - can safely await it as
 /// often as needed without knowing (or caring) whether `initializeStaticResources`
 /// itself tolerates being called twice.
+///
+/// FLAGGED FOR ON-DEVICE VERIFICATION: `PhysicallyBasedMaterial`'s
+/// `doubleSided` field (see [buildMeshViewerMaterial]) is inferred from a
+/// real `flutter_scene` changelog line ("Fixed material.doubleSided being
+/// ignored by runtime importer") rather than confirmed directly against
+/// this file's own installed source the way `baseColorTexture` was after
+/// the earlier `colorTexture` mistake - same "no Flutter SDK in this
+/// sandbox" caveat as everything else in this upgrade.
 library;
 
 import 'dart:math' as math;
@@ -23,7 +32,10 @@ import 'dart:ui' as ui;
 
 import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
+import '../viewport3d/mesh_geometry.dart' show buildMeshEdgesNode, kEdgeStrokeWidth;
+import '../viewport3d/view_preferences.dart' show vector4FromHex;
 import 'mesh_data.dart';
 
 Future<void>? _staticResourcesFuture;
@@ -49,21 +61,100 @@ const int _kMaxVerticesPerBatch = 65535;
 /// `mesh_data.dart`'s `DecodedMesh` doc comment).
 const int _kMaxTrianglesPerBatch = _kMaxVerticesPerBatch ~/ 3;
 
-/// Target triangle ceiling for the decimated view - tuned for a high-end
-/// 2023-class Android flagship (Snapdragon 8 Gen 2 / Adreno 740, the
-/// originally-specified target device), not a lower/generic mobile floor.
-/// This project has no on-device Flutter test capability in its current
-/// sandbox, so this number is a starting point for real-device tuning, not a
-/// benchmarked result - raise or lower it once someone can actually watch
-/// frame time on the target hardware.
-const int kMaxViewerTriangles = 3000000;
+/// Triangle ceiling for the "Mesh" (wireframe) View toggle - deliberately
+/// far below `MeshViewerPreferences.maxTriangles` (the user-adjustable
+/// overall decimation target - see that class's own doc comment; this used
+/// to be a fixed `kMaxViewerTriangles` constant here before that setting
+/// existed). Unlike the real Part viewport's edge overlay (a Body's own,
+/// comparatively small, number of true OCCT edge polylines - see
+/// `mesh_geometry.dart`'s `buildMeshEdgesNode`), an arbitrary imported mesh
+/// has no separate edge data at all: the only way to draw one is every
+/// triangle's 3 edges, undeduped (a shared edge between two adjacent
+/// triangles is simply drawn twice - harmless overdraw, cheaper than a
+/// hash-based dedup pass for a cosmetic toggle). At photogrammetry scale
+/// (millions of triangles) that's tens of millions of individual line
+/// primitives - not something this viewer's target hardware (tuned for a
+/// high-end 2023-class Android flagship - Snapdragon 8 Gen 2 / Adreno 740 -
+/// not a lower/generic mobile floor; a starting point for real-device
+/// tuning, not a benchmarked result, same as every other tunable in this
+/// file) can build or render without stalling, so
+/// [buildMeshViewerWireframeNode] simply isn't called above this ceiling
+/// (see `mesh_viewer_screen.dart`'s own View menu, which disables the
+/// toggle instead of silently doing nothing).
+const int kMaxWireframeTriangles = 200000;
 
-/// Longest edge (px) a decoded texture is downsampled to before upload -
-/// same target-device reasoning as [kMaxViewerTriangles]. Downsampling
-/// happens *during* decode (see [decodeTextureImage]'s use of
+/// Builds a wireframe overlay [Node] from [mesh]'s triangle soup - every
+/// triangle contributes its own 3 edges (undeduped; see
+/// [kMaxWireframeTriangles]'s own doc comment on why that's an accepted
+/// trade-off here), reusing `mesh_geometry.dart`'s own
+/// [buildMeshEdgesNode]/[PolylineGeometry]-based edge renderer rather than a
+/// second implementation of the same "list of segments -> Node" step.
+/// Caller is expected to have already checked [mesh]'s triangle count
+/// against [kMaxWireframeTriangles].
+Node buildMeshViewerWireframeNode(DecodedMesh mesh, {vm.Vector4? color}) {
+  final positions = mesh.positions;
+  final segments = <(vm.Vector3, vm.Vector3)>[];
+  for (var t = 0; t < positions.length; t += 9) {
+    final a = vm.Vector3(positions[t], positions[t + 1], positions[t + 2]);
+    final b = vm.Vector3(positions[t + 3], positions[t + 4], positions[t + 5]);
+    final c = vm.Vector3(positions[t + 6], positions[t + 7], positions[t + 8]);
+    segments.add((a, b));
+    segments.add((b, c));
+    segments.add((c, a));
+  }
+  return buildMeshEdgesNode(segments, color: color ?? vm.Vector4(0, 0, 0, 1), width: kEdgeStrokeWidth);
+}
+
+/// Longest edge (px) a single decoded texture is downsampled to before
+/// upload - same target-device reasoning as `MeshViewerPreferences.maxTriangles`.
+/// Downsampling happens *during* decode (see [decodeTextureImage]'s use of
 /// `ui.ImageDescriptor.instantiateCodec`), so the full-resolution source
-/// image is never held in memory even momentarily.
+/// image is never held in memory even momentarily. This bounds one texture
+/// at a time - see [kMaxTotalTextureBytes] for the budget across an entire
+/// multi-material file, which this constant alone does nothing to limit.
 const int kMaxTextureDimension = 4096;
+
+/// Total decoded-texture memory (CPU-side RGBA buffer + GPU-side texture,
+/// per material) this viewer will allow across one file's *entire*
+/// [DecodedMesh.materialGroups] - a real crash-to-home-screen (no catchable
+/// Dart exception, the signature of a native-level OOM kill rather than
+/// something this app's own error handling would ever see) was reported for
+/// a larger photogrammetry file than `Nightingales.glb` (39 materials,
+/// already confirmed fine) - a file with substantially more primitives,
+/// each with its own near-[kMaxTextureDimension] texture, has no cap at all
+/// on the *sum* before this existed: 100 materials at the individual
+/// 4096x4096 RGBA8 cap alone would be ~100 x 64 MiB =~ 6.4 GiB, easily
+/// enough to trigger exactly this failure mode on a mobile device. 512 MiB
+/// is a starting point for real-device tuning (same caveat as every other
+/// tunable in this file - chosen for headroom against the rest of a large
+/// mesh's own vertex/normal/UV arrays on this viewer's target hardware, not
+/// a benchmarked result) rather than something derived from a specific
+/// device's measured budget.
+const int kMaxTotalTextureBytes = 512 * 1024 * 1024;
+
+/// Never downsample below this, however many materials a file has - a
+/// texture this small is still visibly better than no texture at all
+/// (this viewer's existing flat-tint fallback), so [_textureDimensionBudget]
+/// stops shrinking further rather than approaching 0 for a file with an
+/// extreme material count.
+const int kMinTextureDimension = 256;
+
+/// The per-texture [decodeTextureImage] `maxDimension` to use so that
+/// [textureCount] textures, each assumed roughly square RGBA8, stay within
+/// [kMaxTotalTextureBytes] in total - `textureCount * dimension^2 * 4 <=
+/// kMaxTotalTextureBytes`, solved for `dimension` and clamped to
+/// [kMinTextureDimension]/[kMaxTextureDimension]. A file with few materials
+/// (the common case - most real exports have one texture, or a handful)
+/// is unaffected, since the per-material share of the budget comfortably
+/// exceeds [kMaxTextureDimension] already; this only bites for a file with
+/// enough materials that the individual cap alone would blow the total
+/// budget.
+int _textureDimensionBudget(int textureCount) {
+  if (textureCount <= 1) return kMaxTextureDimension;
+  final perTextureBudget = kMaxTotalTextureBytes / textureCount;
+  final dimension = math.sqrt(perTextureBudget / 4).floor();
+  return dimension.clamp(kMinTextureDimension, kMaxTextureDimension);
+}
 
 /// Decodes [bytes] (JPEG/PNG) to a [ui.Image], downsampled during decode (not
 /// decoded at full size and resized after) so a source photogrammetry texture
@@ -100,30 +191,54 @@ Future<gpu.Texture> uploadTexture(ui.Image image) async {
   return texture;
 }
 
+/// Sets up this viewer's Scene-wide lighting - a procedural, no-asset ambient
+/// fill (so the unlit side of the mesh isn't pure black) plus the single
+/// directional "sun" light driven by [lightIntensity] (the "mid lighting"
+/// control - see `ScenePreferences`). Mirrors `PartViewport`'s own
+/// `_applyLighting`/`EnvironmentMap.studio()` setup exactly, so both
+/// viewers in this app look lit the same way.
+void applySceneLighting(Scene scene, double lightIntensity) {
+  scene.environment = EnvironmentMap.studio();
+  scene.directionalLight = DirectionalLight(
+    direction: vm.Vector3(-0.3, -1.0, -0.2),
+    color: vm.Vector3(1, 1, 1),
+    intensity: lightIntensity,
+  );
+}
+
 /// Confirmed against the real installed `flutter_scene` 0.18.1 source
 /// (`UnlitMaterial`'s own `set baseColorTexture` - see
 /// `package:flutter_scene/src/material/unlit_material.dart`) after the
 /// original unverified guess (`colorTexture`) failed a real on-device build.
-void _bindBaseColorTexture(UnlitMaterial material, gpu.Texture texture) {
+/// `PhysicallyBasedMaterial` (adopted for the lighting/shading upgrade, see
+/// [buildMeshViewerMaterial]) exposes the identically-named
+/// `baseColorTexture` setter - both materials share the same base-color
+/// texture-slot convention.
+void _bindBaseColorTexture(PhysicallyBasedMaterial material, gpu.Texture texture) {
   material.baseColorTexture = texture;
 }
 
-/// Splits [mesh] into `flutter_scene` [Node]s, batched to stay under
-/// `flutter_scene`'s 16-bit index limit (see [_kMaxVerticesPerBatch]) - all
-/// batches share the one [material] (and so the one texture, if any), since
-/// [DecodedMesh] only ever carries a single base-color texture (see its own
-/// doc comment on the single-material scope cut).
-List<Node> buildMeshViewerNodes(DecodedMesh mesh, UnlitMaterial material) {
+/// Builds the batch [Node]s for one contiguous triangle range of [mesh]
+/// (starting at [startTriangle], [triangleCount] long), all sharing the one
+/// [material] - split further to stay under `flutter_scene`'s 16-bit index
+/// limit (see [_kMaxVerticesPerBatch]). Shared by [buildMeshViewerNodes]'s
+/// no-[DecodedMesh.materialGroups] case (the whole mesh is one "range") and
+/// its per-[MeshMaterialGroup] case (one call per group).
+List<Node> _buildMeshViewerBatches(
+  DecodedMesh mesh,
+  PhysicallyBasedMaterial material, {
+  required int startTriangle,
+  required int triangleCount,
+}) {
   final nodes = <Node>[];
-  final triangleCount = mesh.triangleCount;
   for (var start = 0; start < triangleCount; start += _kMaxTrianglesPerBatch) {
     final end = (start + _kMaxTrianglesPerBatch).clamp(0, triangleCount);
     final batchTriangles = end - start;
     final vertexCount = batchTriangles * 3;
     final vertexData = Float32List(vertexCount * 12);
     for (var v = 0; v < vertexCount; v++) {
-      final srcBase = (start * 3 + v) * 3;
-      final srcUvBase = (start * 3 + v) * 2;
+      final srcBase = ((startTriangle + start) * 3 + v) * 3;
+      final srcUvBase = ((startTriangle + start) * 3 + v) * 2;
       final dstBase = v * 12;
       vertexData[dstBase] = mesh.positions[srcBase];
       vertexData[dstBase + 1] = mesh.positions[srcBase + 1];
@@ -148,28 +263,261 @@ List<Node> buildMeshViewerNodes(DecodedMesh mesh, UnlitMaterial material) {
       vertexCount,
       ByteData.sublistView(indices),
     );
-    nodes.add(Node(name: 'mesh-viewer-batch-$start', mesh: Mesh(geometry, material)));
+    nodes.add(Node(name: 'mesh-viewer-batch-${startTriangle + start}', mesh: Mesh(geometry, material)));
   }
   return nodes;
 }
 
-/// Builds the shared [UnlitMaterial] for [mesh] - textured if [mesh] carries
-/// a base-color texture, plain white otherwise (so geometry is always
-/// visible even before/without a texture, matching this viewer's "grey
-/// geometry is an acceptable fallback" scope decision). Caller awaits this
-/// once, then passes the result into [buildMeshViewerNodes].
+/// Splits [mesh] into `flutter_scene` [Node]s. When [mesh] has no
+/// [DecodedMesh.materialGroups] (STL/OBJ, or a single-primitive/single-
+/// material glTF), every batch shares [materials]' one entry, same as
+/// before per-primitive material support existed. When it does (a real
+/// multi-material glTF - see [DecodedMesh.materialGroups]'s own doc
+/// comment), each group gets its own batches built against its own
+/// `materials[i]`, so a triangle range that used material 5 in the source
+/// file is drawn with material 5's own (already-built, already-textured)
+/// [PhysicallyBasedMaterial], not whichever one happened to be built for
+/// material 0. [materials] must have one entry per [DecodedMesh.materialGroups]
+/// entry, in the same order (or exactly one entry when there are no groups) -
+/// see [buildMeshViewerMaterials].
+List<Node> buildMeshViewerNodes(DecodedMesh mesh, List<PhysicallyBasedMaterial> materials) {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    return _buildMeshViewerBatches(mesh, materials.first, startTriangle: 0, triangleCount: mesh.triangleCount);
+  }
+  final nodes = <Node>[];
+  for (var g = 0; g < groups.length; g++) {
+    nodes.addAll(_buildMeshViewerBatches(
+      mesh,
+      materials[g],
+      startTriangle: groups[g].startTriangle,
+      triangleCount: groups[g].triangleCount,
+    ));
+  }
+  return nodes;
+}
+
+/// Builds a [PhysicallyBasedMaterial] for [mesh]'s own top-level texture
+/// (see [buildMeshViewerMaterials] for the real multi-material case) -
+/// textured if [mesh] carries a base-color texture, a flat tint from
+/// [baseColourHex] otherwise (so geometry is always visible even before/
+/// without a texture, matching this viewer's "grey geometry is an
+/// acceptable fallback" scope decision). When a texture *is* present,
+/// [baseColourHex] is deliberately
+/// ignored (left at white) - a PBR base color factor multiplies the texture,
+/// so tinting it by the user's chosen swatch would just darken/recolor a
+/// real captured photogrammetry texture for no good reason; the swatch is
+/// meant for the untextured (plain geometry) case. Caller awaits this once,
+/// then passes the result into [buildMeshViewerNodes]; [roughness]/
+/// [emissiveIntensity] map directly to [PhysicallyBasedMaterial]'s own
+/// `roughnessFactor`/`emissiveFactor` (see `ScenePreferences` for what these
+/// controls mean and their defaults) - `metallicFactor` is fixed at
+/// `ScenePreferences.fixedMetallic`, not a caller-supplied parameter, same
+/// as the main Part viewport's identical choice.
 ///
-/// Awaits [ensureSceneResourcesLoaded] first - `UnlitMaterial`'s constructor
-/// touches the base shader library immediately, which throws until that's
-/// done at least once (see this file's top-of-file doc comment).
-Future<UnlitMaterial> buildMeshViewerMaterial(DecodedMesh mesh) async {
+/// Awaits [ensureSceneResourcesLoaded] first - `PhysicallyBasedMaterial`'s
+/// constructor touches the base shader library immediately, which throws
+/// until that's done at least once (see this file's top-of-file doc
+/// comment - originally documented for `UnlitMaterial`, applies identically
+/// here).
+///
+/// Sets `doubleSided = true` - real on-device testing showed some meshes
+/// rendering with one side opaque and the other see-through (internal
+/// faces visible where an external one should be, flipping depending on
+/// view angle): the textbook symptom of backface culling combined with
+/// inconsistent triangle winding, which `mesh_geometry.dart`'s own
+/// `triangleHighlightBuffers` doc comment already confirms is real in this
+/// engine ("flutter_scene/Impeller's back-face culling", worked around
+/// there by emitting every highlight triangle with both windings). A real
+/// OCCT-tessellated Body's winding is reliably consistent (`geometryFromMesh`
+/// has never needed this workaround), but an arbitrary external STL/OBJ/glTF
+/// file - especially photogrammetry output - has no such guarantee, and
+/// this viewer has no way to detect or repair bad winding in someone else's
+/// file. Disabling culling entirely is the robust fix: every triangle
+/// renders from both sides regardless of the source file's own winding
+/// correctness, at a modest fill-rate cost this viewer's target hardware
+/// (see `MeshViewerPreferences.maxTriangles`'s own doc comment) can afford.
+Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
+  DecodedMesh mesh, {
+  required String baseColourHex,
+  required double roughness,
+  required double emissiveIntensity,
+  required double fixedMetallic,
+}) =>
+    _buildMaterialForTexture(
+      mesh.textureBytes,
+      baseColourHex: baseColourHex,
+      roughness: roughness,
+      emissiveIntensity: emissiveIntensity,
+      fixedMetallic: fixedMetallic,
+      // A single texture - always the full per-texture cap, never
+      // downscaled further by [_textureDimensionBudget] (see
+      // [buildMeshViewerMaterials]'s own doc comment for the real
+      // multi-material case that needs it).
+      maxDimension: kMaxTextureDimension,
+    );
+
+/// One [PhysicallyBasedMaterial] per [DecodedMesh.materialGroups] entry (in
+/// the same order, so `materials[i]` is always group `i`'s own material) -
+/// or, when [mesh] has no groups at all (STL/OBJ, or a single-primitive
+/// glTF), a single-entry list built from [mesh]'s own top-level
+/// [DecodedMesh.textureBytes], identical to a bare [buildMeshViewerMaterial]
+/// call. See [buildMeshViewerNodes]'s own doc comment for why a real
+/// multi-material photogrammetry export needs this instead of the one-
+/// texture-for-the-whole-file assumption [buildMeshViewerMaterial] alone
+/// makes.
+///
+/// Every group's texture is decoded/uploaded eagerly here, before the
+/// viewer ever renders a frame, and all of them stay resident for the
+/// mesh's whole lifetime (any group could become visible at any time) -
+/// unlike triangle count, which [MeshViewerPreferences.maxTriangles] already
+/// bounds, there was previously no cap at all on the *total* texture memory
+/// this implies for a file with many materials (a real crash - see
+/// [kMaxTotalTextureBytes]'s own doc comment). [_textureDimensionBudget]
+/// shrinks each group's own [decodeTextureImage] `maxDimension` based on
+/// [groups]' length so the sum stays bounded, rather than every group
+/// independently claiming up to [kMaxTextureDimension].
+Future<List<PhysicallyBasedMaterial>> buildMeshViewerMaterials(
+  DecodedMesh mesh, {
+  required String baseColourHex,
+  required double roughness,
+  required double emissiveIntensity,
+  required double fixedMetallic,
+}) async {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    return [
+      await buildMeshViewerMaterial(
+        mesh,
+        baseColourHex: baseColourHex,
+        roughness: roughness,
+        emissiveIntensity: emissiveIntensity,
+        fixedMetallic: fixedMetallic,
+      ),
+    ];
+  }
+  // Only groups that actually carry a texture consume any of the budget -
+  // an untextured group (flat-tint fallback) costs nothing, so counting it
+  // here would downscale every *other* group's texture for no reason.
+  final texturedGroupCount = groups.where((g) => g.textureBytes != null).length;
+  final perTextureDimension = _textureDimensionBudget(texturedGroupCount);
+  return [
+    for (final group in groups)
+      await _buildMaterialForTexture(
+        group.textureBytes,
+        baseColourHex: baseColourHex,
+        roughness: roughness,
+        emissiveIntensity: emissiveIntensity,
+        fixedMetallic: fixedMetallic,
+        maxDimension: perTextureDimension,
+      ),
+  ];
+}
+
+Future<PhysicallyBasedMaterial> _buildMaterialForTexture(
+  Uint8List? textureBytes, {
+  required String baseColourHex,
+  required double roughness,
+  required double emissiveIntensity,
+  required double fixedMetallic,
+  int maxDimension = kMaxTextureDimension,
+}) async {
   await ensureSceneResourcesLoaded();
-  final material = UnlitMaterial();
-  final textureBytes = mesh.textureBytes;
+  final hasTexture = textureBytes != null;
+  final material = PhysicallyBasedMaterial()
+    ..baseColorFactor = hasTexture ? vm.Vector4(1, 1, 1, 1) : vector4FromHex(baseColourHex)
+    ..roughnessFactor = roughness
+    ..metallicFactor = fixedMetallic
+    ..emissiveFactor = vm.Vector4(emissiveIntensity, emissiveIntensity, emissiveIntensity, 1)
+    ..doubleSided = true;
   if (textureBytes != null) {
-    final image = await decodeTextureImage(textureBytes);
+    final image = await decodeTextureImage(textureBytes, maxDimension: maxDimension);
     final texture = await uploadTexture(image);
     _bindBaseColorTexture(material, texture);
   }
   return material;
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/// Downsamples/re-encodes one texture for the mesh viewer's own "Export"
+/// feature (`mesh_viewer_screen.dart`) - decodes [textureBytes] at
+/// [maxDimension] via the same [decodeTextureImage] downsampling this
+/// viewer already uses for on-screen display, then re-encodes the
+/// *downsampled* result as PNG. Always PNG regardless of the source
+/// format: `dart:ui`'s `Image.toByteData` has no JPEG encoder, only a
+/// decoder - PNG is the only format it can produce. Needs `dart:ui`
+/// (`ui.Image`/`toByteData`), unlike `mesh_data.dart`'s pure encoders that
+/// actually assemble the exported file - this is the one piece of "smaller
+/// export" that has to live on this side of that pure/GPU-touching split,
+/// and the reason [encodeMeshAsGlb] itself just embeds whatever texture
+/// bytes it's handed rather than doing any resizing of its own.
+Future<(Uint8List bytes, String mimeType)> reencodeTextureForExport(
+  Uint8List textureBytes, {
+  required int maxDimension,
+}) async {
+  final image = await decodeTextureImage(textureBytes, maxDimension: maxDimension);
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  if (byteData == null) {
+    throw StateError('Could not re-encode texture as PNG for export');
+  }
+  return (byteData.buffer.asUint8List(), 'image/png');
+}
+
+/// Rebuilds [mesh] with every material's texture downsampled via
+/// [reencodeTextureForExport] - the same per-texture budget
+/// ([_textureDimensionBudget], counting only groups that actually carry a
+/// texture) [buildMeshViewerMaterials] already uses to decide what
+/// resolution to *display* this mesh's textures at, reused here so an
+/// export is never larger/higher-resolution than what the viewer itself
+/// is already showing on screen. A no-textures mesh (STL/OBJ, or an
+/// untextured glTF) is returned unchanged - nothing to re-encode, and
+/// [MeshExportFormat.stl] callers skip this function entirely (STL has no
+/// texture concept at all - see `mesh_data.dart`'s `encodeMeshAsStl`).
+Future<DecodedMesh> reencodeMeshTexturesForExport(DecodedMesh mesh) async {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    if (mesh.textureBytes == null) return mesh;
+    final (reencoded, mimeType) = await reencodeTextureForExport(mesh.textureBytes!, maxDimension: kMaxTextureDimension);
+    return DecodedMesh(
+      positions: mesh.positions,
+      normals: mesh.normals,
+      uvs: mesh.uvs,
+      textureBytes: reencoded,
+      textureMimeType: mimeType,
+      materialGroups: mesh.materialGroups,
+      sourceTriangleCount: mesh.sourceTriangleCount,
+    );
+  }
+
+  final texturedGroupCount = groups.where((g) => g.textureBytes != null).length;
+  if (texturedGroupCount == 0) return mesh;
+  final perTextureDimension = _textureDimensionBudget(texturedGroupCount);
+
+  final reencodedGroups = <MeshMaterialGroup>[];
+  for (final group in groups) {
+    if (group.textureBytes == null) {
+      reencodedGroups.add(group);
+      continue;
+    }
+    final (reencoded, mimeType) = await reencodeTextureForExport(group.textureBytes!, maxDimension: perTextureDimension);
+    reencodedGroups.add(MeshMaterialGroup(
+      startTriangle: group.startTriangle,
+      triangleCount: group.triangleCount,
+      textureBytes: reencoded,
+      textureMimeType: mimeType,
+    ));
+  }
+
+  return DecodedMesh(
+    positions: mesh.positions,
+    normals: mesh.normals,
+    uvs: mesh.uvs,
+    textureBytes: mesh.textureBytes,
+    textureMimeType: mesh.textureMimeType,
+    materialGroups: reencodedGroups,
+    sourceTriangleCount: mesh.sourceTriangleCount,
+  );
 }

@@ -55,12 +55,18 @@ void main() {
       expect(await pendingResult, FeaturePickerAction.chamfer);
     });
 
-    testWidgets('Revolve/Sweep render disabled', (tester) async {
+    testWidgets('Revolve resolves FeaturePickerAction.revolve', (tester) async {
       await openSheet(tester);
-      for (final label in ['Revolve', 'Sweep']) {
-        final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, label));
-        expect(tile.enabled, isFalse, reason: label);
-      }
+      await tester.tap(find.text('Revolve'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, FeaturePickerAction.revolve);
+    });
+
+    testWidgets('Sweep resolves FeaturePickerAction.sweep', (tester) async {
+      await openSheet(tester);
+      await tester.tap(find.text('Sweep'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, FeaturePickerAction.sweep);
     });
   });
 }

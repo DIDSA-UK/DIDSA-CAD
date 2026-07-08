@@ -47,6 +47,26 @@ class DecodedMesh {
   final Float32List uvs;
   final Uint8List? textureBytes;
   final String? textureMimeType;
+  final int? _sourceTriangleCountOverride;
+
+  /// Per-material triangle ranges within [positions]/[normals]/[uvs], for a
+  /// glTF/GLB file whose mesh has more than one primitive - a real
+  /// photogrammetry export routinely has dozens of primitives, one per
+  /// material/texture-atlas-chunk (e.g. one per building facet/section), all
+  /// of which get concatenated into this single flat triangle soup during
+  /// decode (see `decodeGltf`'s own doc comment). `null`/empty for every
+  /// other case (STL, OBJ, or a single-primitive glTF) - [textureBytes]/
+  /// [textureMimeType] above are that simpler case's own single texture, and
+  /// remain populated even when [materialGroups] is also set (as "whichever
+  /// group's texture would have been picked before this field existed" -
+  /// harmless, unused once a caller actually reads [materialGroups]).
+  ///
+  /// Each group's `startTriangle`/`triangleCount` is a contiguous range in
+  /// the flat triangle-soup arrays (never interleaved with another group's
+  /// triangles - a primitive's own kept triangles, after decimation, are
+  /// always written as one unbroken run - see `_decodeGltfDocument`'s
+  /// assembly loop).
+  final List<MeshMaterialGroup>? materialGroups;
 
   DecodedMesh({
     required this.positions,
@@ -54,10 +74,48 @@ class DecodedMesh {
     required this.uvs,
     this.textureBytes,
     this.textureMimeType,
-  });
+    this.materialGroups,
+    int? sourceTriangleCount,
+  }) : _sourceTriangleCountOverride = sourceTriangleCount;
 
   int get triangleCount => positions.length ~/ 9;
   int get vertexCount => triangleCount * 3;
+
+  /// The file's true triangle count before any in-decode decimation (see
+  /// `decodeStl`/`decodeObj`/`decodeGltf`'s `maxTriangles` parameter) - equal
+  /// to [triangleCount] unless decimation actually dropped triangles while
+  /// building this instance. Drives the mesh viewer's "showing X of Y
+  /// triangles" banner without needing a separate, full-size mesh kept
+  /// around just to know what Y was.
+  int get sourceTriangleCount => _sourceTriangleCountOverride ?? triangleCount;
+}
+
+/// One glTF mesh primitive's own contiguous triangle range and material
+/// (base-color texture only, matching [DecodedMesh]'s own single-texture-
+/// per-material scope cut - see `mesh_viewer_render.dart`'s doc comments on
+/// why only base color is modelled) - see [DecodedMesh.materialGroups]'s own
+/// doc comment for why this exists.
+class MeshMaterialGroup {
+  final int startTriangle;
+  final int triangleCount;
+  final Uint8List? textureBytes;
+  final String? textureMimeType;
+
+  const MeshMaterialGroup({
+    required this.startTriangle,
+    required this.triangleCount,
+    this.textureBytes,
+    this.textureMimeType,
+  });
+}
+
+/// Shared by every decoder's in-decode decimation (STL/OBJ/glTF all call
+/// this the same way) - `1` (keep everything) when [maxTriangles] is null
+/// or [totalTriangles] is already within budget, otherwise the smallest
+/// stride that brings the kept count at or under [maxTriangles].
+int _decimationStride(int totalTriangles, int? maxTriangles) {
+  if (maxTriangles == null || totalTriangles <= maxTriangles) return 1;
+  return (totalTriangles / maxTriangles).ceil();
 }
 
 // ---------------------------------------------------------------------------
@@ -73,22 +131,40 @@ class DecodedMesh {
 /// `decode_stl` fallback rule (an ASCII STL that happens to start with bytes
 /// resembling a binary header is the classic false-positive this guards
 /// against).
-DecodedMesh decodeStl(Uint8List bytes) {
+///
+/// [maxTriangles], if given, decimates *during* decode (stride-skip - see
+/// `_decimationStride`) rather than fully decoding every triangle and
+/// shrinking afterward (the original approach, since replaced - see
+/// `decimateToTriangleBudget`'s own doc comment): a photogrammetry-scale
+/// file can be large enough that materializing its *full* triangle count as
+/// decoded `Float32List`s, even briefly, risks exhausting memory before
+/// decimation ever gets a chance to shrink it down - confirmed by a real
+/// on-device crash-to-home-screen loading a very large `.glb`. Bounding peak
+/// memory to the *target* budget instead of the *source* size is the fix,
+/// applied uniformly across all three formats this file decodes.
+DecodedMesh decodeStl(Uint8List bytes, {int? maxTriangles}) {
   if (bytes.length >= 84) {
     final byteData = ByteData.sublistView(bytes);
     final declaredCount = byteData.getUint32(80, Endian.little);
     if (bytes.length == 84 + declaredCount * 50) {
-      return _decodeBinaryStl(byteData, declaredCount);
+      return _decodeBinaryStl(byteData, declaredCount, maxTriangles);
     }
   }
-  return _decodeAsciiStl(utf8.decode(bytes, allowMalformed: true));
+  return _decodeAsciiStl(utf8.decode(bytes, allowMalformed: true), maxTriangles);
 }
 
-DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount) {
-  final positions = Float32List(triangleCount * 9);
-  final normals = Float32List(triangleCount * 9);
+DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount, int? maxTriangles) {
+  final stride = _decimationStride(triangleCount, maxTriangles);
+  final keptCount = (triangleCount / stride).ceil();
+  final positions = Float32List(keptCount * 9);
+  final normals = Float32List(keptCount * 9);
+  var outTriangle = 0;
   var offset = 84;
   for (var t = 0; t < triangleCount; t++) {
+    if (t % stride != 0) {
+      offset += 50; // skip this record entirely - no float decode, no storage
+      continue;
+    }
     var nx = byteData.getFloat32(offset, Endian.little);
     var ny = byteData.getFloat32(offset + 4, Endian.little);
     var nz = byteData.getFloat32(offset + 8, Endian.little);
@@ -109,7 +185,7 @@ DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount) {
       ny = computed.$2;
       nz = computed.$3;
     }
-    final base = t * 9;
+    final base = outTriangle * 9;
     for (var i = 0; i < 3; i++) {
       positions[base + i * 3] = verts[i].$1;
       positions[base + i * 3 + 1] = verts[i].$2;
@@ -118,20 +194,44 @@ DecodedMesh _decodeBinaryStl(ByteData byteData, int triangleCount) {
       normals[base + i * 3 + 1] = ny;
       normals[base + i * 3 + 2] = nz;
     }
+    outTriangle++;
   }
-  return DecodedMesh(positions: positions, normals: normals, uvs: Float32List(triangleCount * 6));
+  return DecodedMesh(
+    positions: Float32List.sublistView(positions, 0, outTriangle * 9),
+    normals: Float32List.sublistView(normals, 0, outTriangle * 9),
+    uvs: Float32List(outTriangle * 6),
+    sourceTriangleCount: triangleCount,
+  );
 }
 
-DecodedMesh _decodeAsciiStl(String text) {
+DecodedMesh _decodeAsciiStl(String text, int? maxTriangles) {
+  final lines = const LineSplitter().convert(text);
+
+  // Cheap pre-count so the decimation stride is known before any vertex
+  // data is parsed/stored - see decodeStl's own doc comment for why this
+  // matters at photogrammetry scale.
+  var totalFacets = 0;
+  for (final rawLine in lines) {
+    if (rawLine.trim().startsWith('endfacet')) totalFacets++;
+  }
+  final stride = _decimationStride(totalFacets, maxTriangles);
+
   final positions = <double>[];
   final normals = <double>[];
   double nx = 0, ny = 0, nz = 0;
   final verts = <(double, double, double)>[];
+  var facetIndex = 0;
   final normalRegex = RegExp(r'facet\s+normal\s+(\S+)\s+(\S+)\s+(\S+)');
   final vertexRegex = RegExp(r'vertex\s+(\S+)\s+(\S+)\s+(\S+)');
 
   void flushFacet() {
     if (verts.length != 3) return;
+    final keep = facetIndex % stride == 0;
+    facetIndex++;
+    if (!keep) {
+      verts.clear();
+      return;
+    }
     var (fnx, fny, fnz) = (nx, ny, nz);
     if (fnx == 0 && fny == 0 && fnz == 0) {
       final computed = _faceNormal(verts[0], verts[1], verts[2]);
@@ -146,7 +246,7 @@ DecodedMesh _decodeAsciiStl(String text) {
     verts.clear();
   }
 
-  for (final rawLine in const LineSplitter().convert(text)) {
+  for (final rawLine in lines) {
     final line = rawLine.trim();
     final normalMatch = normalRegex.firstMatch(line);
     if (normalMatch != null) {
@@ -173,6 +273,7 @@ DecodedMesh _decodeAsciiStl(String text) {
     positions: Float32List.fromList(positions),
     normals: Float32List.fromList(normals),
     uvs: Float32List(positions.length ~/ 3 * 2),
+    sourceTriangleCount: totalFacets,
   );
 }
 
@@ -208,13 +309,39 @@ DecodedMesh _decodeAsciiStl(String text) {
 /// for a JSON `.gltf`'s external buffer references). Geometry (and UVs, if
 /// present, passed straight through unused until a texture-wiring follow-up
 /// resolves this) still decodes and renders untextured.
-DecodedMesh decodeObj(String text) {
+///
+/// [maxTriangles], if given, decimates during decode - see `decodeStl`'s
+/// own doc comment for why. Unlike STL/glTF, OBJ has no upfront triangle
+/// count declared anywhere in the format, so this does a cheap first pass
+/// over just the `f` lines' own fan-triangulated counts (`vertsInFace - 2`
+/// each) to compute the stride *before* the real parse - which still has to
+/// fully populate the `vertices`/`normals`/`uvs` *pools* below regardless of
+/// decimation (a face can reference any earlier-or-later `v`/`vn`/`vt` line
+/// by index, so which ones end up used isn't known until every face is
+/// read) - what decimation actually bounds here is the triangle-soup
+/// *output* arrays, which is where the real 3x-per-triangle expansion (and
+/// so the real memory cost) lives.
+DecodedMesh decodeObj(String text, {int? maxTriangles}) {
+  final lines = const LineSplitter().convert(text);
+
+  var totalTriangles = 0;
+  for (final rawLine in lines) {
+    final line = rawLine.trim();
+    if (!line.startsWith('f')) continue;
+    final tokens = line.split(RegExp(r'\s+'));
+    if (tokens[0] != 'f') continue;
+    final vertCount = tokens.length - 1;
+    if (vertCount >= 3) totalTriangles += vertCount - 2;
+  }
+  final stride = _decimationStride(totalTriangles, maxTriangles);
+
   final vertices = <(double, double, double)>[];
   final normals = <(double, double, double)>[];
   final uvs = <(double, double)>[];
   final positions = <double>[];
   final outNormals = <double>[];
   final outUvs = <double>[];
+  var triangleIndex = 0;
 
   (int, int?, int?) parseFaceVertex(String token) {
     final parts = token.split('/');
@@ -226,7 +353,7 @@ DecodedMesh decodeObj(String text) {
 
   int resolveIndex(int rawIndex, int count) => rawIndex > 0 ? rawIndex - 1 : count + rawIndex;
 
-  for (final rawLine in const LineSplitter().convert(text)) {
+  for (final rawLine in lines) {
     final line = rawLine.trim();
     if (line.isEmpty || line.startsWith('#')) continue;
     final tokens = line.split(RegExp(r'\s+'));
@@ -247,6 +374,9 @@ DecodedMesh decodeObj(String text) {
           }
         }
         for (var i = 1; i + 1 < faceVerts.length; i++) {
+          final keep = triangleIndex % stride == 0;
+          triangleIndex++;
+          if (!keep) continue;
           final triangleVerts = [faceVerts[0], faceVerts[i], faceVerts[i + 1]];
           var needsNormal = false;
           for (final (vi, ti, ni) in triangleVerts) {
@@ -288,6 +418,7 @@ DecodedMesh decodeObj(String text) {
     positions: Float32List.fromList(positions),
     normals: Float32List.fromList(outNormals),
     uvs: Float32List.fromList(outUvs),
+    sourceTriangleCount: totalTriangles,
   );
 }
 
@@ -318,18 +449,23 @@ const int _kComponentFloat = 5126;
 /// multi-node hierarchy. Only the first material's `baseColorTexture` (if
 /// any) is used, applied to the whole concatenated mesh - a multi-material
 /// GLB would need per-primitive materials, not attempted here.
-DecodedMesh decodeGltf(Uint8List bytes) {
+///
+/// [maxTriangles], if given, decimates during decode - see `decodeStl`'s own
+/// doc comment for why. glTF accessors declare their `count` upfront, so
+/// (unlike OBJ) the total triangle count - and so the decimation stride -
+/// is known before any vertex-attribute bytes are ever decoded into floats.
+DecodedMesh decodeGltf(Uint8List bytes, {int? maxTriangles}) {
   if (bytes.length >= 4 &&
       bytes[0] == 0x67 &&
       bytes[1] == 0x6c &&
       bytes[2] == 0x54 &&
       bytes[3] == 0x46) {
-    return _decodeGlb(bytes);
+    return _decodeGlb(bytes, maxTriangles);
   }
-  return _decodeGltfJson(bytes);
+  return _decodeGltfJson(bytes, maxTriangles);
 }
 
-DecodedMesh _decodeGlb(Uint8List bytes) {
+DecodedMesh _decodeGlb(Uint8List bytes, int? maxTriangles) {
   final byteData = ByteData.sublistView(bytes);
   if (bytes.length < 12) throw MeshImportError('GLB file is too short to contain a header');
   final totalLength = byteData.getUint32(8, Endian.little);
@@ -354,10 +490,10 @@ DecodedMesh _decodeGlb(Uint8List bytes) {
     offset = chunkStart + chunkLength;
   }
   if (gltf == null) throw MeshImportError('GLB file has no JSON chunk');
-  return _decodeGltfDocument(gltf, buffers);
+  return _decodeGltfDocument(gltf, buffers, maxTriangles);
 }
 
-DecodedMesh _decodeGltfJson(Uint8List bytes) {
+DecodedMesh _decodeGltfJson(Uint8List bytes, int? maxTriangles) {
   final Map<String, dynamic> gltf;
   try {
     gltf = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
@@ -368,7 +504,7 @@ DecodedMesh _decodeGltfJson(Uint8List bytes) {
   final buffers = <Uint8List>[
     for (final buffer in rawBuffers) _resolveDataUri((buffer as Map<String, dynamic>)['uri'] as String?, 'buffer'),
   ];
-  return _decodeGltfDocument(gltf, buffers);
+  return _decodeGltfDocument(gltf, buffers, maxTriangles);
 }
 
 Uint8List _resolveDataUri(String? uri, String what) {
@@ -385,11 +521,256 @@ Uint8List _resolveDataUri(String? uri, String what) {
   return base64.decode(uri.substring(commaIndex + 1));
 }
 
-DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffers) {
+/// A glTF node's *world-composed* transform, accumulated by walking the
+/// scene graph from a root node down through every ancestor - not just a
+/// single node's own TRS. A mesh several levels deep under a chain of
+/// parent nodes (an "Empty"/collection wrapper, an armature, a Blender
+/// axis-correction node, etc. - all common in real exports) needs every
+/// ancestor's transform composed together, not just its own; a
+/// root-nodes-only, non-recursive walk misses this entirely, which is why
+/// an earlier version of this fix (root-node-only, no recursion into
+/// `node.children`) still left real-world Blender exports mirrored.
+///
+/// [m]/[n] are row-major 3x3 matrices (9 values: row0, row1, row2) - [m] for
+/// positions (composed rotation+scale), [n] for normals (composed
+/// inverse-transpose, so non-uniform scale at any ancestor level still
+/// shades correctly - see `_localTransform`'s own doc comment on why a
+/// position matrix can't just be reused for normals). [t] is the composed
+/// translation. A node using a raw `matrix` instead of separate
+/// translation/rotation/scale fields is rejected with a clear error rather
+/// than decomposed (real complexity - handling non-uniform scale/reflection
+/// correctly - not attempted here).
+class _NodeTransform {
+  const _NodeTransform({required this.m, required this.n, required this.t});
+
+  final List<double> m;
+  final List<double> n;
+  final (double, double, double) t;
+
+  static const identity = _NodeTransform(
+    m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    n: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    t: (0.0, 0.0, 0.0),
+  );
+}
+
+List<double> _mat3Mul(List<double> a, List<double> b) {
+  final out = List<double>.filled(9, 0.0);
+  for (var row = 0; row < 3; row++) {
+    for (var col = 0; col < 3; col++) {
+      out[row * 3 + col] =
+          a[row * 3 + 0] * b[0 * 3 + col] + a[row * 3 + 1] * b[1 * 3 + col] + a[row * 3 + 2] * b[2 * 3 + col];
+    }
+  }
+  return out;
+}
+
+(double, double, double) _mat3MulVec(List<double> m, (double, double, double) v) {
+  final (x, y, z) = v;
+  return (
+    m[0] * x + m[1] * y + m[2] * z,
+    m[3] * x + m[4] * y + m[5] * z,
+    m[6] * x + m[7] * y + m[8] * z,
+  );
+}
+
+/// Standard right-handed quaternion-to-rotation-matrix formula (glTF spec
+/// convention), row-major.
+List<double> _quatToMat3((double, double, double, double) q) {
+  final (x, y, z, w) = q;
+  final xx = x * x, yy = y * y, zz = z * z;
+  final xy = x * y, xz = x * z, yz = y * z;
+  final wx = w * x, wy = w * y, wz = w * z;
+  return [
+    1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy),
+    2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx),
+    2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy),
+  ];
+}
+
+/// Computes [node]'s own *local* (not yet composed with any ancestor)
+/// position matrix, normal matrix, and translation from its
+/// translation/rotation/scale fields (each defaults per spec when absent).
+/// The normal matrix is `R * diag(1/scale)` rather than reusing the
+/// position matrix `R * diag(scale)` as-is: a normal transforms by a
+/// surface's inverse-transpose, not the same matrix as a position - under
+/// non-uniform scale those two diverge (using the position matrix for
+/// normals too would leave shading subtly wrong on any non-uniformly-scaled
+/// node), and glTF's separate T/R/S fields can't express shear, so
+/// `R * diag(1/scale)` (equivalent to the true inverse-transpose here) is
+/// exact rather than an approximation.
+_NodeTransform _localTransform(Map<String, dynamic> node) {
+  if (node['matrix'] != null) {
+    throw MeshImportError(
+      'This glTF node uses a raw matrix transform, which this viewer cannot decompose - '
+      're-export using separate translation/rotation/scale (most tools default to this).',
+    );
+  }
+  (double, double, double) vec3(String key, (double, double, double) fallback) {
+    final raw = node[key] as List?;
+    if (raw == null) return fallback;
+    return ((raw[0] as num).toDouble(), (raw[1] as num).toDouble(), (raw[2] as num).toDouble());
+  }
+
+  final rotationRaw = node['rotation'] as List?;
+  final rotation = rotationRaw == null
+      ? (0.0, 0.0, 0.0, 1.0)
+      : (
+          (rotationRaw[0] as num).toDouble(),
+          (rotationRaw[1] as num).toDouble(),
+          (rotationRaw[2] as num).toDouble(),
+          (rotationRaw[3] as num).toDouble(),
+        );
+  final translation = vec3('translation', (0.0, 0.0, 0.0));
+  final (sx, sy, sz) = vec3('scale', (1.0, 1.0, 1.0));
+  final r = _quatToMat3(rotation);
+  final m = [
+    r[0] * sx, r[1] * sy, r[2] * sz,
+    r[3] * sx, r[4] * sy, r[5] * sz,
+    r[6] * sx, r[7] * sy, r[8] * sz,
+  ];
+  final n = [
+    r[0] / sx, r[1] / sy, r[2] / sz,
+    r[3] / sx, r[4] / sy, r[5] / sz,
+    r[6] / sx, r[7] / sy, r[8] / sz,
+  ];
+  return _NodeTransform(m: m, n: n, t: translation);
+}
+
+/// Composes [node]'s own local transform onto [parent]'s already-composed
+/// one - `parent.m * local.m` for the position matrix and translation
+/// (`parent.m * local.t + parent.t`, i.e. the parent's rotation+scale
+/// applies to the child's local translation before the parent's own
+/// translation is added - the standard scene-graph transform-composition
+/// rule), and `parent.n * local.n` for the normal matrix (inverse-transpose
+/// of a matrix product reverses to a product of inverse-transposes in the
+/// *same* order as the original product, not reversed, so this mirrors the
+/// position-matrix composition exactly).
+_NodeTransform _composeTransform(_NodeTransform parent, Map<String, dynamic> node) {
+  final local = _localTransform(node);
+  return _NodeTransform(
+    m: _mat3Mul(parent.m, local.m),
+    n: _mat3Mul(parent.n, local.n),
+    t: _addVec3(_mat3MulVec(parent.m, local.t), parent.t),
+  );
+}
+
+(double, double, double) _addVec3((double, double, double) a, (double, double, double) b) =>
+    (a.$1 + b.$1, a.$2 + b.$2, a.$3 + b.$3);
+
+(double, double, double) _applyPosition(_NodeTransform transform, (double, double, double) p) {
+  final (x, y, z) = _mat3MulVec(transform.m, p);
+  final (tx, ty, tz) = transform.t;
+  return (x + tx, y + ty, z + tz);
+}
+
+(double, double, double) _applyNormal(_NodeTransform transform, (double, double, double) v) {
+  var (x, y, z) = _mat3MulVec(transform.n, v);
+  final len = math.sqrt(x * x + y * y + z * z);
+  if (len > 1e-12) {
+    x /= len;
+    y /= len;
+    z /= len;
+  }
+  return (x, y, z);
+}
+
+/// Extensions this decoder cannot read the real geometry of - if any of
+/// these appear in the document's spec-mandated `extensionsUsed` list, every
+/// accessor lacking a `bufferView` is almost certainly *compressed* data
+/// this decoder doesn't understand, not a legitimate spec-legal "all zero"
+/// accessor (see `readAccessor`'s own doc comment on that legal case). A
+/// real ODM/OpenDroneMap `.glb` export hit exactly this on-device - Draco
+/// mesh compression is a common way photogrammetry tools shrink large
+/// exports. Checked once, up front, rather than discovered accessor-by-
+/// accessor: a Draco file's POSITION/NORMAL/TEXCOORD_0 accessors still
+/// declare their real (potentially huge) vertex `count` even though the
+/// actual bytes are compressed elsewhere, so blindly zero-filling each one
+/// as "legitimately all zero" risks a multi-gigabyte allocation attempt
+/// before ever reaching an indices accessor that would otherwise fail
+/// cleanly - the likely explanation for a separate, real on-device
+/// crash-to-home-screen report on a larger file from the same export
+/// pipeline.
+const _kUnsupportedGltfExtensions = {
+  'KHR_draco_mesh_compression',
+  'EXT_meshopt_compression',
+};
+
+DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffers, int? maxTriangles) {
+  final extensionsUsed = ((gltf['extensionsUsed'] as List?) ?? const []).cast<String>();
+  final unsupported = extensionsUsed.where(_kUnsupportedGltfExtensions.contains);
+  if (unsupported.isNotEmpty) {
+    throw MeshImportError(
+      'This glTF/GLB uses ${unsupported.join(', ')}, which this viewer cannot decode - '
+      're-export without mesh compression (most tools that use it offer an uncompressed option).',
+    );
+  }
+
   final accessors = (gltf['accessors'] as List?) ?? const [];
   final bufferViews = (gltf['bufferViews'] as List?) ?? const [];
   final meshes = (gltf['meshes'] as List?) ?? const [];
   if (meshes.isEmpty) throw MeshImportError('glTF file has no meshes');
+
+  // Every (meshIndex, transform) instance to actually process - one entry
+  // per mesh-referencing node reached by recursively walking the active
+  // scene's node hierarchy from its root nodes down through every
+  // `children` list, composing each ancestor's transform along the way (see
+  // `_NodeTransform`'s own doc comment on why composition, not just a
+  // root node's own TRS, is needed - a real Blender export's axis-correction
+  // and/or object transform is often several levels deep, not on a scene
+  // root node directly). Falls back to one identity-transform entry per
+  // mesh when the document has no scene graph at all (true of every fixture
+  // in this file's own test suite, and of any minimal/synthetic glTF),
+  // matching this decoder's pre-node-transform behaviour exactly.
+  final meshInstances = <(int, _NodeTransform)>[];
+  final nodes = (gltf['nodes'] as List?) ?? const [];
+  final scenes = (gltf['scenes'] as List?) ?? const [];
+  final sceneIndex = (gltf['scene'] as int?) ?? 0;
+  final rootNodeIndices = (scenes.isNotEmpty && nodes.isNotEmpty)
+      ? ((scenes[sceneIndex] as Map<String, dynamic>)['nodes'] as List?)?.cast<int>() ?? const []
+      : const <int>[];
+  if (rootNodeIndices.isEmpty) {
+    for (var i = 0; i < meshes.length; i++) {
+      meshInstances.add((i, _NodeTransform.identity));
+    }
+  } else {
+    void walk(int nodeIndex, _NodeTransform parentTransform) {
+      final node = nodes[nodeIndex] as Map<String, dynamic>;
+      final transform = _composeTransform(parentTransform, node);
+      final meshIndex = node['mesh'] as int?;
+      if (meshIndex != null) meshInstances.add((meshIndex, transform));
+      final children = (node['children'] as List?)?.cast<int>() ?? const [];
+      for (final childIndex in children) {
+        walk(childIndex, transform);
+      }
+    }
+
+    for (final rootIndex in rootNodeIndices) {
+      walk(rootIndex, _NodeTransform.identity);
+    }
+  }
+
+  // Pre-count the total triangle count from each instance's own accessor
+  // `count` field - no vertex-attribute bytes decoded yet - so the
+  // decimation stride is known before the real assembly loop below ever
+  // runs. Mirrors decodeStl's binary-header pre-count; see decodeGltf's own
+  // doc comment for why this matters at photogrammetry scale.
+  var totalTriangles = 0;
+  for (final (meshIndex, _) in meshInstances) {
+    final mesh = meshes[meshIndex] as Map<String, dynamic>;
+    for (final primitiveRaw in mesh['primitives'] as List) {
+      final primitive = primitiveRaw as Map<String, dynamic>;
+      final attributes = primitive['attributes'] as Map<String, dynamic>;
+      final positionAccessor = attributes['POSITION'] as int?;
+      if (positionAccessor == null) continue;
+      final indicesAccessor = primitive['indices'] as int?;
+      final elementCount = indicesAccessor != null
+          ? (accessors[indicesAccessor] as Map<String, dynamic>)['count'] as int
+          : (accessors[positionAccessor] as Map<String, dynamic>)['count'] as int;
+      totalTriangles += elementCount ~/ 3;
+    }
+  }
+  final stride = _decimationStride(totalTriangles, maxTriangles);
 
   /// Reads a POSITION/NORMAL/TEXCOORD_0-style vertex accessor. Does not
   /// apply glTF's "normalized integer" rescaling (dividing an
@@ -399,11 +780,21 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
   /// use FLOAT for TEXCOORD_0 too, so this is a real but low-probability gap
   /// rather than a silently-assumed-correct one: a normalized-integer
   /// TEXCOORD_0 would read as raw 0-255/0-65535 values instead of 0-1.
+  ///
+  /// An accessor's `bufferView` is legally optional per spec (means
+  /// "all-zero data" unless a `sparse` accessor is also given, which this
+  /// decoder doesn't support) - a real ODM/OpenDroneMap `.glb` export hit
+  /// this on-device, previously crashing with a raw, unhelpful "type 'Null'
+  /// is not a subtype of type 'int'" the moment `bufferView` was force-cast.
+  /// Handled here by returning the spec-correct zero-filled data instead.
   List<double> readAccessor(int accessorIndex, int expectedComponents) {
     final accessor = accessors[accessorIndex] as Map<String, dynamic>;
     final count = accessor['count'] as int;
+    final bufferViewIndex = accessor['bufferView'] as int?;
+    if (bufferViewIndex == null) {
+      return List.filled(count * expectedComponents, 0.0);
+    }
     final componentType = accessor['componentType'] as int;
-    final bufferViewIndex = accessor['bufferView'] as int;
     final accessorByteOffset = (accessor['byteOffset'] as int?) ?? 0;
     final bufferView = bufferViews[bufferViewIndex] as Map<String, dynamic>;
     final bufferIndex = bufferView['buffer'] as int;
@@ -436,11 +827,19 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
     return out;
   }
 
+  /// See [readAccessor]'s own doc comment on `bufferView` being legally
+  /// optional - unlike a vertex accessor, there's no useful "all zeros"
+  /// interpretation for an *index* accessor (every triangle would collapse
+  /// onto vertex 0), so this rejects that case with a clear error instead
+  /// of either crashing or silently producing a degenerate mesh.
   List<int> readIndices(int accessorIndex) {
     final accessor = accessors[accessorIndex] as Map<String, dynamic>;
     final count = accessor['count'] as int;
+    final bufferViewIndex = accessor['bufferView'] as int?;
+    if (bufferViewIndex == null) {
+      throw MeshImportError('glTF index accessor has no bufferView (sparse/all-zero indices are not supported)');
+    }
     final componentType = accessor['componentType'] as int;
-    final bufferViewIndex = accessor['bufferView'] as int;
     final accessorByteOffset = (accessor['byteOffset'] as int?) ?? 0;
     final bufferView = bufferViews[bufferViewIndex] as Map<String, dynamic>;
     final bufferIndex = bufferView['buffer'] as int;
@@ -448,12 +847,11 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
     final buffer = buffers[bufferIndex];
     final byteData = ByteData.sublistView(buffer);
     final base = bufferViewByteOffset + accessorByteOffset;
-    final componentSize = switch (componentType) {
-      _kComponentUnsignedByte => 1,
-      _kComponentUnsignedShort => 2,
-      _kComponentUnsignedInt => 4,
-      _ => throw MeshImportError('Unsupported index componentType $componentType'),
-    };
+    if (componentType != _kComponentUnsignedByte &&
+        componentType != _kComponentUnsignedShort &&
+        componentType != _kComponentUnsignedInt) {
+      throw MeshImportError('Unsupported index componentType $componentType');
+    }
     return [
       for (var i = 0; i < count; i++)
         switch (componentType) {
@@ -468,9 +866,23 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
   final positions = <double>[];
   final normals = <double>[];
   final uvs = <double>[];
+  var triangleIndex = 0;
 
-  for (final meshRaw in meshes) {
-    final mesh = meshRaw as Map<String, dynamic>;
+  // One entry per mesh primitive that actually contributed a triangle -
+  // real photogrammetry exports routinely have one primitive/material per
+  // building facet or texture-atlas chunk (a real ODM/Blender export this
+  // was tested against has 39) - see [DecodedMesh.materialGroups]'s own doc
+  // comment. Cached per material index so a texture referenced by more than
+  // one primitive is only extracted (byte-sliced, not yet image-decoded -
+  // that's `mesh_viewer_render.dart`'s job) once.
+  final materialGroups = <MeshMaterialGroup>[];
+  final textureCache = <int, (Uint8List, String)?>{};
+  (Uint8List, String)? textureForMaterial(int materialIndex) =>
+      textureCache.putIfAbsent(materialIndex, () => _extractBaseColorTexture(gltf, buffers, materialIndex));
+
+  for (final (meshIndex, transform) in meshInstances) {
+    final mesh = meshes[meshIndex] as Map<String, dynamic>;
+    final isIdentity = identical(transform, _NodeTransform.identity);
     for (final primitiveRaw in mesh['primitives'] as List) {
       final primitive = primitiveRaw as Map<String, dynamic>;
       final attributes = primitive['attributes'] as Map<String, dynamic>;
@@ -489,11 +901,19 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
           ? readIndices(indicesAccessor)
           : List.generate(vertexCount, (i) => i);
 
+      final groupStartTriangle = positions.length ~/ 9;
       for (var i = 0; i + 2 < indices.length; i += 3) {
+        final keep = triangleIndex % stride == 0;
+        triangleIndex++;
+        if (!keep) continue;
         for (final vi in [indices[i], indices[i + 1], indices[i + 2]]) {
-          positions.addAll([rawPositions[vi * 3], rawPositions[vi * 3 + 1], rawPositions[vi * 3 + 2]]);
+          var p = (rawPositions[vi * 3], rawPositions[vi * 3 + 1], rawPositions[vi * 3 + 2]);
+          if (!isIdentity) p = _applyPosition(transform, p);
+          positions.addAll([p.$1, p.$2, p.$3]);
           if (rawNormals != null) {
-            normals.addAll([rawNormals[vi * 3], rawNormals[vi * 3 + 1], rawNormals[vi * 3 + 2]]);
+            var n = (rawNormals[vi * 3], rawNormals[vi * 3 + 1], rawNormals[vi * 3 + 2]);
+            if (!isIdentity) n = _applyNormal(transform, n);
+            normals.addAll([n.$1, n.$2, n.$3]);
           }
           if (rawUvs != null) {
             uvs.addAll([rawUvs[vi * 2], rawUvs[vi * 2 + 1]]);
@@ -510,26 +930,48 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
           normals.addAll([n.$1, n.$2, n.$3, n.$1, n.$2, n.$3, n.$1, n.$2, n.$3]);
         }
       }
+      final groupTriangleCount = (positions.length ~/ 9) - groupStartTriangle;
+      if (groupTriangleCount > 0) {
+        final materialIndex = (primitive['material'] as int?) ?? 0;
+        final texture = textureForMaterial(materialIndex);
+        materialGroups.add(MeshMaterialGroup(
+          startTriangle: groupStartTriangle,
+          triangleCount: groupTriangleCount,
+          textureBytes: texture?.$1,
+          textureMimeType: texture?.$2,
+        ));
+      }
     }
   }
 
   if (positions.isEmpty) throw MeshImportError('glTF file has no usable geometry');
 
-  final texture = _extractBaseColorTexture(gltf, buffers);
+  final firstTexture = materialGroups.isEmpty ? null : (materialGroups.first.textureBytes, materialGroups.first.textureMimeType);
 
   return DecodedMesh(
     positions: Float32List.fromList(positions),
     normals: Float32List.fromList(normals),
     uvs: Float32List.fromList(uvs),
-    textureBytes: texture?.$1,
-    textureMimeType: texture?.$2,
+    textureBytes: firstTexture?.$1,
+    textureMimeType: firstTexture?.$2,
+    materialGroups: materialGroups,
+    sourceTriangleCount: totalTriangles,
   );
 }
 
-(Uint8List, String)? _extractBaseColorTexture(Map<String, dynamic> gltf, List<Uint8List> buffers) {
+/// Extracts [materialIndex]'s own base-color texture bytes (if it has one) -
+/// `null` for a document with no materials, an out-of-range index, or a
+/// material with no `baseColorTexture` at all (untextured/flat-colour).
+/// Caller passes each primitive's own `material` index (falling back to `0`
+/// when unset, matching a primitive with no `material` field using the
+/// document's first material per spec) rather than always reading
+/// `materials.first` - a real photogrammetry export routinely has one
+/// material (and so one texture) per mesh primitive, not one for the whole
+/// file (see `_decodeGltfDocument`'s own doc comment on `materialGroups`).
+(Uint8List, String)? _extractBaseColorTexture(Map<String, dynamic> gltf, List<Uint8List> buffers, int materialIndex) {
   final materials = (gltf['materials'] as List?) ?? const [];
-  if (materials.isEmpty) return null;
-  final material = materials.first as Map<String, dynamic>;
+  if (materialIndex < 0 || materialIndex >= materials.length) return null;
+  final material = materials[materialIndex] as Map<String, dynamic>;
   final pbr = material['pbrMetallicRoughness'] as Map<String, dynamic>?;
   final baseColorTexture = pbr?['baseColorTexture'] as Map<String, dynamic>?;
   if (baseColorTexture == null) return null;
@@ -576,6 +1018,16 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
 /// for texture correctness - an accepted trade-off for a viewer, not a
 /// numerically-optimal decimation.
 ///
+/// No longer the mesh viewer's primary decimation mechanism - `decodeStl`/
+/// `decodeObj`/`decodeGltf` all now decimate *during* decode via their own
+/// `maxTriangles` parameter, so peak memory is bounded by the target budget
+/// rather than the full source mesh (a real on-device crash-to-home-screen
+/// on a very large `.glb` motivated that change - operating on an
+/// *already-fully-decoded* [mesh] here can't help with that, since the
+/// expensive part already happened by the time this runs). Kept as a
+/// standalone utility for a caller that already has a full [DecodedMesh]
+/// from somewhere else and wants it shrunk further.
+///
 /// Returns [mesh] unchanged (same instance) if it's already within budget.
 DecodedMesh decimateToTriangleBudget(DecodedMesh mesh, int maxTriangles) {
   final triangleCount = mesh.triangleCount;
@@ -598,5 +1050,448 @@ DecodedMesh decimateToTriangleBudget(DecodedMesh mesh, int maxTriangles) {
     uvs: Float32List.sublistView(uvs, 0, outTriangle * 6),
     textureBytes: mesh.textureBytes,
     textureMimeType: mesh.textureMimeType,
+    sourceTriangleCount: mesh.sourceTriangleCount,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Up-axis correction
+// ---------------------------------------------------------------------------
+
+/// Which axis this decoder should treat as "up" when building a mesh for
+/// display - see [applyUpAxis]'s own doc comment for why this needs to be a
+/// user choice rather than something auto-detected.
+enum MeshUpAxis { y, z }
+
+/// A real Blender-exported glTF was found rendering "on its side"/"inside
+/// out" (a wide, thin property scan appeared thin in *depth* rather than
+/// *height*) despite this decoder correctly following the glTF spec (Y-up) -
+/// this decoder's node-transform and decimation logic were independently
+/// re-checked and ruled out (see `docs/status.md`'s own investigation).
+/// The real cause: the file's own data is not actually Y-up, most likely
+/// because Blender's "+Y Up" export conversion was skipped (a real,
+/// user-facing option in Blender's glTF exporter, off meaning "export raw
+/// Blender-native Z-up coordinates as-is") - Blender's own viewport still
+/// shows such a file "correctly" only because it's a self-consistent round
+/// trip through the same tool, not because the file is actually spec-
+/// compliant. There is no reliable way to detect this from the file alone
+/// (a correctly Y-up file and a mislabeled Z-up file are structurally
+/// identical glTF), so this is a manual, user-facing choice instead.
+///
+/// [MeshUpAxis.y] is a no-op (returns [mesh] unchanged) - this decoder
+/// already assumes Y-up per spec, so "the file's data is already correct"
+/// needs no correction. [MeshUpAxis.z] applies `(x, y, z) -> (x, z, -y)` -
+/// the same axis permutation Blender's own exporter uses to convert its
+/// native Z-up scene into glTF's Y-up convention, applied here a second
+/// time for a file that skipped it once. Deliberately a proper rotation
+/// (determinant +1: this is a 90-degree rotation about the X axis), not a
+/// bare axis swap (`(x, y, z) -> (x, z, y)`, determinant -1) - a bare swap
+/// would "fix" the up-axis at the cost of introducing a genuine mirror
+/// reflection, reproducing a different version of the exact bug this
+/// exists to correct.
+DecodedMesh applyUpAxis(DecodedMesh mesh, MeshUpAxis axis) {
+  if (axis == MeshUpAxis.y) return mesh;
+
+  Float32List rotate(Float32List src) {
+    final out = Float32List(src.length);
+    for (var i = 0; i + 2 < src.length; i += 3) {
+      out[i] = src[i];
+      out[i + 1] = src[i + 2];
+      out[i + 2] = -src[i + 1];
+    }
+    return out;
+  }
+
+  return DecodedMesh(
+    positions: rotate(mesh.positions),
+    normals: rotate(mesh.normals),
+    uvs: mesh.uvs,
+    textureBytes: mesh.textureBytes,
+    textureMimeType: mesh.textureMimeType,
+    materialGroups: mesh.materialGroups,
+    sourceTriangleCount: mesh.sourceTriangleCount,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Mirror correction
+// ---------------------------------------------------------------------------
+
+/// A real Blender-exported glTF (`Nightingales.glb`, a drone photogrammetry
+/// scan) was confirmed - by decoding its actual `POSITION` accessor data and
+/// rendering both the as-decoded and a left-right-flipped version for the
+/// user to compare against the real property - to be a genuine mirror image
+/// (e.g. a garage on the wrong side of the house) once [applyUpAxis] had
+/// already corrected its vertical orientation. This decoder's own pipeline
+/// (accessor reads, node-transform composition, [applyUpAxis], decimation)
+/// was independently re-verified against this exact file to be incapable of
+/// introducing a reflection - every step is either a no-op or a proper
+/// rotation (determinant +1) - so the mirroring is baked into the file's own
+/// raw vertex data, not something this decoder does. Why the same file opens
+/// un-mirrored in Blender is unresolved (most likely someone manually
+/// mirrored the object in Blender - e.g. a negative-scale fix applied by
+/// hand after noticing the same problem there - which a fresh glTF export
+/// wouldn't carry, but the read-only file handed to this decoder does). As
+/// with [MeshUpAxis], there's no reliable way to detect a mirrored file from
+/// its bytes alone (a correctly-handed and a mirrored file are structurally
+/// identical glTF), so this is a manual, user-facing toggle too.
+///
+/// Negates world X only (`(x, y, z) -> (-x, y, z)`) - the axis this
+/// decoder's own [applyUpAxis] never touches, confirmed as the correct one
+/// to flip for the file that motivated this. Applied to both positions and
+/// normals; triangle winding is left untouched deliberately - flipping X
+/// does invert the file's winding/normal relationship, but every mesh-viewer
+/// material already sets `doubleSided = true` (see `mesh_viewer_render.dart`'s
+/// own doc comment - real external files can't be trusted to have consistent
+/// winding either way), so there is no back-face culling for this to break.
+DecodedMesh applyMirror(DecodedMesh mesh, bool mirror) {
+  if (!mirror) return mesh;
+
+  Float32List negateX(Float32List src) {
+    final out = Float32List(src.length);
+    for (var i = 0; i + 2 < src.length; i += 3) {
+      out[i] = -src[i];
+      out[i + 1] = src[i + 1];
+      out[i + 2] = src[i + 2];
+    }
+    return out;
+  }
+
+  return DecodedMesh(
+    positions: negateX(mesh.positions),
+    normals: negateX(mesh.normals),
+    uvs: mesh.uvs,
+    textureBytes: mesh.textureBytes,
+    textureMimeType: mesh.textureMimeType,
+    materialGroups: mesh.materialGroups,
+    sourceTriangleCount: mesh.sourceTriangleCount,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Export encoders
+// ---------------------------------------------------------------------------
+
+// The reverse of this file's own decoders - lets the mesh viewer save the
+// *decimated, corrected* mesh actually shown on screen (post-[applyUpAxis]/
+// [applyMirror]/decimation - whatever `mesh_viewer_screen.dart` currently
+// has decoded and is displaying) back out as a real, much smaller file,
+// instead of only ever being able to view a reduced version without ever
+// keeping one. Pure, GPU-independent, and testable with plain `flutter
+// test`, same as every other function in this file - texture
+// downsampling/re-encoding (which needs `dart:ui`, unlike anything else
+// here) happens in the caller (`mesh_viewer_render.dart`'s
+// `reencodeTextureForExport`) *before* `encodeMeshAsGlb` is called; this
+// function only ever embeds whatever texture bytes it's given, unmodified.
+
+/// Which file format the mesh viewer's own "Export" feature
+/// (`mesh_viewer_screen.dart`) writes - [stl] drops textures entirely (see
+/// [encodeMeshAsStl]'s own doc comment), [glb] keeps them (see
+/// [encodeMeshAsGlb]).
+enum MeshExportFormat { stl, glb }
+
+/// One triangle range to export, generalizing over [DecodedMesh]'s two
+/// shapes: a real multi-material glTF (one [_ExportGroup] per
+/// [MeshMaterialGroup]) and everything else - STL, OBJ, or a single-
+/// primitive glTF (one [_ExportGroup] covering the whole mesh, using
+/// [DecodedMesh]'s own top-level texture fields).
+class _ExportGroup {
+  final int startTriangle;
+  final int triangleCount;
+  final Uint8List? textureBytes;
+  final String? textureMimeType;
+  const _ExportGroup(this.startTriangle, this.triangleCount, this.textureBytes, this.textureMimeType);
+}
+
+List<_ExportGroup> _exportGroupsFor(DecodedMesh mesh) {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    return [_ExportGroup(0, mesh.triangleCount, mesh.textureBytes, mesh.textureMimeType)];
+  }
+  return [
+    for (final group in groups)
+      _ExportGroup(group.startTriangle, group.triangleCount, group.textureBytes, group.textureMimeType),
+  ];
+}
+
+Uint8List _floatsToLittleEndianBytes(List<double> floats) {
+  final bytes = ByteData(floats.length * 4);
+  for (var i = 0; i < floats.length; i++) {
+    bytes.setFloat32(i * 4, floats[i], Endian.little);
+  }
+  return bytes.buffer.asUint8List();
+}
+
+/// Binary STL header - an 80-byte free-text field per the format's own
+/// spec, unused by any reader; mirrors the backend's own fixed
+/// `_STL_HEADER` (`mesh_export.py`), just identifying this file's own
+/// separate encoder instead.
+Uint8List _stlHeader() {
+  final header = Uint8List(80);
+  final text = utf8.encode('DIDSA-CAD mesh viewer STL export');
+  header.setRange(0, text.length, text);
+  return header;
+}
+
+/// Encodes [mesh] as binary STL - geometry + normals only, no texture (STL
+/// has no such concept at all, so [MeshMaterialGroup.textureBytes]/
+/// [DecodedMesh.textureBytes] are simply not read here) - same binary
+/// layout the backend's own `encode_stl` writes: an 80-byte header, a
+/// uint32 triangle count, then per triangle 12 float32s (facet normal, then
+/// its 3 vertices) plus a 2-byte attribute byte count (always 0).
+///
+/// STL has one normal *per triangle*, not per vertex - this decoder's own
+/// [DecodedMesh.normals] are per-vertex (three per triangle, which can
+/// genuinely differ for a smooth-shaded source file), so this averages a
+/// triangle's own three vertex normals into one facet normal, the standard
+/// choice any STL consumer expects given no other convention exists for it
+/// in the format itself.
+Uint8List encodeMeshAsStl(DecodedMesh mesh) {
+  final triangleCount = mesh.triangleCount;
+  final body = BytesBuilder();
+  final countHeader = ByteData(4)..setUint32(0, triangleCount, Endian.little);
+  body.add(countHeader.buffer.asUint8List());
+
+  for (var t = 0; t < triangleCount; t++) {
+    final base = t * 9;
+    final nx = (mesh.normals[base] + mesh.normals[base + 3] + mesh.normals[base + 6]) / 3;
+    final ny = (mesh.normals[base + 1] + mesh.normals[base + 4] + mesh.normals[base + 7]) / 3;
+    final nz = (mesh.normals[base + 2] + mesh.normals[base + 5] + mesh.normals[base + 8]) / 3;
+    final length = math.sqrt(nx * nx + ny * ny + nz * nz);
+    final normal = length > 1e-12 ? [nx / length, ny / length, nz / length] : [0.0, 0.0, 0.0];
+
+    final triangle = ByteData(50); // 12 float32s (48 bytes) + uint16 attribute byte count
+    for (var c = 0; c < 3; c++) {
+      triangle.setFloat32(c * 4, normal[c], Endian.little);
+    }
+    for (var v = 0; v < 3; v++) {
+      for (var c = 0; c < 3; c++) {
+        triangle.setFloat32(12 + (v * 3 + c) * 4, mesh.positions[base + v * 3 + c], Endian.little);
+      }
+    }
+    triangle.setUint16(48, 0, Endian.little);
+    body.add(triangle.buffer.asUint8List());
+  }
+
+  final result = BytesBuilder();
+  result.add(_stlHeader());
+  result.add(body.toBytes());
+  return result.toBytes();
+}
+
+/// glTF 2.0 chunk-type magic numbers/component types this encoder needs -
+/// mirrors the backend's own `mesh_export.py` constants, kept as a separate
+/// client-side copy since nothing is shared between Dart and Python here.
+const int _kGlbMagic = 0x46546c67; // 'glTF', already little-endian byte order
+const int _kGlbVersion = 2;
+const int _kGlbChunkTypeJson = 0x4e4f534a;
+const int _kGlbChunkTypeBin = 0x004e4942;
+const int _kGltfComponentTypeFloat = 5126;
+const int _kGltfModeTriangles = 4;
+const int _kGltfTargetArrayBuffer = 34962;
+
+Uint8List _padTo4Bytes(Uint8List data, int padByte) {
+  final remainder = data.length % 4;
+  if (remainder == 0) return data;
+  final padding = Uint8List(4 - remainder)..fillRange(0, 4 - remainder, padByte);
+  return Uint8List.fromList([...data, ...padding]);
+}
+
+/// Encodes [mesh] as binary GLB (glTF 2.0) - one primitive per
+/// [DecodedMesh.materialGroups] entry (each with its own material/texture),
+/// or a single primitive covering the whole mesh when there are none (STL/
+/// OBJ, or an already-single-primitive glTF) - see [_exportGroupsFor].
+/// POSITION+NORMAL+TEXCOORD_0 attributes on every primitive regardless of
+/// whether it has a texture (an unreferenced accessor is harmless, and
+/// [DecodedMesh.uvs] is always populated even if meaningless for an
+/// untextured source), no index buffer (this decoder's own triangle-soup
+/// convention - see [DecodedMesh]'s own doc comment - same "nothing to
+/// index" choice the backend's own `encode_glb` makes). An untextured
+/// group gets a plain default material (light grey, non-metallic) rather
+/// than glTF's own spec default (fully metallic, since no
+/// `pbrMetallicRoughness` was given) - a deliberately friendlier fallback
+/// for a viewer whose whole untextured-geometry story is "flat tint is an
+/// acceptable substitute for a real texture".
+///
+/// Each group's own texture bytes are embedded exactly as given - if a
+/// caller wants a smaller export than the source file's own texture
+/// resolution, it must downsample/re-encode them *before* calling this (see
+/// `mesh_viewer_render.dart`'s `reencodeTextureForExport`, which needs
+/// `dart:ui` and so can't live in this pure-Dart file).
+Uint8List encodeMeshAsGlb(DecodedMesh mesh) {
+  final groups = _exportGroupsFor(mesh);
+
+  // A GLB's embedded binary chunk backs exactly one glTF `buffer` (the only
+  // one allowed to omit `uri` per spec) - so vertex data and image bytes,
+  // despite being built up separately below, have to end up as byte ranges
+  // within that *same* single buffer, not two different ones. Vertex data
+  // is written first; every group's own image bytes are appended after
+  // (`imageBuilder`, tracked separately only because its own final length
+  // - and so how far to shift its bufferViews' byte offsets once it's
+  // appended after `vertexBuilder` - isn't known until the loop below
+  // finishes, since later groups still add more vertex data in the
+  // meantime). [imageBufferViewIndices] records which entries in
+  // [bufferViews] need that shift applied afterward.
+  final vertexBuilder = BytesBuilder();
+  final imageBuilder = BytesBuilder();
+  final bufferViews = <Map<String, dynamic>>[];
+  final imageBufferViewIndices = <int>[];
+  final accessors = <Map<String, dynamic>>[];
+  final primitives = <Map<String, dynamic>>[];
+  final materials = <Map<String, dynamic>>[];
+  final images = <Map<String, dynamic>>[];
+  final textures = <Map<String, dynamic>>[];
+
+  int addVertexBufferView(Uint8List bytes, {required int target}) {
+    final byteOffset = vertexBuilder.length;
+    vertexBuilder.add(bytes);
+    bufferViews.add({'buffer': 0, 'byteOffset': byteOffset, 'byteLength': bytes.length, 'target': target});
+    return bufferViews.length - 1;
+  }
+
+  int addImageBufferView(Uint8List bytes) {
+    final byteOffset = imageBuilder.length;
+    imageBuilder.add(bytes);
+    bufferViews.add({'buffer': 0, 'byteOffset': byteOffset, 'byteLength': bytes.length});
+    imageBufferViewIndices.add(bufferViews.length - 1);
+    return bufferViews.length - 1;
+  }
+
+  for (final group in groups) {
+    final startFloat3 = group.startTriangle * 9;
+    final countFloat3 = group.triangleCount * 9;
+    final startFloat2 = group.startTriangle * 6;
+    final countFloat2 = group.triangleCount * 6;
+    final vertexCount = group.triangleCount * 3;
+
+    final positions = mesh.positions.sublist(startFloat3, startFloat3 + countFloat3);
+    final normals = mesh.normals.sublist(startFloat3, startFloat3 + countFloat3);
+    final uvs = mesh.uvs.sublist(startFloat2, startFloat2 + countFloat2);
+
+    var pMinX = 0.0, pMinY = 0.0, pMinZ = 0.0, pMaxX = 0.0, pMaxY = 0.0, pMaxZ = 0.0;
+    if (vertexCount > 0) {
+      pMinX = pMaxX = positions[0];
+      pMinY = pMaxY = positions[1];
+      pMinZ = pMaxZ = positions[2];
+      for (var i = 0; i + 2 < positions.length; i += 3) {
+        final x = positions[i], y = positions[i + 1], z = positions[i + 2];
+        if (x < pMinX) pMinX = x;
+        if (x > pMaxX) pMaxX = x;
+        if (y < pMinY) pMinY = y;
+        if (y > pMaxY) pMaxY = y;
+        if (z < pMinZ) pMinZ = z;
+        if (z > pMaxZ) pMaxZ = z;
+      }
+    }
+
+    final positionView = addVertexBufferView(_floatsToLittleEndianBytes(positions), target: _kGltfTargetArrayBuffer);
+    accessors.add({
+      'bufferView': positionView,
+      'componentType': _kGltfComponentTypeFloat,
+      'count': vertexCount,
+      'type': 'VEC3',
+      'min': [pMinX, pMinY, pMinZ],
+      'max': [pMaxX, pMaxY, pMaxZ],
+    });
+    final positionAccessor = accessors.length - 1;
+
+    final normalView = addVertexBufferView(_floatsToLittleEndianBytes(normals), target: _kGltfTargetArrayBuffer);
+    accessors.add({'bufferView': normalView, 'componentType': _kGltfComponentTypeFloat, 'count': vertexCount, 'type': 'VEC3'});
+    final normalAccessor = accessors.length - 1;
+
+    final uvView = addVertexBufferView(_floatsToLittleEndianBytes(uvs), target: _kGltfTargetArrayBuffer);
+    accessors.add({'bufferView': uvView, 'componentType': _kGltfComponentTypeFloat, 'count': vertexCount, 'type': 'VEC2'});
+    final uvAccessor = accessors.length - 1;
+
+    Map<String, dynamic> material;
+    if (group.textureBytes != null) {
+      final imageBufferView = addImageBufferView(group.textureBytes!);
+      images.add({
+        'bufferView': imageBufferView,
+        'mimeType': group.textureMimeType ?? 'image/jpeg',
+      });
+      textures.add({'source': images.length - 1});
+      material = {
+        'pbrMetallicRoughness': {
+          'baseColorTexture': {'index': textures.length - 1},
+          'metallicFactor': 0.0,
+          'roughnessFactor': 0.9,
+        },
+      };
+    } else {
+      material = {
+        'pbrMetallicRoughness': {
+          'baseColorFactor': [0.8, 0.8, 0.8, 1.0],
+          'metallicFactor': 0.0,
+          'roughnessFactor': 0.8,
+        },
+      };
+    }
+    materials.add(material);
+
+    primitives.add({
+      'attributes': {'POSITION': positionAccessor, 'NORMAL': normalAccessor, 'TEXCOORD_0': uvAccessor},
+      'material': materials.length - 1,
+      'mode': _kGltfModeTriangles,
+    });
+  }
+
+  final vertexBytes = vertexBuilder.toBytes();
+  final imageBytes = imageBuilder.toBytes();
+  // Now that `vertexBytes`' final length is known, shift every image
+  // bufferView's offset (currently relative to `imageBuilder` alone) by
+  // however far into the combined buffer the image bytes actually start.
+  for (final index in imageBufferViewIndices) {
+    bufferViews[index]['byteOffset'] = (bufferViews[index]['byteOffset'] as int) + vertexBytes.length;
+  }
+
+  final gltf = {
+    'asset': {'version': '2.0', 'generator': 'DIDSA-CAD mesh viewer'},
+    'scene': 0,
+    'scenes': [
+      {
+        'nodes': [0],
+      },
+    ],
+    'nodes': [
+      {'mesh': 0},
+    ],
+    'meshes': [
+      {'primitives': primitives},
+    ],
+    if (materials.isNotEmpty) 'materials': materials,
+    if (textures.isNotEmpty) 'textures': textures,
+    if (images.isNotEmpty) 'images': images,
+    'buffers': [
+      {'byteLength': vertexBytes.length + imageBytes.length},
+    ],
+    'bufferViews': bufferViews,
+    'accessors': accessors,
+  };
+
+  final jsonBytes = _padTo4Bytes(Uint8List.fromList(utf8.encode(jsonEncode(gltf))), 0x20);
+  final binBytes = _padTo4Bytes(Uint8List.fromList([...vertexBytes, ...imageBytes]), 0x00);
+
+  final jsonChunk = BytesBuilder()
+    ..add((ByteData(8)..setUint32(0, jsonBytes.length, Endian.little)..setUint32(4, _kGlbChunkTypeJson, Endian.little))
+        .buffer
+        .asUint8List())
+    ..add(jsonBytes);
+  final binChunk = BytesBuilder()
+    ..add((ByteData(8)..setUint32(0, binBytes.length, Endian.little)..setUint32(4, _kGlbChunkTypeBin, Endian.little))
+        .buffer
+        .asUint8List())
+    ..add(binBytes);
+
+  final totalLength = 12 + jsonChunk.length + binChunk.length;
+  final header = ByteData(12)
+    ..setUint32(0, _kGlbMagic, Endian.little)
+    ..setUint32(4, _kGlbVersion, Endian.little)
+    ..setUint32(8, totalLength, Endian.little);
+
+  final result = BytesBuilder();
+  result.add(header.buffer.asUint8List());
+  result.add(jsonChunk.toBytes());
+  result.add(binChunk.toBytes());
+  return result.toBytes();
 }

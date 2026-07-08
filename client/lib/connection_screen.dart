@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
+import 'mesh_viewer/mesh_viewer_settings_screen.dart';
 import 'viewport3d/part_screen.dart';
 
 /// Stage 18's splash/connection screen - shown on cold launch before
@@ -196,14 +197,59 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   // PartScreen underneath in that case).
                   if (!widget.isSettingsRevisit) ...[
                     const SizedBox(height: 24),
-                    TextButton.icon(
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const MeshViewerScreen()),
-                      ),
-                      icon: const Icon(Icons.view_in_ar_outlined, color: Colors.white70),
-                      label: const Text(
-                        'View a mesh file (no server needed)',
-                        style: TextStyle(color: Colors.white70),
+                    // Single obround (stadium-shaped) button, split 80/20 in
+                    // favour of the mesh viewer itself - a separate
+                    // TextButton.icon + IconButton pair (the original shape)
+                    // overflowed its row's available width on-device (a real
+                    // "RIGHT OVERFLOWED BY 17 PIXELS" debug banner), which
+                    // this single, deliberately-narrower-labelled button
+                    // sidesteps entirely rather than just barely fitting.
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: Material(
+                        color: Colors.white.withValues(alpha: 0.08),
+                        shape: const StadiumBorder(),
+                        clipBehavior: Clip.antiAlias,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 4,
+                              child: InkWell(
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (_) => const MeshViewerScreen()),
+                                ),
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.view_in_ar_outlined, color: Colors.white70, size: 20),
+                                    SizedBox(width: 8),
+                                    Flexible(
+                                      child: Text(
+                                        'View a mesh file',
+                                        style: TextStyle(color: Colors.white70),
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 24, child: VerticalDivider(color: Colors.white24, width: 1)),
+                            Expanded(
+                              flex: 1,
+                              child: InkWell(
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (_) => const MeshViewerSettingsScreen()),
+                                ),
+                                child: const Center(
+                                  child: Icon(Icons.settings_outlined, color: Colors.white70, size: 20),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],

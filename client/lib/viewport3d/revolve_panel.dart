@@ -83,6 +83,13 @@ class _RevolvePanelState extends State<RevolvePanel> {
     _mode = widget.initialMode;
     _angleController = TextEditingController(text: _formatAngle(widget.initialAngle));
     _angle = (widget.initialAngle > 0 && widget.initialAngle <= 360) ? widget.initialAngle : null;
+    // Without this, the live preview underneath this panel doesn't appear
+    // until the user actually edits the angle field or mode - onChanged was
+    // only ever wired to those callbacks, never fired for the initial value
+    // this panel opens with (mirrors ExtrudePanel's identical fix).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _angle != null) widget.onChanged(_mode, _angle!);
+    });
   }
 
   @override

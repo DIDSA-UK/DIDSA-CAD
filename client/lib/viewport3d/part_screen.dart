@@ -40,6 +40,7 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'sweep_panel.dart';
+import 'scene_preferences.dart';
 import 'view_preferences.dart';
 
 /// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
@@ -213,6 +214,12 @@ class _PartScreenState extends State<PartScreen> {
   String _bgColourHex = ViewPreferences.defaultBgColourHex;
   String _bodyColourHex = ViewPreferences.defaultBodyColourHex;
   double _bodyOpacity = ViewPreferences.defaultBodyOpacity;
+
+  /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls - see
+  /// [ScenePreferences], loaded/persisted the same way as the block above.
+  double _sceneRoughness = ScenePreferences.defaultRoughness;
+  double _sceneLightIntensity = ScenePreferences.defaultLightIntensity;
+  double _sceneEmissiveIntensity = ScenePreferences.defaultEmissiveIntensity;
 
   /// A4: perspective vs orthographic toggle - false = orthographic default.
   bool _isPerspective = ViewPreferences.defaultIsPerspective;
@@ -1987,6 +1994,7 @@ class _PartScreenState extends State<PartScreen> {
   /// once this completes.
   Future<void> _loadViewPreferences() async {
     await ViewPreferences.load();
+    await ScenePreferences.load();
     if (!mounted) return;
     setState(() {
       _bgColourHex = ViewPreferences.bgColourHex;
@@ -1995,12 +2003,30 @@ class _PartScreenState extends State<PartScreen> {
       _renderMode = ViewPreferences.renderMode;
       _isPerspective = ViewPreferences.isPerspective;
       _farClip = ViewPreferences.farClip;
+      _sceneRoughness = ScenePreferences.roughness;
+      _sceneLightIntensity = ScenePreferences.lightIntensity;
+      _sceneEmissiveIntensity = ScenePreferences.emissiveIntensity;
     });
   }
 
   Future<void> _onBgColourChanged(String hex) async {
     setState(() => _bgColourHex = hex);
     await ViewPreferences.setBgColourHex(hex);
+  }
+
+  Future<void> _onSceneRoughnessChanged(double value) async {
+    setState(() => _sceneRoughness = value);
+    await ScenePreferences.setRoughness(value);
+  }
+
+  Future<void> _onSceneLightIntensityChanged(double value) async {
+    setState(() => _sceneLightIntensity = value);
+    await ScenePreferences.setLightIntensity(value);
+  }
+
+  Future<void> _onSceneEmissiveIntensityChanged(double value) async {
+    setState(() => _sceneEmissiveIntensity = value);
+    await ScenePreferences.setEmissiveIntensity(value);
   }
 
   Future<void> _onBodyColourChanged(String hex) async {
@@ -2026,13 +2052,38 @@ class _PartScreenState extends State<PartScreen> {
     await ViewPreferences.setFarClip(value);
   }
 
-  /// Opens [ConnectionScreen] from the File menu's "Connection Settings"
-  /// entry - [ConnectionScreen.isSettingsRevisit] tells it to pop back here
-  /// on success rather than pushing a brand new [PartScreen].
-  Future<void> _openConnectionSettings() async {
+  /// File > Exit: abandons the current Part and returns all the way back to
+  /// the first splash/[ConnectionScreen] - a fresh, non-revisit instance
+  /// (so its "View a mesh file" entry is present, same as cold launch),
+  /// with [Navigator.pushAndRemoveUntil] clearing this and every other
+  /// route underneath so there's no way back to the abandoned [PartScreen]
+  /// via the system back gesture. Confirms first, mirroring
+  /// [_startNewPart]'s identical "unsaved work would be lost" dialog -
+  /// exiting is just as destructive to unsaved changes as starting new.
+  Future<void> _exitToConnectionScreen() async {
     setState(() => _toolbarOpen = false);
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (context) => const ConnectionScreen(isSettingsRevisit: true)),
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Exit this project?'),
+        content: const Text(
+          'Any changes since your last Save will be lost. This does not delete the current '
+          'project - it will still be there if you open it again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Exit'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const ConnectionScreen()),
+      (route) => false,
     );
   }
 
@@ -4740,13 +4791,25 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// The banner should reflect the file the user actually saved to/opened,
+  /// not the backend `Part.name` - every brand-new Part is created with the
+  /// same hardcoded `'Part 1'` server-side (see `_loadPart`), so without
+  /// this the banner would say "Part 1" forever regardless of what the user
+  /// names their save file. Falls back to `_part?.name` only when nothing's
+  /// been saved/opened yet this session.
+  String get _displayPartName {
+    final savedName = _lastSavedFileName;
+    if (savedName == null) return _part?.name ?? 'Part';
+    return savedName.replaceFirst(RegExp(r'\.DIDSAprt$', caseSensitive: false), '');
+  }
+
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         leading: const DidsaLogoButton(),
         leadingWidth: 100,
         centerTitle: false,
-        title: Text(_part?.name ?? 'Part', textAlign: TextAlign.right),
+        title: Text(_displayPartName, textAlign: TextAlign.right),
       ),
       body: Column(
         children: [
@@ -4795,6 +4858,9 @@ class _PartScreenState extends State<PartScreen> {
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
                   bodyOpacity: _bodyOpacity,
+                  roughness: _sceneRoughness,
+                  lightIntensity: _sceneLightIntensity,
+                  emissiveIntensity: _sceneEmissiveIntensity,
                   // On-device feedback: this used to be forced true for the
                   // whole Extrude panel lifetime, unconditionally overriding
                   // the mode-toggle FAB (itself hidden while the panel was
@@ -4942,7 +5008,7 @@ class _PartScreenState extends State<PartScreen> {
                     onToggleReferencePlanes: _onToggleReferencePlanes,
                     renderMode: _renderMode,
                     onRenderModeChanged: _onRenderModeChanged,
-                    onOpenConnectionSettings: _openConnectionSettings,
+                    onExit: _exitToConnectionScreen,
                     onSaveNative: _saveNativeFile,
                     onSaveAsNative: _saveAsNativeFile,
                     onOpenNative: _openNativeFile,
@@ -4955,6 +5021,12 @@ class _PartScreenState extends State<PartScreen> {
                     onBgColourChanged: _onBgColourChanged,
                     onBodyColourChanged: _onBodyColourChanged,
                     onBodyOpacityChanged: _onBodyOpacityChanged,
+                    sceneRoughness: _sceneRoughness,
+                    sceneLightIntensity: _sceneLightIntensity,
+                    sceneEmissiveIntensity: _sceneEmissiveIntensity,
+                    onSceneRoughnessChanged: _onSceneRoughnessChanged,
+                    onSceneLightIntensityChanged: _onSceneLightIntensityChanged,
+                    onSceneEmissiveIntensityChanged: _onSceneEmissiveIntensityChanged,
                     isPerspective: _isPerspective,
                     onPerspectiveChanged: _onPerspectiveChanged,
                     farClip: _farClip,

@@ -1020,14 +1020,20 @@ class SketchController extends ChangeNotifier {
         final end = points[line.endPointId]!;
         final distToStart = math.pow(x - start.x, 2) + math.pow(y - start.y, 2);
         final distToEnd = math.pow(x - end.x, 2) + math.pow(y - end.y, 2);
-        return distToStart <= distToEnd ? line.startPointId : line.endPointId;
+        final nearerId = distToStart <= distToEnd ? line.startPointId : line.endPointId;
+        // The origin is never a valid drag target (see _entityAt's own
+        // exclusion for a direct hit) - if it's the nearer endpoint, there's
+        // nothing to offer, not a silent fallback to the farther one.
+        return nearerId == _originPointId ? null : nearerId;
       case SelectionKind.circle:
         final circle = circles[hit.id]!;
         final center = points[circle.centerPointId]!;
         final radiusPoint = points[circle.radiusPointId]!;
         final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);
         final distToRadius = math.pow(x - radiusPoint.x, 2) + math.pow(y - radiusPoint.y, 2);
-        return distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+        final nearerId = distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+        // Mirrors the Line case above - the origin is never offered.
+        return nearerId == _originPointId ? null : nearerId;
       case SelectionKind.constraint:
         return null;
     }

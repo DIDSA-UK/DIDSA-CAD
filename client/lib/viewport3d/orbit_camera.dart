@@ -127,7 +127,7 @@ class OrbitCamera {
   /// nearly the full screen (~80% of its linear extent) on a cold launch.
   /// default zoom: planes ~25% of screen (~50% of linear extent needs
   /// distance ~48.28 at this FOV/plane size; rounded to a clean 48).
-  static const double _defaultDistance = 80;
+  static const double _defaultDistance = 48;
 
   /// What [reset] returns [target] to - defaults to the origin, but
   /// [setTarget] moves this along with [target] so "Reset view" re-centers
