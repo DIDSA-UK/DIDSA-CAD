@@ -60,25 +60,19 @@ project spec, see `docs/project-brief.md`.
   handling would ever see - needs an actual crash log (e.g. `adb logcat`
   output captured around the crash) to make any further progress; guessing
   again without one risks repeating the last two rounds' pattern.
-- **The actual "mirrored"/orientation issue on a complex glTF - still not
-  found.** Ruled out so far, with real evidence: decimation (only ever
-  drops whole triangles, never touches a kept one's own data), node
-  transforms (the actual file's root node has no translation/rotation/scale
-  at all - confirmed from its own scene-graph JSON dump, so both rounds of
-  node-transform work were correctly a no-op here), and this decoder's
-  quaternion/matrix composition math (independently re-derived, matches).
-  A *different*, now-confirmed-and-fixed bug (39 materials/primitives all
-  rendered with material 0's texture - see `docs/status.md`'s "Real
-  diagnosis: 39 materials/primitives" entry) explained "patchy and wrong"
-  textures, but not the geometry orientation itself, which the user
-  separately confirmed is real: "everything went down into the ground
-  instead of up into the sky (although the model is actually on its
-  side)". No axis-swap/handedness-conversion code exists anywhere in this
-  decoder or the app's rendering pipeline - and this app's own camera
-  (`orbit_camera.dart`) and documented backend convention (`sketch/
-  view_transform.dart`) both already treat Y as up, matching glTF's own
-  spec exactly - so a simple up-axis mismatch doesn't obviously explain it
-  either. Sent the user a script to pull each POSITION accessor's own
-  spec-mandated bounding box (min/max, no vertex bytes needed) to find the
-  file's true "up" axis directly (smallest range) rather than guess a
-  fourth time. Not yet resolved.
+- **Mesh viewer Up-axis toggle only handles a Y/Z mismatch, not an
+  arbitrary one.** Resolved for the real case that motivated it - a
+  Blender export that skipped its "+Y Up" conversion, leaving the file's
+  real "up" in Z instead of the glTF-spec-mandated Y (see `docs/status.md`'s
+  "Root cause found: the file's own data isn't Y-up" entry) - via a new
+  manual `MeshUpAxis` (`y`/`z`) View-menu toggle, since there's no reliable
+  way to auto-detect this from the file alone. Not handled: a file with a
+  totally different/arbitrary axis convention (e.g. X-up, or a non-90-degree
+  misalignment) would need a more general fix than a simple Y/Z choice -
+  not attempted, since no real file needing it has come up yet.
+- **Mesh viewer decimation triangle-budget and default Up-axis settings are
+  global, not per-device-profile.** `MeshViewerPreferences` (new this
+  session) is a single flat set of values, not a saved list of profiles a
+  user could switch between (e.g. "this phone" vs "that tablet") - fine for
+  a single device, would need real design work to extend to multiple.
+  Not requested, not attempted.

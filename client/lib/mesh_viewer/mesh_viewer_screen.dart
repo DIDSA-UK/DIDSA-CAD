@@ -24,6 +24,7 @@ import '../viewport3d/scene_preferences.dart';
 import '../viewport3d/triad.dart';
 import '../viewport3d/view_preferences.dart';
 import 'mesh_data.dart';
+import 'mesh_viewer_preferences.dart';
 import 'mesh_viewer_render.dart';
 
 class MeshViewerScreen extends StatefulWidget {
@@ -38,13 +39,15 @@ enum _LoadStage { idle, decoding, buildingMaterial, ready }
 class _DecodeRequest {
   final Uint8List bytes;
   final String extension;
-  const _DecodeRequest(this.bytes, this.extension);
+  final int maxTriangles;
+  const _DecodeRequest(this.bytes, this.extension, this.maxTriangles);
 }
 
 /// Runs off the main isolate via [compute] - decode alone can be a
 /// multi-second, main-thread-blocking operation for a large photogrammetry
-/// file. `maxTriangles: kMaxViewerTriangles` decimates *during* decode (see
-/// `mesh_data.dart`'s own doc comment on `decodeStl`) rather than fully
+/// file. `maxTriangles` (from [MeshViewerPreferences], a user-adjustable
+/// setting - see that class's own doc comment) decimates *during* decode
+/// (see `mesh_data.dart`'s own doc comment on `decodeStl`) rather than fully
 /// decoding then shrinking afterward - a real on-device crash-to-home-screen
 /// on a very large `.glb` confirmed the old "decode everything, decimate
 /// after" approach could exhaust memory before decimation ever got a chance
@@ -52,20 +55,50 @@ class _DecodeRequest {
 /// isolate boundary either way.
 (DecodedMesh mesh, int originalTriangleCount) _decodeAndDecimate(_DecodeRequest request) {
   final mesh = switch (request.extension) {
-    'stl' => decodeStl(request.bytes, maxTriangles: kMaxViewerTriangles),
-    'obj' => decodeObj(String.fromCharCodes(request.bytes), maxTriangles: kMaxViewerTriangles),
-    'gltf' || 'glb' => decodeGltf(request.bytes, maxTriangles: kMaxViewerTriangles),
+    'stl' => decodeStl(request.bytes, maxTriangles: request.maxTriangles),
+    'obj' => decodeObj(String.fromCharCodes(request.bytes), maxTriangles: request.maxTriangles),
+    'gltf' || 'glb' => decodeGltf(request.bytes, maxTriangles: request.maxTriangles),
     _ => throw MeshImportError('Unsupported file extension: ${request.extension}'),
   };
   return (mesh, mesh.sourceTriangleCount);
 }
 
+/// Runs [applyUpAxis] off the main isolate via [compute] too - a
+/// photogrammetry-scale mesh can still have millions of vertices even after
+/// decimation, and this needs to re-run every time the View menu's "Up
+/// axis" toggle changes (not just once at load), so it can't assume it's
+/// cheap enough for the main thread. Takes a record (rather than
+/// [applyUpAxis]'s own two positional parameters) since [compute] only
+/// passes a single argument to its isolate entry point.
+DecodedMesh _applyUpAxisIsolate((DecodedMesh, MeshUpAxis) args) => applyUpAxis(args.$1, args.$2);
+
 class _MeshViewerScreenState extends State<MeshViewerScreen> {
   _LoadStage _stage = _LoadStage.idle;
   String? _error;
+
+  /// The raw decode result, exactly as [decodeStl]/[decodeObj]/[decodeGltf]
+  /// produced it - never mutated. [_mesh] (below) is always derived from
+  /// this by applying [_upAxis], so toggling the View menu's "Up axis"
+  /// choice can re-derive a fresh [_mesh] without re-picking/re-decoding the
+  /// file.
+  DecodedMesh? _rawMesh;
+
+  /// [_rawMesh] with [_upAxis] applied - what's actually rendered/queried
+  /// for triangle counts and material info (unaffected by axis choice,
+  /// carried straight through by [applyUpAxis]).
   DecodedMesh? _mesh;
   int? _originalTriangleCount;
   String? _fileName;
+
+  /// View menu's "Up axis" toggle - see `mesh_data.dart`'s own doc comment
+  /// on [MeshUpAxis]/[applyUpAxis] for why this needs to be a manual
+  /// per-file choice. Seeded from [MeshViewerPreferences.upAxis] (the
+  /// device/pipeline-wide default, set from the mesh viewer settings
+  /// screen) in [_loadScenePrefs], and itself written back there on every
+  /// change - so the last file you corrected becomes the new default for
+  /// the next one, the same "live change also persists" convention
+  /// [ScenePreferences]'s own sliders already use.
+  MeshUpAxis _upAxis = MeshViewerPreferences.defaultUpAxis;
 
   /// Scene/material appearance controls - shared with the main Part viewport
   /// via [ViewPreferences]/[ScenePreferences] (see `scene_preferences.dart`'s
@@ -98,13 +131,38 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   Future<void> _loadScenePrefs() async {
     await ViewPreferences.load();
     await ScenePreferences.load();
+    await MeshViewerPreferences.load();
     if (!mounted) return;
     setState(() {
       _bodyColourHex = ViewPreferences.bodyColourHex;
       _roughness = ScenePreferences.roughness;
       _lightIntensity = ScenePreferences.lightIntensity;
       _emissiveIntensity = ScenePreferences.emissiveIntensity;
+      _upAxis = MeshViewerPreferences.upAxis;
     });
+  }
+
+  /// [applyUpAxis]'s async, off-main-isolate wrapper - shared by both
+  /// [_pickAndLoad] (applied once, right after decode) and
+  /// [_onUpAxisChanged] (re-applied to the same [_rawMesh] whenever the
+  /// View menu's toggle changes, with no need to re-pick/re-decode the
+  /// file).
+  Future<DecodedMesh> _applyUpAxisTo(DecodedMesh rawMesh) => compute(_applyUpAxisIsolate, (rawMesh, _upAxis));
+
+  /// View menu's "Up axis" toggle - see `mesh_data.dart`'s own doc comment
+  /// on [MeshUpAxis] for the real-world bug this exists to correct. Rebuilds
+  /// [_mesh] from the unchanged [_rawMesh] (no re-decode needed) and lets
+  /// `_MeshViewerViewport` notice the new [DecodedMesh] instance and rebuild
+  /// its geometry accordingly - the existing [_materials] stay as they are,
+  /// since a texture doesn't depend on vertex orientation.
+  Future<void> _onUpAxisChanged(MeshUpAxis axis) async {
+    setState(() => _upAxis = axis);
+    await MeshViewerPreferences.setUpAxis(axis);
+    final rawMesh = _rawMesh;
+    if (rawMesh == null) return;
+    final corrected = await _applyUpAxisTo(rawMesh);
+    if (!mounted || _rawMesh != rawMesh) return;
+    setState(() => _mesh = corrected);
   }
 
   /// Whether `_materials[index]` has its own base-color texture - a real
@@ -207,17 +265,21 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     setState(() {
       _stage = _LoadStage.decoding;
       _error = null;
+      _rawMesh = null;
       _mesh = null;
       _fileName = file.name;
     });
 
     try {
-      final (decoded, originalTriangleCount) =
-          await compute(_decodeAndDecimate, _DecodeRequest(file.bytes!, extension));
+      final (decoded, originalTriangleCount) = await compute(
+        _decodeAndDecimate,
+        _DecodeRequest(file.bytes!, extension, MeshViewerPreferences.maxTriangles),
+      );
+      final corrected = await _applyUpAxisTo(decoded);
       if (!mounted) return;
       setState(() => _stage = _LoadStage.buildingMaterial);
       final materials = await buildMeshViewerMaterials(
-        decoded,
+        corrected,
         baseColourHex: _bodyColourHex,
         roughness: _roughness,
         emissiveIntensity: _emissiveIntensity,
@@ -225,7 +287,8 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
       );
       if (!mounted) return;
       setState(() {
-        _mesh = decoded;
+        _rawMesh = decoded;
+        _mesh = corrected;
         _originalTriangleCount = originalTriangleCount;
         _stage = _LoadStage.ready;
         _materials = materials;
@@ -270,8 +333,9 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
               ),
             ],
           ),
-          // View > Scene, Facets, Mesh - a full ExpansionTile-based View menu
-          // (mirroring PartToolbar's) would be overkill for this few entries.
+          // View > Scene, Facets, Mesh, Up axis - a full ExpansionTile-based
+          // View menu (mirroring PartToolbar's) would be overkill for this
+          // few entries.
           PopupMenuButton<String>(
             tooltip: 'View',
             icon: const Icon(Icons.visibility_outlined),
@@ -285,6 +349,12 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                   break;
                 case 'wireframe':
                   setState(() => _showWireframe = !_showWireframe);
+                  break;
+                case 'up-axis-y':
+                  _onUpAxisChanged(MeshUpAxis.y);
+                  break;
+                case 'up-axis-z':
+                  _onUpAxisChanged(MeshUpAxis.z);
                   break;
               }
             },
@@ -307,6 +377,22 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                   enabled: wireframeAvailable,
                   checked: _showWireframe && wireframeAvailable,
                   child: Text(wireframeAvailable ? 'Mesh' : 'Mesh (too many triangles)'),
+                ),
+                const PopupMenuDivider(),
+                // Some real-world files (a Blender export that skipped the
+                // "+Y Up" axis conversion) aren't actually Y-up despite
+                // claiming to be - see `mesh_data.dart`'s own doc comment on
+                // `MeshUpAxis`/`applyUpAxis` for why this has to be a manual
+                // choice rather than something auto-detected.
+                CheckedPopupMenuItem(
+                  value: 'up-axis-y',
+                  checked: _upAxis == MeshUpAxis.y,
+                  child: const Text('Up axis: Y (default)'),
+                ),
+                CheckedPopupMenuItem(
+                  value: 'up-axis-z',
+                  checked: _upAxis == MeshUpAxis.z,
+                  child: const Text('Up axis: Z'),
                 ),
               ];
             },
@@ -527,6 +613,39 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     if (widget.showFacets != oldWidget.showFacets || widget.showWireframe != oldWidget.showWireframe) {
       setState(_syncFacetsAndWireframe);
     }
+    // A different DecodedMesh instance - the View menu's "Up axis" toggle
+    // re-derived a new one from the same raw decode (see
+    // `mesh_viewer_screen.dart`'s own `_onUpAxisChanged`) - needs all-new
+    // geometry Nodes built from it; [widget.materials] stays as-is (a
+    // texture doesn't depend on vertex orientation), so this skips redoing
+    // that expensive step.
+    if (_scene != null && !identical(widget.mesh, oldWidget.mesh)) {
+      _rebuildGeometryForNewMesh();
+    }
+  }
+
+  void _rebuildGeometryForNewMesh() {
+    final scene = _scene;
+    if (scene == null) return;
+    setState(() {
+      if (_facesInScene) {
+        for (final node in _faceNodes) {
+          scene.remove(node);
+        }
+      }
+      final wireframeNode = _wireframeNode;
+      if (_wireframeInScene && wireframeNode != null) {
+        scene.remove(wireframeNode);
+      }
+      _faceNodes = buildMeshViewerNodes(widget.mesh, widget.materials);
+      _wireframeNode = null;
+      _facesInScene = false;
+      _wireframeInScene = false;
+      _syncFacetsAndWireframe();
+      final bounds = _boundsOf(widget.mesh);
+      _camera.setTarget(bounds.center);
+      _camera.setZoomBoundsForRadius(bounds.radius);
+    });
   }
 
   ({vm.Vector3 center, double radius}) _boundsOf(DecodedMesh mesh) {

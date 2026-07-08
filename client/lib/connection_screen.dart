@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
+import 'mesh_viewer/mesh_viewer_settings_screen.dart';
 import 'viewport3d/part_screen.dart';
 
 /// Stage 18's splash/connection screen - shown on cold launch before
@@ -196,15 +197,27 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   // PartScreen underneath in that case).
                   if (!widget.isSettingsRevisit) ...[
                     const SizedBox(height: 24),
-                    TextButton.icon(
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const MeshViewerScreen()),
-                      ),
-                      icon: const Icon(Icons.view_in_ar_outlined, color: Colors.white70),
-                      label: const Text(
-                        'View a mesh file (no server needed)',
-                        style: TextStyle(color: Colors.white70),
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        TextButton.icon(
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const MeshViewerScreen()),
+                          ),
+                          icon: const Icon(Icons.view_in_ar_outlined, color: Colors.white70),
+                          label: const Text(
+                            'View a mesh file (no server needed)',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Mesh viewer settings',
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const MeshViewerSettingsScreen()),
+                          ),
+                          icon: const Icon(Icons.settings_outlined, color: Colors.white70),
+                        ),
+                      ],
                     ),
                   ],
                 ],

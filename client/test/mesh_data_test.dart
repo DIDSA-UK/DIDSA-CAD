@@ -714,6 +714,59 @@ void main() {
     });
   });
 
+  group('applyUpAxis', () {
+    DecodedMesh meshWithOneVertex(double x, double y, double z) => DecodedMesh(
+          positions: Float32List.fromList([x, y, z, x, y, z, x, y, z]),
+          normals: Float32List.fromList([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+          uvs: Float32List(6),
+        );
+
+    test('MeshUpAxis.y is a no-op, returning the same instance', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      expect(identical(applyUpAxis(mesh, MeshUpAxis.y), mesh), isTrue);
+    });
+
+    test('MeshUpAxis.z rotates (x, y, z) to (x, z, -y) for positions and normals', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      final corrected = applyUpAxis(mesh, MeshUpAxis.z);
+      expect(corrected.positions.sublist(0, 3), [1.0, 3.0, -2.0]);
+      // The fixture's normal (0, 1, 0) rotates the same way as a position -
+      // this is a pure rotation (determinant +1), so normals transform
+      // identically to positions, unlike a general affine transform.
+      expect(corrected.normals.sublist(0, 3), [0.0, 0.0, -1.0]);
+    });
+
+    test('MeshUpAxis.z is a proper rotation, not a reflection - applying it four times returns to the original', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      var current = mesh;
+      for (var i = 0; i < 4; i++) {
+        current = applyUpAxis(current, MeshUpAxis.z);
+      }
+      expect(current.positions.sublist(0, 3)[0], closeTo(1.0, 1e-9));
+      expect(current.positions.sublist(0, 3)[1], closeTo(2.0, 1e-9));
+      expect(current.positions.sublist(0, 3)[2], closeTo(3.0, 1e-9));
+    });
+
+    test('preserves materialGroups/textureBytes/sourceTriangleCount unchanged', () {
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([1, 2, 3, 1, 2, 3, 1, 2, 3]),
+        normals: Float32List.fromList([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+        uvs: Float32List(6),
+        textureBytes: Uint8List.fromList([1, 2, 3]),
+        textureMimeType: 'image/png',
+        materialGroups: const [
+          MeshMaterialGroup(startTriangle: 0, triangleCount: 1, textureBytes: null, textureMimeType: null),
+        ],
+        sourceTriangleCount: 5,
+      );
+      final corrected = applyUpAxis(mesh, MeshUpAxis.z);
+      expect(corrected.textureBytes, mesh.textureBytes);
+      expect(corrected.textureMimeType, mesh.textureMimeType);
+      expect(corrected.materialGroups, mesh.materialGroups);
+      expect(corrected.sourceTriangleCount, 5);
+    });
+  });
+
   group('decimateToTriangleBudget', () {
     DecodedMesh meshWithTriangles(int count) => DecodedMesh(
           positions: Float32List(count * 9),

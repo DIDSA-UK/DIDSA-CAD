@@ -1054,3 +1054,62 @@ DecodedMesh decimateToTriangleBudget(DecodedMesh mesh, int maxTriangles) {
     sourceTriangleCount: mesh.sourceTriangleCount,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Up-axis correction
+// ---------------------------------------------------------------------------
+
+/// Which axis this decoder should treat as "up" when building a mesh for
+/// display - see [applyUpAxis]'s own doc comment for why this needs to be a
+/// user choice rather than something auto-detected.
+enum MeshUpAxis { y, z }
+
+/// A real Blender-exported glTF was found rendering "on its side"/"inside
+/// out" (a wide, thin property scan appeared thin in *depth* rather than
+/// *height*) despite this decoder correctly following the glTF spec (Y-up) -
+/// this decoder's node-transform and decimation logic were independently
+/// re-checked and ruled out (see `docs/status.md`'s own investigation).
+/// The real cause: the file's own data is not actually Y-up, most likely
+/// because Blender's "+Y Up" export conversion was skipped (a real,
+/// user-facing option in Blender's glTF exporter, off meaning "export raw
+/// Blender-native Z-up coordinates as-is") - Blender's own viewport still
+/// shows such a file "correctly" only because it's a self-consistent round
+/// trip through the same tool, not because the file is actually spec-
+/// compliant. There is no reliable way to detect this from the file alone
+/// (a correctly Y-up file and a mislabeled Z-up file are structurally
+/// identical glTF), so this is a manual, user-facing choice instead.
+///
+/// [MeshUpAxis.y] is a no-op (returns [mesh] unchanged) - this decoder
+/// already assumes Y-up per spec, so "the file's data is already correct"
+/// needs no correction. [MeshUpAxis.z] applies `(x, y, z) -> (x, z, -y)` -
+/// the same axis permutation Blender's own exporter uses to convert its
+/// native Z-up scene into glTF's Y-up convention, applied here a second
+/// time for a file that skipped it once. Deliberately a proper rotation
+/// (determinant +1: this is a 90-degree rotation about the X axis), not a
+/// bare axis swap (`(x, y, z) -> (x, z, y)`, determinant -1) - a bare swap
+/// would "fix" the up-axis at the cost of introducing a genuine mirror
+/// reflection, reproducing a different version of the exact bug this
+/// exists to correct.
+DecodedMesh applyUpAxis(DecodedMesh mesh, MeshUpAxis axis) {
+  if (axis == MeshUpAxis.y) return mesh;
+
+  Float32List rotate(Float32List src) {
+    final out = Float32List(src.length);
+    for (var i = 0; i + 2 < src.length; i += 3) {
+      out[i] = src[i];
+      out[i + 1] = src[i + 2];
+      out[i + 2] = -src[i + 1];
+    }
+    return out;
+  }
+
+  return DecodedMesh(
+    positions: rotate(mesh.positions),
+    normals: rotate(mesh.normals),
+    uvs: mesh.uvs,
+    textureBytes: mesh.textureBytes,
+    textureMimeType: mesh.textureMimeType,
+    materialGroups: mesh.materialGroups,
+    sourceTriangleCount: mesh.sourceTriangleCount,
+  );
+}

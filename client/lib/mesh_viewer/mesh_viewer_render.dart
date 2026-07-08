@@ -61,31 +61,26 @@ const int _kMaxVerticesPerBatch = 65535;
 /// `mesh_data.dart`'s `DecodedMesh` doc comment).
 const int _kMaxTrianglesPerBatch = _kMaxVerticesPerBatch ~/ 3;
 
-/// Target triangle ceiling for the decimated view - tuned for a high-end
-/// 2023-class Android flagship (Snapdragon 8 Gen 2 / Adreno 740, the
-/// originally-specified target device), not a lower/generic mobile floor.
-/// This project has no on-device Flutter test capability in its current
-/// sandbox, so this number is a starting point for real-device tuning, not a
-/// benchmarked result - raise or lower it once someone can actually watch
-/// frame time on the target hardware.
-const int kMaxViewerTriangles = 3000000;
-
 /// Triangle ceiling for the "Mesh" (wireframe) View toggle - deliberately
-/// far below [kMaxViewerTriangles]. Unlike the real Part viewport's edge
-/// overlay (a Body's own, comparatively small, number of true OCCT edge
-/// polylines - see `mesh_geometry.dart`'s `buildMeshEdgesNode`), an
-/// arbitrary imported mesh has no separate edge data at all: the only way
-/// to draw one is every triangle's 3 edges, undeduped (a shared edge
-/// between two adjacent triangles is simply drawn twice - harmless
-/// overdraw, cheaper than a hash-based dedup pass for a cosmetic toggle).
-/// At photogrammetry scale (millions of triangles) that's tens of millions
-/// of individual line primitives - not something this viewer's target
-/// hardware (see [kMaxViewerTriangles]'s own doc comment) can build or
-/// render without stalling, so [buildMeshViewerWireframeNode] simply isn't
-/// called above this ceiling (see `mesh_viewer_screen.dart`'s own View menu,
-/// which disables the toggle instead of silently doing nothing). A starting
-/// point, not a benchmarked result - same standing caveat as every other
-/// tunable in this file.
+/// far below `MeshViewerPreferences.maxTriangles` (the user-adjustable
+/// overall decimation target - see that class's own doc comment; this used
+/// to be a fixed `kMaxViewerTriangles` constant here before that setting
+/// existed). Unlike the real Part viewport's edge overlay (a Body's own,
+/// comparatively small, number of true OCCT edge polylines - see
+/// `mesh_geometry.dart`'s `buildMeshEdgesNode`), an arbitrary imported mesh
+/// has no separate edge data at all: the only way to draw one is every
+/// triangle's 3 edges, undeduped (a shared edge between two adjacent
+/// triangles is simply drawn twice - harmless overdraw, cheaper than a
+/// hash-based dedup pass for a cosmetic toggle). At photogrammetry scale
+/// (millions of triangles) that's tens of millions of individual line
+/// primitives - not something this viewer's target hardware (tuned for a
+/// high-end 2023-class Android flagship - Snapdragon 8 Gen 2 / Adreno 740 -
+/// not a lower/generic mobile floor; a starting point for real-device
+/// tuning, not a benchmarked result, same as every other tunable in this
+/// file) can build or render without stalling, so
+/// [buildMeshViewerWireframeNode] simply isn't called above this ceiling
+/// (see `mesh_viewer_screen.dart`'s own View menu, which disables the
+/// toggle instead of silently doing nothing).
 const int kMaxWireframeTriangles = 200000;
 
 /// Builds a wireframe overlay [Node] from [mesh]'s triangle soup - every
@@ -111,8 +106,8 @@ Node buildMeshViewerWireframeNode(DecodedMesh mesh, {vm.Vector4? color}) {
 }
 
 /// Longest edge (px) a decoded texture is downsampled to before upload -
-/// same target-device reasoning as [kMaxViewerTriangles]. Downsampling
-/// happens *during* decode (see [decodeTextureImage]'s use of
+/// same target-device reasoning as `MeshViewerPreferences.maxTriangles`.
+/// Downsampling happens *during* decode (see [decodeTextureImage]'s use of
 /// `ui.ImageDescriptor.instantiateCodec`), so the full-resolution source
 /// image is never held in memory even momentarily.
 const int kMaxTextureDimension = 4096;
@@ -297,7 +292,7 @@ List<Node> buildMeshViewerNodes(DecodedMesh mesh, List<PhysicallyBasedMaterial> 
 /// file. Disabling culling entirely is the robust fix: every triangle
 /// renders from both sides regardless of the source file's own winding
 /// correctness, at a modest fill-rate cost this viewer's target hardware
-/// (see `kMaxViewerTriangles`'s own doc comment) can afford.
+/// (see `MeshViewerPreferences.maxTriangles`'s own doc comment) can afford.
 Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
   DecodedMesh mesh, {
   required String baseColourHex,
