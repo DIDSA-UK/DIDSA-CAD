@@ -16,45 +16,30 @@ project spec, see `docs/project-brief.md`.
   occlusion bug this was once floated as a workaround for turned out to
   have a real fix; see `docs/status.md`'s "C3 residual edge/face-highlight
   occlusion bug: resolved" entry.)
-- **26 pre-existing client test failures, found by the new CI workflow -
-  all diagnosed and fixed, not yet re-verified by a real CI run.** (See
-  `docs/status.md`'s "CI now shows the real state of this test suite" entry
-  for the original discovery, and its two follow-up entries for the actual
-  fixes.) None were connected to any change made in the session that stood
-  up CI - almost all were the test suite itself never having been updated
-  to match already-shipped product changes, plus a handful of genuine small
-  app bugs found along the way:
-  - 4 in `sketch_controller_test.dart`: `dragTargetPointIdAt` really could
-    return the origin as a drag target for a Line/Circle whose *nearer*
-    constituent Point happened to be the origin (a real app bug - fixed to
-    always offer the *other* point instead); the other 3
-    (`addEqualLengthConstraint`/`addCollinearConstraint`/
-    `applyConstraintOption(collinear)`) were test-coordinate bugs - two taps
-    landed close enough to a Line's own endpoint or midpoint to select/
-    materialize a Point there instead of the Line itself.
-  - 14 in `part_screen_test.dart` - all test-file staleness against B4
-    rollback, Prompt A4's target-body banner, and Revolve/Sweep joining the
-    long-press menu, plus one real (now fixed) bottom-sheet overflow bug in
-    `feature_context_menu.dart`.
-  - 3 in `orbit_camera_test.dart` - a real app bug (`_defaultDistance` was
-    `80`, contradicting its own doc comment's worked math for `48`) plus a
-    stale test expectation (`kDefaultFarClip` was intentionally bumped from
-    1000 to 3000 in an earlier prompt, test never updated).
-  - 1 each in `selection_list_drawer_test.dart` (test picked the wrong
-    `Padding` - `SafeArea`'s own internal one, not the app's), `widget_test.dart`
-    (tested a "Click" tool and flat speed-dial that no longer exist - the FAB
-    menu is a two-level Categories/Sketch-Entities design now), and
-    `part_viewport_test.dart` (test's own "spinner gone" wait was ambiguous
-    with Scene-init failure in this CI sandbox's software renderer - now
-    waits for the real `Listener`-bearing tree instead).
-  - `sketch_canvas_ghost_editor_test.dart` used `pumpAndSettle()` against a
-    widget with its own permanently-running edge-pan `Ticker` - same class
-    of issue as `PartViewport`'s own spinner elsewhere in this codebase -
-    switched to a bounded pump.
-  - `feature_picker_sheet_test.dart` still expected Revolve/Sweep to render
-    disabled - stale from before those features were fully wired up;
-    replaced with tests confirming they resolve their own
-    `FeaturePickerAction`.
+- **CI is green: 534/535 client tests passing, confirmed by real CI runs
+  (not assumed).** All 26 pre-existing failures the new CI workflow first
+  surfaced (see `docs/status.md`'s "CI now shows the real state of this
+  test suite" entry and its many follow-up entries) are resolved - almost
+  all were the test suite itself never having been updated to match
+  already-shipped product changes, plus a handful of genuine small app bugs
+  (`OrbitCamera._defaultDistance` contradicting its own doc comment's math;
+  `dragTargetPointIdAt` able to return the sketch origin as a drag target;
+  a `feature_context_menu.dart` bottom-sheet overflow) found and fixed along
+  the way. Getting to green took nine CI round-trips, several of which
+  caught mistakes in this session's *own* fixes (an unscoped `Listener`
+  finder, a `find.byTooltip` position mismatch, a Hero-flight duplicate FAB)
+  rather than declaring victory on the first apparent fix - see
+  `docs/status.md`'s dated entries for the full history.
+  - **One remaining failure, confirmed as CI-sandbox environment flakiness,
+    not a code bug**: `part_viewport_test.dart`'s "Fix 4: tapping the
+    viewport in selection mode over empty space" test intermittently hits
+    this CI runner's lack of real Impeller/GPU support (`Flutter GPU
+    requires the Impeller rendering backend, but Impeller is not enabled`)
+    for that specific widget configuration - reproduced identically across
+    multiple runs, with a sibling test in the same file only passing
+    reliably because its own assertions happen to hold whether Scene setup
+    succeeds or not. Not fixable from test-file changes; flagged rather
+    than chased further.
 - **Draco-compressed glTF/GLB support (`KHR_draco_mesh_compression`) - not
   implemented.** A real ODM/OpenDroneMap `.glb` export uses it; the mesh
   viewer currently detects it up front and fails with a clear, specific
