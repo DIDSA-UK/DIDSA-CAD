@@ -40,6 +40,9 @@ project spec, see `docs/project-brief.md`.
     reliably because its own assertions happen to hold whether Scene setup
     succeeds or not. Not fixable from test-file changes; flagged rather
     than chased further.
+  - Everything learned along the way about writing/fixing Flutter widget
+    tests correctly (not just this project's specific bugs) is written up
+    as a standalone reference in `docs/flutter-widget-test-lessons.md`.
 - **Draco-compressed glTF/GLB support (`KHR_draco_mesh_compression`) - not
   implemented.** A real ODM/OpenDroneMap `.glb` export uses it; the mesh
   viewer currently detects it up front and fails with a clear, specific
