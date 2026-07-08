@@ -51,20 +51,18 @@ project spec, see `docs/project-brief.md`.
   scale/reflection when decomposing an arbitrary matrix is real
   complexity, not attempted here). Not decided whether it's worth building
   without a real file that needs it.
-- **Larger Blender-exported `.glb` still crashes** - reported multiple times
-  now (after the round-1 node-transform fix, again after round 2's
-  recursive-walk rewrite, and most recently after the mirroring
-  investigation), each time with no new diagnostic information ("still
-  crashes" with no visible in-app error). A plausible, concrete mechanism
-  was found and mitigated - `buildMeshViewerMaterials` had no total budget
-  on texture memory across a file's materials, only a per-texture cap (see
-  `docs/status.md`'s "Texture-memory budget for the mesh viewer" entry) -
-  but this was **not confirmed against the actual crashing file** (too
-  large for the user to upload directly), so it's a real, previously-
-  uncapped gap rather than a proven fix for this specific crash. If it
-  still crashes after this, an actual crash log (e.g. `adb logcat` output
-  captured around the crash) is the only way to make further progress
-  without guessing again.
+- **Larger Blender-exported `.glb` crash - root cause confirmed and fixed,
+  not yet re-tested on-device.** A real `adb logcat` capture (see
+  `docs/status.md`'s "The real, confirmed cause of the crash" entry) showed
+  a genuine `java.lang.OutOfMemoryError` inside `file_picker`'s own
+  `MethodChannel` encoding of the picked file's bytes (`withData: true`
+  reads the whole file into a Java byte array and re-encodes it through a
+  `StandardMessageCodec` envelope, needing roughly double the file's size on
+  Android's small default Java heap) - not a texture or decode issue at
+  all, and not a native/GPU fault either. Fixed by reading the file via its
+  own path (`dart:io`) instead of requesting `PlatformFile.bytes`, so the
+  platform channel never carries the file's actual content. Needs the user
+  to confirm the same larger file now loads without crashing.
 - **Mesh viewer Up-axis toggle only handles a Y/Z mismatch, not an
   arbitrary one.** Resolved for the real case that motivated it - a
   Blender export that skipped its "+Y Up" conversion, leaving the file's

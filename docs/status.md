@@ -2221,3 +2221,29 @@ Separately from the mirroring work above, an earlier-reported crash (a larger Bl
 **Fix**: new `kMaxTotalTextureBytes` (512 MiB, a starting point for real-device tuning like every other tunable in this file, not a benchmarked result) and `_textureDimensionBudget(textureCount)`, which shrinks each texture's own `decodeTextureImage` `maxDimension` - down to a floor of `kMinTextureDimension` (256) - so that `textureCount * dimension^2 * 4 <= kMaxTotalTextureBytes` in total, rather than every material independently claiming up to `kMaxTextureDimension`. A file with few materials (the common case) is unaffected, since its per-material share of the budget already exceeds the individual cap. `buildMeshViewerMaterials` now computes this budget from the count of groups that actually carry a texture (an untextured group costs nothing, so it's excluded from the count rather than needlessly shrinking every other group's share) and threads it through `_buildMaterialForTexture`/`decodeTextureImage`'s existing `maxDimension` parameter - `buildMeshViewerMaterial`'s single-texture case is unaffected, always using the full per-texture cap.
 
 **Not yet confirmed against the actual crashing file** - unlike every other bug this session, this one wasn't diagnosed against real bytes: the file itself is too large for the user to upload directly, so this is a plausible, concretely-reasoned mechanism (and a real, previously-uncapped gap regardless of whether it's the exact cause of this specific crash) rather than a confirmed fix. `mesh_viewer_render.dart` is GPU-touching and can't run in a headless `flutter test` (per its own top-of-file doc comment), so this also has no automated test - needs on-device confirmation that the larger file now loads without crashing.
+
+## 2026-07-08 — The real, confirmed cause of the crash: `file_picker`'s `withData: true`, not textures at all
+
+The texture-memory theory above was a reasonable, concretely-argued guess, but a real `adb logcat` capture (the user's first attempt returned too many lines with a plain keyword grep - resolved by filtering at capture time with `adb logcat`'s own `tag:priority ... *:S` syntax instead of grepping after the fact, which cuts the buffer down to just the tags that matter before any post-processing) turned up the actual, unambiguous stack trace:
+
+```
+FATAL EXCEPTION: main
+Process: uk.snail_shell.didsa_cad_client, PID: 30468
+java.lang.OutOfMemoryError: Failed to allocate a 150384072 byte allocation with 50331648 free bytes and 110MB until OOM, target footprint 203383728, growth limit 268435456
+	at java.util.Arrays.copyOf(Arrays.java:4276)
+	at java.io.ByteArrayOutputStream.grow(ByteArrayOutputStream.java:120)
+	...
+	at io.flutter.plugin.common.StandardMessageCodec.writeValue(StandardMessageCodec.java:242)
+	...
+	at io.flutter.plugin.common.StandardMethodCodec.encodeSuccessEnvelope(StandardMethodCodec.java:61)
+	at io.flutter.plugin.common.MethodChannel$IncomingMethodCallHandler$1.success(MethodChannel.java:272)
+	at com.mr.flutter.plugin.filepicker.FilePickerPlugin$MethodResultWrapper$1.run(FilePickerPlugin.java:205)
+```
+
+This is a genuine, catchable-in-principle Java-level `OutOfMemoryError` on Android's default (and quite small, ~256 MiB) app heap - not a native/GPU-level fault at all, and it happens entirely inside the `file_picker` plugin, *before* any of this app's own Dart code (decode, textures, or otherwise) ever runs. `_pickAndLoad` (`mesh_viewer_screen.dart`) called `FilePicker.platform.pickFiles(type: FileType.any, withData: true)` - `withData: true` makes the plugin read the whole file into a Java byte array on the native Android side, then re-encode that entire array through a Flutter `MethodChannel` reply (`StandardMessageCodec.writeValue`, which grows a `ByteArrayOutputStream` by repeatedly doubling and copying it, per `Arrays.copyOf`) to hand it over to Dart as `PlatformFile.bytes`. For a large enough file, that transiently needs roughly *twice* the file's size on a heap capped at 256 MiB - the crash log's own numbers confirm it exactly: a 150 MiB allocation attempt with only ~48 MiB free and a ~256 MiB growth limit. The earlier texture-memory theory, while a real and worthwhile fix in its own right (a genuine, previously-uncapped gap - see the entry above), was not actually the cause of this specific crash: it never got the chance to run, since the crash happens while the file is still being handed from native code to Dart.
+
+**Fix**: `_pickAndLoad` no longer passes `withData: true` - it reads `PlatformFile.path` instead (file_picker copies content-provider URIs to a real cache file even without `withData`, so this is reliably non-null on the Android/iOS/desktop targets this app builds for - this project has no `web/` directory, so file_picker's web-only "path is always null" caveat doesn't apply here). `_DecodeRequest` now carries that `path` string (not pre-read bytes) into `_decodeAndDecimate`'s background `compute()` isolate, which reads the file itself via `File(path).readAsBytesSync()` - fine to do synchronously there since it's already off the main isolate. This means the file's actual bytes now cross into Dart via ordinary `dart:io` file access, never through a `MethodChannel`/`StandardMessageCodec` envelope and never bound by the small Android Java heap at all - the platform channel now only ever carries a short path string, regardless of how large the picked file is.
+
+**Also confirmed on-device this round**: the mesh-viewer Mirror toggle (see the "mesh viewer's own mirroring bug" entry above) - "that new feature is working and the model looks correct once mirrored."
+
+**Not yet re-tested on-device** - needs the user to try the same larger file again now that the actual cause (not the texture-memory theory) has been fixed; the texture-memory budget from the previous entry remains in place as a real, independent improvement regardless.

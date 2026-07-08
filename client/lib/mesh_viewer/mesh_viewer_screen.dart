@@ -8,8 +8,8 @@
 /// OCCT dependency at all - see `mesh_data.dart`'s own top-of-file doc
 /// comment for why that means it never needs the network round-trip (or its
 /// 15s timeout) in the first place.
+import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -37,10 +37,10 @@ class MeshViewerScreen extends StatefulWidget {
 enum _LoadStage { idle, decoding, buildingMaterial, ready }
 
 class _DecodeRequest {
-  final Uint8List bytes;
+  final String path;
   final String extension;
   final int maxTriangles;
-  const _DecodeRequest(this.bytes, this.extension, this.maxTriangles);
+  const _DecodeRequest(this.path, this.extension, this.maxTriangles);
 }
 
 /// Runs off the main isolate via [compute] - decode alone can be a
@@ -53,11 +53,31 @@ class _DecodeRequest {
 /// after" approach could exhaust memory before decimation ever got a chance
 /// to run. Only the already-bounded result ever has to cross back over the
 /// isolate boundary either way.
+///
+/// Reads [_DecodeRequest.path] itself (via [File.readAsBytesSync], fine
+/// here since this already runs off the main isolate) rather than taking
+/// pre-read bytes - a real on-device crash log confirmed the previous
+/// "pick with `withData: true`, pass the resulting bytes in" approach was
+/// the actual cause of a reported crash: `file_picker` reads the whole file
+/// into a Java byte array *and* re-encodes it through a Flutter
+/// `MethodChannel`'s `StandardMessageCodec` (a growable `ByteArrayOutputStream`
+/// that doubles its buffer as it copies the file's bytes into the platform-
+/// channel reply envelope) to hand it to Dart - for a large enough file, that
+/// briefly needs roughly *twice* the file's size on Android's default (and
+/// fairly small, ~256 MiB) Java heap, well before this app's own Dart-side
+/// code ever runs. The actual crash: `java.lang.OutOfMemoryError: Failed to
+/// allocate a 150384072 byte allocation ... growth limit 268435456` inside
+/// `StandardMessageCodec.writeValue` / `ByteArrayOutputStream.grow`, not
+/// anywhere in this app's own decode or texture code. Reading the file by
+/// its own path via `dart:io` instead avoids the platform channel (and the
+/// Java heap it's bound by) for the file's actual bytes entirely - the
+/// picker only ever hands over a short path string.
 (DecodedMesh mesh, int originalTriangleCount) _decodeAndDecimate(_DecodeRequest request) {
+  final bytes = File(request.path).readAsBytesSync();
   final mesh = switch (request.extension) {
-    'stl' => decodeStl(request.bytes, maxTriangles: request.maxTriangles),
-    'obj' => decodeObj(String.fromCharCodes(request.bytes), maxTriangles: request.maxTriangles),
-    'gltf' || 'glb' => decodeGltf(request.bytes, maxTriangles: request.maxTriangles),
+    'stl' => decodeStl(bytes, maxTriangles: request.maxTriangles),
+    'obj' => decodeObj(String.fromCharCodes(bytes), maxTriangles: request.maxTriangles),
+    'gltf' || 'glb' => decodeGltf(bytes, maxTriangles: request.maxTriangles),
     _ => throw MeshImportError('Unsupported file extension: ${request.extension}'),
   };
   return (mesh, mesh.sourceTriangleCount);
@@ -277,10 +297,28 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// already rejects an unsupported one with a clear `MeshImportError`, so
   /// this trades a slightly less curated OS picker dialog for actually being
   /// able to select the other three formats at all.
+  ///
+  /// Deliberately does *not* pass `withData: true` - a real on-device crash
+  /// log confirmed that reading the whole file into memory as
+  /// `PlatformFile.bytes` (which `file_picker` does by encoding it through a
+  /// Flutter `MethodChannel` reply, on Android's small default Java heap)
+  /// was the actual cause of a reported crash-to-home-screen on a large
+  /// file - see `_decodeAndDecimate`'s own doc comment for the exact
+  /// stack trace. `file.path` instead (file_picker copies content-provider
+  /// URIs to a real cache file even without `withData`, so this is reliably
+  /// non-null on the Android/iOS/desktop targets this app builds for - no
+  /// web target exists in this project) is read directly via `dart:io`
+  /// inside [_decodeAndDecimate]'s own background isolate, never crossing
+  /// the platform channel at all.
   Future<void> _pickAndLoad() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.any, withData: true);
-    if (result == null || result.files.single.bytes == null) return;
+    final result = await FilePicker.platform.pickFiles(type: FileType.any);
+    if (result == null) return;
     final file = result.files.single;
+    final path = file.path;
+    if (path == null) {
+      setState(() => _error = 'Could not access "${file.name}" - no local file path was returned.');
+      return;
+    }
     final extension = (file.extension ?? '').toLowerCase();
     if (!_supportedExtensions.contains(extension)) {
       setState(() => _error = 'Unsupported file type ".$extension" - pick an STL, OBJ, glTF, or GLB file.');
@@ -298,7 +336,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     try {
       final (decoded, originalTriangleCount) = await compute(
         _decodeAndDecimate,
-        _DecodeRequest(file.bytes!, extension, MeshViewerPreferences.maxTriangles),
+        _DecodeRequest(path, extension, MeshViewerPreferences.maxTriangles),
       );
       final corrected = await _applyCorrectionsTo(decoded);
       if (!mounted) return;
