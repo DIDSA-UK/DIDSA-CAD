@@ -81,9 +81,10 @@ def test_maps_correctly_on_the_xz_and_yz_planes_too():
     line_xz = sketch_xz.add_line(start_xz.id, length=5.0, angle=0.0)
     line_ref, point_ref = _line_and_point_refs(sketch_xz, line_xz, start_xz.id)
     resolved_xz = resolve_normal_to_line_at_point(line_ref, point_ref, sketch_basis_for_plane(Plane.XZ))
-    # XZ: local (x, y) -> world (x, 0, y) - a local-x-direction line's world
-    # direction is still along world X.
-    assert resolved_xz.normal == pytest.approx((1.0, 0.0, 0.0))
+    # XZ: local (x, y) -> world (-x, 0, y) - a local-x-direction line's world
+    # direction is along world -X (see `_PLANE_BASIS`'s own doc comment for
+    # why XZ's x_axis is negated).
+    assert resolved_xz.normal == pytest.approx((-1.0, 0.0, 0.0))
 
     sketch_yz = create_sketch(Plane.YZ)
     start_yz = sketch_yz.add_point(0.0, 0.0)

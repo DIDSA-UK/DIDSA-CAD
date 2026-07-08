@@ -34,6 +34,20 @@ class SketchPlaneBasis {
   /// this class's [fixed] factory reproduces the same world points the old
   /// bare-[ReferencePlaneKind] switch statements below used to, for every
   /// pre-C3 fixed-plane Sketch).
+  ///
+  /// XZ's `xAxis` is `(-1, 0, 0)`, not `(1, 0, 0)` - confirmed as a real bug,
+  /// not a pre-existing convention to preserve: `xAxis cross yAxis` must
+  /// equal `normal` for a right-handed basis, and only `(-1,0,0)` satisfies
+  /// that given `yAxis=(0,0,1)`/`normal=(0,1,0)` - `(1,0,0)` gave `xAxis
+  /// cross yAxis = (0,-1,0) = -normal`, a left-handed basis unique to this
+  /// one plane among the three. Every Sketch on the XZ plane was being built
+  /// with inverted chirality as a result - see
+  /// `backend/app/document/plane_geometry.py`'s own `_PLANE_BASIS` doc
+  /// comment for the full derivation and the on-device report that surfaced
+  /// it. `yAxis` was kept fixed deliberately: it means a Sketch's own local
+  /// +Y ("up" on the 2D sketch canvas) still maps to world +Z on this plane,
+  /// so the fix only flips the *horizontal* (local X) direction, not which
+  /// way "up" points.
   factory SketchPlaneBasis.fixed(ReferencePlaneKind plane) => switch (plane) {
         ReferencePlaneKind.xy => SketchPlaneBasis(
             origin: vm.Vector3.zero(),
@@ -43,7 +57,7 @@ class SketchPlaneBasis {
           ),
         ReferencePlaneKind.xz => SketchPlaneBasis(
             origin: vm.Vector3.zero(),
-            xAxis: vm.Vector3(1, 0, 0),
+            xAxis: vm.Vector3(-1, 0, 0),
             yAxis: vm.Vector3(0, 0, 1),
             normal: vm.Vector3(0, 1, 0),
           ),

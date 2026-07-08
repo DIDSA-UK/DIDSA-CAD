@@ -65,15 +65,24 @@ extension ReferencePlaneKindX on ReferencePlaneKind {
         ReferencePlaneKind.yz => const [1, 2],
       };
 
-  /// Stage 18's fixed per-plane tint, matching the conventional RGB-axis
-  /// colour coding used by Fusion 360/Blender/most CAD tools (XY="Top"=blue,
-  /// XZ="Front"=red, YZ="Right"=green) - a per-`ReferencePlaneKind` constant
-  /// rather than derived from [_zeroAxis], since that derivation would put
-  /// XZ/YZ on the opposite colors from the brief's explicit table.
+  /// Each plane's tint matches the colour of the axis it's normal to - the
+  /// same X=red/Y=green/Z=blue coding `triad.dart`'s `triadColorX`/`Y`/`Z`
+  /// already use everywhere else in this app, so a plane's colour directly
+  /// answers "which axis am I perpendicular to" at a glance: XY (normal Z)
+  /// is blue, YZ (normal X) is red, XZ (normal Y) is green.
+  ///
+  /// Stage 18 originally used a *different* table here (XY=blue, XZ=red,
+  /// YZ=green - a "Front"/"Right" named-view convention borrowed from
+  /// another tool's own scheme, not derived from [_zeroAxis]) - XZ and YZ
+  /// were on each other's axis-matching colour, which read as a genuine
+  /// axis mismatch once a user compared a plane's tint against the triad's
+  /// own (confirmed only for the sketch-basis chirality bug, not this - see
+  /// `docs/status.md`). Switched to the axis-matching scheme per explicit
+  /// request once flagged.
   vm.Vector3 get _baseColor => switch (this) {
         ReferencePlaneKind.xy => vm.Vector3(0x3A / 255, 0x7B / 255, 0xD5 / 255),
-        ReferencePlaneKind.xz => vm.Vector3(0xE8 / 255, 0x36 / 255, 0x4A / 255),
-        ReferencePlaneKind.yz => vm.Vector3(0x27 / 255, 0xAE / 255, 0x60 / 255),
+        ReferencePlaneKind.xz => vm.Vector3(0x27 / 255, 0xAE / 255, 0x60 / 255),
+        ReferencePlaneKind.yz => vm.Vector3(0xE8 / 255, 0x36 / 255, 0x4A / 255),
       };
 
   /// The translucent fill color for this plane's rectangle. [selected]

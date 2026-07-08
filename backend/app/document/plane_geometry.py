@@ -25,20 +25,30 @@ Vector3 = tuple[float, float, float]
 # own `sketchPointToWorld`, client/lib/viewport3d/sketch_geometry_3d.dart)
 # exactly: `origin + x * x_axis + y * y_axis` must reproduce the same
 # world point `_sketch_point_to_world(plane, x, y)` already returns for
-# every (x, y). Deliberately hand-written per plane rather than derived from
-# a `normal`-only formula (e.g. a generic cross-product) - hand-verification
-# shows no single such formula reproduces all three fixed planes' existing,
-# already-shipped conventions at once (XZ's own (x_axis, y_axis, normal)
-# triple is left-handed: `normal != x_axis cross y_axis` there, only for XZ -
-# an accident of history now baked into every already-created XZ Sketch, not
-# something to "fix" retroactively), so an explicit lookup table is the only
-# option that is both correct and unsurprising here.
+# every (x, y).
+#
+# XZ's `x_axis` is `(-1, 0, 0)`, not `(1, 0, 0)` - fixed after being flagged
+# as a real, confirmed bug (not "an accident of history" to leave alone, as
+# an earlier version of this comment claimed): `x_axis cross y_axis` must
+# equal `normal` for a right-handed basis, and with `y_axis=(0,0,1)`,
+# `normal=(0,1,0)`, only `x_axis=(-1,0,0)` satisfies that - `(1,0,0)` gives
+# `x_axis cross y_axis = (0,-1,0) = -normal`, a left-handed basis. Every
+# Sketch on the XZ plane was being built with inverted chirality as a
+# result (confirmed both by direct calculation here and by a user's own
+# on-device A/B test: a shape modelled in DIDSA-CAD and opened in Blender
+# read correctly there, but mirrored in DIDSA-CAD's own mesh viewer after a
+# round trip through this plane). `y_axis` (not `x_axis`) was kept as the
+# fix point deliberately: `y_axis=(0,0,1)` means a Sketch's own local +Y
+# ("up" on the 2D sketch canvas) still maps to world +Z, so this fix only
+# flips the *horizontal* (local X) direction on this one plane, not
+# vertical - the more surprising of the two possible one-axis-negation
+# fixes would have been flipping which way "up" points.
 _PLANE_BASIS: dict[Plane, ResolvedPlane] = {
     Plane.XY: ResolvedPlane(
         origin=(0.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0), x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 1.0, 0.0)
     ),
     Plane.XZ: ResolvedPlane(
-        origin=(0.0, 0.0, 0.0), normal=(0.0, 1.0, 0.0), x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 0.0, 1.0)
+        origin=(0.0, 0.0, 0.0), normal=(0.0, 1.0, 0.0), x_axis=(-1.0, 0.0, 0.0), y_axis=(0.0, 0.0, 1.0)
     ),
     Plane.YZ: ResolvedPlane(
         origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0), x_axis=(0.0, 1.0, 0.0), y_axis=(0.0, 0.0, 1.0)
@@ -164,17 +174,21 @@ def resolve_three_points(p0: Vector3, p1: Vector3, p2: Vector3) -> ResolvedPlane
     return ResolvedPlane(origin=p0, normal=normal, x_axis=x_axis, y_axis=y_axis)
 
 
-# Deliberately duplicates (does not import) app.document.extrude's own
-# sketch_point_to_world - that version returns an OCCT gp_Pnt, and importing
-# it would force this whole module to require OCCT at load time, defeating
-# the point of keeping NORMAL_TO_LINE_AT_POINT OCCT-free. Both must stay in
-# sync with each other and with the client's own sketchPointToWorld
-# (client/lib/viewport3d/sketch_geometry_3d.dart) - the same fixed XY/XZ/YZ
-# embedding used everywhere else in this project.
+# A pure, OCCT-free restatement of `_PLANE_BASIS`'s own `origin + x*x_axis +
+# y*y_axis` embedding, kept as a literal per-plane table rather than calling
+# `basis_point(sketch_basis_for_plane(plane), x, y)` for exactly the reason
+# the module docstring gives: OCCT-free callers here can't afford to import
+# anything that would pull OCCT in at load time. `app.document.extrude` no
+# longer keeps its own separate copy of this (it calls `basis_point_to_world`,
+# which goes through `sketch_basis_for_plane`/`basis_point` above directly) -
+# this one and the client's own `sketchPointToWorld`
+# (client/lib/viewport3d/sketch_geometry_3d.dart) are the two that must stay
+# in sync with `_PLANE_BASIS` by hand. XZ is `(-x, 0.0, y)`, not `(x, 0.0,
+# y)` - see `_PLANE_BASIS`'s own doc comment on why.
 def _sketch_point_to_world(plane: Plane, x: float, y: float) -> Vector3:
     return {
         Plane.XY: (x, y, 0.0),
-        Plane.XZ: (x, 0.0, y),
+        Plane.XZ: (-x, 0.0, y),
         Plane.YZ: (0.0, x, y),
     }[plane]
 

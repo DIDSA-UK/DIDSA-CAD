@@ -11,8 +11,12 @@ void main() {
       expect(sketchPointToWorld(SketchPlaneBasis.fixed(ReferencePlaneKind.xy), 3, 4), vm.Vector3(3, 4, 0));
     });
 
-    test('XZ maps local y onto world Z and zeroes Y', () {
-      expect(sketchPointToWorld(SketchPlaneBasis.fixed(ReferencePlaneKind.xz), 3, 4), vm.Vector3(3, 0, 4));
+    test('XZ maps local y onto world Z, negates local x onto world X, and zeroes Y', () {
+      // The x-negation is a real fix (see SketchPlaneBasis.fixed's own doc
+      // comment) - XZ's basis used to be left-handed, the only one of the
+      // three fixed planes that was, which built every XZ-plane Sketch with
+      // inverted chirality.
+      expect(sketchPointToWorld(SketchPlaneBasis.fixed(ReferencePlaneKind.xz), 3, 4), vm.Vector3(-3, 0, 4));
     });
 
     test('YZ maps local x onto world Y and zeroes X', () {
@@ -38,7 +42,7 @@ void main() {
 
       expect(geometry.lineSegments, hasLength(1));
       expect(geometry.lineSegments.single.$1, vm.Vector3(0, 0, 0));
-      expect(geometry.lineSegments.single.$2, vm.Vector3(10, 0, 0));
+      expect(geometry.lineSegments.single.$2, vm.Vector3(-10, 0, 0));
       expect(geometry.lineIds, ['l1']);
       expect(geometry.circlePolygons, isEmpty);
       expect(geometry.isEmpty, isFalse);
