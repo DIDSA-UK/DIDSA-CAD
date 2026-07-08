@@ -146,7 +146,14 @@ void main() {
           ),
         ),
       );
-      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      // A plain "spinner gone" wait is ambiguous here: PartViewport's build()
+      // also stops showing the spinner if Scene setup itself failed (no real
+      // Impeller/GPU backend in this CI sandbox sets `_error`, per its
+      // catchError handler), rendering a plain error Text with no Listener
+      // wired up at all - a tap would then silently hit nothing rather than
+      // ever reaching _onPointerDown/_onPointerEnd. Waiting for the actual
+      // Listener confirms the real interactive tree is what's being tapped.
+      await _pumpUntil(tester, () => find.byType(Listener).evaluate().isNotEmpty);
       await tester.pump();
 
       // Fix 4: a tap (no drag) directly on the viewport commits the current

@@ -167,10 +167,10 @@ void main() {
     final camera = OrbitCamera();
 
     camera.setZoomBoundsForRadius(10);
-    // farClip = max(1000, radius * 4) = max(1000, 40) = 1000 for a small body.
-    expect(camera.farClip, 1000);
-    expect(camera.nearClip, closeTo(0.1, 1e-9)); // farClip / 10000
-    expect(camera.minDistance, closeTo(0.2, 1e-9)); // nearClip * 2
+    // farClip = max(3000, radius * 4) = max(3000, 40) = 3000 for a small body.
+    expect(camera.farClip, 3000);
+    expect(camera.nearClip, closeTo(0.3, 1e-9)); // farClip / 10000
+    expect(camera.minDistance, closeTo(0.6, 1e-9)); // nearClip * 2
     expect(camera.maxDistance, 200); // radius * _maxDistanceRadiusFactor (20)
 
     // Shrinking the bounds below the camera's current distance (48) must

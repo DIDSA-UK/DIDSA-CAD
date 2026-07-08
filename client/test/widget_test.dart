@@ -61,22 +61,25 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
     await tester.pump();
 
-    // Click is its own persistent control, decoupled from the speed dial -
-    // it must be visible and usable even while the speed dial is collapsed.
-    expect(find.byTooltip('Click').hitTestable(), findsOneWidget);
-
-    // Collapsed: the main toggle FAB shows a "+", and the speed dial's own
-    // action FABs are zero-sized (still in the tree under the
-    // SizeTransition, but not tappable - hitTestable excludes them).
+    // Collapsed: only the main toggle FAB ("+") shows - the two-level
+    // Categories/Sketch Entities menu (SketchSpeedDial's own FabMenuState)
+    // has nothing else rendered until it's opened.
     expect(find.byIcon(Icons.add), findsOneWidget);
     expect(find.byTooltip('Line').hitTestable(), findsNothing);
     expect(find.byTooltip('Circle').hitTestable(), findsNothing);
 
     await tester.tap(find.byIcon(Icons.add));
-    await tester.pumpAndSettle();
+    await tester.pump();
 
-    // Still visible and usable now that the speed dial is expanded.
-    expect(find.byTooltip('Click').hitTestable(), findsOneWidget);
+    // First level: categories, not individual tools yet.
+    expect(find.byTooltip('Sketch Entities').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Dimensions').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Circle').hitTestable(), findsNothing);
+
+    await tester.tap(find.byTooltip('Sketch Entities').hitTestable());
+    await tester.pump();
+
+    // Second level: the individual tools, reached via Sketch Entities.
     expect(find.byTooltip('Line').hitTestable(), findsOneWidget);
     expect(find.byTooltip('Circle').hitTestable(), findsOneWidget);
     // No chain in progress yet, so there is nothing to Finish.

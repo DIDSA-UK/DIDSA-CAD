@@ -1016,6 +1016,12 @@ class SketchController extends ChangeNotifier {
         return hit.id;
       case SelectionKind.line:
         final line = lines[hit.id]!;
+        // The origin is never a valid drag target (see _entityAt's own
+        // exclusion for a direct hit) - a Line with the origin as one
+        // endpoint has only its other endpoint left to offer, regardless of
+        // which is nearer x/y.
+        if (line.startPointId == _originPointId) return line.endPointId;
+        if (line.endPointId == _originPointId) return line.startPointId;
         final start = points[line.startPointId]!;
         final end = points[line.endPointId]!;
         final distToStart = math.pow(x - start.x, 2) + math.pow(y - start.y, 2);
@@ -1023,6 +1029,9 @@ class SketchController extends ChangeNotifier {
         return distToStart <= distToEnd ? line.startPointId : line.endPointId;
       case SelectionKind.circle:
         final circle = circles[hit.id]!;
+        // Mirrors the Line case above - the origin is never offered.
+        if (circle.centerPointId == _originPointId) return circle.radiusPointId;
+        if (circle.radiusPointId == _originPointId) return circle.centerPointId;
         final center = points[circle.centerPointId]!;
         final radiusPoint = points[circle.radiusPointId]!;
         final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);

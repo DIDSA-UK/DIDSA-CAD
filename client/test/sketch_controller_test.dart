@@ -2491,7 +2491,11 @@ void main() {
     final lineIds = controller.lines.keys.toSet();
     controller.exitToSelectMode();
     await controller.handleCanvasTap(8, 0.1);
-    await controller.handleCanvasTap(0.1, 7.5); // second line, away from its midpoint (0, 6.5)
+    // Second line, away from both its midpoint (0, 6.5) and its own
+    // endpoints (0, 5)/(0, 8) - (0.1, 7.5) used to land within
+    // pointHitRadiusMultiplier's widened radius of the (0, 8) endpoint,
+    // selecting that Point instead of the Line.
+    await controller.handleCanvasTap(0.15, 7.1);
 
     await controller.addEqualLengthConstraint();
 
@@ -2514,7 +2518,11 @@ void main() {
     final lineIds = controller.lines.keys.toSet();
     controller.exitToSelectMode();
     await controller.handleCanvasTap(8, 0.1); // first line, away from its midpoint (5, 0)
-    await controller.handleCanvasTap(5, 3.1); // second line, away from its midpoint (5, 3)
+    // Second line, away from its midpoint (5, 3) - (5, 3.1) used to land
+    // within snapRadius of that midpoint, materializing a new Point there
+    // (see _resolveSelectableAt/_nearestLineMidpointId) instead of
+    // selecting the Line itself.
+    await controller.handleCanvasTap(6.5, 3.1);
 
     await controller.addCollinearConstraint();
 
@@ -2554,7 +2562,9 @@ void main() {
     controller.finishChain();
     controller.exitToSelectMode();
     await controller.handleCanvasTap(8, 0.1);
-    await controller.handleCanvasTap(5, 3.1);
+    // Away from the second line's midpoint (5, 3) - see the identical fix
+    // in addCollinearConstraint's own test above.
+    await controller.handleCanvasTap(6.5, 3.1);
 
     await controller.applyConstraintOption(ConstraintOptionType.collinear);
 

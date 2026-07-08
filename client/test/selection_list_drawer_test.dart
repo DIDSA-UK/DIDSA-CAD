@@ -62,8 +62,18 @@ void main() {
     );
     await tester.pump();
 
+    // A plain `.first` would actually hit SafeArea's own internal Padding
+    // (its EdgeInsets mirror the device's safe-area insets, zero in a test
+    // environment) - it wraps our own explicit right-padding Padding as its
+    // child, so this matches on the actual inset instead of positional
+    // order.
     final padding = tester.widget<Padding>(
-      find.descendant(of: find.byType(DraggableScrollableSheet), matching: find.byType(Padding)).first,
+      find.descendant(
+        of: find.byType(DraggableScrollableSheet),
+        matching: find.byWidgetPredicate(
+          (widget) => widget is Padding && (widget.padding as EdgeInsets).right == 72,
+        ),
+      ),
     );
     expect((padding.padding as EdgeInsets).right, 72);
     expect(tester.takeException(), isNull);

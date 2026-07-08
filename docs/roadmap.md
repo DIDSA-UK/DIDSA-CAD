@@ -16,29 +16,45 @@ project spec, see `docs/project-brief.md`.
   occlusion bug this was once floated as a workaround for turned out to
   have a real fix; see `docs/status.md`'s "C3 residual edge/face-highlight
   occlusion bug: resolved" entry.)
-- **26 pre-existing client test failures, now confirmed for real by the new
-  CI workflow** (see `docs/status.md`'s "CI now shows the real state of
-  this test suite" entry) - the first time this entire suite has ever run
-  against a real Flutter compiler/CI environment. None are connected to any
-  change made in the session that stood up CI. Not yet triaged or fixed -
-  needs a decision on priority/approach given the scope:
-  - 4 in `sketch_controller_test.dart` (`dragTargetPointIdAt` offering the
-    origin as a drag target; `addEqualLengthConstraint`/
-    `addCollinearConstraint`/`applyConstraintOption(collinear)` not clearing
-    the selection set) - previously flagged in older status entries as
-    "visible once a missing import let the file load", now confirmed real.
-  - 14 in `part_screen_test.dart` - addressed (see `docs/status.md`'s
-    "`part_screen_test.dart`'s 14 failures" entry): all traced to the test
-    file being stale against already-shipped product changes (B4 rollback,
-    Prompt A4's target-body banner, Revolve/Sweep joining the long-press
-    menu) plus one collapsed-`ExpansionTile` test-helper miss and one real
-    (now fixed) bottom-sheet overflow bug in `feature_context_menu.dart` -
-    no app regressions found. Not yet re-verified by a real CI run.
-  - 3 in `orbit_camera_test.dart` (`zoomByFactor`, `setZoomBoundsForRadius`,
-    `reset`) - a new discovery, not documented anywhere before this.
-  - 1 each in `selection_list_drawer_test.dart`, `sketch_canvas_ghost_editor_test.dart`,
-    `feature_picker_sheet_test.dart`, `widget_test.dart`, and
-    `part_viewport_test.dart`.
+- **26 pre-existing client test failures, found by the new CI workflow -
+  all diagnosed and fixed, not yet re-verified by a real CI run.** (See
+  `docs/status.md`'s "CI now shows the real state of this test suite" entry
+  for the original discovery, and its two follow-up entries for the actual
+  fixes.) None were connected to any change made in the session that stood
+  up CI - almost all were the test suite itself never having been updated
+  to match already-shipped product changes, plus a handful of genuine small
+  app bugs found along the way:
+  - 4 in `sketch_controller_test.dart`: `dragTargetPointIdAt` really could
+    return the origin as a drag target for a Line/Circle whose *nearer*
+    constituent Point happened to be the origin (a real app bug - fixed to
+    always offer the *other* point instead); the other 3
+    (`addEqualLengthConstraint`/`addCollinearConstraint`/
+    `applyConstraintOption(collinear)`) were test-coordinate bugs - two taps
+    landed close enough to a Line's own endpoint or midpoint to select/
+    materialize a Point there instead of the Line itself.
+  - 14 in `part_screen_test.dart` - all test-file staleness against B4
+    rollback, Prompt A4's target-body banner, and Revolve/Sweep joining the
+    long-press menu, plus one real (now fixed) bottom-sheet overflow bug in
+    `feature_context_menu.dart`.
+  - 3 in `orbit_camera_test.dart` - a real app bug (`_defaultDistance` was
+    `80`, contradicting its own doc comment's worked math for `48`) plus a
+    stale test expectation (`kDefaultFarClip` was intentionally bumped from
+    1000 to 3000 in an earlier prompt, test never updated).
+  - 1 each in `selection_list_drawer_test.dart` (test picked the wrong
+    `Padding` - `SafeArea`'s own internal one, not the app's), `widget_test.dart`
+    (tested a "Click" tool and flat speed-dial that no longer exist - the FAB
+    menu is a two-level Categories/Sketch-Entities design now), and
+    `part_viewport_test.dart` (test's own "spinner gone" wait was ambiguous
+    with Scene-init failure in this CI sandbox's software renderer - now
+    waits for the real `Listener`-bearing tree instead).
+  - `sketch_canvas_ghost_editor_test.dart` used `pumpAndSettle()` against a
+    widget with its own permanently-running edge-pan `Ticker` - same class
+    of issue as `PartViewport`'s own spinner elsewhere in this codebase -
+    switched to a bounded pump.
+  - `feature_picker_sheet_test.dart` still expected Revolve/Sweep to render
+    disabled - stale from before those features were fully wired up;
+    replaced with tests confirming they resolve their own
+    `FeaturePickerAction`.
 - **Draco-compressed glTF/GLB support (`KHR_draco_mesh_compression`) - not
   implemented.** A real ODM/OpenDroneMap `.glb` export uses it; the mesh
   viewer currently detects it up front and fails with a clear, specific
