@@ -1052,7 +1052,13 @@ void main() {
     /// second-level picker's "Extrude" entry - the trigger every test below
     /// shares.
     Future<void> tapAddFeatureExtrude(WidgetTester tester) async {
-      await tester.tap(find.byTooltip('Add'));
+      // find.byTooltip taps at the Tooltip's own computed showing position,
+      // not necessarily the wrapped FAB's actual center - unreliable enough
+      // in this file (see the identical "Exit Sketch" fix above) that the
+      // "one pre-selected Sketch" test in this group, which reaches this
+      // helper after a full push/pop through the Sketch screen, kept
+      // missing. find.widgetWithIcon targets the real rendered button.
+      await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.add));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Feature'));
@@ -1391,6 +1397,11 @@ void main() {
         await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
+        // "Extrude 1" disappears as soon as _refreshFeatures's own rebuild
+        // lands, but the un-hide bookkeeping right after it in the same
+        // guarded body (see _cascadeDeleteFeature) can still land on a later
+        // frame - an extra settle pump avoids reading the icon mid-update.
+        await tester.pump(const Duration(milliseconds: 250));
 
         expect(find.byIcon(Icons.visibility_off), findsNothing);
         expect(tester.takeException(), isNull);
