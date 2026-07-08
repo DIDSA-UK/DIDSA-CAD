@@ -27,13 +27,13 @@ project spec, see `docs/project-brief.md`.
     `addCollinearConstraint`/`applyConstraintOption(collinear)` not clearing
     the selection set) - previously flagged in older status entries as
     "visible once a missing import let the file load", now confirmed real.
-  - 14 in `part_screen_test.dart` - the largest single cluster (menu toggle
-    labels, Extrude panel FAB visibility, locked-Feature tap/long-press,
-    cascade-delete dialog, the Prompt D sketch-picker flow, and more), almost
-    all failing the same way (`Expected: exactly one matching candidate /
-    Actual: Found 0 widgets with text "..."`) - suggests one shared root
-    cause (a common setup/helper step) rather than 14 independent bugs, but
-    not yet confirmed.
+  - 14 in `part_screen_test.dart` - addressed (see `docs/status.md`'s
+    "`part_screen_test.dart`'s 14 failures" entry): all traced to the test
+    file being stale against already-shipped product changes (B4 rollback,
+    Prompt A4's target-body banner, Revolve/Sweep joining the long-press
+    menu) plus one collapsed-`ExpansionTile` test-helper miss and one real
+    (now fixed) bottom-sheet overflow bug in `feature_context_menu.dart` -
+    no app regressions found. Not yet re-verified by a real CI run.
   - 3 in `orbit_camera_test.dart` (`zoomByFactor`, `setZoomBoundsForRadius`,
     `reset`) - a new discovery, not documented anywhere before this.
   - 1 each in `selection_list_drawer_test.dart`, `sketch_canvas_ghost_editor_test.dart`,

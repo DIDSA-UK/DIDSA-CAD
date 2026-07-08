@@ -348,6 +348,14 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
+    // The toolbar's "View" section is an ExpansionTile, collapsed by
+    // default - its children (including "Hide Reference Planes") aren't
+    // in the render tree at all until it's expanded, matching the
+    // already-passing "A4: Perspective toggle" test's own pattern below.
+    await tester.tap(find.text('View'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
     expect(find.text('Hide Reference Planes'), findsOneWidget);
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isFalse);
 
@@ -388,6 +396,13 @@ void main() {
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
       await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // The toolbar's "View" section is an ExpansionTile, collapsed by
+      // default - its children (including the render-mode entries) aren't
+      // in the render tree at all until it's expanded.
+      await tester.tap(find.text('View'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -462,14 +477,20 @@ void main() {
     expect(find.byTooltip('Add'), findsNothing);
     expect(tester.takeException(), isNull);
 
-    await tester.tap(find.text('Cancel'));
+    // Prompt A4's target-body-picker banner adds its own Cancel button
+    // (top of the screen) alongside ExtrudePanel's own - both wired to the
+    // same _cancelExtrude, so either one works; `.last` picks a single
+    // widget rather than leaving the finder ambiguous.
+    await tester.tap(find.text('Cancel').last);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.byTooltip('Add'), findsOneWidget);
   });
 
-  testWidgets('tapping a locked Feature only selects it, and does not navigate to its Sketch', (tester) async {
+  testWidgets('tapping a locked Feature still selects it and opens its Sketch (B4: no longer gated on lock state)', (
+    tester,
+  ) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
@@ -511,13 +532,16 @@ void main() {
     expect(find.byTooltip('Close toolbar'), findsNothing);
 
     await tester.tap(find.text('Sketch 1'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    // B4: true SolidWorks-style rollback means a tap on a locked Feature no
+    // longer does nothing - it always selects and opens it for editing (see
+    // _onFeatureTap's doc comment), mirroring "tapping an unlocked (editable)
+    // Feature..." below exactly, since lock state no longer gates this at
+    // all. _pumpUntil (not a fixed pump) carries the tester through both the
+    // camera animation into the Sketch plane and the eventual SketchScreen
+    // load.
+    await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
 
-    // Still on PartScreen - a tap on a locked Feature must not open its
-    // Sketch, per the project brief.
-    expect(find.text('Part 1'), findsOneWidget);
-    expect(find.text('DIDSA-CAD Sketch'), findsNothing);
+    expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -654,15 +678,17 @@ void main() {
     expect(iconFor('Sketch 1').icon, Icons.lock);
     expect(iconFor('Sketch 2').color, isNot(Colors.grey));
 
-    // Long-press the last (unlocked) Feature and delete just it - a
-    // "cascade" of one, same as any other delete through this dialog.
+    // Long-press the last (unlocked) Feature and delete just it - nothing
+    // depends on the last Feature, so this cascades to exactly one Feature
+    // and the dialog's confirm button reads "Delete" (not "Delete all") -
+    // see showCascadeDeleteDialog's own count == 1 branch.
     await tester.longPress(find.text('Sketch 2'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Delete'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Delete all'));
+    await tester.tap(find.text('Delete'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await _pumpUntil(tester, () => find.text('Sketch 2').evaluate().isEmpty);
@@ -893,7 +919,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(find.text('Confirm'), findsOneWidget);
-      expect(find.text('Cancel'), findsOneWidget);
+      // Prompt A4's target-body-picker banner adds its own Cancel button
+      // alongside ExtrudePanel's own - both wired to the same
+      // _cancelExtrude, so two is the real, current count.
+      expect(find.text('Cancel'), findsNWidgets(2));
 
       await tester.tap(find.text('Confirm'));
       await tester.pump();
@@ -938,7 +967,10 @@ void main() {
       final extrudeTile = find.widgetWithText(ListTile, 'Extrude');
       expect(extrudeTile, findsOneWidget);
       expect(tester.widget<ListTile>(extrudeTile).enabled, isFalse);
-      expect(find.text('Sketch does not contain a closed profile'), findsOneWidget);
+      // Revolve/Sweep share Extrude's own eligibility check (see
+      // _onFeatureLongPress) and so show the identical disabled-reason
+      // subtitle alongside it - three, not one.
+      expect(find.text('Sketch does not contain a closed profile'), findsNWidgets(3));
       expect(tester.takeException(), isNull);
     },
   );
@@ -1056,7 +1088,10 @@ void main() {
 
       expect(find.text('Select a sketch to extrude'), findsNothing);
       expect(find.text('Confirm'), findsOneWidget);
-      expect(find.text('Cancel'), findsOneWidget);
+      // Prompt A4's target-body-picker banner adds its own Cancel button
+      // alongside ExtrudePanel's own - both wired to the same
+      // _cancelExtrude, so two is the real, current count.
+      expect(find.text('Cancel'), findsNWidgets(2));
 
       await tester.tap(find.text('Confirm'));
       await tester.pump();
@@ -1167,11 +1202,17 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      // Sketch 1 is locked, so this tap only selects it - it does not
-      // navigate away to its Sketch screen.
+      // B4: tapping Sketch 1 (locked or not) always selects it and now also
+      // opens its Sketch screen - so getting back to a "pre-selected but on
+      // PartScreen" state means exiting that Sketch afterward, the same way
+      // a real user would; _selectedFeatureId (all _extrudeSelectedFeature
+      // actually reads) stays set to feature-1 across the round trip since
+      // PartScreen's own State is never rebuilt, just covered/uncovered.
       await tester.tap(find.text('Sketch 1'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Exit Sketch'));
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
       expect(find.text('Part 1'), findsOneWidget);
 
       await tapAddFeatureExtrude(tester);
@@ -1339,7 +1380,10 @@ void main() {
 
     expect(backend.features.where((f) => f['type'] == 'extrude'), hasLength(1));
 
-    await tester.tap(find.text('Cancel'));
+    // Prompt A4's target-body-picker banner adds its own Cancel button
+    // alongside ExtrudePanel's own - both wired to the same _cancelExtrude,
+    // so `.last` just needs to pick one, not the specific one.
+    await tester.tap(find.text('Cancel').last);
     await _pumpUntil(tester, () => backend.features.every((f) => f['type'] != 'extrude'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
