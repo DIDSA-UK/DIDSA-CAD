@@ -38,19 +38,25 @@ project spec, see `docs/project-brief.md`.
   (platform-specific binaries). Whether to pursue this, versus relying on
   re-exporting without mesh compression (available in most pipelines that
   use it, including ODM's), is an open question for the user - not decided.
-- **glTF node transforms: only root-level nodes, no `matrix`-based nodes.**
-  Fixed for the real case that motivated it (a Blender-exported file's
-  Z-up-to-Y-up axis correction, applied as a single root node's TRS - see
-  `docs/status.md`'s "glTF node transforms" entry), but a deeper
-  multi-level scene-graph hierarchy (a transformed node nested under
-  another transformed node) is not composed, and a node using a raw
-  `matrix` instead of separate translation/rotation/scale fields is
-  rejected with a clear error rather than decomposed. Not decided whether
-  either is worth building without a real file that needs it.
-- **Larger Blender-exported `.glb` still crashes** - reported alongside the
-  mirrored-geometry/bad-shading issue the node-transform fix above
-  addresses, but not yet separately diagnosed. Could be the same
-  node-transform gap (a `matrix`-based root node would now fail with the
-  new clear error instead of whatever it was doing before), a
-  scale/complexity issue, or something else - needs its own on-device
-  report once the user has re-tested with the node-transform fix in place.
+- **glTF node transforms: full scene-graph walk now implemented, but
+  `matrix`-based nodes are still rejected rather than decomposed.** The
+  original fix only inspected root scene nodes, which turned out to be
+  wrong for a real Blender export (the transform-bearing ancestor is often
+  several levels above the actual mesh node) - now fixed via a full
+  recursive walk composing every ancestor's transform (see
+  `docs/status.md`'s "glTF node transforms, round 2" entry). The remaining
+  gap: a node anywhere in the hierarchy using a raw `matrix` instead of
+  separate translation/rotation/scale fields is rejected with a clear
+  error rather than decomposed (correctly handling non-uniform
+  scale/reflection when decomposing an arbitrary matrix is real
+  complexity, not attempted here). Not decided whether it's worth building
+  without a real file that needs it.
+- **Larger Blender-exported `.glb` still crashes** - reported twice now
+  (after the round-1 node-transform fix, and again after round 2's
+  recursive-walk rewrite), with no new diagnostic information either time
+  ("still crashes" with no visible in-app error). Crash-to-home-screen with
+  no catchable Dart exception usually means a native-level fault (OOM kill,
+  GPU/driver crash) rather than something this codebase's own error
+  handling would ever see - needs an actual crash log (e.g. `adb logcat`
+  output captured around the crash) to make any further progress; guessing
+  again without one risks repeating the last two rounds' pattern.

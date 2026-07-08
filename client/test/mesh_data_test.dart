@@ -529,6 +529,64 @@ void main() {
       expect(mesh.triangleCount, 1);
       expect(mesh.positions.sublist(0, 3), [5.0, 0.0, 0.0]);
     });
+
+    test('composes an ancestor transform with a nested mesh node (not just root nodes)', () {
+      // Mirrors a real Blender export shape: the mesh-bearing node itself
+      // carries no transform at all - the axis-correction/object transform
+      // lives entirely on a parent "Empty"/collection node instead. A
+      // root-nodes-only (non-recursive) walk would miss this transform
+      // completely, since the root node here has no `mesh` field of its own.
+      const half = 0.70710678;
+      final positions = Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      final bufferBytes = positions.buffer.asUint8List();
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'scene': 0,
+        'scenes': [
+          {'nodes': [0]},
+        ],
+        'nodes': [
+          {
+            'name': 'axis-correction root (no mesh)',
+            'rotation': [half, 0.0, 0.0, half], // 90 deg about X: (x,y,z) -> (x,-z,y)
+            'children': [1],
+          },
+          {'name': 'mesh object', 'mesh': 0},
+        ],
+        'buffers': [
+          {
+            'byteLength': bufferBytes.length,
+            'uri': 'data:application/octet-stream;base64,${base64.encode(bufferBytes)}',
+          },
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': bufferBytes.length},
+        ],
+        'accessors': [
+          {'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+              },
+            ],
+          },
+        ],
+      };
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      final p = mesh.positions.sublist(0, 9);
+      expect(p[0], closeTo(0.0, 1e-6));
+      expect(p[1], closeTo(0.0, 1e-6));
+      expect(p[2], closeTo(0.0, 1e-6));
+      expect(p[3], closeTo(1.0, 1e-6));
+      expect(p[4], closeTo(0.0, 1e-6));
+      expect(p[5], closeTo(0.0, 1e-6));
+      expect(p[6], closeTo(0.0, 1e-6));
+      expect(p[7], closeTo(0.0, 1e-6));
+      expect(p[8], closeTo(1.0, 1e-6));
+    });
   });
 
   group('decimateToTriangleBudget', () {
