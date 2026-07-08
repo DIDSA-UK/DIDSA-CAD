@@ -60,18 +60,25 @@ project spec, see `docs/project-brief.md`.
   handling would ever see - needs an actual crash log (e.g. `adb logcat`
   output captured around the crash) to make any further progress; guessing
   again without one risks repeating the last two rounds' pattern.
-- **A complex glTF is still mirrored even after the recursive node-transform
-  fix; a simple one is not.** Decimation has been ruled out as the cause by
-  code review (it only ever keeps-or-skips whole triangles, never touches a
-  kept triangle's own vertex data), and the node-transform matrix
-  composition math has been independently re-derived and re-checked against
-  the implementation with no error found (see `docs/status.md`'s
-  "Investigated: complex glTF mesh still reported mirrored" entry). Not yet
-  resolved - needs either the actual file's `nodes`/`scenes` JSON (or a
-  reduced repro), or a clearer description of exactly what looks mirrored
-  (the whole model flipped on one axis vs. one sub-part looking wrong), to
-  make further progress without guessing a third time. One untested
-  candidate: a node with a genuine negative-scale component (a legitimate
-  glTF reflection, e.g. from an un-applied Blender "Mirror modifier"
-  duplicate) - the transform math is believed correct for this case per the
-  review, but not confirmed against a real file that actually has one.
+- **The actual "mirrored"/orientation issue on a complex glTF - still not
+  found.** Ruled out so far, with real evidence: decimation (only ever
+  drops whole triangles, never touches a kept one's own data), node
+  transforms (the actual file's root node has no translation/rotation/scale
+  at all - confirmed from its own scene-graph JSON dump, so both rounds of
+  node-transform work were correctly a no-op here), and this decoder's
+  quaternion/matrix composition math (independently re-derived, matches).
+  A *different*, now-confirmed-and-fixed bug (39 materials/primitives all
+  rendered with material 0's texture - see `docs/status.md`'s "Real
+  diagnosis: 39 materials/primitives" entry) explained "patchy and wrong"
+  textures, but not the geometry orientation itself, which the user
+  separately confirmed is real: "everything went down into the ground
+  instead of up into the sky (although the model is actually on its
+  side)". No axis-swap/handedness-conversion code exists anywhere in this
+  decoder or the app's rendering pipeline - and this app's own camera
+  (`orbit_camera.dart`) and documented backend convention (`sketch/
+  view_transform.dart`) both already treat Y as up, matching glTF's own
+  spec exactly - so a simple up-axis mismatch doesn't obviously explain it
+  either. Sent the user a script to pull each POSITION accessor's own
+  spec-mandated bounding box (min/max, no vertex bytes needed) to find the
+  file's true "up" axis directly (smallest range) rather than guess a
+  fourth time. Not yet resolved.

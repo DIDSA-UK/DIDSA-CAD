@@ -49,12 +49,32 @@ class DecodedMesh {
   final String? textureMimeType;
   final int? _sourceTriangleCountOverride;
 
+  /// Per-material triangle ranges within [positions]/[normals]/[uvs], for a
+  /// glTF/GLB file whose mesh has more than one primitive - a real
+  /// photogrammetry export routinely has dozens of primitives, one per
+  /// material/texture-atlas-chunk (e.g. one per building facet/section), all
+  /// of which get concatenated into this single flat triangle soup during
+  /// decode (see `decodeGltf`'s own doc comment). `null`/empty for every
+  /// other case (STL, OBJ, or a single-primitive glTF) - [textureBytes]/
+  /// [textureMimeType] above are that simpler case's own single texture, and
+  /// remain populated even when [materialGroups] is also set (as "whichever
+  /// group's texture would have been picked before this field existed" -
+  /// harmless, unused once a caller actually reads [materialGroups]).
+  ///
+  /// Each group's `startTriangle`/`triangleCount` is a contiguous range in
+  /// the flat triangle-soup arrays (never interleaved with another group's
+  /// triangles - a primitive's own kept triangles, after decimation, are
+  /// always written as one unbroken run - see `_decodeGltfDocument`'s
+  /// assembly loop).
+  final List<MeshMaterialGroup>? materialGroups;
+
   DecodedMesh({
     required this.positions,
     required this.normals,
     required this.uvs,
     this.textureBytes,
     this.textureMimeType,
+    this.materialGroups,
     int? sourceTriangleCount,
   }) : _sourceTriangleCountOverride = sourceTriangleCount;
 
@@ -68,6 +88,25 @@ class DecodedMesh {
   /// triangles" banner without needing a separate, full-size mesh kept
   /// around just to know what Y was.
   int get sourceTriangleCount => _sourceTriangleCountOverride ?? triangleCount;
+}
+
+/// One glTF mesh primitive's own contiguous triangle range and material
+/// (base-color texture only, matching [DecodedMesh]'s own single-texture-
+/// per-material scope cut - see `mesh_viewer_render.dart`'s doc comments on
+/// why only base color is modelled) - see [DecodedMesh.materialGroups]'s own
+/// doc comment for why this exists.
+class MeshMaterialGroup {
+  final int startTriangle;
+  final int triangleCount;
+  final Uint8List? textureBytes;
+  final String? textureMimeType;
+
+  const MeshMaterialGroup({
+    required this.startTriangle,
+    required this.triangleCount,
+    this.textureBytes,
+    this.textureMimeType,
+  });
 }
 
 /// Shared by every decoder's in-decode decimation (STL/OBJ/glTF all call
@@ -830,6 +869,18 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
   final uvs = <double>[];
   var triangleIndex = 0;
 
+  // One entry per mesh primitive that actually contributed a triangle -
+  // real photogrammetry exports routinely have one primitive/material per
+  // building facet or texture-atlas chunk (a real ODM/Blender export this
+  // was tested against has 39) - see [DecodedMesh.materialGroups]'s own doc
+  // comment. Cached per material index so a texture referenced by more than
+  // one primitive is only extracted (byte-sliced, not yet image-decoded -
+  // that's `mesh_viewer_render.dart`'s job) once.
+  final materialGroups = <MeshMaterialGroup>[];
+  final textureCache = <int, (Uint8List, String)?>{};
+  (Uint8List, String)? textureForMaterial(int materialIndex) =>
+      textureCache.putIfAbsent(materialIndex, () => _extractBaseColorTexture(gltf, buffers, materialIndex));
+
   for (final (meshIndex, transform) in meshInstances) {
     final mesh = meshes[meshIndex] as Map<String, dynamic>;
     final isIdentity = identical(transform, _NodeTransform.identity);
@@ -851,6 +902,7 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
           ? readIndices(indicesAccessor)
           : List.generate(vertexCount, (i) => i);
 
+      final groupStartTriangle = positions.length ~/ 9;
       for (var i = 0; i + 2 < indices.length; i += 3) {
         final keep = triangleIndex % stride == 0;
         triangleIndex++;
@@ -879,27 +931,48 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
           normals.addAll([n.$1, n.$2, n.$3, n.$1, n.$2, n.$3, n.$1, n.$2, n.$3]);
         }
       }
+      final groupTriangleCount = (positions.length ~/ 9) - groupStartTriangle;
+      if (groupTriangleCount > 0) {
+        final materialIndex = (primitive['material'] as int?) ?? 0;
+        final texture = textureForMaterial(materialIndex);
+        materialGroups.add(MeshMaterialGroup(
+          startTriangle: groupStartTriangle,
+          triangleCount: groupTriangleCount,
+          textureBytes: texture?.$1,
+          textureMimeType: texture?.$2,
+        ));
+      }
     }
   }
 
   if (positions.isEmpty) throw MeshImportError('glTF file has no usable geometry');
 
-  final texture = _extractBaseColorTexture(gltf, buffers);
+  final firstTexture = materialGroups.isEmpty ? null : (materialGroups.first.textureBytes, materialGroups.first.textureMimeType);
 
   return DecodedMesh(
     positions: Float32List.fromList(positions),
     normals: Float32List.fromList(normals),
     uvs: Float32List.fromList(uvs),
-    textureBytes: texture?.$1,
-    textureMimeType: texture?.$2,
+    textureBytes: firstTexture?.$1,
+    textureMimeType: firstTexture?.$2,
+    materialGroups: materialGroups,
     sourceTriangleCount: totalTriangles,
   );
 }
 
-(Uint8List, String)? _extractBaseColorTexture(Map<String, dynamic> gltf, List<Uint8List> buffers) {
+/// Extracts [materialIndex]'s own base-color texture bytes (if it has one) -
+/// `null` for a document with no materials, an out-of-range index, or a
+/// material with no `baseColorTexture` at all (untextured/flat-colour).
+/// Caller passes each primitive's own `material` index (falling back to `0`
+/// when unset, matching a primitive with no `material` field using the
+/// document's first material per spec) rather than always reading
+/// `materials.first` - a real photogrammetry export routinely has one
+/// material (and so one texture) per mesh primitive, not one for the whole
+/// file (see `_decodeGltfDocument`'s own doc comment on `materialGroups`).
+(Uint8List, String)? _extractBaseColorTexture(Map<String, dynamic> gltf, List<Uint8List> buffers, int materialIndex) {
   final materials = (gltf['materials'] as List?) ?? const [];
-  if (materials.isEmpty) return null;
-  final material = materials.first as Map<String, dynamic>;
+  if (materialIndex < 0 || materialIndex >= materials.length) return null;
+  final material = materials[materialIndex] as Map<String, dynamic>;
   final pbr = material['pbrMetallicRoughness'] as Map<String, dynamic>?;
   final baseColorTexture = pbr?['baseColorTexture'] as Map<String, dynamic>?;
   if (baseColorTexture == null) return null;

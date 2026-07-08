@@ -589,6 +589,131 @@ void main() {
     });
   });
 
+  group('decodeGltf multi-material primitives', () {
+    // A real photogrammetry export routinely has one primitive/material per
+    // texture-atlas chunk (a real ODM/Blender export this was built against
+    // has 39) - each primitive's own vertex data and texture must stay
+    // associated with its own contiguous triangle range, not get collapsed
+    // onto material 0's texture for the whole mesh.
+    Map<String, dynamic> gltfWithTwoMaterialPrimitives({int? primitive0Material, int? primitive1Material}) {
+      final positionsA = Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      final positionsB = Float32List.fromList([2, 0, 0, 3, 0, 0, 2, 1, 0]);
+      final bytesA = positionsA.buffer.asUint8List();
+      final bytesB = positionsB.buffer.asUint8List();
+      final combined = Uint8List.fromList([...bytesA, ...bytesB]);
+      final textureA = base64.encode(utf8.encode('texture-a-bytes'));
+      final textureB = base64.encode(utf8.encode('texture-b-bytes'));
+      return {
+        'asset': {'version': '2.0'},
+        'buffers': [
+          {
+            'byteLength': combined.length,
+            'uri': 'data:application/octet-stream;base64,${base64.encode(combined)}',
+          },
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': bytesA.length},
+          {'buffer': 0, 'byteOffset': bytesA.length, 'byteLength': bytesB.length},
+        ],
+        'accessors': [
+          {'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+          {'bufferView': 1, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+        ],
+        'materials': [
+          {
+            'pbrMetallicRoughness': {
+              'baseColorTexture': {'index': 0},
+            },
+          },
+          {
+            'pbrMetallicRoughness': {
+              'baseColorTexture': {'index': 1},
+            },
+          },
+        ],
+        'textures': [
+          {'source': 0},
+          {'source': 1},
+        ],
+        'images': [
+          {'uri': 'data:image/png;base64,$textureA'},
+          {'uri': 'data:image/png;base64,$textureB'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+                if (primitive0Material != null) 'material': primitive0Material,
+              },
+              {
+                'attributes': {'POSITION': 1},
+                if (primitive1Material != null) 'material': primitive1Material,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    test('each primitive gets its own MeshMaterialGroup with its own texture and triangle range', () {
+      final gltf = gltfWithTwoMaterialPrimitives(primitive0Material: 0, primitive1Material: 1);
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      expect(mesh.triangleCount, 2);
+      final groups = mesh.materialGroups!;
+      expect(groups.length, 2);
+      expect(groups[0].startTriangle, 0);
+      expect(groups[0].triangleCount, 1);
+      expect(utf8.decode(groups[0].textureBytes!), 'texture-a-bytes');
+      expect(groups[1].startTriangle, 1);
+      expect(groups[1].triangleCount, 1);
+      expect(utf8.decode(groups[1].textureBytes!), 'texture-b-bytes');
+    });
+
+    test('a primitive with no material field defaults to material index 0', () {
+      final gltf = gltfWithTwoMaterialPrimitives(primitive0Material: null, primitive1Material: 1);
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      final groups = mesh.materialGroups!;
+      expect(utf8.decode(groups[0].textureBytes!), 'texture-a-bytes');
+      expect(utf8.decode(groups[1].textureBytes!), 'texture-b-bytes');
+    });
+
+    test('a single-primitive glTF still populates a single-entry materialGroups', () {
+      final positions = Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      final bufferBytes = positions.buffer.asUint8List();
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'buffers': [
+          {
+            'byteLength': bufferBytes.length,
+            'uri': 'data:application/octet-stream;base64,${base64.encode(bufferBytes)}',
+          },
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': bufferBytes.length},
+        ],
+        'accessors': [
+          {'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3'},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+              },
+            ],
+          },
+        ],
+      };
+      final mesh = decodeGltf(Uint8List.fromList(utf8.encode(jsonEncode(gltf))));
+      final groups = mesh.materialGroups!;
+      expect(groups.length, 1);
+      expect(groups.single.startTriangle, 0);
+      expect(groups.single.triangleCount, 1);
+      expect(groups.single.textureBytes, isNull);
+    });
+  });
+
   group('decimateToTriangleBudget', () {
     DecodedMesh meshWithTriangles(int count) => DecodedMesh(
           positions: Float32List(count * 9),

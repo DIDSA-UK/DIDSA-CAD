@@ -179,22 +179,27 @@ void _bindBaseColorTexture(PhysicallyBasedMaterial material, gpu.Texture texture
   material.baseColorTexture = texture;
 }
 
-/// Splits [mesh] into `flutter_scene` [Node]s, batched to stay under
-/// `flutter_scene`'s 16-bit index limit (see [_kMaxVerticesPerBatch]) - all
-/// batches share the one [material] (and so the one texture, if any), since
-/// [DecodedMesh] only ever carries a single base-color texture (see its own
-/// doc comment on the single-material scope cut).
-List<Node> buildMeshViewerNodes(DecodedMesh mesh, PhysicallyBasedMaterial material) {
+/// Builds the batch [Node]s for one contiguous triangle range of [mesh]
+/// (starting at [startTriangle], [triangleCount] long), all sharing the one
+/// [material] - split further to stay under `flutter_scene`'s 16-bit index
+/// limit (see [_kMaxVerticesPerBatch]). Shared by [buildMeshViewerNodes]'s
+/// no-[DecodedMesh.materialGroups] case (the whole mesh is one "range") and
+/// its per-[MeshMaterialGroup] case (one call per group).
+List<Node> _buildMeshViewerBatches(
+  DecodedMesh mesh,
+  PhysicallyBasedMaterial material, {
+  required int startTriangle,
+  required int triangleCount,
+}) {
   final nodes = <Node>[];
-  final triangleCount = mesh.triangleCount;
   for (var start = 0; start < triangleCount; start += _kMaxTrianglesPerBatch) {
     final end = (start + _kMaxTrianglesPerBatch).clamp(0, triangleCount);
     final batchTriangles = end - start;
     final vertexCount = batchTriangles * 3;
     final vertexData = Float32List(vertexCount * 12);
     for (var v = 0; v < vertexCount; v++) {
-      final srcBase = (start * 3 + v) * 3;
-      final srcUvBase = (start * 3 + v) * 2;
+      final srcBase = ((startTriangle + start) * 3 + v) * 3;
+      final srcUvBase = ((startTriangle + start) * 3 + v) * 2;
       final dstBase = v * 12;
       vertexData[dstBase] = mesh.positions[srcBase];
       vertexData[dstBase + 1] = mesh.positions[srcBase + 1];
@@ -219,16 +224,47 @@ List<Node> buildMeshViewerNodes(DecodedMesh mesh, PhysicallyBasedMaterial materi
       vertexCount,
       ByteData.sublistView(indices),
     );
-    nodes.add(Node(name: 'mesh-viewer-batch-$start', mesh: Mesh(geometry, material)));
+    nodes.add(Node(name: 'mesh-viewer-batch-${startTriangle + start}', mesh: Mesh(geometry, material)));
   }
   return nodes;
 }
 
-/// Builds the shared [PhysicallyBasedMaterial] for [mesh] - textured if
-/// [mesh] carries a base-color texture, a flat tint from [baseColourHex]
-/// otherwise (so geometry is always visible even before/without a texture,
-/// matching this viewer's "grey geometry is an acceptable fallback" scope
-/// decision). When a texture *is* present, [baseColourHex] is deliberately
+/// Splits [mesh] into `flutter_scene` [Node]s. When [mesh] has no
+/// [DecodedMesh.materialGroups] (STL/OBJ, or a single-primitive/single-
+/// material glTF), every batch shares [materials]' one entry, same as
+/// before per-primitive material support existed. When it does (a real
+/// multi-material glTF - see [DecodedMesh.materialGroups]'s own doc
+/// comment), each group gets its own batches built against its own
+/// `materials[i]`, so a triangle range that used material 5 in the source
+/// file is drawn with material 5's own (already-built, already-textured)
+/// [PhysicallyBasedMaterial], not whichever one happened to be built for
+/// material 0. [materials] must have one entry per [DecodedMesh.materialGroups]
+/// entry, in the same order (or exactly one entry when there are no groups) -
+/// see [buildMeshViewerMaterials].
+List<Node> buildMeshViewerNodes(DecodedMesh mesh, List<PhysicallyBasedMaterial> materials) {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    return _buildMeshViewerBatches(mesh, materials.first, startTriangle: 0, triangleCount: mesh.triangleCount);
+  }
+  final nodes = <Node>[];
+  for (var g = 0; g < groups.length; g++) {
+    nodes.addAll(_buildMeshViewerBatches(
+      mesh,
+      materials[g],
+      startTriangle: groups[g].startTriangle,
+      triangleCount: groups[g].triangleCount,
+    ));
+  }
+  return nodes;
+}
+
+/// Builds a [PhysicallyBasedMaterial] for [mesh]'s own top-level texture
+/// (see [buildMeshViewerMaterials] for the real multi-material case) -
+/// textured if [mesh] carries a base-color texture, a flat tint from
+/// [baseColourHex] otherwise (so geometry is always visible even before/
+/// without a texture, matching this viewer's "grey geometry is an
+/// acceptable fallback" scope decision). When a texture *is* present,
+/// [baseColourHex] is deliberately
 /// ignored (left at white) - a PBR base color factor multiplies the texture,
 /// so tinting it by the user's chosen swatch would just darken/recolor a
 /// real captured photogrammetry texture for no good reason; the swatch is
@@ -268,16 +304,70 @@ Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
   required double roughness,
   required double emissiveIntensity,
   required double fixedMetallic,
+}) =>
+    _buildMaterialForTexture(
+      mesh.textureBytes,
+      baseColourHex: baseColourHex,
+      roughness: roughness,
+      emissiveIntensity: emissiveIntensity,
+      fixedMetallic: fixedMetallic,
+    );
+
+/// One [PhysicallyBasedMaterial] per [DecodedMesh.materialGroups] entry (in
+/// the same order, so `materials[i]` is always group `i`'s own material) -
+/// or, when [mesh] has no groups at all (STL/OBJ, or a single-primitive
+/// glTF), a single-entry list built from [mesh]'s own top-level
+/// [DecodedMesh.textureBytes], identical to a bare [buildMeshViewerMaterial]
+/// call. See [buildMeshViewerNodes]'s own doc comment for why a real
+/// multi-material photogrammetry export needs this instead of the one-
+/// texture-for-the-whole-file assumption [buildMeshViewerMaterial] alone
+/// makes.
+Future<List<PhysicallyBasedMaterial>> buildMeshViewerMaterials(
+  DecodedMesh mesh, {
+  required String baseColourHex,
+  required double roughness,
+  required double emissiveIntensity,
+  required double fixedMetallic,
+}) async {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    return [
+      await buildMeshViewerMaterial(
+        mesh,
+        baseColourHex: baseColourHex,
+        roughness: roughness,
+        emissiveIntensity: emissiveIntensity,
+        fixedMetallic: fixedMetallic,
+      ),
+    ];
+  }
+  return [
+    for (final group in groups)
+      await _buildMaterialForTexture(
+        group.textureBytes,
+        baseColourHex: baseColourHex,
+        roughness: roughness,
+        emissiveIntensity: emissiveIntensity,
+        fixedMetallic: fixedMetallic,
+      ),
+  ];
+}
+
+Future<PhysicallyBasedMaterial> _buildMaterialForTexture(
+  Uint8List? textureBytes, {
+  required String baseColourHex,
+  required double roughness,
+  required double emissiveIntensity,
+  required double fixedMetallic,
 }) async {
   await ensureSceneResourcesLoaded();
-  final hasTexture = mesh.textureBytes != null;
+  final hasTexture = textureBytes != null;
   final material = PhysicallyBasedMaterial()
     ..baseColorFactor = hasTexture ? vm.Vector4(1, 1, 1, 1) : vector4FromHex(baseColourHex)
     ..roughnessFactor = roughness
     ..metallicFactor = fixedMetallic
     ..emissiveFactor = vm.Vector4(emissiveIntensity, emissiveIntensity, emissiveIntensity, 1)
     ..doubleSided = true;
-  final textureBytes = mesh.textureBytes;
   if (textureBytes != null) {
     final image = await decodeTextureImage(textureBytes);
     final texture = await uploadTexture(image);

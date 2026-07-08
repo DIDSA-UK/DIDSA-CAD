@@ -107,23 +107,39 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     });
   }
 
+  /// Whether `_materials[index]` has its own base-color texture - a real
+  /// photogrammetry glTF's per-primitive [DecodedMesh.materialGroups] entry
+  /// if present, else (STL/OBJ, or a single-primitive glTF) [_mesh]'s own
+  /// top-level [DecodedMesh.textureBytes] for `index == 0`. Drives whether
+  /// [_applyMaterialParams] overwrites that material's `baseColorFactor`
+  /// with the user's swatch colour (untextured) or leaves it white
+  /// (textured - see [buildMeshViewerMaterial]'s own doc comment on why).
+  bool _hasTextureForMaterial(int index) {
+    final groups = _mesh?.materialGroups;
+    if (groups != null && groups.isNotEmpty) return groups[index].textureBytes != null;
+    return _mesh?.textureBytes != null;
+  }
+
   /// Applied both when the Scene sheet changes a value live and once right
-  /// after a new mesh's material is built, so a file picked *after* the user
-  /// already dialed in a look doesn't reset to plain white/defaults - unlike
-  /// `PartViewport` (which rebuilds a fresh material every `_syncMeshNode`
-  /// call), this viewer holds one long-lived [PhysicallyBasedMaterial]
-  /// instance per loaded mesh and mutates its fields directly, since nothing
-  /// else about the Node/geometry needs to change when only the material's
-  /// appearance does.
+  /// after a new mesh's materials are built, so a file picked *after* the
+  /// user already dialed in a look doesn't reset to plain white/defaults -
+  /// unlike `PartViewport` (which rebuilds a fresh material every
+  /// `_syncMeshNode` call), this viewer holds one long-lived
+  /// [PhysicallyBasedMaterial] instance per material group of the loaded
+  /// mesh (see [DecodedMesh.materialGroups]) and mutates each one's fields
+  /// directly, since nothing else about the Node/geometry needs to change
+  /// when only the materials' appearance does.
   void _applyMaterialParams() {
-    final material = _material;
-    if (material == null) return;
-    final hasTexture = _mesh?.textureBytes != null;
-    material
-      ..baseColorFactor = hasTexture ? vm.Vector4(1, 1, 1, 1) : vector4FromHex(_bodyColourHex)
-      ..roughnessFactor = _roughness
-      ..metallicFactor = ScenePreferences.fixedMetallic
-      ..emissiveFactor = vm.Vector4(_emissiveIntensity, _emissiveIntensity, _emissiveIntensity, 1);
+    final materials = _materials;
+    if (materials == null) return;
+    for (var i = 0; i < materials.length; i++) {
+      final hasTexture = _hasTextureForMaterial(i);
+      materials[i]
+        ..baseColorFactor = hasTexture ? vm.Vector4(1, 1, 1, 1) : vector4FromHex(_bodyColourHex)
+        ..roughnessFactor = _roughness
+        ..metallicFactor = ScenePreferences.fixedMetallic
+        ..emissiveFactor = vm.Vector4(_emissiveIntensity, _emissiveIntensity, _emissiveIntensity, 1);
+    }
   }
 
   Future<void> _onBaseColourChanged(String hex) async {
@@ -200,7 +216,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
           await compute(_decodeAndDecimate, _DecodeRequest(file.bytes!, extension));
       if (!mounted) return;
       setState(() => _stage = _LoadStage.buildingMaterial);
-      final material = await buildMeshViewerMaterial(
+      final materials = await buildMeshViewerMaterials(
         decoded,
         baseColourHex: _bodyColourHex,
         roughness: _roughness,
@@ -212,7 +228,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
         _mesh = decoded;
         _originalTriangleCount = originalTriangleCount;
         _stage = _LoadStage.ready;
-        _material = material;
+        _materials = materials;
       });
     } catch (error) {
       if (!mounted) return;
@@ -223,7 +239,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     }
   }
 
-  PhysicallyBasedMaterial? _material;
+  List<PhysicallyBasedMaterial>? _materials;
 
   @override
   Widget build(BuildContext context) {
@@ -354,13 +370,13 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
         );
       case _LoadStage.ready:
         final mesh = _mesh!;
-        final material = _material!;
+        final materials = _materials!;
         return Stack(
           children: [
             Positioned.fill(
               child: _MeshViewerViewport(
                 mesh: mesh,
-                material: material,
+                materials: materials,
                 lightIntensity: _lightIntensity,
                 showFacets: _showFacets,
                 showWireframe: _showWireframe && mesh.triangleCount <= kMaxWireframeTriangles,
@@ -406,7 +422,11 @@ class _InfoBanner extends StatelessWidget {
 /// to a single client-decoded mesh with no server behind it at all.
 class _MeshViewerViewport extends StatefulWidget {
   final DecodedMesh mesh;
-  final PhysicallyBasedMaterial material;
+
+  /// One entry per [DecodedMesh.materialGroups] entry, or a single entry
+  /// when [mesh] has none (STL/OBJ, or a single-primitive glTF) - see
+  /// [buildMeshViewerMaterials]/[buildMeshViewerNodes].
+  final List<PhysicallyBasedMaterial> materials;
 
   /// The "mid lighting" control (see `ScenePreferences`) - drives the
   /// Scene-wide directional light, reapplied whenever it changes (see
@@ -425,7 +445,7 @@ class _MeshViewerViewport extends StatefulWidget {
 
   const _MeshViewerViewport({
     required this.mesh,
-    required this.material,
+    required this.materials,
     required this.lightIntensity,
     required this.showFacets,
     required this.showWireframe,
@@ -454,7 +474,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
       setState(() {
         _scene = Scene();
         applySceneLighting(_scene!, widget.lightIntensity);
-        _faceNodes = buildMeshViewerNodes(widget.mesh, widget.material);
+        _faceNodes = buildMeshViewerNodes(widget.mesh, widget.materials);
         _syncFacetsAndWireframe();
         final bounds = _boundsOf(widget.mesh);
         _camera.setTarget(bounds.center);
