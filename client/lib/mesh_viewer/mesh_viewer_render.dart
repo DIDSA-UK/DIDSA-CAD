@@ -105,12 +105,56 @@ Node buildMeshViewerWireframeNode(DecodedMesh mesh, {vm.Vector4? color}) {
   return buildMeshEdgesNode(segments, color: color ?? vm.Vector4(0, 0, 0, 1), width: kEdgeStrokeWidth);
 }
 
-/// Longest edge (px) a decoded texture is downsampled to before upload -
-/// same target-device reasoning as `MeshViewerPreferences.maxTriangles`.
+/// Longest edge (px) a single decoded texture is downsampled to before
+/// upload - same target-device reasoning as `MeshViewerPreferences.maxTriangles`.
 /// Downsampling happens *during* decode (see [decodeTextureImage]'s use of
 /// `ui.ImageDescriptor.instantiateCodec`), so the full-resolution source
-/// image is never held in memory even momentarily.
+/// image is never held in memory even momentarily. This bounds one texture
+/// at a time - see [kMaxTotalTextureBytes] for the budget across an entire
+/// multi-material file, which this constant alone does nothing to limit.
 const int kMaxTextureDimension = 4096;
+
+/// Total decoded-texture memory (CPU-side RGBA buffer + GPU-side texture,
+/// per material) this viewer will allow across one file's *entire*
+/// [DecodedMesh.materialGroups] - a real crash-to-home-screen (no catchable
+/// Dart exception, the signature of a native-level OOM kill rather than
+/// something this app's own error handling would ever see) was reported for
+/// a larger photogrammetry file than `Nightingales.glb` (39 materials,
+/// already confirmed fine) - a file with substantially more primitives,
+/// each with its own near-[kMaxTextureDimension] texture, has no cap at all
+/// on the *sum* before this existed: 100 materials at the individual
+/// 4096x4096 RGBA8 cap alone would be ~100 x 64 MiB =~ 6.4 GiB, easily
+/// enough to trigger exactly this failure mode on a mobile device. 512 MiB
+/// is a starting point for real-device tuning (same caveat as every other
+/// tunable in this file - chosen for headroom against the rest of a large
+/// mesh's own vertex/normal/UV arrays on this viewer's target hardware, not
+/// a benchmarked result) rather than something derived from a specific
+/// device's measured budget.
+const int kMaxTotalTextureBytes = 512 * 1024 * 1024;
+
+/// Never downsample below this, however many materials a file has - a
+/// texture this small is still visibly better than no texture at all
+/// (this viewer's existing flat-tint fallback), so [_textureDimensionBudget]
+/// stops shrinking further rather than approaching 0 for a file with an
+/// extreme material count.
+const int kMinTextureDimension = 256;
+
+/// The per-texture [decodeTextureImage] `maxDimension` to use so that
+/// [textureCount] textures, each assumed roughly square RGBA8, stay within
+/// [kMaxTotalTextureBytes] in total - `textureCount * dimension^2 * 4 <=
+/// kMaxTotalTextureBytes`, solved for `dimension` and clamped to
+/// [kMinTextureDimension]/[kMaxTextureDimension]. A file with few materials
+/// (the common case - most real exports have one texture, or a handful)
+/// is unaffected, since the per-material share of the budget comfortably
+/// exceeds [kMaxTextureDimension] already; this only bites for a file with
+/// enough materials that the individual cap alone would blow the total
+/// budget.
+int _textureDimensionBudget(int textureCount) {
+  if (textureCount <= 1) return kMaxTextureDimension;
+  final perTextureBudget = kMaxTotalTextureBytes / textureCount;
+  final dimension = math.sqrt(perTextureBudget / 4).floor();
+  return dimension.clamp(kMinTextureDimension, kMaxTextureDimension);
+}
 
 /// Decodes [bytes] (JPEG/PNG) to a [ui.Image], downsampled during decode (not
 /// decoded at full size and resized after) so a source photogrammetry texture
@@ -306,6 +350,11 @@ Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
       roughness: roughness,
       emissiveIntensity: emissiveIntensity,
       fixedMetallic: fixedMetallic,
+      // A single texture - always the full per-texture cap, never
+      // downscaled further by [_textureDimensionBudget] (see
+      // [buildMeshViewerMaterials]'s own doc comment for the real
+      // multi-material case that needs it).
+      maxDimension: kMaxTextureDimension,
     );
 
 /// One [PhysicallyBasedMaterial] per [DecodedMesh.materialGroups] entry (in
@@ -317,6 +366,17 @@ Future<PhysicallyBasedMaterial> buildMeshViewerMaterial(
 /// multi-material photogrammetry export needs this instead of the one-
 /// texture-for-the-whole-file assumption [buildMeshViewerMaterial] alone
 /// makes.
+///
+/// Every group's texture is decoded/uploaded eagerly here, before the
+/// viewer ever renders a frame, and all of them stay resident for the
+/// mesh's whole lifetime (any group could become visible at any time) -
+/// unlike triangle count, which [MeshViewerPreferences.maxTriangles] already
+/// bounds, there was previously no cap at all on the *total* texture memory
+/// this implies for a file with many materials (a real crash - see
+/// [kMaxTotalTextureBytes]'s own doc comment). [_textureDimensionBudget]
+/// shrinks each group's own [decodeTextureImage] `maxDimension` based on
+/// [groups]' length so the sum stays bounded, rather than every group
+/// independently claiming up to [kMaxTextureDimension].
 Future<List<PhysicallyBasedMaterial>> buildMeshViewerMaterials(
   DecodedMesh mesh, {
   required String baseColourHex,
@@ -336,6 +396,11 @@ Future<List<PhysicallyBasedMaterial>> buildMeshViewerMaterials(
       ),
     ];
   }
+  // Only groups that actually carry a texture consume any of the budget -
+  // an untextured group (flat-tint fallback) costs nothing, so counting it
+  // here would downscale every *other* group's texture for no reason.
+  final texturedGroupCount = groups.where((g) => g.textureBytes != null).length;
+  final perTextureDimension = _textureDimensionBudget(texturedGroupCount);
   return [
     for (final group in groups)
       await _buildMaterialForTexture(
@@ -344,6 +409,7 @@ Future<List<PhysicallyBasedMaterial>> buildMeshViewerMaterials(
         roughness: roughness,
         emissiveIntensity: emissiveIntensity,
         fixedMetallic: fixedMetallic,
+        maxDimension: perTextureDimension,
       ),
   ];
 }
@@ -354,6 +420,7 @@ Future<PhysicallyBasedMaterial> _buildMaterialForTexture(
   required double roughness,
   required double emissiveIntensity,
   required double fixedMetallic,
+  int maxDimension = kMaxTextureDimension,
 }) async {
   await ensureSceneResourcesLoaded();
   final hasTexture = textureBytes != null;
@@ -364,7 +431,7 @@ Future<PhysicallyBasedMaterial> _buildMaterialForTexture(
     ..emissiveFactor = vm.Vector4(emissiveIntensity, emissiveIntensity, emissiveIntensity, 1)
     ..doubleSided = true;
   if (textureBytes != null) {
-    final image = await decodeTextureImage(textureBytes);
+    final image = await decodeTextureImage(textureBytes, maxDimension: maxDimension);
     final texture = await uploadTexture(image);
     _bindBaseColorTexture(material, texture);
   }

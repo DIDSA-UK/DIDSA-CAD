@@ -51,15 +51,20 @@ project spec, see `docs/project-brief.md`.
   scale/reflection when decomposing an arbitrary matrix is real
   complexity, not attempted here). Not decided whether it's worth building
   without a real file that needs it.
-- **Larger Blender-exported `.glb` still crashes** - reported twice now
-  (after the round-1 node-transform fix, and again after round 2's
-  recursive-walk rewrite), with no new diagnostic information either time
-  ("still crashes" with no visible in-app error). Crash-to-home-screen with
-  no catchable Dart exception usually means a native-level fault (OOM kill,
-  GPU/driver crash) rather than something this codebase's own error
-  handling would ever see - needs an actual crash log (e.g. `adb logcat`
-  output captured around the crash) to make any further progress; guessing
-  again without one risks repeating the last two rounds' pattern.
+- **Larger Blender-exported `.glb` still crashes** - reported multiple times
+  now (after the round-1 node-transform fix, again after round 2's
+  recursive-walk rewrite, and most recently after the mirroring
+  investigation), each time with no new diagnostic information ("still
+  crashes" with no visible in-app error). A plausible, concrete mechanism
+  was found and mitigated - `buildMeshViewerMaterials` had no total budget
+  on texture memory across a file's materials, only a per-texture cap (see
+  `docs/status.md`'s "Texture-memory budget for the mesh viewer" entry) -
+  but this was **not confirmed against the actual crashing file** (too
+  large for the user to upload directly), so it's a real, previously-
+  uncapped gap rather than a proven fix for this specific crash. If it
+  still crashes after this, an actual crash log (e.g. `adb logcat` output
+  captured around the crash) is the only way to make further progress
+  without guessing again.
 - **Mesh viewer Up-axis toggle only handles a Y/Z mismatch, not an
   arbitrary one.** Resolved for the real case that motivated it - a
   Blender export that skipped its "+Y Up" conversion, leaving the file's
