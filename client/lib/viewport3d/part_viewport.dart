@@ -361,6 +361,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // throttled buffer (debugPrintThrottled) and can bury or indefinitely
         // delay a one-time line behind that backlog. `print` bypasses that
         // throttling entirely so this can't get lost in logcat capture.
+        // ignore: avoid_print
         print(
           '[PartViewport][RenderDebug] GPU: defaultColorFormat=${gpu.gpuContext.defaultColorFormat} '
           'defaultStencilFormat=${gpu.gpuContext.defaultStencilFormat} '
@@ -368,6 +369,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           'doesSupportOffscreenMSAA=${gpu.gpuContext.doesSupportOffscreenMSAA}',
         );
       } catch (error) {
+        // ignore: avoid_print
         print('[PartViewport][RenderDebug] GPU capability query failed: $error');
       }
       if (!mounted) return;
@@ -394,6 +396,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           ..environment = EnvironmentMap.studio();
         _applyLighting();
         // See the `print` comment above: same reasoning applies here.
+        // ignore: avoid_print
         print(
           '[PartViewport][RenderDebug] scene: antiAliasingMode=${_scene!.antiAliasingMode} '
           'effectiveAntiAliasingMode=${_scene!.effectiveAntiAliasingMode}',
