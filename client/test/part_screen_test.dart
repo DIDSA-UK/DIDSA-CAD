@@ -715,9 +715,12 @@ void main() {
     await tester.pump();
     // The cascade-delete preview is an awaited network round trip before the
     // confirmation dialog even shows - pump past it rather than a single
-    // fixed-duration frame.
-    await _pumpUntil(tester, () => find.text('Delete').evaluate().isNotEmpty);
-    await tester.tap(find.text('Delete'));
+    // fixed-duration frame. Waits for the AlertDialog itself (not just any
+    // "Delete" text) since the closing context-menu sheet's own ListTile can
+    // still be mid-exit-animation and briefly coexist with the dialog,
+    // making a plain text search ambiguous.
+    await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
+    await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await _pumpUntil(tester, () => find.text('Sketch 2').evaluate().isEmpty);
@@ -1251,6 +1254,10 @@ void main() {
       // real rendered button directly.
       await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.logout));
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      // Same reasoning as the push above: the pop's own route transition
+      // (sliding PartScreen back in) may still be in progress even though
+      // its title text is already in the tree.
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('Part 1'), findsOneWidget);
 
       await tapAddFeatureExtrude(tester);
@@ -1309,9 +1316,12 @@ void main() {
         await tester.pump();
         // The cascade-delete preview is an awaited network round trip before
         // the confirmation dialog even shows - pump past it rather than a
-        // single fixed-duration frame.
-        await _pumpUntil(tester, () => find.text('Delete').evaluate().isNotEmpty);
-        await tester.tap(find.text('Delete'));
+        // single fixed-duration frame. Waits for the AlertDialog itself (not
+        // just any "Delete" text), since the closing context-menu sheet's
+        // own ListTile can still be mid-exit-animation and briefly coexist
+        // with the dialog, making a plain text search ambiguous.
+        await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
+        await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
         expect(backend.features.where((f) => f['type'] == 'extrude'), isEmpty);
@@ -1373,9 +1383,12 @@ void main() {
         await tester.pump();
         // The cascade-delete preview is an awaited network round trip before
         // the confirmation dialog even shows - pump past it rather than a
-        // single fixed-duration frame.
-        await _pumpUntil(tester, () => find.text('Delete').evaluate().isNotEmpty);
-        await tester.tap(find.text('Delete'));
+        // single fixed-duration frame. Waits for the AlertDialog itself (not
+        // just any "Delete" text), since the closing context-menu sheet's
+        // own ListTile can still be mid-exit-animation and briefly coexist
+        // with the dialog, making a plain text search ambiguous.
+        await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
+        await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isEmpty);
 
