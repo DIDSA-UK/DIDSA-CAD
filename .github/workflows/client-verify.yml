@@ -20,10 +20,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This project's `.metadata`/pubspec.lock track a `master`-channel
+      # Flutter revision, not stable - see docs/status.md's "Flutter CI
+      # workflow" entries for why: flutter_scene 0.18.1 depends directly on
+      # flutter_gpu's still-experimental, evolving API surface, and the
+      # specific shape it needs isn't present in current stable Flutter
+      # (confirmed by a real CI failure against stable 3.44.5 - VertexLayout/
+      # VertexFormat/VertexAttribute/TextureCompressionFamily and others were
+      # missing entirely). `channel: master` matches what this project is
+      # actually developed and run against - not a recommendation for CI in
+      # general (master is Flutter's most volatile channel and can break for
+      # reasons unrelated to this repo), but the only channel that currently
+      # reflects reality here.
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: master
           cache: true
 
       - name: Install dependencies
