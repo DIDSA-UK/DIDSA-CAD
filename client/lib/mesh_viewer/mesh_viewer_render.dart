@@ -437,3 +437,87 @@ Future<PhysicallyBasedMaterial> _buildMaterialForTexture(
   }
   return material;
 }
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/// Downsamples/re-encodes one texture for the mesh viewer's own "Export"
+/// feature (`mesh_viewer_screen.dart`) - decodes [textureBytes] at
+/// [maxDimension] via the same [decodeTextureImage] downsampling this
+/// viewer already uses for on-screen display, then re-encodes the
+/// *downsampled* result as PNG. Always PNG regardless of the source
+/// format: `dart:ui`'s `Image.toByteData` has no JPEG encoder, only a
+/// decoder - PNG is the only format it can produce. Needs `dart:ui`
+/// (`ui.Image`/`toByteData`), unlike `mesh_data.dart`'s pure encoders that
+/// actually assemble the exported file - this is the one piece of "smaller
+/// export" that has to live on this side of that pure/GPU-touching split,
+/// and the reason [encodeMeshAsGlb] itself just embeds whatever texture
+/// bytes it's handed rather than doing any resizing of its own.
+Future<(Uint8List bytes, String mimeType)> reencodeTextureForExport(
+  Uint8List textureBytes, {
+  required int maxDimension,
+}) async {
+  final image = await decodeTextureImage(textureBytes, maxDimension: maxDimension);
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  if (byteData == null) {
+    throw StateError('Could not re-encode texture as PNG for export');
+  }
+  return (byteData.buffer.asUint8List(), 'image/png');
+}
+
+/// Rebuilds [mesh] with every material's texture downsampled via
+/// [reencodeTextureForExport] - the same per-texture budget
+/// ([_textureDimensionBudget], counting only groups that actually carry a
+/// texture) [buildMeshViewerMaterials] already uses to decide what
+/// resolution to *display* this mesh's textures at, reused here so an
+/// export is never larger/higher-resolution than what the viewer itself
+/// is already showing on screen. A no-textures mesh (STL/OBJ, or an
+/// untextured glTF) is returned unchanged - nothing to re-encode, and
+/// [MeshExportFormat.stl] callers skip this function entirely (STL has no
+/// texture concept at all - see `mesh_data.dart`'s `encodeMeshAsStl`).
+Future<DecodedMesh> reencodeMeshTexturesForExport(DecodedMesh mesh) async {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    if (mesh.textureBytes == null) return mesh;
+    final (reencoded, mimeType) = await reencodeTextureForExport(mesh.textureBytes!, maxDimension: kMaxTextureDimension);
+    return DecodedMesh(
+      positions: mesh.positions,
+      normals: mesh.normals,
+      uvs: mesh.uvs,
+      textureBytes: reencoded,
+      textureMimeType: mimeType,
+      materialGroups: mesh.materialGroups,
+      sourceTriangleCount: mesh.sourceTriangleCount,
+    );
+  }
+
+  final texturedGroupCount = groups.where((g) => g.textureBytes != null).length;
+  if (texturedGroupCount == 0) return mesh;
+  final perTextureDimension = _textureDimensionBudget(texturedGroupCount);
+
+  final reencodedGroups = <MeshMaterialGroup>[];
+  for (final group in groups) {
+    if (group.textureBytes == null) {
+      reencodedGroups.add(group);
+      continue;
+    }
+    final (reencoded, mimeType) = await reencodeTextureForExport(group.textureBytes!, maxDimension: perTextureDimension);
+    reencodedGroups.add(MeshMaterialGroup(
+      startTriangle: group.startTriangle,
+      triangleCount: group.triangleCount,
+      textureBytes: reencoded,
+      textureMimeType: mimeType,
+    ));
+  }
+
+  return DecodedMesh(
+    positions: mesh.positions,
+    normals: mesh.normals,
+    uvs: mesh.uvs,
+    textureBytes: mesh.textureBytes,
+    textureMimeType: mesh.textureMimeType,
+    materialGroups: reencodedGroups,
+    sourceTriangleCount: mesh.sourceTriangleCount,
+  );
+}

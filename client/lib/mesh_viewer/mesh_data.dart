@@ -1168,3 +1168,331 @@ DecodedMesh applyMirror(DecodedMesh mesh, bool mirror) {
     sourceTriangleCount: mesh.sourceTriangleCount,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Export encoders
+// ---------------------------------------------------------------------------
+
+// The reverse of this file's own decoders - lets the mesh viewer save the
+// *decimated, corrected* mesh actually shown on screen (post-[applyUpAxis]/
+// [applyMirror]/decimation - whatever `mesh_viewer_screen.dart` currently
+// has decoded and is displaying) back out as a real, much smaller file,
+// instead of only ever being able to view a reduced version without ever
+// keeping one. Pure, GPU-independent, and testable with plain `flutter
+// test`, same as every other function in this file - texture
+// downsampling/re-encoding (which needs `dart:ui`, unlike anything else
+// here) happens in the caller (`mesh_viewer_render.dart`'s
+// `reencodeTextureForExport`) *before* `encodeMeshAsGlb` is called; this
+// function only ever embeds whatever texture bytes it's given, unmodified.
+
+/// Which file format the mesh viewer's own "Export" feature
+/// (`mesh_viewer_screen.dart`) writes - [stl] drops textures entirely (see
+/// [encodeMeshAsStl]'s own doc comment), [glb] keeps them (see
+/// [encodeMeshAsGlb]).
+enum MeshExportFormat { stl, glb }
+
+/// One triangle range to export, generalizing over [DecodedMesh]'s two
+/// shapes: a real multi-material glTF (one [_ExportGroup] per
+/// [MeshMaterialGroup]) and everything else - STL, OBJ, or a single-
+/// primitive glTF (one [_ExportGroup] covering the whole mesh, using
+/// [DecodedMesh]'s own top-level texture fields).
+class _ExportGroup {
+  final int startTriangle;
+  final int triangleCount;
+  final Uint8List? textureBytes;
+  final String? textureMimeType;
+  const _ExportGroup(this.startTriangle, this.triangleCount, this.textureBytes, this.textureMimeType);
+}
+
+List<_ExportGroup> _exportGroupsFor(DecodedMesh mesh) {
+  final groups = mesh.materialGroups;
+  if (groups == null || groups.isEmpty) {
+    return [_ExportGroup(0, mesh.triangleCount, mesh.textureBytes, mesh.textureMimeType)];
+  }
+  return [
+    for (final group in groups)
+      _ExportGroup(group.startTriangle, group.triangleCount, group.textureBytes, group.textureMimeType),
+  ];
+}
+
+Uint8List _floatsToLittleEndianBytes(List<double> floats) {
+  final bytes = ByteData(floats.length * 4);
+  for (var i = 0; i < floats.length; i++) {
+    bytes.setFloat32(i * 4, floats[i], Endian.little);
+  }
+  return bytes.buffer.asUint8List();
+}
+
+/// Binary STL header - an 80-byte free-text field per the format's own
+/// spec, unused by any reader; mirrors the backend's own fixed
+/// `_STL_HEADER` (`mesh_export.py`), just identifying this file's own
+/// separate encoder instead.
+Uint8List _stlHeader() {
+  final header = Uint8List(80);
+  final text = utf8.encode('DIDSA-CAD mesh viewer STL export');
+  header.setRange(0, text.length, text);
+  return header;
+}
+
+/// Encodes [mesh] as binary STL - geometry + normals only, no texture (STL
+/// has no such concept at all, so [MeshMaterialGroup.textureBytes]/
+/// [DecodedMesh.textureBytes] are simply not read here) - same binary
+/// layout the backend's own `encode_stl` writes: an 80-byte header, a
+/// uint32 triangle count, then per triangle 12 float32s (facet normal, then
+/// its 3 vertices) plus a 2-byte attribute byte count (always 0).
+///
+/// STL has one normal *per triangle*, not per vertex - this decoder's own
+/// [DecodedMesh.normals] are per-vertex (three per triangle, which can
+/// genuinely differ for a smooth-shaded source file), so this averages a
+/// triangle's own three vertex normals into one facet normal, the standard
+/// choice any STL consumer expects given no other convention exists for it
+/// in the format itself.
+Uint8List encodeMeshAsStl(DecodedMesh mesh) {
+  final triangleCount = mesh.triangleCount;
+  final body = BytesBuilder();
+  final countHeader = ByteData(4)..setUint32(0, triangleCount, Endian.little);
+  body.add(countHeader.buffer.asUint8List());
+
+  for (var t = 0; t < triangleCount; t++) {
+    final base = t * 9;
+    final nx = (mesh.normals[base] + mesh.normals[base + 3] + mesh.normals[base + 6]) / 3;
+    final ny = (mesh.normals[base + 1] + mesh.normals[base + 4] + mesh.normals[base + 7]) / 3;
+    final nz = (mesh.normals[base + 2] + mesh.normals[base + 5] + mesh.normals[base + 8]) / 3;
+    final length = math.sqrt(nx * nx + ny * ny + nz * nz);
+    final normal = length > 1e-12 ? [nx / length, ny / length, nz / length] : [0.0, 0.0, 0.0];
+
+    final triangle = ByteData(50); // 12 float32s (48 bytes) + uint16 attribute byte count
+    for (var c = 0; c < 3; c++) {
+      triangle.setFloat32(c * 4, normal[c], Endian.little);
+    }
+    for (var v = 0; v < 3; v++) {
+      for (var c = 0; c < 3; c++) {
+        triangle.setFloat32(12 + (v * 3 + c) * 4, mesh.positions[base + v * 3 + c], Endian.little);
+      }
+    }
+    triangle.setUint16(48, 0, Endian.little);
+    body.add(triangle.buffer.asUint8List());
+  }
+
+  final result = BytesBuilder();
+  result.add(_stlHeader());
+  result.add(body.toBytes());
+  return result.toBytes();
+}
+
+/// glTF 2.0 chunk-type magic numbers/component types this encoder needs -
+/// mirrors the backend's own `mesh_export.py` constants, kept as a separate
+/// client-side copy since nothing is shared between Dart and Python here.
+const int _kGlbMagic = 0x46546c67; // 'glTF', already little-endian byte order
+const int _kGlbVersion = 2;
+const int _kGlbChunkTypeJson = 0x4e4f534a;
+const int _kGlbChunkTypeBin = 0x004e4942;
+const int _kGltfComponentTypeFloat = 5126;
+const int _kGltfModeTriangles = 4;
+const int _kGltfTargetArrayBuffer = 34962;
+
+Uint8List _padTo4Bytes(Uint8List data, int padByte) {
+  final remainder = data.length % 4;
+  if (remainder == 0) return data;
+  final padding = Uint8List(4 - remainder)..fillRange(0, 4 - remainder, padByte);
+  return Uint8List.fromList([...data, ...padding]);
+}
+
+/// Encodes [mesh] as binary GLB (glTF 2.0) - one primitive per
+/// [DecodedMesh.materialGroups] entry (each with its own material/texture),
+/// or a single primitive covering the whole mesh when there are none (STL/
+/// OBJ, or an already-single-primitive glTF) - see [_exportGroupsFor].
+/// POSITION+NORMAL+TEXCOORD_0 attributes on every primitive regardless of
+/// whether it has a texture (an unreferenced accessor is harmless, and
+/// [DecodedMesh.uvs] is always populated even if meaningless for an
+/// untextured source), no index buffer (this decoder's own triangle-soup
+/// convention - see [DecodedMesh]'s own doc comment - same "nothing to
+/// index" choice the backend's own `encode_glb` makes). An untextured
+/// group gets a plain default material (light grey, non-metallic) rather
+/// than glTF's own spec default (fully metallic, since no
+/// `pbrMetallicRoughness` was given) - a deliberately friendlier fallback
+/// for a viewer whose whole untextured-geometry story is "flat tint is an
+/// acceptable substitute for a real texture".
+///
+/// Each group's own texture bytes are embedded exactly as given - if a
+/// caller wants a smaller export than the source file's own texture
+/// resolution, it must downsample/re-encode them *before* calling this (see
+/// `mesh_viewer_render.dart`'s `reencodeTextureForExport`, which needs
+/// `dart:ui` and so can't live in this pure-Dart file).
+Uint8List encodeMeshAsGlb(DecodedMesh mesh) {
+  final groups = _exportGroupsFor(mesh);
+
+  // A GLB's embedded binary chunk backs exactly one glTF `buffer` (the only
+  // one allowed to omit `uri` per spec) - so vertex data and image bytes,
+  // despite being built up separately below, have to end up as byte ranges
+  // within that *same* single buffer, not two different ones. Vertex data
+  // is written first; every group's own image bytes are appended after
+  // (`imageBuilder`, tracked separately only because its own final length
+  // - and so how far to shift its bufferViews' byte offsets once it's
+  // appended after `vertexBuilder` - isn't known until the loop below
+  // finishes, since later groups still add more vertex data in the
+  // meantime). [imageBufferViewIndices] records which entries in
+  // [bufferViews] need that shift applied afterward.
+  final vertexBuilder = BytesBuilder();
+  final imageBuilder = BytesBuilder();
+  final bufferViews = <Map<String, dynamic>>[];
+  final imageBufferViewIndices = <int>[];
+  final accessors = <Map<String, dynamic>>[];
+  final primitives = <Map<String, dynamic>>[];
+  final materials = <Map<String, dynamic>>[];
+  final images = <Map<String, dynamic>>[];
+  final textures = <Map<String, dynamic>>[];
+
+  int addVertexBufferView(Uint8List bytes, {required int target}) {
+    final byteOffset = vertexBuilder.length;
+    vertexBuilder.add(bytes);
+    bufferViews.add({'buffer': 0, 'byteOffset': byteOffset, 'byteLength': bytes.length, 'target': target});
+    return bufferViews.length - 1;
+  }
+
+  int addImageBufferView(Uint8List bytes) {
+    final byteOffset = imageBuilder.length;
+    imageBuilder.add(bytes);
+    bufferViews.add({'buffer': 0, 'byteOffset': byteOffset, 'byteLength': bytes.length});
+    imageBufferViewIndices.add(bufferViews.length - 1);
+    return bufferViews.length - 1;
+  }
+
+  for (final group in groups) {
+    final startFloat3 = group.startTriangle * 9;
+    final countFloat3 = group.triangleCount * 9;
+    final startFloat2 = group.startTriangle * 6;
+    final countFloat2 = group.triangleCount * 6;
+    final vertexCount = group.triangleCount * 3;
+
+    final positions = mesh.positions.sublist(startFloat3, startFloat3 + countFloat3);
+    final normals = mesh.normals.sublist(startFloat3, startFloat3 + countFloat3);
+    final uvs = mesh.uvs.sublist(startFloat2, startFloat2 + countFloat2);
+
+    var pMinX = 0.0, pMinY = 0.0, pMinZ = 0.0, pMaxX = 0.0, pMaxY = 0.0, pMaxZ = 0.0;
+    if (vertexCount > 0) {
+      pMinX = pMaxX = positions[0];
+      pMinY = pMaxY = positions[1];
+      pMinZ = pMaxZ = positions[2];
+      for (var i = 0; i + 2 < positions.length; i += 3) {
+        final x = positions[i], y = positions[i + 1], z = positions[i + 2];
+        if (x < pMinX) pMinX = x;
+        if (x > pMaxX) pMaxX = x;
+        if (y < pMinY) pMinY = y;
+        if (y > pMaxY) pMaxY = y;
+        if (z < pMinZ) pMinZ = z;
+        if (z > pMaxZ) pMaxZ = z;
+      }
+    }
+
+    final positionView = addVertexBufferView(_floatsToLittleEndianBytes(positions), target: _kGltfTargetArrayBuffer);
+    accessors.add({
+      'bufferView': positionView,
+      'componentType': _kGltfComponentTypeFloat,
+      'count': vertexCount,
+      'type': 'VEC3',
+      'min': [pMinX, pMinY, pMinZ],
+      'max': [pMaxX, pMaxY, pMaxZ],
+    });
+    final positionAccessor = accessors.length - 1;
+
+    final normalView = addVertexBufferView(_floatsToLittleEndianBytes(normals), target: _kGltfTargetArrayBuffer);
+    accessors.add({'bufferView': normalView, 'componentType': _kGltfComponentTypeFloat, 'count': vertexCount, 'type': 'VEC3'});
+    final normalAccessor = accessors.length - 1;
+
+    final uvView = addVertexBufferView(_floatsToLittleEndianBytes(uvs), target: _kGltfTargetArrayBuffer);
+    accessors.add({'bufferView': uvView, 'componentType': _kGltfComponentTypeFloat, 'count': vertexCount, 'type': 'VEC2'});
+    final uvAccessor = accessors.length - 1;
+
+    Map<String, dynamic> material;
+    if (group.textureBytes != null) {
+      final imageBufferView = addImageBufferView(group.textureBytes!);
+      images.add({
+        'bufferView': imageBufferView,
+        'mimeType': group.textureMimeType ?? 'image/jpeg',
+      });
+      textures.add({'source': images.length - 1});
+      material = {
+        'pbrMetallicRoughness': {
+          'baseColorTexture': {'index': textures.length - 1},
+          'metallicFactor': 0.0,
+          'roughnessFactor': 0.9,
+        },
+      };
+    } else {
+      material = {
+        'pbrMetallicRoughness': {
+          'baseColorFactor': [0.8, 0.8, 0.8, 1.0],
+          'metallicFactor': 0.0,
+          'roughnessFactor': 0.8,
+        },
+      };
+    }
+    materials.add(material);
+
+    primitives.add({
+      'attributes': {'POSITION': positionAccessor, 'NORMAL': normalAccessor, 'TEXCOORD_0': uvAccessor},
+      'material': materials.length - 1,
+      'mode': _kGltfModeTriangles,
+    });
+  }
+
+  final vertexBytes = vertexBuilder.toBytes();
+  final imageBytes = imageBuilder.toBytes();
+  // Now that `vertexBytes`' final length is known, shift every image
+  // bufferView's offset (currently relative to `imageBuilder` alone) by
+  // however far into the combined buffer the image bytes actually start.
+  for (final index in imageBufferViewIndices) {
+    bufferViews[index]['byteOffset'] = (bufferViews[index]['byteOffset'] as int) + vertexBytes.length;
+  }
+
+  final gltf = {
+    'asset': {'version': '2.0', 'generator': 'DIDSA-CAD mesh viewer'},
+    'scene': 0,
+    'scenes': [
+      {
+        'nodes': [0],
+      },
+    ],
+    'nodes': [
+      {'mesh': 0},
+    ],
+    'meshes': [
+      {'primitives': primitives},
+    ],
+    if (materials.isNotEmpty) 'materials': materials,
+    if (textures.isNotEmpty) 'textures': textures,
+    if (images.isNotEmpty) 'images': images,
+    'buffers': [
+      {'byteLength': vertexBytes.length + imageBytes.length},
+    ],
+    'bufferViews': bufferViews,
+    'accessors': accessors,
+  };
+
+  final jsonBytes = _padTo4Bytes(Uint8List.fromList(utf8.encode(jsonEncode(gltf))), 0x20);
+  final binBytes = _padTo4Bytes(Uint8List.fromList([...vertexBytes, ...imageBytes]), 0x00);
+
+  final jsonChunk = BytesBuilder()
+    ..add((ByteData(8)..setUint32(0, jsonBytes.length, Endian.little)..setUint32(4, _kGlbChunkTypeJson, Endian.little))
+        .buffer
+        .asUint8List())
+    ..add(jsonBytes);
+  final binChunk = BytesBuilder()
+    ..add((ByteData(8)..setUint32(0, binBytes.length, Endian.little)..setUint32(4, _kGlbChunkTypeBin, Endian.little))
+        .buffer
+        .asUint8List())
+    ..add(binBytes);
+
+  final totalLength = 12 + jsonChunk.length + binChunk.length;
+  final header = ByteData(12)
+    ..setUint32(0, _kGlbMagic, Endian.little)
+    ..setUint32(4, _kGlbVersion, Endian.little)
+    ..setUint32(8, totalLength, Endian.little);
+
+  final result = BytesBuilder();
+  result.add(header.buffer.asUint8List());
+  result.add(jsonChunk.toBytes());
+  result.add(binChunk.toBytes());
+  return result.toBytes();
+}

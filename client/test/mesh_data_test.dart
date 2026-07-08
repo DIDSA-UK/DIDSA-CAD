@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -829,6 +830,126 @@ void main() {
       final decimated = decimateToTriangleBudget(mesh, 10);
       expect(decimated.triangleCount, lessThanOrEqualTo(10));
       expect(decimated.triangleCount, greaterThan(0));
+    });
+  });
+
+  group('encodeMeshAsStl', () {
+    test('encodes triangle count, header, and per-triangle vertex data', () {
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: Float32List.fromList([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: Float32List(6),
+      );
+      final bytes = encodeMeshAsStl(mesh);
+
+      expect(bytes.length, 80 + 4 + 50); // header + count + one triangle record
+      final data = ByteData.sublistView(bytes);
+      expect(data.getUint32(80, Endian.little), 1); // triangle count
+
+      final base = 84;
+      // Facet normal: all three vertex normals are (0,0,1) here, so the
+      // average is exactly (0,0,1) too.
+      expect(data.getFloat32(base, Endian.little), closeTo(0, 1e-6));
+      expect(data.getFloat32(base + 4, Endian.little), closeTo(0, 1e-6));
+      expect(data.getFloat32(base + 8, Endian.little), closeTo(1, 1e-6));
+      // Vertex 0, 1, 2 positions, unchanged from the input.
+      final expectedPositions = [0.0, 0, 0, 1, 0, 0, 0, 1, 0];
+      for (var i = 0; i < 9; i++) {
+        expect(data.getFloat32(base + 12 + i * 4, Endian.little), closeTo(expectedPositions[i], 1e-6));
+      }
+      expect(data.getUint16(base + 48, Endian.little), 0); // attribute byte count
+    });
+
+    test('averages a triangle\'s three per-vertex normals into one facet normal', () {
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: Float32List.fromList([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        uvs: Float32List(6),
+      );
+      final bytes = encodeMeshAsStl(mesh);
+      final data = ByteData.sublistView(bytes);
+      final base = 84;
+      // Average of (1,0,0), (0,1,0), (0,0,1) is (1/3, 1/3, 1/3), normalized.
+      final expected = 1 / math.sqrt(3);
+      expect(data.getFloat32(base, Endian.little), closeTo(expected, 1e-6));
+      expect(data.getFloat32(base + 4, Endian.little), closeTo(expected, 1e-6));
+      expect(data.getFloat32(base + 8, Endian.little), closeTo(expected, 1e-6));
+    });
+
+    test('an empty mesh encodes a zero triangle count and nothing else', () {
+      final mesh = DecodedMesh(positions: Float32List(0), normals: Float32List(0), uvs: Float32List(0));
+      final bytes = encodeMeshAsStl(mesh);
+      expect(bytes.length, 84);
+      expect(ByteData.sublistView(bytes).getUint32(80, Endian.little), 0);
+    });
+  });
+
+  group('encodeMeshAsGlb', () {
+    test('round-trips a single-primitive, untextured mesh through decodeGltf', () {
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: Float32List.fromList([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: Float32List.fromList([0, 0, 1, 0, 0, 1]),
+      );
+      final bytes = encodeMeshAsGlb(mesh);
+      final decoded = decodeGltf(bytes);
+
+      expect(decoded.triangleCount, 1);
+      expect(decoded.positions, mesh.positions);
+      expect(decoded.normals, mesh.normals);
+      expect(decoded.uvs, mesh.uvs);
+      expect(decoded.textureBytes, isNull);
+    });
+
+    test('round-trips a multi-material mesh (one textured, one not) through decodeGltf', () {
+      final textureBytes = Uint8List.fromList([1, 2, 3, 4, 5]);
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([
+          0, 0, 0, 1, 0, 0, 0, 1, 0, // triangle 0 (textured group)
+          2, 2, 2, 3, 2, 2, 2, 3, 2, // triangle 1 (untextured group)
+        ]),
+        normals: Float32List.fromList([
+          0, 0, 1, 0, 0, 1, 0, 0, 1,
+          1, 0, 0, 1, 0, 0, 1, 0, 0,
+        ]),
+        uvs: Float32List.fromList([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        materialGroups: [
+          MeshMaterialGroup(startTriangle: 0, triangleCount: 1, textureBytes: textureBytes, textureMimeType: 'image/png'),
+          const MeshMaterialGroup(startTriangle: 1, triangleCount: 1),
+        ],
+      );
+
+      final bytes = encodeMeshAsGlb(mesh);
+      final decoded = decodeGltf(bytes);
+
+      expect(decoded.triangleCount, 2);
+      expect(decoded.positions, mesh.positions);
+      expect(decoded.normals, mesh.normals);
+      final groups = decoded.materialGroups!;
+      expect(groups, hasLength(2));
+      expect(groups[0].startTriangle, 0);
+      expect(groups[0].triangleCount, 1);
+      expect(groups[0].textureBytes, textureBytes);
+      expect(groups[0].textureMimeType, 'image/png');
+      expect(groups[1].textureBytes, isNull);
+    });
+
+    test('an untextured mesh has no images/textures in the resulting glTF JSON', () {
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: Float32List.fromList([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: Float32List(6),
+      );
+      final bytes = encodeMeshAsGlb(mesh);
+      // Parse just the JSON chunk to confirm no images/textures arrays leak
+      // in when nothing was ever textured (rather than relying solely on
+      // the round-trip test above, which wouldn't catch an empty-but-present
+      // `images: []`).
+      final jsonLength = ByteData.sublistView(bytes).getUint32(12, Endian.little);
+      final json = jsonDecode(utf8.decode(bytes.sublist(20, 20 + jsonLength))) as Map<String, dynamic>;
+      expect(json.containsKey('images'), isFalse);
+      expect(json.containsKey('textures'), isFalse);
+      expect(json['buffers'], hasLength(1));
     });
   });
 }

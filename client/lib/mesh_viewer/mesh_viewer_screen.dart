@@ -10,6 +10,7 @@
 /// 15s timeout) in the first place.
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -96,9 +97,26 @@ class _DecodeRequest {
 DecodedMesh _applyCorrectionsIsolate((DecodedMesh, MeshUpAxis, bool) args) =>
     applyMirror(applyUpAxis(args.$1, args.$2), args.$3);
 
+/// Runs the actual [MeshExportFormat.stl]/[MeshExportFormat.glb] byte
+/// encoding off the main isolate via [compute] - `encodeMeshAsStl`/
+/// `encodeMeshAsGlb` are pure CPU-bound loops over a photogrammetry-scale
+/// mesh's whole position/normal/UV arrays, the same "don't block the main
+/// thread" reasoning as [_decodeAndDecimate]. Takes the mesh *after*
+/// [reencodeMeshTexturesForExport] has already run (that part needs
+/// `dart:ui`, which isn't available off the main isolate, so it can't be
+/// folded into this same [compute] call - see `_exportMesh`, which does
+/// both steps in sequence).
+Uint8List _encodeMeshIsolate((DecodedMesh, MeshExportFormat) args) =>
+    args.$2 == MeshExportFormat.stl ? encodeMeshAsStl(args.$1) : encodeMeshAsGlb(args.$1);
+
 class _MeshViewerScreenState extends State<MeshViewerScreen> {
   _LoadStage _stage = _LoadStage.idle;
   String? _error;
+
+  /// True only while [_exportMesh] is running - a separate flag rather than
+  /// another [_LoadStage] value, since exporting happens *after* the mesh is
+  /// already [_LoadStage.ready], not instead of it.
+  bool _exporting = false;
 
   /// The raw decode result, exactly as [decodeStl]/[decodeObj]/[decodeGltf]
   /// produced it - never mutated. [_mesh] (below) is always derived from
@@ -365,36 +383,128 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     }
   }
 
+  /// The mesh viewer's "Export" feature - saves the *decimated, corrected*
+  /// mesh currently on screen ([_mesh]: post-decimation, post-Up-axis,
+  /// post-Mirror) as a real, much smaller file, based on whatever the
+  /// current decimation-triangle-budget/texture settings already reduced it
+  /// to - rather than only ever being able to *view* a reduced version
+  /// without ever keeping one.
+  ///
+  /// [MeshExportFormat.glb] first re-encodes every material's texture down
+  /// to the same resolution this viewer already displays it at
+  /// ([reencodeMeshTexturesForExport] - needs `dart:ui`, so it has to run
+  /// here on the main isolate, *before* the actual byte encoding). The
+  /// (already texture-reduced) mesh is then handed to [_encodeMeshIsolate]
+  /// via [compute] - pure CPU-bound work over the whole mesh, same
+  /// off-main-isolate reasoning as [_decodeAndDecimate].
+  ///
+  /// Passes the encoded bytes to `FilePicker.platform.saveFile`'s own
+  /// `bytes` parameter rather than writing via a returned path directly -
+  /// unlike [_pickAndLoad]'s `withData: true` fix (a real on-device OOM from
+  /// shipping an *unbounded, full-resolution* source file's bytes through
+  /// the platform channel), this is the *already-decimated, already
+  /// texture-budget-capped* result - bounded by the user's own
+  /// `MeshViewerPreferences` settings, not the original file's size - so the
+  /// same channel-encoding cost this time is deliberately small.
+  Future<void> _exportMesh(MeshExportFormat format) async {
+    final mesh = _mesh;
+    if (mesh == null) return;
+    setState(() => _exporting = true);
+    try {
+      final meshForExport = format == MeshExportFormat.glb ? await reencodeMeshTexturesForExport(mesh) : mesh;
+      final bytes = await compute(_encodeMeshIsolate, (meshForExport, format));
+      final extension = format == MeshExportFormat.stl ? 'stl' : 'glb';
+      final baseName = _fileName == null ? 'mesh_export' : _stripFileExtension(_fileName!);
+      final savedPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Export reduced mesh',
+        fileName: '$baseName-reduced.$extension',
+        type: FileType.any,
+        bytes: bytes,
+      );
+      if (!mounted || savedPath == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Exported to $savedPath')));
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = 'Could not export mesh: $error');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  static String _stripFileExtension(String name) {
+    final dot = name.lastIndexOf('.');
+    return dot <= 0 ? name : name.substring(0, dot);
+  }
+
   List<PhysicallyBasedMaterial>? _materials;
 
   @override
   Widget build(BuildContext context) {
-    final busy = _stage == _LoadStage.decoding || _stage == _LoadStage.buildingMaterial;
+    final busy = _stage == _LoadStage.decoding || _stage == _LoadStage.buildingMaterial || _exporting;
     return Scaffold(
       appBar: AppBar(
         title: Text(_fileName == null ? 'View Complex Mesh' : _fileName!),
         actions: [
-          // File > Open, File > Exit - this viewer has no Document/Part
-          // model to save, so "File" here is just navigation, unlike
-          // PartToolbar's much larger File menu.
+          // File > Open, Export as GLB/STL, Exit - this viewer has no
+          // Document/Part model to save (a native "Save" doesn't apply
+          // here), so "Export" is really "write out the currently-decimated
+          // mesh as a real, much smaller file" rather than PartToolbar's
+          // much larger File menu's save/load story.
           PopupMenuButton<String>(
             tooltip: 'File',
             icon: const Icon(Icons.folder_outlined),
             onSelected: (value) {
-              if (value == 'open') _pickAndLoad();
-              if (value == 'exit') Navigator.of(context).pop();
+              switch (value) {
+                case 'open':
+                  _pickAndLoad();
+                  break;
+                case 'export-glb':
+                  _exportMesh(MeshExportFormat.glb);
+                  break;
+                case 'export-stl':
+                  _exportMesh(MeshExportFormat.stl);
+                  break;
+                case 'exit':
+                  Navigator.of(context).pop();
+                  break;
+              }
             },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'open',
-                enabled: !busy,
-                child: const ListTile(leading: Icon(Icons.folder_open), title: Text('Open')),
-              ),
-              const PopupMenuItem(
-                value: 'exit',
-                child: ListTile(leading: Icon(Icons.close), title: Text('Exit')),
-              ),
-            ],
+            itemBuilder: (context) {
+              final canExport = _mesh != null && !busy;
+              return [
+                PopupMenuItem(
+                  value: 'open',
+                  enabled: !busy,
+                  child: const ListTile(leading: Icon(Icons.folder_open), title: Text('Open')),
+                ),
+                const PopupMenuDivider(),
+                PopupMenuItem(
+                  value: 'export-glb',
+                  enabled: canExport,
+                  height: 72,
+                  child: const ListTile(
+                    leading: Icon(Icons.save_alt),
+                    title: Text('Export as GLB (reduced)'),
+                    subtitle: Text('Keeps textures, downsampled to match'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'export-stl',
+                  enabled: canExport,
+                  height: 72,
+                  child: const ListTile(
+                    leading: Icon(Icons.save_alt),
+                    title: Text('Export as STL (reduced)'),
+                    subtitle: Text('Geometry only, no textures'),
+                  ),
+                ),
+                const PopupMenuDivider(),
+                const PopupMenuItem(
+                  value: 'exit',
+                  child: ListTile(leading: Icon(Icons.close), title: Text('Exit')),
+                ),
+              ];
+            },
           ),
           // View > Scene, Facets, Mesh, Up axis - a full ExpansionTile-based
           // View menu (mirroring PartToolbar's) would be overkill for this
