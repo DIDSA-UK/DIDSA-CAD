@@ -1260,10 +1260,16 @@ void main() {
       // real rendered button directly.
       await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.logout));
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      // Same reasoning as the push above: the pop's own route transition
-      // (sliding PartScreen back in) may still be in progress even though
-      // its title text is already in the tree.
-      await tester.pump(const Duration(milliseconds: 300));
+      // The "Add" FAB carries heroTag: 'add-fab' - while the pop's Hero
+      // flight is still in progress, a temporary in-flight copy coexists
+      // with the destination route's own static FAB, so a plain fixed pump
+      // isn't reliable (this ambiguity showed up intermittently at 300ms).
+      // Wait for the flight to actually finish - exactly one Icons.add FAB
+      // left - rather than guessing a duration.
+      await _pumpUntil(
+        tester,
+        () => find.widgetWithIcon(FloatingActionButton, Icons.add).evaluate().length == 1,
+      );
       expect(find.text('Part 1'), findsOneWidget);
 
       await tapAddFeatureExtrude(tester);
