@@ -17,6 +17,8 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../viewport3d/orbit_camera.dart';
@@ -398,14 +400,27 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// via [compute] - pure CPU-bound work over the whole mesh, same
   /// off-main-isolate reasoning as [_decodeAndDecimate].
   ///
-  /// Passes the encoded bytes to `FilePicker.platform.saveFile`'s own
-  /// `bytes` parameter rather than writing via a returned path directly -
-  /// unlike [_pickAndLoad]'s `withData: true` fix (a real on-device OOM from
-  /// shipping an *unbounded, full-resolution* source file's bytes through
-  /// the platform channel), this is the *already-decimated, already
-  /// texture-budget-capped* result - bounded by the user's own
-  /// `MeshViewerPreferences` settings, not the original file's size - so the
-  /// same channel-encoding cost this time is deliberately small.
+  /// Writes the encoded bytes to a real file via `dart:io` in this app's own
+  /// temporary directory (`path_provider`'s `getTemporaryDirectory()` - no
+  /// storage permission needed, since it's this app's own sandbox), then
+  /// hands the resulting *file path* to `share_plus`'s
+  /// `SharePlus.instance.share` so the OS share sheet lets the user
+  /// save/send it anywhere they like.
+  ///
+  /// Deliberately does **not** use `FilePicker.platform.saveFile(bytes:
+  /// ...)` (an earlier version of this method did) - confirmed on-device to
+  /// fail silently for a heavily-textured, "very large" source file. This
+  /// viewer explicitly targets photogrammetry-scale meshes (the default
+  /// `maxTriangles` budget alone is 3,000,000 - at ~32 bytes/vertex that's
+  /// already ~275 MiB of geometry before a single texture byte is counted),
+  /// so "the decimated result is always small enough for the platform
+  /// channel" - the assumption the `saveFile` version made - turned out to
+  /// be wrong for the same reason `_pickAndLoad`'s original `withData: true`
+  /// was: on Android, `saveFile`'s own `bytes` parameter still has to cross
+  /// into native code as a `StandardMessageCodec`-encoded `MethodChannel`
+  /// argument, bound by the same small Java heap. A local `dart:io` write
+  /// followed by a share-sheet handoff of just the *path* avoids that
+  /// entirely, in either direction, regardless of how large the export is.
   Future<void> _exportMesh(MeshExportFormat format) async {
     final mesh = _mesh;
     if (mesh == null) return;
@@ -415,14 +430,11 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
       final bytes = await compute(_encodeMeshIsolate, (meshForExport, format));
       final extension = format == MeshExportFormat.stl ? 'stl' : 'glb';
       final baseName = _fileName == null ? 'mesh_export' : _stripFileExtension(_fileName!);
-      final savedPath = await FilePicker.platform.saveFile(
-        dialogTitle: 'Export reduced mesh',
-        fileName: '$baseName-reduced.$extension',
-        type: FileType.any,
-        bytes: bytes,
-      );
-      if (!mounted || savedPath == null) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Exported to $savedPath')));
+      final tempDir = await getTemporaryDirectory();
+      final exportPath = '${tempDir.path}/$baseName-reduced.$extension';
+      await File(exportPath).writeAsBytes(bytes);
+      if (!mounted) return;
+      await SharePlus.instance.share(ShareParams(files: [XFile(exportPath)], subject: 'DIDSA-CAD mesh export'));
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = 'Could not export mesh: $error');
