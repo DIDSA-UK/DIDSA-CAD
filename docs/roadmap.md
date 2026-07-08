@@ -16,15 +16,29 @@ project spec, see `docs/project-brief.md`.
   occlusion bug this was once floated as a workaround for turned out to
   have a real fix; see `docs/status.md`'s "C3 residual edge/face-highlight
   occlusion bug: resolved" entry.)
-- **Pre-existing, unrelated test failures flagged but not fixed** across
-  several status entries (e.g. `addCollinearConstraint`/
-  `addEqualLengthConstraint`/`applyConstraintOption(collinear)` not
-  clearing the selection set in one specific test scenario, and
-  `dragTargetPointIdAt` offering the origin as a drag target in
-  `sketch_controller_test.dart`) — flagged in Prompt B's status doc as
-  newly *visible* (not newly introduced) once a missing import let that
-  test file load for the first time in a sandbox. Still open as of the
-  last time it was checked.
+- **26 pre-existing client test failures, now confirmed for real by the new
+  CI workflow** (see `docs/status.md`'s "CI now shows the real state of
+  this test suite" entry) - the first time this entire suite has ever run
+  against a real Flutter compiler/CI environment. None are connected to any
+  change made in the session that stood up CI. Not yet triaged or fixed -
+  needs a decision on priority/approach given the scope:
+  - 4 in `sketch_controller_test.dart` (`dragTargetPointIdAt` offering the
+    origin as a drag target; `addEqualLengthConstraint`/
+    `addCollinearConstraint`/`applyConstraintOption(collinear)` not clearing
+    the selection set) - previously flagged in older status entries as
+    "visible once a missing import let the file load", now confirmed real.
+  - 14 in `part_screen_test.dart` - the largest single cluster (menu toggle
+    labels, Extrude panel FAB visibility, locked-Feature tap/long-press,
+    cascade-delete dialog, the Prompt D sketch-picker flow, and more), almost
+    all failing the same way (`Expected: exactly one matching candidate /
+    Actual: Found 0 widgets with text "..."`) - suggests one shared root
+    cause (a common setup/helper step) rather than 14 independent bugs, but
+    not yet confirmed.
+  - 3 in `orbit_camera_test.dart` (`zoomByFactor`, `setZoomBoundsForRadius`,
+    `reset`) - a new discovery, not documented anywhere before this.
+  - 1 each in `selection_list_drawer_test.dart`, `sketch_canvas_ghost_editor_test.dart`,
+    `feature_picker_sheet_test.dart`, `widget_test.dart`, and
+    `part_viewport_test.dart`.
 - **Draco-compressed glTF/GLB support (`KHR_draco_mesh_compression`) - not
   implemented.** A real ODM/OpenDroneMap `.glb` export uses it; the mesh
   viewer currently detects it up front and fails with a clear, specific
