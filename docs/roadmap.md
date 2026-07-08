@@ -30,7 +30,10 @@ project spec, see `docs/project-brief.md`.
 ## Sketcher tuning package
 
 Notes from a scoping pass on sketcher UX. Grouped by theme; each is a
-distinct, independently implementable item.
+distinct, independently implementable item. See
+`docs/sketcher-overhaul-scope.md` for the engineering breakdown
+(current-state findings against the real code, proposed approach per
+item, affected files, complexity/risk, and a suggested delivery order).
 
 **Selection and drag interaction**
 - **"Double-tap to drag" produces too many false positives** - e.g. user
