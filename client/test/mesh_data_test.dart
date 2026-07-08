@@ -767,6 +767,51 @@ void main() {
     });
   });
 
+  group('applyMirror', () {
+    DecodedMesh meshWithOneVertex(double x, double y, double z) => DecodedMesh(
+          positions: Float32List.fromList([x, y, z, x, y, z, x, y, z]),
+          normals: Float32List.fromList([1, 0, 0, 1, 0, 0, 1, 0, 0]),
+          uvs: Float32List(6),
+        );
+
+    test('mirror: false is a no-op, returning the same instance', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      expect(identical(applyMirror(mesh, false), mesh), isTrue);
+    });
+
+    test('mirror: true negates X only, for positions and normals', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      final corrected = applyMirror(mesh, true);
+      expect(corrected.positions.sublist(0, 3), [-1.0, 2.0, 3.0]);
+      expect(corrected.normals.sublist(0, 3), [-1.0, 0.0, 0.0]);
+    });
+
+    test('applying it twice returns to the original - a reflection is its own inverse', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      final roundTripped = applyMirror(applyMirror(mesh, true), true);
+      expect(roundTripped.positions.sublist(0, 3), [1.0, 2.0, 3.0]);
+    });
+
+    test('preserves materialGroups/textureBytes/sourceTriangleCount unchanged', () {
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([1, 2, 3, 1, 2, 3, 1, 2, 3]),
+        normals: Float32List.fromList([1, 0, 0, 1, 0, 0, 1, 0, 0]),
+        uvs: Float32List(6),
+        textureBytes: Uint8List.fromList([1, 2, 3]),
+        textureMimeType: 'image/png',
+        materialGroups: const [
+          MeshMaterialGroup(startTriangle: 0, triangleCount: 1, textureBytes: null, textureMimeType: null),
+        ],
+        sourceTriangleCount: 5,
+      );
+      final corrected = applyMirror(mesh, true);
+      expect(corrected.textureBytes, mesh.textureBytes);
+      expect(corrected.textureMimeType, mesh.textureMimeType);
+      expect(corrected.materialGroups, mesh.materialGroups);
+      expect(corrected.sourceTriangleCount, 5);
+    });
+  });
+
   group('decimateToTriangleBudget', () {
     DecodedMesh meshWithTriangles(int count) => DecodedMesh(
           positions: Float32List(count * 9),

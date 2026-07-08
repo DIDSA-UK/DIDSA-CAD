@@ -15,6 +15,7 @@ class MeshViewerPreferences {
 
   static const String maxTrianglesPrefKey = 'mesh_viewer_max_triangles';
   static const String upAxisPrefKey = 'mesh_viewer_up_axis';
+  static const String mirrorPrefKey = 'mesh_viewer_mirror';
 
   /// Matches `mesh_viewer_render.dart`'s own former hardcoded constant -
   /// tuned for a high-end 2023-class Android flagship (Snapdragon 8 Gen 2 /
@@ -28,11 +29,22 @@ class MeshViewerPreferences {
 
   static const MeshUpAxis defaultUpAxis = MeshUpAxis.y;
 
+  /// Default for the "Mirror" toggle - see `mesh_data.dart`'s own doc
+  /// comment on [applyMirror] for the real file (a Blender-exported drone
+  /// photogrammetry scan) that motivated this: confirmed, by rendering both
+  /// the as-decoded and a left-right-flipped version for direct comparison
+  /// against the real property, to be a genuine mirror image baked into the
+  /// file's own raw vertex data. Off by default for the same reason
+  /// [defaultUpAxis] is `y`: most files need no correction at all.
+  static const bool defaultMirror = false;
+
   static int _maxTriangles = defaultMaxTriangles;
   static MeshUpAxis _upAxis = defaultUpAxis;
+  static bool _mirror = defaultMirror;
 
   static int get maxTriangles => _maxTriangles;
   static MeshUpAxis get upAxis => _upAxis;
+  static bool get mirror => _mirror;
 
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -42,6 +54,7 @@ class MeshViewerPreferences {
       (axis) => axis.name == storedUpAxis,
       orElse: () => defaultUpAxis,
     );
+    _mirror = prefs.getBool(mirrorPrefKey) ?? defaultMirror;
   }
 
   static Future<void> setMaxTriangles(int value) async {
@@ -54,5 +67,11 @@ class MeshViewerPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(upAxisPrefKey, axis.name);
     _upAxis = axis;
+  }
+
+  static Future<void> setMirror(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(mirrorPrefKey, value);
+    _mirror = value;
   }
 }

@@ -63,14 +63,18 @@ class _DecodeRequest {
   return (mesh, mesh.sourceTriangleCount);
 }
 
-/// Runs [applyUpAxis] off the main isolate via [compute] too - a
-/// photogrammetry-scale mesh can still have millions of vertices even after
-/// decimation, and this needs to re-run every time the View menu's "Up
-/// axis" toggle changes (not just once at load), so it can't assume it's
-/// cheap enough for the main thread. Takes a record (rather than
-/// [applyUpAxis]'s own two positional parameters) since [compute] only
-/// passes a single argument to its isolate entry point.
-DecodedMesh _applyUpAxisIsolate((DecodedMesh, MeshUpAxis) args) => applyUpAxis(args.$1, args.$2);
+/// Runs [applyUpAxis] then [applyMirror] off the main isolate via [compute]
+/// too - a photogrammetry-scale mesh can still have millions of vertices
+/// even after decimation, and this needs to re-run every time the View
+/// menu's "Up axis"/"Mirror" toggles change (not just once at load), so it
+/// can't assume it's cheap enough for the main thread. Both corrections are
+/// combined into one isolate hop (rather than two separate [compute] calls)
+/// to avoid copying the whole position/normal arrays twice for a single
+/// toggle change. Takes a record (rather than each function's own
+/// positional parameters) since [compute] only passes a single argument to
+/// its isolate entry point.
+DecodedMesh _applyCorrectionsIsolate((DecodedMesh, MeshUpAxis, bool) args) =>
+    applyMirror(applyUpAxis(args.$1, args.$2), args.$3);
 
 class _MeshViewerScreenState extends State<MeshViewerScreen> {
   _LoadStage _stage = _LoadStage.idle;
@@ -78,14 +82,14 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
 
   /// The raw decode result, exactly as [decodeStl]/[decodeObj]/[decodeGltf]
   /// produced it - never mutated. [_mesh] (below) is always derived from
-  /// this by applying [_upAxis], so toggling the View menu's "Up axis"
+  /// this by applying [_upAxis]/[_mirror], so toggling either View menu
   /// choice can re-derive a fresh [_mesh] without re-picking/re-decoding the
   /// file.
   DecodedMesh? _rawMesh;
 
-  /// [_rawMesh] with [_upAxis] applied - what's actually rendered/queried
-  /// for triangle counts and material info (unaffected by axis choice,
-  /// carried straight through by [applyUpAxis]).
+  /// [_rawMesh] with [_upAxis] and [_mirror] applied - what's actually
+  /// rendered/queried for triangle counts and material info (unaffected by
+  /// either choice, carried straight through by [applyUpAxis]/[applyMirror]).
   DecodedMesh? _mesh;
   int? _originalTriangleCount;
   String? _fileName;
@@ -99,6 +103,12 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// the next one, the same "live change also persists" convention
   /// [ScenePreferences]'s own sliders already use.
   MeshUpAxis _upAxis = MeshViewerPreferences.defaultUpAxis;
+
+  /// View menu's "Mirror" toggle - see `mesh_data.dart`'s own doc comment on
+  /// [applyMirror] for the real file (a Blender-exported drone
+  /// photogrammetry scan) confirmed to need this. Same
+  /// seed-from-/persist-to-[MeshViewerPreferences] convention as [_upAxis].
+  bool _mirror = MeshViewerPreferences.defaultMirror;
 
   /// Scene/material appearance controls - shared with the main Part viewport
   /// via [ViewPreferences]/[ScenePreferences] (see `scene_preferences.dart`'s
@@ -139,15 +149,17 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
       _lightIntensity = ScenePreferences.lightIntensity;
       _emissiveIntensity = ScenePreferences.emissiveIntensity;
       _upAxis = MeshViewerPreferences.upAxis;
+      _mirror = MeshViewerPreferences.mirror;
     });
   }
 
-  /// [applyUpAxis]'s async, off-main-isolate wrapper - shared by both
-  /// [_pickAndLoad] (applied once, right after decode) and
-  /// [_onUpAxisChanged] (re-applied to the same [_rawMesh] whenever the
-  /// View menu's toggle changes, with no need to re-pick/re-decode the
-  /// file).
-  Future<DecodedMesh> _applyUpAxisTo(DecodedMesh rawMesh) => compute(_applyUpAxisIsolate, (rawMesh, _upAxis));
+  /// [applyUpAxis]/[applyMirror]'s combined async, off-main-isolate wrapper -
+  /// shared by [_pickAndLoad] (applied once, right after decode),
+  /// [_onUpAxisChanged], and [_onMirrorChanged] (re-applied to the same
+  /// [_rawMesh] whenever either View menu toggle changes, with no need to
+  /// re-pick/re-decode the file).
+  Future<DecodedMesh> _applyCorrectionsTo(DecodedMesh rawMesh) =>
+      compute(_applyCorrectionsIsolate, (rawMesh, _upAxis, _mirror));
 
   /// View menu's "Up axis" toggle - see `mesh_data.dart`'s own doc comment
   /// on [MeshUpAxis] for the real-world bug this exists to correct. Rebuilds
@@ -160,7 +172,20 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     await MeshViewerPreferences.setUpAxis(axis);
     final rawMesh = _rawMesh;
     if (rawMesh == null) return;
-    final corrected = await _applyUpAxisTo(rawMesh);
+    final corrected = await _applyCorrectionsTo(rawMesh);
+    if (!mounted || _rawMesh != rawMesh) return;
+    setState(() => _mesh = corrected);
+  }
+
+  /// View menu's "Mirror" toggle - see `mesh_data.dart`'s own doc comment on
+  /// [applyMirror] for the real-world bug this exists to correct. Identical
+  /// shape to [_onUpAxisChanged], just toggling the other correction.
+  Future<void> _onMirrorChanged(bool mirror) async {
+    setState(() => _mirror = mirror);
+    await MeshViewerPreferences.setMirror(mirror);
+    final rawMesh = _rawMesh;
+    if (rawMesh == null) return;
+    final corrected = await _applyCorrectionsTo(rawMesh);
     if (!mounted || _rawMesh != rawMesh) return;
     setState(() => _mesh = corrected);
   }
@@ -275,7 +300,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
         _decodeAndDecimate,
         _DecodeRequest(file.bytes!, extension, MeshViewerPreferences.maxTriangles),
       );
-      final corrected = await _applyUpAxisTo(decoded);
+      final corrected = await _applyCorrectionsTo(decoded);
       if (!mounted) return;
       setState(() => _stage = _LoadStage.buildingMaterial);
       final materials = await buildMeshViewerMaterials(
@@ -356,6 +381,9 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                 case 'up-axis-z':
                   _onUpAxisChanged(MeshUpAxis.z);
                   break;
+                case 'mirror':
+                  _onMirrorChanged(!_mirror);
+                  break;
               }
             },
             itemBuilder: (context) {
@@ -393,6 +421,19 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                   value: 'up-axis-z',
                   checked: _upAxis == MeshUpAxis.z,
                   child: const Text('Up axis: Z'),
+                ),
+                const PopupMenuDivider(),
+                // Some real-world files (a Blender-exported drone
+                // photogrammetry scan, confirmed by rendering both the
+                // as-decoded and a left-right-flipped version for direct
+                // comparison against the real property) genuinely have
+                // mirrored vertex data - see `mesh_data.dart`'s own doc
+                // comment on `applyMirror` for why this has to be a manual
+                // choice too, same reasoning as "Up axis" above.
+                CheckedPopupMenuItem(
+                  value: 'mirror',
+                  checked: _mirror,
+                  child: const Text('Mirror'),
                 ),
               ];
             },

@@ -1113,3 +1113,58 @@ DecodedMesh applyUpAxis(DecodedMesh mesh, MeshUpAxis axis) {
     sourceTriangleCount: mesh.sourceTriangleCount,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Mirror correction
+// ---------------------------------------------------------------------------
+
+/// A real Blender-exported glTF (`Nightingales.glb`, a drone photogrammetry
+/// scan) was confirmed - by decoding its actual `POSITION` accessor data and
+/// rendering both the as-decoded and a left-right-flipped version for the
+/// user to compare against the real property - to be a genuine mirror image
+/// (e.g. a garage on the wrong side of the house) once [applyUpAxis] had
+/// already corrected its vertical orientation. This decoder's own pipeline
+/// (accessor reads, node-transform composition, [applyUpAxis], decimation)
+/// was independently re-verified against this exact file to be incapable of
+/// introducing a reflection - every step is either a no-op or a proper
+/// rotation (determinant +1) - so the mirroring is baked into the file's own
+/// raw vertex data, not something this decoder does. Why the same file opens
+/// un-mirrored in Blender is unresolved (most likely someone manually
+/// mirrored the object in Blender - e.g. a negative-scale fix applied by
+/// hand after noticing the same problem there - which a fresh glTF export
+/// wouldn't carry, but the read-only file handed to this decoder does). As
+/// with [MeshUpAxis], there's no reliable way to detect a mirrored file from
+/// its bytes alone (a correctly-handed and a mirrored file are structurally
+/// identical glTF), so this is a manual, user-facing toggle too.
+///
+/// Negates world X only (`(x, y, z) -> (-x, y, z)`) - the axis this
+/// decoder's own [applyUpAxis] never touches, confirmed as the correct one
+/// to flip for the file that motivated this. Applied to both positions and
+/// normals; triangle winding is left untouched deliberately - flipping X
+/// does invert the file's winding/normal relationship, but every mesh-viewer
+/// material already sets `doubleSided = true` (see `mesh_viewer_render.dart`'s
+/// own doc comment - real external files can't be trusted to have consistent
+/// winding either way), so there is no back-face culling for this to break.
+DecodedMesh applyMirror(DecodedMesh mesh, bool mirror) {
+  if (!mirror) return mesh;
+
+  Float32List negateX(Float32List src) {
+    final out = Float32List(src.length);
+    for (var i = 0; i + 2 < src.length; i += 3) {
+      out[i] = -src[i];
+      out[i + 1] = src[i + 1];
+      out[i + 2] = src[i + 2];
+    }
+    return out;
+  }
+
+  return DecodedMesh(
+    positions: negateX(mesh.positions),
+    normals: negateX(mesh.normals),
+    uvs: mesh.uvs,
+    textureBytes: mesh.textureBytes,
+    textureMimeType: mesh.textureMimeType,
+    materialGroups: mesh.materialGroups,
+    sourceTriangleCount: mesh.sourceTriangleCount,
+  );
+}

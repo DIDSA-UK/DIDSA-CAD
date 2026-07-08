@@ -22,6 +22,7 @@ class MeshViewerSettingsScreen extends StatefulWidget {
 class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
   int _maxTriangles = MeshViewerPreferences.defaultMaxTriangles;
   MeshUpAxis _upAxis = MeshViewerPreferences.defaultUpAxis;
+  bool _mirror = MeshViewerPreferences.defaultMirror;
   bool _loaded = false;
 
   @override
@@ -36,6 +37,7 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
     setState(() {
       _maxTriangles = MeshViewerPreferences.maxTriangles;
       _upAxis = MeshViewerPreferences.upAxis;
+      _mirror = MeshViewerPreferences.mirror;
       _loaded = true;
     });
   }
@@ -49,6 +51,11 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
   Future<void> _onUpAxisChanged(MeshUpAxis axis) async {
     setState(() => _upAxis = axis);
     await MeshViewerPreferences.setUpAxis(axis);
+  }
+
+  Future<void> _onMirrorChanged(bool mirror) async {
+    setState(() => _mirror = mirror);
+    await MeshViewerPreferences.setMirror(mirror);
   }
 
   static String _formatTriangleCount(int n) {
@@ -108,6 +115,25 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
                   ],
                   selected: {_upAxis},
                   onSelectionChanged: (selection) => _onUpAxisChanged(selection.first),
+                ),
+                const SizedBox(height: 24),
+                Text('Mirror', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  "Some export pipelines produce genuinely mirrored geometry (e.g. a "
+                  "Blender export where the model itself is a left-right flip of the real "
+                  "object) - this sets the default for newly opened files (still "
+                  "overridable per file from the viewer's own View menu).",
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('Off (default)')),
+                    ButtonSegment(value: true, label: Text('Mirrored')),
+                  ],
+                  selected: {_mirror},
+                  onSelectionChanged: (selection) => _onMirrorChanged(selection.first),
                 ),
               ],
             ),
