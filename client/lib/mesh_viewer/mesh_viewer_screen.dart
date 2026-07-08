@@ -8,6 +8,8 @@
 /// OCCT dependency at all - see `mesh_data.dart`'s own top-of-file doc
 /// comment for why that means it never needs the network round-trip (or its
 /// 15s timeout) in the first place.
+library;
+
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -403,9 +405,8 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// Writes the encoded bytes to a real file via `dart:io` in this app's own
   /// temporary directory (`path_provider`'s `getTemporaryDirectory()` - no
   /// storage permission needed, since it's this app's own sandbox), then
-  /// hands the resulting *file path* to `share_plus`'s
-  /// `SharePlus.instance.share` so the OS share sheet lets the user
-  /// save/send it anywhere they like.
+  /// hands the resulting *file path* to `share_plus`'s `Share.shareXFiles`
+  /// so the OS share sheet lets the user save/send it anywhere they like.
   ///
   /// Deliberately does **not** use `FilePicker.platform.saveFile(bytes:
   /// ...)` (an earlier version of this method did) - confirmed on-device to
@@ -434,7 +435,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
       final exportPath = '${tempDir.path}/$baseName-reduced.$extension';
       await File(exportPath).writeAsBytes(bytes);
       if (!mounted) return;
-      await SharePlus.instance.share(ShareParams(files: [XFile(exportPath)], subject: 'DIDSA-CAD mesh export'));
+      await Share.shareXFiles([XFile(exportPath)], subject: 'DIDSA-CAD mesh export');
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = 'Could not export mesh: $error');

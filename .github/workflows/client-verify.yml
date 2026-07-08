@@ -33,4 +33,5 @@ jobs:
         run: flutter analyze
 
       - name: Run tests
+        if: ${{ !cancelled() }}
         run: flutter test

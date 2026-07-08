@@ -847,12 +847,11 @@ DecodedMesh _decodeGltfDocument(Map<String, dynamic> gltf, List<Uint8List> buffe
     final buffer = buffers[bufferIndex];
     final byteData = ByteData.sublistView(buffer);
     final base = bufferViewByteOffset + accessorByteOffset;
-    final componentSize = switch (componentType) {
-      _kComponentUnsignedByte => 1,
-      _kComponentUnsignedShort => 2,
-      _kComponentUnsignedInt => 4,
-      _ => throw MeshImportError('Unsupported index componentType $componentType'),
-    };
+    if (componentType != _kComponentUnsignedByte &&
+        componentType != _kComponentUnsignedShort &&
+        componentType != _kComponentUnsignedInt) {
+      throw MeshImportError('Unsupported index componentType $componentType');
+    }
     return [
       for (var i = 0; i < count; i++)
         switch (componentType) {

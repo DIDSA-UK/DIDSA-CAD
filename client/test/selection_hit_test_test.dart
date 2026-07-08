@@ -745,6 +745,7 @@ void main() {
         points: [vm.Vector3(0.05, 0, 10)],
         pointIds: const ['point-a'],
         circlePolygons: const [],
+        circleIds: const [],
       ),
     };
 
