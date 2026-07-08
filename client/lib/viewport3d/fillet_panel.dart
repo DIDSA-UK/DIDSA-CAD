@@ -51,6 +51,13 @@ class _FilletPanelState extends State<FilletPanel> {
     super.initState();
     _radiusController = TextEditingController(text: _formatDistance(widget.initialRadius));
     _radius = widget.initialRadius > 0 ? widget.initialRadius : null;
+    // Without this, the live preview underneath this panel doesn't appear
+    // until the user actually edits the radius field - onRadiusChanged was
+    // only ever wired to that callback, never fired for the initial value
+    // this panel opens with (mirrors ExtrudePanel's identical fix).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _radius != null) widget.onRadiusChanged?.call(_radius!);
+    });
   }
 
   @override

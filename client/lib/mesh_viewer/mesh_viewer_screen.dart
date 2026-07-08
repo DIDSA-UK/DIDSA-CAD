@@ -76,6 +76,14 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   double _lightIntensity = ScenePreferences.defaultLightIntensity;
   double _emissiveIntensity = ScenePreferences.defaultEmissiveIntensity;
 
+  /// "Facets" (filled faces) and "Mesh" (wireframe overlay) View-menu
+  /// toggles - session-only (not persisted), defaulting to this viewer's
+  /// pre-existing behaviour (facets on, no wireframe). See
+  /// [buildMeshViewerWireframeNode]'s own doc comment for why wireframe is
+  /// unavailable above [kMaxWireframeTriangles].
+  bool _showFacets = true;
+  bool _showWireframe = false;
+
   static const _supportedExtensions = ['stl', 'obj', 'gltf', 'glb'];
 
   @override
@@ -246,21 +254,46 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
               ),
             ],
           ),
-          // View > Scene - the only View entry this viewer has; a full
-          // ExpansionTile-based View menu (mirroring PartToolbar's) would be
-          // overkill for one entry.
+          // View > Scene, Facets, Mesh - a full ExpansionTile-based View menu
+          // (mirroring PartToolbar's) would be overkill for this few entries.
           PopupMenuButton<String>(
             tooltip: 'View',
             icon: const Icon(Icons.visibility_outlined),
             onSelected: (value) {
-              if (value == 'scene') _openScenePanel();
+              switch (value) {
+                case 'scene':
+                  _openScenePanel();
+                  break;
+                case 'facets':
+                  setState(() => _showFacets = !_showFacets);
+                  break;
+                case 'wireframe':
+                  setState(() => _showWireframe = !_showWireframe);
+                  break;
+              }
             },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'scene',
-                child: ListTile(leading: Icon(Icons.wb_incandescent_outlined), title: Text('Scene')),
-              ),
-            ],
+            itemBuilder: (context) {
+              final mesh = _mesh;
+              final wireframeAvailable = mesh != null && mesh.triangleCount <= kMaxWireframeTriangles;
+              return [
+                const PopupMenuItem(
+                  value: 'scene',
+                  child: ListTile(leading: Icon(Icons.wb_incandescent_outlined), title: Text('Scene')),
+                ),
+                const PopupMenuDivider(),
+                CheckedPopupMenuItem(
+                  value: 'facets',
+                  checked: _showFacets,
+                  child: const Text('Facets'),
+                ),
+                CheckedPopupMenuItem(
+                  value: 'wireframe',
+                  enabled: wireframeAvailable,
+                  checked: _showWireframe && wireframeAvailable,
+                  child: Text(wireframeAvailable ? 'Mesh' : 'Mesh (too many triangles)'),
+                ),
+              ];
+            },
           ),
         ],
       ),
@@ -325,7 +358,13 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
         return Stack(
           children: [
             Positioned.fill(
-              child: _MeshViewerViewport(mesh: mesh, material: material, lightIntensity: _lightIntensity),
+              child: _MeshViewerViewport(
+                mesh: mesh,
+                material: material,
+                lightIntensity: _lightIntensity,
+                showFacets: _showFacets,
+                showWireframe: _showWireframe && mesh.triangleCount <= kMaxWireframeTriangles,
+              ),
             ),
             if (_originalTriangleCount != null && _originalTriangleCount != mesh.triangleCount)
               Positioned(
@@ -375,7 +414,22 @@ class _MeshViewerViewport extends StatefulWidget {
   /// convention `PartViewport.lightIntensity` uses.
   final double lightIntensity;
 
-  const _MeshViewerViewport({required this.mesh, required this.material, required this.lightIntensity});
+  /// View menu's "Facets"/"Mesh" toggles - whether the filled-face batches
+  /// ([buildMeshViewerNodes]) and/or the wireframe overlay
+  /// ([buildMeshViewerWireframeNode]) are currently in the [Scene]. The
+  /// caller (`mesh_viewer_screen.dart`) has already clamped [showWireframe]
+  /// to false above [kMaxWireframeTriangles] - this widget doesn't
+  /// re-check that itself.
+  final bool showFacets;
+  final bool showWireframe;
+
+  const _MeshViewerViewport({
+    required this.mesh,
+    required this.material,
+    required this.lightIntensity,
+    required this.showFacets,
+    required this.showWireframe,
+  });
 
   @override
   State<_MeshViewerViewport> createState() => _MeshViewerViewportState();
@@ -387,6 +441,11 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
   String? _error;
   final Map<int, Offset> _activeTouches = {};
 
+  List<Node> _faceNodes = const [];
+  Node? _wireframeNode;
+  bool _facesInScene = false;
+  bool _wireframeInScene = false;
+
   @override
   void initState() {
     super.initState();
@@ -395,9 +454,8 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
       setState(() {
         _scene = Scene();
         applySceneLighting(_scene!, widget.lightIntensity);
-        for (final node in buildMeshViewerNodes(widget.mesh, widget.material)) {
-          _scene!.add(node);
-        }
+        _faceNodes = buildMeshViewerNodes(widget.mesh, widget.material);
+        _syncFacetsAndWireframe();
         final bounds = _boundsOf(widget.mesh);
         _camera.setTarget(bounds.center);
         _camera.setZoomBoundsForRadius(bounds.radius);
@@ -408,12 +466,46 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     });
   }
 
+  /// Adds/removes [_faceNodes]/[_wireframeNode] to/from [_scene] to match
+  /// [widget.showFacets]/[widget.showWireframe] - only touches the [Scene]
+  /// on an actual transition (tracked via [_facesInScene]/
+  /// [_wireframeInScene]), never re-adding an already-present [Node]. The
+  /// wireframe [Node] itself is built lazily, once, the first time it's
+  /// needed - a mesh the user never toggles wireframe on for never pays
+  /// [buildMeshViewerWireframeNode]'s cost at all.
+  void _syncFacetsAndWireframe() {
+    final scene = _scene;
+    if (scene == null) return;
+    if (widget.showFacets != _facesInScene) {
+      for (final node in _faceNodes) {
+        if (widget.showFacets) {
+          scene.add(node);
+        } else {
+          scene.remove(node);
+        }
+      }
+      _facesInScene = widget.showFacets;
+    }
+    if (widget.showWireframe != _wireframeInScene) {
+      _wireframeNode ??= buildMeshViewerWireframeNode(widget.mesh);
+      if (widget.showWireframe) {
+        scene.add(_wireframeNode!);
+      } else {
+        scene.remove(_wireframeNode!);
+      }
+      _wireframeInScene = widget.showWireframe;
+    }
+  }
+
   @override
   void didUpdateWidget(covariant _MeshViewerViewport oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.lightIntensity != oldWidget.lightIntensity) {
       final scene = _scene;
       if (scene != null) setState(() => applySceneLighting(scene, widget.lightIntensity));
+    }
+    if (widget.showFacets != oldWidget.showFacets || widget.showWireframe != oldWidget.showWireframe) {
+      setState(_syncFacetsAndWireframe);
     }
   }
 

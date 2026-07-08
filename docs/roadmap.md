@@ -60,3 +60,18 @@ project spec, see `docs/project-brief.md`.
   handling would ever see - needs an actual crash log (e.g. `adb logcat`
   output captured around the crash) to make any further progress; guessing
   again without one risks repeating the last two rounds' pattern.
+- **A complex glTF is still mirrored even after the recursive node-transform
+  fix; a simple one is not.** Decimation has been ruled out as the cause by
+  code review (it only ever keeps-or-skips whole triangles, never touches a
+  kept triangle's own vertex data), and the node-transform matrix
+  composition math has been independently re-derived and re-checked against
+  the implementation with no error found (see `docs/status.md`'s
+  "Investigated: complex glTF mesh still reported mirrored" entry). Not yet
+  resolved - needs either the actual file's `nodes`/`scenes` JSON (or a
+  reduced repro), or a clearer description of exactly what looks mirrored
+  (the whole model flipped on one axis vs. one sub-part looking wrong), to
+  make further progress without guessing a third time. One untested
+  candidate: a node with a genuine negative-scale component (a legitimate
+  glTF reflection, e.g. from an un-applied Blender "Mirror modifier"
+  duplicate) - the transform math is believed correct for this case per the
+  review, but not confirmed against a real file that actually has one.

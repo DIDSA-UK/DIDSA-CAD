@@ -86,6 +86,13 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     _startController = TextEditingController(text: _formatDistance(widget.initialStartDistance));
     _endController = TextEditingController(text: _formatDistance(widget.initialEndDistance));
     _depth = widget.initialEndDistance - widget.initialStartDistance;
+    // Without this, the live preview underneath this panel doesn't appear
+    // until the user actually edits a field - onChanged was only ever wired
+    // to the TextField/SegmentedButton callbacks, never fired for the
+    // initial values this panel opens with.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onChanged(_type, widget.initialStartDistance, widget.initialEndDistance);
+    });
   }
 
   @override

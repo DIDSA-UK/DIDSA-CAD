@@ -34,6 +34,7 @@ import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../viewport3d/mesh_geometry.dart' show buildMeshEdgesNode, kEdgeStrokeWidth;
 import '../viewport3d/view_preferences.dart' show vector4FromHex;
 import 'mesh_data.dart';
 
@@ -68,6 +69,46 @@ const int _kMaxTrianglesPerBatch = _kMaxVerticesPerBatch ~/ 3;
 /// benchmarked result - raise or lower it once someone can actually watch
 /// frame time on the target hardware.
 const int kMaxViewerTriangles = 3000000;
+
+/// Triangle ceiling for the "Mesh" (wireframe) View toggle - deliberately
+/// far below [kMaxViewerTriangles]. Unlike the real Part viewport's edge
+/// overlay (a Body's own, comparatively small, number of true OCCT edge
+/// polylines - see `mesh_geometry.dart`'s `buildMeshEdgesNode`), an
+/// arbitrary imported mesh has no separate edge data at all: the only way
+/// to draw one is every triangle's 3 edges, undeduped (a shared edge
+/// between two adjacent triangles is simply drawn twice - harmless
+/// overdraw, cheaper than a hash-based dedup pass for a cosmetic toggle).
+/// At photogrammetry scale (millions of triangles) that's tens of millions
+/// of individual line primitives - not something this viewer's target
+/// hardware (see [kMaxViewerTriangles]'s own doc comment) can build or
+/// render without stalling, so [buildMeshViewerWireframeNode] simply isn't
+/// called above this ceiling (see `mesh_viewer_screen.dart`'s own View menu,
+/// which disables the toggle instead of silently doing nothing). A starting
+/// point, not a benchmarked result - same standing caveat as every other
+/// tunable in this file.
+const int kMaxWireframeTriangles = 200000;
+
+/// Builds a wireframe overlay [Node] from [mesh]'s triangle soup - every
+/// triangle contributes its own 3 edges (undeduped; see
+/// [kMaxWireframeTriangles]'s own doc comment on why that's an accepted
+/// trade-off here), reusing `mesh_geometry.dart`'s own
+/// [buildMeshEdgesNode]/[PolylineGeometry]-based edge renderer rather than a
+/// second implementation of the same "list of segments -> Node" step.
+/// Caller is expected to have already checked [mesh]'s triangle count
+/// against [kMaxWireframeTriangles].
+Node buildMeshViewerWireframeNode(DecodedMesh mesh, {vm.Vector4? color}) {
+  final positions = mesh.positions;
+  final segments = <(vm.Vector3, vm.Vector3)>[];
+  for (var t = 0; t < positions.length; t += 9) {
+    final a = vm.Vector3(positions[t], positions[t + 1], positions[t + 2]);
+    final b = vm.Vector3(positions[t + 3], positions[t + 4], positions[t + 5]);
+    final c = vm.Vector3(positions[t + 6], positions[t + 7], positions[t + 8]);
+    segments.add((a, b));
+    segments.add((b, c));
+    segments.add((c, a));
+  }
+  return buildMeshEdgesNode(segments, color: color ?? vm.Vector4(0, 0, 0, 1), width: kEdgeStrokeWidth);
+}
 
 /// Longest edge (px) a decoded texture is downsampled to before upload -
 /// same target-device reasoning as [kMaxViewerTriangles]. Downsampling

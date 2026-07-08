@@ -4791,13 +4791,25 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// The banner should reflect the file the user actually saved to/opened,
+  /// not the backend `Part.name` - every brand-new Part is created with the
+  /// same hardcoded `'Part 1'` server-side (see `_loadPart`), so without
+  /// this the banner would say "Part 1" forever regardless of what the user
+  /// names their save file. Falls back to `_part?.name` only when nothing's
+  /// been saved/opened yet this session.
+  String get _displayPartName {
+    final savedName = _lastSavedFileName;
+    if (savedName == null) return _part?.name ?? 'Part';
+    return savedName.replaceFirst(RegExp(r'\.DIDSAprt$', caseSensitive: false), '');
+  }
+
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         leading: const DidsaLogoButton(),
         leadingWidth: 100,
         centerTitle: false,
-        title: Text(_part?.name ?? 'Part', textAlign: TextAlign.right),
+        title: Text(_displayPartName, textAlign: TextAlign.right),
       ),
       body: Column(
         children: [
