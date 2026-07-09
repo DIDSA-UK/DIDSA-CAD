@@ -846,28 +846,6 @@ void main() {
     expect(controller.labelOffsetFor(constraintId), const Offset(12, -4));
   });
 
-  test('resetLabelOffset (the double-tap-without-drag gesture) snaps a label back to zero', () async {
-    controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
-    await controller.handleCanvasTap(10, 0);
-    controller.finishChain();
-    controller.enterDimensionMode();
-    await controller.handleCanvasTap(8, 0.1);
-    controller.tapGhost('length');
-    await controller.confirmGhostValue('length', 25.0);
-    final constraintId =
-        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
-
-    controller.beginLabelDrag(constraintId);
-    controller.updateLabelDrag(const Offset(2, 1)); // tiny - under the 4px reset threshold
-    controller.endLabelDrag();
-    expect(controller.labelOffsetFor(constraintId), const Offset(2, 1));
-
-    controller.resetLabelOffset(constraintId);
-
-    expect(controller.labelOffsetFor(constraintId), Offset.zero);
-  });
-
   test('closedProfileFills is populated with the ordered loop once a chain closes', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);

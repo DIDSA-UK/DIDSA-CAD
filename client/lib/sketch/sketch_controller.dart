@@ -1392,21 +1392,31 @@ class SketchController extends ChangeNotifier {
   /// Feeds a cursor-position update to whichever entity is currently
   /// grabbed (a Point or a Line - see [isEntityGrabbed]) - lets the
   /// canvas's cursor-movement code stay agnostic to which kind of grab is
-  /// active. A no-op if nothing's grabbed, or only a label is (labels use
-  /// their own screen-delta-based [updateLabelDrag], driven directly by the
-  /// canvas, since a label drag is still a plain continuous hold rather
-  /// than this grab/drop gesture).
+  /// active. A no-op if nothing's grabbed, or only a label is - a label's
+  /// offset lives in screen space, not an absolute cursor position, so the
+  /// canvas feeds it directly via [updateLabelDrag] instead of through
+  /// here (see sketch_canvas.dart's `_feedMouseSwipeToGrabbedEntity` and
+  /// its touch-branch equivalent).
   Future<void> updateGrabbedPosition(double x, double y) async {
     if (_draggingPointId != null) return updatePointDrag(x, y);
     if (_draggingLineId != null) return updateLineDrag(x, y);
   }
 
-  /// Drops whichever entity is currently grabbed (Point or Line - see
-  /// [isEntityGrabbed]), finalizing it the same way its own end-drag method
-  /// would.
+  /// Drops whichever entity is currently grabbed (Point, Line, or
+  /// Constraint label - see [isEntityGrabbed]), finalizing it the same way
+  /// its own end-drag method would.
+  ///
+  /// Bug-fix: the label branch was missing entirely - dropGrabbedEntity
+  /// was written before label dragging was unified into this same
+  /// grab/drop gesture, and never got updated when that happened, so a
+  /// tap meant to drop a grabbed label silently did nothing (neither
+  /// _draggingPointId nor _draggingLineId was ever set for a label grab).
+  /// isEntityGrabbed stayed true forever after, leaving the label
+  /// permanently stuck grabbed with no way to drop it.
   Future<void> dropGrabbedEntity() async {
     if (_draggingPointId != null) return endPointDrag();
     if (_draggingLineId != null) return endLineDrag();
+    if (_draggingLabelId != null) return endLabelDrag();
   }
 
   /// Stage 15 item 2: per-Constraint screen-pixel offset from its default
@@ -1473,19 +1483,6 @@ class SketchController extends ChangeNotifier {
   /// was dropped.
   void endLabelDrag() {
     _draggingLabelId = null;
-  }
-
-  /// Clears [constraintId]'s offset back to its default painted anchor.
-  /// Originally Stage 15 item 2's "double-tap without dragging" reset
-  /// gesture - that specific trigger no longer exists now that label
-  /// dragging shares the tap-grab/swipe/tap-drop gesture (grabbing and
-  /// immediately dropping without swiping just leaves the label where it
-  /// already was, not a reset), so this is currently unreachable from the
-  /// UI. Kept as a public method (and still covered by its own unit test)
-  /// in case it's worth wiring to a different gesture later (e.g. a
-  /// long-press on a selected label).
-  void resetLabelOffset(String constraintId) {
-    if (_labelOffsets.remove(constraintId) != null) notifyListeners();
   }
 
   double _distanceToSegment(
