@@ -286,18 +286,28 @@ class OrbitCamera {
 /// so a Sketch on either of those planes rendered upside-down/rotated
 /// relative to its own 2D canvas whenever a 3D camera faced it head-on
 /// (Orbit View's entry orientation, the camera-into-sketch transition, and
-/// the shaded backdrop all inherited this). Each plane's quaternion below
-/// is now composed as [the original look-from-direction rotation] followed
-/// by an additional roll about that same viewing axis, chosen so that
-/// `_up`/`_right` land exactly on `SketchPlaneBasis.fixed(plane).yAxis`/
-/// `.xAxis` (verified by hand for all three planes - XY needed no roll,
-/// XZ/YZ each needed one) - not an arbitrary pick.
+/// the shaded backdrop all inherited this).
+///
+/// `test/orientation_facing_plane_test.dart` checks each plane's `right`/
+/// `up`/viewing-direction against `SketchPlaneBasis.fixed(plane)` directly
+/// via real `vm.Quaternion` arithmetic - composing two quaternions by hand
+/// (as XZ's case still does, now CI-confirmed correct) proved genuinely
+/// error-prone to verify by hand (composition order isn't visually
+/// obvious), and that same hand-verification for YZ turned out to be
+/// simply wrong - CI caught `right` landing on `(0,0,-1)` instead of
+/// `SketchPlaneBasis.fixed(.yz).xAxis` (`(0,1,0)`). YZ's case below is
+/// instead a single rotation, derived directly from the required mapping
+/// (local "back" -> world `normal`, local "up" -> world `yAxis`) rather
+/// than composed from two rotations, and double-checked against that same
+/// test (now passing for all three planes) rather than by hand alone.
 vm.Quaternion orientationFacingPlane(ReferencePlaneKind plane) => switch (plane) {
       ReferencePlaneKind.xy => vm.Quaternion.identity(),
       ReferencePlaneKind.xz => (vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi) *
               vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), -math.pi / 2))
           .normalized(),
-      ReferencePlaneKind.yz => (vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), math.pi / 2) *
-              vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi / 2))
-          .normalized(),
+      // Cycles local axes (right,up,back) -> world (up,back,right) i.e.
+      // local back=(0,0,1) -> world normal=(1,0,0), local up=(0,1,0) ->
+      // world yAxis=(0,0,1) - a 120-degree rotation about the (1,1,1) body
+      // diagonal.
+      ReferencePlaneKind.yz => vm.Quaternion.axisAngle(vm.Vector3(1, 1, 1).normalized(), 2 * math.pi / 3),
     };

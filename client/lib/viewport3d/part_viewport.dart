@@ -862,16 +862,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // = screenCentre + panOffsetPx): the sketch-space point currently
     // rendered at the canvas's own centre.
     //
-    // On-device feedback (round 2): the un-negated `panOffsetPx.dx /
-    // pixelsPerUnit` here (rather than the negated form a plain inverse of
-    // ViewTransform.sketchToScreen would suggest) is deliberate - panning
-    // the 2D canvas left/right was tracking backwards in the 3D backdrop
-    // (vertical panning was already correct). Negating y here but not x
-    // compensates for that - isolated to this sync method rather than
-    // touching the shared `orientationFacingPlane` (used by Orbit View's
-    // own entry/exit orientation too), so this fix can't regress that
-    // separately-confirmed-correct behaviour.
-    final sketchX = panOffsetPx.dx / pixelsPerUnit;
+    // On-device feedback (round 3): reverted round 2's un-negated sketchX -
+    // that was an unverified compensating guess made before
+    // `test/orientation_facing_plane_test.dart` existed. That test now
+    // proves `orientationFacingPlane`'s right/up/direction already matched
+    // `SketchPlaneBasis` exactly for XZ at the time of round 2 (YZ was the
+    // one genuinely wrong - see that function's own doc comment), so
+    // negating sketchX here (the direct, provable inverse of
+    // ViewTransform.sketchToScreen) was correct all along; the round-2 flip
+    // introduced a real static mismatch between this backdrop and its own
+    // (unrelated, always-correct) ghost-outline projection instead of
+    // fixing anything.
+    final sketchX = -panOffsetPx.dx / pixelsPerUnit;
     final sketchY = panOffsetPx.dy / pixelsPerUnit;
     final target = sketchPointToWorld(basis, sketchX, sketchY);
     final visibleWorldHeight = canvasSize.height / pixelsPerUnit;
