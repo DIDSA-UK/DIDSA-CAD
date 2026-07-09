@@ -73,13 +73,21 @@ Future<void> _settlePartViewport(WidgetTester tester, {int maxPumps = 100}) asyn
 }
 
 /// Flushes `_exitOrbitView`'s `await animateToPlane(...)` to completion,
-/// plus the `setState` that follows it, by pumping in small steps until no
-/// more frames are scheduled - a fixed-size `pump(duration)` proved
-/// insufficient on CI (the GPU/scene setup already failed by this point, so
-/// there's no risk of `pumpAndSettle` hanging on an ongoing render loop the
-/// way a real, successfully-initialized Scene might).
-Future<void> _pumpExitAnimation(WidgetTester tester) async {
-  await tester.pumpAndSettle(const Duration(milliseconds: 50));
+/// plus the `setState` that follows it - bounded, condition-driven pumping
+/// (mirrors `_settlePartViewport`/`part_viewport_test.dart`'s own
+/// `_pumpUntil`), not `pumpAndSettle`. `pumpAndSettle` actually timed out
+/// here on CI: once the GPU/scene setup has failed, something keeps
+/// scheduling further frames indefinitely (the same underlying class of
+/// issue as `part_viewport_test.dart`'s own documented "Fix 4" flake,
+/// presumably in flutter_scene/gpu's own error-path machinery) - "wait
+/// until literally nothing is scheduled" never resolves, so this instead
+/// waits only for the specific condition that matters: the widget tree
+/// actually swapping back to [SketchCanvas].
+Future<void> _pumpExitAnimation(WidgetTester tester, {int maxPumps = 50}) async {
+  for (var i = 0; i < maxPumps; i++) {
+    if (find.byType(SketchCanvas).evaluate().isNotEmpty) return;
+    await tester.pump(const Duration(milliseconds: 100));
+  }
 }
 
 void main() {
