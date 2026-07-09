@@ -187,6 +187,13 @@ void main() {
 
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodyOpacity, isNot(0.75));
 
+    // The hamburger menu panel/scrim stays open underneath the modal
+    // bottom sheet - Apply only dismisses the sheet, not the menu itself
+    // - so it needs closing explicitly before the "Exit Orbit View" FAB
+    // underneath its scrim becomes tappable again.
+    await tester.tap(find.byTooltip('Menu'));
+    await tester.pump();
+
     // Leave (through the return animation) and re-enter.
     await tester.tap(find.byTooltip('Exit Orbit View'));
     await _pumpExitAnimation(tester);
