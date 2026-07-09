@@ -2,6 +2,7 @@ import math
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.sketch.constraints import CoincidentConstraint
 from app.sketch.models import Circle, Sketch
 
 
@@ -103,11 +104,27 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     """
     real_entities = [entity for entity in sketch.entities.values() if not entity.construction]
 
-    connections: list[tuple[str, tuple[str, str]]] = [
-        (entity.id, endpoints)
-        for entity in real_entities
-        if (endpoints := entity.endpoint_point_ids()) is not None
-    ]
+    # Two Points linked by a CoincidentConstraint (e.g. a corner "closed" by
+    # dragging one Point onto another, per _autoCoincideIfNear on the
+    # client) are still two distinct Point ids in the model - only pinned
+    # to the same position by the solver, never merged into one shared
+    # reference. Left alone, that means the adjacency graph below sees two
+    # unconnected nodes at that corner and reports the loop as open, even
+    # though it visibly looks closed. Canonicalizing each Point id through
+    # this union-find before building adjacency treats Coincident Points as
+    # the same graph node for connectivity purposes - closing the loop
+    # exactly like a real shared Point would, with no change to the
+    # Point/Line/Circle data model itself (still fully reversible by
+    # deleting the CoincidentConstraint).
+    canonical_point_id = _coincident_canonical_ids(sketch)
+
+    connections: list[tuple[str, tuple[str, str]]] = []
+    for entity in real_entities:
+        endpoints = entity.endpoint_point_ids()
+        if endpoints is None:
+            continue
+        a, b = endpoints
+        connections.append((entity.id, (canonical_point_id.get(a, a), canonical_point_id.get(b, b))))
 
     line_loops: list[Profile] = []
     any_branch_point = False
@@ -163,6 +180,33 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
         )
 
     return _classify_nesting(sketch, loops)
+
+
+def _coincident_canonical_ids(sketch: Sketch) -> dict[str, str]:
+    """Maps every Point id that's a party to a CoincidentConstraint to a
+    single canonical id shared with every other Point it's (transitively)
+    Coincident with - standard union-find, path-compressed on lookup. A
+    Point with no CoincidentConstraint at all is simply absent from the
+    returned mapping (callers fall back to the Point's own id via `.get`).
+    """
+    parent: dict[str, str] = {}
+
+    def find(point_id: str) -> str:
+        parent.setdefault(point_id, point_id)
+        root = point_id
+        while parent[root] != root:
+            root = parent[root]
+        while parent[point_id] != root:
+            parent[point_id], point_id = root, parent[point_id]
+        return root
+
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, CoincidentConstraint):
+            a, b = find(constraint.point_a_id), find(constraint.point_b_id)
+            if a != b:
+                parent[a] = b
+
+    return {point_id: find(point_id) for point_id in parent}
 
 
 def _connected_component(start_point_id: str, adjacency: dict[str, list[tuple[str, str]]]) -> set[str]:
