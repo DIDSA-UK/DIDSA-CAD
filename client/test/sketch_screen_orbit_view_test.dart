@@ -170,7 +170,12 @@ void main() {
     await tester.tap(find.byTooltip('Menu'));
     await tester.pump();
     await tester.tap(find.text('Body Transparency'));
-    await tester.pump();
+    // showModalBottomSheet animates up from off-screen - a single
+    // no-duration pump only renders its first frame, leaving the Slider/
+    // Apply button positioned below the test viewport (a silent
+    // "did not hit test" warning, not a thrown error) until this entrance
+    // transition (Material's default 250ms) has actually finished.
+    await tester.pump(const Duration(milliseconds: 300));
     // A large leftward drag clamps the slider to its minimum (0% transparency,
     // i.e. opacity 1.0) regardless of the sheet's exact rendered width.
     await tester.drag(find.byType(Slider), const Offset(-1000, 0));
