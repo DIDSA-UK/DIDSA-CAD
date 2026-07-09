@@ -353,6 +353,39 @@ hit-testing/picking (4.1's "(a)" direction's other half) was not built -
 nothing in this pass makes the rendered bodies selectable, since nothing
 in 4.1/4.2's own ask needed it; that remains 4.3's territory.
 
+**On-device bug-fix round (post-implementation)**:
+- **Face-culling bug**: `bodyOpacity < 1.0` (Orbit View's own default, or
+  the main 3D viewport's own Body Transparency slider) made whole
+  back-facing triangles of a solid disappear rather than fade, because
+  `flutter_scene`'s `Material.bind()` unconditionally back-face-culls any
+  translucent (`AlphaMode.blend`) material regardless of the material's own
+  `doubleSided` flag - the same quirk already documented (and fixed) for
+  the flat reference-plane quad in `reference_planes.dart`, just never
+  applied to real body mesh geometry until now. Fixed in
+  `mesh_geometry.dart`'s `meshBuffersFromMesh`/`geometryFromMesh` (new
+  `doubleSidedWinding` parameter, emitting a second reverse-wound,
+  normal-flipped copy of every triangle) and wired into
+  `part_viewport.dart`'s `_syncMeshNode` for any translucent body/preview
+  material. Applies to the main 3D viewport too, not just the sketcher -
+  this was a real, previously-latent bug, just made prominent by Orbit
+  View's opacity-below-100%-by-default entry point.
+- **Orbit View now offers the same View controls as the 3D viewport**:
+  render mode (Shaded / Shaded + Edges / Wireframe), Body Colour, Body
+  Transparency - added to `sketch_screen.dart`'s hamburger menu (a new
+  "3D View" submenu, shown in place of the 2D canvas's own View submenu
+  while Orbit View is active), reusing `PartToolbar`'s exact
+  `showColourSwatchSheet`/`showBodyOpacitySheet` helpers. Defaults to
+  `shadedWithEdges` (edges visible by default, per on-device feedback) and
+  ~25% transparent (unchanged from 4.1's own ask).
+- **Stable entry orientation**: entering Orbit View no longer snaps the
+  camera to `OrbitCamera`'s own angled default view. `PartViewport` gained
+  a new optional `initialViewPlane` parameter (set once, in
+  `PartViewportState.initState`) that starts the embedded `OrbitCamera`
+  facing the given plane exactly - matching what the flat 2D canvas was
+  already showing - so the view only changes once the user actually
+  orbits it themselves. "Return to Default View" is unaffected and still
+  useful after the user has since orbited away from that view.
+
 ### 4.1 Show existing bodies behind the canvas, default ~25% transparent
 - **Correction (confirmed on-device, this is NOT already working)**: the
   earlier "one-line default change" verdict was wrong. `canvasOpacity`

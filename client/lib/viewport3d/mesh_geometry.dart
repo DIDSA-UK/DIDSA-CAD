@@ -39,28 +39,54 @@ class MeshBuffers {
 /// here; uv is unused by [UnlitMaterial] without a texture and is left at
 /// (0, 0), and color is left fully opaque white so [UnlitMaterial]'s
 /// `baseColorFactor` alone controls the rendered color.
-MeshBuffers meshBuffersFromMesh(MeshDto mesh) {
+///
+/// [doubleSidedWinding]: face-culling bug fix - `flutter_scene`'s
+/// `Material.bind()` always back-face-culls a translucent (`AlphaMode.blend`)
+/// material's geometry regardless of `Material.doubleSided` (the same
+/// `cullBackFace = !doubleSided || !isOpaque()` quirk documented on
+/// `reference_planes.dart`'s `doubleSidedQuadBuffers`, and worked around for
+/// ad-hoc highlight triangles by [triangleHighlightBuffers] below) - a body
+/// rendered at `bodyOpacity < 1.0` (e.g. the sketcher's Orbit View, or the
+/// main viewport's own Body Transparency slider) hit this for real: whole
+/// back-facing triangles of the solid vanished instead of just fading, since
+/// `doubleSided: true` alone is not enough once the material is translucent.
+/// Set true to emit a second, reverse-wound copy of every triangle (with
+/// flipped normals, so lighting/shading still reads correctly from either
+/// side) - the same fix, applied to real mesh geometry instead of a simple
+/// quad or ad-hoc triangle list. Doubles [MeshBuffers.vertexCount], so it
+/// halves this file's existing 65535-vertex 16-bit-index ceiling (see
+/// [MeshBuffers]'s own doc comment) for any mesh rendered translucent.
+MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false}) {
   final vertexCount = mesh.vertices.length;
-  final vertexData = Float32List(vertexCount * 12);
-  for (var i = 0; i < vertexCount; i++) {
-    final position = mesh.vertices[i];
-    final normal = mesh.normals[i];
-    final base = i * 12;
-    vertexData[base] = position[0];
-    vertexData[base + 1] = position[1];
-    vertexData[base + 2] = position[2];
-    vertexData[base + 3] = normal[0];
-    vertexData[base + 4] = normal[1];
-    vertexData[base + 5] = normal[2];
-    vertexData[base + 6] = 0; // u
-    vertexData[base + 7] = 0; // v
-    vertexData[base + 8] = 1; // r
-    vertexData[base + 9] = 1; // g
-    vertexData[base + 10] = 1; // b
-    vertexData[base + 11] = 1; // a
+  final copies = doubleSidedWinding ? 2 : 1;
+  final vertexData = Float32List(vertexCount * 12 * copies);
+
+  void writeVertexCopy(int copyIndex, double normalSign) {
+    final vertexOffset = copyIndex * vertexCount;
+    for (var i = 0; i < vertexCount; i++) {
+      final position = mesh.vertices[i];
+      final normal = mesh.normals[i];
+      final base = (vertexOffset + i) * 12;
+      vertexData[base] = position[0];
+      vertexData[base + 1] = position[1];
+      vertexData[base + 2] = position[2];
+      vertexData[base + 3] = normal[0] * normalSign;
+      vertexData[base + 4] = normal[1] * normalSign;
+      vertexData[base + 5] = normal[2] * normalSign;
+      vertexData[base + 6] = 0; // u
+      vertexData[base + 7] = 0; // v
+      vertexData[base + 8] = 1; // r
+      vertexData[base + 9] = 1; // g
+      vertexData[base + 10] = 1; // b
+      vertexData[base + 11] = 1; // a
+    }
   }
 
-  final indexCount = mesh.triangleIndices.length * 3;
+  writeVertexCopy(0, 1.0);
+  if (doubleSidedWinding) writeVertexCopy(1, -1.0);
+
+  final triangleCount = mesh.triangleIndices.length;
+  final indexCount = triangleCount * 3 * copies;
   final indices = Uint16List(indexCount);
   var i = 0;
   for (final triangle in mesh.triangleIndices) {
@@ -68,10 +94,19 @@ MeshBuffers meshBuffersFromMesh(MeshDto mesh) {
     indices[i++] = triangle[1];
     indices[i++] = triangle[2];
   }
+  if (doubleSidedWinding) {
+    for (final triangle in mesh.triangleIndices) {
+      // Reversed winding (so it's front-facing when viewed from the
+      // opposite side), referencing the second, normal-flipped vertex copy.
+      indices[i++] = vertexCount + triangle[0];
+      indices[i++] = vertexCount + triangle[2];
+      indices[i++] = vertexCount + triangle[1];
+    }
+  }
 
   return MeshBuffers(
     vertexData: vertexData,
-    vertexCount: vertexCount,
+    vertexCount: vertexCount * copies,
     indexData: ByteData.sublistView(indices),
   );
 }
@@ -82,8 +117,8 @@ MeshBuffers meshBuffersFromMesh(MeshDto mesh) {
 /// into `flutter_scene`'s GPU shim to allocate a device buffer - a real
 /// GPU/Impeller context is needed for that, so unlike [meshBuffersFromMesh]
 /// this function cannot be exercised in a headless `flutter test` run.
-UnskinnedGeometry geometryFromMesh(MeshDto mesh) {
-  final buffers = meshBuffersFromMesh(mesh);
+UnskinnedGeometry geometryFromMesh(MeshDto mesh, {bool doubleSidedWinding = false}) {
+  final buffers = meshBuffersFromMesh(mesh, doubleSidedWinding: doubleSidedWinding);
   final geometry = UnskinnedGeometry();
   geometry.uploadVertexData(
     ByteData.sublistView(buffers.vertexData),

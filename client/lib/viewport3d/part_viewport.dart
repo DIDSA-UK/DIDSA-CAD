@@ -203,6 +203,14 @@ class PartViewport extends StatefulWidget {
   /// [PartScreen._toggleProfileLoop]), needing no expansion here.
   final Set<String>? Function(String sketchFeatureId, String sketchEntityId)? sketchLineLoopGroup;
 
+  /// If set, the [OrbitCamera]'s starting orientation faces this plane
+  /// exactly (via [orientationFacingPlane]) instead of [OrbitCamera]'s own
+  /// angled default - read once, in [PartViewportState.initState]. Used by
+  /// [SketchScreen]'s Orbit View toggle so entering it from the flat 2D
+  /// sketch canvas never visibly jumps the camera on entry; the view only
+  /// changes once the user actually orbits it themselves.
+  final ReferencePlaneKind? initialViewPlane;
+
   const PartViewport({
     super.key,
     this.bodies = const [],
@@ -233,6 +241,7 @@ class PartViewport extends StatefulWidget {
     this.farClip,
     this.onFarClipChanged,
     this.sketchLineLoopGroup,
+    this.initialViewPlane,
   });
 
   @override
@@ -342,6 +351,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.farClip != null) {
       _camera.farClip = widget.farClip!;
       _camera.nearClip = kDefaultNearClip;
+    }
+    // Orbit View entry fix: start facing the given plane exactly, rather
+    // than OrbitCamera's own angled default - see [PartViewport.initialViewPlane].
+    if (widget.initialViewPlane != null) {
+      _camera.orientation = orientationFacingPlane(widget.initialViewPlane!);
     }
     debugPrint('[PartViewport] Scene.initializeStaticResources()...');
     Scene.initializeStaticResources().then((_) {
@@ -576,7 +590,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           '[PartViewport] _syncMeshNode: geometryFromMesh(${body.bodyId}, '
           '${mesh.vertices.length} verts)...',
         );
-        final geometry = geometryFromMesh(mesh);
+        // Face-culling bug fix: any translucent material below (preview
+        // overlays are always translucent; a confirmed Body is translucent
+        // whenever bodyOpacity < 1.0) needs double-sided-winding geometry,
+        // or flutter_scene back-face-culls it regardless of the material's
+        // own doubleSided flag - see geometryFromMesh's doc comment.
+        final isTranslucent = widget.isPreviewMesh || isPreviewOverlay || widget.bodyOpacity < 1.0;
+        final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
         // Live-operation preview overlays stay a flat, translucent tint -
         // they're meant to read as a distinct "in-progress" indicator, not
         // real lit geometry, so they're deliberately left on UnlitMaterial.

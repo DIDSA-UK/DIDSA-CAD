@@ -7,7 +7,10 @@ import '../api/sketch_api_client.dart' show CircleDto, LineDto, PointDto;
 import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/reference_planes.dart';
+import '../viewport3d/render_mode.dart';
 import '../viewport3d/sketch_geometry_3d.dart';
+import '../viewport3d/view_prefs_sheets.dart';
+import '../viewport3d/view_preferences.dart';
 import 'sketch_canvas.dart';
 import 'sketch_construction_method_bar.dart';
 import 'sketch_controller.dart';
@@ -133,10 +136,17 @@ class _SketchScreenState extends State<SketchScreen> {
   /// `viewport3d/orbit_camera.dart`: no camera is ever injectable).
   final GlobalKey<PartViewportState> _orbitViewportKey = GlobalKey<PartViewportState>();
 
-  /// 4.1's "~25% transparent" ask - [ViewPreferences.defaultBodyOpacity] is
-  /// `1.0` (fully opaque), so Orbit View overrides it with its own fixed
-  /// default rather than reusing the Part viewport's persisted preference.
-  static const double _orbitBodyOpacity = 0.75;
+  /// On-device feedback: Orbit View needs the same View controls the main 3D
+  /// viewport offers (render mode, body colour, body transparency) - see
+  /// [_build3DViewMenu]. All session-only, same as the 2D canvas's own view
+  /// preferences above; [_orbitRenderMode] defaults to `shadedWithEdges`
+  /// (also on-device feedback: edges should be visible by default here) and
+  /// [_orbitBodyOpacity] defaults to 4.1's "~25% transparent" ask - overriding
+  /// [ViewPreferences.defaultBodyOpacity]'s `1.0` rather than reusing the
+  /// Part viewport's own persisted preference.
+  ViewportRenderMode _orbitRenderMode = ViewportRenderMode.shadedWithEdges;
+  String _orbitBodyColourHex = ViewPreferences.defaultBodyColourHex;
+  double _orbitBodyOpacity = 0.75;
 
   @override
   void initState() {
@@ -573,7 +583,10 @@ class _SketchScreenState extends State<SketchScreen> {
             ),
           },
           referencePlanesHidden: true,
+          renderMode: _orbitRenderMode,
+          bodyColourHex: _orbitBodyColourHex,
           bodyOpacity: _orbitBodyOpacity,
+          initialViewPlane: planeKind,
         ),
       );
     }
@@ -615,35 +628,93 @@ class _SketchScreenState extends State<SketchScreen> {
       shrinkWrap: true,
       padding: EdgeInsets.zero,
       children: [
-        ExpansionTile(
+        if (_orbitViewActive)
+          _build3DViewMenu(context, density, titleStyle)
+        else
+          ExpansionTile(
+            dense: true,
+            visualDensity: density,
+            leading: const Icon(Icons.visibility_outlined, size: 20),
+            title: const Text('View', style: titleStyle),
+            initiallyExpanded: true,
+            children: [
+              SwitchListTile(
+                dense: true,
+                visualDensity: density,
+                title: const Text('Constraint Labels', style: titleStyle),
+                value: _constraintLabelsVisible,
+                onChanged: (value) => setState(() => _constraintLabelsVisible = value),
+              ),
+              ListTile(
+                dense: true,
+                visualDensity: density,
+                leading: Icon(Icons.palette_outlined, color: _canvasColor, size: 20),
+                title: const Text('Canvas Colour', style: titleStyle),
+                onTap: () => _pickCanvasColor(context),
+              ),
+              ListTile(
+                dense: true,
+                visualDensity: density,
+                leading: const Icon(Icons.opacity_outlined, size: 20),
+                title: const Text('Canvas Transparency', style: titleStyle),
+                onTap: () => _pickCanvasOpacity(context),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  /// Orbit View's own View submenu - on-device feedback: "view options
+  /// should be available as in the 3D viewport [...] body colour,
+  /// transparency, edges, shaded, wireframe", mirroring
+  /// `PartToolbar._buildViewMenu`'s render-mode list and Body Colour/
+  /// Transparency entries exactly (reusing the same [showColourSwatchSheet]/
+  /// [showBodyOpacitySheet] helpers), scoped down to just what applies to a
+  /// read-only embedded viewport - no far clip/perspective/background
+  /// colour/scene lighting controls, since those aren't part of the ask and
+  /// Orbit View has no persisted preferences of its own to expose them via.
+  Widget _build3DViewMenu(BuildContext context, VisualDensity density, TextStyle titleStyle) {
+    return ExpansionTile(
+      dense: true,
+      visualDensity: density,
+      leading: const Icon(Icons.view_in_ar, size: 20),
+      title: const Text('3D View', style: titleStyle),
+      initiallyExpanded: true,
+      children: [
+        for (final mode in ViewportRenderMode.values)
+          ListTile(
+            dense: true,
+            visualDensity: density,
+            leading: Icon(mode.icon, size: 20),
+            title: Text(mode.label, style: titleStyle),
+            trailing: mode == _orbitRenderMode ? const Icon(Icons.check, size: 18) : null,
+            onTap: () => setState(() => _orbitRenderMode = mode),
+          ),
+        ListTile(
           dense: true,
           visualDensity: density,
-          leading: const Icon(Icons.visibility_outlined, size: 20),
-          title: const Text('View', style: titleStyle),
-          initiallyExpanded: true,
-          children: [
-            SwitchListTile(
-              dense: true,
-              visualDensity: density,
-              title: const Text('Constraint Labels', style: titleStyle),
-              value: _constraintLabelsVisible,
-              onChanged: (value) => setState(() => _constraintLabelsVisible = value),
-            ),
-            ListTile(
-              dense: true,
-              visualDensity: density,
-              leading: Icon(Icons.palette_outlined, color: _canvasColor, size: 20),
-              title: const Text('Canvas Colour', style: titleStyle),
-              onTap: () => _pickCanvasColor(context),
-            ),
-            ListTile(
-              dense: true,
-              visualDensity: density,
-              leading: const Icon(Icons.opacity_outlined, size: 20),
-              title: const Text('Canvas Transparency', style: titleStyle),
-              onTap: () => _pickCanvasOpacity(context),
-            ),
-          ],
+          leading: Icon(Icons.circle, color: colorFromHex(_orbitBodyColourHex), size: 20),
+          title: const Text('Body Colour', style: titleStyle),
+          onTap: () async {
+            final hex = await showColourSwatchSheet(
+              context,
+              title: 'Body Colour',
+              swatches: bodyColourSwatches,
+              selectedHex: _orbitBodyColourHex,
+            );
+            if (hex != null) setState(() => _orbitBodyColourHex = hex);
+          },
+        ),
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.opacity_outlined, size: 20),
+          title: const Text('Body Transparency', style: titleStyle),
+          onTap: () async {
+            final opacity = await showBodyOpacitySheet(context, initialOpacity: _orbitBodyOpacity);
+            if (opacity != null) setState(() => _orbitBodyOpacity = opacity);
+          },
         ),
       ],
     );

@@ -11,6 +11,8 @@ import 'package:didsa_cad_client/sketch/sketch_canvas.dart';
 import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 import 'package:didsa_cad_client/sketch/sketch_speed_dial.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
+import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 
 /// Phase 4.2's Orbit View toggle. A minimal fake backend - [ensureSketch]
 /// only ever calls `POST /sketch/sketches` (see
@@ -69,6 +71,22 @@ void main() {
   });
 
   testWidgets(
+      'the embedded PartViewport starts facing the sketch\'s own plane (so entering Orbit View '
+      'never visibly jumps the camera) and defaults to Shaded + Edges, matching on-device '
+      'feedback that edges should be visible', (tester) async {
+    final controller = await _freshController();
+
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Orbit View'));
+    await tester.pump();
+
+    final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+    expect(viewport.initialViewPlane, ReferencePlaneKind.xy);
+    expect(viewport.renderMode, ViewportRenderMode.shadedWithEdges);
+  });
+
+  testWidgets(
       'while Orbit View is active, editing controls are hidden and the "Return to Default View" '
       'button replaces the draw/dimension speed dial', (tester) async {
     final controller = await _freshController();
@@ -85,5 +103,32 @@ void main() {
     expect(find.byType(SketchSpeedDial), findsNothing);
     expect(find.byTooltip('Return to Default View'), findsOneWidget);
     expect(find.byTooltip('Drag mode off - tap to drag entities'), findsNothing);
+  });
+
+  testWidgets(
+      'on-device feedback: while Orbit View is active, the hamburger menu offers the same '
+      'View controls as the 3D viewport (render mode, body colour, transparency), and '
+      'picking a render mode is reflected on the embedded PartViewport', (tester) async {
+    final controller = await _freshController();
+
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Orbit View'));
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Menu'));
+    await tester.pump();
+
+    expect(find.text('3D View'), findsOneWidget);
+    expect(find.text('Constraint Labels'), findsNothing); // the 2D-only menu is replaced, not stacked
+    expect(find.text('Body Colour'), findsOneWidget);
+    expect(find.text('Body Transparency'), findsOneWidget);
+    expect(find.text('Wireframe'), findsOneWidget);
+
+    await tester.tap(find.text('Wireframe'));
+    await tester.pump();
+
+    final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+    expect(viewport.renderMode, ViewportRenderMode.wireframe);
   });
 }
