@@ -285,6 +285,20 @@ void main() {
     expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).canvasOpacity, 0.75);
   });
 
+  testWidgets(
+      'on-device feedback: the shaded-body backdrop occupies the exact same screen rect as the '
+      '2D SketchCanvas above it, so the two stay pixel-aligned', (tester) async {
+    final controller = await _freshController();
+
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, bodies: [_fakeBody()])));
+    await tester.pump();
+    await _settlePartViewport(tester);
+
+    final canvasRect = tester.getRect(find.byType(SketchCanvas));
+    final backdropRect = tester.getRect(find.byType(PartViewport));
+    expect(backdropRect, canvasRect);
+  });
+
   testWidgets('a bodyless Sketch keeps the fully-opaque canvas default and shows no backdrop', (tester) async {
     final controller = await _freshController();
 
