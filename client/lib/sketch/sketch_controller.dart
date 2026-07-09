@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
 import '../api/sketch_api_client.dart';
+import 'dof_analysis.dart';
 import 'view_transform.dart';
 
 /// Returns [candidate] unchanged if it is within [canvasSize] bounds.
@@ -632,6 +633,24 @@ class SketchController extends ChangeNotifier {
   /// actually something to be fully constrained.
   bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty;
 
+  /// Phase 3's client-side structural DOF/rigidity preview (see
+  /// dof_analysis.dart's own doc comment for the full algorithm and its
+  /// architecture rule) - recomputed fresh on every access rather than
+  /// cached, since it's a fast union-find over this Sketch's local graph
+  /// (small by construction - tens to low hundreds of entities) and a
+  /// cached-and-invalidated version would need touching every mutation
+  /// call site in this file to stay correct, for no real benefit at this
+  /// scale. [isUnderConstrained] above stays the whole-sketch, backend-
+  /// authoritative signal; this is the finer-grained, advisory-only,
+  /// per-entity one `sketch_canvas.dart` renders from.
+  SketchRigidity get rigidity => SketchRigidity.analyze(
+        pointIds: points.keys,
+        originPointId: _originPointId,
+        lineStartPointId: {for (final line in lines.values) line.id: line.startPointId},
+        lineEndPointId: {for (final line in lines.values) line.id: line.endPointId},
+        constraints: constraints.values,
+      );
+
   /// [anchorPointIds] passes through to [SketchApiClient.solve] - see that
   /// method's doc comment. Defaults to none, which every call site except
   /// the drag-drop endings below wants (equal freedom for every Point).
@@ -1167,6 +1186,13 @@ class SketchController extends ChangeNotifier {
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
+    // Phase 3 (3.2): a Point in an over-constrained cluster (see
+    // dof_analysis.dart) already has a redundant/conflicting Constraint
+    // pinning it - dragging it wouldn't move it anywhere the solver would
+    // actually let it stay, so refuse the grab rather than start a drag
+    // that's guaranteed to snap back. sketch_canvas.dart colors these
+    // Points red so this isn't a silent no-op.
+    if (rigidity.isPointOverConstrained(pointId)) return false;
     final point = points[pointId]!;
     _draggingPointId = pointId;
     _dragOriginCursorX = cursorX;
@@ -1294,6 +1320,10 @@ class SketchController extends ChangeNotifier {
     final start = points[line.startPointId];
     final end = points[line.endPointId];
     if (start == null || end == null) return false;
+    // Phase 3 (3.2): mirrors [beginPointDrag]'s over-constrained refusal,
+    // checked against both endpoints since either one being implicated is
+    // enough to make the drag pointless.
+    if (rigidity.isSegmentOverConstrained(line.startPointId, line.endPointId)) return false;
     _draggingLineId = lineId;
     _dragOriginCursorX = cursorX;
     _dragOriginCursorY = cursorY;

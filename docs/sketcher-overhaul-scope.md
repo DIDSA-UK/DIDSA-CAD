@@ -244,6 +244,8 @@ the line behind the text" look without extra work.
 
 ## Phase 3 — Constraint visual feedback
 
+**Status: 3.1/3.2 implemented, pending on-device verification.**
+
 **Decided approach (superseding the earlier heuristic idea): client-side
 structural DOF/rigidity analysis, computed live, no backend round-trip.**
 
@@ -559,10 +561,19 @@ ellipse → spline → text), no reprioritization requested.
    installable in this sandbox, so that layer is verified via CI instead
    (see the new tests in `test_stage2b_solver_integration.py`).
 3. **Phase 6.1** (line snap) — small, independent, can slot in anywhere.
-4. **Phase 3** (constraint color feedback, client-side DOF/rigidity
-   analysis) — no longer blocked on a design spike now that the
-   heuristic approach has been replaced with the structural-analysis
-   approach; main work is the per-constraint-type DOF-cost table.
+4. **Phase 3 (3.1/3.2) — DONE, pending on-device verification**
+   (constraint color feedback, client-side DOF/rigidity analysis) — new
+   `client/lib/sketch/dof_analysis.dart` implements the per-constraint-
+   type DOF-cost table via a union-find clustering algorithm (a
+   documented, honestly-approximate simplification of the full
+   combinatorial pebble game - see that file's own doc comment for the
+   algorithm and its known edge-case limitations), wired into
+   `sketch_canvas.dart` (dark-green/red Line/Circle/Point coloring) and
+   `sketch_controller.dart` (`beginPointDrag`/`beginLineDrag` refuse to
+   grab an over-constrained Point). Covered by pure-Dart unit tests
+   (`dof_analysis_test.dart`) verified by hand-tracing the DOF arithmetic
+   against the algorithm's own formulas (no Dart SDK in this sandbox to
+   run them directly - see CI).
 5. **Phase 4.1 + 4.2 + 4.3** (3D context, orbit view, body-edge
    dimensioning) — now sequenced together rather than 4.1 being a
    quick win, since all three need the same underlying capability
