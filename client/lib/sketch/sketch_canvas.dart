@@ -48,6 +48,15 @@ class SketchCanvas extends StatefulWidget {
   final Color canvasColor;
   final double canvasOpacity;
 
+  /// On-device feedback: lets [SketchScreen] keep its shaded-body backdrop
+  /// (behind this canvas, see `sketch_screen.dart`'s `_buildBaseLayer`)
+  /// visually in sync with this canvas's own pan/zoom - fired (debounced,
+  /// post-frame) whenever [SketchViewport]'s `panOffset`/`zoom` or this
+  /// canvas's own render size actually changes. `panOffset`/`zoom` are
+  /// [SketchViewport]'s own fields verbatim; `canvasSize` is this widget's
+  /// current render size.
+  final void Function(Offset panOffset, double zoom, Size canvasSize)? onViewportChanged;
+
   static const Color defaultColor = Color(0xFFF2F2F2);
 
   const SketchCanvas({
@@ -58,6 +67,7 @@ class SketchCanvas extends StatefulWidget {
     this.constraintLabelsVisible = true,
     this.canvasColor = defaultColor,
     this.canvasOpacity = 1.0,
+    this.onViewportChanged,
   });
 
   @override
@@ -85,6 +95,40 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// How far (pixels) a single-finger touch may travel and still count as
   /// a tap rather than a drag.
   static const double _tapTravelThreshold = 10.0;
+
+  /// Last values passed to [widget.onViewportChanged] - see
+  /// [_notifyViewportChangedIfNeeded], which debounces against these so
+  /// the callback only actually fires when something real changed, not on
+  /// every unrelated rebuild (e.g. a constraint solve).
+  Offset? _lastNotifiedPan;
+  double? _lastNotifiedZoom;
+  Size? _lastNotifiedSize;
+
+  /// On-device feedback: notifies [widget.onViewportChanged] (if set)
+  /// whenever this canvas's pan/zoom/size actually changed since the last
+  /// notification - scheduled via [WidgetsBinding.addPostFrameCallback]
+  /// rather than fired synchronously from [build], since the callback may
+  /// itself call `setState` on a sibling widget (the shaded-body backdrop
+  /// in `sketch_screen.dart`) that's already been built earlier in the
+  /// same frame - doing that mid-build throws.
+  void _notifyViewportChangedIfNeeded(Size size) {
+    final onViewportChanged = widget.onViewportChanged;
+    if (onViewportChanged == null) return;
+    if (_lastNotifiedPan == _viewport.panOffset &&
+        _lastNotifiedZoom == _viewport.zoom &&
+        _lastNotifiedSize == size) {
+      return;
+    }
+    _lastNotifiedPan = _viewport.panOffset;
+    _lastNotifiedZoom = _viewport.zoom;
+    _lastNotifiedSize = size;
+    final pan = _viewport.panOffset;
+    final zoom = _viewport.zoom;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      onViewportChanged(pan, zoom, size);
+    });
+  }
 
   /// The canvas's own render size, refreshed every [build] - read by
   /// [_onEdgePanTick], which runs independently of any pointer event so an
@@ -653,6 +697,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _lastSize = size;
+        _notifyViewportChangedIfNeeded(size);
         final transform = _viewport.transformFor(size);
         return Stack(
           children: [

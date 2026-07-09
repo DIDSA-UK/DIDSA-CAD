@@ -272,16 +272,32 @@ class OrbitCamera {
 /// -Z), XZ from +Y (down -Y), YZ from +X (down -X). Derived by hand from
 /// [OrbitCamera]'s own `_direction = orientation.rotated((0, 0, 1))` /
 /// `_up = orientation.rotated((0, 1, 0))` convention: identity orientation
-/// already gives direction=+Z (XY's case), and the other two are a single
-/// axis-angle rotation each that carries +Z to +Y or +X respectively.
+/// already gives direction=+Z (XY's case), and the other two are built from
+/// that same axis-angle rotation carrying +Z to +Y or +X respectively, plus
+/// one more fix described below.
 ///
-/// XZ and YZ's resulting "up" (world (0, 0, -1) and world (0, 1, 0)
-/// respectively) is a deliberate but unforced convention choice - the brief
-/// only specifies the look-from direction, not which way is "up" for a
-/// top-down/side-on view - and would benefit from a real-device check that
-/// it doesn't feel upside-down.
+/// On-device feedback (bug-fix round): XZ and YZ's own "up" here is *not*
+/// an unforced convention choice after all - it has to agree with
+/// `viewport3d/sketch_geometry_3d.dart`'s `SketchPlaneBasis.fixed(plane)`,
+/// which every other consumer of a Sketch's 3D projection (rendered
+/// geometry, hit-testing, the shaded-body-behind-canvas backdrop) already
+/// treats as *the* definition of "up"/"right" for that plane. The original
+/// version picked a different "up" for XZ/YZ than `SketchPlaneBasis` does,
+/// so a Sketch on either of those planes rendered upside-down/rotated
+/// relative to its own 2D canvas whenever a 3D camera faced it head-on
+/// (Orbit View's entry orientation, the camera-into-sketch transition, and
+/// the shaded backdrop all inherited this). Each plane's quaternion below
+/// is now composed as [the original look-from-direction rotation] followed
+/// by an additional roll about that same viewing axis, chosen so that
+/// `_up`/`_right` land exactly on `SketchPlaneBasis.fixed(plane).yAxis`/
+/// `.xAxis` (verified by hand for all three planes - XY needed no roll,
+/// XZ/YZ each needed one) - not an arbitrary pick.
 vm.Quaternion orientationFacingPlane(ReferencePlaneKind plane) => switch (plane) {
       ReferencePlaneKind.xy => vm.Quaternion.identity(),
-      ReferencePlaneKind.xz => vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), -math.pi / 2),
-      ReferencePlaneKind.yz => vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi / 2),
+      ReferencePlaneKind.xz => (vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi) *
+              vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), -math.pi / 2))
+          .normalized(),
+      ReferencePlaneKind.yz => (vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), math.pi / 2) *
+              vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi / 2))
+          .normalized(),
     };

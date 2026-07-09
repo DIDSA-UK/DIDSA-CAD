@@ -828,6 +828,55 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
   }
 
+  /// On-device feedback: matches this camera's target/distance to exactly
+  /// what a 2D `SketchViewport` is currently showing, so a locked,
+  /// non-interactive backdrop (`SketchScreen`'s shaded-body backdrop) stays
+  /// visually in sync with the flat 2D canvas above it as it's panned/
+  /// zoomed - unlike [animateToPlane], this only ever makes sense for a
+  /// [PartViewport] built with a fixed [PartViewport.initialViewPlane], and
+  /// jumps immediately rather than animating (called continuously as the
+  /// 2D canvas moves, so an animated tween here would always be chasing a
+  /// moving target).
+  ///
+  /// [pixelsPerUnit]/[panOffsetPx] mirror `SketchViewport`'s own
+  /// `basePixelsPerUnit * zoom`/`panOffset` fields exactly; [canvasSize] is
+  /// that same canvas's current render size. The math: the sketch-space
+  /// point currently at the *centre* of the 2D canvas is derived by
+  /// inverting `ViewTransform.sketchToScreen` at the canvas's own centre,
+  /// then mapped into world space via [plane]'s basis (`sketchPointToWorld`,
+  /// the same projection every other 3D-sketch-geometry consumer already
+  /// uses) to become the new camera target; the distance is solved so the
+  /// camera's vertical field of view exactly spans `canvasSize.height /
+  /// pixelsPerUnit` world units at that target, matching flutter_scene's
+  /// fixed `kCameraVerticalFovRadians` perspective FOV ([OrbitCamera] has
+  /// no orthographic option - see its own doc comment on `isPerspective`).
+  void syncToSketchViewport({
+    required ReferencePlaneKind plane,
+    required double pixelsPerUnit,
+    required Offset panOffsetPx,
+    required Size canvasSize,
+  }) {
+    if (pixelsPerUnit <= 0 || canvasSize.isEmpty) return;
+    final basis = SketchPlaneBasis.fixed(plane);
+    // Inverse of ViewTransform.sketchToScreen at screen-centre (originScreen
+    // = screenCentre + panOffsetPx): the sketch-space point currently
+    // rendered at the canvas's own centre.
+    final sketchX = -panOffsetPx.dx / pixelsPerUnit;
+    final sketchY = panOffsetPx.dy / pixelsPerUnit;
+    final target = sketchPointToWorld(basis, sketchX, sketchY);
+    final visibleWorldHeight = canvasSize.height / pixelsPerUnit;
+    final distance = visibleWorldHeight / (2 * math.tan(kCameraVerticalFovRadians / 2));
+    // No "did this actually change" guard here (vector_math's Vector3
+    // doesn't override ==, so a same-value check would just always be
+    // false) - the caller (SketchCanvas's onViewportChanged) already only
+    // fires when its own pan/zoom/size genuinely changed, so this is
+    // already called no more often than necessary.
+    setState(() {
+      _camera.target = target;
+      _camera.distance = distance;
+    });
+  }
+
   void _handlePointerDown(PointerDownEvent event) {
     _gestureTravel = 0;
     if (event.kind == PointerDeviceKind.mouse) return;
