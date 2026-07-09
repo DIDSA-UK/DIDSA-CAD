@@ -86,18 +86,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// a tap rather than a drag.
   static const double _tapTravelThreshold = 10.0;
 
-  /// The moment [_dispatchTap] last ran, or null - compared against the
-  /// next pointer-down to recognize new work package item 8's
-  /// double-click-drag gesture: a second down arriving within
-  /// [_doubleClickTimeout] of a dispatched tap, landing (per the
-  /// controller's own trackpad-style cursor, not this event's literal
-  /// screen position - see [_dispatchTap]'s doc comment) on a draggable
-  /// Point/Line/Circle, starts a drag instead of a second discrete tap.
-  DateTime? _lastTapTime;
-
-  static const Duration _doubleClickTimeout = Duration(milliseconds: 350);
-
-  /// The Point currently grabbed by an active double-click-drag, or null -
+  /// The Point currently grabbed by an active drag-mode drag, or null -
   /// once set, pointer-move feeds [SketchController.updatePointDrag]
   /// instead of the normal cursor-move/pan/pinch handling, and the
   /// eventual pointer-up/cancel ends the drag rather than dispatching a
@@ -385,7 +374,6 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// [SketchController.handleCanvasTap].
   void _dispatchTap(ViewTransform transform) {
     final controller = widget.controller;
-    _lastTapTime = DateTime.now();
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     if (controller.mode == SketchMode.dimension) {
       final hitKey = _ghostKeyAt(controller, transform, cursorScreen);
@@ -411,22 +399,20 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     controller.handleCanvasTap(controller.cursorX, controller.cursorY, hitRadius);
   }
 
-  /// New work package item 8: recognizes a pointer-down arriving shortly
-  /// after the last dispatched tap as the second half of a double-click,
-  /// and - if the controller's cursor (not this event's own screen
-  /// position; see [_dispatchTap]) currently sits on a draggable
-  /// Point/Line/Circle - starts a drag instead of letting the down event
-  /// fall through to a second ordinary tap. Returns whether a drag started.
+  /// Drag-mode FAB gesture (replaces the old "double-tap/double-click to
+  /// drag" timing gesture, which produced too many false positives - a
+  /// plain select-tap immediately followed by an ordinary drag-intent tap
+  /// was easily misread as the second half of a double-click). While
+  /// [SketchController.dragModeEnabled] is on, every pointer-down attempts
+  /// to grab and drag whatever's under the controller's cursor (not this
+  /// event's own screen position; see [_dispatchTap]) immediately - no
+  /// timing race, no second tap needed. Returns whether a drag started.
   bool _tryStartEntityDrag(ViewTransform transform) {
-    final lastTapTime = _lastTapTime;
-    if (lastTapTime == null || DateTime.now().difference(lastTapTime) > _doubleClickTimeout) {
-      return false;
-    }
     final controller = widget.controller;
+    if (!controller.dragModeEnabled) return false;
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
     if (labelId != null && controller.beginLabelDrag(labelId)) {
-      _lastTapTime = null;
       _draggingLabelId = labelId;
       _labelDragTravel = 0;
       return true;
@@ -434,7 +420,6 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     final pointId = controller.dragTargetPointIdAt(controller.cursorX, controller.cursorY, hitRadius);
     if (pointId == null || !controller.beginPointDrag(pointId)) return false;
-    _lastTapTime = null;
     _draggingPointId = pointId;
     return true;
   }
@@ -1279,6 +1264,26 @@ class _SketchPainter extends CustomPainter {
   static const Color _ghostInactiveColor = Color(0xFF555555);
   static const Color _ghostLabelBackground = Color(0xCC222222);
 
+  /// Sketcher global size-down: every point/line/label size below is
+  /// centralized here (rather than scattered magic numbers) specifically so
+  /// it's a one-line change to re-tune after on-device feedback - the
+  /// values below are a first pass, not final. All shrunk from their prior
+  /// values (noted per-constant) in response to feedback that the sketcher
+  /// felt oversized generally, independent of the touch hit-radius (which
+  /// stays deliberately more generous than the visual size for touchability
+  /// - see [SketchController.minTapHitRadiusPixels]/[SketchController.pointHitRadiusMultiplier]).
+  static const double _pointRadius = 3.0; // was 4
+  static const double _pointRadiusEmphasis = 4.5; // was 6 (chain-start/circle-center/hover)
+  static const double _pointRadiusSelected = 5.0; // was 7
+  static const double _pointRadiusSnapping = 7.0; // was 11 (chain-start snap-to-close)
+  static const double _lineStrokeWidth = 1.5; // was 2
+  static const double _lineStrokeWidthEmphasis = 2.25; // was 3 (selected/hover)
+  static const double _originHalfSize = 5.0; // was 7
+  static const double _originHalfSizeSnapping = 7.0; // was 10
+  static const double _dimensionFontSize = 9.5; // was 11
+  static const double _snapHighlightPointRadius = 3.0; // was 4 (snap/coincident highlight base)
+  static const double _midpointSnapIndicatorRadius = 6.5; // was 9
+
   /// Draws [start]-to-[end] as a dashed segment - used for construction
   /// Lines. There's no dashed-stroke primitive on [Canvas]/[Paint], so this
   /// walks the segment in fixed-length on/off increments by hand.
@@ -1373,6 +1378,54 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(anchor, anchor + labelOffset, Paint()..color = color..strokeWidth = 1);
   }
 
+  /// ISO 129/ASME Y14.5-style extension (witness) line: leaves a small gap
+  /// at [from] (the actual measured Point/Line-midpoint - a witness line
+  /// conventionally never touches the geometry it measures) and overshoots
+  /// slightly past [to] (where it meets the dimension line), instead of
+  /// running as a plain edge-to-edge connecting segment.
+  static const double _extensionLineGap = 4.0;
+  static const double _extensionLineOvershoot = 3.0;
+
+  void _drawExtensionLine(Canvas canvas, Offset from, Offset to, Paint paint) {
+    final delta = to - from;
+    final length = delta.distance;
+    if (length < 1e-6) return;
+    final direction = delta / length;
+    canvas.drawLine(from + direction * _extensionLineGap, to + direction * _extensionLineOvershoot, paint);
+  }
+
+  /// ISO 129/ASME Y14.5-style dimension-line arrowhead: a small filled
+  /// triangle with its tip at [tip], pointing along [direction] (a unit
+  /// vector pointing outward, away from the dimension line's other end) -
+  /// the two arrows on a dimension line point away from each other, tips
+  /// touching the extension lines, same as every traditional technical
+  /// drawing.
+  static const double _arrowheadLength = 8.0;
+  static const double _arrowheadHalfWidth = 2.5;
+
+  void _drawArrowhead(Canvas canvas, Offset tip, Offset direction, Color color) {
+    final normal = Offset(-direction.dy, direction.dx);
+    final base = tip - direction * _arrowheadLength;
+    final path = Path()
+      ..moveTo(tip.dx, tip.dy)
+      ..lineTo((base + normal * _arrowheadHalfWidth).dx, (base + normal * _arrowheadHalfWidth).dy)
+      ..lineTo((base - normal * _arrowheadHalfWidth).dx, (base - normal * _arrowheadHalfWidth).dy)
+      ..close();
+    canvas.drawPath(path, Paint()..color = color);
+  }
+
+  /// Draws both outward-pointing arrowheads for a dimension line running
+  /// [p1] to [p2] - shared by every dimension overlay with a real
+  /// two-extension-line-plus-offset-segment layout.
+  void _drawDimensionArrows(Canvas canvas, Offset p1, Offset p2, Color color) {
+    final delta = p2 - p1;
+    final length = delta.distance;
+    if (length < 1e-6) return;
+    final unit = delta / length;
+    _drawArrowhead(canvas, p1, -unit, color);
+    _drawArrowhead(canvas, p2, unit, color);
+  }
+
   /// Draws a small filled, rounded-rect "chip" centered on [center] with
   /// [text] in white - shared by every dimension overlay below so they all
   /// read consistently against busy sketch geometry.
@@ -1380,7 +1433,7 @@ class _SketchPainter extends CustomPainter {
     final textPainter = TextPainter(
       text: TextSpan(
         text: text,
-        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+        style: const TextStyle(color: Colors.white, fontSize: _dimensionFontSize, fontWeight: FontWeight.w600),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -1442,9 +1495,10 @@ class _SketchPainter extends CustomPainter {
         p2 = bScreen + normal;
     }
 
-    canvas.drawLine(aScreen, p1, dimPaint);
-    canvas.drawLine(bScreen, p2, dimPaint);
+    _drawExtensionLine(canvas, aScreen, p1, dimPaint);
+    _drawExtensionLine(canvas, bScreen, p2, dimPaint);
     canvas.drawLine(p1, p2, dimPaint);
+    _drawDimensionArrows(canvas, p1, p2, color);
 
     final midpoint = (p1 + p2) / 2;
     _drawLeaderLine(canvas, midpoint, labelOffset, color);
@@ -1470,9 +1524,10 @@ class _SketchPainter extends CustomPainter {
     final dimPaint = Paint()
       ..color = color
       ..strokeWidth = 1;
-    canvas.drawLine(midA, midA + offset, dimPaint);
-    canvas.drawLine(midB, midB + offset, dimPaint);
+    _drawExtensionLine(canvas, midA, midA + offset, dimPaint);
+    _drawExtensionLine(canvas, midB, midB + offset, dimPaint);
     canvas.drawLine(midA + offset, midB + offset, dimPaint);
+    _drawDimensionArrows(canvas, midA + offset, midB + offset, color);
 
     final midpoint = (midA + offset + midB + offset) / 2;
     _drawLeaderLine(canvas, midpoint, labelOffset, color);
@@ -1612,11 +1667,11 @@ class _SketchPainter extends CustomPainter {
     final screenPos = transform.sketchToScreen(midpoint.$1, midpoint.$2);
     canvas.drawCircle(
       screenPos,
-      9,
+      _midpointSnapIndicatorRadius,
       Paint()
         ..color = Colors.green
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2,
+        ..strokeWidth = 1.5,
     );
   }
 
@@ -1647,16 +1702,15 @@ class _SketchPainter extends CustomPainter {
     final point = controller.points[pointId];
     if (point == null) return;
     final screenPos = transform.sketchToScreen(point.x, point.y);
-    const plainPointRadius = 4.0;
-    const highlightRadius = plainPointRadius * 2;
+    const highlightRadius = _snapHighlightPointRadius * 2;
     canvas.drawCircle(screenPos, highlightRadius, Paint()..color = _snapCandidateColor.withValues(alpha: 0.35));
     canvas.drawCircle(
       screenPos,
-      highlightRadius + 4,
+      highlightRadius + 3,
       Paint()
         ..color = _snapCandidateColor
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2,
+        ..strokeWidth = 1.5,
     );
   }
 
@@ -1672,16 +1726,15 @@ class _SketchPainter extends CustomPainter {
     final point = controller.points[pointId];
     if (point == null) return;
     final screenPos = transform.sketchToScreen(point.x, point.y);
-    const plainPointRadius = 4.0;
-    const highlightRadius = plainPointRadius * 2;
+    const highlightRadius = _snapHighlightPointRadius * 2;
     canvas.drawCircle(screenPos, highlightRadius, Paint()..color = _snapCandidateColor.withValues(alpha: 0.35));
     canvas.drawCircle(
       screenPos,
-      highlightRadius + 4,
+      highlightRadius + 3,
       Paint()
         ..color = _snapCandidateColor
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2,
+        ..strokeWidth = 1.5,
     );
   }
 
@@ -1833,7 +1886,7 @@ class _SketchPainter extends CustomPainter {
                     : controller.isUnderConstrained
                         ? Colors.blueGrey.shade700
                         : Colors.black
-        ..strokeWidth = lineIsSelected || isHovered ? 3 : 2;
+        ..strokeWidth = lineIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
       final startScreen = transform.sketchToScreen(start.x, start.y);
       final endScreen = transform.sketchToScreen(end.x, end.y);
       if (line.construction) {
@@ -1861,7 +1914,7 @@ class _SketchPainter extends CustomPainter {
                     ? _constructionColor
                     : Colors.blueGrey.shade700
         ..style = PaintingStyle.stroke
-        ..strokeWidth = circleIsSelected || isHovered ? 3 : 2;
+        ..strokeWidth = circleIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
       final centerScreen = transform.sketchToScreen(center.x, center.y);
       final radiusPixels = radius * transform.pixelsPerUnit;
       if (circle.construction) {
@@ -1889,8 +1942,8 @@ class _SketchPainter extends CustomPainter {
         final originPaint = Paint()
           ..color = color
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2;
-        final halfSize = isSnappingToOrigin ? 10.0 : 7.0;
+          ..strokeWidth = 1.5;
+        final halfSize = isSnappingToOrigin ? _originHalfSizeSnapping : _originHalfSize;
         final originScreen = transform.sketchToScreen(origin.x, origin.y);
         canvas.drawRect(
           Rect.fromCenter(center: originScreen, width: halfSize * 2, height: halfSize * 2),
@@ -1910,19 +1963,19 @@ class _SketchPainter extends CustomPainter {
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
       final screenPos = transform.sketchToScreen(point.x, point.y);
       Color color = Colors.black87;
-      double radius = 4;
+      double radius = _pointRadius;
       if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
-        radius = isSnapping ? 11 : 6;
+        radius = isSnapping ? _pointRadiusSnapping : _pointRadiusEmphasis;
       } else if (isCircleCenter) {
         color = Colors.deepOrange;
-        radius = 6;
+        radius = _pointRadiusEmphasis;
       } else if (pointIsSelected) {
         color = _selectedColor;
-        radius = 7;
+        radius = _pointRadiusSelected;
       } else if (isHovered) {
         color = _hoverColor;
-        radius = 6;
+        radius = _pointRadiusEmphasis;
       }
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
     }

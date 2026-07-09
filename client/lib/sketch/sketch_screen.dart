@@ -300,6 +300,36 @@ class _SketchScreenState extends State<SketchScreen> {
                     bottom: 16,
                     child: SketchSpeedDial(controller: _controller),
                   ),
+                  // Drag-mode toggle FAB, bottom-left: replaces the old
+                  // timing-based "double-tap/double-click to drag" gesture
+                  // (too many false positives - a plain select-tap followed
+                  // by an ordinary drag-intent tap was easily misread as the
+                  // second half of a double-click). While toggled on, the
+                  // canvas grabs whatever's under the cursor on the very
+                  // next pointer-down instead of waiting for a second tap.
+                  // Select-mode only, same gating as the "select all"
+                  // button above - there's nothing draggable in draw/
+                  // dimension mode.
+                  Positioned(
+                    left: 16,
+                    bottom: 16,
+                    child: AnimatedBuilder(
+                      animation: _controller,
+                      builder: (context, _) {
+                        if (_controller.mode != SketchMode.select) return const SizedBox.shrink();
+                        final active = _controller.dragModeEnabled;
+                        final theme = Theme.of(context);
+                        return FloatingActionButton.small(
+                          heroTag: 'drag-mode-fab',
+                          tooltip: active ? 'Drag mode on - tap to turn off' : 'Drag mode off - tap to drag entities',
+                          backgroundColor: active ? theme.colorScheme.primary : null,
+                          foregroundColor: active ? theme.colorScheme.onPrimary : null,
+                          onPressed: _controller.toggleDragMode,
+                          child: const Icon(Icons.open_with),
+                        );
+                      },
+                    ),
+                  ),
                   // Construction-method/dimension picker: flies up from the
                   // bottom whenever draw or dimension mode is active,
                   // non-modal so taps still reach the canvas underneath (see

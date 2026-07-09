@@ -14,12 +14,32 @@ Newton-Raphson constraint solver, wrapped by `solver.py`/`constraints.py`).
 
 ## Phase 1 — Interaction model fixes (client-only, no backend changes)
 
-Highest value, lowest risk: all four items live entirely in
-`sketch_canvas.dart` / `sketch_controller.dart` and don't touch the
-solver or data model.
+Highest value, lowest risk: all items live entirely in
+`sketch_canvas.dart` / `sketch_controller.dart` / `sketch_screen.dart`
+and don't touch the solver or data model.
+
+**Status: implemented (1.1–1.6 below), pending on-device verification —
+no Flutter SDK available in the dev environment this was built in, so
+`flutter analyze`/`flutter test` could not be run here.** Each change
+was reviewed by hand against the surrounding code and cross-checked
+against the existing unit test suite's assertions (particularly the
+hit-radius/midpoint tests in `sketch_controller_test.dart`, which
+default `hitRadius` to `snapRadius` and so are unaffected by the
+midpoint-radius fix below) - but this needs a real `flutter test` run
+and on-device pass before merging. See the on-device checklist
+delivered alongside this update.
 
 ### 1.1 Replace "double-tap/double-click to drag" with an explicit drag-mode FAB
-- **Current state**: there's no real double-tap gesture today. A tap
+**Implemented.** `SketchController.dragModeEnabled`/`toggleDragMode()`
+added; `_tryStartEntityDrag` (`sketch_canvas.dart`) now gates on that
+flag instead of the 350ms timing window, which is removed entirely
+(`_lastTapTime`/`_doubleClickTimeout` deleted). New bottom-left FAB in
+`sketch_screen.dart`, select-mode only, toggles the mode; icon fills
+with the primary color while active. Implemented as a **sticky**
+toggle (stays on until pressed again), matching every other tool-mode
+button in this app, rather than auto-clearing after one drag - flagged
+in the on-device checklist as worth confirming feels right.
+- **Current state (before this change)**: there was no real double-tap gesture. A tap
   fires on pointer-up if travel < 10px (`sketch_canvas.dart:588-591`),
   and a *second* pointer-down within 350ms (`_doubleClickTimeout`,
   `:98`) over a draggable point is reinterpreted as a drag-start
@@ -41,7 +61,24 @@ solver or data model.
   or similar) will need updating for the new trigger path.
 
 ### 1.2 Shrink point hit-radius / detach from the midpoint false-positive problem
-- **Current state**: `minTapHitRadiusPixels = 14.0` (`sketch_controller.dart:274`),
+**Implemented, plus the actual root cause of the midpoint false-positives
+found and fixed.** `pointHitRadiusMultiplier` reduced 1.6 → 1.2 (first-pass
+value, needs on-device tuning per the checklist). Separately - and this
+turned out to be the real cause of "unintended selections of midpoints"
+from the original roadmap notes, not just a radius-tuning question -
+`_resolveSelectableAt` (the actual tap-to-select path) was calling
+`_nearestLineMidpointId` with the full zoom-scaled tap radius instead of
+the tight `snapRadius` every *other* midpoint check in the file already
+uses (`hoveredLineMidpoint`, `_pointIdAt`). That meant a tap anywhere
+along a line within the generous tap radius of its midpoint silently
+converted into "materialize and select the midpoint" instead of
+selecting the line - and disagreed with the hover indicator, which only
+lit up when genuinely close. Fixed by matching the existing tight-radius
+convention. This directly resolves the roadmap's separately-listed
+"disconnect between hover/highlight and what actually gets selected...
+unintended selections of midpoints" item, not just the point-hit-radius
+item.
+- **Current state (before this change)**: `minTapHitRadiusPixels = 14.0` (`sketch_controller.dart:274`),
   with an extra `pointHitRadiusMultiplier = 1.6` applied to points only
   (`:279`, used in `_entityAt`, `:814`) — so a point's *effective* radius
   is 22.4px, competing with nearby midpoint hit-testing
@@ -75,7 +112,14 @@ solver or data model.
   engineering.
 
 ### 1.4 Auto-create coincident constraint when a point is placed/dropped on another point
-- **Current state**: this exists for the **point-placement tool** only
+**Implemented**, and widened slightly beyond the original scope once a
+third instance of the same bug turned up: the 3-point circle tool's
+circumcenter-derived centre point (`sketch_controller.dart`, near line
+2959) had the exact same "raw `_api.createPoint`, no proximity check"
+bug as the rectangle centre point. Both now share a new
+`_autoCoincideIfNear(pointId, x, y)` helper (also used by the rewritten
+`endPointDrag`) rather than duplicating the check three times.
+- **Current state (before this change)**: this exists for the **point-placement tool** only
   (`_clickPointTool`, `sketch_controller.dart:2722-2754`, via
   `_existingPointIdNear` + `_api.createCoincidentConstraint`) — confirmed
   via on-device testing to be **missing everywhere else**. Two separate
@@ -109,6 +153,61 @@ solver or data model.
 - **Files**: `sketch_controller.dart` only (`endPointDrag`,
   `_buildRectangle`'s centre-point creation).
 - **Risk**: low.
+
+### 1.5 Global sizing pass (new item, added mid-implementation)
+**Implemented.** Every point/line/label/highlight size in
+`_SketchPainter` (`sketch_canvas.dart`) was scattered as inline magic
+numbers - now centralized into named constants at the top of the class
+(`_pointRadius`, `_pointRadiusEmphasis`, `_pointRadiusSelected`,
+`_pointRadiusSnapping`, `_lineStrokeWidth`, `_lineStrokeWidthEmphasis`,
+`_originHalfSize`/`_originHalfSizeSnapping`, `_dimensionFontSize`,
+`_snapHighlightPointRadius`, `_midpointSnapIndicatorRadius`), each
+shrunk from its prior value (e.g. point radius 4→3, selected 7→5, line
+stroke 2→1.5, constraint label font 11→9.5). Deliberately kept separate
+from the touch **hit**-radius constants in `sketch_controller.dart`
+(1.2 above) - visual size and touch-target size are different
+concerns; the hit-radius already sits well above the visual dot size on
+purpose, for touchability. First-pass values, explicitly expected to
+need re-tuning on-device (per the user's own framing of this request) -
+centralizing them was done specifically so that re-tuning is a one-line
+change per constant rather than a file-wide hunt.
+- **Files**: `sketch_canvas.dart` only.
+- **Risk**: low (pure rendering constants), but *will* need iteration -
+  treat the current values as a starting point, not a final answer.
+
+### 1.6 Traditional CAD-style dimension rendering (new item, added mid-implementation)
+**Implemented** for the two dimension types that already had a real
+two-extension-line-plus-offset-segment layout: `_paintDistanceDimension`
+and `_paintLineDistanceDimension`. Added, per ISO 129/ASME Y14.5
+technical-drawing convention: a small gap between the measured
+point/line-midpoint and where its extension (witness) line starts
+(`_extensionLineGap = 4.0`), a slight overshoot of the extension line
+past the dimension line it meets (`_extensionLineOvershoot = 3.0`), and
+solid filled arrowheads at both ends of the dimension line, pointing
+outward and touching the extension lines (`_drawArrowhead`/
+`_drawDimensionArrows`). The dimension label chip already paints last
+(on top), which incidentally already gives the traditional "break in
+the line behind the text" look without extra work.
+- **Not touched, deliberately out of scope for this pass**:
+  - `_paintPointLineDistanceDimension` (Point-to-Line distance) doesn't
+    even draw a dimension line today, only a floating numeric label -
+    a materially bigger change (needs the same layout work the other
+    two already had) than "add arrows to an existing line," left as a
+    follow-up.
+  - The dimension-mode **ghost preview** (ghost ballooning/placement
+    UI, `_layoutGhost` and friends around `sketch_canvas.dart:820-1002`)
+    still renders as a plain dashed line with no extension-line-gap/
+    arrowhead treatment - it's already visually distinguished (dashed,
+    different color) as "not yet committed," so left alone rather than
+    doubling the size of this change; worth revisiting if the
+    plain-vs-decorated inconsistency reads oddly on-device.
+  - Angle dimensions, and the H/V/parallel/perpendicular/equal/collinear
+    glyphs, stay as simple text chips - they're annotations of an
+    existing relationship, not a measured distance, so the
+    extension-line/arrow treatment doesn't obviously apply the same way.
+- **Files**: `sketch_canvas.dart` only.
+- **Risk**: low - purely additive rendering, no layout values that
+  existing callers depended on were removed, just extended.
 
 ---
 
@@ -440,9 +539,14 @@ ellipse → spline → text), no reprioritization requested.
 
 ## Suggested delivery order
 
-1. **Phase 1** (interaction fixes, including the now-broadened 1.4
-   coincident-on-drop/rectangle-centre fix) — do first, self-contained,
-   fixes the most-reported daily annoyances, no backend risk.
+1. **Phase 1 — DONE, pending on-device verification** (interaction
+   fixes, the now-broadened 1.4 coincident-on-drop/rectangle-centre/
+   circle-centre fix, plus two items added mid-implementation: 1.5
+   global sizing pass and 1.6 traditional CAD-style dimension
+   rendering). Implemented without a Flutter SDK available to run
+   `flutter analyze`/`flutter test` in the dev environment this was
+   built in - see the on-device checklist delivered alongside this
+   update for what to verify before considering it shippable.
 2. **Phase 2** (drag-pin solve semantics) — natural follow-on to Phase 1
    since it changes what "drag" means; touches the solver but reuses an
    existing fixed-group mechanism.

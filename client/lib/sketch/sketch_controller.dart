@@ -276,7 +276,12 @@ class SketchController extends ChangeNotifier {
   /// How much wider than [minTapHitRadiusPixels]/[snapRadius] a Point's own
   /// hit-test radius is, in [_entityAt] - see that method's doc comment for
   /// why a single point needs the extra forgiveness a line/circle doesn't.
-  static const double pointHitRadiusMultiplier = 1.6;
+  ///
+  /// Reduced from 1.6 after feedback that points were producing too many
+  /// false-positive selections (a point's effective hit-circle overlapping
+  /// nearby geometry it shouldn't). Still a first-pass value pending
+  /// on-device tuning, not a final number.
+  static const double pointHitRadiusMultiplier = 1.2;
 
   /// Converts [minTapHitRadiusPixels] into sketch-space units for the
   /// current zoom level - the canvas passes its [ViewTransform.pixelsPerUnit]
@@ -988,15 +993,45 @@ class SketchController extends ChangeNotifier {
   /// Line's midpoint - a real Point materialized there on the spot (new
   /// work package item 5). Points still win over everything else, same
   /// priority order as plain [_entityAt].
+  ///
+  /// Bug-fix: the midpoint check below used to pass [radius] (the full,
+  /// zoom-scaled tap-hit radius, generous enough to cover an entire short
+  /// Line) instead of the tight [snapRadius] every other midpoint check in
+  /// this file uses ([hoveredLineMidpoint], [_pointIdAt]) - so a tap
+  /// anywhere along a Line within the generous tap radius of its midpoint
+  /// silently materialized and selected the midpoint instead of the Line
+  /// itself, and disagreed with the hover indicator ([hoveredLineMidpoint]),
+  /// which only lit up when genuinely close. This was the confirmed root
+  /// cause of "unintended selections of midpoints" - fixed by matching the
+  /// tight radius every other midpoint check already uses.
   Future<SketchSelection?> _resolveSelectableAt(double radius) async {
     final direct = _entityAt(cursorX, cursorY, radius, includeOrigin: true);
     if (direct != null && direct.kind == SelectionKind.point) return direct;
-    final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, radius);
+    final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, snapRadius);
     if (midpointLineId != null) {
       final pointId = await _materializeMidpoint(midpointLineId);
       return SketchSelection(kind: SelectionKind.point, id: pointId);
     }
     return direct;
+  }
+
+  /// Whether the drag-mode FAB is currently toggled on - while true, the
+  /// canvas's next pointer-down attempts to grab and drag whatever's under
+  /// the cursor immediately (see [SketchCanvas]'s `_tryStartEntityDrag`),
+  /// instead of the old timing-based "second tap within 350ms starts a
+  /// drag" gesture, which produced too many false positives (a plain
+  /// select-tap followed by an ordinary drag-intent tap was easily
+  /// misread as the second half of a double-click). Sticky (stays on until
+  /// toggled off again), matching every other tool-mode toggle in this
+  /// controller (draw tools, construction methods) rather than
+  /// auto-clearing after one drag - open to revisiting after on-device
+  /// feedback on which feels better.
+  bool _dragModeEnabled = false;
+  bool get dragModeEnabled => _dragModeEnabled;
+
+  void toggleDragMode() {
+    _dragModeEnabled = !_dragModeEnabled;
+    notifyListeners();
   }
 
   /// New work package item 8's double-click-drag target resolver: a
@@ -1146,6 +1181,7 @@ class SketchController extends ChangeNotifier {
     if (pointId == null) return;
     final originX = _dragOriginPointX!;
     final originY = _dragOriginPointY!;
+    final droppedPoint = points[pointId]!;
     _draggingPointId = null;
     _dragOriginCursorX = null;
     _dragOriginCursorY = null;
@@ -1156,6 +1192,14 @@ class SketchController extends ChangeNotifier {
         final restored = await _api.updatePoint(_sketchId!, pointId, originX, originY);
         points[pointId] = SketchPointView(id: restored.id, x: restored.x, y: restored.y);
       });
+      // Dropping a dragged Point onto another existing Point should link
+      // them with a CoincidentConstraint, same as [_clickPointTool]'s
+      // placement-time snap (Prompt B item B4) - previously only the
+      // placement path did this, so dragging a Point onto another silently
+      // did nothing. Checked against the position it was actually dropped
+      // at (before any solve moves it), same convention as every other
+      // proximity-snap check in this file.
+      await _autoCoincideIfNear(pointId, droppedPoint.x, droppedPoint.y);
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -2704,6 +2748,25 @@ class SketchController extends ChangeNotifier {
     }
   }
 
+  /// Creates a CoincidentConstraint linking [pointId] to the nearest
+  /// existing Point within [snapRadius] of ([x], [y]), if any - shared by
+  /// every path that places a *computed/derived* Point (a rectangle's
+  /// tracked centre, a 3-point circle's circumcenter-derived centre) rather
+  /// than a Point the user tapped directly, so it still snaps onto nearby
+  /// geometry (e.g. landing exactly on the sketch origin) the same way
+  /// [_clickPointTool]'s directly-tapped placement already does. Bug-fix:
+  /// these derived-point paths previously called [_api.createPoint]
+  /// directly with no proximity check at all - confirmed on-device by
+  /// placing a Rectangle's centre exactly on the origin and observing no
+  /// constraint was created.
+  Future<void> _autoCoincideIfNear(String pointId, double x, double y) async {
+    final existingId = _existingPointIdNear(x, y, excludeId: pointId);
+    if (existingId == null) return;
+    final constraint = await _api.createCoincidentConstraint(_sketchId!, pointId, existingId);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+    _autoCoincidentIndicatorPointId = pointId;
+  }
+
   /// [SketchTool.point]: a single, self-terminating tap that places one
   /// Point. Still snaps onto a nearby Line's midpoint via
   /// [_materializeMidpoint] (same as every other placement path, through
@@ -2932,6 +2995,7 @@ class SketchController extends ChangeNotifier {
         await _api.deletePoint(_sketchId!, centerPoint.id);
         points.remove(centerPoint.id);
       });
+      await _autoCoincideIfNear(centerPoint.id, center.$1, center.$2);
       final radiusPoint = await _api.createPoint(_sketchId!, cx, cy);
       points[radiusPoint.id] = SketchPointView(id: radiusPoint.id, x: radiusPoint.x, y: radiusPoint.y);
       _pushUndo(() async {
@@ -3139,6 +3203,7 @@ class SketchController extends ChangeNotifier {
         await _api.deletePoint(_sketchId!, centerPoint.id);
         points.remove(centerPoint.id);
       });
+      await _autoCoincideIfNear(centerPoint.id, centerX, centerY);
 
       // Bug-fix round 2: only one AtMidpoint constraint, not two. Both
       // diagonals share the same true midpoint once the H/V constraints
