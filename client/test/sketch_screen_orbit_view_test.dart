@@ -156,6 +156,18 @@ void main() {
   testWidgets(
       'on-device feedback: entering Orbit View always resets body transparency to ~25%, even if '
       'a previous Orbit View session on this Sketch left it at a different value', (tester) async {
+    // The Body Transparency bottom sheet's content (title + slider row +
+    // Apply button, each with Material's own default padding) is taller
+    // than flutter_test's default 800x600 surface - the Slider/Apply
+    // button render below y=600 and are silently un-hit-testable there
+    // regardless of animation timing (confirmed: the same off-screen
+    // offset appeared with or without an extra settle pump). Widen the
+    // test surface so the whole sheet actually fits.
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     final controller = await _freshController();
 
     await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
@@ -170,12 +182,7 @@ void main() {
     await tester.tap(find.byTooltip('Menu'));
     await tester.pump();
     await tester.tap(find.text('Body Transparency'));
-    // showModalBottomSheet animates up from off-screen - a single
-    // no-duration pump only renders its first frame, leaving the Slider/
-    // Apply button positioned below the test viewport (a silent
-    // "did not hit test" warning, not a thrown error) until this entrance
-    // transition (Material's default 250ms) has actually finished.
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
     // A large leftward drag clamps the slider to its minimum (0% transparency,
     // i.e. opacity 1.0) regardless of the sheet's exact rendered width.
     await tester.drag(find.byType(Slider), const Offset(-1000, 0));
