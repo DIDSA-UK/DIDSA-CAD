@@ -625,6 +625,280 @@ ellipse → spline → text), no reprioritization requested.
 
 ---
 
+## Phase 7 — Unified 2D/3D sketching environment ("infinite plane" hybrid)
+
+Raised as an exploratory question: can the sketcher live inside the same
+environment as the 3D viewport, with a locked camera orientation and the
+canvas read as an infinite plane, rather than two separate
+canvas/viewport widgets? This directly extends Phase 4.1's already-shipped
+shaded-body backdrop (`sketch_screen.dart`'s `_buildBaseLayer`, the
+non-orbit branch) - today that backdrop's camera is static (`initialViewPlane`,
+set once); this phase asks it to pan/zoom in lockstep with the flat 2D
+canvas above it, so the two visually read as one continuous scene.
+
+### 7.1 Sync the 2D canvas's pan/zoom with the 3D backdrop's camera
+- **Current state**: pan/zoom is owned entirely by `SketchViewport`
+  (`sketch_viewport.dart:12-40` - `double zoom`, `Offset panOffset`,
+  `panByScreenDelta`/`applyAnchoredZoomPan`/`zoomAtScreenPoint`/`zoomToFit`),
+  itself a private field of `_SketchCanvasState`
+  (`sketch_canvas.dart:68`) with **no external observability at all** -
+  no callback param, no `ValueListenable`, not even a public getter.
+  `SketchViewport`'s own doc comment is explicit that this is deliberate:
+  pan/zoom is "purely a view concern, not sketch domain state," kept off
+  `SketchController` on purpose. Five call sites mutate it today: mouse
+  right-drag pan (`:532`), two-finger pinch/pan (`:616-631`), mouse-wheel
+  zoom (`:602-608`), the RTS edge-pan ticker (`:299-326`), and the
+  "zoom to fit" button (`:749`). Separately, `OrbitCamera`
+  (`orbit_camera.dart`) has no external injection or observation point
+  either (confirmed already for Phase 4's own work) - `panByScreenDelta`/
+  `zoomByFactor`/`target`/`distance` are only ever mutated by
+  `PartViewportState`'s own raw pointer handlers; there is no precedent
+  anywhere in this codebase for an `OrbitCamera` being driven
+  programmatically from outside its owning widget (the closest thing,
+  `animateToPlane`, only ever touches `orientation`, driven by an
+  internal `AnimationController`, not target/distance/pan).
+- **Proposed approach**: (a) add a new optional `onViewportChanged(Offset
+  panOffset, double zoom)` callback param to `SketchCanvas`, fired from
+  each of the five mutation sites above; (b) add two new public methods
+  to `PartViewportState` - `applyExternalPan(double dx, double dy)` /
+  `applyExternalZoom(double scaleFactor)`, thin wrappers around
+  `_camera.panByScreenDelta`/`zoomByFactor` + `setState` - reachable via
+  a `GlobalKey<PartViewportState>` on the backdrop instance (which
+  doesn't have one today; only the Orbit View branch's instance does);
+  (c) in `sketch_screen.dart`, translate `SketchViewport`'s pan(px)/
+  zoom(linear multiplier) deltas into calls on the backdrop through that
+  key; (d) give `PartViewport` a new locked gesture mode - pan/zoom
+  allowed, rotation suppressed - since today any drag in its default
+  mode calls `orbitByScreenDelta`, and remove the backdrop's
+  `IgnorePointer` wrapper only for that locked interaction; (e)
+  suppress the backdrop's unconditionally-rendered "Reset view" button
+  (`part_viewport.dart:1476-1485`, currently just inert under
+  `IgnorePointer`) with a new `showControls`-style flag, since it would
+  fight programmatic sync once live. Orbit View (already shipped) stays
+  the "step back and freely rotate" escape hatch, untouched by any of
+  this.
+- **Open risk worth a spike before committing to full delivery**:
+  `flutter_scene` 0.18.x has no true orthographic camera - `OrbitCamera`
+  is always a `PerspectiveCamera` with a fixed FOV (documented on
+  `OrbitCamera.isPerspective`'s own field). `SketchViewport`'s zoom is a
+  linear pixels-per-unit multiplier; `OrbitCamera`'s "zoom" is
+  `distance` (an inverse, FOV-dependent measure, body-radius-clamped via
+  `setZoomBoundsForRadius`). These aren't a 1:1 mapping, and a
+  perspective camera panned off-axis introduces foreshortening a true
+  orthographic "infinite plane" wouldn't have - the "feels like one flat
+  window" premise this phase is built on may not fully hold up
+  visually. Recommend a small throwaway prototype (sync just pan first,
+  on a real device, one plane) to validate the feel before investing in
+  the full locked-gesture-mode/callback plumbing.
+- **Files**: `sketch_viewport.dart`, `sketch_canvas.dart` (new callback +
+  call sites), `sketch_screen.dart` (wiring + new `GlobalKey`),
+  `viewport3d/part_viewport.dart` (external pan/zoom methods, locked
+  gesture mode, `showControls` flag).
+- **Risk**: medium-high - genuine new architecture (no existing
+  precedent for externally-driven camera control, no existing
+  observability on the 2D canvas's own pan/zoom), plus the open
+  perspective-vs-orthographic visual-fidelity question above. Not a
+  rewrite of the sketcher (all of `SketchCanvas`'s rendering/hit-testing/
+  drag-solve logic stays untouched) - the "completely new sketcher"
+  alternative (every sketch entity rebuilt as real 3D scene geometry
+  with ray-cast hit-testing) was considered and explicitly rejected as
+  materially higher-risk for no real benefit, since sketches are
+  inherently planar.
+
+---
+
+## Phase 8 — DXF/DWG import to sketch
+
+### 8.1 Import DXF geometry as real, editable sketch entities
+- **Current state**: entirely greenfield - a repo-wide grep found zero
+  mentions of "dxf" or "dwg" anywhere in code or docs. The existing
+  `ImportFeature` pipeline (STEP/STL/OBJ/glTF -> a Part's Body,
+  `part_screen.dart:2251`'s `_importGeometry()` -> `POST
+  /parts/{id}/import-features`, `document/router.py:1234`) is
+  architecturally unrelated: it's a Part/Body-level, 3D,
+  fixed-non-parametric import (base64-in-JSON, one API call, no
+  preview/confirm step, backend re-decodes the raw bytes on every
+  recompute rather than caching parsed geometry) in `app.document`, not
+  `app.sketch` - not a reusable substrate for "import into an editable,
+  still-parametric 2D Sketch," though its general shape (client picks
+  file -> base64 -> JSON POST -> server-side parse) is a conventions
+  precedent worth mirroring. No DXF-parsing library is a dependency
+  today - `backend/environment.yml` has exactly `pythonocc-core`,
+  `fastapi`, `uvicorn`, `pytest`, `httpx`, and `py-slvs`; `ezdxf` (the
+  standard, actively-maintained, MIT-licensed Python DXF library) would
+  be wholly new. The Sketch entity model only has `Point`/`Line`/`Circle`
+  (`sketch/models.py` - `Arc` does not exist, confirmed both in the
+  model and in this doc's own Phase 6.2, which lists Arc as an
+  *unscheduled* backlog item) - DXF `ARC` entities and
+  `LWPOLYLINE`/`POLYLINE` bulge (arc) segments have nothing to map onto
+  today. There is no bulk-create endpoint anywhere in
+  `sketch/router.py` - every Point/Line/Circle/Constraint creation is
+  one POST, so an uncached import of N entities is N+ sequential
+  round-trips absent new plumbing. There is no unit/scale concept
+  anywhere in the sketch model either - `Point.x`/`.y` are bare floats
+  with an implicit, undocumented unit - while DXF files routinely carry
+  an explicit `$INSUNITS` header and arbitrary drawing units.
+- **Proposed approach**:
+  1. **DXF only for v1, not DWG.** DWG is a proprietary Autodesk binary
+     format with no viable open-source native parser (`ezdxf` itself
+     only reads DXF). Realistic DWG support means shelling out to
+     Autodesk/ODA's free `ODAFileConverter` CLI to convert DWG->DXF
+     server-side first - a separate, distinct decision (extra installed
+     binary, its own licensing terms to check) that should not be
+     bundled into DXF v1's scope. Simplest v1: reject `.dwg` uploads
+     with a clear "please save as DXF" message.
+  2. **Backend**: add `ezdxf` as a new dependency; a new endpoint (e.g.
+     a stateless "parse and return entities" endpoint rather than one
+     that mutates the Sketch store directly, keeping the client
+     authoritative over what actually gets created, per this project's
+     own API-first design - see the Cross-cutting notes below) that
+     extracts `LINE`/`CIRCLE`/`ARC`/`LWPOLYLINE`(+bulge)/`POLYLINE`
+     entities from modelspace only for v1 (layers, blocks, text,
+     dimensions, and hatches are explicit non-goals, called out as such
+     rather than silently dropped). Read `$INSUNITS` where present
+     (default to millimeters, matching the sketch model's own implicit
+     convention, when absent/unitless) and return the detected unit +
+     a suggested scale alongside the parsed entities, rather than
+     silently assuming.
+  3. **Arc handling - a real product decision, not a detail**: either
+     (a) block DXF import on Phase 6.2's Arc tool landing first, or (b)
+     flatten `ARC`/bulge segments into short line-segment approximations
+     on import as an interim stopgap (common practice in many DXF
+     importers, but means imported "arcs" aren't editable/
+     constrainable as arcs). Recommend (b) for a usable v1, revisited
+     once Arc ships.
+  4. **Client**: a new "Import DXF" entry point (sketch screen hamburger
+     menu) -> file picker -> parse-preview request -> a genuine
+     preview/confirm step (unlike `ImportFeature`'s no-preview flow -
+     DXF import is messier and riskier: arbitrary source-tool quirks,
+     unknown entity count, unit ambiguity - a user gut-check before
+     flooding the sketch matters here) showing entity count, detected
+     unit, and an editable scale factor -> on confirm, create each
+     Point/Line/Circle via the existing one-at-a-time endpoints,
+     wrapped in a single undo-stack entry - `SketchController`'s
+     existing `deleteSelected()`/`_restoreDeletedEntities()`
+     (`sketch_controller.dart`) already demonstrates exactly this
+     pattern (many sequential API calls, one grouped undo entry with
+     id-remapping) and can be copied directly, so no new undo-stack
+     mechanism is needed.
+  5. **Deferred**: a real bulk-create backend endpoint, only if
+     sequential-round-trip latency proves a real problem in practice
+     for large drawings - ship v1 without it and measure first.
+- **Files**: `backend/environment.yml` (new dep), new
+  `backend/app/sketch/dxf_import.py` (or similar), `sketch/router.py`,
+  `sketch/schemas.py`; client: new import-sheet widget or an addition to
+  `sketch_screen.dart`'s hamburger menu, `sketch_controller.dart` (batch
+  create + one undo entry), `sketch_api_client.dart`.
+- **Risk**: medium-high - a genuinely new backend dependency and parsing
+  surface, a real blocking dependency on Phase 6.2's Arc (or an explicit
+  flatten-to-lines interim decision), a unit/scale UX built from
+  scratch with no existing convention to extend, and DWG needs its own
+  explicit non-goal framing rather than being assumed free alongside
+  DXF.
+
+---
+
+## Phase 9 — Convert/Translate Entities (bring in lines from other sketches and body edges)
+
+### 9.1 Convert external geometry into real, editable entities in the active sketch
+**Overlaps substantially with Phase 4.3** (deferred above) - both are
+fundamentally "a Sketch referencing something outside itself for the
+first time." Whichever of the two ships first effectively decides where
+that concept first enters `app.sketch.models` - see the sequencing note
+at the end of this section.
+- **Current state**: two very different source types, with very
+  different reference-stability properties already established
+  elsewhere in this codebase:
+  - **Body edges/vertices**: the raw `MeshDto` ids the 3D viewport's own
+    hit-testing uses (`face_ids`/`edge_ids`/`topology_vertex_ids`) are
+    explicitly documented as "only stable within one response" - a
+    Body is rebuilt from scratch on every mesh request. The durable
+    mechanism that already exists is `SubShapeRef`
+    (`document/models.py:191-216` - `body_id` + `shape_type` + an
+    OCCT-enumeration `index` captured at reference time), already used
+    by Fillet/Chamfer/Create Plane, re-resolved fresh via
+    `resolve_subshape` (`document/extrude.py:757-778`), which fails
+    closed (`422 missing_reference`) if the Body's topology changed
+    enough to invalidate the index - a known, already-accepted risk in
+    this codebase ("cheap to fall back from later if it proves too
+    fragile in practice" - its own doc comment), not something this
+    phase introduces new.
+  - **Other-Sketch geometry**: `SketchEntityRef` (sketch id + entity
+    id), already used by Extrude's `profile_refs`, Revolve's
+    `axis_ref`, and Sweep's multi-Sketch `path_refs`, resolved via a
+    plain dict lookup by permanent id (`sketch/store.py`'s
+    `resolve_sketch_entity`) - materially more durable than the
+    body-edge case, since ids are never reassigned, only failing if the
+    source entity was itself deleted. Revolve's and Sweep's own doc
+    comments already confirm the source Sketch need not be the same one
+    the Feature's own profile lives in, or even a single Sketch per
+    Feature.
+  - The client already has essentially all the picking infrastructure
+    this needs, none of it purpose-built for this feature: 
+    `SelectionEntityKind`/`SelectionEntityRef`
+    (`viewport3d/selection_hit_test.dart:61-129`) already treat Body
+    edges/vertices and other-Sketch Points/Lines/Circles as first-class,
+    uniformly-handled members of one type; `SelectionFilterState`
+    (`selection_filter.dart`) already has a proven per-tool-panel
+    filter pattern (Fillet's edge+face filter, Revolve's
+    body+sketchLine-only filter, Sweep's ordered multi-Sketch chain);
+    the Fillet panel's open/seed-selection/live-preview/close session
+    pattern (`part_screen.dart`'s `_openFilletPanel` et al) is a ready
+    template; and a dedicated "pick a whole source Sketch" mode already
+    exists separately (`isSketchPickerMode`/`pickableSketchIds`,
+    `feature_tree_panel.dart`, used by Extrude/Revolve's own "which
+    Sketch is my profile" step) for the "which Sketch am I converting
+    from" step.
+  - What's genuinely new: **nothing today actually materializes a copy
+    of external geometry as new persisted Point/Line rows inside a
+    different Sketch's own collections.** Every existing reference
+    (`SketchEntityRef`, `SubShapeRef`) is only ever consumed live by a
+    downstream Feature's own compute step (Extrude/Revolve/Sweep/
+    Fillet) - none of them spawn new sketch-native entities in a
+    sibling Sketch. That's the actual novel mechanic here.
+- **Proposed approach - split into two real sub-scopes, not one**:
+  - **v1: frozen one-time copy, no live link.** Pick a Body
+    edge/vertex or another Sketch's Point/Line/Circle (reusing the
+    selection infrastructure above, scoped to a new filter covering
+    `sketchPoint`/`sketchLine`/`sketchCircle`/`edge`/`vertex`); resolve
+    its current world-space geometry (already available - body edges
+    via existing mesh/edge data, other-Sketch entities via that
+    Sketch's own plane basis) and project onto the *active* sketch's
+    plane, reusing `projectMeshEdgesOntoPlane`/`worldPointToSketch`
+    (`viewport3d/sketch_geometry_3d.dart`, already built for Phase
+    4.1's ghost-wireframe overlay) - cross-plane projection needs to be
+    handled explicitly here, not assumed same-plane; then create real
+    new Point/Line/Circle entities in the active sketch via the
+    existing one-at-a-time endpoints, one grouped undo entry (same
+    `deleteSelected`-style pattern as Phase 8's import). **This is
+    genuinely client-only** - compute coordinates, call existing create
+    endpoints - no new backend data model at all for v1, a real
+    scope-reduction discovery from this research.
+  - **v2: associative/live link, deferred until paired with Phase
+    4.3.** Store a `SketchEntityRef`/`SubShapeRef`-style back-reference
+    on the converted entity; add staleness detection, re-resolve on
+    upstream model change, and the yellow "lost reference" tree-icon
+    state (reusing `feature_tree_panel.dart:449-464`'s existing
+    grey-when-locked color-branch pattern, exactly as Phase 4.3 already
+    proposes). This half inherits Phase 4.3's own risk assessment
+    verbatim and should be built *once*, shared between both features,
+    not duplicated - if only one of {4.3, Convert Entities} is picked
+    up, do v1 (frozen copy) alone and leave v2 for whichever phase
+    tackles the shared external-reference foundation.
+- **Files**: v1 - `viewport3d/part_screen.dart` (new selection filter +
+  panel session), a new panel widget or an addition to
+  `sketch_screen.dart`, `sketch_controller.dart` (creation calls + one
+  grouped undo entry), reuses `sketch_geometry_3d.dart`'s projection
+  helpers. v2 (shared with 4.3) - `models.py`, `schemas.py`,
+  `router.py`, `feature_tree_panel.dart`.
+- **Risk**: v1 - low-medium, almost entirely reuse of existing
+  picking/projection/creation infrastructure, no new backend concept.
+  v2 - high, inherits Phase 4.3's own "new data model concept,
+  cross-feature staleness tracking" assessment directly; sequence
+  together with 4.3 rather than attempting independently.
+
+---
+
 ## Suggested delivery order
 
 1. **Phase 1 — DONE, pending on-device verification** (interaction
@@ -673,6 +947,23 @@ ellipse → spline → text), no reprioritization requested.
 7. **Phase 6.2** (new shape tools) — ongoing backlog, pick off in the
    confirmed complexity order; spline and text need their own scoping
    passes when reached.
+8. **Phase 9.1 (v1, frozen-copy Convert Entities)** — can slot in any
+   time after Phase 4.1 (needs its plane-projection helpers), genuinely
+   client-only, no dependency on Phase 4.3.
+9. **Phase 4.3 + Phase 9.1 (v2, associative link)** — do these together
+   if both are ever picked up, building the shared external-reference/
+   staleness-tracking foundation once rather than twice; either can go
+   first structurally, but building it in isolation for just one of them
+   means redoing the same design work when the other arrives.
+10. **Phase 8** (DXF import) — sequence Phase 6.1 (Arc) before it, or
+    explicitly commit to the flatten-arcs-to-lines interim approach
+    described in 8.1; independent of everything else in this list
+    otherwise.
+11. **Phase 7** (hybrid 2D/3D environment) — do the recommended
+    throwaway prototype/spike first, independent of every other item
+    above; only invest in the full callback/gesture-mode plumbing once
+    the perspective-camera visual-fidelity question is actually
+    answered on a real device.
 
 ## Cross-cutting notes (architecture fit)
 
