@@ -86,16 +86,26 @@ const Map<String, int> dofCostByConstraintType = {
   'at_midpoint': 2, // point == midpoint(line) - an x and a y equation.
 };
 
-/// Every Point id a Constraint references, resolving a line-pair
-/// Constraint's Lines to their endpoint Point ids via [lineStartPointId]/
-/// [lineEndPointId] - the client's [ConstraintDto] subclasses for those
-/// types (angle/parallel/perpendicular/equal_length/collinear/
-/// line_distance) only carry Line ids, unlike the backend's own internal
-/// model (constraints.py captures each Line's endpoint ids directly at
-/// creation time for the solver's benefit - see e.g.
-/// `AngleConstraint.line1_start_id`), since the API response shape
-/// (schemas.py's `AngleConstraintResponse` etc.) never exposed them.
-List<String> _pointIdsOf(
+/// Resolves a Constraint to its backend `type` discriminator string (the
+/// [dofCostByConstraintType] key) and every Point id it references,
+/// resolving a line-pair Constraint's Lines to their endpoint Point ids
+/// via [lineStartPointId]/[lineEndPointId] - one dispatch for both, rather
+/// than two separate `is`-chains that could drift out of sync with each
+/// other as constraint types are added.
+///
+/// [ConstraintDto] carries no `type` field client-side - only
+/// `ConstraintDto.fromJson`'s switch statement (sketch_api_client.dart)
+/// ever sees the backend's raw JSON discriminator, so it has to be
+/// re-derived here from each concrete subclass.
+///
+/// The client's DTOs for the line-pair types (angle/parallel/
+/// perpendicular/equal_length/collinear/line_distance) only carry Line
+/// ids, unlike the backend's own internal model (constraints.py captures
+/// each Line's endpoint ids directly at creation time for the solver's
+/// benefit - see e.g. `AngleConstraint.line1_start_id`), since the API
+/// response shape (schemas.py's `AngleConstraintResponse` etc.) never
+/// exposed them.
+({String type, List<String> pointIds}) _describe(
   ConstraintDto constraint,
   Map<String, String> lineStartPointId,
   Map<String, String> lineEndPointId,
@@ -113,33 +123,55 @@ List<String> _pointIdsOf(
     return ids;
   }
 
-  if (constraint is DistanceConstraintDto) return [constraint.pointAId, constraint.pointBId];
-  if (constraint is VerticalConstraintDto) return [constraint.pointAId, constraint.pointBId];
-  if (constraint is HorizontalConstraintDto) return [constraint.pointAId, constraint.pointBId];
-  if (constraint is CoincidentConstraintDto) return [constraint.pointAId, constraint.pointBId];
-  if (constraint is AngleConstraintDto) return ofLines(constraint.line1Id, constraint.line2Id);
-  if (constraint is ParallelConstraintDto) return ofLines(constraint.line1Id, constraint.line2Id);
-  if (constraint is PerpendicularConstraintDto) return ofLines(constraint.line1Id, constraint.line2Id);
-  if (constraint is EqualLengthConstraintDto) return ofLines(constraint.line1Id, constraint.line2Id);
-  if (constraint is CollinearConstraintDto) return ofLines(constraint.line1Id, constraint.line2Id);
-  if (constraint is LineDistanceConstraintDto) return ofLines(constraint.line1Id, constraint.line2Id);
-  if (constraint is PointLineDistanceConstraintDto) {
-    final ids = <String>[constraint.pointId];
-    final start = lineStartPointId[constraint.lineId];
-    final end = lineEndPointId[constraint.lineId];
+  List<String> ofLine(String lineId, String pointId) {
+    final ids = <String>[pointId];
+    final start = lineStartPointId[lineId];
+    final end = lineEndPointId[lineId];
     if (start != null) ids.add(start);
     if (end != null) ids.add(end);
     return ids;
+  }
+
+  if (constraint is DistanceConstraintDto) {
+    return (type: 'distance', pointIds: [constraint.pointAId, constraint.pointBId]);
+  }
+  if (constraint is VerticalConstraintDto) {
+    return (type: 'vertical', pointIds: [constraint.pointAId, constraint.pointBId]);
+  }
+  if (constraint is HorizontalConstraintDto) {
+    return (type: 'horizontal', pointIds: [constraint.pointAId, constraint.pointBId]);
+  }
+  if (constraint is CoincidentConstraintDto) {
+    return (type: 'coincident', pointIds: [constraint.pointAId, constraint.pointBId]);
+  }
+  if (constraint is AngleConstraintDto) {
+    return (type: 'angle', pointIds: ofLines(constraint.line1Id, constraint.line2Id));
+  }
+  if (constraint is ParallelConstraintDto) {
+    return (type: 'parallel', pointIds: ofLines(constraint.line1Id, constraint.line2Id));
+  }
+  if (constraint is PerpendicularConstraintDto) {
+    return (type: 'perpendicular', pointIds: ofLines(constraint.line1Id, constraint.line2Id));
+  }
+  if (constraint is EqualLengthConstraintDto) {
+    return (type: 'equal_length', pointIds: ofLines(constraint.line1Id, constraint.line2Id));
+  }
+  if (constraint is CollinearConstraintDto) {
+    return (type: 'collinear', pointIds: ofLines(constraint.line1Id, constraint.line2Id));
+  }
+  if (constraint is LineDistanceConstraintDto) {
+    return (type: 'line_distance', pointIds: ofLines(constraint.line1Id, constraint.line2Id));
+  }
+  if (constraint is PointLineDistanceConstraintDto) {
+    return (
+      type: 'point_line_distance',
+      pointIds: ofLine(constraint.lineId, constraint.pointId),
+    );
   }
   if (constraint is AtMidpointConstraintDto) {
-    final ids = <String>[constraint.pointId];
-    final start = lineStartPointId[constraint.lineId];
-    final end = lineEndPointId[constraint.lineId];
-    if (start != null) ids.add(start);
-    if (end != null) ids.add(end);
-    return ids;
+    return (type: 'at_midpoint', pointIds: ofLine(constraint.lineId, constraint.pointId));
   }
-  return const [];
+  return (type: '', pointIds: const []);
 }
 
 /// Result of running [SketchRigidity.analyze] over one Sketch's current
@@ -154,7 +186,7 @@ class SketchRigidity {
   /// [pointIds] should include every Point id in the Sketch (origin
   /// included). [lineStartPointId]/[lineEndPointId] resolve a Line id to
   /// its endpoint Point ids, for the line-pair Constraint types - see
-  /// [_pointIdsOf]. [originPointId] is the Sketch's own permanently-pinned
+  /// [_describe]. [originPointId] is the Sketch's own permanently-pinned
   /// Point id (null only for a brand-new/unloaded Sketch), the sole source
   /// of "grounded" in the algorithm described in this file's header
   /// comment.
@@ -188,23 +220,23 @@ class SketchRigidity {
       if (rootA != rootB) parent[rootA] = rootB;
     }
 
-    final resolvedPointIds = <ConstraintDto, List<String>>{
-      for (final constraint in constraints)
-        constraint: _pointIdsOf(constraint, lineStartPointId, lineEndPointId),
-    };
+    final descriptions = [
+      for (final constraint in constraints) _describe(constraint, lineStartPointId, lineEndPointId),
+    ];
 
-    for (final ids in resolvedPointIds.values) {
+    for (final description in descriptions) {
+      final ids = description.pointIds;
       for (var i = 1; i < ids.length; i++) {
         union(ids[0], ids[i]);
       }
     }
 
     final removedDofByRoot = <String, int>{};
-    for (final entry in resolvedPointIds.entries) {
-      final ids = entry.value;
+    for (final description in descriptions) {
+      final ids = description.pointIds;
       if (ids.isEmpty) continue;
       final root = find(ids.first);
-      final cost = dofCostByConstraintType[entry.key.type] ?? 0;
+      final cost = dofCostByConstraintType[description.type] ?? 0;
       removedDofByRoot[root] = (removedDofByRoot[root] ?? 0) + cost;
     }
 
