@@ -72,15 +72,14 @@ Future<void> _settlePartViewport(WidgetTester tester, {int maxPumps = 100}) asyn
   }
 }
 
-/// Flushes `_exitOrbitView`'s `await animateToPlane(...)` to completion - a
-/// single duration-advancing pump completes the underlying
-/// `AnimationController`'s ticker, but the `setState` in `_exitOrbitView`'s
-/// own code *after* that `await` only runs as a queued microtask, so a
-/// second, no-duration pump is needed to actually flush it and rebuild with
-/// `_orbitViewActive` now false.
+/// Flushes `_exitOrbitView`'s `await animateToPlane(...)` to completion,
+/// plus the `setState` that follows it, by pumping in small steps until no
+/// more frames are scheduled - a fixed-size `pump(duration)` proved
+/// insufficient on CI (the GPU/scene setup already failed by this point, so
+/// there's no risk of `pumpAndSettle` hanging on an ongoing render loop the
+/// way a real, successfully-initialized Scene might).
 Future<void> _pumpExitAnimation(WidgetTester tester) async {
-  await tester.pump(const Duration(milliseconds: 500));
-  await tester.pump();
+  await tester.pumpAndSettle(const Duration(milliseconds: 50));
 }
 
 void main() {
