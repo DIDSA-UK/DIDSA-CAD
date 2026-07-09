@@ -72,6 +72,17 @@ Future<void> _settlePartViewport(WidgetTester tester, {int maxPumps = 100}) asyn
   }
 }
 
+/// Flushes `_exitOrbitView`'s `await animateToPlane(...)` to completion - a
+/// single duration-advancing pump completes the underlying
+/// `AnimationController`'s ticker, but the `setState` in `_exitOrbitView`'s
+/// own code *after* that `await` only runs as a queued microtask, so a
+/// second, no-duration pump is needed to actually flush it and rebuild with
+/// `_orbitViewActive` now false.
+Future<void> _pumpExitAnimation(WidgetTester tester) async {
+  await tester.pump(const Duration(milliseconds: 500));
+  await tester.pump();
+}
+
 void main() {
   testWidgets('the Orbit View toggle FAB appears once the sketch plane has loaded', (tester) async {
     final controller = await _freshController();
@@ -105,7 +116,7 @@ void main() {
     // (see _exitOrbitView) - a single no-duration pump only advances one
     // frame, not enough for the 400ms default animateToPlane duration.
     await tester.tap(find.byTooltip('Exit Orbit View'));
-    await tester.pump(const Duration(milliseconds: 500));
+    await _pumpExitAnimation(tester);
 
     expect(find.byType(SketchCanvas), findsOneWidget);
     expect(find.byType(PartViewport), findsNothing);
@@ -129,7 +140,7 @@ void main() {
     expect(find.byType(PartViewport), findsOneWidget, reason: 'still animating back to the plane');
     expect(find.byType(SketchCanvas), findsNothing);
 
-    await tester.pump(const Duration(milliseconds: 500)); // animation completes
+    await _pumpExitAnimation(tester); // animation completes
 
     expect(find.byType(SketchCanvas), findsOneWidget);
     expect(find.byType(PartViewport), findsNothing);
@@ -164,7 +175,7 @@ void main() {
 
     // Leave (through the return animation) and re-enter.
     await tester.tap(find.byTooltip('Exit Orbit View'));
-    await tester.pump(const Duration(milliseconds: 500));
+    await _pumpExitAnimation(tester);
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
     await _settlePartViewport(tester);
