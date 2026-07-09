@@ -56,6 +56,22 @@ Future<SketchController> _freshController() async {
   return controller;
 }
 
+/// Mirrors `part_viewport_test.dart`'s own `_pumpUntil` helper: a
+/// [PartViewport]'s `Scene.initializeStaticResources()` GPU setup is a real,
+/// un-mockable async `Future` (it fails on this CI runner - no Impeller -
+/// but still only resolves, one way or the other, after a real async gap),
+/// so every test that mounts a [PartViewport] must pump until its loading
+/// spinner clears *before* doing anything else (tapping, asserting, or
+/// ending the test) - otherwise that `Future` resolves later, calls
+/// `setState` on an already-disposed/reused Element, and throws into
+/// whichever test happens to be running when it finally lands.
+Future<void> _settlePartViewport(WidgetTester tester, {int maxPumps = 100}) async {
+  for (var i = 0; i < maxPumps; i++) {
+    if (find.byType(CircularProgressIndicator).evaluate().isEmpty) return;
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
 void main() {
   testWidgets('the Orbit View toggle FAB appears once the sketch plane has loaded', (tester) async {
     final controller = await _freshController();
@@ -79,6 +95,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     expect(find.byType(SketchCanvas), findsNothing);
     expect(find.byType(PartViewport), findsOneWidget);
@@ -104,6 +121,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     await tester.tap(find.byTooltip('Exit Orbit View'));
     await tester.pump(const Duration(milliseconds: 50)); // mid-animation
@@ -126,6 +144,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodyOpacity, 0.75);
 
@@ -148,6 +167,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodyOpacity, 0.75);
   });
@@ -162,6 +182,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
     expect(viewport.initialViewPlane, ReferencePlaneKind.xy);
@@ -181,6 +202,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     expect(find.byType(SketchSpeedDial), findsNothing);
     expect(find.byTooltip('Return to Default View'), findsOneWidget);
@@ -197,6 +219,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byTooltip('Orbit View'));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     await tester.tap(find.byTooltip('Menu'));
     await tester.pump();
@@ -223,6 +246,7 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, bodies: [_fakeBody()])));
     await tester.pump();
+    await _settlePartViewport(tester);
 
     expect(find.byType(SketchCanvas), findsOneWidget);
     expect(find.byType(PartViewport), findsOneWidget);
@@ -252,6 +276,7 @@ void main() {
       ),
     );
     await tester.pump();
+    await _settlePartViewport(tester);
 
     expect(find.byType(PartViewport), findsOneWidget);
 
