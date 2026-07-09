@@ -679,7 +679,7 @@ class _SketchScreenState extends State<SketchScreen> {
       dense: true,
       visualDensity: density,
       leading: const Icon(Icons.view_in_ar, size: 20),
-      title: const Text('3D View', style: titleStyle),
+      title: Text('3D View', style: titleStyle),
       initiallyExpanded: true,
       children: [
         for (final mode in ViewportRenderMode.values)
@@ -695,7 +695,7 @@ class _SketchScreenState extends State<SketchScreen> {
           dense: true,
           visualDensity: density,
           leading: Icon(Icons.circle, color: colorFromHex(_orbitBodyColourHex), size: 20),
-          title: const Text('Body Colour', style: titleStyle),
+          title: Text('Body Colour', style: titleStyle),
           onTap: () async {
             final hex = await showColourSwatchSheet(
               context,
@@ -710,7 +710,7 @@ class _SketchScreenState extends State<SketchScreen> {
           dense: true,
           visualDensity: density,
           leading: const Icon(Icons.opacity_outlined, size: 20),
-          title: const Text('Body Transparency', style: titleStyle),
+          title: Text('Body Transparency', style: titleStyle),
           onTap: () async {
             final opacity = await showBodyOpacitySheet(context, initialOpacity: _orbitBodyOpacity);
             if (opacity != null) setState(() => _orbitBodyOpacity = opacity);
