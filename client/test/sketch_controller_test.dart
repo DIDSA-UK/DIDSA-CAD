@@ -1300,31 +1300,49 @@ void main() {
     expect(controller.selectedPointDeleteBlockedReason, isNotNull);
   });
 
-  test('selectedPointDeleteBlockedReason flags a point referenced by a line', () async {
+  test(
+      'selectedPointDeleteBlockedReason no longer flags a point referenced by a line - '
+      'deleting it now cascades to the line instead of being disallowed', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(10, 10);
     final startId = controller.chainFirstPointId;
     await controller.handleCanvasTap(15, 10);
     controller.finishChain();
     controller.exitToSelectMode();
+    final lineId = controller.lines.keys.first;
 
     await controller.handleCanvasTap(10, 10);
 
     expect(controller.selection!.id, startId);
-    expect(controller.selectedPointDeleteBlockedReason, contains('line'));
+    expect(controller.selectedPointDeleteBlockedReason, isNull);
+
+    await controller.deleteSelected();
+
+    expect(controller.points.containsKey(startId), isFalse);
+    expect(controller.lines.containsKey(lineId), isFalse);
+    expect(controller.errorMessage, isNull);
   });
 
-  test('selectedPointDeleteBlockedReason flags a point referenced by a circle', () async {
+  test(
+      'selectedPointDeleteBlockedReason no longer flags a point referenced by a circle - '
+      'deleting it now cascades to the circle instead of being disallowed', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(10, 10);
     final centerId = controller.circleCenterPointId;
     await controller.handleCanvasTap(15, 10);
     controller.exitToSelectMode();
+    final circleId = controller.circles.keys.first;
 
     await controller.handleCanvasTap(10, 10);
 
     expect(controller.selection!.id, centerId);
-    expect(controller.selectedPointDeleteBlockedReason, contains('circle'));
+    expect(controller.selectedPointDeleteBlockedReason, isNull);
+
+    await controller.deleteSelected();
+
+    expect(controller.points.containsKey(centerId), isFalse);
+    expect(controller.circles.containsKey(circleId), isFalse);
+    expect(controller.errorMessage, isNull);
   });
 
   test('selectedPointDeleteBlockedReason is null for a genuinely unreferenced point', () async {
