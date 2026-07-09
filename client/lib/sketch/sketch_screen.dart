@@ -310,9 +310,15 @@ class _SketchScreenState extends State<SketchScreen> {
                   // Select-mode only, same gating as the "select all"
                   // button above - there's nothing draggable in draw/
                   // dimension mode.
+                  //
+                  // Bug-fix: bottom:16 used to sit directly on top of
+                  // PlaneIndicator (SketchCanvas's own bottom-left plane/axis
+                  // triad, also anchored bottom:8/left:8 - see
+                  // sketch_canvas.dart's Positioned around its own Stack) -
+                  // raised well above the triad's ~40px footprint to clear it.
                   Positioned(
                     left: 16,
-                    bottom: 16,
+                    bottom: 72,
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
@@ -383,34 +389,58 @@ class _SketchScreenState extends State<SketchScreen> {
   /// controls. Exit Sketch lives in its own dedicated FAB (top-right of the
   /// canvas) rather than as the drawer's first entry now, so it isn't
   /// repeated here.
+  ///
+  /// Bug-fix: this used to be a full-width (304dp default), default-density
+  /// [Drawer] with no top padding - far taller/wider than its 3 short
+  /// entries needed, and [SafeArea] alone only accounts for OS-level insets
+  /// (status bar/notch), not this screen's own [AppBar] - so the content
+  /// started right under the status bar, visually overlapping the title
+  /// bar's own space rather than sitting below it. Narrowed, given a
+  /// compact [VisualDensity] + smaller text everywhere, and padded down by
+  /// exactly [kToolbarHeight] so it starts below the title bar instead.
   Widget _buildDrawer(BuildContext context) {
+    const density = VisualDensity(horizontal: -4, vertical: -4);
+    const titleStyle = TextStyle(fontSize: 13);
     return Drawer(
+      width: 220,
       child: SafeArea(
-        child: ListView(
-          children: [
-            ExpansionTile(
-              leading: const Icon(Icons.visibility_outlined),
-              title: const Text('View'),
-              initiallyExpanded: true,
-              children: [
-                SwitchListTile(
-                  title: const Text('Constraint Labels'),
-                  value: _constraintLabelsVisible,
-                  onChanged: (value) => setState(() => _constraintLabelsVisible = value),
-                ),
-                ListTile(
-                  leading: Icon(Icons.palette_outlined, color: _canvasColor),
-                  title: const Text('Canvas Colour'),
-                  onTap: () => _pickCanvasColor(context),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.opacity_outlined),
-                  title: const Text('Canvas Transparency'),
-                  onTap: () => _pickCanvasOpacity(context),
-                ),
-              ],
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.only(top: kToolbarHeight),
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              ExpansionTile(
+                dense: true,
+                visualDensity: density,
+                leading: const Icon(Icons.visibility_outlined, size: 20),
+                title: const Text('View', style: titleStyle),
+                initiallyExpanded: true,
+                children: [
+                  SwitchListTile(
+                    dense: true,
+                    visualDensity: density,
+                    title: const Text('Constraint Labels', style: titleStyle),
+                    value: _constraintLabelsVisible,
+                    onChanged: (value) => setState(() => _constraintLabelsVisible = value),
+                  ),
+                  ListTile(
+                    dense: true,
+                    visualDensity: density,
+                    leading: Icon(Icons.palette_outlined, color: _canvasColor, size: 20),
+                    title: const Text('Canvas Colour', style: titleStyle),
+                    onTap: () => _pickCanvasColor(context),
+                  ),
+                  ListTile(
+                    dense: true,
+                    visualDensity: density,
+                    leading: const Icon(Icons.opacity_outlined, size: 20),
+                    title: const Text('Canvas Transparency', style: titleStyle),
+                    onTap: () => _pickCanvasOpacity(context),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

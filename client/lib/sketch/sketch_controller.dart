@@ -462,6 +462,13 @@ class SketchController extends ChangeNotifier {
   /// tool selection"), and abandons any other in-progress mode state
   /// (selection, dimension picks) so the new tool starts clean.
   void selectDrawTool(SketchTool tool) {
+    // Switching away from select mode mid-grab (e.g. tapping a draw tool
+    // in the speed dial while a Point/Line is still grabbed via drag mode)
+    // would otherwise leave it dangling - grabbing only ever happens in
+    // select mode, but nothing previously stopped the *mode* from changing
+    // out from under an active grab. Finalizes wherever it currently sits,
+    // same as a normal drop.
+    dropGrabbedEntity();
     _activeTool = tool;
     _mode = SketchMode.draw;
     _fabMenu = FabMenuState.closed;
@@ -477,6 +484,8 @@ class SketchController extends ChangeNotifier {
   /// FAB → Dimensions: enters [SketchMode.dimension] directly, with no
   /// further tool choice (Stage 13 item 5).
   void enterDimensionMode() {
+    // Same dangling-grab guard as [selectDrawTool] - see its comment.
+    dropGrabbedEntity();
     _mode = SketchMode.dimension;
     _fabMenu = FabMenuState.closed;
     _resetTransientDrawState();
@@ -1015,33 +1024,46 @@ class SketchController extends ChangeNotifier {
     return direct;
   }
 
-  /// Whether the drag-mode FAB is currently toggled on - while true, the
-  /// canvas's next pointer-down attempts to grab and drag whatever's under
-  /// the cursor immediately (see [SketchCanvas]'s `_tryStartEntityDrag`),
-  /// instead of the old timing-based "second tap within 350ms starts a
-  /// drag" gesture, which produced too many false positives (a plain
-  /// select-tap followed by an ordinary drag-intent tap was easily
-  /// misread as the second half of a double-click). Sticky (stays on until
-  /// toggled off again), matching every other tool-mode toggle in this
-  /// controller (draw tools, construction methods) rather than
-  /// auto-clearing after one drag - open to revisiting after on-device
-  /// feedback on which feels better.
+  /// Whether the drag-mode FAB is currently toggled on. While true, a tap
+  /// picks up whichever Point/Line sits at the cursor (see [SketchCanvas]'s
+  /// `_handleDragModeTap`/[dragGrabTargetAt]/[beginPointDrag]/
+  /// [beginLineDrag]), a further tap drops it ([dropGrabbedEntity]), and
+  /// any movement in between ("swipe", regardless of which touch/click
+  /// gesture it's part of) repositions it via [updateGrabbedPosition] -
+  /// replacing both the original timing-based "second tap within 350ms
+  /// starts a drag" gesture and this controller's own first replacement
+  /// (an immediate pointer-down grab), both of which produced false
+  /// positives or felt like an awkward continuous hold. Sticky (stays on
+  /// until toggled off again), matching every other tool-mode toggle in
+  /// this controller (draw tools, construction methods).
   bool _dragModeEnabled = false;
   bool get dragModeEnabled => _dragModeEnabled;
 
   void toggleDragMode() {
+    if (_dragModeEnabled) {
+      // Turning drag mode off while something's grabbed would otherwise
+      // strand it - the tap that drops it only fires while
+      // dragModeEnabled is still true (see SketchCanvas._dispatchTap's
+      // drag-mode branch), so it would never get another chance to drop.
+      dropGrabbedEntity();
+    }
     _dragModeEnabled = !_dragModeEnabled;
     notifyListeners();
   }
 
-  /// New work package item 8's double-click-drag target resolver: a
-  /// directly-hit Point as-is, or - for a Line/Circle, neither of which is
-  /// itself a Point - whichever of its constituent Points sits nearer
+  /// New work package item 8's original double-click-drag target resolver:
+  /// a directly-hit Point as-is, or - for a Line/Circle, neither of which
+  /// is itself a Point - whichever of its constituent Points sits nearer
   /// [x]/[y], since a Line/Circle's shape is entirely defined by the Points
   /// it references and has no position of its own to drag. Returns null if
   /// nothing within [radius] qualifies, the sketch isn't in
   /// [SketchMode.select], or [isUnderConstrained] is false (nothing could
   /// move into anyway, so there's nothing to offer).
+  ///
+  /// Superseded by [dragGrabTargetAt] for the live drag-mode gesture (a
+  /// Line now grabs as its own rigid body instead of collapsing to its
+  /// nearest Point) - kept as-is, unused by [SketchCanvas] now, purely so
+  /// the existing direct unit tests against it keep passing unchanged.
   String? dragTargetPointIdAt(double x, double y, double radius) {
     if (_mode != SketchMode.select || !isUnderConstrained) return null;
     final hit = _entityAt(x, y, radius);
@@ -1069,6 +1091,39 @@ class SketchController extends ChangeNotifier {
         final nearerId = distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
         // Mirrors the Line case above - the origin is never offered.
         return nearerId == _originPointId ? null : nearerId;
+      case SelectionKind.constraint:
+        return null;
+    }
+  }
+
+  /// Drag-mode's grab target at ([x], [y]): a directly-hit Point as a
+  /// point-grab, or a directly-hit Line as a line-grab (see [beginLineDrag]
+  /// - translated as a rigid body so its length/orientation stay fixed
+  /// during the drag, unlike a Point's own single-endpoint grab). For a
+  /// Circle, which has no rigid-body drag of its own yet, falls back to
+  /// whichever of its center/radius Points sits nearer - the same
+  /// fallback [dragTargetPointIdAt] used for both Lines and Circles before
+  /// Lines got their own grab. Same gating as [dragTargetPointIdAt] (select
+  /// mode + under-constrained).
+  SketchSelection? dragGrabTargetAt(double x, double y, double radius) {
+    if (_mode != SketchMode.select || !isUnderConstrained) return null;
+    final hit = _entityAt(x, y, radius);
+    if (hit == null) return null;
+    switch (hit.kind) {
+      case SelectionKind.point:
+        return hit;
+      case SelectionKind.line:
+        return hit;
+      case SelectionKind.circle:
+        final circle = circles[hit.id]!;
+        final center = points[circle.centerPointId]!;
+        final radiusPoint = points[circle.radiusPointId]!;
+        final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);
+        final distToRadius = math.pow(x - radiusPoint.x, 2) + math.pow(y - radiusPoint.y, 2);
+        final nearerId = distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+        return nearerId == _originPointId
+            ? null
+            : SketchSelection(kind: SelectionKind.point, id: nearerId);
       case SelectionKind.constraint:
         return null;
     }
@@ -1108,7 +1163,7 @@ class SketchController extends ChangeNotifier {
   /// before the user has dragged at all. See [updatePointDrag].
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
-    if (_draggingLabelId != null) return false;
+    if (_draggingLabelId != null || _draggingLineId != null) return false;
     final point = points[pointId]!;
     _draggingPointId = pointId;
     _dragOriginCursorX = cursorX;
@@ -1206,11 +1261,171 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  String? _draggingLineId;
+  double? _dragOriginLineStartX;
+  double? _dragOriginLineStartY;
+  double? _dragOriginLineEndX;
+  double? _dragOriginLineEndY;
+
+  /// The Line currently being live-dragged via [beginLineDrag], or null -
+  /// mirrors [draggingPointId] for the drag-mode grab/drop gesture's
+  /// rigid-body Line case (see sketch_canvas.dart's drag-mode dispatch).
+  String? get draggingLineId => _draggingLineId;
+
+  /// Starts a live rigid-body drag of [lineId]: both endpoints translate by
+  /// the same delta on every subsequent [updateLineDrag] call, so the
+  /// Line's length/orientation stay fixed for the duration of the drag
+  /// (only [endLineDrag]'s solve may change them again, via whatever other
+  /// Constraints apply) - same origin-tracking pattern as [beginPointDrag].
+  bool beginLineDrag(String lineId) {
+    if (_busy || _sketchId == null) return false;
+    if (_draggingPointId != null || _draggingLabelId != null) return false;
+    final line = lines[lineId];
+    if (line == null) return false;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return false;
+    _draggingLineId = lineId;
+    _dragOriginCursorX = cursorX;
+    _dragOriginCursorY = cursorY;
+    _dragOriginLineStartX = start.x;
+    _dragOriginLineStartY = start.y;
+    _dragOriginLineEndX = end.x;
+    _dragOriginLineEndY = end.y;
+    notifyListeners();
+    return true;
+  }
+
+  /// [beginLineDrag]'s per-move update - both endpoints move by the same
+  /// delta from where the drag started, applied to each endpoint's own
+  /// origin position (same origin-relative math as [updatePointDrag], so
+  /// the Line never "jumps" to be exactly under the cursor on the first
+  /// move). PATCHes both endpoints immediately, same backend-is-truth
+  /// tracking as [updatePointDrag].
+  Future<void> updateLineDrag(double x, double y) async {
+    final lineId = _draggingLineId;
+    final originCursorX = _dragOriginCursorX;
+    final originCursorY = _dragOriginCursorY;
+    final originStartX = _dragOriginLineStartX;
+    final originStartY = _dragOriginLineStartY;
+    final originEndX = _dragOriginLineEndX;
+    final originEndY = _dragOriginLineEndY;
+    if (lineId == null ||
+        _sketchId == null ||
+        originCursorX == null ||
+        originCursorY == null ||
+        originStartX == null ||
+        originStartY == null ||
+        originEndX == null ||
+        originEndY == null) {
+      return;
+    }
+    final line = lines[lineId];
+    if (line == null) return;
+    final dx = x - originCursorX;
+    final dy = y - originCursorY;
+    try {
+      final updatedStart =
+          await _api.updatePoint(_sketchId!, line.startPointId, originStartX + dx, originStartY + dy);
+      if (_draggingLineId != lineId) return;
+      points[line.startPointId] = SketchPointView(id: updatedStart.id, x: updatedStart.x, y: updatedStart.y);
+      final updatedEnd =
+          await _api.updatePoint(_sketchId!, line.endPointId, originEndX + dx, originEndY + dy);
+      if (_draggingLineId != lineId) return;
+      points[line.endPointId] = SketchPointView(id: updatedEnd.id, x: updatedEnd.x, y: updatedEnd.y);
+      notifyListeners();
+    } on ApiException catch (e) {
+      errorMessage = e.message;
+      notifyListeners();
+    }
+  }
+
+  /// Ends the current Line drag (if any) and re-solves from the dropped
+  /// position - mirrors [endPointDrag], including auto-coincident snapping
+  /// independently for each endpoint (dropping either end of a dragged Line
+  /// onto an existing Point links them, same as a single dragged Point).
+  Future<void> endLineDrag() async {
+    final lineId = _draggingLineId;
+    if (lineId == null) return;
+    final line = lines[lineId];
+    final originStartX = _dragOriginLineStartX!;
+    final originStartY = _dragOriginLineStartY!;
+    final originEndX = _dragOriginLineEndX!;
+    final originEndY = _dragOriginLineEndY!;
+    final droppedStart = line != null ? points[line.startPointId] : null;
+    final droppedEnd = line != null ? points[line.endPointId] : null;
+    _draggingLineId = null;
+    _dragOriginCursorX = null;
+    _dragOriginCursorY = null;
+    _dragOriginLineStartX = null;
+    _dragOriginLineStartY = null;
+    _dragOriginLineEndX = null;
+    _dragOriginLineEndY = null;
+    if (line == null) return;
+    await _runGuarded(() async {
+      _pushUndo(() async {
+        final restoredStart =
+            await _api.updatePoint(_sketchId!, line.startPointId, originStartX, originStartY);
+        points[line.startPointId] = SketchPointView(id: restoredStart.id, x: restoredStart.x, y: restoredStart.y);
+        final restoredEnd = await _api.updatePoint(_sketchId!, line.endPointId, originEndX, originEndY);
+        points[line.endPointId] = SketchPointView(id: restoredEnd.id, x: restoredEnd.x, y: restoredEnd.y);
+      });
+      if (droppedStart != null) {
+        await _autoCoincideIfNear(line.startPointId, droppedStart.x, droppedStart.y);
+      }
+      if (droppedEnd != null) {
+        await _autoCoincideIfNear(line.endPointId, droppedEnd.x, droppedEnd.y);
+      }
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+    });
+  }
+
+  /// Whether something is currently grabbed via the drag-mode gesture (a
+  /// Point, a Line, or a Constraint label) - the canvas hides its crosshair
+  /// cursor and highlights the grabbed entity while this is true, and a
+  /// further tap drops whatever's grabbed (see sketch_canvas.dart's
+  /// drag-mode tap dispatch) instead of trying to grab something new.
+  bool get isEntityGrabbed => _draggingPointId != null || _draggingLineId != null || _draggingLabelId != null;
+
+  /// Feeds a cursor-position update to whichever entity is currently
+  /// grabbed (a Point or a Line - see [isEntityGrabbed]) - lets the
+  /// canvas's cursor-movement code stay agnostic to which kind of grab is
+  /// active. A no-op if nothing's grabbed, or only a label is (labels use
+  /// their own screen-delta-based [updateLabelDrag], driven directly by the
+  /// canvas, since a label drag is still a plain continuous hold rather
+  /// than this grab/drop gesture).
+  Future<void> updateGrabbedPosition(double x, double y) async {
+    if (_draggingPointId != null) return updatePointDrag(x, y);
+    if (_draggingLineId != null) return updateLineDrag(x, y);
+  }
+
+  /// Drops whichever entity is currently grabbed (Point or Line - see
+  /// [isEntityGrabbed]), finalizing it the same way its own end-drag method
+  /// would.
+  Future<void> dropGrabbedEntity() async {
+    if (_draggingPointId != null) return endPointDrag();
+    if (_draggingLineId != null) return endLineDrag();
+  }
+
   /// Stage 15 item 2: per-Constraint screen-pixel offset from its default
-  /// painted label position, applied by the painter on top of whichever
-  /// anchor it would otherwise use - purely a client-side display tweak
-  /// (no backend call), so it survives a sketch refresh but not a fresh
+  /// painted label position - purely a client-side display tweak (no
+  /// backend call), so it survives a sketch refresh but not a fresh
   /// [ensureSketch]/[adoptSketch] (same lifetime as the controller itself).
+  ///
+  /// Dual meaning depending on Constraint type (both live in
+  /// sketch_canvas.dart's `_SketchPainter`): for the value-less glyphs
+  /// (V/H, parallel/perpendicular/equal/collinear, angle), it's applied
+  /// directly as the label's own on-screen offset from its anchor, same as
+  /// always. For a real dimension (distance, line-distance - the two with
+  /// actual extension lines), it instead relocates *the dimension line
+  /// itself* (its perpendicular offset from the measured geometry - see
+  /// `_dimensionOffsetDistance`), so the extension lines stretch/shrink to
+  /// reach it and the label sits on the line, rather than the label
+  /// floating apart from a fixed dimension line connected by a leader
+  /// line (removed - reported as an unwanted line traditional technical
+  /// drawings don't have).
   final Map<String, Offset> _labelOffsets = {};
 
   /// [constraintId]'s current user-applied offset, or [Offset.zero] if it
@@ -1222,9 +1437,12 @@ class SketchController extends ChangeNotifier {
   String? _draggingLabelId;
 
   /// The Constraint label currently being live-dragged via [beginLabelDrag],
-  /// or null if no label drag is in progress - mirrors [draggingPointId];
-  /// the two are mutually exclusive within a single double-click-drag
-  /// gesture (see [beginPointDrag]/[beginLabelDrag]'s guards).
+  /// or null if no label drag is in progress - mirrors [draggingPointId]/
+  /// [draggingLineId]; all three are mutually exclusive (see
+  /// [beginPointDrag]/[beginLineDrag]/[beginLabelDrag]'s guards). Unlike
+  /// the Point/Line grab, a label drag stays a plain continuous
+  /// pointer-down-to-pointer-up hold - see sketch_canvas.dart's
+  /// `_tryStartLabelDrag`.
   String? get draggingLabelId => _draggingLabelId;
 
   /// Starts a live drag of [constraintId]'s label - false (no-op) if a
@@ -1282,33 +1500,100 @@ class SketchController extends ChangeNotifier {
   }
 
   /// A human-readable reason [selection] (if it's a Point) cannot be
-  /// deleted, mirroring the backend's own Line/Circle/origin checks so the
-  /// flyout can grey out Delete without a round-trip - or null if this
-  /// client-side check sees no reason to block it. Only meaningful for a
-  /// single-Point selection - the backend is still the final authority
-  /// (e.g. for Constraints, which the client doesn't track locally) - see
-  /// [deleteSelected]'s error handling for that fallback, so a null result
-  /// here is not a guarantee the backend will accept it.
+  /// deleted, or null if there's none. The sketch origin is the only entity
+  /// that's still a hard block - a Point/Line/Circle still referenced by
+  /// other geometry is no longer blocked here (see [computeDeleteCascade]/
+  /// [deleteSelected], which now cascade the deletion instead, gated by a
+  /// confirmation warning in the UI rather than an outright disable).
   String? get selectedPointDeleteBlockedReason {
     if (_selectionSet.length != 1) return null;
     final current = _selectionSet.first;
     if (current.kind != SelectionKind.point) return null;
-    final pointId = current.id;
-    if (pointId == _originPointId) {
+    if (current.id == _originPointId) {
       return "Can't delete the sketch's origin point";
-    }
-    for (final line in lines.values) {
-      if (line.startPointId == pointId || line.endPointId == pointId) {
-        return 'Still used by a line';
-      }
-    }
-    for (final circle in circles.values) {
-      if (circle.centerPointId == pointId || circle.radiusPointId == pointId) {
-        return 'Still used by a circle';
-      }
     }
     return null;
   }
+
+  /// The Point/Line ids [constraint] directly references, regardless of its
+  /// concrete type - used by [computeDeleteCascade] to find every
+  /// Constraint that would be left dangling by deleting a given set of
+  /// entities. Deliberately excludes Circle ids: no Constraint type
+  /// references a Circle directly (a Circle's own radius DistanceConstraint
+  /// references its center/radius Points instead, and is already
+  /// auto-cascaded server-side when the Circle itself is deleted - see
+  /// Sketch.delete_circle) - so a Circle never needs its own entry here.
+  ({Set<String> pointIds, Set<String> lineIds}) _constraintReferences(ConstraintDto c) {
+    return switch (c) {
+      DistanceConstraintDto d => (pointIds: {d.pointAId, d.pointBId}, lineIds: <String>{}),
+      VerticalConstraintDto d => (pointIds: {d.pointAId, d.pointBId}, lineIds: {d.lineId}),
+      HorizontalConstraintDto d => (pointIds: {d.pointAId, d.pointBId}, lineIds: {d.lineId}),
+      AngleConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
+      CoincidentConstraintDto d => (pointIds: {d.pointAId, d.pointBId}, lineIds: <String>{}),
+      ParallelConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
+      PerpendicularConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
+      EqualLengthConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
+      CollinearConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
+      LineDistanceConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
+      PointLineDistanceConstraintDto d => (pointIds: {d.pointId}, lineIds: {d.lineId}),
+      AtMidpointConstraintDto d => (pointIds: {d.pointId}, lineIds: {d.lineId}),
+      _ => (pointIds: <String>{}, lineIds: <String>{}),
+    };
+  }
+
+  /// Everything deleting [selection] would need to also delete, computed
+  /// transitively: a Point pulls in every Line/Circle that references it
+  /// (start/end or center/radius); every Point/Line actually being deleted
+  /// (directly selected or pulled in) pulls in every Constraint that
+  /// references it. Replaces the old behaviour of just disallowing deletion
+  /// of a still-referenced Point/Line outright - the backend rejects
+  /// (rather than auto-cascades) deleting something still referenced by
+  /// other geometry, so the client now computes and performs the full
+  /// cascade itself, with the UI layer (see sketch_ribbon.dart) responsible
+  /// for warning the user what else is about to go.
+  ({Set<String> points, Set<String> lines, Set<String> circles, Set<String> constraints})
+      computeDeleteCascade(Iterable<SketchSelection> selection) {
+    final pointIds = <String>{};
+    final lineIds = <String>{};
+    final circleIds = <String>{};
+    final constraintIds = <String>{};
+    for (final s in selection) {
+      switch (s.kind) {
+        case SelectionKind.point:
+          if (s.id != _originPointId) pointIds.add(s.id);
+        case SelectionKind.line:
+          lineIds.add(s.id);
+        case SelectionKind.circle:
+          circleIds.add(s.id);
+        case SelectionKind.constraint:
+          constraintIds.add(s.id);
+      }
+    }
+    for (final line in lines.values) {
+      if (pointIds.contains(line.startPointId) || pointIds.contains(line.endPointId)) {
+        lineIds.add(line.id);
+      }
+    }
+    for (final circle in circles.values) {
+      if (pointIds.contains(circle.centerPointId) || pointIds.contains(circle.radiusPointId)) {
+        circleIds.add(circle.id);
+      }
+    }
+    for (final entry in constraints.entries) {
+      final refs = _constraintReferences(entry.value);
+      if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) {
+        constraintIds.add(entry.key);
+      }
+    }
+    return (points: pointIds, lines: lineIds, circles: circleIds, constraints: constraintIds);
+  }
+
+  /// Session-scoped opt-out for the delete-cascade confirmation dialog (see
+  /// sketch_ribbon.dart's `_confirmAndDelete`) - plain mutable field, same
+  /// session-only/no-persistence convention as SketchScreen's other View
+  /// toggles, just living on the controller since the ribbon (not the
+  /// screen) is what needs to read/set it.
+  bool suppressDeleteCascadeWarning = false;
 
   /// The single entry point for every click/tap on the 2D sketch canvas -
   /// Stage 13 item 3 replaces the old separate "move cursor, then press
@@ -1537,21 +1822,26 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Deletes every entity in [selectionSet] via the matching backend DELETE
-  /// endpoint, then refreshes from backend state - same backend-is-truth
-  /// pattern as every other mutation. A rejected delete (e.g. a Constraint
-  /// the client doesn't track locally) surfaces via [errorMessage], same as
-  /// any other API failure; entities already deleted before the failure
-  /// stay removed, and the selection is left in place so the flyout keeps
-  /// showing it.
+  /// Deletes every entity in [selectionSet], cascaded via
+  /// [computeDeleteCascade] to also remove whatever depends on it (a Line/
+  /// Circle a deleted Point still anchored, a Constraint any of that would
+  /// leave dangling) - previously this only ever deleted the literal
+  /// selection and let the backend reject anything still referenced; the UI
+  /// layer (sketch_ribbon.dart's `_confirmAndDelete`) is responsible for
+  /// warning the user what the cascade adds before calling this. Same
+  /// backend-is-truth refresh as every other mutation; a rejected delete
+  /// (e.g. a Constraint the client doesn't track locally) surfaces via
+  /// [errorMessage], same as any other API failure, and entities already
+  /// deleted before the failure stay removed.
   Future<void> deleteSelected() async {
     if (_selectionSet.isEmpty || _busy || _sketchId == null) return;
-    // Stage 21 item 4: the origin Point is pinned by the solver and the
-    // backend always rejects deleting it - silently drop it here rather
-    // than surfacing that rejection as an [errorMessage], since it's never
-    // a meaningful delete target even if it ended up selected.
-    final toDelete = List<SketchSelection>.from(_selectionSet)
-      ..removeWhere((s) => s.kind == SelectionKind.point && s.id == _originPointId);
+    final cascade = computeDeleteCascade(_selectionSet);
+    final toDelete = <SketchSelection>[
+      for (final id in cascade.points) SketchSelection(kind: SelectionKind.point, id: id),
+      for (final id in cascade.lines) SketchSelection(kind: SelectionKind.line, id: id),
+      for (final id in cascade.circles) SketchSelection(kind: SelectionKind.circle, id: id),
+      for (final id in cascade.constraints) SketchSelection(kind: SelectionKind.constraint, id: id),
+    ];
     if (toDelete.isEmpty) return;
 
     // Stage 19b item 4: captured before anything is actually removed, so

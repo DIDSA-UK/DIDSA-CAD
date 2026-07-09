@@ -118,7 +118,9 @@ class SketchRibbon extends StatelessWidget {
         icon: Icons.delete_outline,
         label: 'Delete',
         tooltip: blockedReason,
-        onTap: blockedReason == null && !controller.busy ? controller.deleteSelected : null,
+        onTap: blockedReason == null && !controller.busy
+            ? () => _confirmAndDelete(context, controller)
+            : null,
       ),
     ];
 
@@ -169,6 +171,75 @@ class SketchRibbon extends StatelessWidget {
       ConstraintOptionType.tangent => Icons.circle,
     };
   }
+}
+
+/// Wraps [SketchController.deleteSelected] with a confirmation step
+/// whenever the delete would cascade beyond what's directly selected -
+/// deleting a still-referenced Point/Line no longer just fails/disallows,
+/// it cascades to whatever depends on it (see
+/// [SketchController.computeDeleteCascade]), so this is where the user
+/// gets told what else is about to go, with a per-session opt-out
+/// ([SketchController.suppressDeleteCascadeWarning]). A no-op dialog (skips
+/// straight to deleting) whenever nothing extra would be removed, or the
+/// user already opted out this session.
+Future<void> _confirmAndDelete(BuildContext context, SketchController controller) async {
+  final selection = controller.selectionSet;
+  final cascade = controller.computeDeleteCascade(selection);
+  final selectedLineIds =
+      selection.where((s) => s.kind == SelectionKind.line).map((s) => s.id).toSet();
+  final selectedCircleIds =
+      selection.where((s) => s.kind == SelectionKind.circle).map((s) => s.id).toSet();
+  final selectedConstraintIds =
+      selection.where((s) => s.kind == SelectionKind.constraint).map((s) => s.id).toSet();
+  final extraLines = cascade.lines.difference(selectedLineIds).length;
+  final extraCircles = cascade.circles.difference(selectedCircleIds).length;
+  final extraConstraints = cascade.constraints.difference(selectedConstraintIds).length;
+  final hasExtras = extraLines > 0 || extraCircles > 0 || extraConstraints > 0;
+
+  if (hasExtras && !controller.suppressDeleteCascadeWarning) {
+    final parts = [
+      if (extraLines > 0) '$extraLines line${extraLines == 1 ? '' : 's'}',
+      if (extraCircles > 0) '$extraCircles circle${extraCircles == 1 ? '' : 's'}',
+      if (extraConstraints > 0) '$extraConstraints constraint${extraConstraints == 1 ? '' : 's'}',
+    ];
+    var dontWarnAgain = false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Delete dependent geometry?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('This also deletes ${parts.join(', ')}, since they depend on what you selected.'),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                dense: true,
+                title: const Text("Don't warn me again this session"),
+                value: dontWarnAgain,
+                onChanged: (value) => setDialogState(() => dontWarnAgain = value ?? false),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                if (dontWarnAgain) controller.suppressDeleteCascadeWarning = true;
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+  }
+  await controller.deleteSelected();
 }
 
 /// Stage 19b item 6: prompts for a new length for the given Line, pre-filled

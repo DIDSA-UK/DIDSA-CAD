@@ -86,17 +86,20 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// a tap rather than a drag.
   static const double _tapTravelThreshold = 10.0;
 
-  /// The Point currently grabbed by an active drag-mode drag, or null -
-  /// once set, pointer-move feeds [SketchController.updatePointDrag]
-  /// instead of the normal cursor-move/pan/pinch handling, and the
-  /// eventual pointer-up/cancel ends the drag rather than dispatching a
-  /// tap.
-  String? _draggingPointId;
-
   /// Stage 15 item 2: the Constraint id currently grabbed by an active
-  /// double-click-drag of its label, or null - mutually exclusive with
-  /// [_draggingPointId] (see [_tryStartEntityDrag], which checks
-  /// [dimensionLabelAt] first).
+  /// continuous-hold drag of its label, or null. Unlike the Point/Line
+  /// grab/drop gesture below (see [SketchController.isEntityGrabbed]),
+  /// label dragging keeps its original pointer-down-to-pointer-up
+  /// continuous-hold mechanism - grabbed on pointer-down (see
+  /// [_tryStartLabelDrag], which checks [dimensionLabelAt]), dropped on
+  /// pointer-up, no separate "drop tap" needed. There's no canvas-local
+  /// mirror of the grabbed Point/Line id the way this field mirrors the
+  /// controller's own `_draggingLabelId` - the grab/drop gesture instead
+  /// queries [SketchController.draggingPointId]/[SketchController.draggingLineId]/
+  /// [SketchController.isEntityGrabbed] directly, since it must persist
+  /// correctly across separate touch gestures (grab-tap, swipe, swipe,
+  /// drop-tap), not just within one continuous hold the way a canvas-local
+  /// field tied to a single gesture would.
   String? _draggingLabelId;
 
   /// Cumulative screen-pixel travel since [_draggingLabelId] was set - if a
@@ -247,6 +250,12 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   void _maybeStartLongPress(Offset downScreen, ViewTransform transform) {
     final controller = widget.controller;
     if (controller.mode != SketchMode.select) return;
+    // A marquee-select starting while something's grabbed via drag mode
+    // would be a confusing second gesture layered on top of the first - a
+    // stationary press elsewhere on the canvas while repositioning a
+    // grabbed Point/Line should just be part of that swipe, not grow into
+    // a marquee.
+    if (controller.isEntityGrabbed) return;
     final coord = transform.screenToSketch(downScreen.dx, downScreen.dy);
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     if (controller.hasEntityNear(coord.x, coord.y, hitRadius)) return;
@@ -359,6 +368,16 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     if (event.kind != PointerDeviceKind.mouse) return;
     _refreshCursorMoveTimeIfMoved(event.localPosition);
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+    // Drag-mode's "swipe to move" for a mouse: since a grab/drop is two
+    // separate clicks (see _dispatchTap's drag-mode branch), the mouse
+    // button is *up* while repositioning a grabbed entity - exactly what
+    // fires hover events, not pointer-move. See _handlePointerMove's mirror
+    // of this for the button-held case (a literal click-and-drag also
+    // works, not just click-move-click).
+    if (widget.controller.isEntityGrabbed) {
+      final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
+      widget.controller.updateGrabbedPosition(coord.x, coord.y);
+    }
   }
 
   /// Trackpad-style dispatch point for "what does a click do right now":
@@ -388,6 +407,20 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         return;
       }
     }
+    // Drag-mode's pick-up/drop gesture: a tap while nothing is grabbed
+    // picks up whichever Point/Line sits at the cursor; a tap while
+    // something already is drops it. Checked ahead of normal select-mode
+    // tap handling below, since a drop must always win over an ordinary
+    // select-tap landing on the same spot. Movement between the two taps
+    // (a "swipe", handled in _handlePointerMove/_handlePointerHover
+    // whenever something is grabbed, regardless of which touch/click
+    // gesture it's part of) is what actually repositions the grabbed
+    // entity - see SketchController.updateGrabbedPosition.
+    if (controller.mode == SketchMode.select &&
+        controller.dragModeEnabled &&
+        _handleDragModeTap(controller, transform)) {
+      return;
+    }
     if (controller.mode == SketchMode.select) {
       final constraintId = _constraintIdAt(controller, transform, cursorScreen);
       if (constraintId != null) {
@@ -399,28 +432,43 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     controller.handleCanvasTap(controller.cursorX, controller.cursorY, hitRadius);
   }
 
-  /// Drag-mode FAB gesture (replaces the old "double-tap/double-click to
-  /// drag" timing gesture, which produced too many false positives - a
-  /// plain select-tap immediately followed by an ordinary drag-intent tap
-  /// was easily misread as the second half of a double-click). While
-  /// [SketchController.dragModeEnabled] is on, every pointer-down attempts
-  /// to grab and drag whatever's under the controller's cursor (not this
-  /// event's own screen position; see [_dispatchTap]) immediately - no
-  /// timing race, no second tap needed. Returns whether a drag started.
-  bool _tryStartEntityDrag(ViewTransform transform) {
+  /// [_dispatchTap]'s drag-mode branch: drops whatever's grabbed if
+  /// something is, otherwise tries to grab a Point or Line at the cursor.
+  /// Returns whether the tap was consumed (grabbed or dropped something) -
+  /// false falls through to ordinary select-tap handling (e.g. a tap on
+  /// empty canvas, or on a Circle, which this gesture doesn't grab).
+  bool _handleDragModeTap(SketchController controller, ViewTransform transform) {
+    if (controller.isEntityGrabbed) {
+      controller.dropGrabbedEntity();
+      return true;
+    }
+    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    final target = controller.dragGrabTargetAt(controller.cursorX, controller.cursorY, hitRadius);
+    if (target == null) return false;
+    switch (target.kind) {
+      case SelectionKind.point:
+        return controller.beginPointDrag(target.id);
+      case SelectionKind.line:
+        return controller.beginLineDrag(target.id);
+      default:
+        return false;
+    }
+  }
+
+  /// Label-drag's own pointer-down-triggered grab, unchanged from before
+  /// the Point/Line grab/drop gesture existed - a continuous hold, not a
+  /// tap/tap/swipe sequence (see the [_draggingLabelId] field's doc comment
+  /// for why labels keep this simpler mechanism). Still gated by
+  /// [SketchController.dragModeEnabled], same as the Point/Line gesture.
+  /// Returns whether a label drag started.
+  bool _tryStartLabelDrag(ViewTransform transform) {
     final controller = widget.controller;
     if (!controller.dragModeEnabled) return false;
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
-    if (labelId != null && controller.beginLabelDrag(labelId)) {
-      _draggingLabelId = labelId;
-      _labelDragTravel = 0;
-      return true;
-    }
-    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
-    final pointId = controller.dragTargetPointIdAt(controller.cursorX, controller.cursorY, hitRadius);
-    if (pointId == null || !controller.beginPointDrag(pointId)) return false;
-    _draggingPointId = pointId;
+    if (labelId == null || !controller.beginLabelDrag(labelId)) return false;
+    _draggingLabelId = labelId;
+    _labelDragTravel = 0;
     return true;
   }
 
@@ -440,7 +488,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
-        if (_tryStartEntityDrag(transform)) return;
+        if (_tryStartLabelDrag(transform)) return;
         _maybeStartLongPress(event.localPosition, transform);
         _dispatchTap(transform);
       }
@@ -467,7 +515,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     }
     _singleTouchTravel = 0;
     _multiTouchOccurred = false;
-    if (_tryStartEntityDrag(transform)) return;
+    if (_tryStartLabelDrag(transform)) return;
     _maybeStartLongPress(event.localPosition, transform);
   }
 
@@ -487,26 +535,14 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       widget.controller.updateLabelDrag(event.delta);
       return;
     }
-    if (_draggingPointId != null) {
-      final controller = widget.controller;
-      if (event.kind == PointerDeviceKind.mouse) {
-        // A mouse cursor is always absolute/1:1 (see _handlePointerHover), so
-        // the literal screen position converts straight to sketch space.
-        final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
-        controller.updatePointDrag(coord.x, coord.y);
-      } else {
-        // Touch must move the dragged Point by the exact same
-        // relative+scaled delta that drives every other touch interaction
-        // (see moveCursorRelative's touchSensitivity/zoom scaling) - using
-        // the raw absolute touch position here instead (as a naive
-        // screenToSketch of event.localPosition would) applies a far larger,
-        // inconsistent scale, which is what made the Point race away from
-        // the finger instead of tracking it 1:1 with the cursor.
-        controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
-        controller.updatePointDrag(controller.cursorX, controller.cursorY);
-      }
-      return;
-    }
+    // Drag-mode's "swipe to move": a grab and its drop are two separate
+    // taps (see _dispatchTap's drag-mode branch), so a grabbed Point/Line
+    // just rides along with the ordinary cursor-move handling below for
+    // however many separate swipe gestures happen in between - there's no
+    // early-return/intercept branch here the way the old continuous-hold
+    // drag needed, [SketchController.updateGrabbedPosition] is just an
+    // extra step alongside the normal cursor move whenever something's
+    // grabbed.
     if (event.kind == PointerDeviceKind.mouse) {
       if (event.buttons & kSecondaryMouseButton != 0) {
         // Panning never itself touches the cursor's sketch-space position
@@ -518,6 +554,10 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       } else {
         _refreshCursorMoveTimeIfMoved(event.localPosition);
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+        if (widget.controller.isEntityGrabbed) {
+          final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
+          widget.controller.updateGrabbedPosition(coord.x, coord.y);
+        }
       }
       return;
     }
@@ -526,10 +566,16 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // Single-finger: relative, scaled cursor movement, trackpad-style -
       // this is what determines where a subsequent tap commits (see
       // _dispatchTap, which always reads the cursor's current position,
-      // never the tap's own screen location).
+      // never the tap's own screen location). Same relative+scaled delta
+      // also drives a grabbed Point/Line, same as it always drove the old
+      // continuous-hold Point drag - see moveCursorRelative's
+      // touchSensitivity/zoom scaling.
       _singleTouchTravel += event.delta.distance;
       _refreshCursorMoveTimeIfMoved(event.localPosition);
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
+      if (widget.controller.isEntityGrabbed) {
+        widget.controller.updateGrabbedPosition(widget.controller.cursorX, widget.controller.cursorY);
+      }
       return;
     }
 
@@ -559,17 +605,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       widget.controller.endLabelDrag();
       return;
     }
-    if (_draggingPointId != null) {
-      _draggingPointId = null;
-      _activeTouches.remove(event.pointer);
-      widget.controller.endPointDrag();
-      return;
-    }
     if (event.kind == PointerDeviceKind.mouse) return;
 
     // A lone finger lifting (not the tail end of a pinch) after barely
     // moving is a tap - the select/draw/dimension gesture - rather than a
-    // drag.
+    // drag. Deliberately the *only* path that can drop a grabbed Point/Line
+    // now (via _dispatchTap's drag-mode branch, when this counts as a
+    // tap) - a swipe that moved past the threshold just ends this one
+    // touch/pinch-pan gesture without dropping anything, since the entity
+    // is still grabbed and ready for another swipe or a final drop-tap.
     final wasTap = event is PointerUpEvent &&
         _activeTouches.length == 1 &&
         !_multiTouchOccurred &&
@@ -1072,8 +1116,8 @@ Offset? _constraintLabelCenter(
 /// this never disagrees with where [_SketchPainter] actually draws it
 /// after a drag. Public (unlike its sibling hit-testers in this file) so
 /// it's directly unit-testable without pumping a real widget tree - see
-/// [_SketchCanvasState._tryStartEntityDrag], which checks this *before*
-/// [SketchController.dragTargetPointIdAt] on a second pointer-down.
+/// [_SketchCanvasState._tryStartLabelDrag], which checks this on
+/// pointer-down.
 String? dimensionLabelAt(
   SketchController controller,
   ViewTransform transform,
@@ -1238,6 +1282,13 @@ class _SketchPainter extends CustomPainter {
   static const Color _hoverColor = Colors.amber;
   static const Color _selectedColor = Colors.purple;
 
+  /// Drag-mode's "currently grabbed" highlight - the entity a tap has
+  /// picked up (see [SketchController.isEntityGrabbed]) while its cursor is
+  /// hidden (see this painter's cursor-visibility check), so it needs to
+  /// read as unambiguously "this is what's about to move" - distinct from
+  /// both selected (purple) and hover (amber) and given priority over them.
+  static const Color _grabbedColor = Colors.orangeAccent;
+
   /// The crosshair's color while [SketchMode.draw] is active - distinct
   /// from [_selectCursorColor] so the cursor itself signals "you are
   /// sketching right now" independent of any toolbar/mode-label text.
@@ -1366,16 +1417,34 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
-  /// Stage 16 item 9: connects a dimension's default (un-offset) label
-  /// anchor to wherever the user has actually dragged the label (Stage 15
-  /// item 2's [SketchController.labelOffsetFor]) - without this, dragging a
-  /// label away from its dimension line/glyph left it visually floating
-  /// with nothing tying it back to the geometry it measures. A no-op when
-  /// [labelOffset] is [Offset.zero] (the untouched, default position),
-  /// since there's nothing to lead to in that case.
-  void _drawLeaderLine(Canvas canvas, Offset anchor, Offset labelOffset, Color color) {
-    if (labelOffset == Offset.zero) return;
-    canvas.drawLine(anchor, anchor + labelOffset, Paint()..color = color..strokeWidth = 1);
+  /// Traditional-drawing dimension repositioning: dragging a distance/
+  /// line-distance dimension's label used to leave the dimension line
+  /// itself fixed and draw a separate leader line out to the floating
+  /// label - not how a real technical drawing looks, and reported as an
+  /// unwanted extra line. Instead, the drag *relocates the dimension line
+  /// itself* (this perpendicular offset distance), so the extension lines
+  /// stretch/shrink to reach it and the label sits directly on the
+  /// (now-relocated) dimension line, same as [_paintDistanceDimension]/
+  /// [_paintLineDistanceDimension] already did before any drag - no
+  /// separate leader line needed. [normal] must be a *unit* vector in the
+  /// dimension line's offset direction; the drag offset is projected onto
+  /// it so only the perpendicular component moves the line (sliding the
+  /// label along the line's own direction isn't supported yet). The
+  /// magnitude is floored so the dimension line can't collapse onto the
+  /// geometry it measures, but the sign is free to flip - dragging the
+  /// label to the other side of the measured entities moves the whole
+  /// dimension there too, same as a real CAD tool allows.
+  static const double _defaultDimensionOffset = 18.0;
+  static const double _minDimensionOffsetMagnitude = 6.0;
+
+  double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
+    if (labelOffset == Offset.zero) return _defaultDimensionOffset;
+    final projected = labelOffset.dx * normal.dx + labelOffset.dy * normal.dy;
+    final raw = _defaultDimensionOffset + projected;
+    if (raw.abs() < _minDimensionOffsetMagnitude) {
+      return raw.isNegative ? -_minDimensionOffsetMagnitude : _minDimensionOffsetMagnitude;
+    }
+    return raw;
   }
 
   /// ISO 129/ASME Y14.5-style extension (witness) line: leaves a small gap
@@ -1479,20 +1548,23 @@ class _SketchPainter extends CustomPainter {
     final Offset p2;
     switch (c.orientation) {
       case 'vertical':
-        final offsetX = math.max(aScreen.dx, bScreen.dx) + 18.0;
+        const normal = Offset(1, 0);
+        final offsetX = math.max(aScreen.dx, bScreen.dx) + _dimensionOffsetDistance(normal, labelOffset);
         p1 = Offset(offsetX, aScreen.dy);
         p2 = Offset(offsetX, bScreen.dy);
       case 'horizontal':
-        final offsetY = math.max(aScreen.dy, bScreen.dy) + 18.0;
+        const normal = Offset(0, 1);
+        final offsetY = math.max(aScreen.dy, bScreen.dy) + _dimensionOffsetDistance(normal, labelOffset);
         p1 = Offset(aScreen.dx, offsetY);
         p2 = Offset(bScreen.dx, offsetY);
       default:
         final delta = bScreen - aScreen;
         final length = delta.distance;
         if (length < 1e-6) return;
-        final normal = Offset(-delta.dy, delta.dx) / length * 18.0;
-        p1 = aScreen + normal;
-        p2 = bScreen + normal;
+        final normal = Offset(-delta.dy, delta.dx) / length;
+        final offsetVec = normal * _dimensionOffsetDistance(normal, labelOffset);
+        p1 = aScreen + offsetVec;
+        p2 = bScreen + offsetVec;
     }
 
     _drawExtensionLine(canvas, aScreen, p1, dimPaint);
@@ -1500,9 +1572,7 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 
-    final midpoint = (p1 + p2) / 2;
-    _drawLeaderLine(canvas, midpoint, labelOffset, color);
-    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
+    _drawDimensionLabel(canvas, (p1 + p2) / 2, c.distance.toStringAsFixed(2), color);
   }
 
   /// Line-to-line distance dimension (Stage 16 item 9's `LineDistanceConstraint`):
@@ -1518,8 +1588,7 @@ class _SketchPainter extends CustomPainter {
     final length = delta.distance;
     if (length < 1e-6) return;
     final normal = Offset(-delta.dy, delta.dx) / length;
-    const offsetDistance = 18.0;
-    final offset = normal * offsetDistance;
+    final offset = normal * _dimensionOffsetDistance(normal, labelOffset);
 
     final dimPaint = Paint()
       ..color = color
@@ -1529,9 +1598,7 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(midA + offset, midB + offset, dimPaint);
     _drawDimensionArrows(canvas, midA + offset, midB + offset, color);
 
-    final midpoint = (midA + offset + midB + offset) / 2;
-    _drawLeaderLine(canvas, midpoint, labelOffset, color);
-    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
+    _drawDimensionLabel(canvas, (midA + offset + midB + offset) / 2, c.distance.toStringAsFixed(2), color);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
@@ -1549,7 +1616,6 @@ class _SketchPainter extends CustomPainter {
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
-    _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
@@ -1563,7 +1629,6 @@ class _SketchPainter extends CustomPainter {
     final midpoint2 = _lineMidpointScreen(c.line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
   }
 
@@ -1583,7 +1648,6 @@ class _SketchPainter extends CustomPainter {
     final midpoint2 = _lineMidpointScreen(line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
@@ -1601,7 +1665,6 @@ class _SketchPainter extends CustomPainter {
     if (point == null || lineMid == null) return;
     final pointScreen = transform.sketchToScreen(point.x, point.y);
     final midpoint = (pointScreen + lineMid) / 2;
-    _drawLeaderLine(canvas, midpoint, labelOffset, color);
     _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
   }
 
@@ -1869,24 +1932,27 @@ class _SketchPainter extends CustomPainter {
       final start = controller.points[line.startPointId];
       final end = controller.points[line.endPointId];
       if (start == null || end == null) continue;
+      final lineIsGrabbed = controller.draggingLineId == line.id;
       final lineIsSelected = isSelected(SelectionKind.line, line.id);
       final isHovered = hovered?.kind == SelectionKind.line && hovered!.id == line.id;
       final linePaint = Paint()
-        ..color = lineIsSelected
-            ? _selectedColor
-            : isHovered
-                ? _hoverColor
-                : line.construction
-                    ? _constructionColor
-                    // Prompt B item B5: once the most recent solve reports
-                    // dof == 0, every line renders black (fully
-                    // constrained) instead of the usual grey - simplified,
-                    // sketch-wide signal for this stage; per-entity
-                    // constrained colouring is deferred.
-                    : controller.isUnderConstrained
-                        ? Colors.blueGrey.shade700
-                        : Colors.black
-        ..strokeWidth = lineIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
+        ..color = lineIsGrabbed
+            ? _grabbedColor
+            : lineIsSelected
+                ? _selectedColor
+                : isHovered
+                    ? _hoverColor
+                    : line.construction
+                        ? _constructionColor
+                        // Prompt B item B5: once the most recent solve reports
+                        // dof == 0, every line renders black (fully
+                        // constrained) instead of the usual grey - simplified,
+                        // sketch-wide signal for this stage; per-entity
+                        // constrained colouring is deferred.
+                        : controller.isUnderConstrained
+                            ? Colors.blueGrey.shade700
+                            : Colors.black
+        ..strokeWidth = lineIsGrabbed || lineIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
       final startScreen = transform.sketchToScreen(start.x, start.y);
       final endScreen = transform.sketchToScreen(end.x, end.y);
       if (line.construction) {
@@ -1959,12 +2025,16 @@ class _SketchPainter extends CustomPainter {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
+      final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
       final screenPos = transform.sketchToScreen(point.x, point.y);
       Color color = Colors.black87;
       double radius = _pointRadius;
-      if (isChainStart) {
+      if (pointIsGrabbed) {
+        color = _grabbedColor;
+        radius = _pointRadiusSelected;
+      } else if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
         radius = isSnapping ? _pointRadiusSnapping : _pointRadiusEmphasis;
       } else if (isCircleCenter) {
@@ -1995,7 +2065,12 @@ class _SketchPainter extends CustomPainter {
     // what used to cause the reported "jumps to the middle" glitch), it
     // simply stops rendering until the next cursor-moving interaction
     // (see SketchController.isCursorVisible/moveCursorRelative).
-    if (controller.isCursorVisible(size, transform)) {
+    //
+    // Also hidden entirely while something is grabbed via drag mode (see
+    // SketchController.isEntityGrabbed) - the grabbed entity's own
+    // highlight (see _grabbedColor above) *is* the cursor at that point,
+    // showing both would be redundant/confusing.
+    if (controller.isCursorVisible(size, transform) && !controller.isEntityGrabbed) {
       final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
       final crosshairPaint = Paint()
         ..color = controller.mode == SketchMode.draw ? _sketchingCursorColor : _selectCursorColor
