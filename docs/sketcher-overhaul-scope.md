@@ -333,6 +333,26 @@ changes.
 
 ## Phase 4 — 3D context while sketching
 
+**Status: 4.1 and 4.2 implemented together (see below); 4.3 deferred per
+its own recommendation.** An Orbit View toggle FAB (`sketch_screen.dart`)
+swaps the flat 2D `SketchCanvas` for a read-only, look-only `PartViewport`
+embedding the Part's Body meshes (shaded, at a fixed ~25% transparent
+opacity - direction (a) from 4.1's proposed approach) alongside this
+Sketch's own geometry (via `sketch_geometry_3d.dart`'s existing
+`sketchGeometry3DFrom`/`SketchPlaneBasis`). A second "Return to Default
+View" FAB animates the embedded viewport's camera back to facing the
+Sketch's plane via `PartViewportState.animateToPlane`, the same mechanism
+the 3D viewport already uses for its own camera-into-sketch transition.
+Editing stays 2D-only throughout - every edit-mode control (the ribbon,
+mode pill, drag-mode FAB, construction/dimension bar, speed dial) hides
+while Orbit View is active, and the toggle itself only appears once the
+Sketch's plane resolves to one of the three fixed `ReferencePlaneKind`s
+(a custom-plane Sketch has no `orientationFacingPlane` equivalent yet,
+same limitation `_openSketchWithAnimation` already has). Body-edge
+hit-testing/picking (4.1's "(a)" direction's other half) was not built -
+nothing in this pass makes the rendered bodies selectable, since nothing
+in 4.1/4.2's own ask needed it; that remains 4.3's territory.
+
 ### 4.1 Show existing bodies behind the canvas, default ~25% transparent
 - **Correction (confirmed on-device, this is NOT already working)**: the
   earlier "one-line default change" verdict was wrong. `canvasOpacity`

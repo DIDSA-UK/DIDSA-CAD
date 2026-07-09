@@ -1,12 +1,66 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
+import '../api/document_api_client.dart' show BodyMeshDto;
+import '../api/sketch_api_client.dart' show CircleDto, LineDto, PointDto;
 import '../didsa_logo_button.dart';
+import '../viewport3d/part_viewport.dart';
+import '../viewport3d/reference_planes.dart';
+import '../viewport3d/sketch_geometry_3d.dart';
 import 'sketch_canvas.dart';
 import 'sketch_construction_method_bar.dart';
 import 'sketch_controller.dart';
 import 'sketch_dimension_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
+
+/// Phase 4.1/4.2: converts [controller]'s live points into the
+/// [PointDto]/[LineDto]/[CircleDto] shapes [sketchGeometry3DFrom] expects -
+/// needed because [SketchController]'s own `SketchPointView`/`SketchLineView`/
+/// `SketchCircleView` are a distinct, unsaved-state-oriented set of types
+/// that don't carry the `length`/`radius` fields those DTOs do (the backend
+/// computes those; the live client-side views don't store them), so they're
+/// recomputed here via plain distance formulas.
+List<PointDto> _pointDtosFrom(SketchController controller) => [
+      for (final p in controller.points.values) PointDto(id: p.id, x: p.x, y: p.y),
+    ];
+
+double _sketchPointDistance(SketchPointView a, SketchPointView b) {
+  final dx = b.x - a.x;
+  final dy = b.y - a.y;
+  return math.sqrt(dx * dx + dy * dy);
+}
+
+List<LineDto> _lineDtosFrom(SketchController controller) => [
+      for (final line in controller.lines.values)
+        if (controller.points[line.startPointId] != null && controller.points[line.endPointId] != null)
+          LineDto(
+            id: line.id,
+            startPointId: line.startPointId,
+            endPointId: line.endPointId,
+            length: _sketchPointDistance(
+              controller.points[line.startPointId]!,
+              controller.points[line.endPointId]!,
+            ),
+            construction: line.construction,
+          ),
+    ];
+
+List<CircleDto> _circleDtosFrom(SketchController controller) => [
+      for (final circle in controller.circles.values)
+        if (controller.points[circle.centerPointId] != null && controller.points[circle.radiusPointId] != null)
+          CircleDto(
+            id: circle.id,
+            centerPointId: circle.centerPointId,
+            radiusPointId: circle.radiusPointId,
+            radius: _sketchPointDistance(
+              controller.points[circle.centerPointId]!,
+              controller.points[circle.radiusPointId]!,
+            ),
+            construction: circle.construction,
+          ),
+    ];
 
 /// The 2D sketch screen: chained line/circle sketching against the live
 /// backend, against a single Sketch. By default it creates a brand-new
@@ -29,11 +83,19 @@ class SketchScreen extends StatefulWidget {
   /// outside [PartScreen] at all, such as in isolated tests).
   final List<((double, double), (double, double))> referenceGhostSegments;
 
+  /// Phase 4.1/4.2: the same Part's Body meshes ([PartScreen]'s
+  /// `_visibleBodies`), threaded in so the Orbit View toggle can show them
+  /// shaded (not just [referenceGhostSegments]'s flat wireframe outline)
+  /// behind the sketch's own geometry. Empty outside [PartScreen] (e.g.
+  /// isolated tests), in which case the toggle simply shows no bodies.
+  final List<BodyMeshDto> bodies;
+
   const SketchScreen({
     super.key,
     this.controller,
     this.adoptSketchId,
     this.referenceGhostSegments = const [],
+    this.bodies = const [],
   });
 
   @override
@@ -59,6 +121,22 @@ class _SketchScreenState extends State<SketchScreen> {
   bool _constraintLabelsVisible = true;
   Color _canvasColor = SketchCanvas.defaultColor;
   double _canvasOpacity = 1.0;
+
+  /// Phase 4.2's Orbit View toggle: look-only, 2D editing stays disabled
+  /// while active (see [_buildBaseLayer]'s doc comment). Session-only, same
+  /// as the other view-preference fields above.
+  bool _orbitViewActive = false;
+
+  /// Lets [_returnOrbitToDefaultView] drive the embedded [PartViewport]'s
+  /// own [PartViewportState.animateToPlane] - the only way to control its
+  /// internally-owned [OrbitCamera] from outside (see
+  /// `viewport3d/orbit_camera.dart`: no camera is ever injectable).
+  final GlobalKey<PartViewportState> _orbitViewportKey = GlobalKey<PartViewportState>();
+
+  /// 4.1's "~25% transparent" ask - [ViewPreferences.defaultBodyOpacity] is
+  /// `1.0` (fully opaque), so Orbit View overrides it with its own fixed
+  /// default rather than reusing the Part viewport's persisted preference.
+  static const double _orbitBodyOpacity = 0.75;
 
   @override
   void initState() {
@@ -177,14 +255,7 @@ class _SketchScreenState extends State<SketchScreen> {
             Expanded(
               child: Stack(
                 children: [
-                  SketchCanvas(
-                    controller: _controller,
-                    referenceGhostSegments: widget.referenceGhostSegments,
-                    referenceBodyHidden: _referenceBodyHidden,
-                    constraintLabelsVisible: _constraintLabelsVisible,
-                    canvasColor: _canvasColor,
-                    canvasOpacity: _canvasOpacity,
-                  ),
+                  _buildBaseLayer(),
                   // Top-right: Exit Sketch (most prominent/most reached-for
                   // action) plus the optional reference-body visibility
                   // toggle.
@@ -213,6 +284,33 @@ class _SketchScreenState extends State<SketchScreen> {
                               child: Icon(_referenceBodyHidden ? Icons.visibility_off : Icons.visibility),
                             ),
                           ],
+                          // Phase 4.2: only offered once the Sketch's plane
+                          // has loaded and resolves to one of the three fixed
+                          // ReferencePlaneKinds - a custom-plane Sketch has no
+                          // orientationFacingPlane equivalent yet (matches
+                          // the same limitation _openSketchWithAnimation
+                          // already has for those Sketches), and there's
+                          // nothing to orbit toward before the plane loads.
+                          AnimatedBuilder(
+                            animation: _controller,
+                            builder: (context, _) {
+                              if (referencePlaneKindFromApiValue(_controller.plane) == null) {
+                                return const SizedBox.shrink();
+                              }
+                              final theme = Theme.of(context);
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: FloatingActionButton.small(
+                                  heroTag: 'orbit-view-toggle-fab',
+                                  tooltip: _orbitViewActive ? 'Exit Orbit View' : 'Orbit View',
+                                  backgroundColor: _orbitViewActive ? theme.colorScheme.primary : null,
+                                  foregroundColor: _orbitViewActive ? theme.colorScheme.onPrimary : null,
+                                  onPressed: () => setState(() => _orbitViewActive = !_orbitViewActive),
+                                  child: const Icon(Icons.view_in_ar),
+                                ),
+                              );
+                            },
+                          ),
                         ],
                       ),
                     ),
@@ -242,7 +340,9 @@ class _SketchScreenState extends State<SketchScreen> {
                   // room to do so without forcing a particular size. Placed
                   // after (in front of) the menu FAB above so the ribbon is
                   // the topmost thing in that corner whenever it's visible.
-                  Positioned.fill(child: SketchRibbon(controller: _controller)),
+                  // Hidden during Orbit View (Phase 4.2 is look-only -
+                  // editing always happens back on the 2D canvas).
+                  if (!_orbitViewActive) Positioned.fill(child: SketchRibbon(controller: _controller)),
                   // Tap-outside barrier: while the FAB menu is open, any tap
                   // outside the FAB itself (which sits above this in the
                   // Stack, so remains tappable) closes the menu instead of
@@ -270,7 +370,7 @@ class _SketchScreenState extends State<SketchScreen> {
                       child: AnimatedBuilder(
                         animation: _controller,
                         builder: (context, _) {
-                          if (_controller.mode == SketchMode.select) {
+                          if (_controller.mode == SketchMode.select || _orbitViewActive) {
                             return const SizedBox.shrink();
                           }
                           final pill = Material(
@@ -292,10 +392,26 @@ class _SketchScreenState extends State<SketchScreen> {
                       ),
                     ),
                   ),
+                  // Bottom-right: the draw/dimension tool speed dial, or -
+                  // while Orbit View is active - the "Return to Default
+                  // View" button instead, since there's nothing to draw
+                  // while look-only. Unlike the toggle FAB above, this one
+                  // *animates*: it calls the same animateToPlane the 3D
+                  // viewport already uses for its own camera-into-sketch
+                  // transition, re-orienting the embedded PartViewport back
+                  // to looking straight at the Sketch's plane without
+                  // leaving Orbit View.
                   Positioned(
                     right: 16,
                     bottom: 16,
-                    child: SketchSpeedDial(controller: _controller),
+                    child: _orbitViewActive
+                        ? FloatingActionButton.small(
+                            heroTag: 'orbit-return-to-default-fab',
+                            tooltip: 'Return to Default View',
+                            onPressed: _returnOrbitToDefaultView,
+                            child: const Icon(Icons.restore),
+                          )
+                        : SketchSpeedDial(controller: _controller),
                   ),
                   // Drag-mode toggle FAB, bottom-left: replaces the old
                   // timing-based "double-tap/double-click to drag" gesture
@@ -319,7 +435,9 @@ class _SketchScreenState extends State<SketchScreen> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        if (_controller.mode != SketchMode.select) return const SizedBox.shrink();
+                        if (_controller.mode != SketchMode.select || _orbitViewActive) {
+                          return const SizedBox.shrink();
+                        }
                         final active = _controller.dragModeEnabled;
                         final theme = Theme.of(context);
                         return FloatingActionButton.small(
@@ -352,7 +470,7 @@ class _SketchScreenState extends State<SketchScreen> {
                         // "Tap to place a point" message instead of chips,
                         // but the bar (and its Exit button) still appears.
                         final showConstructionBar = mode == SketchMode.draw;
-                        final visible = showConstructionBar || mode == SketchMode.dimension;
+                        final visible = (showConstructionBar || mode == SketchMode.dimension) && !_orbitViewActive;
                         final bar = mode == SketchMode.dimension
                             ? SketchDimensionBar(controller: _controller)
                             : SketchConstructionMethodBar(controller: _controller);
@@ -423,6 +541,61 @@ class _SketchScreenState extends State<SketchScreen> {
         ),
       ),
     );
+  }
+
+  /// Phase 4.1/4.2: the Stack's base layer - the flat 2D [SketchCanvas]
+  /// normally, or (while [_orbitViewActive]) a read-only, look-only 3D
+  /// [PartViewport] embedding [widget.bodies] (shaded, at
+  /// [_orbitBodyOpacity]) alongside this Sketch's own geometry, reusing
+  /// `viewport3d/sketch_geometry_3d.dart`'s existing projection - "so the
+  /// user can see where they are sketching" relative to the real part, per
+  /// the brief. Editing always stays on the 2D canvas (see the scope doc's
+  /// "Decided: look-only toggle" note) - `onPlaneTap`/`onBackgroundTap` are
+  /// no-ops and `selectionMode` stays false, so orbiting is the only
+  /// interaction available here.
+  Widget _buildBaseLayer() {
+    final planeKind = referencePlaneKindFromApiValue(_controller.plane);
+    if (_orbitViewActive && planeKind != null) {
+      return AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) => PartViewport(
+          key: _orbitViewportKey,
+          bodies: widget.bodies,
+          selectedPlane: null,
+          onPlaneTap: (_) {},
+          onBackgroundTap: () {},
+          sketchGeometries: {
+            (_controller.sketchId ?? 'active-sketch'): sketchGeometry3DFrom(
+              basis: SketchPlaneBasis.fixed(planeKind),
+              points: _pointDtosFrom(_controller),
+              lines: _lineDtosFrom(_controller),
+              circles: _circleDtosFrom(_controller),
+            ),
+          },
+          referencePlanesHidden: true,
+          bodyOpacity: _orbitBodyOpacity,
+        ),
+      );
+    }
+    return SketchCanvas(
+      controller: _controller,
+      referenceGhostSegments: widget.referenceGhostSegments,
+      referenceBodyHidden: _referenceBodyHidden,
+      constraintLabelsVisible: _constraintLabelsVisible,
+      canvasColor: _canvasColor,
+      canvasOpacity: _canvasOpacity,
+    );
+  }
+
+  /// The "Return to Default View" FAB's action - re-orients the embedded
+  /// [PartViewport]'s camera to look straight at the Sketch's own plane,
+  /// animated, reusing [PartViewportState.animateToPlane] exactly as the 3D
+  /// viewport already does for its camera-into-sketch transition. Stays in
+  /// Orbit View rather than exiting it - leaving is the toggle FAB's job.
+  void _returnOrbitToDefaultView() {
+    final planeKind = referencePlaneKindFromApiValue(_controller.plane);
+    if (planeKind == null) return;
+    _orbitViewportKey.currentState?.animateToPlane(planeKind);
   }
 
   /// Stage 23f: the hamburger menu's content - a View submenu for the

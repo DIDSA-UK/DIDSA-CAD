@@ -4730,6 +4730,7 @@ class _PartScreenState extends State<PartScreen> {
           controller: SketchController(api: widget.sketchApiFactory?.call()),
           adoptSketchId: feature.sketchId,
           referenceGhostSegments: ghostSegments,
+          bodies: _visibleBodies,
         ),
       ),
     );
