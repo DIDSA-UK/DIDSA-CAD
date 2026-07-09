@@ -125,8 +125,15 @@ class OrbitCamera {
   /// default vertical FOV and the fixed reference planes' real
   /// [referencePlaneSize] of 20 world units - left the planes filling
   /// nearly the full screen (~80% of its linear extent) on a cold launch.
-  /// default zoom: planes ~25% of screen (~50% of linear extent needs
-  /// distance ~48.28 at this FOV/plane size; rounded to a clean 48).
+  /// Raised to `48` (planes ~25% of screen, ~50% of linear extent) to fix
+  /// that, then further out to `80` by explicit request to push the
+  /// default zoom level farther out still (planes now read at roughly
+  /// (48/80)^2 ≈ 36% of that screen coverage - correspondingly smaller/
+  /// farther-looking on open). Also what "Reset View" (see [reset])
+  /// returns to, whenever the loaded body's zoom-out bound allows it -
+  /// a small body's own `maxDistance` (see [setZoomBoundsForRadius])
+  /// still clamps below this exactly as it did before, unaffected by this
+  /// constant's value.
   static const double _defaultDistance = 80;
 
   /// What [reset] returns [target] to - defaults to the origin, but
