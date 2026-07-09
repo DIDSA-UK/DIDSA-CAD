@@ -86,32 +86,6 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// a tap rather than a drag.
   static const double _tapTravelThreshold = 10.0;
 
-  /// Stage 15 item 2: the Constraint id currently grabbed by an active
-  /// continuous-hold drag of its label, or null. Unlike the Point/Line
-  /// grab/drop gesture below (see [SketchController.isEntityGrabbed]),
-  /// label dragging keeps its original pointer-down-to-pointer-up
-  /// continuous-hold mechanism - grabbed on pointer-down (see
-  /// [_tryStartLabelDrag], which checks [dimensionLabelAt]), dropped on
-  /// pointer-up, no separate "drop tap" needed. There's no canvas-local
-  /// mirror of the grabbed Point/Line id the way this field mirrors the
-  /// controller's own `_draggingLabelId` - the grab/drop gesture instead
-  /// queries [SketchController.draggingPointId]/[SketchController.draggingLineId]/
-  /// [SketchController.isEntityGrabbed] directly, since it must persist
-  /// correctly across separate touch gestures (grab-tap, swipe, swipe,
-  /// drop-tap), not just within one continuous hold the way a canvas-local
-  /// field tied to a single gesture would.
-  String? _draggingLabelId;
-
-  /// Cumulative screen-pixel travel since [_draggingLabelId] was set - if a
-  /// label drag ends having moved less than [_labelTapTravelThreshold], it's
-  /// treated as a double-tap rather than a drag and the label snaps back to
-  /// its default position (see [_handlePointerEnd]).
-  double _labelDragTravel = 0;
-
-  /// How far (screen pixels) a label "drag" may travel and still count as a
-  /// tap-in-place reset gesture rather than an intentional reposition.
-  static const double _labelTapTravelThreshold = 4.0;
-
   /// The canvas's own render size, refreshed every [build] - read by
   /// [_onEdgePanTick], which runs independently of any pointer event so an
   /// RTS-style edge-pan keeps going even while the pointer itself sits
@@ -374,10 +348,26 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // fires hover events, not pointer-move. See _handlePointerMove's mirror
     // of this for the button-held case (a literal click-and-drag also
     // works, not just click-move-click).
-    if (widget.controller.isEntityGrabbed) {
-      final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
-      widget.controller.updateGrabbedPosition(coord.x, coord.y);
+    _feedMouseSwipeToGrabbedEntity(event, transform);
+  }
+
+  /// Feeds a mouse swipe (hover or button-held move, both carry a screen
+  /// position + delta) to whatever's currently grabbed via drag mode - a
+  /// Point/Line/Constraint-label (see [SketchController.isEntityGrabbed]).
+  /// A label's offset lives in screen space (see
+  /// [SketchController.updateLabelDrag]'s doc comment for why), so it's fed
+  /// [event]'s own delta directly; a Point/Line tracks an absolute cursor
+  /// position instead, so its update converts [event]'s screen position
+  /// through [transform]. No-op if nothing's grabbed.
+  void _feedMouseSwipeToGrabbedEntity(PointerEvent event, ViewTransform transform) {
+    final controller = widget.controller;
+    if (!controller.isEntityGrabbed) return;
+    if (controller.draggingLabelId != null) {
+      controller.updateLabelDrag(event.delta);
+      return;
     }
+    final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
+    controller.updateGrabbedPosition(coord.x, coord.y);
   }
 
   /// Trackpad-style dispatch point for "what does a click do right now":
@@ -433,15 +423,20 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   }
 
   /// [_dispatchTap]'s drag-mode branch: drops whatever's grabbed if
-  /// something is, otherwise tries to grab a Point or Line at the cursor.
-  /// Returns whether the tap was consumed (grabbed or dropped something) -
-  /// false falls through to ordinary select-tap handling (e.g. a tap on
-  /// empty canvas, or on a Circle, which this gesture doesn't grab).
+  /// something is, otherwise tries to grab a Constraint label, Point, or
+  /// Line at the cursor (checked in that order, same priority the old
+  /// pointer-down-triggered label grab used). Returns whether the tap was
+  /// consumed (grabbed or dropped something) - false falls through to
+  /// ordinary select-tap handling (e.g. a tap on empty canvas, or on a
+  /// Circle, which this gesture doesn't grab).
   bool _handleDragModeTap(SketchController controller, ViewTransform transform) {
     if (controller.isEntityGrabbed) {
       controller.dropGrabbedEntity();
       return true;
     }
+    final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
+    final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
+    if (labelId != null && controller.beginLabelDrag(labelId)) return true;
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     final target = controller.dragGrabTargetAt(controller.cursorX, controller.cursorY, hitRadius);
     if (target == null) return false;
@@ -453,23 +448,6 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       default:
         return false;
     }
-  }
-
-  /// Label-drag's own pointer-down-triggered grab, unchanged from before
-  /// the Point/Line grab/drop gesture existed - a continuous hold, not a
-  /// tap/tap/swipe sequence (see the [_draggingLabelId] field's doc comment
-  /// for why labels keep this simpler mechanism). Still gated by
-  /// [SketchController.dragModeEnabled], same as the Point/Line gesture.
-  /// Returns whether a label drag started.
-  bool _tryStartLabelDrag(ViewTransform transform) {
-    final controller = widget.controller;
-    if (!controller.dragModeEnabled) return false;
-    final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
-    final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
-    if (labelId == null || !controller.beginLabelDrag(labelId)) return false;
-    _draggingLabelId = labelId;
-    _labelDragTravel = 0;
-    return true;
   }
 
   void _handlePointerDown(PointerDownEvent event, ViewTransform transform) {
@@ -488,7 +466,6 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
-        if (_tryStartLabelDrag(transform)) return;
         _maybeStartLongPress(event.localPosition, transform);
         _dispatchTap(transform);
       }
@@ -515,7 +492,6 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     }
     _singleTouchTravel = 0;
     _multiTouchOccurred = false;
-    if (_tryStartLabelDrag(transform)) return;
     _maybeStartLongPress(event.localPosition, transform);
   }
 
@@ -530,19 +506,13 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         _cancelLongPress();
       }
     }
-    if (_draggingLabelId != null) {
-      _labelDragTravel += event.delta.distance;
-      widget.controller.updateLabelDrag(event.delta);
-      return;
-    }
     // Drag-mode's "swipe to move": a grab and its drop are two separate
-    // taps (see _dispatchTap's drag-mode branch), so a grabbed Point/Line
-    // just rides along with the ordinary cursor-move handling below for
-    // however many separate swipe gestures happen in between - there's no
-    // early-return/intercept branch here the way the old continuous-hold
-    // drag needed, [SketchController.updateGrabbedPosition] is just an
-    // extra step alongside the normal cursor move whenever something's
-    // grabbed.
+    // taps (see _dispatchTap's drag-mode branch), so whatever's grabbed -
+    // a Point, a Line, or now a Constraint label too - just rides along
+    // with the ordinary cursor-move handling below for however many
+    // separate swipe gestures happen in between, rather than needing its
+    // own early-return/intercept branch the way the old continuous-hold
+    // label drag did.
     if (event.kind == PointerDeviceKind.mouse) {
       if (event.buttons & kSecondaryMouseButton != 0) {
         // Panning never itself touches the cursor's sketch-space position
@@ -554,10 +524,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       } else {
         _refreshCursorMoveTimeIfMoved(event.localPosition);
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
-        if (widget.controller.isEntityGrabbed) {
-          final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
-          widget.controller.updateGrabbedPosition(coord.x, coord.y);
-        }
+        _feedMouseSwipeToGrabbedEntity(event, transform);
       }
       return;
     }
@@ -567,14 +534,22 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // this is what determines where a subsequent tap commits (see
       // _dispatchTap, which always reads the cursor's current position,
       // never the tap's own screen location). Same relative+scaled delta
-      // also drives a grabbed Point/Line, same as it always drove the old
-      // continuous-hold Point drag - see moveCursorRelative's
-      // touchSensitivity/zoom scaling.
+      // also drives a grabbed Point/Line/label, same as it always drove
+      // the old continuous-hold Point drag - see
+      // moveCursorRelative's touchSensitivity/zoom scaling. A label's
+      // offset lives in screen space (unlike a Point/Line's absolute
+      // cursor-position tracking), so it's fed this same raw touch delta
+      // directly rather than through the cursor-position-based
+      // [SketchController.updateGrabbedPosition].
       _singleTouchTravel += event.delta.distance;
       _refreshCursorMoveTimeIfMoved(event.localPosition);
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       if (widget.controller.isEntityGrabbed) {
-        widget.controller.updateGrabbedPosition(widget.controller.cursorX, widget.controller.cursorY);
+        if (widget.controller.draggingLabelId != null) {
+          widget.controller.updateLabelDrag(event.delta);
+        } else {
+          widget.controller.updateGrabbedPosition(widget.controller.cursorX, widget.controller.cursorY);
+        }
       }
       return;
     }
@@ -595,25 +570,16 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // fire if its pointer lifts first - same as any other gesture that's
     // still ambiguous when the pointer ends.
     _cancelLongPress();
-    if (_draggingLabelId != null) {
-      final labelId = _draggingLabelId!;
-      _draggingLabelId = null;
-      _activeTouches.remove(event.pointer);
-      if (_labelDragTravel < _labelTapTravelThreshold) {
-        widget.controller.resetLabelOffset(labelId);
-      }
-      widget.controller.endLabelDrag();
-      return;
-    }
     if (event.kind == PointerDeviceKind.mouse) return;
 
     // A lone finger lifting (not the tail end of a pinch) after barely
     // moving is a tap - the select/draw/dimension gesture - rather than a
-    // drag. Deliberately the *only* path that can drop a grabbed Point/Line
-    // now (via _dispatchTap's drag-mode branch, when this counts as a
-    // tap) - a swipe that moved past the threshold just ends this one
-    // touch/pinch-pan gesture without dropping anything, since the entity
-    // is still grabbed and ready for another swipe or a final drop-tap.
+    // drag. Deliberately the *only* path that can drop a grabbed Point/
+    // Line/label now (via _dispatchTap's drag-mode branch, when this
+    // counts as a tap) - a swipe that moved past the threshold just ends
+    // this one touch/pinch-pan gesture without dropping anything, since
+    // the entity is still grabbed and ready for another swipe or a final
+    // drop-tap.
     final wasTap = event is PointerUpEvent &&
         _activeTouches.length == 1 &&
         !_multiTouchOccurred &&
@@ -1116,8 +1082,8 @@ Offset? _constraintLabelCenter(
 /// this never disagrees with where [_SketchPainter] actually draws it
 /// after a drag. Public (unlike its sibling hit-testers in this file) so
 /// it's directly unit-testable without pumping a real widget tree - see
-/// [_SketchCanvasState._tryStartLabelDrag], which checks this on
-/// pointer-down.
+/// [_SketchCanvasState._handleDragModeTap], which checks this first,
+/// ahead of a Point/Line grab.
 String? dimensionLabelAt(
   SketchController controller,
   ViewTransform transform,

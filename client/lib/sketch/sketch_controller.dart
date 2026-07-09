@@ -1439,17 +1439,18 @@ class SketchController extends ChangeNotifier {
   /// The Constraint label currently being live-dragged via [beginLabelDrag],
   /// or null if no label drag is in progress - mirrors [draggingPointId]/
   /// [draggingLineId]; all three are mutually exclusive (see
-  /// [beginPointDrag]/[beginLineDrag]/[beginLabelDrag]'s guards). Unlike
-  /// the Point/Line grab, a label drag stays a plain continuous
-  /// pointer-down-to-pointer-up hold - see sketch_canvas.dart's
-  /// `_tryStartLabelDrag`.
+  /// [beginPointDrag]/[beginLineDrag]/[beginLabelDrag]'s guards). Now uses
+  /// the same tap-grab/swipe/tap-drop gesture as Point/Line grabbing (see
+  /// sketch_canvas.dart's `_handleDragModeTap`) rather than its own
+  /// separate continuous-hold mechanism.
   String? get draggingLabelId => _draggingLabelId;
 
   /// Starts a live drag of [constraintId]'s label - false (no-op) if a
-  /// Point drag is already active. Unlike [beginPointDrag] this never
-  /// touches the backend, so there's no busy/sketch-id guard to fail on.
+  /// Point or Line drag is already active. Unlike [beginPointDrag] this
+  /// never touches the backend, so there's no busy/sketch-id guard to fail
+  /// on.
   bool beginLabelDrag(String constraintId) {
-    if (_draggingPointId != null) return false;
+    if (_draggingPointId != null || _draggingLineId != null) return false;
     _draggingLabelId = constraintId;
     return true;
   }
@@ -1469,14 +1470,20 @@ class SketchController extends ChangeNotifier {
 
   /// Ends the current label drag (if any). The accumulated offset is kept
   /// as-is - a drag that actually moved the label leaves it wherever it
-  /// was dropped; see [resetLabelOffset] for the separate "double-tap
-  /// without dragging" gesture that snaps a label back to its default.
+  /// was dropped.
   void endLabelDrag() {
     _draggingLabelId = null;
   }
 
-  /// Clears [constraintId]'s offset back to its default painted anchor -
-  /// Stage 15 item 2's double-tap-without-drag reset gesture.
+  /// Clears [constraintId]'s offset back to its default painted anchor.
+  /// Originally Stage 15 item 2's "double-tap without dragging" reset
+  /// gesture - that specific trigger no longer exists now that label
+  /// dragging shares the tap-grab/swipe/tap-drop gesture (grabbing and
+  /// immediately dropping without swiping just leaves the label where it
+  /// already was, not a reset), so this is currently unreachable from the
+  /// UI. Kept as a public method (and still covered by its own unit test)
+  /// in case it's worth wiring to a different gesture later (e.g. a
+  /// long-press on a selected label).
   void resetLabelOffset(String constraintId) {
     if (_labelOffsets.remove(constraintId) != null) notifyListeners();
   }

@@ -47,12 +47,11 @@ class _SketchScreenState extends State<SketchScreen> {
   /// same as PartScreen's `_referencePlanesHidden`. Defaults to shown.
   bool _referenceBodyHidden = false;
 
-  /// Stage 23f: lets the menu FAB open/close [_buildDrawer]'s [Drawer]
-  /// without relying on `Scaffold.of(context)` - the outer `build` method's
-  /// own context sits *above* the Scaffold it returns, not below it, so
-  /// that lookup would fail; a [GlobalKey] sidesteps the question of which
-  /// context is in scope entirely.
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  /// Whether the hamburger menu panel (see [_buildMenuPanel]) is open -
+  /// plain state instead of Flutter's built-in [Scaffold.drawer]/[Drawer],
+  /// which is always full-screen height by construction with no way to
+  /// bound it - see [_buildMenuPanel]'s doc comment for why that mattered.
+  bool _menuOpen = false;
 
   /// Stage 23f's View submenu controls - all in-memory only/session-only
   /// per the brief, with no `shared_preferences` persistence (unlike
@@ -87,8 +86,6 @@ class _SketchScreenState extends State<SketchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      key: _scaffoldKey,
-      drawer: _buildDrawer(context),
       appBar: AppBar(
         leading: const DidsaLogoButton(),
         leadingWidth: 100,
@@ -235,7 +232,7 @@ class _SketchScreenState extends State<SketchScreen> {
                       child: FloatingActionButton.small(
                         heroTag: 'sketch-menu-fab',
                         tooltip: 'Menu',
-                        onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                        onPressed: () => setState(() => _menuOpen = !_menuOpen),
                         child: const Icon(Icons.menu),
                       ),
                     ),
@@ -375,6 +372,50 @@ class _SketchScreenState extends State<SketchScreen> {
                       },
                     ),
                   ),
+                  // Hamburger menu overlay - a scrim (tap to close) plus a
+                  // bounded panel, anchored top-left below the AppBar/menu
+                  // FAB. Deliberately *not* Scaffold's built-in [Drawer]:
+                  // that widget is always full-screen height by
+                  // construction (no `height`/bounding parameter exists),
+                  // so a previous fix that only padded its *content* down
+                  // still left the panel's own Material surface spanning
+                  // the whole screen. Living inside this body Stack (which
+                  // Scaffold already positions strictly below the AppBar)
+                  // means the top can never cover the title bar/DIDSA logo
+                  // without any padding hack, and the height cap below
+                  // keeps the bottom well short of full-screen (around
+                  // mid-screen at most, hugging its actually-short content
+                  // in practice).
+                  if (_menuOpen)
+                    Positioned.fill(
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => setState(() => _menuOpen = false),
+                              child: Container(color: Colors.black45),
+                            ),
+                          ),
+                          Positioned(
+                            top: 56,
+                            left: 8,
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: 220,
+                                maxHeight: MediaQuery.of(context).size.height * 0.5,
+                              ),
+                              child: Material(
+                                elevation: 8,
+                                borderRadius: BorderRadius.circular(8),
+                                clipBehavior: Clip.antiAlias,
+                                child: _buildMenuPanel(context),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -384,65 +425,54 @@ class _SketchScreenState extends State<SketchScreen> {
     );
   }
 
-  /// Stage 23f: the hamburger drawer - a View submenu for the
+  /// Stage 23f: the hamburger menu's content - a View submenu for the
   /// constraint-label-visibility toggle and the canvas colour/transparency
   /// controls. Exit Sketch lives in its own dedicated FAB (top-right of the
-  /// canvas) rather than as the drawer's first entry now, so it isn't
-  /// repeated here.
+  /// canvas) rather than as an entry here, so it isn't repeated.
   ///
-  /// Bug-fix: this used to be a full-width (304dp default), default-density
-  /// [Drawer] with no top padding - far taller/wider than its 3 short
-  /// entries needed, and [SafeArea] alone only accounts for OS-level insets
-  /// (status bar/notch), not this screen's own [AppBar] - so the content
-  /// started right under the status bar, visually overlapping the title
-  /// bar's own space rather than sitting below it. Narrowed, given a
-  /// compact [VisualDensity] + smaller text everywhere, and padded down by
-  /// exactly [kToolbarHeight] so it starts below the title bar instead.
-  Widget _buildDrawer(BuildContext context) {
+  /// `shrinkWrap: true` so this sizes to its own (short) content within
+  /// whatever [ConstrainedBox] the caller (the menu overlay above) wraps it
+  /// in, rather than trying to fill it - the previous [Drawer]-based
+  /// version couldn't do this at all, since a [Drawer] forces its content
+  /// to the full screen height regardless.
+  Widget _buildMenuPanel(BuildContext context) {
     const density = VisualDensity(horizontal: -4, vertical: -4);
     const titleStyle = TextStyle(fontSize: 13);
-    return Drawer(
-      width: 220,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.only(top: kToolbarHeight),
-          child: ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              ExpansionTile(
-                dense: true,
-                visualDensity: density,
-                leading: const Icon(Icons.visibility_outlined, size: 20),
-                title: const Text('View', style: titleStyle),
-                initiallyExpanded: true,
-                children: [
-                  SwitchListTile(
-                    dense: true,
-                    visualDensity: density,
-                    title: const Text('Constraint Labels', style: titleStyle),
-                    value: _constraintLabelsVisible,
-                    onChanged: (value) => setState(() => _constraintLabelsVisible = value),
-                  ),
-                  ListTile(
-                    dense: true,
-                    visualDensity: density,
-                    leading: Icon(Icons.palette_outlined, color: _canvasColor, size: 20),
-                    title: const Text('Canvas Colour', style: titleStyle),
-                    onTap: () => _pickCanvasColor(context),
-                  ),
-                  ListTile(
-                    dense: true,
-                    visualDensity: density,
-                    leading: const Icon(Icons.opacity_outlined, size: 20),
-                    title: const Text('Canvas Transparency', style: titleStyle),
-                    onTap: () => _pickCanvasOpacity(context),
-                  ),
-                ],
-              ),
-            ],
-          ),
+    return ListView(
+      shrinkWrap: true,
+      padding: EdgeInsets.zero,
+      children: [
+        ExpansionTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.visibility_outlined, size: 20),
+          title: const Text('View', style: titleStyle),
+          initiallyExpanded: true,
+          children: [
+            SwitchListTile(
+              dense: true,
+              visualDensity: density,
+              title: const Text('Constraint Labels', style: titleStyle),
+              value: _constraintLabelsVisible,
+              onChanged: (value) => setState(() => _constraintLabelsVisible = value),
+            ),
+            ListTile(
+              dense: true,
+              visualDensity: density,
+              leading: Icon(Icons.palette_outlined, color: _canvasColor, size: 20),
+              title: const Text('Canvas Colour', style: titleStyle),
+              onTap: () => _pickCanvasColor(context),
+            ),
+            ListTile(
+              dense: true,
+              visualDensity: density,
+              leading: const Icon(Icons.opacity_outlined, size: 20),
+              title: const Text('Canvas Transparency', style: titleStyle),
+              onTap: () => _pickCanvasOpacity(context),
+            ),
+          ],
         ),
-      ),
+      ],
     );
   }
 
