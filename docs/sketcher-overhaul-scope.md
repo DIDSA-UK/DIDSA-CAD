@@ -74,22 +74,40 @@ solver or data model.
   terms below that floor. Worth a quick manual check rather than new
   engineering.
 
-### 1.4 Auto-create coincident constraint when a dragged point is dropped on another point
-- **Current state**: this already exists for the **point-placement
-  tool** (`_clickPointTool`, `sketch_controller.dart:2722-2754`, via
-  `_existingPointIdNear` + `_api.createCoincidentConstraint`) but is
-  **missing from drag-and-drop** — `endPointDrag`
-  (`:1144-1163`) has no equivalent snap-and-constrain logic.
+### 1.4 Auto-create coincident constraint when a point is placed/dropped on another point
+- **Current state**: this exists for the **point-placement tool** only
+  (`_clickPointTool`, `sketch_controller.dart:2722-2754`, via
+  `_existingPointIdNear` + `_api.createCoincidentConstraint`) — confirmed
+  via on-device testing to be **missing everywhere else**. Two separate
+  gaps found:
+  - `endPointDrag` (`:1144-1163`) has no snap-and-constrain logic at all
+    for dragging an existing point onto another.
+  - Every other point-creating tool path goes through `_pointIdAt`
+    (`:2990-3005`), which *silently reuses* a nearby existing point's id
+    instead of creating a new one — no duplicate point, but also no
+    constraint, which is usually fine (rectangle/line corners landing on
+    shared points don't need a coincident constraint, they just are the
+    same point) **except** for one confirmed bug: the rectangle tool's
+    centre-tracking point (`_buildRectangle`, `sketch_controller.dart:3136`,
+    used by `centreCorner` construction method) is created via a raw
+    `_api.createPoint` call with **no proximity check at all** — tested
+    placing a rectangle's centre exactly on the sketch origin and no
+    coincident constraint was created, because this path never even
+    looks for a nearby point.
   `CoincidentConstraint` itself is fully implemented server-side
-  (`constraints.py:270-287`, `router.py:405-406`), so this is UI-glue
-  only, not new backend work.
-- **Proposed approach**: in `endPointDrag`, reuse the existing
-  `_existingPointIdNear`-style proximity check against the drop
-  position, and call the same `createCoincidentConstraint` API if a hit
-  is found (with a confirmation/undo-friendly UX — auto-adding a
-  constraint the user didn't explicitly ask for should be easy to
-  reverse).
-- **Files**: `sketch_controller.dart` only.
+  (`constraints.py:270-287`, `router.py:405-406`), so all of this is
+  UI-glue, not new backend work.
+- **Proposed approach**: standardize on `_clickPointTool`'s pattern
+  (create the point, then check `_existingPointIdNear` and add a
+  coincident constraint if found) as the one path every point-creating
+  interaction uses when a *new, independent* point is involved — this
+  covers `endPointDrag` and the rectangle centre point specifically.
+  Leave `_pointIdAt`'s reuse-by-id behavior as-is for corners/endpoints
+  that are meant to literally share a point (that's correct today, not
+  a bug). Auto-adding a constraint the user didn't explicitly request
+  should stay easy to undo.
+- **Files**: `sketch_controller.dart` only (`endPointDrag`,
+  `_buildRectangle`'s centre-point creation).
 - **Risk**: low.
 
 ---
@@ -125,72 +143,134 @@ solver or data model.
 
 ## Phase 3 — Constraint visual feedback
 
+**Decided approach (superseding the earlier heuristic idea): client-side
+structural DOF/rigidity analysis, computed live, no backend round-trip.**
+
+Discussed and rejected: deferring actual position-solving to
+sketch-exit (client edits fully local, backend `solve` only called on
+close). Rejected because it doesn't solve the coloring problem on its
+own (still need DOF analysis, which is a separate topological question
+from *where points end up*), and it actively conflicts with Phase 2 —
+the sketch would visually look "unsolved" (constraints not visibly
+satisfied) throughout editing, then jump when the deferred solve
+finally runs. Real numeric solving stays on the backend, per-edit,
+unchanged.
+
+What *does* move client-side: whether an entity is fully/under/over
+constrained is a question about the **topology** of the constraint
+graph (how many degrees of freedom each constraint type removes), not
+about solved numeric positions — so it doesn't need py-slvs at all.
+This is the same technique real parametric sketchers use internally
+(2D bar-joint rigidity / "pebble game" style DOF counting) to report
+constraint status independent of the solver actually running. The
+client already caches the full points/lines/constraints graph locally,
+so this can run instantly on every constraint add/remove/delete, with
+zero network round-trip — strictly better than either the original
+heuristic (which leaned on py-slvs's own admittedly-unreliable
+`blamed_constraint_ids`, "most recently added," not a real diagnosis)
+or a server round-trip per keystroke.
+
+**Architecture rule**: this client-side DOF checker is advisory/UI-only
+— it must never become a second source of truth. Anything that
+consumes sketch state programmatically (a script, an AI agent driving
+the backend API directly per the project's stated architecture —
+`docs/project-brief.md` §6/§8, stateless server, client-holds-model,
+API-first from Stage 1) reads the backend's own `SolveResult.dof`/
+`converged` fields, which are unchanged by this work. Keep the two
+concerns cleanly separated: backend `dof`/`converged` = authoritative
+solve result; client rigidity check = fast local preview for the
+person actively sketching.
+
 ### 3.1 Fully-constrained line/curve turns dark green
-- **Current state**: `SolveResult` already surfaces `dof`
-  (`solver.py:26-57`, from py-slvs's `system.Dof`) and `converged`, but
-  there's no *per-entity* constrained/unconstrained flag — `dof` is a
-  whole-sketch scalar. No `over_constrained`/`fully_constrained` field
-  exists in `schemas.py` at all today (`SolveResultResponse`,
-  `schemas.py:360-366`).
-- **Proposed approach (v1, heuristic)**: per-entity "fully constrained"
-  isn't something py-slvs gives for free — a real answer needs
-  structural DOF decomposition (which points/lines are pinned down by
-  the constraint graph vs. still free), which is genuine new solver
-  work, not a client-side derivation. Recommend a v1 heuristic instead:
-  color a line/curve green once *both* its endpoints have zero
-  remaining freedom under the current constraint set, approximated by
-  re-solving with that entity's points perturbed and checking they
-  snap back (expensive) — **or**, cheaper and likely good enough,
-  green once each endpoint participates in constraints that fully
-  pin its two coordinates (e.g. coincident-to-fixed, or both an
-  H/V + a dimension). This needs a short design spike before
-  committing to an approach; flag as the riskiest single item in the
-  whole package.
-- **Files**: likely new logic in `solver.py` (whichever heuristic wins)
-  plus `sketch_canvas.dart` rendering (color per entity).
-- **Risk**: medium-high — genuinely underspecified, needs a design
-  decision before implementation, not just coding.
+- **Current state**: no per-entity constrained/unconstrained flag
+  exists anywhere; `SolveResult.dof` (`solver.py:26-57`) is a
+  whole-sketch scalar only.
+- **Proposed approach**: new client-side module implementing the DOF
+  counting — needs an explicit, documented DOF-cost table per
+  constraint type (coincident, horizontal, vertical, parallel,
+  perpendicular, equal_length, angle, distance, at_midpoint, collinear,
+  point_line_distance — the full list from `constraints.py:147-532`
+  each remove a different, specific number of degrees of freedom, this
+  is a real per-type analysis task, not a single constant), run over
+  the cached local graph. Color a line/curve green once its
+  entities have zero remaining freedom under this count.
+- **Files**: new Dart module (e.g. `client/lib/sketch/dof_analysis.dart`),
+  called from `sketch_canvas.dart` for rendering; a small, clearly
+  isolated file — see the forking note below for why isolation matters
+  here specifically.
+- **Risk**: medium — real algorithm work (getting the per-constraint-type
+  DOF costs right, including edge cases like redundant-but-consistent
+  constraints), but no solver/backend risk and no round-trip latency
+  concern.
 
 ### 3.2 Over-constrained entities turn red and disallow drag on their defining points
-- **Current state**: py-slvs's own `Failed` constraint list exists
-  (`solver_reported_failed_constraint_ids`, `solver.py:264-268`) but is
-  explicitly documented as unreliable for root-cause attribution — "tends
-  to list every constraint in an inconsistent system rather than a
-  single culprit" (`solver.py:40-45,283-286`); the existing
-  `blamed_constraint_ids` is just "most recently added," a placeholder
-  heuristic, not a real diagnosis.
-- **Proposed approach**: same root problem as 3.1 — real over-constraint
-  attribution needs proper DOF/rigidity analysis on the constraint
-  graph. Until that exists, a defensible v1: when `dof < 0` /
-  `converged == false` overall, mark the constraints in
-  `blamed_constraint_ids` (and the points/entities they reference) red
-  and block drag on those points, clearly labelled as best-effort rather
-  than exact. Revisit with real graph-based DOF analysis as a follow-up
-  if the heuristic proves misleading in practice.
-- **Files**: `solver.py` (expose which entities to flag),
-  `sketch_canvas.dart` (red rendering + drag-disable check).
-- **Risk**: shares 3.1's underlying uncertainty; ship the heuristic
-  version and treat exact attribution as a separate, later backlog item.
+- **Current state**: no over-constrained detection at the entity level;
+  py-slvs's own `Failed` list (`solver.py:264-268`) is documented as
+  unreliable for root-cause attribution.
+- **Proposed approach**: same DOF-counting module as 3.1 naturally
+  detects the over-constrained case too (negative remaining freedom
+  once a redundant constraint is added) — flag those specific
+  entities/constraints red and disable drag on their points. This is a
+  genuine improvement over the originally-floated heuristic, not just a
+  cheaper version of it, since it's counting actual redundancy in the
+  graph rather than guessing from "whatever was added last."
+- **Files**: same new DOF-analysis module + `sketch_canvas.dart`
+  (red rendering + drag-disable check).
+- **Risk**: shares 3.1's algorithm risk; no separate backend risk.
+
+**Fork note**: because this logic is a client-only duplication of
+knowledge that also lives in the backend's constraint-type list, keep
+the DOF-cost table in one small, explicitly-labeled file that documents
+"must stay in sync with `backend/app/sketch/constraints.py`'s type
+list" — cheap insurance for a future standalone fork where the two
+could otherwise drift silently if the backend's constraint set ever
+changes.
 
 ---
 
 ## Phase 4 — 3D context while sketching
 
 ### 4.1 Show existing bodies behind the canvas, default ~25% transparent
-- **Current state**: already fully implemented and user-adjustable.
-  `SketchCanvas.canvasOpacity` (`sketch_canvas.dart:49,60`,
-  applied at `:1795`) defaults to `1.0` (fully opaque); `sketch_screen.dart`
-  already has a working opacity slider bottom sheet (`_CanvasOpacitySheet`,
-  `:422-513`) reachable from a toolbar icon (`:377`).
-- **Proposed approach**: this is a **one-line default change** — set
-  the initial `_canvasOpacity` in `sketch_screen.dart:62` to `0.75`
-  (25% transparent, 75% opaque) instead of the current default. No new
-  UI needed.
-- **Files**: `sketch_screen.dart`.
-- **Risk**: none — smallest item in the whole package, verify the
-  default actually reads `1.0` today before changing (confirmed above).
+- **Correction (confirmed on-device, this is NOT already working)**: the
+  earlier "one-line default change" verdict was wrong. `canvasOpacity`
+  (`sketch_canvas.dart:49,60`, applied at `:1795`) only fades a flat
+  background *color rect*, and there is nothing else in the `Stack`
+  behind `SketchCanvas` (`sketch_screen.dart:180-190`) for that fade to
+  reveal — no 3D body rendering happens behind the sketch canvas at
+  all. What *does* exist is a separate, always-on, opacity-independent
+  mechanism: `referenceGhostSegments` — a flat list of the visible
+  bodies' mesh edges, projected onto the sketch plane
+  (`edgeSegmentsFromMesh` + `projectMeshEdgesOntoPlane`,
+  `part_screen.dart:4719-4725`) and painted as dashed lines
+  (`sketch_canvas.dart:1797-1806`). This is a 2D wireframe outline, not
+  a shaded/solid body, and it's pure paint — not hit-testable, so it
+  can't currently support the body-edge dimensioning ask in 4.3 either.
+  Changing the opacity default currently changes nothing a user would
+  notice, since it fades a plain background, not the bodies.
+- **Proposed approach**: this needs real work, and should be scoped
+  together with 4.3 rather than treated as trivial, since both need the
+  same underlying capability — *interactive* body geometry available
+  inside the sketch view, not just a projected outline. Two viable
+  directions: (a) render the actual mesh (shaded, using the existing
+  mesh-viewer rendering path) behind the 2D sketch canvas at the chosen
+  opacity, with hit-testing added against that mesh's edges/vertices for
+  4.3's picking, or (b) keep the flat 2D projection approach but make
+  the projected segments genuinely hit-testable objects (simpler, but
+  doesn't give real depth/occlusion cues the "orbit to see where you're
+  sketching" ask implies). Recommend (a) given 4.2 already establishes
+  a 3D camera path for this screen.
+- **Files**: `sketch_canvas.dart`, `sketch_screen.dart`, `part_screen.dart`
+  (ghost-segment computation), likely shares infrastructure with 4.2
+  and 4.3.
+- **Risk**: medium — smaller than 4.3 alone but no longer the trivial
+  item it first appeared to be; sequence it alongside 4.2/4.3 rather
+  than as an early quick win.
 
 ### 4.2 Orbit-view button + animated return-to-default-view button
+**Decided: look-only toggle**, not simultaneous 3D editing — confirmed.
+Editing always happens back in the flat 2D view; orbit is purely for
+inspection, matching the original ask and the lower-risk reuse path
+below.
 - **Current state**: the sketcher uses a flat 2D `SketchViewport`
   (pan/zoom only, `sketch_viewport.dart`), not the 3D `OrbitCamera`
   used by the part viewer (`viewport3d/orbit_camera.dart`). However,
@@ -257,6 +337,10 @@ solver or data model.
 ## Phase 5 — Sketch orientation control
 
 ### 5.1 Flip / rotate sketch axes, reference-axis alignment, retrospective redefine
+**Decided: discrete steps** (90° rotation + mirror flip), not free/
+continuous rotation — confirmed. Simpler solver-basis math (a small
+fixed set of basis transforms rather than an arbitrary angle), and a
+much simpler axis-arrow indicator to keep in sync.
 - **Current state**: `Sketch.plane` is only a fixed enum
   (`Plane.XY|XZ|YZ`, `models.py:25-31,208`) or `None` when anchored to a
   custom `CreatePlaneFeature` — there is no independent
@@ -317,6 +401,8 @@ solver or data model.
 - **Risk**: low — additive, reuses existing constraint calls.
 
 ### 6.2 New shape/curve tools: arc, ellipse, slot, polygon, spline, text
+**Decided: complexity-based order confirmed** (arc → polygon → slot →
+ellipse → spline → text), no reprioritization requested.
 - **Current state**: today's tools are point, line, circle, rectangle
   (`sketch_speed_dial.dart:43-99`). None of arc/ellipse/slot/polygon/
   spline/text exist client- or backend-side.
@@ -354,34 +440,55 @@ solver or data model.
 
 ## Suggested delivery order
 
-1. **Phase 1** (interaction fixes) — do first, self-contained, fixes
-   the most-reported daily annoyances, no backend risk.
+1. **Phase 1** (interaction fixes, including the now-broadened 1.4
+   coincident-on-drop/rectangle-centre fix) — do first, self-contained,
+   fixes the most-reported daily annoyances, no backend risk.
 2. **Phase 2** (drag-pin solve semantics) — natural follow-on to Phase 1
    since it changes what "drag" means; touches the solver but reuses an
    existing fixed-group mechanism.
-3. **Phase 4.1** (canvas opacity default) — trivial, do any time,
-   possibly bundle into Phase 1's PR since it's a one-line change.
-4. **Phase 6.1** (line snap) — small, independent, can slot in anywhere.
-5. **Phase 4.2** (orbit view) — medium, mostly integration of existing
-   `OrbitCamera`/`animateToPlane` code.
-6. **Phase 5** (sketch orientation) — do before Phase 4.3 if both are
-   planned, since 4.3's retrospective-redefine interaction is simpler
-   against an already-generalized orientation model.
-7. **Phase 3** (constraint color feedback) — needs a short design spike
-   first (3.1/3.2's heuristic approach) before estimating; not blocked
-   on anything else, but the *decision* of what heuristic to ship
-   should happen before implementation starts.
-8. **Phase 4.3** (external body references) — biggest structural item;
-   recommend its own scoping doc when the team is ready to pick it up.
-9. **Phase 6.2** (new shape tools) — ongoing backlog, pick off in the
-   listed complexity order; spline and text need their own scoping
+3. **Phase 6.1** (line snap) — small, independent, can slot in anywhere.
+4. **Phase 3** (constraint color feedback, client-side DOF/rigidity
+   analysis) — no longer blocked on a design spike now that the
+   heuristic approach has been replaced with the structural-analysis
+   approach; main work is the per-constraint-type DOF-cost table.
+5. **Phase 4.1 + 4.2 + 4.3** (3D context, orbit view, body-edge
+   dimensioning) — now sequenced together rather than 4.1 being a
+   quick win, since all three need the same underlying capability
+   (real, hit-testable body geometry inside the sketch view). Do 4.2
+   (orbit, look-only) first as it's the most self-contained reuse of
+   existing camera code, then 4.1+4.3 together once interactive body
+   geometry is in place. 4.3 remains the largest item here and may
+   still warrant its own scoping doc when picked up.
+6. **Phase 5** (sketch orientation, discrete flip/rotate) — do before
+   the retrospective-redefine part of 4.3 if both are in flight, since
+   redefinition is simpler against an already-generalized orientation
+   model.
+7. **Phase 6.2** (new shape tools) — ongoing backlog, pick off in the
+   confirmed complexity order; spline and text need their own scoping
    passes when reached.
 
-Open questions for the user before implementation starts:
-- Phase 3: acceptable to ship a heuristic (not exact) over/under-constrained
-  indicator first, with real DOF-graph analysis as a later follow-up?
-- Phase 4.2: confirmed that orbit should be a *look-only* temporary mode
-  rather than full 3D editing?
-- Phase 5: flip/rotate as discrete steps (e.g. 90°) or free rotation?
-- Phase 6.2: any priority order preference among arc/ellipse/slot/polygon/
-  spline/text, or is the complexity-based ordering above fine?
+## Cross-cutting notes (architecture fit)
+
+Raised and resolved while scoping Phase 3, but relevant to the whole
+package:
+
+- **AI/API-driven model building**: the project was already designed
+  API-first — `docs/project-brief.md` §6/§8 states the server is
+  stateless, the client holds the authoritative model, and the original
+  Stage 1 build was verified via direct API calls with no UI at all.
+  Nothing in this package changes that contract. The one new thing
+  (Phase 3's client-side DOF checker) is Flutter-only UI logic with no
+  backend endpoint and must stay advisory-only, never authoritative —
+  see the architecture rule under Phase 3.
+- **Future standalone fork (lower priority)**: no structural obstacle
+  found in anything scoped here — the stateless/no-persistence design
+  was already fork-friendly. The one thing to isolate cleanly for this
+  reason is Phase 3's DOF-cost table (see its fork note).
+- **iOS port**: also not a new consideration — Windows/Android/iOS was
+  the stated target client set from the original vision (§1, §3), so no
+  architecture rework is implied. Phase 1's move away from
+  timing-based double-tap-drag detection toward an explicit FAB is a
+  net positive for cross-platform gesture consistency. Worth keeping
+  Apple's ~44pt minimum touch-target guidance in mind when tuning the
+  point hit-radius down in 1.2 (today's effective ~44px diameter is
+  already close to that line).
