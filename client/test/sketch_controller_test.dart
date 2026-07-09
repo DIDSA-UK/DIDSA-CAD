@@ -2800,6 +2800,12 @@ void main() {
     final line = controller.lines.values.single;
     controller.exitToSelectMode();
 
+    // A single Vertical Constraint only removes 1 of the far endpoint's 2
+    // degrees of freedom - dof = 1, not the fake backend's default 0, so
+    // isFullyConstrained correctly stays false and the drag below (needed
+    // to trigger a fresh solve) isn't refused by the newer "a fully
+    // constrained and grounded Point can't be dragged" check.
+    backend.dof = 1;
     await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (5, 0)
     await controller.addVerticalConstraint();
     final constraintId = controller.constraints.values.whereType<VerticalConstraintDto>().single.id;
