@@ -386,6 +386,37 @@ in 4.1/4.2's own ask needed it; that remains 4.3's territory.
   orbits it themselves. "Return to Default View" is unaffected and still
   useful after the user has since orbited away from that view.
 
+**Second on-device round**:
+- **Orbit View transparency always resets to ~25% on entry**: previously
+  `_orbitBodyOpacity` persisted across toggles within a session (whatever
+  the user last set it to via the 3D View menu); now every fresh entry
+  into Orbit View resets it to 4.1's default, matching the "temporary
+  inspection mode" framing - a session shouldn't carry state forward
+  unpredictably.
+- **Leaving Orbit View now animates back to the sketch view first**:
+  previously the toggle FAB swapped instantly back to the flat 2D canvas
+  from whatever angle the camera had been orbited to. `_exitOrbitView` now
+  awaits the same `animateToPlane` call `_returnOrbitToDefaultView` uses
+  before swapping, so leaving reads as a smooth camera return rather than
+  a hard cut.
+- **4.1's original ask, actually built**: bodies now render as a static,
+  non-interactive shaded backdrop *behind the flat 2D canvas itself*
+  during ordinary sketch editing (not just inside Orbit View) - a
+  read-only `PartViewport` (camera fixed once via `initialViewPlane`,
+  wrapped in `IgnorePointer` so it never orbits) sits behind `SketchCanvas`
+  in `_buildBaseLayer`'s Stack, and `SketchCanvas`'s own Canvas
+  Transparency now defaults to ~25% whenever the Sketch's Part has Body
+  geometry (bodyless Sketches keep the fully-opaque default). The body
+  itself stays fully opaque - it's the *canvas*'s own fade that reveals
+  it - and reuses the existing Hide/Show Reference Body toggle, so one FAB
+  now controls both the ghost-wireframe outline and the shaded backdrop.
+  Two `PartViewport`/`Scene` instances can now be alive at once during
+  ordinary 2D editing (this static backdrop, on top of whatever the main
+  `PartScreen` viewport is doing off-screen) - worth an on-device eye on
+  performance; if it's a problem on lower-end devices, gating this behind
+  its own visibility toggle (rather than always-on whenever a Body exists)
+  is a natural follow-up for a later phase.
+
 ### 4.1 Show existing bodies behind the canvas, default ~25% transparent
 - **Correction (confirmed on-device, this is NOT already working)**: the
   earlier "one-line default change" verdict was wrong. `canvasOpacity`

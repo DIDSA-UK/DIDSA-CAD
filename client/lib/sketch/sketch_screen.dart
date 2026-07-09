@@ -158,6 +158,14 @@ class _SketchScreenState extends State<SketchScreen> {
     } else {
       _controller.ensureSketch();
     }
+    // On-device feedback: when this Sketch's Part has real Body geometry to
+    // show behind the canvas (see _buildBaseLayer's body backdrop), default
+    // Canvas Transparency to ~25% so it's actually visible without the user
+    // needing to find the View menu first - a bodyless Sketch keeps the
+    // fully-opaque default, since there would be nothing to reveal anyway.
+    if (widget.bodies.isNotEmpty) {
+      _canvasOpacity = 0.75;
+    }
   }
 
   @override
@@ -315,7 +323,7 @@ class _SketchScreenState extends State<SketchScreen> {
                                   tooltip: _orbitViewActive ? 'Exit Orbit View' : 'Orbit View',
                                   backgroundColor: _orbitViewActive ? theme.colorScheme.primary : null,
                                   foregroundColor: _orbitViewActive ? theme.colorScheme.onPrimary : null,
-                                  onPressed: () => setState(() => _orbitViewActive = !_orbitViewActive),
+                                  onPressed: _orbitViewActive ? _exitOrbitView : _enterOrbitView,
                                   child: const Icon(Icons.view_in_ar),
                                 ),
                               );
@@ -553,16 +561,22 @@ class _SketchScreenState extends State<SketchScreen> {
     );
   }
 
-  /// Phase 4.1/4.2: the Stack's base layer - the flat 2D [SketchCanvas]
-  /// normally, or (while [_orbitViewActive]) a read-only, look-only 3D
-  /// [PartViewport] embedding [widget.bodies] (shaded, at
-  /// [_orbitBodyOpacity]) alongside this Sketch's own geometry, reusing
-  /// `viewport3d/sketch_geometry_3d.dart`'s existing projection - "so the
-  /// user can see where they are sketching" relative to the real part, per
-  /// the brief. Editing always stays on the 2D canvas (see the scope doc's
-  /// "Decided: look-only toggle" note) - `onPlaneTap`/`onBackgroundTap` are
-  /// no-ops and `selectionMode` stays false, so orbiting is the only
-  /// interaction available here.
+  /// Phase 4.1/4.2: the Stack's base layer.
+  ///
+  /// While [_orbitViewActive]: a read-only, look-only 3D [PartViewport]
+  /// embedding [widget.bodies] (shaded, at [_orbitBodyOpacity]) alongside
+  /// this Sketch's own geometry, reusing `viewport3d/sketch_geometry_3d.dart`'s
+  /// existing projection - "so the user can see where they are sketching"
+  /// relative to the real part, per the brief. Editing always stays on the
+  /// 2D canvas (see the scope doc's "Decided: look-only toggle" note) -
+  /// `onPlaneTap`/`onBackgroundTap` are no-ops and `selectionMode` stays
+  /// false, so orbiting is the only interaction available here.
+  ///
+  /// Otherwise: the flat 2D [SketchCanvas], with (on-device feedback) a
+  /// second, static shaded-body backdrop behind it whenever there's a Body
+  /// to show - see the `showBodyBackdrop` block below for why that one
+  /// stays non-interactive and fully opaque itself, letting the *canvas*'s
+  /// own [_canvasOpacity] do the fading instead.
   Widget _buildBaseLayer() {
     final planeKind = referencePlaneKindFromApiValue(_controller.plane);
     if (_orbitViewActive && planeKind != null) {
@@ -590,13 +604,42 @@ class _SketchScreenState extends State<SketchScreen> {
         ),
       );
     }
-    return SketchCanvas(
-      controller: _controller,
-      referenceGhostSegments: widget.referenceGhostSegments,
-      referenceBodyHidden: _referenceBodyHidden,
-      constraintLabelsVisible: _constraintLabelsVisible,
-      canvasColor: _canvasColor,
-      canvasOpacity: _canvasOpacity,
+    // On-device feedback: outside Orbit View, the Part's Body geometry (if
+    // any) still renders as a static, non-interactive shaded backdrop
+    // behind the 2D canvas - a read-only PartViewport with pointer events
+    // ignored (so it never orbits itself; its camera is set once via
+    // initialViewPlane and stays there) and full opacity of its own, left
+    // fully opaque - it's the *canvas*'s own transparency (canvasOpacity,
+    // defaulted to ~25% in initState whenever there's a body to reveal)
+    // that lets it show through, not the body fading itself. Same
+    // Hide/Show Reference Body toggle as the ghost-wireframe overlay
+    // already uses, so one FAB controls both.
+    final showBodyBackdrop = planeKind != null && widget.bodies.isNotEmpty && !_referenceBodyHidden;
+    return Stack(
+      children: [
+        if (showBodyBackdrop)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: PartViewport(
+                bodies: widget.bodies,
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+                referencePlanesHidden: true,
+                renderMode: ViewportRenderMode.shaded,
+                initialViewPlane: planeKind,
+              ),
+            ),
+          ),
+        SketchCanvas(
+          controller: _controller,
+          referenceGhostSegments: widget.referenceGhostSegments,
+          referenceBodyHidden: _referenceBodyHidden,
+          constraintLabelsVisible: _constraintLabelsVisible,
+          canvasColor: _canvasColor,
+          canvasOpacity: _canvasOpacity,
+        ),
+      ],
     );
   }
 
@@ -609,6 +652,39 @@ class _SketchScreenState extends State<SketchScreen> {
     final planeKind = referencePlaneKindFromApiValue(_controller.plane);
     if (planeKind == null) return;
     _orbitViewportKey.currentState?.animateToPlane(planeKind);
+  }
+
+  /// On-device feedback: entering Orbit View should always start at 4.1's
+  /// ~25% transparent default, not whatever [_orbitBodyOpacity] was left at
+  /// from a previous Orbit View session on this same Sketch - each entry is
+  /// a fresh, predictable "temporary inspection mode" (see
+  /// [_buildBaseLayer]'s doc comment), not one that carries state forward.
+  void _enterOrbitView() {
+    setState(() {
+      _orbitViewActive = true;
+      _orbitBodyOpacity = 0.75;
+    });
+  }
+
+  /// Guards [_exitOrbitView] against overlapping camera animations if the
+  /// toggle FAB is tapped again mid-exit.
+  bool _orbitViewExiting = false;
+
+  /// On-device feedback: leaving Orbit View should animate the camera back
+  /// to facing the Sketch's plane *before* swapping back to the flat 2D
+  /// canvas - reusing the same [PartViewportState.animateToPlane] call
+  /// [_returnOrbitToDefaultView] uses - rather than cutting away instantly
+  /// from whatever angle the user had orbited to.
+  Future<void> _exitOrbitView() async {
+    if (_orbitViewExiting) return;
+    _orbitViewExiting = true;
+    final planeKind = referencePlaneKindFromApiValue(_controller.plane);
+    if (planeKind != null) {
+      await _orbitViewportKey.currentState?.animateToPlane(planeKind);
+    }
+    _orbitViewExiting = false;
+    if (!mounted) return;
+    setState(() => _orbitViewActive = false);
   }
 
   /// Stage 23f: the hamburger menu's content - a View submenu for the
