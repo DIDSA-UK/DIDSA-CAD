@@ -2852,4 +2852,40 @@ void main() {
     expect(controller.isUnderConstrained, isFalse);
     expect(controller.isFullyConstrained, isTrue);
   });
+
+  test('a fully constrained and grounded Point refuses to be dragged even while an unrelated '
+      'Point elsewhere in the same Sketch is still free', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 20); // away from the origin, deliberately not snapped to it
+    await controller.handleCanvasTap(30, 20);
+    controller.finishChain();
+    final line = controller.lines.values.single;
+    final pointAId = line.startPointId; // about to be grounded
+    final pointDId = line.endPointId; // stays free throughout
+
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(0, 0); // the origin
+    expect(controller.selection!.id, controller.originPointId);
+    await controller.handleCanvasTap(20, 20); // adds A to the selection
+    await controller.addCoincidentConstraint();
+
+    // The fake backend's dof is independent of this file's own structural
+    // analysis - set it to simulate "the rest of the Sketch (here, D's own
+    // freedom) isn't backend-confirmed done yet", so isFullyConstrained
+    // (whole-Sketch) reads false, while rigidity's *local* verdict for A's
+    // own now-grounded-and-pinned cluster is unaffected by that.
+    backend.dof = 1;
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(25, 30); // any mutation re-solves; unrelated standalone Point.
+
+    expect(controller.isFullyConstrained, isFalse);
+    expect(controller.rigidity.isPointFullyConstrained(pointAId), isTrue);
+    expect(controller.isPointFullyPinned(pointAId), isTrue);
+    expect(controller.beginPointDrag(pointAId), isFalse);
+
+    // Control: D is still genuinely free, and must remain draggable - the
+    // refusal above is per-Point, not an accidental whole-Sketch block.
+    expect(controller.isPointFullyPinned(pointDId), isFalse);
+    expect(controller.beginPointDrag(pointDId), isTrue);
+  });
 }

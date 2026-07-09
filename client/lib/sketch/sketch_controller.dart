@@ -782,6 +782,19 @@ class SketchController extends ChangeNotifier {
       backendFlaggedOverConstrainedPointIds.contains(pointId) ||
       degenerateConstraintPointIds.contains(pointId);
 
+  /// Whether dragging [pointId] would be pointless because it has no
+  /// freedom left to move into - confirmed directly (raised on-device):
+  /// a fully constrained *and* grounded Point should never be movable,
+  /// even while some other, unrelated part of the same Sketch still has
+  /// freedom. [isFullyConstrained] alone is too coarse for that second
+  /// case - it's a whole-Sketch signal, true only once *every* connected
+  /// piece of geometry is done - so this also checks [rigidity]'s own
+  /// per-cluster verdict ([SketchRigidity.isPointFullyConstrained], which
+  /// already requires grounding - see that method's own doc comment) for
+  /// [pointId] specifically.
+  bool isPointFullyPinned(String pointId) =>
+      isFullyConstrained || rigidity.isPointFullyConstrained(pointId);
+
   /// [anchorPointIds] passes through to [SketchApiClient.solve] - see that
   /// method's doc comment. Defaults to none, which every call site except
   /// the drag-drop endings below wants (equal freedom for every Point).
@@ -1326,6 +1339,11 @@ class SketchController extends ChangeNotifier {
     // no-op. Checks every red source (see [isPointForcedOverConstrained]),
     // not just [rigidity]'s own structural verdict.
     if (isPointForcedOverConstrained(pointId)) return false;
+    // Bug-fix round: a fully constrained *and* grounded Point (rendered
+    // green - see [isPointFullyPinned]'s own doc comment) has nowhere
+    // left to move into either, same reasoning as the over-constrained
+    // case above but for the opposite ("done", not "broken") reason.
+    if (isPointFullyPinned(pointId)) return false;
     final point = points[pointId]!;
     _draggingPointId = pointId;
     _dragOriginCursorX = cursorX;
@@ -1458,6 +1476,10 @@ class SketchController extends ChangeNotifier {
     // enough to make the drag pointless.
     if (isPointForcedOverConstrained(line.startPointId) ||
         isPointForcedOverConstrained(line.endPointId)) {
+      return false;
+    }
+    // Bug-fix round: mirrors [beginPointDrag]'s fully-pinned refusal.
+    if (isPointFullyPinned(line.startPointId) || isPointFullyPinned(line.endPointId)) {
       return false;
     }
     _draggingLineId = lineId;
