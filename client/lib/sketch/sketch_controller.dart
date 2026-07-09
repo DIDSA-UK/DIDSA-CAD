@@ -637,39 +637,34 @@ class SketchController extends ChangeNotifier {
   /// actually something to be fully constrained.
   bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty;
 
-  /// Whole-sketch "every Point is grounded and fully pinned" - what the
-  /// padlock icon (sketch_screen.dart) shows, and (via [isUnderConstrained]
-  /// below) what gates whether dragging is offered at all. Phase 3 bug-fix
-  /// round: a fully dimensioned rectangle nowhere near the origin solves
-  /// to `dof == 0` (confirmed directly against py-slvs - a floating rigid
+  /// Whole-sketch "grounded and fully pinned" - what the padlock icon
+  /// (sketch_screen.dart) shows, and (via [isUnderConstrained] below) what
+  /// gates whether dragging is offered at all. Phase 3 bug-fix round: a
+  /// fully dimensioned rectangle nowhere near the origin solves to
+  /// `dof == 0` (confirmed directly against py-slvs - a floating rigid
   /// body's whole-body translate/rotate freedom reads as "no freedom left"
   /// by the same generic-rigidity convention py-slvs itself uses), but a
   /// shape that can still be dragged/rotated as a whole is *not* "fully
   /// constrained" from this app's point of view (raised directly against
   /// an on-device sketch) - so trusting the backend's raw `dof`/`converged`
-  /// alone isn't enough here. This combines that authoritative backend
-  /// signal (for "is everything numerically settled" - topology alone can
-  /// never answer that, see dof_analysis.dart's own doc comment) with an
-  /// *exact*, non-approximate topological check ([SketchRigidity.
-  /// isPointGrounded] - plain graph reachability back to the origin, no
-  /// DOF-cost counting involved) for every Point that actually defines a
-  /// Line or Circle, so grounding is required without inheriting
-  /// [rigidity]'s own DOF-counting approximation risk.
-  bool get isFullyConstrained {
-    if (!hasGeometry || !_backendConfirmsSolved) return false;
-    final r = rigidity;
-    for (final line in lines.values) {
-      if (!r.isPointGrounded(line.startPointId) || !r.isPointGrounded(line.endPointId)) {
-        return false;
-      }
-    }
-    for (final circle in circles.values) {
-      if (!r.isPointGrounded(circle.centerPointId) || !r.isPointGrounded(circle.radiusPointId)) {
-        return false;
-      }
-    }
-    return true;
-  }
+  /// alone isn't enough here.
+  ///
+  /// Combines that authoritative backend signal (for "is everything
+  /// numerically settled" - topology alone can never answer that, see
+  /// dof_analysis.dart's own doc comment) with [SketchRigidity.
+  /// isAnyPointGrounded] - just *one* Point anywhere in the Sketch needs
+  /// to be grounded, not every individual entity's own Points: grounding
+  /// propagates through a whole connected/rigid cluster's union-find (see
+  /// [SketchRigidity.isPointGrounded]'s doc comment), and a genuinely
+  /// separate, ungrounded piece of geometry can never coexist with a
+  /// backend-confirmed `dof <= 0` for the *whole* Sketch - it would always
+  /// contribute its own nonzero remaining freedom (confirmed directly
+  /// against py-slvs: two disjoint rigid clusters, one grounded and one
+  /// not, report `dof: 2`, not `0`). So checking for any single grounded
+  /// Point, rather than looping every Line/Circle's own Points
+  /// individually, is both simpler and exactly as correct given that
+  /// precondition.
+  bool get isFullyConstrained => hasGeometry && _backendConfirmsSolved && rigidity.isAnyPointGrounded;
 
   /// The inverse of [isFullyConstrained] - kept as its own getter (rather
   /// than inlining `!isFullyConstrained` at each call site) since it reads
@@ -685,14 +680,15 @@ class SketchController extends ChangeNotifier {
   /// cached-and-invalidated version would need touching every mutation
   /// call site in this file to stay correct, for no real benefit at this
   /// scale. [isUnderConstrained] above stays the whole-sketch, backend-
-  /// authoritative signal; this is the finer-grained, advisory-only,
-  /// per-entity one `sketch_canvas.dart` renders from - together with
-  /// [isFullyConstrained] (whole-sketch green override) and
-  /// [backendFlaggedOverConstrainedPointIds]/[degenerateConstraintPointIds]
-  /// below (both additional red sources [rigidity] alone can't produce).
+  /// authoritative signal (built partly from this getter's own
+  /// [SketchRigidity.isAnyPointGrounded]); this is the finer-grained,
+  /// advisory-only, per-entity one `sketch_canvas.dart` renders from -
+  /// together with [backendFlaggedOverConstrainedPointIds]/
+  /// [degenerateConstraintPointIds] below (additional red sources
+  /// [rigidity] alone can't produce).
   SketchRigidity get rigidity => SketchRigidity.analyze(
         pointIds: points.keys,
-        originPointId: _originPointId,
+        fixedPointIds: {if (_originPointId != null) _originPointId!},
         lineStartPointId: {for (final line in lines.values) line.id: line.startPointId},
         lineEndPointId: {for (final line in lines.values) line.id: line.endPointId},
         constraints: constraints.values,

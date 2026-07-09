@@ -225,13 +225,18 @@ class SketchRigidity {
   /// [pointIds] should include every Point id in the Sketch (origin
   /// included). [lineStartPointId]/[lineEndPointId] resolve a Line id to
   /// its endpoint Point ids, for the line-pair Constraint types - see
-  /// [describeConstraint]. [originPointId] is the Sketch's own permanently-pinned
-  /// Point id (null only for a brand-new/unloaded Sketch), the sole source
-  /// of "grounded" in the algorithm described in this file's header
-  /// comment.
+  /// [describeConstraint]. [fixedPointIds] are every Point id that's
+  /// permanently pinned independent of any Constraint - today that's only
+  /// ever the Sketch's own origin Point (a singleton set, or empty only
+  /// for a brand-new/unloaded Sketch), but this takes a set rather than a
+  /// single id on purpose: a future "Fix"/"Where Dragged" Constraint type
+  /// (pinning an arbitrary Point's absolute position, not just the
+  /// origin's) would only need to add its own target Point id(s) here,
+  /// with the rest of the grounding algorithm - which only ever cares
+  /// "does this cluster contain *any* fixed Point" - unchanged.
   factory SketchRigidity.analyze({
     required Iterable<String> pointIds,
-    required String? originPointId,
+    required Set<String> fixedPointIds,
     required Map<String, String> lineStartPointId,
     required Map<String, String> lineEndPointId,
     required Iterable<ConstraintDto> constraints,
@@ -284,8 +289,9 @@ class SketchRigidity {
     for (final pointId in pointIds) {
       if (!parent.containsKey(pointId)) continue; // Untouched by any Constraint.
       final root = find(pointId);
-      rawDofByRoot[root] = (rawDofByRoot[root] ?? 0) + (pointId == originPointId ? 0 : 2);
-      if (pointId == originPointId) groundedByRoot[root] = true;
+      final isFixed = fixedPointIds.contains(pointId);
+      rawDofByRoot[root] = (rawDofByRoot[root] ?? 0) + (isFixed ? 0 : 2);
+      if (isFixed) groundedByRoot[root] = true;
     }
 
     final fully = <String>{};
@@ -316,7 +322,8 @@ class SketchRigidity {
   bool isPointOverConstrained(String pointId) => _overConstrainedPointIds.contains(pointId);
 
   /// Whether [pointId] is (transitively, via any chain of Constraints)
-  /// connected to the Sketch's own origin Point - a purely topological,
+  /// connected to one of the Sketch's fixed Points (today, only ever the
+  /// origin - see [analyze]'s own doc comment) - a purely topological,
   /// exact (no counting-approximation risk) connectivity question, unlike
   /// [isPointFullyConstrained] which also depends on this module's
   /// approximate DOF-cost totals. `SketchController.isFullyConstrained`
@@ -325,6 +332,19 @@ class SketchRigidity {
   /// comment for why splitting the two concerns this way is more robust
   /// than trusting either alone.
   bool isPointGrounded(String pointId) => _groundedPointIds.contains(pointId);
+
+  /// Whether *any* Point anywhere in the Sketch is grounded. Grounding
+  /// propagates through a cluster's whole union-find (a single fixed
+  /// Point anywhere in a connected structure grounds every other Point in
+  /// it - see [isPointGrounded]), so once the backend confirms
+  /// `dof <= 0` for the *whole* Sketch, one grounded Point anywhere is
+  /// already enough to know every connected piece of geometry is grounded
+  /// - a disconnected, ungrounded piece can never coexist with a
+  /// backend-confirmed `dof <= 0` (it would always contribute its own
+  /// nonzero remaining freedom - confirmed directly against py-slvs).
+  /// `SketchController.isFullyConstrained` uses exactly this combination
+  /// rather than checking every individual entity's own grounding.
+  bool get isAnyPointGrounded => _groundedPointIds.isNotEmpty;
 
   /// Whether a two-Point-defined entity (a Line's start/end, or a Circle's
   /// center/radius Point) has zero remaining freedom - both defining

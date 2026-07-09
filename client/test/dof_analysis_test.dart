@@ -18,7 +18,7 @@ SketchRigidity _analyze({
 }) =>
     SketchRigidity.analyze(
       pointIds: pointIds,
-      originPointId: originPointId,
+      fixedPointIds: {if (originPointId != null) originPointId},
       lineStartPointId: lineStartPointId,
       lineEndPointId: lineEndPointId,
       constraints: constraints,
@@ -220,6 +220,71 @@ void main() {
     test('a Point untouched by any Constraint at all is not grounded', () {
       final rigidity = _analyze(pointIds: ['origin', 'a'], constraints: const []);
       expect(rigidity.isPointGrounded('a'), isFalse);
+    });
+  });
+
+  group('isAnyPointGrounded', () {
+    test('is false when nothing in the Sketch is grounded', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a', 'b'],
+        constraints: const [
+          HorizontalConstraintDto(id: 'c1', lineId: 'l1', pointAId: 'a', pointBId: 'b'),
+        ],
+      );
+      expect(rigidity.isAnyPointGrounded, isFalse);
+    });
+
+    test('is true as soon as any single Point anywhere is grounded, even one unrelated to '
+        'other geometry in the same Sketch', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a', 'b', 'c'],
+        constraints: const [
+          // b/c form their own separate, ungrounded cluster - irrelevant
+          // to whether the Sketch as a whole has *a* grounded Point.
+          HorizontalConstraintDto(id: 'c1', lineId: 'l1', pointAId: 'b', pointBId: 'c'),
+          DistanceConstraintDto(id: 'c2', pointAId: 'origin', pointBId: 'a', distance: 5.0),
+        ],
+      );
+      expect(rigidity.isPointGrounded('b'), isFalse);
+      expect(rigidity.isAnyPointGrounded, isTrue);
+    });
+
+    test('is false for SketchRigidity.empty()', () {
+      const rigidity = SketchRigidity.empty();
+      expect(rigidity.isAnyPointGrounded, isFalse);
+    });
+  });
+
+  group('fixedPointIds accepts more than just the origin (forward-looking: a future "Fix" '
+      'Constraint on an arbitrary Point, not only the origin)', () {
+    test('grounds via any fixed Point in the set, not only a literal origin id', () {
+      final rigidity = SketchRigidity.analyze(
+        pointIds: ['origin', 'anchor', 'a'],
+        // 'anchor' stands in for a Point pinned by some future Constraint
+        // type that isn't the origin - the algorithm doesn't care *why*
+        // a Point is fixed, only that it is.
+        fixedPointIds: const {'origin', 'anchor'},
+        lineStartPointId: const {},
+        lineEndPointId: const {},
+        constraints: const [
+          DistanceConstraintDto(id: 'c1', pointAId: 'anchor', pointBId: 'a', distance: 5.0),
+        ],
+      );
+      expect(rigidity.isPointGrounded('a'), isTrue);
+      expect(rigidity.isAnyPointGrounded, isTrue);
+    });
+
+    test('an empty fixedPointIds set grounds nothing at all', () {
+      final rigidity = SketchRigidity.analyze(
+        pointIds: ['a', 'b'],
+        fixedPointIds: const {},
+        lineStartPointId: const {},
+        lineEndPointId: const {},
+        constraints: const [
+          DistanceConstraintDto(id: 'c1', pointAId: 'a', pointBId: 'b', distance: 5.0),
+        ],
+      );
+      expect(rigidity.isAnyPointGrounded, isFalse);
     });
   });
 
