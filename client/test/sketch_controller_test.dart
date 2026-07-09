@@ -371,12 +371,18 @@ class _FakeBackend {
     };
   }
 
+  /// Phase 3 bug-fix round: lets a test simulate a non-convergent solve
+  /// (`converged: false`) and py-slvs's own list of implicated Constraint
+  /// ids, same pattern as [dof] above.
+  bool converged = true;
+  List<String> solverReportedFailedConstraintIds = [];
+
   Map<String, dynamic> _solveResultBody() => {
-        'converged': true,
+        'converged': converged,
         'dof': dof,
-        'result_code': 0,
+        'result_code': converged ? 0 : 1,
         'blamed_constraint_ids': [],
-        'solver_reported_failed_constraint_ids': [],
+        'solver_reported_failed_constraint_ids': solverReportedFailedConstraintIds,
         'detail': 'ok',
       };
 
@@ -2700,5 +2706,118 @@ void main() {
       controller.selectionLabel(SketchSelection(kind: SelectionKind.circle, id: circle.id)),
       'Circle 1',
     );
+  });
+
+  test('degenerateConstraintPointIds flags a Line carrying both a Vertical and a Horizontal '
+      'Constraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    final line = controller.lines.values.single;
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(2, 1); // the line, away from its midpoint (5, 2.5)
+    await controller.addVerticalConstraint();
+    await controller.handleCanvasTap(2, 1);
+    await controller.addHorizontalConstraint();
+
+    expect(controller.degenerateConstraintPointIds, {line.startPointId, line.endPointId});
+    expect(controller.isPointForcedOverConstrained(line.startPointId), isTrue);
+    expect(controller.isPointForcedOverConstrained(line.endPointId), isTrue);
+    expect(controller.beginPointDrag(line.startPointId), isFalse);
+  });
+
+  test('degenerateConstraintPointIds flags a Line pair carrying both a Parallel and a '
+      'Perpendicular Constraint between them', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 6);
+    controller.finishChain();
+    final lines = controller.lines.values.toList();
+    final expectedIds = {
+      for (final line in lines) ...[line.startPointId, line.endPointId],
+    };
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.8);
+    await controller.addParallelConstraint();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.8);
+    await controller.addPerpendicularConstraint();
+
+    expect(controller.degenerateConstraintPointIds, expectedIds);
+  });
+
+  test('degenerateConstraintPointIds is empty for a Line with only a Vertical Constraint',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(2, 1);
+    await controller.addVerticalConstraint();
+
+    expect(controller.degenerateConstraintPointIds, isEmpty);
+  });
+
+  test('backendFlaggedOverConstrainedPointIds reflects py-slvs\'s own failed-constraint report '
+      'when the last solve did not converge', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    final line = controller.lines.values.single;
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (5, 0)
+    await controller.addVerticalConstraint();
+    final constraintId = controller.constraints.values.whereType<VerticalConstraintDto>().single.id;
+
+    backend.converged = false;
+    backend.solverReportedFailedConstraintIds = [constraintId];
+    // Any further mutation re-solves and refreshes the tracked result -
+    // dragging the line's start Point (itself unrelated to the fake
+    // failure) is a convenient way to trigger one without adding new
+    // geometry.
+    controller.beginPointDrag(line.startPointId);
+    await controller.updatePointDrag(0, 0);
+    await controller.endPointDrag();
+
+    expect(controller.isUnderConstrained, isTrue);
+    expect(
+      controller.backendFlaggedOverConstrainedPointIds,
+      {line.startPointId, line.endPointId},
+    );
+    expect(controller.isPointForcedOverConstrained(line.startPointId), isTrue);
+  });
+
+  test('isFullyConstrained mirrors hasGeometry && !isUnderConstrained', () async {
+    expect(controller.isFullyConstrained, isFalse); // no geometry yet.
+
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    // The Line tool's own solve (still under default dof=0) already ran -
+    // force it under-constrained via a standalone Point placement (which
+    // also triggers its own solve, see _clickPointTool), to isolate the
+    // "has geometry but dof > 0" case.
+    controller.selectDrawTool(SketchTool.point);
+    backend.dof = 1;
+    await controller.handleCanvasTap(20, 20);
+    expect(controller.isUnderConstrained, isTrue);
+    expect(controller.isFullyConstrained, isFalse);
+
+    backend.dof = 0;
+    await controller.handleCanvasTap(30, 30);
+    expect(controller.isUnderConstrained, isFalse);
+    expect(controller.isFullyConstrained, isTrue);
   });
 }

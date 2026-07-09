@@ -302,6 +302,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     _lastTick = elapsed;
     if (size == null || dt <= 0 || dt > 0.25) return;
     if (_activeTouches.length >= 2) return;
+    // Bug-fix round: while something's grabbed via drag mode, the cursor is
+    // hidden (see _SketchPainter's isCursorVisible check) but its screen
+    // position doesn't stop existing - if it happens to sit near an edge
+    // from an earlier move, this ambient RTS-style edge-pan kept firing
+    // every tick regardless, silently scrolling the view out from under a
+    // drag the user never asked to pan during. Every other pan/gesture path
+    // in this file already gates on isEntityGrabbed; this automatic,
+    // no-explicit-gesture one is the one that was missing it.
+    if (widget.controller.isEntityGrabbed) return;
     final lastMove = _lastCursorMoveTime;
     if (lastMove == null || DateTime.now().difference(lastMove) >= _edgePanIdleThreshold) return;
 
@@ -1267,14 +1276,27 @@ class _SketchPainter extends CustomPainter {
   static const Color _constructionColor = Color(0xFF4A90D9);
 
   /// Phase 3 (3.1): a Line/Circle/Point whose defining Points are all fully
-  /// constrained (see [SketchController.rigidity]) - deliberately a darker
-  /// green than [_sketchingCursorColor]'s plain green (the draw-mode
-  /// cursor) or the origin marker's "snapping" green, both unrelated
-  /// signals, so none of the three read as the same thing.
-  static const Color _fullyConstrainedColor = Color(0xFF1B5E20);
+  /// constrained (see [SketchController.rigidity]/[SketchController.
+  /// isFullyConstrained]) - deliberately a darker green than
+  /// [_sketchingCursorColor]'s plain green (the draw-mode cursor) or the
+  /// origin marker's "snapping" green, both unrelated signals, so none of
+  /// the three read as the same thing. Bug-fix round: nudged a shade
+  /// brighter than the original 0xFF1B5E20 per on-device feedback ("a
+  /// touch more green").
+  static const Color _fullyConstrainedColor = Color(0xFF2E7D32);
+
+  /// Phase 3: a Line/Circle/Point that is *not* fully constrained and
+  /// *not* flagged as over-constrained either - plain "still has freedom"
+  /// charcoal grey, replacing the old sketch-wide-only black/blueGrey
+  /// split (Prompt B item B5) now that per-entity colouring covers that
+  /// role instead.
+  static const Color _unconstrainedColor = Color(0xFF36454F);
 
   /// Phase 3 (3.2): a Line/Circle/Point implicated by an over-constrained
-  /// (redundant/conflicting) Constraint cluster - a slightly deeper red
+  /// (redundant/conflicting) Constraint cluster, or by one of the other
+  /// red sources [SketchController.isPointForcedOverConstrained] combines
+  /// (a backend solve failure, or a structurally-degenerate Constraint
+  /// combination - see that method's doc comment) - a slightly deeper red
   /// than [_selectCursorColor]'s plain red (an unrelated cursor color), so
   /// it reads as a deliberate warning rather than incidentally the same
   /// shade.
@@ -1915,15 +1937,21 @@ class _SketchPainter extends CustomPainter {
       final lineIsGrabbed = controller.draggingLineId == line.id;
       final lineIsSelected = isSelected(SelectionKind.line, line.id);
       final isHovered = hovered?.kind == SelectionKind.line && hovered!.id == line.id;
-      // Phase 3: per-entity structural DOF preview (dof_analysis.dart),
+      // Phase 3: per-entity structural DOF preview (dof_analysis.dart) plus
+      // the two backend-derived red sources and the whole-sketch green
+      // override (see SketchController.isFullyConstrained/
+      // backendFlaggedOverConstrainedPointIds/degenerateConstraintPointIds'
+      // doc comments for why [rigidity] alone can't produce either) -
       // superseding Prompt B item B5's sketch-wide-only black/grey signal
-      // now that per-entity colouring exists - over-constrained takes
+      // now that per-entity colouring exists. Over-constrained takes
       // priority over construction (a warning that matters regardless of
       // whether the Line is construction geometry), fully-constrained does
       // not (construction's own color stays the stronger signal there).
       final lineIsOverConstrained =
-          controller.rigidity.isSegmentOverConstrained(line.startPointId, line.endPointId);
-      final lineIsFullyConstrained =
+          controller.rigidity.isSegmentOverConstrained(line.startPointId, line.endPointId) ||
+              controller.isPointForcedOverConstrained(line.startPointId) ||
+              controller.isPointForcedOverConstrained(line.endPointId);
+      final lineIsFullyConstrained = controller.isFullyConstrained ||
           controller.rigidity.isSegmentFullyConstrained(line.startPointId, line.endPointId);
       final linePaint = Paint()
         ..color = lineIsGrabbed
@@ -1938,9 +1966,7 @@ class _SketchPainter extends CustomPainter {
                             ? _constructionColor
                             : lineIsFullyConstrained
                                 ? _fullyConstrainedColor
-                                : controller.isUnderConstrained
-                                    ? Colors.blueGrey.shade700
-                                    : Colors.black
+                                : _unconstrainedColor
         ..strokeWidth = lineIsGrabbed || lineIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
       final startScreen = transform.sketchToScreen(start.x, start.y);
       final endScreen = transform.sketchToScreen(end.x, end.y);
@@ -1960,11 +1986,14 @@ class _SketchPainter extends CustomPainter {
       );
       final circleIsSelected = isSelected(SelectionKind.circle, circle.id);
       final isHovered = hovered?.kind == SelectionKind.circle && hovered!.id == circle.id;
-      // Phase 3: same per-entity DOF preview as the Line loop above,
-      // treating a Circle's center/radius Points as its defining pair.
+      // Phase 3: same per-entity DOF preview (plus the same backend-derived
+      // red/whole-sketch-green sources) as the Line loop above, treating a
+      // Circle's center/radius Points as its defining pair.
       final circleIsOverConstrained =
-          controller.rigidity.isSegmentOverConstrained(circle.centerPointId, circle.radiusPointId);
-      final circleIsFullyConstrained =
+          controller.rigidity.isSegmentOverConstrained(circle.centerPointId, circle.radiusPointId) ||
+              controller.isPointForcedOverConstrained(circle.centerPointId) ||
+              controller.isPointForcedOverConstrained(circle.radiusPointId);
+      final circleIsFullyConstrained = controller.isFullyConstrained ||
           controller.rigidity.isSegmentFullyConstrained(circle.centerPointId, circle.radiusPointId);
       final circlePaint = Paint()
         ..color = circleIsSelected
@@ -1977,7 +2006,7 @@ class _SketchPainter extends CustomPainter {
                         ? _constructionColor
                         : circleIsFullyConstrained
                             ? _fullyConstrainedColor
-                            : Colors.blueGrey.shade700
+                            : _unconstrainedColor
         ..style = PaintingStyle.stroke
         ..strokeWidth = circleIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
       final centerScreen = transform.sketchToScreen(center.x, center.y);
@@ -2028,7 +2057,7 @@ class _SketchPainter extends CustomPainter {
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
       final screenPos = transform.sketchToScreen(point.x, point.y);
-      Color color = Colors.black87;
+      Color color = _unconstrainedColor;
       double radius = _pointRadius;
       if (pointIsGrabbed) {
         color = _grabbedColor;
@@ -2039,7 +2068,7 @@ class _SketchPainter extends CustomPainter {
       } else if (isCircleCenter) {
         color = Colors.deepOrange;
         radius = _pointRadiusEmphasis;
-      } else if (controller.rigidity.isPointOverConstrained(point.id)) {
+      } else if (controller.isPointForcedOverConstrained(point.id)) {
         // Phase 3 (3.2): flags exactly the Points [beginPointDrag]/
         // [beginLineDrag] refuse to grab - see those methods' own doc
         // comments in sketch_controller.dart.
@@ -2051,6 +2080,10 @@ class _SketchPainter extends CustomPainter {
       } else if (isHovered) {
         color = _hoverColor;
         radius = _pointRadiusEmphasis;
+      } else if (controller.isFullyConstrained || controller.rigidity.isPointFullyConstrained(point.id)) {
+        // Phase 3 (3.1): same whole-sketch-or-per-cluster verdict as the
+        // Line/Circle loops above, applied to a standalone Point too.
+        color = _fullyConstrainedColor;
       }
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
     }

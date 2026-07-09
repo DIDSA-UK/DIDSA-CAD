@@ -633,6 +633,22 @@ class SketchController extends ChangeNotifier {
   /// actually something to be fully constrained.
   bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty;
 
+  /// Whole-sketch, backend-confirmed "every Point is fully pinned" - what
+  /// the padlock icon (sketch_screen.dart) already shows. Phase 3 bug-fix
+  /// round: [rigidity] below under-reports "fully constrained" for a
+  /// rigid-but-not-grounded-to-the-origin cluster (documented, deliberate
+  /// - see dof_analysis.dart's KNOWN LIMITATIONS), which a real on-device
+  /// sketch hit: a fully dimensioned rectangle nowhere near the origin
+  /// solved to `dof == 0` (confirmed directly against py-slvs - a floating
+  /// rigid body's whole-body translate/rotate freedom isn't "real"
+  /// freedom by the same generic-rigidity convention py-slvs itself uses),
+  /// yet its Lines stayed the default colour since [rigidity] only trusts
+  /// origin-grounded clusters. `sketch_canvas.dart` colours *every*
+  /// Line/Circle/Point green whenever this is true, regardless of
+  /// [rigidity]'s per-entity verdict, so the padlock and the canvas always
+  /// agree once the whole Sketch is actually done.
+  bool get isFullyConstrained => hasGeometry && !isUnderConstrained;
+
   /// Phase 3's client-side structural DOF/rigidity preview (see
   /// dof_analysis.dart's own doc comment for the full algorithm and its
   /// architecture rule) - recomputed fresh on every access rather than
@@ -642,7 +658,10 @@ class SketchController extends ChangeNotifier {
   /// call site in this file to stay correct, for no real benefit at this
   /// scale. [isUnderConstrained] above stays the whole-sketch, backend-
   /// authoritative signal; this is the finer-grained, advisory-only,
-  /// per-entity one `sketch_canvas.dart` renders from.
+  /// per-entity one `sketch_canvas.dart` renders from - together with
+  /// [isFullyConstrained] (whole-sketch green override) and
+  /// [backendFlaggedOverConstrainedPointIds]/[degenerateConstraintPointIds]
+  /// below (both additional red sources [rigidity] alone can't produce).
   SketchRigidity get rigidity => SketchRigidity.analyze(
         pointIds: points.keys,
         originPointId: _originPointId,
@@ -651,6 +670,94 @@ class SketchController extends ChangeNotifier {
         constraints: constraints.values,
       );
 
+  /// py-slvs's own report of which Constraints were implicated the last
+  /// time a solve failed to converge (empty on a converged solve) - see
+  /// `SolveResultDto.solverReportedFailedConstraintIds`'s doc comment.
+  List<String> _solverReportedFailedConstraintIds = [];
+
+  /// Phase 3 bug-fix round: the Point ids referenced by whichever
+  /// Constraints py-slvs itself blamed for the most recent non-convergent
+  /// solve - e.g. a rectangle dimensioned with mutually-impossible width/
+  /// height/diagonal values (confirmed directly against py-slvs: this
+  /// converges to `converged: false`, and [isUnderConstrained] already
+  /// reflects that correctly, but [rigidity] has no way to know *why*,
+  /// since it never looks at solved values - see dof_analysis.dart's
+  /// KNOWN LIMITATIONS). `sketch_canvas.dart` colours any Line/Circle/
+  /// Point referencing one of these ids red, on top of [rigidity]'s own
+  /// (purely structural) over-constrained verdict.
+  Set<String> get backendFlaggedOverConstrainedPointIds {
+    final lineStartPointId = {for (final line in lines.values) line.id: line.startPointId};
+    final lineEndPointId = {for (final line in lines.values) line.id: line.endPointId};
+    final ids = <String>{};
+    for (final constraintId in _solverReportedFailedConstraintIds) {
+      final constraint = constraints[constraintId];
+      if (constraint == null) continue;
+      ids.addAll(describeConstraint(constraint, lineStartPointId, lineEndPointId).pointIds);
+    }
+    return ids;
+  }
+
+  /// Phase 3 bug-fix round: a Line carrying *both* a Vertical and a
+  /// Horizontal Constraint is geometrically nonsensical (its two endpoints
+  /// would have to share both their x and their y - a zero-length Line) -
+  /// confirmed directly against py-slvs that this *does* still converge
+  /// (it just collapses the Line to a degenerate point, `dof: 2`, not a
+  /// solve failure), so neither [rigidity]'s structural count nor
+  /// [backendFlaggedOverConstrainedPointIds] above catches it. Same for a
+  /// Line pair carrying both a Parallel and a Perpendicular Constraint
+  /// between them - two Lines cannot be both. Both are flagged red
+  /// unconditionally, independent of whatever the solver actually does
+  /// with them.
+  Set<String> get degenerateConstraintPointIds {
+    final verticalLineIds = <String>{};
+    final horizontalLineIds = <String>{};
+    final parallelPairs = <String>{};
+    final perpendicularPairs = <String>{};
+    String pairKey(String a, String b) => ([a, b]..sort()).join('|');
+    for (final constraint in constraints.values) {
+      if (constraint is VerticalConstraintDto) verticalLineIds.add(constraint.lineId);
+      if (constraint is HorizontalConstraintDto) horizontalLineIds.add(constraint.lineId);
+      if (constraint is ParallelConstraintDto) {
+        parallelPairs.add(pairKey(constraint.line1Id, constraint.line2Id));
+      }
+      if (constraint is PerpendicularConstraintDto) {
+        perpendicularPairs.add(pairKey(constraint.line1Id, constraint.line2Id));
+      }
+    }
+    final degenerateLineIds = verticalLineIds.intersection(horizontalLineIds);
+    final degeneratePairKeys = parallelPairs.intersection(perpendicularPairs);
+
+    final ids = <String>{};
+    for (final lineId in degenerateLineIds) {
+      final line = lines[lineId];
+      if (line == null) continue;
+      ids.addAll([line.startPointId, line.endPointId]);
+    }
+    if (degeneratePairKeys.isNotEmpty) {
+      for (final line in lines.values) {
+        for (final otherLine in lines.values) {
+          if (line.id == otherLine.id) continue;
+          if (degeneratePairKeys.contains(pairKey(line.id, otherLine.id))) {
+            ids.addAll([line.startPointId, line.endPointId, otherLine.startPointId, otherLine.endPointId]);
+          }
+        }
+      }
+    }
+    return ids;
+  }
+
+  /// Whether [pointId] should be treated as over-constrained by *any* of
+  /// the three red sources `sketch_canvas.dart` renders from - [rigidity]'s
+  /// own structural verdict, [backendFlaggedOverConstrainedPointIds], or
+  /// [degenerateConstraintPointIds]. The single check [beginPointDrag]/
+  /// [beginLineDrag] use to refuse a grab, kept in sync with whatever the
+  /// canvas colours red so a Point is never draggable while it's visibly
+  /// flagged.
+  bool isPointForcedOverConstrained(String pointId) =>
+      rigidity.isPointOverConstrained(pointId) ||
+      backendFlaggedOverConstrainedPointIds.contains(pointId) ||
+      degenerateConstraintPointIds.contains(pointId);
+
   /// [anchorPointIds] passes through to [SketchApiClient.solve] - see that
   /// method's doc comment. Defaults to none, which every call site except
   /// the drag-drop endings below wants (equal freedom for every Point).
@@ -658,6 +765,7 @@ class SketchController extends ChangeNotifier {
     final result = await _api.solve(_sketchId!, anchorPointIds: anchorPointIds);
     _dof = result.dof;
     _lastSolveConverged = result.converged;
+    _solverReportedFailedConstraintIds = result.solverReportedFailedConstraintIds;
   }
 
   /// True when the cursor is close enough to the chain's start Point that
@@ -1186,13 +1294,14 @@ class SketchController extends ChangeNotifier {
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
-    // Phase 3 (3.2): a Point in an over-constrained cluster (see
-    // dof_analysis.dart) already has a redundant/conflicting Constraint
-    // pinning it - dragging it wouldn't move it anywhere the solver would
-    // actually let it stay, so refuse the grab rather than start a drag
-    // that's guaranteed to snap back. sketch_canvas.dart colors these
-    // Points red so this isn't a silent no-op.
-    if (rigidity.isPointOverConstrained(pointId)) return false;
+    // Phase 3 (3.2): a Point in an over-constrained cluster already has a
+    // redundant/conflicting Constraint pinning it - dragging it wouldn't
+    // move it anywhere the solver would actually let it stay, so refuse
+    // the grab rather than start a drag that's guaranteed to snap back.
+    // sketch_canvas.dart colors these Points red so this isn't a silent
+    // no-op. Checks every red source (see [isPointForcedOverConstrained]),
+    // not just [rigidity]'s own structural verdict.
+    if (isPointForcedOverConstrained(pointId)) return false;
     final point = points[pointId]!;
     _draggingPointId = pointId;
     _dragOriginCursorX = cursorX;
@@ -1323,7 +1432,10 @@ class SketchController extends ChangeNotifier {
     // Phase 3 (3.2): mirrors [beginPointDrag]'s over-constrained refusal,
     // checked against both endpoints since either one being implicated is
     // enough to make the drag pointless.
-    if (rigidity.isSegmentOverConstrained(line.startPointId, line.endPointId)) return false;
+    if (isPointForcedOverConstrained(line.startPointId) ||
+        isPointForcedOverConstrained(line.endPointId)) {
+      return false;
+    }
     _draggingLineId = lineId;
     _dragOriginCursorX = cursorX;
     _dragOriginCursorY = cursorY;

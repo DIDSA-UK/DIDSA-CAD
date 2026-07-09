@@ -40,19 +40,48 @@
 ///    more independent equations than freedoms, the local structural
 ///    signature of a redundant or conflicting Constraint.
 ///
-/// KNOWN LIMITATION (an accepted tradeoff, not an oversight - see the
-/// scope doc's own risk note): this is a *counting* approximation, not a
-/// full generic-rigidity check. The real (2,3)-pebble game, generalised to
-/// weighted constraints, can distinguish "this specific redundant
-/// Constraint is harmless because a different combination already pins the
-/// same freedom" from genuine over-constraint in edge cases this counting
-/// approach cannot - e.g. a literal duplicate Constraint (same two Points,
+/// KNOWN LIMITATIONS (accepted tradeoffs, not oversights - see the scope
+/// doc's own risk note): this is a *counting* approximation, not a full
+/// generic-rigidity check, and it disagrees with the backend's own
+/// `SolveResultDto.dof` in two specific, deliberate ways:
+///
+///  1. A rigid-but-ungrounded cluster (every Point fixed relative to every
+///     other, but no chain back to the origin) genuinely has only 3 real
+///     remaining degrees of freedom (2D translation + rotation) by
+///     standard generic-rigidity convention (Gruebler's equation) - the
+///     *same* convention py-slvs's own rank-based `Dof` uses, confirmed by
+///     directly testing an ungrounded rectangle against the real solver
+///     (`dof: 0`, not 3). This module deliberately does *not* replicate
+///     that "-3" allowance, because it can't be applied as a flat
+///     per-cluster constant without real rank computation - which
+///     constraint(s) happen to pin orientation-only vs shape-only differs
+///     per case, and a flat subtraction produces *worse* false positives
+///     (e.g. misreporting 2 Points linked by a single Horizontal
+///     constraint alone as "rigid"). Practical effect: this module
+///     under-reports "fully constrained" for anything not grounded to the
+///     origin. `SketchController` compensates for this at the whole-
+///     sketch level (see its own `rigidity`/`isFullyConstrained` doc
+///     comments) by falling back to the backend's own confirmed
+///     `dof == 0` when this module's grounding-based check comes up
+///     empty - so the *visible* result matches the backend correctly;
+///     only this module's own internal Point-level detail stays
+///     conservative.
+///  2. A genuinely-independent set of constraints can still be
+///     *numerically* inconsistent (e.g. a rectangle's width, height, and
+///     diagonal dimensioned to mutually-impossible values) - topology
+///     alone can never catch this, by design (see the header's opening
+///     paragraph). `SketchController` compensates by also colouring red
+///     whenever the backend's last solve actually failed to converge,
+///     using `SolveResultDto.solverReportedFailedConstraintIds` to find
+///     which specific entities are implicated (see [describeConstraint]).
+///
+/// A narrower, still-real gap this module cannot fully close even with
+/// that compensation: a literal duplicate Constraint (same two Points,
 /// same value, added twice) reads as over-constrained here even though
-/// py-slvs may solve it without complaint (a consistent, merely
-/// rank-deficient system). It never disagrees with the backend about the
-/// *sketch-wide* scalar DOF count (the same additive counting py-slvs
-/// itself reports via `SolveResultDto.dof`) - only, occasionally, about
-/// which *specific* entities are responsible when something's off.
+/// py-slvs solves it without complaint (a consistent, merely
+/// rank-deficient system) - the real (2,3)-pebble game, generalised to
+/// weighted constraints, could tell "harmless duplicate" apart from
+/// genuine over-constraint; this counting approach cannot.
 ///
 /// FORK NOTE: [dofCostByConstraintType] must stay in sync with
 /// `backend/app/sketch/constraints.py`'s Constraint type list - cheap
@@ -91,7 +120,14 @@ const Map<String, int> dofCostByConstraintType = {
 /// resolving a line-pair Constraint's Lines to their endpoint Point ids
 /// via [lineStartPointId]/[lineEndPointId] - one dispatch for both, rather
 /// than two separate `is`-chains that could drift out of sync with each
-/// other as constraint types are added.
+/// other as constraint types are added. Public (not just used by
+/// [SketchRigidity.analyze] internally) because `sketch_controller.dart`
+/// also needs it, to map the backend's own `solver_reported_failed_
+/// constraint_ids` (see `SolveResultDto`) back to the Point ids those
+/// Constraints reference, for colouring the entities responsible for an
+/// actual numeric solve failure - something no purely-structural analysis
+/// in this file can ever detect on its own (see this file's own
+/// "ARCHITECTURE RULE"/"KNOWN LIMITATION" header comments).
 ///
 /// [ConstraintDto] carries no `type` field client-side - only
 /// `ConstraintDto.fromJson`'s switch statement (sketch_api_client.dart)
@@ -105,7 +141,7 @@ const Map<String, int> dofCostByConstraintType = {
 /// benefit - see e.g. `AngleConstraint.line1_start_id`), since the API
 /// response shape (schemas.py's `AngleConstraintResponse` etc.) never
 /// exposed them.
-({String type, List<String> pointIds}) _describe(
+({String type, List<String> pointIds}) describeConstraint(
   ConstraintDto constraint,
   Map<String, String> lineStartPointId,
   Map<String, String> lineEndPointId,
@@ -186,7 +222,7 @@ class SketchRigidity {
   /// [pointIds] should include every Point id in the Sketch (origin
   /// included). [lineStartPointId]/[lineEndPointId] resolve a Line id to
   /// its endpoint Point ids, for the line-pair Constraint types - see
-  /// [_describe]. [originPointId] is the Sketch's own permanently-pinned
+  /// [describeConstraint]. [originPointId] is the Sketch's own permanently-pinned
   /// Point id (null only for a brand-new/unloaded Sketch), the sole source
   /// of "grounded" in the algorithm described in this file's header
   /// comment.
@@ -221,7 +257,7 @@ class SketchRigidity {
     }
 
     final descriptions = [
-      for (final constraint in constraints) _describe(constraint, lineStartPointId, lineEndPointId),
+      for (final constraint in constraints) describeConstraint(constraint, lineStartPointId, lineEndPointId),
     ];
 
     for (final description in descriptions) {

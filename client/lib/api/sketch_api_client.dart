@@ -394,12 +394,33 @@ class SolveResultDto {
   final int dof;
   final String detail;
 
-  SolveResultDto({required this.converged, required this.dof, required this.detail});
+  /// Phase 3 bug-fix round: py-slvs's own `Failed` constraint-handle list
+  /// (see backend solver.py's `SolveResult.solver_reported_failed_
+  /// constraint_ids` doc comment) - "tends to list every constraint in an
+  /// inconsistent system rather than a single culprit", which is exactly
+  /// why it's useful here: when [converged] is false, this is the closest
+  /// thing to "which entities are actually responsible" the backend can
+  /// offer, used to colour those entities red even though the client's own
+  /// purely-structural dof_analysis.dart has no way to know a solve
+  /// numerically failed (see [SketchController.rigidity]'s own doc
+  /// comment on why it can't - a *topology*-only check can never catch a
+  /// numeric conflict like "these dimensions are geometrically
+  /// impossible").
+  final List<String> solverReportedFailedConstraintIds;
+
+  SolveResultDto({
+    required this.converged,
+    required this.dof,
+    required this.detail,
+    this.solverReportedFailedConstraintIds = const [],
+  });
 
   factory SolveResultDto.fromJson(Map<String, dynamic> json) => SolveResultDto(
         converged: json['converged'] as bool,
         dof: json['dof'] as int,
         detail: json['detail'] as String,
+        solverReportedFailedConstraintIds:
+            (json['solver_reported_failed_constraint_ids'] as List<dynamic>? ?? []).cast<String>(),
       );
 }
 
