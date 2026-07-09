@@ -294,12 +294,21 @@ class OrbitCamera {
 /// (as XZ's case still does, now CI-confirmed correct) proved genuinely
 /// error-prone to verify by hand (composition order isn't visually
 /// obvious), and that same hand-verification for YZ turned out to be
-/// simply wrong - CI caught `right` landing on `(0,0,-1)` instead of
-/// `SketchPlaneBasis.fixed(.yz).xAxis` (`(0,1,0)`). YZ's case below is
-/// instead a single rotation, derived directly from the required mapping
-/// (local "back" -> world `normal`, local "up" -> world `yAxis`) rather
-/// than composed from two rotations, and double-checked against that same
-/// test (now passing for all three planes) rather than by hand alone.
+/// simply wrong - CI caught `right` landing on the wrong axis entirely.
+///
+/// Root cause, found via `test/orientation_facing_plane_test.dart`'s own
+/// `print()` diagnostics (not more hand-derivation): `vm.Quaternion`'s
+/// `.rotated(v)` does NOT implement the textbook active-rotation formula
+/// `v' = q*v*q^-1` - empirically (confirmed by comparing the test's real
+/// printed vectors against two independent from-scratch computations,
+/// Rodrigues' formula and quaternion-to-matrix conversion, which agreed
+/// with each other but not with `.rotated()`), it rotates by the
+/// *conjugate* of `v' = q*v*q^-1` instead. XZ's case below still checks
+/// out with the textbook formula purely by coincidence: it's exactly a
+/// 180-degree rotation (`w = 0`), and a quaternion's conjugate represents
+/// the *same* rotation as the quaternion itself whenever `w = 0` - the
+/// discrepancy is invisible for any 180-degree rotation and only shows up
+/// for a non-180-degree one, like YZ's below.
 vm.Quaternion orientationFacingPlane(ReferencePlaneKind plane) => switch (plane) {
       ReferencePlaneKind.xy => vm.Quaternion.identity(),
       ReferencePlaneKind.xz => (vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi) *
@@ -307,7 +316,9 @@ vm.Quaternion orientationFacingPlane(ReferencePlaneKind plane) => switch (plane)
           .normalized(),
       // Cycles local axes (right,up,back) -> world (up,back,right) i.e.
       // local back=(0,0,1) -> world normal=(1,0,0), local up=(0,1,0) ->
-      // world yAxis=(0,0,1) - a 120-degree rotation about the (1,1,1) body
-      // diagonal.
-      ReferencePlaneKind.yz => vm.Quaternion.axisAngle(vm.Vector3(1, 1, 1).normalized(), 2 * math.pi / 3),
+      // world yAxis=(0,0,1) - a -120-degree (not +120) rotation about the
+      // (1,1,1) body diagonal, accounting for `.rotated()`'s conjugate
+      // convention described above (confirmed against the diagnostic
+      // test's real printed output, not re-derived by hand alone).
+      ReferencePlaneKind.yz => vm.Quaternion.axisAngle(vm.Vector3(1, 1, 1).normalized(), -2 * math.pi / 3),
     };

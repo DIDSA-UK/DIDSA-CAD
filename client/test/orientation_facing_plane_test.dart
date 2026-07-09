@@ -43,14 +43,6 @@ void main() {
         // this side of the plane, looking back across it towards target.
         final towardsCamera = orientation.rotated(localBack);
 
-        // TEMP diagnostic - remove once the mismatch is understood.
-        // ignore: avoid_print
-        print(
-          'DIAG ${plane.name}: orientation=$orientation right=$right up=$up '
-          'towardsCamera=$towardsCamera basis.xAxis=${basis.xAxis} '
-          'basis.yAxis=${basis.yAxis} basis.normal=${basis.normal}',
-        );
-
         expect(right.x, closeTo(basis.xAxis.x, 1e-6));
         expect(right.y, closeTo(basis.xAxis.y, 1e-6));
         expect(right.z, closeTo(basis.xAxis.z, 1e-6));
