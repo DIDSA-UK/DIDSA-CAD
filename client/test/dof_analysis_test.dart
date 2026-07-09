@@ -177,6 +177,52 @@ void main() {
     });
   });
 
+  group('isPointGrounded - exact topological connectivity to the origin, independent of DOF counting', () {
+    test('a rigid pair not connected to the origin is not grounded, even though DOF is not what '
+        'gates this check', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a', 'b'],
+        constraints: const [
+          HorizontalConstraintDto(id: 'c1', lineId: 'l1', pointAId: 'a', pointBId: 'b'),
+          DistanceConstraintDto(id: 'c2', pointAId: 'a', pointBId: 'b', distance: 10.0),
+        ],
+      );
+      expect(rigidity.isPointGrounded('a'), isFalse);
+      expect(rigidity.isPointGrounded('b'), isFalse);
+    });
+
+    test('a single Constraint touching the origin grounds the whole cluster, even with 1 '
+        'remaining degree of freedom', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a'],
+        constraints: const [
+          DistanceConstraintDto(id: 'c1', pointAId: 'origin', pointBId: 'a', distance: 5.0),
+        ],
+      );
+      // Not fully constrained (1 DOF remains - see the earlier group of
+      // the same name), but grounded is a strictly weaker, purely
+      // topological claim: is there *any* chain back to the origin.
+      expect(rigidity.isPointFullyConstrained('a'), isFalse);
+      expect(rigidity.isPointGrounded('a'), isTrue);
+    });
+
+    test('grounding is transitive through an unrelated intermediate Point', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a', 'b'],
+        constraints: const [
+          DistanceConstraintDto(id: 'c1', pointAId: 'origin', pointBId: 'a', distance: 5.0),
+          DistanceConstraintDto(id: 'c2', pointAId: 'a', pointBId: 'b', distance: 3.0),
+        ],
+      );
+      expect(rigidity.isPointGrounded('b'), isTrue);
+    });
+
+    test('a Point untouched by any Constraint at all is not grounded', () {
+      final rigidity = _analyze(pointIds: ['origin', 'a'], constraints: const []);
+      expect(rigidity.isPointGrounded('a'), isFalse);
+    });
+  });
+
   group('dofCostByConstraintType', () {
     test('matches the documented per-type equation counts', () {
       expect(dofCostByConstraintType['distance'], 1);

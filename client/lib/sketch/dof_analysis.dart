@@ -40,40 +40,38 @@
 ///    more independent equations than freedoms, the local structural
 ///    signature of a redundant or conflicting Constraint.
 ///
-/// KNOWN LIMITATIONS (accepted tradeoffs, not oversights - see the scope
-/// doc's own risk note): this is a *counting* approximation, not a full
-/// generic-rigidity check, and it disagrees with the backend's own
-/// `SolveResultDto.dof` in two specific, deliberate ways:
+/// DELIBERATE DIVERGENCE FROM py-slvs's OWN `Dof`: a rigid-but-ungrounded
+/// cluster (every Point fixed relative to every other, but no chain back
+/// to the origin) genuinely has only 3 real remaining degrees of freedom
+/// (2D translation + rotation) by standard generic-rigidity convention
+/// (Gruebler's equation) - the *same* convention py-slvs's own rank-based
+/// `Dof` uses, confirmed by directly testing an ungrounded rectangle
+/// against the real solver (`dof: 0`, not 3). Product decision (raised
+/// directly against an on-device sketch): a shape that can still be
+/// dragged/rotated as a whole is *not* "fully constrained" from this
+/// app's point of view, regardless of what py-slvs's raw `Dof` says - so
+/// this module's "fully constrained"/[isPointFullyConstrained] requires
+/// grounding on purpose, and does *not* try to match py-slvs's `Dof`
+/// here. [isPointGrounded] exposes the same origin-connectivity check on
+/// its own (a plain, *exact* graph-reachability question, no DOF-counting
+/// approximation involved) - `SketchController.isFullyConstrained`
+/// combines it with the backend's own authoritative `dof`/`converged` for
+/// the whole-sketch "padlock" signal, so the padlock and the per-entity
+/// colouring agree.
 ///
-///  1. A rigid-but-ungrounded cluster (every Point fixed relative to every
-///     other, but no chain back to the origin) genuinely has only 3 real
-///     remaining degrees of freedom (2D translation + rotation) by
-///     standard generic-rigidity convention (Gruebler's equation) - the
-///     *same* convention py-slvs's own rank-based `Dof` uses, confirmed by
-///     directly testing an ungrounded rectangle against the real solver
-///     (`dof: 0`, not 3). This module deliberately does *not* replicate
-///     that "-3" allowance, because it can't be applied as a flat
-///     per-cluster constant without real rank computation - which
-///     constraint(s) happen to pin orientation-only vs shape-only differs
-///     per case, and a flat subtraction produces *worse* false positives
-///     (e.g. misreporting 2 Points linked by a single Horizontal
-///     constraint alone as "rigid"). Practical effect: this module
-///     under-reports "fully constrained" for anything not grounded to the
-///     origin. `SketchController` compensates for this at the whole-
-///     sketch level (see its own `rigidity`/`isFullyConstrained` doc
-///     comments) by falling back to the backend's own confirmed
-///     `dof == 0` when this module's grounding-based check comes up
-///     empty - so the *visible* result matches the backend correctly;
-///     only this module's own internal Point-level detail stays
-///     conservative.
-///  2. A genuinely-independent set of constraints can still be
-///     *numerically* inconsistent (e.g. a rectangle's width, height, and
-///     diagonal dimensioned to mutually-impossible values) - topology
-///     alone can never catch this, by design (see the header's opening
-///     paragraph). `SketchController` compensates by also colouring red
-///     whenever the backend's last solve actually failed to converge,
-///     using `SolveResultDto.solverReportedFailedConstraintIds` to find
-///     which specific entities are implicated (see [describeConstraint]).
+/// KNOWN LIMITATIONS (accepted tradeoffs, not oversights - see the scope
+/// doc's own risk note): this *is* still a counting approximation for the
+/// DOF-cost side (not the grounding side, which is exact), not a full
+/// generic-rigidity check:
+///
+///  - A genuinely-independent set of constraints can still be
+///    *numerically* inconsistent (e.g. a rectangle's width, height, and
+///    diagonal dimensioned to mutually-impossible values) - topology
+///    alone can never catch this, by design (see the header's opening
+///    paragraph). `SketchController` compensates by also colouring red
+///    whenever the backend's last solve actually failed to converge,
+///    using `SolveResultDto.solverReportedFailedConstraintIds` to find
+///    which specific entities are implicated (see [describeConstraint]).
 ///
 /// A narrower, still-real gap this module cannot fully close even with
 /// that compensation: a literal duplicate Constraint (same two Points,
@@ -216,8 +214,13 @@ const Map<String, int> dofCostByConstraintType = {
 class SketchRigidity {
   final Set<String> _fullyConstrainedPointIds;
   final Set<String> _overConstrainedPointIds;
+  final Set<String> _groundedPointIds;
 
-  const SketchRigidity._(this._fullyConstrainedPointIds, this._overConstrainedPointIds);
+  const SketchRigidity._(
+    this._fullyConstrainedPointIds,
+    this._overConstrainedPointIds,
+    this._groundedPointIds,
+  );
 
   /// [pointIds] should include every Point id in the Sketch (origin
   /// included). [lineStartPointId]/[lineEndPointId] resolve a Line id to
@@ -287,6 +290,7 @@ class SketchRigidity {
 
     final fully = <String>{};
     final over = <String>{};
+    final grounded = <String>{};
     for (final pointId in pointIds) {
       if (!parent.containsKey(pointId)) continue;
       final root = find(pointId);
@@ -296,19 +300,31 @@ class SketchRigidity {
       } else if (remaining == 0 && (groundedByRoot[root] ?? false)) {
         fully.add(pointId);
       }
+      if (groundedByRoot[root] ?? false) grounded.add(pointId);
     }
 
-    return SketchRigidity._(fully, over);
+    return SketchRigidity._(fully, over, grounded);
   }
 
   /// An empty analysis - every query returns false. Used before a Sketch
   /// has loaded, mirroring the "nothing computed yet" state other
   /// controller fields default to.
-  const SketchRigidity.empty() : this._(const {}, const {});
+  const SketchRigidity.empty() : this._(const {}, const {}, const {});
 
   bool isPointFullyConstrained(String pointId) => _fullyConstrainedPointIds.contains(pointId);
 
   bool isPointOverConstrained(String pointId) => _overConstrainedPointIds.contains(pointId);
+
+  /// Whether [pointId] is (transitively, via any chain of Constraints)
+  /// connected to the Sketch's own origin Point - a purely topological,
+  /// exact (no counting-approximation risk) connectivity question, unlike
+  /// [isPointFullyConstrained] which also depends on this module's
+  /// approximate DOF-cost totals. `SketchController.isFullyConstrained`
+  /// combines this with the backend's own authoritative `dof`/`converged`
+  /// for the whole-sketch "padlock" signal - see that getter's own doc
+  /// comment for why splitting the two concerns this way is more robust
+  /// than trusting either alone.
+  bool isPointGrounded(String pointId) => _groundedPointIds.contains(pointId);
 
   /// Whether a two-Point-defined entity (a Line's start/end, or a Circle's
   /// center/radius Point) has zero remaining freedom - both defining

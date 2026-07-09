@@ -619,11 +619,15 @@ class SketchController extends ChangeNotifier {
   /// before a solve resolves them - see the rectangle tool's fix for
   /// exactly this) fail to converge (`result_code != 0`) while still
   /// reporting `dof == 0`, which - trusted blindly - showed a visibly
-  /// under-constrained sketch as "fully constrained". [isUnderConstrained]
-  /// treats a non-convergent solve as under-constrained regardless of what
-  /// `dof` says, since a failed solve is never "fully constrained".
+  /// under-constrained sketch as "fully constrained".
   bool _lastSolveConverged = true;
-  bool get isUnderConstrained => _dof > 0 || !_lastSolveConverged;
+
+  /// Whether the backend's own numbers say there's nothing left to solve -
+  /// `dof <= 0` (a genuinely negative dof, e.g. from a redundant Constraint
+  /// counted twice, is just as "nothing left to solve" as exactly 0) and
+  /// the solve actually converged. Deliberately says nothing about
+  /// *grounding* - see [isFullyConstrained], which is the one that does.
+  bool get _backendConfirmsSolved => _dof <= 0 && _lastSolveConverged;
 
   /// Whether this Sketch has any drawn entity at all (Lines/Circles) -
   /// bug-fix round: a brand-new, empty Sketch has `dof == 0` too (nothing
@@ -633,21 +637,45 @@ class SketchController extends ChangeNotifier {
   /// actually something to be fully constrained.
   bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty;
 
-  /// Whole-sketch, backend-confirmed "every Point is fully pinned" - what
-  /// the padlock icon (sketch_screen.dart) already shows. Phase 3 bug-fix
-  /// round: [rigidity] below under-reports "fully constrained" for a
-  /// rigid-but-not-grounded-to-the-origin cluster (documented, deliberate
-  /// - see dof_analysis.dart's KNOWN LIMITATIONS), which a real on-device
-  /// sketch hit: a fully dimensioned rectangle nowhere near the origin
-  /// solved to `dof == 0` (confirmed directly against py-slvs - a floating
-  /// rigid body's whole-body translate/rotate freedom isn't "real"
-  /// freedom by the same generic-rigidity convention py-slvs itself uses),
-  /// yet its Lines stayed the default colour since [rigidity] only trusts
-  /// origin-grounded clusters. `sketch_canvas.dart` colours *every*
-  /// Line/Circle/Point green whenever this is true, regardless of
-  /// [rigidity]'s per-entity verdict, so the padlock and the canvas always
-  /// agree once the whole Sketch is actually done.
-  bool get isFullyConstrained => hasGeometry && !isUnderConstrained;
+  /// Whole-sketch "every Point is grounded and fully pinned" - what the
+  /// padlock icon (sketch_screen.dart) shows, and (via [isUnderConstrained]
+  /// below) what gates whether dragging is offered at all. Phase 3 bug-fix
+  /// round: a fully dimensioned rectangle nowhere near the origin solves
+  /// to `dof == 0` (confirmed directly against py-slvs - a floating rigid
+  /// body's whole-body translate/rotate freedom reads as "no freedom left"
+  /// by the same generic-rigidity convention py-slvs itself uses), but a
+  /// shape that can still be dragged/rotated as a whole is *not* "fully
+  /// constrained" from this app's point of view (raised directly against
+  /// an on-device sketch) - so trusting the backend's raw `dof`/`converged`
+  /// alone isn't enough here. This combines that authoritative backend
+  /// signal (for "is everything numerically settled" - topology alone can
+  /// never answer that, see dof_analysis.dart's own doc comment) with an
+  /// *exact*, non-approximate topological check ([SketchRigidity.
+  /// isPointGrounded] - plain graph reachability back to the origin, no
+  /// DOF-cost counting involved) for every Point that actually defines a
+  /// Line or Circle, so grounding is required without inheriting
+  /// [rigidity]'s own DOF-counting approximation risk.
+  bool get isFullyConstrained {
+    if (!hasGeometry || !_backendConfirmsSolved) return false;
+    final r = rigidity;
+    for (final line in lines.values) {
+      if (!r.isPointGrounded(line.startPointId) || !r.isPointGrounded(line.endPointId)) {
+        return false;
+      }
+    }
+    for (final circle in circles.values) {
+      if (!r.isPointGrounded(circle.centerPointId) || !r.isPointGrounded(circle.radiusPointId)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// The inverse of [isFullyConstrained] - kept as its own getter (rather
+  /// than inlining `!isFullyConstrained` at each call site) since it reads
+  /// more naturally at the two drag-gating sites below ("is dragging worth
+  /// offering") than the double negative would.
+  bool get isUnderConstrained => !isFullyConstrained;
 
   /// Phase 3's client-side structural DOF/rigidity preview (see
   /// dof_analysis.dart's own doc comment for the full algorithm and its

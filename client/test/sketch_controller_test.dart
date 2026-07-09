@@ -2148,10 +2148,19 @@ void main() {
 
   test('dragTargetPointIdAt is null while the sketch is fully constrained', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
     await controller.handleCanvasTap(10, 0); // backend.dof defaults to 0
     controller.finishChain();
     controller.exitToSelectMode();
+    // Phase 3 bug-fix round: backend.dof == 0 alone isn't "fully
+    // constrained" any more - a bare Line with no Constraint tying its far
+    // endpoint back to the origin can still be dragged freely, so it must
+    // not read as fully constrained even though the fake backend already
+    // reports dof == 0 by default. Ground it with a Vertical Constraint
+    // (unions the Line's two endpoints - one of which is the origin
+    // itself - into one cluster) so this test's premise actually holds.
+    await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (5, 0)
+    await controller.addVerticalConstraint();
 
     expect(controller.isUnderConstrained, isFalse);
     expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
@@ -2279,10 +2288,25 @@ void main() {
     await controller.endPointDrag();
 
     expect(controller.draggingPointId, isNull);
-    expect(controller.isUnderConstrained, isFalse);
     expect(controller.points[pointId]!.x, 2);
     expect(controller.points[pointId]!.y, 34);
     expect(controller.errorMessage, isNull);
+
+    // Phase 3 bug-fix round: backend.dof == 0 alone isn't "fully
+    // constrained" any more - ground the Line (a Vertical Constraint
+    // unions its two endpoints, one of which is the origin, into one
+    // cluster) to actually exercise the "fully constrained" case, rather
+    // than asserting it against a still-ungrounded Line. Computed (not
+    // hand-picked) tap point, since the drag above moved the Line's start.
+    final line = controller.lines.values.last;
+    final start = controller.points[line.startPointId]!;
+    final end = controller.points[line.endPointId]!;
+    await controller.handleCanvasTap(
+      start.x + (end.x - start.x) * 0.25,
+      start.y + (end.y - start.y) * 0.25,
+    );
+    await controller.addVerticalConstraint();
+    expect(controller.isUnderConstrained, isFalse);
   });
 
   // --- Stage 16 item 7: Coincident/Parallel/Perpendicular/EqualLength/
@@ -2798,25 +2822,33 @@ void main() {
     expect(controller.isPointForcedOverConstrained(line.startPointId), isTrue);
   });
 
-  test('isFullyConstrained mirrors hasGeometry && !isUnderConstrained', () async {
+  test('isFullyConstrained requires both a backend-confirmed dof<=0 solve AND every entity '
+      'being topologically grounded to the origin', () async {
     expect(controller.isFullyConstrained, isFalse); // no geometry yet.
 
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
-    // The Line tool's own solve (still under default dof=0) already ran -
-    // force it under-constrained via a standalone Point placement (which
-    // also triggers its own solve, see _clickPointTool), to isolate the
-    // "has geometry but dof > 0" case.
+    controller.exitToSelectMode();
+
+    // Backend confirms dof<=0, but no Constraint ties the Line's far
+    // endpoint back to the origin - a Line by itself creates no
+    // Constraint (see dof_analysis.dart), so even though its *other*
+    // endpoint happens to literally be the origin Point, the far one is
+    // not grounded, and this must not read as fully constrained.
+    backend.dof = 0;
     controller.selectDrawTool(SketchTool.point);
-    backend.dof = 1;
-    await controller.handleCanvasTap(20, 20);
+    await controller.handleCanvasTap(20, 20); // any mutation re-solves; unrelated standalone Point.
     expect(controller.isUnderConstrained, isTrue);
     expect(controller.isFullyConstrained, isFalse);
 
-    backend.dof = 0;
-    await controller.handleCanvasTap(30, 30);
+    // Ground it: a Vertical Constraint on the Line unions its two
+    // endpoints - one of which is the origin itself - into one cluster.
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (5, 0)
+    await controller.addVerticalConstraint();
+
     expect(controller.isUnderConstrained, isFalse);
     expect(controller.isFullyConstrained, isTrue);
   });
