@@ -937,10 +937,19 @@ class SketchApiClient {
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<SolveResultDto> solve(String sketchId) => _send(
+  /// [anchorPointIds] pins those Points for this one solve only (drag-solve
+  /// semantics - see the backend's `SolveRequest` doc comment): the Point(s)
+  /// the user just dragged stay exactly where dropped while the rest of the
+  /// Sketch settles around them. Omitted (the common case, every call site
+  /// that isn't a drag-drop) sends no body at all, same request the backend
+  /// already handled before this parameter existed.
+  Future<SolveResultDto> solve(String sketchId, {List<String> anchorPointIds = const []}) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/solve'),
               headers: _headers,
+              body: anchorPointIds.isEmpty
+                  ? null
+                  : jsonEncode({'anchor_point_ids': anchorPointIds}),
             ),
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
       );

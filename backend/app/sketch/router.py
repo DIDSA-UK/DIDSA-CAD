@@ -56,6 +56,7 @@ from app.sketch.schemas import (
     ProfileResponse,
     SketchCreate,
     SketchResponse,
+    SolveRequest,
     SolveResultResponse,
     VerticalConstraintCreate,
     VerticalConstraintResponse,
@@ -466,7 +467,11 @@ def update_constraint_value(
 
 
 @router.post("/sketches/{sketch_id}/solve", response_model=SolveResultResponse)
-def solve(sketch_id: str) -> SolveResultResponse:
+def solve(sketch_id: str, payload: SolveRequest | None = None) -> SolveResultResponse:
+    """`payload` is optional (defaults to no anchors) so every caller from
+    before drag-solve semantics existed - which POSTs no body at all -
+    keeps working unchanged; see SolveRequest's own doc comment."""
     sketch = _get_sketch_or_404(sketch_id)
-    result = solve_sketch(sketch)
+    anchor_point_ids = frozenset(payload.anchor_point_ids) if payload else frozenset()
+    result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
     return _solve_result_response(result)

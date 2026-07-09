@@ -632,8 +632,11 @@ class SketchController extends ChangeNotifier {
   /// actually something to be fully constrained.
   bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty;
 
-  Future<void> _solveAndTrackDof() async {
-    final result = await _api.solve(_sketchId!);
+  /// [anchorPointIds] passes through to [SketchApiClient.solve] - see that
+  /// method's doc comment. Defaults to none, which every call site except
+  /// the drag-drop endings below wants (equal freedom for every Point).
+  Future<void> _solveAndTrackDof({List<String> anchorPointIds = const []}) async {
+    final result = await _api.solve(_sketchId!, anchorPointIds: anchorPointIds);
     _dof = result.dof;
     _lastSolveConverged = result.converged;
   }
@@ -1255,7 +1258,13 @@ class SketchController extends ChangeNotifier {
       // at (before any solve moves it), same convention as every other
       // proximity-snap check in this file.
       await _autoCoincideIfNear(pointId, droppedPoint.x, droppedPoint.y);
-      await _solveAndTrackDof();
+      // Anchored so the just-dropped Point stays exactly where the user put
+      // it and the rest of the Sketch settles around it, instead of every
+      // Point (including this one) being equally free to move - Phase 2 of
+      // docs/sketcher-overhaul-scope.md. Also gives the auto-coincide above
+      // its intuitive result: the *other*, pre-existing Point moves to meet
+      // this one, not the other way around.
+      await _solveAndTrackDof(anchorPointIds: [pointId]);
       await _refreshAllPoints();
       await _refreshConstraints();
     });
@@ -1376,7 +1385,9 @@ class SketchController extends ChangeNotifier {
       if (droppedEnd != null) {
         await _autoCoincideIfNear(line.endPointId, droppedEnd.x, droppedEnd.y);
       }
-      await _solveAndTrackDof();
+      // Both endpoints anchored - mirrors [endPointDrag]'s reasoning, applied
+      // to the whole dropped Line rather than a single Point.
+      await _solveAndTrackDof(anchorPointIds: [line.startPointId, line.endPointId]);
       await _refreshAllPoints();
       await _refreshConstraints();
     });

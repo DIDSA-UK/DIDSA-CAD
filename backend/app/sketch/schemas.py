@@ -364,3 +364,17 @@ class SolveResultResponse(BaseModel):
     blamed_constraint_ids: list[str]
     solver_reported_failed_constraint_ids: list[str]
     detail: str
+
+
+class SolveRequest(BaseModel):
+    """Optional body for POST .../solve. `anchor_point_ids` are pinned for
+    this one solve exactly like the sketch's own origin already is (see
+    `solver.solve_sketch`'s doc comment) - drag-solve semantics: a Point the
+    client just dragged (or, for a dragged Line, both its endpoints) stays
+    at exactly the position it was dropped at, and the rest of the sketch
+    settles around it, instead of every Point (including the one the user
+    was just holding) being equally free to move. Never persisted - each
+    solve call is independent, and omitting the body entirely (as every
+    caller did before this field existed) is equivalent to an empty list."""
+
+    anchor_point_ids: list[str] = []

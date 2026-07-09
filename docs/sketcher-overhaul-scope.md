@@ -213,6 +213,8 @@ the line behind the text" look without extra work.
 
 ## Phase 2 — Drag-solve semantics (client + backend)
 
+**Status: implemented, pending on-device verification.**
+
 ### 2.1 "Dragged point stays put, others move to accommodate" during solve
 - **Current state**: no pinning concept exists anywhere. `update_point`
   (`router.py:258-266`) is a raw coordinate overwrite with no re-solve.
@@ -547,9 +549,15 @@ ellipse → spline → text), no reprioritization requested.
    `flutter analyze`/`flutter test` in the dev environment this was
    built in - see the on-device checklist delivered alongside this
    update for what to verify before considering it shippable.
-2. **Phase 2** (drag-pin solve semantics) — natural follow-on to Phase 1
-   since it changes what "drag" means; touches the solver but reuses an
-   existing fixed-group mechanism.
+2. **Phase 2 — DONE, pending on-device verification** (drag-pin solve
+   semantics) — natural follow-on to Phase 1 since it changes what
+   "drag" means; touches the solver but reuses the existing fixed-group
+   mechanism. Backend logic verified directly against a real py-slvs
+   install (anchor holds exactly; default no-anchor behaviour unchanged;
+   conflicting anchors correctly fail to converge without crashing); the
+   full API-level pytest suite needs `pythonocc-core`, which isn't
+   installable in this sandbox, so that layer is verified via CI instead
+   (see the new tests in `test_stage2b_solver_integration.py`).
 3. **Phase 6.1** (line snap) — small, independent, can slot in anywhere.
 4. **Phase 3** (constraint color feedback, client-side DOF/rigidity
    analysis) — no longer blocked on a design spike now that the

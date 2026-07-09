@@ -114,6 +114,59 @@ def test_overconstrained_triangle_reports_non_convergence_and_diagnostics():
     assert set(result.solver_reported_failed_constraint_ids) <= set(sketch.constraints)
 
 
+def test_solve_with_anchor_keeps_the_anchored_point_fixed_and_moves_the_other():
+    """Drag-solve semantics: the just-dragged Point should stay exactly
+    where the user placed it, with the other end of the Constraint moving
+    to satisfy it - not the ordinary "every Point is equally free, current
+    position is merely an initial guess" solve behaviour."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    sketch.add_distance_constraint(a.id, b.id, 50.0)
+
+    # Simulate having just dragged `a` to an arbitrary position - without
+    # anchoring, an ordinary solve would be free to move it too.
+    sketch.points[a.id].x = 3.0
+    sketch.points[a.id].y = 4.0
+
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({a.id}))
+
+    assert result.converged
+    assert sketch.points[a.id].x == pytest.approx(3.0)
+    assert sketch.points[a.id].y == pytest.approx(4.0)
+    distance = math.hypot(
+        sketch.points[b.id].x - sketch.points[a.id].x,
+        sketch.points[b.id].y - sketch.points[a.id].y,
+    )
+    assert distance == pytest.approx(50.0)
+    # b actually moved from its own initial guess to satisfy the
+    # constraint relative to the now-fixed a, rather than a moving instead.
+    assert (sketch.points[b.id].x, sketch.points[b.id].y) != pytest.approx((10.0, 0.0))
+
+
+def test_solve_with_two_anchors_that_violate_their_own_distance_constraint_does_not_converge():
+    """Anchoring both ends of a Constraint to positions that don't actually
+    satisfy it makes the constraint literally unsatisfiable (both Points
+    are held fixed, so nothing is left to solve for) - documents the
+    conflict case flagged as a risk when this feature was scoped: the
+    solve still completes and reports non-convergence, same as any other
+    over-constrained system, rather than crashing or silently dropping the
+    conflicting anchor."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(100.0, 100.0)
+    sketch.add_distance_constraint(a.id, b.id, 5.0)
+
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({a.id, b.id}))
+
+    assert not result.converged
+    # Both anchors hold their positions regardless of convergence.
+    assert sketch.points[a.id].x == pytest.approx(0.0)
+    assert sketch.points[a.id].y == pytest.approx(0.0)
+    assert sketch.points[b.id].x == pytest.approx(100.0)
+    assert sketch.points[b.id].y == pytest.approx(100.0)
+
+
 def test_multiple_sketches_have_independent_constraints():
     sketch_one = Sketch(id="s1", plane=Plane.XY)
     a1 = sketch_one.add_point(0.0, 0.0)
@@ -301,3 +354,50 @@ def test_solve_over_the_api_reports_non_convergence_for_overconstrained_sketch()
     assert body["converged"] is False
     assert body["blamed_constraint_ids"] == [newest["id"]]
     assert body["solver_reported_failed_constraint_ids"]
+
+
+def test_solve_over_the_api_with_anchor_keeps_the_anchored_point_fixed():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 50.0},
+    )
+    # Simulate a drag: PATCH a to a new position (its own next initial
+    # guess - see test_moving_a_point_directly_does_not_trigger_a_solve),
+    # then solve anchored to it.
+    client.patch(f"/sketch/sketches/{sketch['id']}/points/{a['id']}", json={"x": 3.0, "y": 4.0})
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/solve",
+        json={"anchor_point_ids": [a["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["converged"] is True
+
+    solved_a = client.get(f"/sketch/sketches/{sketch['id']}/points/{a['id']}").json()
+    solved_b = client.get(f"/sketch/sketches/{sketch['id']}/points/{b['id']}").json()
+    assert solved_a["x"] == pytest.approx(3.0)
+    assert solved_a["y"] == pytest.approx(4.0)
+    distance = math.hypot(solved_b["x"] - solved_a["x"], solved_b["y"] - solved_a["y"])
+    assert distance == pytest.approx(50.0)
+
+
+def test_solve_over_the_api_with_no_body_still_works():
+    """Every caller from before this field existed POSTs no body at all -
+    confirms that keeps working unchanged (SolveRequest is an optional
+    param, not a required one)."""
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 1.0, 0.0)
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 5.0},
+    )
+
+    response = client.post(f"/sketch/sketches/{sketch['id']}/solve")
+
+    assert response.status_code == 200
+    assert response.json()["converged"] is True

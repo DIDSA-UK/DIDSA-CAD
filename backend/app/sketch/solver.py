@@ -68,6 +68,7 @@ class _PySlvsBuilder:
         workplane: int,
         points: dict[str, Point],
         origin_point_id: str | None = None,
+        anchor_point_ids: frozenset[str] = frozenset(),
     ):
         self._system = system
         self._workplane = workplane
@@ -84,11 +85,23 @@ class _PySlvsBuilder:
         # added to a group never passed to system.solve(group=...) keeps
         # whatever initial value it was given, here always (0, 0).
         self._origin_point_id = origin_point_id
+        # Stage: drag-solve semantics ("dragged Point stays put, others move
+        # to accommodate"). A Point the client just dragged (or, for a
+        # dragged Line, both its endpoints) is pinned into the fixed group
+        # for this one solve call the same way the origin always is - not
+        # persisted anywhere, just a per-call hint. If an anchor conflicts
+        # with another Constraint on the same Point (e.g. it also has a
+        # fixed-length dimension to a third Point that can't reach the
+        # anchor's forced location), the solve simply may not converge -
+        # same as any other over-constrained system - rather than the
+        # anchor silently losing or the call raising.
+        self._anchor_point_ids = anchor_point_ids
 
     def point2d(self, point_id: str) -> int:
         if point_id not in self._point_handles:
             point = self._points[point_id]
-            group = _FIXED_GROUP if point_id == self._origin_point_id else _SOLVE_GROUP
+            is_pinned = point_id == self._origin_point_id or point_id in self._anchor_point_ids
+            group = _FIXED_GROUP if is_pinned else _SOLVE_GROUP
             pu = self._system.addParamV(point.x, group=group)
             pv = self._system.addParamV(point.y, group=group)
             self._point_handles[point_id] = self._system.addPoint2d(
@@ -206,7 +219,7 @@ class _PySlvsBuilder:
         return self._point_handles[point_id]
 
 
-def solve_sketch(sketch: Sketch) -> SolveResult:
+def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset()) -> SolveResult:
     """Build the py-slvs problem for `sketch`'s Points + Constraints, solve
     it, and write the resulting positions back onto `sketch.points` (best
     effort even when it doesn't fully converge). Does not mutate
@@ -223,6 +236,14 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
     (verified directly against the installed py-slvs wheel - solving an
     otherwise-empty constraint set is safe and reports the correct free
     parameter count, not an error).
+
+    `anchor_point_ids` - drag-solve semantics: any Point id in this set
+    holds exactly the x/y it already had (its position going into this
+    solve, e.g. wherever the client just PATCHed it to mid-drag) rather
+    than being free for the solver to move - see `_PySlvsBuilder`'s own
+    doc comment for the fixed-group mechanism and the conflict-with-other-
+    constraints caveat. Empty (the default) reproduces the previous
+    behaviour exactly: nothing pinned beyond the sketch's own origin.
     """
 
     system = slvs.System()
@@ -235,7 +256,13 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
     normal = system.addNormal3dV(1, 0, 0, 0, group=_FIXED_GROUP)
     workplane = system.addWorkplane(origin, normal, group=_FIXED_GROUP)
 
-    builder = _PySlvsBuilder(system, workplane, sketch.points, origin_point_id=sketch.origin_point_id)
+    builder = _PySlvsBuilder(
+        system,
+        workplane,
+        sketch.points,
+        origin_point_id=sketch.origin_point_id,
+        anchor_point_ids=anchor_point_ids,
+    )
 
     constraint_id_by_handle: dict[int, str] = {}
     for constraint in sketch.constraints.values():
