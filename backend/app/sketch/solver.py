@@ -89,12 +89,14 @@ class _PySlvsBuilder:
         # to accommodate"). A Point the client just dragged (or, for a
         # dragged Line, both its endpoints) is pinned into the fixed group
         # for this one solve call the same way the origin always is - not
-        # persisted anywhere, just a per-call hint. If an anchor conflicts
-        # with another Constraint on the same Point (e.g. it also has a
-        # fixed-length dimension to a third Point that can't reach the
-        # anchor's forced location), the solve simply may not converge -
-        # same as any other over-constrained system - rather than the
-        # anchor silently losing or the call raising.
+        # persisted anywhere, just a per-call hint. A Constraint tying an
+        # anchored Point to a *free* Point (e.g. a fixed-length dimension)
+        # still converges normally - the free Point simply moves to satisfy
+        # it. It's a Constraint tying an anchored Point to *another already-
+        # fixed* position (the origin, or a second anchored Point) that
+        # can't converge, since neither side is free to move to match the
+        # other - see `solve_sketch`'s retry-without-anchors fallback for
+        # how that case is resolved rather than left stuck.
         self._anchor_point_ids = anchor_point_ids
 
     def point2d(self, point_id: str) -> int:
@@ -225,6 +227,38 @@ def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset())
     effort even when it doesn't fully converge). Does not mutate
     `sketch.constraints`.
 
+    `anchor_point_ids` - drag-solve semantics: any Point id in this set
+    holds exactly the x/y it already had (its position going into this
+    solve, e.g. wherever the client just PATCHed it to mid-drag) rather
+    than being free for the solver to move - see `_PySlvsBuilder`'s own
+    doc comment for the fixed-group mechanism. Empty (the default)
+    reproduces the previous behaviour exactly: nothing pinned beyond the
+    sketch's own origin.
+
+    If pinning those anchors leaves the system unable to converge (e.g. the
+    dragged Point is Coincident with the fixed origin, or with another
+    anchored Point - two fixed positions that a Constraint demands be
+    equal, but aren't), the explicit Constraint wins: this retries once
+    with no anchors at all and returns *that* result instead. Without this,
+    the anchored attempt's non-convergence still writes back the anchored
+    (dropped) position unchanged - since a Point pinned into the fixed
+    group is never touched by the solve regardless of whether it
+    converges - which looks like the drag "worked" until some unrelated
+    later solve (with no anchor) finally pulls the Point back to satisfy
+    the Constraint. Retrying immediately here gives the same end state
+    without the confusing delay.
+    """
+
+    result = _solve_sketch_once(sketch, anchor_point_ids)
+    if anchor_point_ids and not result.converged:
+        return _solve_sketch_once(sketch, frozenset())
+    return result
+
+
+def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> SolveResult:
+    """One py-slvs solve attempt - see `solve_sketch` for the retry-without-
+    anchors fallback built on top of this.
+
     Always builds and solves the system - including every Point, even ones
     no Constraint references - rather than skipping straight to a canned
     "nothing to solve" result whenever `sketch.constraints` is empty. It
@@ -236,14 +270,6 @@ def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset())
     (verified directly against the installed py-slvs wheel - solving an
     otherwise-empty constraint set is safe and reports the correct free
     parameter count, not an error).
-
-    `anchor_point_ids` - drag-solve semantics: any Point id in this set
-    holds exactly the x/y it already had (its position going into this
-    solve, e.g. wherever the client just PATCHed it to mid-drag) rather
-    than being free for the solver to move - see `_PySlvsBuilder`'s own
-    doc comment for the fixed-group mechanism and the conflict-with-other-
-    constraints caveat. Empty (the default) reproduces the previous
-    behaviour exactly: nothing pinned beyond the sketch's own origin.
     """
 
     system = slvs.System()

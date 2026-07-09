@@ -144,14 +144,18 @@ def test_solve_with_anchor_keeps_the_anchored_point_fixed_and_moves_the_other():
     assert (sketch.points[b.id].x, sketch.points[b.id].y) != pytest.approx((10.0, 0.0))
 
 
-def test_solve_with_two_anchors_that_violate_their_own_distance_constraint_does_not_converge():
+def test_solve_with_two_anchors_that_violate_their_own_distance_constraint_falls_back_to_a_free_solve():
     """Anchoring both ends of a Constraint to positions that don't actually
-    satisfy it makes the constraint literally unsatisfiable (both Points
-    are held fixed, so nothing is left to solve for) - documents the
-    conflict case flagged as a risk when this feature was scoped: the
-    solve still completes and reports non-convergence, same as any other
-    over-constrained system, rather than crashing or silently dropping the
-    conflicting anchor."""
+    satisfy it makes the constraint literally unsatisfiable with both
+    Points held fixed (nothing left to solve for) - the conflict case
+    flagged as a risk when this feature was scoped. Rather than leaving
+    the Sketch stuck in that unconverged, contradictory-looking state
+    (both anchors visually "holding" positions 95 units apart from a
+    Constraint that says they must be 5 apart) until some unrelated later
+    solve corrects it, `solve_sketch` retries with no anchors at all -
+    same fallback as the origin-coincidence case below - so it converges
+    immediately by freeing both Points to actually satisfy the
+    Constraint."""
     sketch = Sketch(id="s", plane=Plane.XY)
     a = sketch.add_point(0.0, 0.0)
     b = sketch.add_point(100.0, 100.0)
@@ -159,12 +163,42 @@ def test_solve_with_two_anchors_that_violate_their_own_distance_constraint_does_
 
     result = solve_sketch(sketch, anchor_point_ids=frozenset({a.id, b.id}))
 
-    assert not result.converged
-    # Both anchors hold their positions regardless of convergence.
-    assert sketch.points[a.id].x == pytest.approx(0.0)
-    assert sketch.points[a.id].y == pytest.approx(0.0)
-    assert sketch.points[b.id].x == pytest.approx(100.0)
-    assert sketch.points[b.id].y == pytest.approx(100.0)
+    assert result.converged
+    distance = math.hypot(
+        sketch.points[b.id].x - sketch.points[a.id].x,
+        sketch.points[b.id].y - sketch.points[a.id].y,
+    )
+    assert distance == pytest.approx(5.0)
+
+
+def test_solve_with_anchor_on_a_point_coincident_to_the_fixed_origin_snaps_back_immediately():
+    """Bug-fix round: a Point Coincident with the Sketch's own (permanently
+    fixed) origin, dragged away and anchored at the drop location, used to
+    report non-convergence but leave the Point exactly where it was
+    dropped - since a Point pinned into the fixed group is never touched
+    by the solve regardless of whether it converges. That looked like the
+    drag "worked" until some unrelated later solve (with no anchor) pulled
+    the Point back to satisfy the Coincident constraint - a confusing
+    delayed correction reported against a real on-device sketch. Anchoring
+    against a fixed origin is exactly the "anchor conflicts with another
+    already-fixed position" case `solve_sketch`'s retry-without-anchors
+    fallback exists for, so this must now converge and land back on the
+    origin in the same solve that the drag ends with."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    origin = sketch.origin_point()
+    p = sketch.add_point(5.0, 5.0)
+    sketch.add_coincident_constraint(p.id, origin.id)
+
+    # Simulate the drag: the client PATCHes the Point to wherever it was
+    # dropped, same as updatePointDrag does mid-gesture.
+    sketch.points[p.id].x = 40.0
+    sketch.points[p.id].y = 40.0
+
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({p.id}))
+
+    assert result.converged
+    assert sketch.points[p.id].x == pytest.approx(0.0)
+    assert sketch.points[p.id].y == pytest.approx(0.0)
 
 
 def test_multiple_sketches_have_independent_constraints():
@@ -383,6 +417,31 @@ def test_solve_over_the_api_with_anchor_keeps_the_anchored_point_fixed():
     assert solved_a["y"] == pytest.approx(4.0)
     distance = math.hypot(solved_b["x"] - solved_a["x"], solved_b["y"] - solved_a["y"])
     assert distance == pytest.approx(50.0)
+
+
+def test_solve_over_the_api_with_anchor_on_a_point_coincident_to_the_origin_snaps_back_immediately():
+    """API-level counterpart of
+    test_solve_with_anchor_on_a_point_coincident_to_the_fixed_origin_snaps_back_immediately
+    - exercises the same bug through the real /solve endpoint rather than
+    calling solve_sketch directly."""
+    sketch = _create_sketch()
+    p = _create_point(sketch["id"], 5.0, 5.0)
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "coincident", "point_a_id": p["id"], "point_b_id": sketch["origin_point_id"]},
+    )
+    client.patch(f"/sketch/sketches/{sketch['id']}/points/{p['id']}", json={"x": 40.0, "y": 40.0})
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/solve",
+        json={"anchor_point_ids": [p["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["converged"] is True
+    solved_p = client.get(f"/sketch/sketches/{sketch['id']}/points/{p['id']}").json()
+    assert solved_p["x"] == pytest.approx(0.0)
+    assert solved_p["y"] == pytest.approx(0.0)
 
 
 def test_solve_over_the_api_with_no_body_still_works():
