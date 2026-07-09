@@ -6,11 +6,20 @@ project spec, see `docs/project-brief.md`.
 
 ---
 
-## Measure tool & MBD part-data compliance
+## Analysis tools
 
 - **Measure tool.** Not yet scoped in detail - needs its own design pass
   (what can be measured: distance, angle, radius, between which entity
   types, etc.).
+- **Sectioning tool.** Not yet scoped in detail - needs its own design
+  pass (single vs. multiple section planes, planar vs. offset/stepped
+  sections, a live/interactive cutaway vs. a static section view, and
+  whether it also supports measuring/dimensioning the cut face).
+- **Centre of gravity (CofG)** calculation for parts/assemblies.
+- **Basic static stress analysis.**
+
+## MBD part-data compliance
+
 - **Part data to support MBD (model-based definition) and comply with the
   project's STEP MBD policy.** Fields needed on a part: material, part
   number, description, supplier, supplier part number, mass (with a
@@ -24,8 +33,6 @@ project spec, see `docs/project-brief.md`.
 - **Material database** so a part's material can be populated easily from
   a picklist, with dependent metrics cascading automatically from the
   chosen material: density, stress data, colour, texture, etc.
-- **Centre of gravity (CofG)** calculation for parts/assemblies.
-- **Basic static stress analysis.**
 
 ## Sketcher tuning package
 
