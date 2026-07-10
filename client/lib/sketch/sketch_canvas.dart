@@ -1058,6 +1058,23 @@ Offset? _constraintLabelCenter(
 ) {
   switch (constraint) {
     case DistanceConstraintDto c:
+      final circle = controller.circleForDistanceConstraint(c);
+      if (circle != null) {
+        // Must mirror _paintRadiusDiameterDimension's base anchor exactly
+        // (including its own 24.0 leg length), or dragging/hit-testing a
+        // radius/diameter dimension's label would disagree with where it's
+        // actually drawn.
+        final center = controller.points[c.pointAId];
+        final rim = controller.points[c.pointBId];
+        if (center == null || rim == null) return null;
+        final centerScreen = transform.sketchToScreen(center.x, center.y);
+        final rimScreen = transform.sketchToScreen(rim.x, rim.y);
+        final delta = rimScreen - centerScreen;
+        final length = delta.distance;
+        final direction = length < 1e-6 ? const Offset(1, 0) : delta / length;
+        const legLength = 24.0;
+        return rimScreen + direction * legLength;
+      }
       final a = controller.points[c.pointAId];
       final b = controller.points[c.pointBId];
       if (a == null || b == null) return null;
@@ -1435,7 +1452,18 @@ class _SketchPainter extends CustomPainter {
       final labelOffset = controller.labelOffsetFor(entry.key);
       switch (entry.value) {
         case DistanceConstraintDto c:
-          _paintDistanceDimension(canvas, c, color, labelOffset);
+          final circle = controller.circleForDistanceConstraint(c);
+          if (circle != null) {
+            _paintRadiusDiameterDimension(
+              canvas,
+              c,
+              color,
+              labelOffset,
+              controller.showsDiameterFor(entry.key),
+            );
+          } else {
+            _paintDistanceDimension(canvas, c, color, labelOffset);
+          }
         case VerticalConstraintDto c:
           _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', color, labelOffset);
         case HorizontalConstraintDto c:
@@ -1483,6 +1511,14 @@ class _SketchPainter extends CustomPainter {
   /// dimension there too, same as a real CAD tool allows.
   static const double _defaultDimensionOffset = 18.0;
   static const double _minDimensionOffsetMagnitude = 6.0;
+
+  /// On-device feedback: default distance (screen pixels) a radius/diameter
+  /// dimension's label sits past the circle's rim, along the leader
+  /// direction, before any drag offset - see [_paintRadiusDiameterDimension]
+  /// and [_constraintLabelCenter] (top-level function below), which must
+  /// derive the exact same base anchor or dragging/hit-testing this label
+  /// would disagree with where it's actually drawn.
+  static const double _radialLegLength = 24.0;
 
   double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
     if (labelOffset == Offset.zero) return _defaultDimensionOffset;
@@ -1645,7 +1681,68 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 
-    _drawDimensionLabel(canvas, (p1 + p2) / 2, c.distance.toStringAsFixed(2), color);
+    _drawDimensionLabel(canvas, (p1 + p2) / 2, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+  }
+
+  /// Radial (radius/diameter) dimension for a Circle's DistanceConstraint -
+  /// see [SketchController.circleForDistanceConstraint]/[SketchController.
+  /// showsDiameterFor]. A radius dimension is a single leader from the
+  /// circle's rim (the constraint's own [DistanceConstraintDto.pointBId],
+  /// which already sits exactly on the circle) outward to the label,
+  /// arrowhead touching the rim; a diameter dimension spans the whole
+  /// circle (rim point through centre to the diametrically-opposite
+  /// point), arrowheads at both ends - on-device feedback: "Include arrow,
+  /// leader, dim", distinguishing a circle's size measurement from a plain
+  /// two-point dimension so it reads unambiguously rather than as an
+  /// arbitrary diagonal distance. [_radialLegLength]'s base anchor must
+  /// match [_constraintLabelCenter]'s own (top-level function below)
+  /// exactly, or dragging/hit-testing this label would disagree with where
+  /// it's actually drawn.
+  void _paintRadiusDiameterDimension(
+    Canvas canvas,
+    DistanceConstraintDto c,
+    Color color,
+    Offset labelOffset,
+    bool showsDiameter,
+  ) {
+    final center = controller.points[c.pointAId];
+    final rim = controller.points[c.pointBId];
+    if (center == null || rim == null) return;
+    final centerScreen = transform.sketchToScreen(center.x, center.y);
+    final rimScreen = transform.sketchToScreen(rim.x, rim.y);
+    final delta = rimScreen - centerScreen;
+    final length = delta.distance;
+    final direction = length < 1e-6 ? const Offset(1, 0) : delta / length;
+    final labelCenter = rimScreen + direction * _radialLegLength + labelOffset;
+
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = 1;
+
+    if (showsDiameter) {
+      final oppositeScreen = centerScreen * 2 - rimScreen;
+      canvas.drawLine(oppositeScreen, rimScreen, dimPaint);
+      canvas.drawLine(rimScreen, labelCenter, dimPaint);
+      _drawArrowhead(canvas, rimScreen, direction, color);
+      _drawArrowhead(canvas, oppositeScreen, -direction, color);
+      _drawDimensionLabel(
+        canvas,
+        labelCenter,
+        '⌀${(c.distance * 2).toStringAsFixed(2)}',
+        color,
+        plainBlackText: true,
+      );
+    } else {
+      canvas.drawLine(rimScreen, labelCenter, dimPaint);
+      _drawArrowhead(canvas, rimScreen, direction, color);
+      _drawDimensionLabel(
+        canvas,
+        labelCenter,
+        'R${c.distance.toStringAsFixed(2)}',
+        color,
+        plainBlackText: true,
+      );
+    }
   }
 
   /// Line-to-line distance dimension (Stage 16 item 9's `LineDistanceConstraint`):
@@ -1671,7 +1768,7 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(midA + offset, midB + offset, dimPaint);
     _drawDimensionArrows(canvas, midA + offset, midB + offset, color);
 
-    _drawDimensionLabel(canvas, (midA + offset + midB + offset) / 2, c.distance.toStringAsFixed(2), color);
+    _drawDimensionLabel(canvas, (midA + offset + midB + offset) / 2, c.distance.toStringAsFixed(2), color, plainBlackText: true);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
@@ -1689,7 +1786,7 @@ class _SketchPainter extends CustomPainter {
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color, plainBlackText: true);
   }
 
   /// Angle dimension: deliberately a numeric-only label rather than a
@@ -1702,7 +1799,7 @@ class _SketchPainter extends CustomPainter {
     final midpoint2 = _lineMidpointScreen(c.line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color, plainBlackText: true);
   }
 
   /// Generic two-Line glyph (Stage 23e): a small text chip at the midpoint
@@ -1721,7 +1818,7 @@ class _SketchPainter extends CustomPainter {
     final midpoint2 = _lineMidpointScreen(line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color, plainBlackText: true);
   }
 
   /// Point-to-Line distance dimension (Stage 23e, [PointLineDistanceConstraintDto]):
@@ -1738,7 +1835,7 @@ class _SketchPainter extends CustomPainter {
     if (point == null || lineMid == null) return;
     final pointScreen = transform.sketchToScreen(point.x, point.y);
     final midpoint = (pointScreen + lineMid) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color, plainBlackText: true);
   }
 
   Offset? _lineMidpointScreen(String lineId) {

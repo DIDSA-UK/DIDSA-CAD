@@ -1684,6 +1684,48 @@ class SketchController extends ChangeNotifier {
     _draggingLabelId = null;
   }
 
+  /// On-device feedback: session-only display-mode override for a circle's
+  /// radius/diameter dimension - whether it currently reads as "R<value>"
+  /// (false, the default) or "⌀<value*2>" (true), toggleable from the
+  /// ribbon once the dimension is selected (see [toggleRadiusDiameterDisplay]).
+  /// Needed because the underlying DistanceConstraint always stores the
+  /// *radius* value either way (see [confirmGhostValue]'s `distanceValue` -
+  /// a confirmed diameter ghost is halved before it's sent), so a radius-
+  /// confirmed and a diameter-confirmed dimension of the same circle are
+  /// otherwise indistinguishable from the persisted data alone - R/⌀ is
+  /// purely a display choice layered on top of that one persisted value,
+  /// not sent to the backend (matching this file's other session-only view
+  /// preferences, e.g. [labelOffsetFor]'s drag offsets).
+  final Map<String, bool> _showsDiameter = {};
+
+  bool showsDiameterFor(String constraintId) => _showsDiameter[constraintId] ?? false;
+
+  /// Flips [constraintId]'s R/⌀ display mode - only meaningful for a
+  /// [circleForDistanceConstraint]-eligible dimension, but harmless to call
+  /// for any id (just sets an unused map entry) since [SketchRibbon] only
+  /// ever offers this action while such a dimension is selected.
+  void toggleRadiusDiameterDisplay(String constraintId) {
+    _showsDiameter[constraintId] = !showsDiameterFor(constraintId);
+    notifyListeners();
+  }
+
+  /// The Circle a [DistanceConstraintDto] measures the radius/diameter of -
+  /// true exactly when [c]'s point pair matches some Circle's own
+  /// centerPointId/radiusPointId (however that DistanceConstraint was
+  /// created - not just via the radius/diameter ghost flow), or null for
+  /// an ordinary two-point linear/horizontal/vertical dimension. Used by
+  /// [SketchCanvas] to route rendering to the radial leader instead of the
+  /// generic two-point layout, and by [SketchRibbon] to gate the Radius/
+  /// Diameter toggle.
+  SketchCircleView? circleForDistanceConstraint(DistanceConstraintDto c) {
+    for (final circle in circles.values) {
+      if (circle.centerPointId == c.pointAId && circle.radiusPointId == c.pointBId) {
+        return circle;
+      }
+    }
+    return null;
+  }
+
   double _distanceToSegment(
     double px,
     double py,
@@ -2269,6 +2311,22 @@ class SketchController extends ChangeNotifier {
       return false;
     }
     return constraints[_selectionSet.first.id] is AngleConstraintDto;
+  }
+
+  /// The selected single Constraint's id, if it's a circle radius/diameter
+  /// dimension (see [circleForDistanceConstraint]) - drives the ribbon's
+  /// Radius/Diameter toggle, matching [selectedConstraintValue]'s
+  /// single-Constraint-selection gating exactly.
+  String? get selectedRadiusDiameterConstraintId {
+    if (_selectionSet.length != 1 || _selectionSet.first.kind != SelectionKind.constraint) {
+      return null;
+    }
+    final id = _selectionSet.first.id;
+    final constraint = constraints[id];
+    if (constraint is DistanceConstraintDto && circleForDistanceConstraint(constraint) != null) {
+      return id;
+    }
+    return null;
   }
 
   /// [lineId]'s current length in sketch units, or null if it isn't a known
@@ -2950,7 +3008,9 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       final existing = _findDistanceConstraint(pointAId, pointBId, orientation: orientation);
+      final String constraintId;
       if (existing != null) {
+        constraintId = existing.id;
         final oldValue = existing.distance;
         await _api.updateConstraintValue(_sketchId!, existing.id, distanceValue);
         _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
@@ -2982,8 +3042,12 @@ class SketchController extends ChangeNotifier {
           distanceValue,
           orientation: orientation,
         );
+        constraintId = constraint.id;
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         await _solveAndTrackDof();
+      }
+      if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
+        _showsDiameter[constraintId] = target.kind == GhostKind.diameter;
       }
       await _refreshAllPoints();
       await _refreshConstraints();

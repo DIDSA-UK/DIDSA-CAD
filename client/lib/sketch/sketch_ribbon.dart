@@ -132,11 +132,14 @@ class SketchRibbon extends StatelessWidget {
       ),
     );
 
+    final radiusDiameterId = controller.selectedRadiusDiameterConstraintId;
     final content = !controller.selectedConstraintHasValue
         ? chipRow
         : Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (radiusDiameterId != null)
+                _RadiusDiameterToggle(controller: controller, constraintId: radiusDiameterId),
               _ConstraintValueEditor(controller: controller),
               chipRow,
             ],
@@ -466,12 +469,42 @@ class _ConstraintValueEditor extends StatefulWidget {
 class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
   late final TextEditingController _textController;
 
+  /// On-device feedback: a circle's radius/diameter dimension always stores
+  /// the *radius* value (see [SketchController.confirmGhostValue]'s
+  /// `distanceValue`), so editing it while [SketchController.
+  /// showsDiameterFor] is true must show/accept the *diameter* the label
+  /// itself displays, not the raw stored radius the user never sees -
+  /// tracked here (rather than read fresh in [_submit]) so
+  /// [didUpdateWidget] can tell whether the R/⌀ toggle flipped mid-edit and
+  /// re-sync the displayed text to match.
+  bool _showsDiameter = false;
+
+  bool _computeShowsDiameter() {
+    final id = widget.controller.selectedRadiusDiameterConstraintId;
+    return id != null && widget.controller.showsDiameterFor(id);
+  }
+
+  double? _displayValue() {
+    final raw = widget.controller.selectedConstraintValue;
+    if (raw == null) return null;
+    return _showsDiameter ? raw * 2 : raw;
+  }
+
   @override
   void initState() {
     super.initState();
-    _textController = TextEditingController(
-      text: _formatValue(widget.controller.selectedConstraintValue),
-    );
+    _showsDiameter = _computeShowsDiameter();
+    _textController = TextEditingController(text: _formatValue(_displayValue()));
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConstraintValueEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nowShowsDiameter = _computeShowsDiameter();
+    if (nowShowsDiameter != _showsDiameter) {
+      _showsDiameter = nowShowsDiameter;
+      _textController.text = _formatValue(_displayValue());
+    }
   }
 
   @override
@@ -488,12 +521,17 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
   void _submit() {
     final value = double.tryParse(_textController.text);
     if (value == null) return;
-    widget.controller.updateSelectedConstraintValue(value);
+    widget.controller.updateSelectedConstraintValue(_showsDiameter ? value / 2 : value);
   }
 
   @override
   Widget build(BuildContext context) {
-    final suffix = widget.controller.selectedConstraintIsAngle ? '°' : 'mm';
+    final isRadiusDiameter = widget.controller.selectedRadiusDiameterConstraintId != null;
+    final suffix = widget.controller.selectedConstraintIsAngle
+        ? '°'
+        : isRadiusDiameter
+            ? (_showsDiameter ? 'mm ⌀' : 'mm R')
+            : 'mm';
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       child: Row(
@@ -515,6 +553,52 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
             tooltip: 'Apply',
             icon: const Icon(Icons.check),
             onPressed: widget.controller.busy ? null : _submit,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// On-device feedback: "when the dimension is selected there should be a
+/// toggle to switch between the two [radius and diameter]" - a circle's
+/// dimension always stores the *radius* value (see [SketchController.
+/// confirmGhostValue]), so this only ever changes how it's *labeled* on
+/// canvas and *edited* in [_ConstraintValueEditor] (see
+/// [SketchController.showsDiameterFor]'s own doc comment), never the
+/// underlying constraint - a purely client-side display preference, so
+/// toggling is instant with no backend round-trip.
+class _RadiusDiameterToggle extends StatelessWidget {
+  final SketchController controller;
+  final String constraintId;
+
+  const _RadiusDiameterToggle({required this.controller, required this.constraintId});
+
+  @override
+  Widget build(BuildContext context) {
+    final showsDiameter = controller.showsDiameterFor(constraintId);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: ChoiceChip(
+              label: const Text('Radius (R)'),
+              selected: !showsDiameter,
+              onSelected: (_) {
+                if (showsDiameter) controller.toggleRadiusDiameterDisplay(constraintId);
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: ChoiceChip(
+              label: const Text('Diameter (⌀)'),
+              selected: showsDiameter,
+              onSelected: (_) {
+                if (!showsDiameter) controller.toggleRadiusDiameterDisplay(constraintId);
+              },
+            ),
           ),
         ],
       ),

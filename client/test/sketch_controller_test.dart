@@ -1757,6 +1757,96 @@ void main() {
     expect(distanceConstraints.single.distance, 20.0); // halved from the 40.0 diameter entered
   });
 
+  test(
+      'on-device feedback: confirming a diameter ghost marks the resulting dimension to display as '
+      'a diameter; confirming a radius ghost marks it to display as a radius', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // radius point -> radius 10
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 10); // on the circle's edge
+
+    await controller.confirmGhostValue('diameter', 40.0);
+
+    final constraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(controller.showsDiameterFor(constraint.id), isTrue);
+
+    // Re-picking the same circle and confirming the radius ghost this time
+    // must flip the same (now-existing) constraint's display mode back.
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 10);
+    await controller.confirmGhostValue('radius', 20.0);
+
+    expect(controller.showsDiameterFor(constraint.id), isFalse);
+  });
+
+  test(
+      'on-device feedback: circleForDistanceConstraint identifies a circle radius/diameter dimension '
+      'and returns null for an ordinary two-point dimension', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 10);
+    await controller.confirmGhostValue('radius', 10.0);
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+
+    expect(controller.circleForDistanceConstraint(radiusConstraint), isNotNull);
+
+    // A DistanceConstraintDto whose point pair doesn't match any Circle's
+    // own (centerPointId, radiusPointId) order - even reusing the same two
+    // point ids, just swapped - must not be treated as a radius/diameter
+    // dimension.
+    final notACircleConstraint = DistanceConstraintDto(
+      id: 'fake-constraint',
+      pointAId: radiusConstraint.pointBId,
+      pointBId: radiusConstraint.pointAId,
+      distance: 5.0,
+    );
+    expect(controller.circleForDistanceConstraint(notACircleConstraint), isNull);
+  });
+
+  test('on-device feedback: toggleRadiusDiameterDisplay flips the display mode and notifies listeners', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 10);
+    await controller.confirmGhostValue('radius', 10.0);
+    final constraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(controller.showsDiameterFor(constraint.id), isFalse);
+
+    var notified = false;
+    controller.addListener(() => notified = true);
+    controller.toggleRadiusDiameterDisplay(constraint.id);
+
+    expect(controller.showsDiameterFor(constraint.id), isTrue);
+    expect(notified, isTrue);
+
+    controller.toggleRadiusDiameterDisplay(constraint.id);
+    expect(controller.showsDiameterFor(constraint.id), isFalse);
+  });
+
+  test(
+      'dimensionLabelAt finds a radius dimension label at its radial base anchor - rim point plus '
+      '24px along the centre-to-rim direction, not the generic two-point diagonal midpoint', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // centre
+    await controller.handleCanvasTap(10, 0); // radius point -> radius 10, rim direction = +X
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 10);
+    await controller.confirmGhostValue('radius', 10.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // centre (0,0) -> screen (400,300); rim (10,0) -> screen (600,300);
+    // direction = +X, so the base anchor is 24px further along +X: (624,300).
+    const radialAnchor = Offset(624, 300);
+
+    expect(dimensionLabelAt(controller, transform, radialAnchor, 5), constraintId);
+  });
+
   test('tapping empty canvas with nothing picked in dimension mode exits to select mode', () async {
     controller.enterDimensionMode();
 
