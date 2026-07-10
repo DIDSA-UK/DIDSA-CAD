@@ -17,11 +17,14 @@ from app.sketch.constraints import (
     PointLineDistanceConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Circle, Line, Point, Sketch
+from app.sketch.models import Arc, Circle, Line, Point, Sketch
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
     AngleConstraintResponse,
+    ArcCreate,
+    ArcResponse,
+    ArcUpdate,
     AtMidpointConstraintCreate,
     AtMidpointConstraintResponse,
     CircleCreate,
@@ -91,6 +94,13 @@ def _get_circle_or_404(sketch: Sketch, circle_id: str) -> Circle:
     return entity
 
 
+def _get_arc_or_404(sketch: Sketch, arc_id: str) -> Arc:
+    entity = sketch.entities.get(arc_id)
+    if not isinstance(entity, Arc):
+        raise HTTPException(status_code=404, detail="Arc not found")
+    return entity
+
+
 def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
     constraint = sketch.constraints.get(constraint_id)
     if constraint is None:
@@ -119,6 +129,17 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         radius_point_id=circle.radius_point_id,
         radius=circle.radius(sketch.points),
         construction=circle.construction,
+    )
+
+
+def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
+    return ArcResponse(
+        id=arc.id,
+        center_point_id=arc.center_point_id,
+        start_point_id=arc.start_point_id,
+        end_point_id=arc.end_point_id,
+        radius=arc.radius(sketch.points),
+        construction=arc.construction,
     )
 
 
@@ -374,6 +395,52 @@ def delete_circle(sketch_id: str, circle_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_circle_or_404(sketch, circle_id)
     sketch.delete_circle(circle_id)
+
+
+@router.post("/sketches/{sketch_id}/arcs", response_model=ArcResponse, status_code=201)
+def create_arc(sketch_id: str, payload: ArcCreate) -> ArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        arc = sketch.add_arc(
+            payload.center_point_id,
+            payload.start_point_id,
+            payload.end_point_id,
+            end_angle=payload.end_angle,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _arc_response(sketch, arc)
+
+
+@router.get("/sketches/{sketch_id}/arcs", response_model=list[ArcResponse])
+def list_arcs(sketch_id: str) -> list[ArcResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_arc_response(sketch, arc) for arc in sketch.arcs()]
+
+
+@router.get("/sketches/{sketch_id}/arcs/{arc_id}", response_model=ArcResponse)
+def get_arc(sketch_id: str, arc_id: str) -> ArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _arc_response(sketch, _get_arc_or_404(sketch, arc_id))
+
+
+@router.patch("/sketches/{sketch_id}/arcs/{arc_id}", response_model=ArcResponse)
+def update_arc(sketch_id: str, arc_id: str, payload: ArcUpdate) -> ArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    arc = _get_arc_or_404(sketch, arc_id)
+    if payload.construction is not None:
+        arc.construction = payload.construction
+    return _arc_response(sketch, arc)
+
+
+@router.delete("/sketches/{sketch_id}/arcs/{arc_id}", status_code=204)
+def delete_arc(sketch_id: str, arc_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_arc_or_404(sketch, arc_id)
+    sketch.delete_arc(arc_id)
 
 
 @router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)

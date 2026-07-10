@@ -119,7 +119,49 @@ class CircleUpdate(BaseModel):
     construction: bool | None = None
 
 
-SketchEntityResponse = Union[LineResponse, CircleResponse]
+class ArcCreate(BaseModel):
+    """Create an arc from an existing center Point and an existing start
+    Point (together fixing the radius), plus either an existing end
+    Point's id (explicit sharing) or an end angle (radians from the +x
+    axis), which creates a new end Point on the same circle - mirroring
+    CircleCreate's existing-vs-computed-point pattern, one Point further
+    along."""
+
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str | None = None
+    end_angle: float | None = None
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_creation_mode(self) -> "ArcCreate":
+        if self.end_point_id is not None:
+            if self.end_angle is not None:
+                raise ValueError("Provide either 'end_point_id' or 'end_angle', not both")
+        elif self.end_angle is None:
+            raise ValueError("Provide either 'end_point_id' or 'end_angle'")
+        return self
+
+
+class ArcResponse(BaseModel):
+    type: Literal["arc"] = "arc"
+    id: str
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str
+    radius: float
+    construction: bool = False
+
+
+class ArcUpdate(BaseModel):
+    """Update an arc's construction flag - mirrors CircleUpdate. There is
+    no radius field here either: an arc's radius is driven by its two
+    DistanceConstraints (see Sketch.add_arc), not edited directly."""
+
+    construction: bool | None = None
+
+
+SketchEntityResponse = Union[LineResponse, CircleResponse, ArcResponse]
 
 
 class ProfileResponse(BaseModel):

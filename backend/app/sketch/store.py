@@ -2,7 +2,13 @@ import uuid
 
 from fastapi import HTTPException
 
-from app.sketch.models import Circle, Line, Point, Plane, Sketch, SketchEntityRef, SketchEntityType
+from app.sketch.models import Arc, Circle, Line, Point, Plane, Sketch, SketchEntityRef, SketchEntityType
+
+_ENTITY_TYPE_BY_REF: dict[SketchEntityType, type] = {
+    SketchEntityType.LINE: Line,
+    SketchEntityType.CIRCLE: Circle,
+    SketchEntityType.ARC: Arc,
+}
 
 # Temporary in-memory store, Stage 2 only - see the note in router.py. Pulled
 # out of router.py in Stage 7 so other modules (the Document/Part/Feature
@@ -67,14 +73,15 @@ def _missing_sketch_entity_reference(ref: SketchEntityRef) -> HTTPException:
     )
 
 
-def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle:
+def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle | Arc:
     """C1: resolves `ref` against the current store - a direct dict lookup
-    (`Sketch.points` for POINT, `Sketch.entities` for LINE/CIRCLE, with an
-    `isinstance` check so asking for a LINE at a Point/Circle's own id fails
-    closed rather than returning the wrong type), unlike `resolve_subshape`'s
-    OCCT re-derivation. Fails closed with the structured `missing_reference`
-    error above for an unknown `sketch_id`, an unknown `entity_id`, or an
-    `entity_id` that exists but is the wrong `entity_type`."""
+    (`Sketch.points` for POINT, `Sketch.entities` for LINE/CIRCLE/ARC, with
+    an `isinstance` check so asking for a LINE at a Point/Circle/Arc's own
+    id fails closed rather than returning the wrong type), unlike
+    `resolve_subshape`'s OCCT re-derivation. Fails closed with the
+    structured `missing_reference` error above for an unknown `sketch_id`,
+    an unknown `entity_id`, or an `entity_id` that exists but is the wrong
+    `entity_type`."""
     sketch = _sketches.get(ref.sketch_id)
     if sketch is None:
         raise _missing_sketch_entity_reference(ref)
@@ -85,7 +92,7 @@ def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle:
             return point
     else:
         entity = sketch.entities.get(ref.entity_id)
-        expected_type = Line if ref.entity_type == SketchEntityType.LINE else Circle
+        expected_type = _ENTITY_TYPE_BY_REF[ref.entity_type]
         if isinstance(entity, expected_type):
             return entity
 

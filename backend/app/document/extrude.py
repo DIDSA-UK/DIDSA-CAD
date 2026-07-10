@@ -44,7 +44,7 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
 )
-from app.sketch.models import Circle, Line, Sketch, SketchEntityRef, SketchEntityType
+from app.sketch.models import Arc, Circle, Line, Sketch, SketchEntityRef, SketchEntityType
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
@@ -68,6 +68,24 @@ def basis_normal(basis: ResolvedPlane) -> gp_Dir:
     return gp_Dir(x, y, z)
 
 
+def _arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
+    """The `gp_Ax2` an Arc's `gp_Circ` is built against - unlike Circle's
+    own `axis` (built with the 2-argument `gp_Ax2(point, normal)`, whose X
+    reference direction OCCT picks arbitrarily, harmless there since a full
+    circle's edge construction never reads it), an Arc's edge is trimmed
+    between two points via `BRepBuilderAPI_MakeEdge(gp_Circ, P1, P2)`,
+    which *does* pick one of the circle's two possible arcs based on that
+    reference direction (the trim always runs from P1 to P2 in the
+    direction of increasing parameter/angle). Passing the sketch plane's
+    own local +X axis as the explicit 3rd argument pins that parametrization
+    to exactly "standard CCW in the sketch's own local (x, y) coordinates"
+    - the same convention the Arc class docstring documents and the
+    client's 2D rendering must also use - rather than leaving it to
+    whatever direction OCCT happens to auto-select."""
+    x, y, z = basis.x_axis
+    return gp_Ax2(basis_point_to_world(basis, center_x, center_y), basis_normal(basis), gp_Dir(x, y, z))
+
+
 def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
     """C3: `basis`'s local (x, y) -> world-space embedding - generalizes the
     fixed-plane-only `sketch_point_to_world` this replaces (see
@@ -85,10 +103,12 @@ def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
 
 
 def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
-    """A Profile is either a Line-chain polygon (the common case) or a
-    standalone Circle (see app.sketch.profile._circle_profile, which packs
-    the Circle's own entity id into `line_ids` rather than a Line chain) -
-    each needs a different OCCT wire construction.
+    """A Profile is a standalone Circle (see app.sketch.profile._circle_
+    profile, which packs the Circle's own entity id into `line_ids` rather
+    than a Line chain), a pure Line-chain polygon (the common case), or a
+    Line/Arc-chain mixing straight and curved segments (e.g. a
+    rounded-corner rectangle) - each needs a different OCCT wire
+    construction.
 
     On-device feedback: public (no leading underscore) since
     `app.document.sweep` also needs a bare outer wire (not the full
@@ -103,12 +123,48 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         edge = BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
 
-    polygon = BRepBuilderAPI_MakePolygon()
-    for point_id in profile.point_ids:
-        point = sketch.points[point_id]
-        polygon.Add(basis_point_to_world(basis, point.x, point.y))
-    polygon.Close()
-    return polygon.Wire()
+    if not any(isinstance(sketch.entities.get(entity_id), Arc) for entity_id in profile.line_ids):
+        polygon = BRepBuilderAPI_MakePolygon()
+        for point_id in profile.point_ids:
+            point = sketch.points[point_id]
+            polygon.Add(basis_point_to_world(basis, point.x, point.y))
+        polygon.Close()
+        return polygon.Wire()
+
+    # A Line/Arc-mixed chain: BRepBuilderAPI_MakePolygon has no notion of a
+    # curved segment at all, so each hop is built as its own edge (straight
+    # for a Line, a trimmed circular arc for an Arc) and stitched together
+    # via BRepBuilderAPI_MakeWire, which matches shared vertices regardless
+    # of each edge's own parametric direction - so an Arc edge is always
+    # built from its own canonical start->end Points (see the Arc class
+    # docstring's CCW convention), never from `point_ids[i]`/`point_ids[i+1]`
+    # order, which depends on which direction profile.py's graph walk
+    # happened to trace this loop in and would otherwise risk picking the
+    # circle's *other* (wrong) arc between the same two points.
+    wire_maker = BRepBuilderAPI_MakeWire()
+    point_count = len(profile.point_ids)
+    for i in range(point_count):
+        entity = sketch.entities[profile.line_ids[i]]
+        if isinstance(entity, Arc):
+            center = sketch.points[entity.center_point_id]
+            radius = entity.radius(sketch.points)
+            axis = _arc_axis(basis, center.x, center.y)
+            start = sketch.points[entity.start_point_id]
+            end = sketch.points[entity.end_point_id]
+            edge = BRepBuilderAPI_MakeEdge(
+                gp_Circ(axis, radius),
+                basis_point_to_world(basis, start.x, start.y),
+                basis_point_to_world(basis, end.x, end.y),
+            ).Edge()
+        else:
+            a = sketch.points[profile.point_ids[i]]
+            b = sketch.points[profile.point_ids[(i + 1) % point_count]]
+            edge = BRepBuilderAPI_MakeEdge(
+                basis_point_to_world(basis, a.x, a.y),
+                basis_point_to_world(basis, b.x, b.y),
+            ).Edge()
+        wire_maker.Add(edge)
+    return wire_maker.Wire()
 
 
 def _wire_normal(wire: TopoDS_Wire) -> gp_Dir:
@@ -186,8 +242,8 @@ def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature
 def invalid_profile_ref(ref: SketchEntityRef) -> HTTPException:
     """Prompt G: the structured `invalid_profile_ref` error for a
     `profile_refs` anchor that cannot select a real outer profile - covers
-    every way this can fail: the entity doesn't exist, isn't a Line/Circle
-    (only those two can anchor a profile - a Point can't), or exists but
+    every way this can fail: the entity doesn't exist, isn't a Line/Circle/
+    Arc (only those can anchor a profile - a Point can't), or exists but
     isn't part of any of `detect_profile`'s current outer profiles (it
     belongs to a hole, or to an unusable open-chain/branch component
     `detect_profile` already excluded). Public (no leading underscore) since
@@ -240,13 +296,13 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
 
     selected_indices: set[int] = set()
     for ref in profile_refs:
-        if ref.entity_type not in (SketchEntityType.LINE, SketchEntityType.CIRCLE):
+        if ref.entity_type not in (SketchEntityType.LINE, SketchEntityType.CIRCLE, SketchEntityType.ARC):
             raise invalid_profile_ref(ref)
         try:
             entity = resolve_sketch_entity(ref)
         except HTTPException:
             raise invalid_profile_ref(ref) from None
-        if not isinstance(entity, (Line, Circle)):
+        if not isinstance(entity, (Line, Circle, Arc)):
             raise invalid_profile_ref(ref)
 
         match_index = next(

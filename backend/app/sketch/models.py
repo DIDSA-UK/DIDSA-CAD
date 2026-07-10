@@ -150,6 +150,61 @@ class Circle(SketchEntity):
         return math.hypot(radius_point.x - center.x, radius_point.y - center.y)
 
 
+@dataclass
+class Arc(SketchEntity):
+    """A circular arc defined by three referenced Points: a center Point
+    and a start/end Point pair on the arc's own circle. All three are
+    real, independently addressable Points, same as Line's/Circle's own
+    defining Points.
+
+    The radius is a real solver constraint, not a stored number - exactly
+    like Circle's, just doubled: `add_arc` creates a DistanceConstraint
+    pinning the start Point's distance from center, and a second
+    DistanceConstraint pinning the end Point's distance from center to the
+    *same* value, so a drag of either Point (or the center) keeps both
+    ends on the same circle after the next solve. There is no dedicated
+    py-slvs arc entity or "equal radius" constraint involved - two
+    independent DistanceConstraints sharing one initial value achieves the
+    same result with zero new solver primitives, mirroring the project's
+    "reuse existing constraint types" approach to Circle.
+
+    DOES override `endpoint_point_ids()` (unlike Circle): an Arc's
+    start/end Points ARE real chain-connection points for closed-loop
+    detection purposes, exactly like a Line's - a Line-and-Arc chain that
+    closes into a loop (e.g. a rounded-corner rectangle) is a valid
+    profile, detected by the same generic connectivity walk `profile.py`
+    already runs over any entity with a non-None `endpoint_point_ids()`.
+    The center Point is deliberately excluded from that tuple - it is not
+    a chain-connection point, only start/end are.
+
+    The arc traced from start to end is always the one going
+    counter-clockwise around center as seen along the sketch plane's
+    normal (matching gp_Circ's own parametrization convention) - both the
+    client's 2D rendering and `app.document.extrude.wire_for_profile`'s
+    OCCT edge construction must agree on this, since a circle has two
+    possible arcs between any two points on it and only one is "the" Arc.
+    """
+
+    id: str
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str
+    radius_constraint_id: str
+    end_radius_constraint_id: str
+
+    @property
+    def type(self) -> str:
+        return "arc"
+
+    def endpoint_point_ids(self) -> tuple[str, str]:
+        return (self.start_point_id, self.end_point_id)
+
+    def radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center_point_id]
+        start = points[self.start_point_id]
+        return math.hypot(start.x - center.x, start.y - center.y)
+
+
 class SketchEntityType(str, Enum):
     """Which kind of Sketch entity a `SketchEntityRef` (below) points at.
     Mirrors app.document.models.SubShapeType's str-Enum pattern so it
@@ -160,6 +215,7 @@ class SketchEntityType(str, Enum):
     POINT = "point"
     LINE = "line"
     CIRCLE = "circle"
+    ARC = "arc"
 
 
 @dataclass(frozen=True)
@@ -322,6 +378,63 @@ class Sketch:
     def circles(self) -> list[Circle]:
         return [entity for entity in self.entities.values() if isinstance(entity, Circle)]
 
+    def add_arc(
+        self,
+        center_point_id: str,
+        start_point_id: str,
+        end_point_id: str | None = None,
+        *,
+        end_angle: float | None = None,
+        construction: bool = False,
+    ) -> Arc:
+        """Add an Arc from an existing center Point and an existing start
+        Point (together fixing the radius, same as Circle's center/radius
+        Point pair) to either an existing end Point (explicit sharing) or
+        a new Point computed from the current radius and an end angle
+        (radians from the +x axis) - always placed exactly on the circle
+        of that radius, mirroring add_circle's existing-vs-computed-point
+        pattern.
+
+        Both the start and end Point's distance from center become real
+        solver DistanceConstraints, pinned to the *same* radius value at
+        creation - keeps the Arc circular under drag exactly like Circle's
+        own single radius DistanceConstraint, just applied to both
+        defining Points instead of one (see the Arc class docstring).
+        """
+        center = self.points[center_point_id]
+        start = self.points[start_point_id]
+        radius = math.hypot(start.x - center.x, start.y - center.y)
+        if radius == 0:
+            raise ValueError("An arc's start point cannot coincide with its center point")
+
+        if end_point_id is None:
+            end_point_id = self.add_point(
+                center.x + radius * math.cos(end_angle),
+                center.y + radius * math.sin(end_angle),
+            ).id
+        elif end_point_id not in self.points:
+            raise KeyError(end_point_id)
+
+        if len({center_point_id, start_point_id, end_point_id}) != 3:
+            raise ValueError("An arc's center, start, and end points must all be distinct")
+
+        radius_constraint = self.add_distance_constraint(center_point_id, start_point_id, radius)
+        end_radius_constraint = self.add_distance_constraint(center_point_id, end_point_id, radius)
+        arc = Arc(
+            id=str(uuid.uuid4()),
+            center_point_id=center_point_id,
+            start_point_id=start_point_id,
+            end_point_id=end_point_id,
+            radius_constraint_id=radius_constraint.id,
+            end_radius_constraint_id=end_radius_constraint.id,
+            construction=construction,
+        )
+        self.entities[arc.id] = arc
+        return arc
+
+    def arcs(self) -> list[Arc]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Arc)]
+
     def delete_line(self, line_id: str) -> None:
         """Remove a Line. Its endpoint Points are left untouched - they may
         be shared with other Lines, so only an explicit Point deletion can
@@ -343,6 +456,19 @@ class Sketch:
         del self.entities[circle_id]
         self.constraints.pop(circle.radius_constraint_id, None)
 
+    def delete_arc(self, arc_id: str) -> None:
+        """Remove an Arc and the two radius DistanceConstraints `add_arc`
+        always creates alongside it - same "internal implementation
+        detail" exception `delete_circle` already makes for its own radius
+        constraint. The center/start/end Points themselves are left
+        untouched, same as `delete_line`/`delete_circle`."""
+        arc = self.entities.get(arc_id)
+        if not isinstance(arc, Arc):
+            raise KeyError(arc_id)
+        del self.entities[arc_id]
+        self.constraints.pop(arc.radius_constraint_id, None)
+        self.constraints.pop(arc.end_radius_constraint_id, None)
+
     def _point_deletion_blocker(self, point_id: str) -> str | None:
         """A human-readable reason this Point cannot be deleted, or None if
         deletion is safe. A Point is only ever deleted explicitly, never as
@@ -355,6 +481,12 @@ class Sketch:
                 return f"Point is still referenced by line {entity.id}"
             if isinstance(entity, Circle) and point_id in (entity.center_point_id, entity.radius_point_id):
                 return f"Point is still referenced by circle {entity.id}"
+            if isinstance(entity, Arc) and point_id in (
+                entity.center_point_id,
+                entity.start_point_id,
+                entity.end_point_id,
+            ):
+                return f"Point is still referenced by arc {entity.id}"
         for constraint in self.constraints.values():
             if point_id in constraint.point_ids():
                 return f"Point is still referenced by constraint {constraint.id}"
