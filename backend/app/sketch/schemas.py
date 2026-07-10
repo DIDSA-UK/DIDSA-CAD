@@ -4,6 +4,7 @@ from pydantic import BaseModel, model_validator
 
 from app.sketch.models import Plane
 from app.sketch.profile import ProfileStatus
+from app.sketch.text_fonts import DEFAULT_FONT, FONT_ALLOWLIST
 
 
 class SketchCreate(BaseModel):
@@ -247,7 +248,99 @@ class SplineUpdate(BaseModel):
     construction: bool | None = None
 
 
-SketchEntityResponse = Union[LineResponse, CircleResponse, ArcResponse, EllipseResponse, SplineResponse]
+class TextCreate(BaseModel):
+    """Create a Text entity anchored to an existing Point - mirrors
+    `SplineCreate`: unlike Circle/Arc/Ellipse's existing-vs-computed-point
+    choice, the anchor Point must already exist (created via the ordinary
+    `/points` endpoint first), since a Text entity has exactly one Point
+    and no derived-from-radius placement to compute. `font` must be one
+    of `app.sketch.text_fonts.FONT_ALLOWLIST`'s small backend-bundled set
+    (see `app.sketch.models.TextEntity`'s own docstring for why) -
+    checked here rather than deferred to the (materially more expensive)
+    actual OCCT conversion, so an unknown font is rejected immediately
+    with a clear 422 rather than surfacing later as a confusing failure
+    from profile detection or extrude."""
+
+    content: str
+    anchor_point_id: str
+    font: str = DEFAULT_FONT
+    size: float = 10.0
+    rotation_degrees: float = 0.0
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_content(self) -> "TextCreate":
+        if not self.content:
+            raise ValueError("Text content cannot be empty")
+        if self.size <= 0:
+            raise ValueError("Text size must be positive")
+        if self.font not in FONT_ALLOWLIST:
+            raise ValueError(f"Unknown font: {self.font!r}")
+        return self
+
+
+class TextResponse(BaseModel):
+    type: Literal["text"] = "text"
+    id: str
+    content: str
+    font: str
+    size: float
+    anchor_point_id: str
+    rotation_degrees: float = 0.0
+    construction: bool = False
+
+
+class TextUpdate(BaseModel):
+    """Update any of a Text entity's own directly-editable fields -
+    mirrors EllipseUpdate/SplineUpdate's "construction flag, plus
+    whatever fields have no backing solver constraint of their own"
+    shape. Every field here is a plain direct edit (see TextEntity's own
+    docstring: none of `content`/`font`/`size`/`rotation_degrees` is
+    solver-tracked) - omitted fields are left unchanged."""
+
+    content: str | None = None
+    font: str | None = None
+    size: float | None = None
+    rotation_degrees: float | None = None
+    construction: bool | None = None
+
+    @model_validator(mode="after")
+    def check_values(self) -> "TextUpdate":
+        if self.content is not None and not self.content:
+            raise ValueError("Text content cannot be empty")
+        if self.size is not None and self.size <= 0:
+            raise ValueError("Text size must be positive")
+        if self.font is not None and self.font not in FONT_ALLOWLIST:
+            raise ValueError(f"Unknown font: {self.font!r}")
+        return self
+
+
+class TextContourResponse(BaseModel):
+    """One glyph's own closed boundary (`outer`) plus its own inner holes
+    (`holes`, e.g. the counter in "o"/"e"/"a"/"g") - both as sketch-local
+    `(x, y)` polylines, already positioned/rotated per the owning Text
+    entity's own anchor Point and `rotation_degrees` (the client draws
+    these directly with its existing sketch-space rendering, no extra
+    transform needed). Each polyline is closed but does not repeat its
+    first point."""
+
+    outer: list[tuple[float, float]]
+    holes: list[list[tuple[float, float]]] = []
+
+
+class TextPreviewResponse(BaseModel):
+    """A Text entity's full tessellated outline - one `TextContourResponse`
+    per glyph (see `app.sketch.profile._text_profile`) - for client
+    rendering only (see the Text tool's own scoping notes: no font-outline
+    renderer belongs in Flutter, so the client fetches/caches/draws this
+    real server-tessellated outline instead of approximating one)."""
+
+    contours: list[TextContourResponse]
+
+
+SketchEntityResponse = Union[
+    LineResponse, CircleResponse, ArcResponse, EllipseResponse, SplineResponse, TextResponse
+]
 
 
 class ProfileResponse(BaseModel):

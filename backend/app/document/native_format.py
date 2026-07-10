@@ -70,6 +70,7 @@ from app.sketch.models import (
     SketchEntityRef,
     SketchEntityType,
     Spline,
+    TextEntity,
 )
 
 # Bumped whenever the on-disk shape changes in a way that breaks reading an
@@ -168,6 +169,17 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "control_point_ids": entity.control_point_ids,
             "tangent_constraint_ids": entity.tangent_constraint_ids,
         }
+    if isinstance(entity, TextEntity):
+        return {
+            "type": "text",
+            "id": entity.id,
+            "construction": entity.construction,
+            "content": entity.content,
+            "font": entity.font,
+            "size": entity.size,
+            "anchor_point_id": entity.anchor_point_id,
+            "rotation_degrees": entity.rotation_degrees,
+        }
     raise NativeFormatError(f"No native export mapping for sketch entity type: {entity.type!r}")
 
 
@@ -214,6 +226,16 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             through_point_ids=list(_require(data, "through_point_ids")),
             control_point_ids=list(_require(data, "control_point_ids")),
             tangent_constraint_ids=list(_require(data, "tangent_constraint_ids")),
+        )
+    if entity_type == "text":
+        return TextEntity(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            content=_require(data, "content"),
+            font=_require(data, "font"),
+            size=_require(data, "size"),
+            anchor_point_id=_require(data, "anchor_point_id"),
+            rotation_degrees=data.get("rotation_degrees", 0.0),
         )
     raise NativeFormatError(f"Unknown native sketch entity type: {entity_type!r}")
 

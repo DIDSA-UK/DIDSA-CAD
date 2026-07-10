@@ -334,6 +334,57 @@ class Spline(SketchEntity):
         ]
 
 
+@dataclass
+class TextEntity(SketchEntity):
+    """A string of text, rendered via a bundled font's outline as one or
+    more closed contours (each glyph, plus that glyph's own inner holes
+    like the counters in "o"/"e"/"a"/"g") for cutting/embossing - see the
+    Text tool's own scoping notes in docs/sketcher-overhaul-scope.md
+    6.2.6.
+
+    Deliberately NOT decomposed into constrainable Points/Lines/Splines
+    the way every other entity here is: a single word already produces
+    dozens of contours and curve segments, and nobody hand-tweaks the
+    curve of a single serif - every mainstream CAD tool treats sketch
+    text the same way, an opaque, regenerate-on-edit object. The only
+    real, independently addressable, draggable/constrainable Point is
+    `anchor_point_id` (the same role Circle's center Point plays) - the
+    glyph geometry itself is never persisted as Points, it regenerates
+    fresh from `content`/`font`/`size`/`rotation_degrees` on every read
+    via `app.sketch.text_geometry.text_to_shape`, the same
+    recompute-from-parametric-inputs principle every other feature/
+    extrude/fillet in this app already follows.
+
+    `font` is restricted to `app.sketch.text_geometry.FONT_ALLOWLIST` (a
+    small backend-bundled set, not arbitrary system/uploaded fonts - see
+    that module's own docstring) - enforced at creation/update time, not
+    here (a bare dataclass has no validation of its own, matching every
+    other entity in this file).
+
+    `rotation_degrees` is a plain, directly user-set value (unlike
+    Ellipse's own `rotation()`, which is *derived* from a second Point) -
+    there is no second Point here to derive an angle from, so this is
+    edited the same direct-PATCH way Ellipse's `minor_radius` is.
+
+    Does NOT override `endpoint_point_ids()` (inherits the base class's
+    `None`, same as Circle/Ellipse): Text is always its own standalone
+    closed-loop-producing entity (in fact potentially several, one per
+    glyph), never part of a Line/Arc/Spline chain's connectivity graph -
+    see `profile.py`'s `_text_profile`.
+    """
+
+    id: str
+    content: str
+    font: str
+    size: float
+    anchor_point_id: str
+    rotation_degrees: float = 0.0
+
+    @property
+    def type(self) -> str:
+        return "text"
+
+
 class SketchEntityType(str, Enum):
     """Which kind of Sketch entity a `SketchEntityRef` (below) points at.
     Mirrors app.document.models.SubShapeType's str-Enum pattern so it
@@ -347,6 +398,7 @@ class SketchEntityType(str, Enum):
     ARC = "arc"
     ELLIPSE = "ellipse"
     SPLINE = "spline"
+    TEXT = "text"
 
 
 @dataclass(frozen=True)
@@ -684,6 +736,44 @@ class Sketch:
     def splines(self) -> list[Spline]:
         return [entity for entity in self.entities.values() if isinstance(entity, Spline)]
 
+    def add_text(
+        self,
+        content: str,
+        font: str,
+        size: float,
+        anchor_point_id: str,
+        *,
+        rotation_degrees: float = 0.0,
+        construction: bool = False,
+    ) -> TextEntity:
+        """Add a Text entity anchored to an existing Point. `content`/
+        `font`/`size` validation (non-empty, allow-listed font, positive
+        size) happens in `app.sketch.text_geometry.text_to_shape`, called
+        lazily wherever the Text's actual geometry is needed (profile
+        detection, extrude, the preview-outline endpoint) rather than
+        here - this mirrors every other `add_*` here only validating what
+        it can cheaply check up front (the anchor Point's existence), not
+        pre-flighting a call to what's ultimately a fairly expensive OCCT
+        conversion just to validate input at creation time.
+        """
+        if anchor_point_id not in self.points:
+            raise KeyError(anchor_point_id)
+
+        text = TextEntity(
+            id=str(uuid.uuid4()),
+            content=content,
+            font=font,
+            size=size,
+            anchor_point_id=anchor_point_id,
+            rotation_degrees=rotation_degrees,
+            construction=construction,
+        )
+        self.entities[text.id] = text
+        return text
+
+    def texts(self) -> list[TextEntity]:
+        return [entity for entity in self.entities.values() if isinstance(entity, TextEntity)]
+
     def delete_line(self, line_id: str) -> None:
         """Remove a Line. Its endpoint Points are left untouched - they may
         be shared with other Lines, so only an explicit Point deletion can
@@ -745,6 +835,14 @@ class Sketch:
         for constraint_id in spline.tangent_constraint_ids:
             self.constraints.pop(constraint_id, None)
 
+    def delete_text(self, text_id: str) -> None:
+        """Remove a Text entity. Its anchor Point is left untouched, same
+        as every other entity's own defining Point(s) - it may be shared
+        with other entities via explicit id reference, same as any Point."""
+        if not isinstance(self.entities.get(text_id), TextEntity):
+            raise KeyError(text_id)
+        del self.entities[text_id]
+
     def _point_deletion_blocker(self, point_id: str) -> str | None:
         """A human-readable reason this Point cannot be deleted, or None if
         deletion is safe. A Point is only ever deleted explicitly, never as
@@ -769,6 +867,8 @@ class Sketch:
                 point_id in entity.through_point_ids or point_id in entity.control_point_ids
             ):
                 return f"Point is still referenced by spline {entity.id}"
+            if isinstance(entity, TextEntity) and point_id == entity.anchor_point_id:
+                return f"Point is still referenced by text {entity.id}"
         for constraint in self.constraints.values():
             if point_id in constraint.point_ids():
                 return f"Point is still referenced by constraint {constraint.id}"

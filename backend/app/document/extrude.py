@@ -27,7 +27,7 @@ from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_V
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
-from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
@@ -47,9 +47,20 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
 )
-from app.sketch.models import Arc, Circle, Ellipse, Line, Sketch, SketchEntityRef, SketchEntityType, Spline
+from app.sketch.models import (
+    Arc,
+    Circle,
+    Ellipse,
+    Line,
+    Sketch,
+    SketchEntityRef,
+    SketchEntityType,
+    Spline,
+    TextEntity,
+)
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
+from app.sketch.text_geometry import text_contour_wire
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +133,49 @@ def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
     return gp_Pnt(ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
 
 
+def _text_world_transform(text: TextEntity, sketch: Sketch, basis: ResolvedPlane) -> gp_Trsf:
+    """The local(text_to_brep's own baseline-origin space) -> world
+    transform for `text`'s own geometry: first rotated in-plane by
+    `text.rotation_degrees` and translated to its anchor Point (both in
+    the sketch's own local (x, y) space, mirroring `_ellipse_axis`'s
+    identical "rotate the basis's own in-plane axes" composition), then
+    embedded in world space via `basis` - composed directly into one 3x4
+    affine matrix (`gp_Trsf.SetValues`) rather than two chained
+    `BRepBuilderAPI_Transform` calls, avoiding a second full-shape copy.
+    `text_to_brep`'s own shapes always lie flat at local Z=0 (confirmed
+    by direct on-device testing), so this transform's Z-column
+    coefficients (`basis.normal`) never actually get exercised by any
+    coordinate this is applied to - included anyway to keep the matrix a
+    genuine orthonormal 3D transform, not a degenerate 2D-only one.
+    """
+    anchor = sketch.points[text.anchor_point_id]
+    rotation = math.radians(text.rotation_degrees)
+    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    nx, ny, nz = basis.normal
+    # The world-space direction local +x/+y each map along, after the
+    # in-plane rotation - same composition _ellipse_axis uses for its own
+    # rotated major-axis direction.
+    x_prime = (cos_r * xx + sin_r * yx, cos_r * xy + sin_r * yy, cos_r * xz + sin_r * yz)
+    y_prime = (-sin_r * xx + cos_r * yx, -sin_r * xy + cos_r * yy, -sin_r * xz + cos_r * yz)
+    translation = basis_point_to_world(basis, anchor.x, anchor.y)
+
+    trsf = gp_Trsf()
+    trsf.SetValues(
+        x_prime[0], y_prime[0], nx, translation.X(),
+        x_prime[1], y_prime[1], ny, translation.Y(),
+        x_prime[2], y_prime[2], nz, translation.Z(),
+    )
+    return trsf
+
+
 def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
-    """A Profile is a standalone Circle (see app.sketch.profile._circle_
-    profile, which packs the Circle's own entity id into `line_ids` rather
-    than a Line chain), a pure Line-chain polygon (the common case), or a
-    Line/Arc-chain mixing straight and curved segments (e.g. a
+    """A Profile is a standalone Circle/Ellipse/Text contour (see
+    app.sketch.profile._circle_profile/_ellipse_profile/_text_profile,
+    which all pack the owning entity's own id into `line_ids` rather than
+    a Line chain), a pure Line-chain polygon (the common case), or a
+    Line/Arc/Spline-chain mixing straight and curved segments (e.g. a
     rounded-corner rectangle) - each needs a different OCCT wire
     construction.
 
@@ -153,6 +202,22 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         # creation/update time (see Sketch.add_ellipse/EllipseUpdate).
         edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, ellipse.minor_radius)).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
+
+    if len(profile.line_ids) == 1 and isinstance(sketch.entities.get(profile.line_ids[0]), TextEntity):
+        # A Text contour's own boundary (`profile.text_vertices`) is only
+        # a coarse tessellation, used for profile.py's nesting/containment
+        # classification, never for the actual solid - the real wire is
+        # the EXACT curve `app.sketch.text_geometry.text_contour_wire`
+        # re-derives directly from a fresh OCCT font-to-BRep conversion
+        # (see that function's own docstring for why it can't just be
+        # reconstructed from the tessellation), placed in world space via
+        # `_text_world_transform` (see that function's own doc comment).
+        text = sketch.entities[profile.line_ids[0]]
+        local_wire = text_contour_wire(
+            text.content, text.font, text.size, profile.text_contour_index, profile.text_hole_index
+        )
+        transform = _text_world_transform(text, sketch, basis)
+        return topods.Wire(BRepBuilderAPI_Transform(local_wire, transform, True).Shape())
 
     if not any(
         isinstance(sketch.entities.get(entity_id), (Arc, Spline)) for entity_id in profile.line_ids
@@ -330,15 +395,20 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
     update, and picking a subset of 2+ closed loops is now possible instead
     of always using all of them).
 
-    Each `profile_refs` entry names one anchor entity (a Line or Circle)
-    expected to belong to one of `candidates`' own `line_ids` - resolved via
-    `app.sketch.store.resolve_sketch_entity`, then matched by scanning each
-    candidate's `line_ids` (a Circle profile's `line_ids` holds its own
-    single entity id - see `app.sketch.profile._circle_profile` - so the
-    same membership check works uniformly for both profile shapes). Fails
-    closed with `invalid_profile_ref` (never a generic `missing_reference`
-    or an uncaught lookup error) for every way an anchor can fail to select
-    a real outer profile - see `invalid_profile_ref`'s own doc comment.
+    Each `profile_refs` entry names one anchor entity (a Line, Circle, Arc,
+    Ellipse, Spline, or Text) expected to belong to one or more of
+    `candidates`' own `line_ids` - resolved via `app.sketch.store.
+    resolve_sketch_entity`, then matched by scanning each candidate's
+    `line_ids` (a Circle/Ellipse/Spline/Text profile's `line_ids` holds its
+    own single owning entity id - see `app.sketch.profile._circle_profile`/
+    `_ellipse_profile`/`_text_profile` - so the same membership check works
+    uniformly across every profile shape). A Text entity is the only one
+    that can own more than one top-level candidate at once (one per glyph
+    contour), so referencing it selects every one of its own loops, not
+    just the first. Fails closed with `invalid_profile_ref` (never a
+    generic `missing_reference` or an uncaught lookup error) for every way
+    an anchor can fail to select a real outer profile - see
+    `invalid_profile_ref`'s own doc comment.
 
     Selected profiles are deduplicated (two refs naming the same loop select
     it once) and returned in `candidates`' own order, not `profile_refs`'
@@ -355,21 +425,25 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
             SketchEntityType.ARC,
             SketchEntityType.ELLIPSE,
             SketchEntityType.SPLINE,
+            SketchEntityType.TEXT,
         ):
             raise invalid_profile_ref(ref)
         try:
             entity = resolve_sketch_entity(ref)
         except HTTPException:
             raise invalid_profile_ref(ref) from None
-        if not isinstance(entity, (Line, Circle, Arc, Ellipse, Spline)):
+        if not isinstance(entity, (Line, Circle, Arc, Ellipse, Spline, TextEntity)):
             raise invalid_profile_ref(ref)
 
-        match_index = next(
-            (i for i, candidate in enumerate(candidates) if entity.id in candidate.line_ids), None
-        )
-        if match_index is None:
+        # A Text entity can own several top-level candidates at once (one
+        # per glyph contour - see app.sketch.profile._text_profile), so
+        # every matching candidate is selected here, not just the first -
+        # every other entity type only ever owns exactly one, so this is
+        # a no-op generalization for them (a set of one match either way).
+        matched_indices = [i for i, candidate in enumerate(candidates) if entity.id in candidate.line_ids]
+        if not matched_indices:
             raise invalid_profile_ref(ref)
-        selected_indices.add(match_index)
+        selected_indices.update(matched_indices)
 
     return [candidates[i] for i in sorted(selected_indices)]
 

@@ -18,7 +18,7 @@ from app.sketch.constraints import (
     SplineTangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch, Spline
+from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch, Spline, TextEntity
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
@@ -71,12 +71,18 @@ from app.sketch.schemas import (
     SplineResponse,
     SplineTangentConstraintResponse,
     SplineUpdate,
+    TextContourResponse,
+    TextCreate,
+    TextPreviewResponse,
+    TextResponse,
+    TextUpdate,
     VerticalConstraintCreate,
     VerticalConstraintResponse,
 )
 from app.sketch.solver import SolveResult, solve_sketch
 from app.sketch.store import create_sketch as _create_sketch
 from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
+from app.sketch.text_geometry import place_local_point, text_to_polygons
 
 router = APIRouter(prefix="/sketch", tags=["sketch"])
 
@@ -120,6 +126,13 @@ def _get_spline_or_404(sketch: Sketch, spline_id: str) -> Spline:
     entity = sketch.entities.get(spline_id)
     if not isinstance(entity, Spline):
         raise HTTPException(status_code=404, detail="Spline not found")
+    return entity
+
+
+def _get_text_or_404(sketch: Sketch, text_id: str) -> TextEntity:
+    entity = sketch.entities.get(text_id)
+    if not isinstance(entity, TextEntity):
+        raise HTTPException(status_code=404, detail="Text not found")
     return entity
 
 
@@ -183,6 +196,18 @@ def _spline_response(spline: Spline) -> SplineResponse:
         through_point_ids=spline.through_point_ids,
         control_point_ids=spline.control_point_ids,
         construction=spline.construction,
+    )
+
+
+def _text_response(text: TextEntity) -> TextResponse:
+    return TextResponse(
+        id=text.id,
+        content=text.content,
+        font=text.font,
+        size=text.size,
+        anchor_point_id=text.anchor_point_id,
+        rotation_degrees=text.rotation_degrees,
+        construction=text.construction,
     )
 
 
@@ -592,6 +617,93 @@ def delete_spline(sketch_id: str, spline_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_spline_or_404(sketch, spline_id)
     sketch.delete_spline(spline_id)
+
+
+@router.post("/sketches/{sketch_id}/texts", response_model=TextResponse, status_code=201)
+def create_text(sketch_id: str, payload: TextCreate) -> TextResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        text = sketch.add_text(
+            payload.content,
+            payload.font,
+            payload.size,
+            payload.anchor_point_id,
+            rotation_degrees=payload.rotation_degrees,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _text_response(text)
+
+
+@router.get("/sketches/{sketch_id}/texts", response_model=list[TextResponse])
+def list_texts(sketch_id: str) -> list[TextResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_text_response(text) for text in sketch.texts()]
+
+
+@router.get("/sketches/{sketch_id}/texts/{text_id}", response_model=TextResponse)
+def get_text(sketch_id: str, text_id: str) -> TextResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _text_response(_get_text_or_404(sketch, text_id))
+
+
+@router.patch("/sketches/{sketch_id}/texts/{text_id}", response_model=TextResponse)
+def update_text(sketch_id: str, text_id: str, payload: TextUpdate) -> TextResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    text = _get_text_or_404(sketch, text_id)
+    if payload.content is not None:
+        text.content = payload.content
+    if payload.font is not None:
+        text.font = payload.font
+    if payload.size is not None:
+        text.size = payload.size
+    if payload.rotation_degrees is not None:
+        text.rotation_degrees = payload.rotation_degrees
+    if payload.construction is not None:
+        text.construction = payload.construction
+    return _text_response(text)
+
+
+@router.delete("/sketches/{sketch_id}/texts/{text_id}", status_code=204)
+def delete_text(sketch_id: str, text_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_text_or_404(sketch, text_id)
+    sketch.delete_text(text_id)
+
+
+@router.get("/sketches/{sketch_id}/texts/{text_id}/preview", response_model=TextPreviewResponse)
+def get_text_preview(sketch_id: str, text_id: str) -> TextPreviewResponse:
+    """Every contour of `text_id`'s own current outline, already positioned
+    per its anchor Point/rotation, in sketch-local `(x, y)` - see the Text
+    tool's own scoping notes: no font-outline renderer belongs in the
+    client, so it fetches/caches/draws this real server-tessellated
+    outline instead of approximating one itself. Regenerated fresh on
+    every call (see `app.sketch.text_geometry`'s own docstring) - the
+    client is expected to call this once per content/font/size/rotation
+    change and cache the result locally, not poll it."""
+    sketch = _get_sketch_or_404(sketch_id)
+    text = _get_text_or_404(sketch, text_id)
+    anchor = sketch.points[text.anchor_point_id]
+
+    def placed(local: tuple[float, float]) -> tuple[float, float]:
+        return place_local_point(anchor.x, anchor.y, text.rotation_degrees, local[0], local[1])
+
+    try:
+        contours = text_to_polygons(text.content, text.font, text.size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TextPreviewResponse(
+        contours=[
+            TextContourResponse(
+                outer=[placed(p) for p in outer],
+                holes=[[placed(p) for p in hole] for hole in holes],
+            )
+            for outer, holes in contours
+        ]
+    )
 
 
 @router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)
