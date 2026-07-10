@@ -60,11 +60,27 @@ class SketchCircleView {
   });
 }
 
+class SketchArcView {
+  final String id;
+  final String centerPointId;
+  final String startPointId;
+  final String endPointId;
+  final bool construction;
+
+  const SketchArcView({
+    required this.id,
+    required this.centerPointId,
+    required this.startPointId,
+    required this.endPointId,
+    this.construction = false,
+  });
+}
+
 /// Which entity the next tap-to-place commits, while [SketchMode.draw] is
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point, rectangle }
+enum SketchTool { line, circle, point, rectangle, arc }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -135,6 +151,32 @@ class CircleGhost extends DrawGhost {
   const CircleGhost({required this.centerX, required this.centerY, required this.edgeX, required this.edgeY});
 }
 
+/// Previews an Arc centered at [centerX]/[centerY], from the already-placed
+/// start Point at [startX]/[startY] to [endX]/[endY] - the cursor's
+/// position projected onto the circle of radius `dist(center, start)`
+/// (see [SketchController._arcDrawGhost]), so the previewed end is always
+/// a valid point on the same circle the real Arc would be created on,
+/// never the raw cursor position. Only relevant once both center and
+/// start are placed - the center-only stage instead reuses [CircleGhost]
+/// (see [SketchController._arcDrawGhost]'s own doc comment).
+class ArcGhost extends DrawGhost {
+  final double centerX;
+  final double centerY;
+  final double startX;
+  final double startY;
+  final double endX;
+  final double endY;
+
+  const ArcGhost({
+    required this.centerX,
+    required this.centerY,
+    required this.startX,
+    required this.startY,
+    required this.endX,
+    required this.endY,
+  });
+}
+
 /// Previews a Rectangle's 4 corners, in the same winding order
 /// [SketchController._buildRectangle] would use to create its 4 Lines.
 class RectGhost extends DrawGhost {
@@ -144,6 +186,27 @@ class RectGhost extends DrawGhost {
   final (double, double) corner3;
 
   const RectGhost({required this.corner0, required this.corner1, required this.corner2, required this.corner3});
+}
+
+/// Normalizes [angle] (radians) into `[0, 2*pi)`.
+double normalizeSketchAngle(double angle) {
+  const twoPi = 2 * math.pi;
+  final wrapped = angle % twoPi;
+  return wrapped < 0 ? wrapped + twoPi : wrapped;
+}
+
+/// Whether [angle] falls within the counter-clockwise sweep from
+/// [startAngle] to [endAngle] (all radians) - the shared definition of "on
+/// this arc" used by both hit-testing ([SketchController._entityAt]) and
+/// rendering (the canvas's real-Arc/[ArcGhost] painting), so what's drawn
+/// and what's tappable never disagree about which of the two possible
+/// arcs between two angles is "the" arc. Matches the backend's own
+/// CCW-in-sketch-space convention (see the backend's `app.sketch.models.
+/// Arc` docstring).
+bool angleWithinArcSweep(double angle, double startAngle, double endAngle) {
+  final offset = normalizeSketchAngle(angle - startAngle);
+  final sweep = normalizeSketchAngle(endAngle - startAngle);
+  return offset <= sweep;
 }
 
 /// Stage 13 item 3's feature-flag stub: scaffolds a future user preference
@@ -163,7 +226,7 @@ enum SketchMode { select, draw, dimension }
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
 /// and bare relational Constraints (Vertical/Horizontal, which don't) -
 /// the ribbon distinguishes the two via [SketchController.selectedConstraintHasValue].
-enum SelectionKind { point, line, circle, constraint }
+enum SelectionKind { point, line, circle, constraint, arc }
 
 /// The single hovered-or-selected entity, idle-state only (see
 /// [SketchController.isIdle]) - distinct from the chain-start/circle-center
@@ -327,6 +390,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchPointView> points = {};
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
+  final Map<String, SketchArcView> arcs = {};
 
   /// Stage 23b: the sketch-space bounding box of every Point, plus every
   /// Circle's full extent (center +/- radius, since a circle's own Points
@@ -358,6 +422,18 @@ class SketchController extends ChangeNotifier {
       final radius = math.sqrt(
         math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
       );
+      include(center.x - radius, center.y - radius);
+      include(center.x + radius, center.y + radius);
+    }
+    for (final arc in arcs.values) {
+      final center = points[arc.centerPointId];
+      final start = points[arc.startPointId];
+      if (center == null || start == null) continue;
+      final radius = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+      // Conservative: the full circle's bounding box, same simplification
+      // [selectInRect] uses - a superset of the arc's actual (smaller)
+      // extent, so zoom-to-fit always shows the whole arc even though it
+      // may include a little extra margin from the unswept side.
       include(center.x - radius, center.y - radius);
       include(center.x + radius, center.y + radius);
     }
@@ -439,6 +515,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Point';
           case SketchTool.rectangle:
             return 'Draw: Rectangle';
+          case SketchTool.arc:
+            return 'Draw: Arc';
         }
       case SketchMode.dimension:
         return 'Dimension';
@@ -527,6 +605,8 @@ class SketchController extends ChangeNotifier {
     _chainStartPointId = null;
     _chainFirstPointId = null;
     _circleCenterPointId = null;
+    _arcCenterPointId = null;
+    _arcStartPointId = null;
     _midpointAnchorX = null;
     _midpointAnchorY = null;
     _threePointFirstX = null;
@@ -550,6 +630,19 @@ class SketchController extends ChangeNotifier {
   /// the radius-defining tap) - null if no Circle is in progress.
   String? get circleCenterPointId => _circleCenterPointId;
   bool get circleInProgress => _circleCenterPointId != null;
+
+  String? _arcCenterPointId;
+  String? _arcStartPointId;
+
+  /// The center/start Points of an Arc placed but not yet completed
+  /// (waiting on the end-defining tap) - mirrors [circleCenterPointId],
+  /// one tap stage further along. [arcStartPointId] is null while only
+  /// the center has been placed (the in-progress ghost is then a plain
+  /// [CircleGhost], same as the Circle tool's own first stage - see
+  /// [_arcDrawGhost]).
+  String? get arcCenterPointId => _arcCenterPointId;
+  String? get arcStartPointId => _arcStartPointId;
+  bool get arcInProgress => _arcCenterPointId != null;
 
   double? _midpointAnchorX;
   double? _midpointAnchorY;
@@ -647,7 +740,7 @@ class SketchController extends ChangeNotifier {
   /// make the "fully constrained" indicator light up before the user had
   /// drawn anything. That indicator should only ever appear once there's
   /// actually something to be fully constrained.
-  bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty;
+  bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty || arcs.isNotEmpty;
 
   /// Whole-sketch "grounded and fully pinned" - what the padlock icon
   /// (sketch_screen.dart) shows, and (via [isUnderConstrained] below) what
@@ -868,7 +961,7 @@ class SketchController extends ChangeNotifier {
   /// circle mid-placement. Hovering/selecting an existing entity, and the
   /// flyout, only ever apply while idle; a bare tap during active drawing
   /// must not trigger either, per the Stage 6 interaction model.
-  bool get isIdle => !chainInProgress && !circleInProgress;
+  bool get isIdle => !chainInProgress && !circleInProgress && !arcInProgress;
 
   /// Stage 15 item 1: the live preview of whatever the next tap would
   /// commit, or null when there's nothing in progress to preview (idle, or
@@ -887,7 +980,61 @@ class SketchController extends ChangeNotifier {
         return _circleDrawGhost();
       case SketchTool.rectangle:
         return _rectangleDrawGhost();
+      case SketchTool.arc:
+        return _arcDrawGhost();
     }
+  }
+
+  /// Arc's tap sequence is center, then start, then end - one stage
+  /// further than Circle's center-then-radius. While only the center is
+  /// placed, the radius isn't fixed yet, so the preview is a plain
+  /// [CircleGhost] (identical to Circle's own first stage - reusing that
+  /// type rather than inventing a redundant one). Once the start Point is
+  /// also placed, the radius is fixed and the preview becomes an
+  /// [ArcGhost] whose end is the cursor's direction from center projected
+  /// onto that same circle (see [_pointOnCircleTowardCursor]) - never the
+  /// raw cursor position, so what's previewed always matches what a
+  /// confirming tap would actually create.
+  DrawGhost? _arcDrawGhost() {
+    final centerId = _arcCenterPointId;
+    if (centerId == null) return null;
+    final center = points[centerId];
+    if (center == null) return null;
+
+    final startId = _arcStartPointId;
+    if (startId == null) {
+      return CircleGhost(centerX: center.x, centerY: center.y, edgeX: cursorX, edgeY: cursorY);
+    }
+    final start = points[startId];
+    if (start == null) return null;
+
+    final end = _pointOnCircleTowardCursor(center.x, center.y, start.x, start.y);
+    if (end == null) return null;
+    return ArcGhost(
+      centerX: center.x,
+      centerY: center.y,
+      startX: start.x,
+      startY: start.y,
+      endX: end.$1,
+      endY: end.$2,
+    );
+  }
+
+  /// A point on the circle centered at ([centerX], [centerY]) with radius
+  /// `dist(center, start)`, in the direction of the current cursor from
+  /// center - or null if the radius is degenerate (start coincides with
+  /// center) or the cursor is exactly on center (no defined direction).
+  /// Shared by [_arcDrawGhost]'s live preview and [_clickArcTool]'s actual
+  /// placement, so the Arc that gets created always exactly matches
+  /// whatever the ghost last showed.
+  (double, double)? _pointOnCircleTowardCursor(double centerX, double centerY, double startX, double startY) {
+    final radius = math.sqrt(math.pow(startX - centerX, 2) + math.pow(startY - centerY, 2));
+    if (radius < 1e-9) return null;
+    final dx = cursorX - centerX;
+    final dy = cursorY - centerY;
+    final cursorDistance = math.sqrt(dx * dx + dy * dy);
+    if (cursorDistance < 1e-9) return null;
+    return (centerX + radius * dx / cursorDistance, centerY + radius * dy / cursorDistance);
   }
 
   DrawGhost? _lineDrawGhost() {
@@ -1094,6 +1241,31 @@ class SketchController extends ChangeNotifier {
       final distanceToCenter = math.sqrt(math.pow(x - center.x, 2) + math.pow(y - center.y, 2));
       if ((distanceToCenter - r).abs() <= radius) {
         return SketchSelection(kind: SelectionKind.circle, id: circle.id);
+      }
+    }
+
+    for (final arc in arcs.values) {
+      final center = points[arc.centerPointId];
+      final start = points[arc.startPointId];
+      final end = points[arc.endPointId];
+      if (center == null || start == null || end == null) continue;
+      final r = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+      final distanceToCenter = math.sqrt(math.pow(x - center.x, 2) + math.pow(y - center.y, 2));
+      final angle = math.atan2(y - center.y, x - center.x);
+      final startAngle = math.atan2(start.y - center.y, start.x - center.x);
+      final endAngle = math.atan2(end.y - center.y, end.x - center.x);
+      // Off the swept range, the nearest point on the arc is whichever
+      // endpoint is closer - not a point on the circle's *other*, unswept
+      // arc, which the plain (distanceToCenter - r).abs() check Circle
+      // uses would otherwise wrongly treat as "on" this Arc.
+      final distanceToArc = angleWithinArcSweep(angle, startAngle, endAngle)
+          ? (distanceToCenter - r).abs()
+          : math.min(
+              math.sqrt(math.pow(x - start.x, 2) + math.pow(y - start.y, 2)),
+              math.sqrt(math.pow(x - end.x, 2) + math.pow(y - end.y, 2)),
+            );
+      if (distanceToArc <= radius) {
+        return SketchSelection(kind: SelectionKind.arc, id: arc.id);
       }
     }
 
@@ -1322,9 +1494,31 @@ class SketchController extends ChangeNotifier {
         final nearerId = distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
         // Mirrors the Line case above - the origin is never offered.
         return nearerId == _originPointId ? null : nearerId;
+      case SelectionKind.arc:
+        final arc = arcs[hit.id]!;
+        final nearerId = _nearestOf(x, y, [arc.centerPointId, arc.startPointId, arc.endPointId]);
+        return nearerId == _originPointId ? null : nearerId;
       case SelectionKind.constraint:
         return null;
     }
+  }
+
+  /// The id, among [pointIds], whose Point sits nearest ([x], [y]) -
+  /// shared by [dragTargetPointIdAt]/[dragGrabTargetAt]'s Arc case (3
+  /// candidate Points: center/start/end) since Circle's own inline
+  /// 2-candidate ternary doesn't generalize cleanly to a third.
+  String _nearestOf(double x, double y, List<String> pointIds) {
+    var bestId = pointIds.first;
+    var bestDistSq = double.infinity;
+    for (final id in pointIds) {
+      final point = points[id]!;
+      final distSq = math.pow(x - point.x, 2) + math.pow(y - point.y, 2);
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq.toDouble();
+        bestId = id;
+      }
+    }
+    return bestId;
   }
 
   /// Drag-mode's grab target at ([x], [y]): a directly-hit Point as a
@@ -1352,6 +1546,12 @@ class SketchController extends ChangeNotifier {
         final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);
         final distToRadius = math.pow(x - radiusPoint.x, 2) + math.pow(y - radiusPoint.y, 2);
         final nearerId = distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+        return nearerId == _originPointId
+            ? null
+            : SketchSelection(kind: SelectionKind.point, id: nearerId);
+      case SelectionKind.arc:
+        final arc = arcs[hit.id]!;
+        final nearerId = _nearestOf(x, y, [arc.centerPointId, arc.startPointId, arc.endPointId]);
         return nearerId == _originPointId
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
@@ -1790,6 +1990,25 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  /// Whether [c] measures the radius of a Circle or an Arc - either
+  /// [circleForDistanceConstraint] recognizes it, or its point pair
+  /// matches one of some Arc's own two radius-defining DistanceConstraints
+  /// (center-start or center-end, both of which read as the same radius/
+  /// diameter dimension - see the backend's `app.sketch.models.Arc`
+  /// docstring). Used wherever rendering/hit-testing/the ribbon needs to
+  /// know "is this a radius/diameter dimension" without caring which shape
+  /// it belongs to.
+  bool isRadiusDistanceConstraint(DistanceConstraintDto c) {
+    if (circleForDistanceConstraint(c) != null) return true;
+    for (final arc in arcs.values) {
+      if (arc.centerPointId == c.pointAId &&
+          (arc.startPointId == c.pointBId || arc.endPointId == c.pointBId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   double _distanceToSegment(
     double px,
     double py,
@@ -1851,20 +2070,22 @@ class SketchController extends ChangeNotifier {
   }
 
   /// Everything deleting [selection] would need to also delete, computed
-  /// transitively: a Point pulls in every Line/Circle that references it
-  /// (start/end or center/radius); every Point/Line actually being deleted
-  /// (directly selected or pulled in) pulls in every Constraint that
-  /// references it. Replaces the old behaviour of just disallowing deletion
-  /// of a still-referenced Point/Line outright - the backend rejects
-  /// (rather than auto-cascades) deleting something still referenced by
-  /// other geometry, so the client now computes and performs the full
-  /// cascade itself, with the UI layer (see sketch_ribbon.dart) responsible
-  /// for warning the user what else is about to go.
-  ({Set<String> points, Set<String> lines, Set<String> circles, Set<String> constraints})
+  /// transitively: a Point pulls in every Line/Circle/Arc that references
+  /// it (start/end, center/radius, or center/start/end); every Point/Line/
+  /// Arc actually being deleted (directly selected or pulled in) pulls in
+  /// every Constraint that references it. Replaces the old behaviour of
+  /// just disallowing deletion of a still-referenced Point/Line outright -
+  /// the backend rejects (rather than auto-cascades) deleting something
+  /// still referenced by other geometry, so the client now computes and
+  /// performs the full cascade itself, with the UI layer (see
+  /// sketch_ribbon.dart) responsible for warning the user what else is
+  /// about to go.
+  ({Set<String> points, Set<String> lines, Set<String> circles, Set<String> arcs, Set<String> constraints})
       computeDeleteCascade(Iterable<SketchSelection> selection) {
     final pointIds = <String>{};
     final lineIds = <String>{};
     final circleIds = <String>{};
+    final arcIds = <String>{};
     final constraintIds = <String>{};
     for (final s in selection) {
       switch (s.kind) {
@@ -1874,6 +2095,8 @@ class SketchController extends ChangeNotifier {
           lineIds.add(s.id);
         case SelectionKind.circle:
           circleIds.add(s.id);
+        case SelectionKind.arc:
+          arcIds.add(s.id);
         case SelectionKind.constraint:
           constraintIds.add(s.id);
       }
@@ -1888,13 +2111,20 @@ class SketchController extends ChangeNotifier {
         circleIds.add(circle.id);
       }
     }
+    for (final arc in arcs.values) {
+      if (pointIds.contains(arc.centerPointId) ||
+          pointIds.contains(arc.startPointId) ||
+          pointIds.contains(arc.endPointId)) {
+        arcIds.add(arc.id);
+      }
+    }
     for (final entry in constraints.entries) {
       final refs = _constraintReferences(entry.value);
       if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) {
         constraintIds.add(entry.key);
       }
     }
-    return (points: pointIds, lines: lineIds, circles: circleIds, constraints: constraintIds);
+    return (points: pointIds, lines: lineIds, circles: circleIds, arcs: arcIds, constraints: constraintIds);
   }
 
   /// Session-scoped opt-out for the delete-cascade confirmation dialog (see
@@ -2034,6 +2264,8 @@ class SketchController extends ChangeNotifier {
         return 'Line ${lines.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.circle:
         return 'Circle ${circles.keys.toList().indexOf(selection.id) + 1}';
+      case SelectionKind.arc:
+        return 'Arc ${arcs.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.constraint:
         return 'Constraint ${constraints.keys.toList().indexOf(selection.id) + 1}';
     }
@@ -2053,6 +2285,7 @@ class SketchController extends ChangeNotifier {
           ))
       ..addAll(lines.keys.map((id) => SketchSelection(kind: SelectionKind.line, id: id)))
       ..addAll(circles.keys.map((id) => SketchSelection(kind: SelectionKind.circle, id: id)))
+      ..addAll(arcs.keys.map((id) => SketchSelection(kind: SelectionKind.arc, id: id)))
       // Stage 21 item 4: without this, deleteSelected()'s constraints-first
       // ordering only ever covers constraints the user explicitly tapped -
       // any constraint on a selected Point/Line that select-all itself
@@ -2124,6 +2357,21 @@ class SketchController extends ChangeNotifier {
         selected.add(SketchSelection(kind: SelectionKind.circle, id: circle.id));
       }
     }
+    for (final arc in arcs.values) {
+      final center = points[arc.centerPointId];
+      final start = points[arc.startPointId];
+      final end = points[arc.endPointId];
+      if (center == null || start == null || end == null) continue;
+      final radius = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+      // Conservative: the full circle's bounding box, same as Circle's
+      // own check - a superset of the arc's actual (smaller) extent, so
+      // this only ever under-selects a marquee-enclosed Arc, never
+      // wrongly includes one that isn't fully inside.
+      if (insideRect(center.x - radius, center.y - radius) &&
+          insideRect(center.x + radius, center.y + radius)) {
+        selected.add(SketchSelection(kind: SelectionKind.arc, id: arc.id));
+      }
+    }
     _selectionSet
       ..clear()
       ..addAll(selected);
@@ -2149,6 +2397,7 @@ class SketchController extends ChangeNotifier {
       for (final id in cascade.points) SketchSelection(kind: SelectionKind.point, id: id),
       for (final id in cascade.lines) SketchSelection(kind: SelectionKind.line, id: id),
       for (final id in cascade.circles) SketchSelection(kind: SelectionKind.circle, id: id),
+      for (final id in cascade.arcs) SketchSelection(kind: SelectionKind.arc, id: id),
       for (final id in cascade.constraints) SketchSelection(kind: SelectionKind.constraint, id: id),
     ];
     if (toDelete.isEmpty) return;
@@ -2160,6 +2409,7 @@ class SketchController extends ChangeNotifier {
     final capturedPoints = <SketchPointView>[];
     final capturedLines = <SketchLineView>[];
     final capturedCircles = <SketchCircleView>[];
+    final capturedArcs = <SketchArcView>[];
     final capturedConstraints = <ConstraintDto>[];
     for (final current in toDelete) {
       switch (current.kind) {
@@ -2170,6 +2420,10 @@ class SketchController extends ChangeNotifier {
         case SelectionKind.circle:
           final circle = circles[current.id];
           if (circle != null) capturedCircles.add(circle);
+          break;
+        case SelectionKind.arc:
+          final arc = arcs[current.id];
+          if (arc != null) capturedArcs.add(arc);
           break;
         case SelectionKind.point:
           final point = points[current.id];
@@ -2183,19 +2437,19 @@ class SketchController extends ChangeNotifier {
     }
 
     await _runGuarded(() async {
-      // Backend rejects deleting a Point still referenced by a Line/Circle,
-      // and a Line/Circle can itself still be referenced by a Constraint -
-      // so deletion must run in the reverse of creation/dependency order
-      // (Constraints, then Lines/Circles, then Points), regardless of the
-      // order entities happened to be selected/tapped in. Mirrors
-      // [_restoreDeletedEntities]'s own (forward) Points -> Lines/Circles ->
-      // Constraints ordering.
+      // Backend rejects deleting a Point still referenced by a Line/Circle/
+      // Arc, and a Line/Circle/Arc can itself still be referenced by a
+      // Constraint - so deletion must run in the reverse of creation/
+      // dependency order (Constraints, then Lines/Circles/Arcs, then
+      // Points), regardless of the order entities happened to be selected/
+      // tapped in. Mirrors [_restoreDeletedEntities]'s own (forward)
+      // Points -> Lines/Circles/Arcs -> Constraints ordering.
       final constraintsToDelete = toDelete.where((s) => s.kind == SelectionKind.constraint);
-      final linesCirclesToDelete = toDelete.where(
-        (s) => s.kind == SelectionKind.line || s.kind == SelectionKind.circle,
+      final shapesToDelete = toDelete.where(
+        (s) => s.kind == SelectionKind.line || s.kind == SelectionKind.circle || s.kind == SelectionKind.arc,
       );
       final pointsToDelete = toDelete.where((s) => s.kind == SelectionKind.point);
-      for (final current in [...constraintsToDelete, ...linesCirclesToDelete, ...pointsToDelete]) {
+      for (final current in [...constraintsToDelete, ...shapesToDelete, ...pointsToDelete]) {
         switch (current.kind) {
           case SelectionKind.line:
             await _api.deleteLine(_sketchId!, current.id);
@@ -2204,6 +2458,10 @@ class SketchController extends ChangeNotifier {
           case SelectionKind.circle:
             await _api.deleteCircle(_sketchId!, current.id);
             circles.remove(current.id);
+            break;
+          case SelectionKind.arc:
+            await _api.deleteArc(_sketchId!, current.id);
+            arcs.remove(current.id);
             break;
           case SelectionKind.point:
             await _api.deletePoint(_sketchId!, current.id);
@@ -2219,6 +2477,7 @@ class SketchController extends ChangeNotifier {
             capturedPoints,
             capturedLines,
             capturedCircles,
+            capturedArcs,
             capturedConstraints,
           ));
       // Bug-fix round 2: always re-solve/refresh here, not just when a
@@ -2250,6 +2509,7 @@ class SketchController extends ChangeNotifier {
     List<SketchPointView> capturedPoints,
     List<SketchLineView> capturedLines,
     List<SketchCircleView> capturedCircles,
+    List<SketchArcView> capturedArcs,
     List<ConstraintDto> capturedConstraints,
   ) async {
     final idMap = <String, String>{};
@@ -2286,6 +2546,23 @@ class SketchController extends ChangeNotifier {
         id: created.id,
         centerPointId: created.centerPointId,
         radiusPointId: created.radiusPointId,
+        construction: created.construction,
+      );
+    }
+    for (final arc in capturedArcs) {
+      final created = await _api.createArc(
+        _sketchId!,
+        idMap[arc.centerPointId] ?? arc.centerPointId,
+        idMap[arc.startPointId] ?? arc.startPointId,
+        idMap[arc.endPointId] ?? arc.endPointId,
+        construction: arc.construction,
+      );
+      idMap[arc.id] = created.id;
+      arcs[created.id] = SketchArcView(
+        id: created.id,
+        centerPointId: created.centerPointId,
+        startPointId: created.startPointId,
+        endPointId: created.endPointId,
         construction: created.construction,
       );
     }
@@ -2387,7 +2664,7 @@ class SketchController extends ChangeNotifier {
     }
     final id = _selectionSet.first.id;
     final constraint = constraints[id];
-    if (constraint is DistanceConstraintDto && circleForDistanceConstraint(constraint) != null) {
+    if (constraint is DistanceConstraintDto && isRadiusDistanceConstraint(constraint)) {
       return id;
     }
     return null;
@@ -2469,6 +2746,8 @@ class SketchController extends ChangeNotifier {
         return lines[current.id]?.construction;
       case SelectionKind.circle:
         return circles[current.id]?.construction;
+      case SelectionKind.arc:
+        return arcs[current.id]?.construction;
       case SelectionKind.point:
       case SelectionKind.constraint:
         return null;
@@ -2504,6 +2783,16 @@ class SketchController extends ChangeNotifier {
             construction: updated.construction,
           );
           break;
+        case SelectionKind.arc:
+          final updated = await _api.updateArc(_sketchId!, current.id, construction: next);
+          arcs[current.id] = SketchArcView(
+            id: updated.id,
+            centerPointId: updated.centerPointId,
+            startPointId: updated.startPointId,
+            endPointId: updated.endPointId,
+            construction: updated.construction,
+          );
+          break;
         case SelectionKind.point:
         case SelectionKind.constraint:
           break;
@@ -2517,8 +2806,8 @@ class SketchController extends ChangeNotifier {
   /// EqualLength/Collinear are wired here (Stage 16 item 7 moved them out of
   /// the dimension tool's now-removed button row - see
   /// [SketchDimensionBar]); Concentric/EqualRadius/Tangent remain
-  /// `wired: false` since this Sketch model has no Arc entity or
-  /// Concentric/EqualRadius backend support yet.
+  /// `wired: false` since there's no backend Concentric/EqualRadius/Tangent
+  /// constraint support yet.
   List<ConstraintOption> get availableConstraintOptions {
     final sel = _selectionSet;
 
@@ -2700,13 +2989,13 @@ class SketchController extends ChangeNotifier {
 
   /// Dispatches [_dimensionSelection]'s current shape onto a ghost set, per
   /// the new work package's combination table: one Line -> length; one
-  /// Circle -> radius+diameter; two Points, or a Point+Line (substituting
-  /// the Line's nearer endpoint - the backend has no point-to-line distance
-  /// constraint, see [_buildPointLineGhosts]) -> vertical/horizontal/linear
-  /// distance; two Lines -> a line-pair distance ghost if they're
-  /// (near-)parallel, otherwise an angle ghost (see [_buildLinePairGhosts]).
-  /// Any other shape (a bare Point or Circle alone, or anything with more
-  /// than two entities) shows no ghosts.
+  /// Circle or Arc -> radius+diameter; two Points, or a Point+Line
+  /// (substituting the Line's nearer endpoint - the backend has no
+  /// point-to-line distance constraint, see [_buildPointLineGhosts]) ->
+  /// vertical/horizontal/linear distance; two Lines -> a line-pair distance
+  /// ghost if they're (near-)parallel, otherwise an angle ghost (see
+  /// [_buildLinePairGhosts]). Any other shape (a bare Point/Circle/Arc
+  /// alone, or anything with more than two entities) shows no ghosts.
   void _rebuildDimensionGhosts() {
     final sel = _dimensionSelection;
 
@@ -2716,7 +3005,20 @@ class SketchController extends ChangeNotifier {
           _buildLineLengthGhost(sel.first.id);
           return;
         case SelectionKind.circle:
-          _buildRadiusGhosts(sel.first.id);
+          final circle = circles[sel.first.id];
+          if (circle == null) {
+            _ghosts = [];
+          } else {
+            _buildRadiusGhosts(circle.centerPointId, circle.radiusPointId);
+          }
+          return;
+        case SelectionKind.arc:
+          final arc = arcs[sel.first.id];
+          if (arc == null) {
+            _ghosts = [];
+          } else {
+            _buildRadiusGhosts(arc.centerPointId, arc.startPointId);
+          }
           return;
         case SelectionKind.point:
         case SelectionKind.constraint:
@@ -2839,24 +3141,16 @@ class SketchController extends ChangeNotifier {
         : [DimensionGhost(key: 'angle', kind: GhostKind.angle, lineAId: lineAId, lineBId: lineBId)];
   }
 
-  void _buildRadiusGhosts(String circleId) {
-    final circle = circles[circleId];
-    _ghosts = circle == null
-        ? []
-        : [
-            DimensionGhost(
-              key: 'radius',
-              kind: GhostKind.radius,
-              pointAId: circle.centerPointId,
-              pointBId: circle.radiusPointId,
-            ),
-            DimensionGhost(
-              key: 'diameter',
-              kind: GhostKind.diameter,
-              pointAId: circle.centerPointId,
-              pointBId: circle.radiusPointId,
-            ),
-          ];
+  /// Radius+diameter ghosts for a Circle (center/radiusPointId) or an Arc
+  /// (center/startPointId - either of an Arc's two radius-defining Points
+  /// works equally, see [isRadiusDistanceConstraint]'s own doc comment) -
+  /// [centerPointId]/[edgePointId] generalize both shapes' "center Point,
+  /// Point on the circle" pair to one shared builder.
+  void _buildRadiusGhosts(String centerPointId, String edgePointId) {
+    _ghosts = [
+      DimensionGhost(key: 'radius', kind: GhostKind.radius, pointAId: centerPointId, pointBId: edgePointId),
+      DimensionGhost(key: 'diameter', kind: GhostKind.diameter, pointAId: centerPointId, pointBId: edgePointId),
+    ];
   }
 
   /// The angle (degrees, 0-180) between two Lines' direction vectors - the
@@ -3112,6 +3406,7 @@ class SketchController extends ChangeNotifier {
       }
       if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
         _showsDiameter[constraintId] = target.kind == GhostKind.diameter;
+        await _syncArcOtherRadiusPoint(pointAId, pointBId, distanceValue);
       }
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -3119,6 +3414,36 @@ class SketchController extends ChangeNotifier {
       _dimensionSelection.clear();
       _activeGhostKey = null;
     });
+  }
+
+  /// Keeps an Arc's *other* radius-defining Point in sync when the user
+  /// edits its radius/diameter dimension via one of the two (start or
+  /// end) - otherwise only the tapped Point's own DistanceConstraint would
+  /// update, leaving the other at the old radius and breaking circularity
+  /// (see the backend's `app.sketch.models.Arc` docstring: two
+  /// independent DistanceConstraints sharing one value at creation, not a
+  /// solver-enforced equal-radius link). A no-op for a Circle's own
+  /// radius/diameter dimension - there is no "other" Point to sync.
+  Future<void> _syncArcOtherRadiusPoint(String centerPointId, String usedPointId, double radius) async {
+    SketchArcView? owner;
+    for (final arc in arcs.values) {
+      if (arc.centerPointId == centerPointId &&
+          (arc.startPointId == usedPointId || arc.endPointId == usedPointId)) {
+        owner = arc;
+        break;
+      }
+    }
+    if (owner == null) return;
+    final otherPointId = owner.startPointId == usedPointId ? owner.endPointId : owner.startPointId;
+    final existing = _findDistanceConstraint(centerPointId, otherPointId);
+    if (existing != null) {
+      final oldValue = existing.distance;
+      await _api.updateConstraintValue(_sketchId!, existing.id, radius);
+      _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
+    } else {
+      final constraint = await _api.createDistanceConstraint(_sketchId!, centerPointId, otherPointId, radius);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+    }
   }
 
   /// Stage 15 item 5 (repointed by Stage 16 item 7): whether [type] is both
@@ -3222,6 +3547,15 @@ class SketchController extends ChangeNotifier {
         centerPointId: circle.centerPointId,
         radiusPointId: circle.radiusPointId,
         construction: circle.construction,
+      );
+    }
+    for (final arc in await _api.listArcs(sketchId)) {
+      arcs[arc.id] = SketchArcView(
+        id: arc.id,
+        centerPointId: arc.centerPointId,
+        startPointId: arc.startPointId,
+        endPointId: arc.endPointId,
+        construction: arc.construction,
       );
     }
     for (final constraint in await _api.listConstraints(sketchId)) {
@@ -3358,6 +3692,11 @@ class SketchController extends ChangeNotifier {
         case RectangleConstructionMethod.threePoint:
           await _clickThreePointRectangleTool();
       }
+      return;
+    }
+
+    if (_activeTool == SketchTool.arc) {
+      await _clickArcTool();
       return;
     }
 
@@ -3594,6 +3933,75 @@ class SketchController extends ChangeNotifier {
       await _refreshConstraints();
 
       _circleCenterPointId = null;
+    });
+  }
+
+  /// Arc tool's tap handling: first tap places the center Point, second
+  /// tap places the start Point (together fixing the radius, same as
+  /// Circle's center+radius Point pair), third tap places the end Point -
+  /// always exactly on the same circle as start, in the cursor's
+  /// direction from center (see [_pointOnCircleTowardCursor]), never the
+  /// raw cursor position - and creates the Arc (which auto-creates its
+  /// pair of radius DistanceConstraints server-side, see the backend's
+  /// `Sketch.add_arc`). Self-terminating, like Circle, so there is no
+  /// separate "finish" step.
+  Future<void> _clickArcTool() async {
+    if (_arcCenterPointId == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _runGuarded(() async {
+        _arcCenterPointId = await _pointIdAtCursor();
+      });
+      return;
+    }
+
+    if (_arcStartPointId == null) {
+      await _runGuarded(() async {
+        _arcStartPointId = await _pointIdAtCursor(excludeId: _arcCenterPointId);
+      });
+      return;
+    }
+
+    final centerId = _arcCenterPointId!;
+    final startId = _arcStartPointId!;
+    await _runGuarded(() async {
+      final center = points[centerId]!;
+      final start = points[startId]!;
+      final end = _pointOnCircleTowardCursor(center.x, center.y, start.x, start.y);
+      if (end == null) {
+        errorMessage = 'Cannot place an arc end point directly on its own center';
+        _arcCenterPointId = null;
+        _arcStartPointId = null;
+        return;
+      }
+
+      final endPoint = await _api.createPoint(_sketchId!, end.$1, end.$2);
+      points[endPoint.id] = SketchPointView(id: endPoint.id, x: endPoint.x, y: endPoint.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, endPoint.id);
+        points.remove(endPoint.id);
+      });
+
+      final arc = await _api.createArc(_sketchId!, centerId, startId, endPoint.id);
+      arcs[arc.id] = SketchArcView(
+        id: arc.id,
+        centerPointId: arc.centerPointId,
+        startPointId: arc.startPointId,
+        endPointId: arc.endPointId,
+        construction: arc.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteArc(_sketchId!, arc.id);
+        arcs.remove(arc.id);
+      });
+
+      // Same rule as a completed Circle: one finished entity = one solve call.
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+
+      _arcCenterPointId = null;
+      _arcStartPointId = null;
     });
   }
 

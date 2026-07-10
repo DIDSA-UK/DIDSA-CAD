@@ -1058,8 +1058,7 @@ Offset? _constraintLabelCenter(
 ) {
   switch (constraint) {
     case DistanceConstraintDto c:
-      final circle = controller.circleForDistanceConstraint(c);
-      if (circle != null) {
+      if (controller.isRadiusDistanceConstraint(c)) {
         // Must mirror _paintRadiusDiameterDimension's base anchor exactly
         // (including its own 24.0 leg length), or dragging/hit-testing a
         // radius/diameter dimension's label would disagree with where it's
@@ -1438,6 +1437,48 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// Draws a dashed arc outline (a construction Arc's version of
+  /// [_drawDashedCircle]) - walks [startAngle]/[sweepAngle] (both already
+  /// in Flutter's `Canvas.drawArc` convention - see [_arcScreenAngles]) in
+  /// fixed-angle on/off increments, honoring [sweepAngle]'s sign so a
+  /// negative (CCW-on-screen) sweep dashes in the same direction the solid
+  /// version would draw.
+  void _drawDashedArc(Canvas canvas, Rect rect, double startAngle, double sweepAngle, Paint paint) {
+    const dashAngle = 0.12; // radians
+    const gapAngle = 0.08;
+    final direction = sweepAngle < 0 ? -1.0 : 1.0;
+    final totalSweep = sweepAngle.abs();
+    var travelled = 0.0;
+    while (travelled < totalSweep) {
+      final segment = math.min(dashAngle, totalSweep - travelled);
+      final path = Path()..addArc(rect, startAngle + direction * travelled, direction * segment);
+      canvas.drawPath(path, paint);
+      travelled += dashAngle + gapAngle;
+    }
+  }
+
+  /// The [Canvas.drawArc] `(startAngle, sweepAngle)` pair that renders the
+  /// arc from ([startX], [startY]) to ([endX], [endY]) around
+  /// ([centerX], [centerY]) exactly matching the sketch's own CCW-in-local-
+  /// space convention (see the backend's `app.sketch.models.Arc`
+  /// docstring) - Flutter's angle convention (0 = +X, positive = clockwise
+  /// on a Y-down canvas) is the mirror image of that (Y-up, positive =
+  /// counter-clockwise), so both angles are negated here to undo
+  /// [ViewTransform.sketchToScreen]'s Y-flip.
+  (double, double) _arcScreenAngles(
+    double centerX,
+    double centerY,
+    double startX,
+    double startY,
+    double endX,
+    double endY,
+  ) {
+    final startAngle = math.atan2(startY - centerY, startX - centerX);
+    final endAngle = math.atan2(endY - centerY, endX - centerX);
+    final sweep = normalizeSketchAngle(endAngle - startAngle);
+    return (-startAngle, -sweep);
+  }
+
   /// Stage 12 item 10: renders every Constraint in [SketchController.constraints]
   /// as a render-only overlay - there is no client-side UI to create or edit
   /// a Distance/Angle value yet (the backend has no PATCH endpoint for
@@ -1452,8 +1493,7 @@ class _SketchPainter extends CustomPainter {
       final labelOffset = controller.labelOffsetFor(entry.key);
       switch (entry.value) {
         case DistanceConstraintDto c:
-          final circle = controller.circleForDistanceConstraint(c);
-          if (circle != null) {
+          if (controller.isRadiusDistanceConstraint(c)) {
             _paintRadiusDiameterDimension(
               canvas,
               c,
@@ -2000,6 +2040,14 @@ class _SketchPainter extends CustomPainter {
         final edge = transform.sketchToScreen(g.edgeX, g.edgeY);
         final radiusPixels = (edge - center).distance;
         _drawDashedCircle(canvas, center, radiusPixels, paint);
+      case ArcGhost g:
+        final center = transform.sketchToScreen(g.centerX, g.centerY);
+        final start = transform.sketchToScreen(g.startX, g.startY);
+        final radiusPixels = (start - center).distance;
+        final rect = Rect.fromCircle(center: center, radius: radiusPixels);
+        final (startAngle, sweepAngle) =
+            _arcScreenAngles(g.centerX, g.centerY, g.startX, g.startY, g.endX, g.endY);
+        _drawDashedArc(canvas, rect, startAngle, sweepAngle, paint);
       case RectGhost g:
         final corners = [g.corner0, g.corner1, g.corner2, g.corner3]
             .map((c) => transform.sketchToScreen(c.$1, c.$2))
@@ -2074,14 +2122,64 @@ class _SketchPainter extends CustomPainter {
       if (point == null) return false;
       points.add(transform.sketchToScreen(point.x, point.y));
     }
-    if (points.length == 2) {
-      final center = points[0];
-      final radius = (points[1] - center).distance;
-      path.addOval(Rect.fromCircle(center: center, radius: radius));
+
+    final hasArc = loop.lineIds.any((id) => controller.arcs.containsKey(id));
+    if (!hasArc) {
+      if (points.length == 2) {
+        final center = points[0];
+        final radius = (points[1] - center).distance;
+        path.addOval(Rect.fromCircle(center: center, radius: radius));
+        return true;
+      }
+      if (points.length < 3) return false;
+      path.addPolygon(points, true);
       return true;
     }
-    if (points.length < 3) return false;
-    path.addPolygon(points, true);
+
+    // A Line/Arc-mixed loop (e.g. a rounded-corner rectangle) - at least 2
+    // points (two Arcs alone can close a full circle), each hop built as
+    // its own straight or curved segment rather than blindly polygon-
+    // connecting every point, mirroring app.document.extrude.wire_for_
+    // profile's identical straight-vs-curved-per-hop distinction on the
+    // backend.
+    if (points.length < 2) return false;
+    path.moveTo(points[0].dx, points[0].dy);
+    final n = points.length;
+    for (var i = 0; i < n; i++) {
+      final next = points[(i + 1) % n];
+      final entityId = i < loop.lineIds.length ? loop.lineIds[i] : null;
+      final arc = entityId == null ? null : controller.arcs[entityId];
+      final arcCenter = arc == null ? null : controller.points[arc.centerPointId];
+      final arcStart = arc == null ? null : controller.points[arc.startPointId];
+      final arcEnd = arc == null ? null : controller.points[arc.endPointId];
+      if (arc == null || arcCenter == null || arcStart == null || arcEnd == null) {
+        path.lineTo(next.dx, next.dy);
+        continue;
+      }
+      final centerScreen = transform.sketchToScreen(arcCenter.x, arcCenter.y);
+      final radiusPixels = (transform.sketchToScreen(arcStart.x, arcStart.y) - centerScreen).distance;
+      final rect = Rect.fromCircle(center: centerScreen, radius: radiusPixels);
+      final (startAngle, sweepAngle) = _arcScreenAngles(
+        arcCenter.x,
+        arcCenter.y,
+        arcStart.x,
+        arcStart.y,
+        arcEnd.x,
+        arcEnd.y,
+      );
+      // loop.pointIds[i] may be the Arc's own start or end Point,
+      // depending on which direction profile.py's graph walk traced this
+      // loop in - trace the identical physical arc backward (from the end
+      // angle, by the negative sweep) when it's the latter, so the fill
+      // always follows the real curve regardless of trace direction (same
+      // resolution as extrude.py's wire_for_profile).
+      if (loop.pointIds[i] == arc.startPointId) {
+        path.arcTo(rect, startAngle, sweepAngle, false);
+      } else {
+        path.arcTo(rect, startAngle + sweepAngle, -sweepAngle, false);
+      }
+    }
+    path.close();
     return true;
   }
 
@@ -2195,6 +2293,54 @@ class _SketchPainter extends CustomPainter {
       }
     }
 
+    for (final arc in controller.arcs.values) {
+      final center = controller.points[arc.centerPointId];
+      final start = controller.points[arc.startPointId];
+      final end = controller.points[arc.endPointId];
+      if (center == null || start == null || end == null) continue;
+      final radius = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+      final arcIsSelected = isSelected(SelectionKind.arc, arc.id);
+      final isHovered = hovered?.kind == SelectionKind.arc && hovered!.id == arc.id;
+      // Same per-entity DOF preview as Circle above, treating an Arc's
+      // center/start pair and center/end pair as its two defining
+      // segments - over-constrained if either is, fully constrained only
+      // if both are (the two DistanceConstraints are independent - see
+      // the backend's `app.sketch.models.Arc` docstring).
+      final arcIsOverConstrained =
+          controller.rigidity.isSegmentOverConstrained(arc.centerPointId, arc.startPointId) ||
+              controller.rigidity.isSegmentOverConstrained(arc.centerPointId, arc.endPointId) ||
+              controller.isPointForcedOverConstrained(arc.centerPointId) ||
+              controller.isPointForcedOverConstrained(arc.startPointId) ||
+              controller.isPointForcedOverConstrained(arc.endPointId);
+      final arcIsFullyConstrained = controller.isFullyConstrained ||
+          (controller.rigidity.isSegmentFullyConstrained(arc.centerPointId, arc.startPointId) &&
+              controller.rigidity.isSegmentFullyConstrained(arc.centerPointId, arc.endPointId));
+      final arcPaint = Paint()
+        ..color = arcIsSelected
+            ? _selectedColor
+            : isHovered
+                ? _hoverColor
+                : arcIsOverConstrained
+                    ? _overConstrainedColor
+                    : arc.construction
+                        ? _constructionColor
+                        : arcIsFullyConstrained
+                            ? _fullyConstrainedColor
+                            : _unconstrainedColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = arcIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
+      final centerScreen = transform.sketchToScreen(center.x, center.y);
+      final radiusPixels = radius * transform.pixelsPerUnit;
+      final rect = Rect.fromCircle(center: centerScreen, radius: radiusPixels);
+      final (startAngle, sweepAngle) =
+          _arcScreenAngles(center.x, center.y, start.x, start.y, end.x, end.y);
+      if (arc.construction) {
+        _drawDashedArc(canvas, rect, startAngle, sweepAngle, arcPaint);
+      } else {
+        canvas.drawArc(rect, startAngle, sweepAngle, false, arcPaint);
+      }
+    }
+
     final originId = controller.originPointId;
     if (originId != null) {
       final origin = controller.points[originId];
@@ -2226,10 +2372,13 @@ class _SketchPainter extends CustomPainter {
     final chainFirstId = controller.chainFirstPointId;
     final isSnapping = controller.isHoveringChainStart;
     final circleCenterId = controller.circleCenterPointId;
+    final arcCenterId = controller.arcCenterPointId;
+    final arcStartId = controller.arcStartPointId;
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
+      final isArcAnchor = controller.arcInProgress && (point.id == arcCenterId || point.id == arcStartId);
       final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
@@ -2242,7 +2391,7 @@ class _SketchPainter extends CustomPainter {
       } else if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
         radius = isSnapping ? _pointRadiusSnapping : _pointRadiusEmphasis;
-      } else if (isCircleCenter) {
+      } else if (isCircleCenter || isArcAnchor) {
         color = Colors.deepOrange;
         radius = _pointRadiusEmphasis;
       } else if (controller.isPointForcedOverConstrained(point.id)) {

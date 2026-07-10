@@ -75,6 +75,7 @@ class SketchDimensionBar extends StatelessWidget {
       SelectionKind.point => 'Point',
       SelectionKind.line => 'Line',
       SelectionKind.circle => 'Circle',
+      SelectionKind.arc => 'Arc',
       SelectionKind.constraint => 'Constraint',
     };
   }

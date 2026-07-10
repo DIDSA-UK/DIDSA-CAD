@@ -99,6 +99,33 @@ class CircleDto {
       );
 }
 
+class ArcDto {
+  final String id;
+  final String centerPointId;
+  final String startPointId;
+  final String endPointId;
+  final double radius;
+  final bool construction;
+
+  ArcDto({
+    required this.id,
+    required this.centerPointId,
+    required this.startPointId,
+    required this.endPointId,
+    required this.radius,
+    this.construction = false,
+  });
+
+  factory ArcDto.fromJson(Map<String, dynamic> json) => ArcDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        startPointId: json['start_point_id'] as String,
+        endPointId: json['end_point_id'] as String,
+        radius: (json['radius'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
 /// Base type for the backend's discriminated Constraint union (Stage 12) -
 /// see app/sketch/schemas.py's `ConstraintResponse`. Used by the client both
 /// to *render* existing constraints (Stage 12 item 10's dimension overlays)
@@ -594,6 +621,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<ArcDto>> listArcs(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/arcs'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => ArcDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<LineDto> createLine(
     String sketchId,
     String startPointId,
@@ -632,6 +666,27 @@ class SketchApiClient {
         (body) => CircleDto.fromJson(body as Map<String, dynamic>),
       );
 
+  Future<ArcDto> createArc(
+    String sketchId,
+    String centerPointId,
+    String startPointId,
+    String endPointId, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/arcs'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'start_point_id': startPointId,
+                'end_point_id': endPointId,
+                'construction': construction,
+              }),
+            ),
+        (body) => ArcDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Toggles a Line's construction flag (Make-Construction/Make-Solid) -
   /// `length` is left null since this call never needs to also resize the
   /// line (see backend LineUpdate, where both fields are independently
@@ -661,6 +716,18 @@ class SketchApiClient {
         (body) => CircleDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Toggles an Arc's construction flag - mirrors [updateCircle].
+  Future<ArcDto> updateArc(String sketchId, String arcId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/arcs/$arcId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => ArcDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<void> deletePoint(String sketchId, String pointId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/points/$pointId'),
@@ -680,6 +747,14 @@ class SketchApiClient {
   Future<void> deleteCircle(String sketchId, String circleId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/circles/$circleId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteArc(String sketchId, String arcId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/arcs/$arcId'),
               headers: _headers,
             ),
         (_) {},

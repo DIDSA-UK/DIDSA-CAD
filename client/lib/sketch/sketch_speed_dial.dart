@@ -73,6 +73,12 @@ class SketchSpeedDial extends StatelessWidget {
             onPressed: () => controller.selectDrawTool(SketchTool.circle),
           ),
           _SpeedDialAction(
+            icon: Icons.donut_large,
+            label: 'Arc',
+            selected: controller.activeTool == SketchTool.arc,
+            onPressed: () => controller.selectDrawTool(SketchTool.arc),
+          ),
+          _SpeedDialAction(
             icon: Icons.show_chart,
             label: 'Line',
             selected: controller.activeTool == SketchTool.line,

@@ -29,12 +29,15 @@ class SketchConstructionMethodBar extends StatelessWidget {
               child: Row(
                 children: [
                   Expanded(
-                    child: controller.activeTool == SketchTool.point
-                        ? const Text('Tap to place a point')
-                        : SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(children: _methodChips()),
-                          ),
+                    child: switch (controller.activeTool) {
+                      SketchTool.point => const Text('Tap to place a point'),
+                      SketchTool.arc => const Text('Tap center, then start, then end'),
+                      SketchTool.line || SketchTool.circle || SketchTool.rectangle =>
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(children: _methodChips()),
+                        ),
+                    },
                   ),
                   const SizedBox(width: 8),
                   TextButton.icon(

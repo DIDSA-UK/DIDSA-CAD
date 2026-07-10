@@ -131,10 +131,13 @@ void main() {
 
       controller.selectDrawTool(SketchTool.line);
       await controller.handleCanvasTap(0, 0);
-      await controller.handleCanvasTap(10, 0);
+      // Phase 6.1: off-axis (not (10, 0)) so placement doesn't try to
+      // auto-add a HorizontalConstraint - this trimmed fake backend has no
+      // endpoint for one (see the class doc comment above).
+      await controller.handleCanvasTap(10, 3);
       controller.finishChain();
       controller.enterDimensionMode();
-      await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint (5, 0)
+      await controller.handleCanvasTap(8, 2.4); // on the line, away from its midpoint
       controller.tapGhost('length');
       expect(controller.activeGhostKey, 'length');
 

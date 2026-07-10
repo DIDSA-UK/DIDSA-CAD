@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +20,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> points = {};
   final Map<String, Map<String, dynamic>> lines = {};
   final Map<String, Map<String, dynamic>> circles = {};
+  final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> sketches = {};
   final Map<String, Map<String, dynamic>> constraints = {};
 
@@ -63,6 +65,11 @@ class _FakeBackend {
 
     final circleDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/circles/(.+)$').firstMatch(path);
     if (circleDeleteMatch != null && request.method == 'DELETE') {
+      return http.Response('', 204);
+    }
+
+    final arcDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs/(.+)$').firstMatch(path);
+    if (arcDeleteMatch != null && request.method == 'DELETE') {
       return http.Response('', 204);
     }
 
@@ -181,6 +188,41 @@ class _FakeBackend {
     }
     if (circlesCollectionMatch && request.method == 'GET') {
       return _jsonList(circles.values.toList(), 200);
+    }
+
+    final arcsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs$').hasMatch(path);
+    if (arcsCollectionMatch && request.method == 'POST') {
+      final id = _newId('arc');
+      final arc = {
+        'id': id,
+        'center_point_id': body['center_point_id'],
+        'start_point_id': body['start_point_id'],
+        'end_point_id': body['end_point_id'],
+        'radius': 1.0,
+        'construction': false,
+      };
+      arcs[id] = arc;
+      // Mirrors the real backend's Sketch.add_arc, which auto-creates two
+      // radius DistanceConstraints (center-start, center-end) alongside
+      // the Arc.
+      final startConstraintId = _newId('constraint');
+      constraints[startConstraintId] = {
+        'id': startConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': body['start_point_id'],
+        'distance': 1.0,
+      };
+      final endConstraintId = _newId('constraint');
+      constraints[endConstraintId] = {
+        'id': endConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': body['end_point_id'],
+        'distance': 1.0,
+      };
+      return _json(arc, 201);
+    }
+    if (arcsCollectionMatch && request.method == 'GET') {
+      return _jsonList(arcs.values.toList(), 200);
     }
 
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
@@ -826,6 +868,138 @@ void main() {
     final ghost = controller.activeDrawGhost as LineGhost;
     expect(ghost.endX, 4);
     expect(ghost.endY, 5);
+  });
+
+  // --- Phase 6.2.1: Arc tool -------------------------------------------------
+
+  test('activeDrawGhost previews a plain circle while only the arc center is placed', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(2, 2);
+
+    controller.cursorX = 6;
+    controller.cursorY = 2;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<CircleGhost>());
+    final circle = ghost as CircleGhost;
+    expect(circle.centerX, 2);
+    expect(circle.centerY, 2);
+    expect(circle.edgeX, 6);
+    expect(circle.edgeY, 2);
+  });
+
+  test('activeDrawGhost previews an arc snapped onto the fixed radius once center and start are both placed',
+      () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(5, 0); // start - fixes the radius at 5
+
+    // Cursor far off the circle - the ghost's end must still land exactly
+    // on the radius-5 circle, in the cursor's direction from center.
+    controller.cursorX = 0;
+    controller.cursorY = 100;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<ArcGhost>());
+    final arc = ghost as ArcGhost;
+    expect(arc.centerX, 0);
+    expect(arc.centerY, 0);
+    expect(arc.startX, 5);
+    expect(arc.startY, 0);
+    expect(arc.endX, closeTo(0, 1e-9));
+    expect(arc.endY, closeTo(5, 1e-9));
+  });
+
+  test('the arc tool places center, start, then end across three taps, creating one Arc and two radius '
+      'constraints', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // center
+    expect(controller.arcInProgress, isTrue);
+    await controller.handleCanvasTap(5, 0); // start - radius 5
+    expect(controller.arcCenterPointId, isNotNull);
+    expect(controller.arcStartPointId, isNotNull);
+
+    // Aimed far past the circle - the created end Point must still land
+    // exactly on the radius-5 circle, not the raw tap position.
+    await controller.handleCanvasTap(0, 100);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.arcInProgress, isFalse);
+    expect(controller.arcs.length, 1);
+    final arc = controller.arcs.values.single;
+    final end = controller.points[arc.endPointId]!;
+    expect(end.x, closeTo(0, 1e-9));
+    expect(end.y, closeTo(5, 1e-9));
+    // Two independent radius DistanceConstraints: center-start, center-end.
+    expect(controller.constraints.length, 2);
+  });
+
+  test('tapping an Arc in select mode, away from its defining Points, recognizes SelectionKind.arc', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(5, 0); // start, angle 0 degrees
+    await controller.handleCanvasTap(0, 5); // end, angle 90 degrees
+    controller.exitToSelectMode();
+
+    // On the rim at 45 degrees - within the swept quarter-circle, away
+    // from center/start/end.
+    final onRim = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim, onRim);
+
+    expect(controller.selectionSet.length, 1);
+    expect(controller.selectionSet.first.kind, SelectionKind.arc);
+  });
+
+  test('selecting an Arc in dimension mode builds radius+diameter ghosts', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    final arcId = controller.arcs.keys.single;
+    controller.enterDimensionMode();
+
+    final onRim = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim, onRim);
+
+    expect(controller.dimensionSelection.single.kind, SelectionKind.arc);
+    expect(controller.dimensionSelection.single.id, arcId);
+    expect(controller.ghosts.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
+  });
+
+  test('confirming a new radius for an Arc updates both of its radius DistanceConstraints', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    controller.enterDimensionMode();
+    final onRim = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim, onRim);
+
+    await controller.confirmGhostValue('radius', 8.0);
+
+    expect(controller.errorMessage, isNull);
+    // The fake backend's solve is a stub (no real point repositioning), so
+    // this asserts on the two persisted DistanceConstraint values
+    // themselves - what a real solve would then use to reposition both
+    // Points onto the new radius-8 circle.
+    final distances =
+        controller.constraints.values.whereType<DistanceConstraintDto>().map((c) => c.distance).toList();
+    expect(distances, hasLength(2));
+    expect(distances, everyElement(closeTo(8.0, 1e-9)));
+  });
+
+  test('deleting an Arc cascades to its center/start/end Points and both radius constraints', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    final arc = controller.arcs.values.single;
+    controller.exitToSelectMode();
+
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.arc, id: arc.id)],
+    );
+
+    expect(cascade.arcs, {arc.id});
+    expect(cascade.constraints.length, 2);
   });
 
   test('dimensionLabelAt hits a dragged label at its offset position and misses its old default anchor', () async {
@@ -2106,10 +2280,13 @@ void main() {
       'updateSelectedConstraintValue PATCHes it then deselects', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
-    await controller.handleCanvasTap(10, 0);
+    // Phase 6.1: off-axis (not (10, 0)) so placement doesn't auto-add a
+    // HorizontalConstraint, which would make `constraints.keys.single`
+    // below see two Constraints instead of just the confirmed length one.
+    await controller.handleCanvasTap(10, 3);
     controller.finishChain();
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(8, 0.1); // away from the line's midpoint
+    await controller.handleCanvasTap(8, 2.4); // on the line, away from its midpoint
     await controller.confirmGhostValue('length', 25.0);
     controller.exitToSelectMode();
     final constraintId = controller.constraints.keys.single;
@@ -2977,7 +3154,11 @@ void main() {
       'when the last solve did not converge', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
-    await controller.handleCanvasTap(10, 0);
+    // Phase 6.1: off-axis (not (10, 0)) so placement doesn't auto-add a
+    // HorizontalConstraint ahead of the explicit VerticalConstraint below,
+    // which would leave this Line with two (conflicting) Constraints
+    // instead of just the one this test means to add.
+    await controller.handleCanvasTap(10, 3);
     controller.finishChain();
     final line = controller.lines.values.single;
     controller.exitToSelectMode();
@@ -2988,7 +3169,7 @@ void main() {
     // to trigger a fresh solve) isn't refused by the newer "a fully
     // constrained and grounded Point can't be dragged" check.
     backend.dof = 1;
-    await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (5, 0)
+    await controller.handleCanvasTap(8, 2.4); // the line, away from its midpoint
     await controller.addVerticalConstraint();
     final constraintId = controller.constraints.values.whereType<VerticalConstraintDto>().single.id;
 
@@ -3016,7 +3197,10 @@ void main() {
 
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
-    await controller.handleCanvasTap(10, 0);
+    // Phase 6.1: off-axis (not (10, 0)) so placement doesn't auto-add a
+    // Constraint of its own - this test's whole premise is that a bare
+    // Line creates none until the explicit VerticalConstraint below.
+    await controller.handleCanvasTap(10, 3);
     controller.finishChain();
     controller.exitToSelectMode();
 
@@ -3034,7 +3218,7 @@ void main() {
     // Ground it: a Vertical Constraint on the Line unions its two
     // endpoints - one of which is the origin itself - into one cluster.
     controller.exitToSelectMode();
-    await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (5, 0)
+    await controller.handleCanvasTap(8, 2.4); // the line, away from its midpoint
     await controller.addVerticalConstraint();
 
     expect(controller.isUnderConstrained, isFalse);
@@ -3045,7 +3229,10 @@ void main() {
       'Point elsewhere in the same Sketch is still free', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(20, 20); // away from the origin, deliberately not snapped to it
-    await controller.handleCanvasTap(30, 20);
+    // Phase 6.1: off-axis (not (30, 20)) so placement doesn't auto-add a
+    // HorizontalConstraint, which would change this Line's own DOF/rigidity
+    // clustering beyond just the CoincidentConstraint this test adds below.
+    await controller.handleCanvasTap(30, 23);
     controller.finishChain();
     final line = controller.lines.values.single;
     final pointAId = line.startPointId; // about to be grounded

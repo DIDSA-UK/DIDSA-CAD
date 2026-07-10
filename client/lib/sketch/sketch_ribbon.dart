@@ -69,6 +69,7 @@ class SketchRibbon extends StatelessWidget {
       SelectionKind.point => 'Point selected',
       SelectionKind.line => 'Line selected',
       SelectionKind.circle => 'Circle selected',
+      SelectionKind.arc => 'Arc selected',
       SelectionKind.constraint => 'Constraint selected',
     };
   }
@@ -192,17 +193,20 @@ Future<void> _confirmAndDelete(BuildContext context, SketchController controller
       selection.where((s) => s.kind == SelectionKind.line).map((s) => s.id).toSet();
   final selectedCircleIds =
       selection.where((s) => s.kind == SelectionKind.circle).map((s) => s.id).toSet();
+  final selectedArcIds = selection.where((s) => s.kind == SelectionKind.arc).map((s) => s.id).toSet();
   final selectedConstraintIds =
       selection.where((s) => s.kind == SelectionKind.constraint).map((s) => s.id).toSet();
   final extraLines = cascade.lines.difference(selectedLineIds).length;
   final extraCircles = cascade.circles.difference(selectedCircleIds).length;
+  final extraArcs = cascade.arcs.difference(selectedArcIds).length;
   final extraConstraints = cascade.constraints.difference(selectedConstraintIds).length;
-  final hasExtras = extraLines > 0 || extraCircles > 0 || extraConstraints > 0;
+  final hasExtras = extraLines > 0 || extraCircles > 0 || extraArcs > 0 || extraConstraints > 0;
 
   if (hasExtras && !controller.suppressDeleteCascadeWarning) {
     final parts = [
       if (extraLines > 0) '$extraLines line${extraLines == 1 ? '' : 's'}',
       if (extraCircles > 0) '$extraCircles circle${extraCircles == 1 ? '' : 's'}',
+      if (extraArcs > 0) '$extraArcs arc${extraArcs == 1 ? '' : 's'}',
       if (extraConstraints > 0) '$extraConstraints constraint${extraConstraints == 1 ? '' : 's'}',
     ];
     var dontWarnAgain = false;
