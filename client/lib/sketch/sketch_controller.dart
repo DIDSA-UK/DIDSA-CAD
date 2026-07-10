@@ -119,11 +119,54 @@ class SketchSplineView {
       ];
 }
 
+/// One glyph contour's outer/hole boundaries, cached as `(dx, dy)` offsets
+/// from the owning Text's anchor Point *at the time the preview was
+/// fetched* - not absolute sketch-space points. Kept anchor-relative
+/// (rather than baking in the anchor's position) so dragging the anchor
+/// Point - which never touches the Text entity's own fields, only the
+/// Point's `(x, y)` - repositions every contour for free on the very next
+/// frame, with no re-fetch: [SketchController.textAbsoluteContours] just
+/// adds the anchor's *current* position back on read.
+class SketchTextContourOffsets {
+  final List<(double, double)> outer;
+  final List<List<(double, double)>> holes;
+
+  const SketchTextContourOffsets({required this.outer, this.holes = const []});
+}
+
+class SketchTextView {
+  final String id;
+  final String content;
+  final String font;
+  final double size;
+  final String anchorPointId;
+  final double rotationDegrees;
+  final bool construction;
+
+  /// Null until the first [SketchController._refreshTextPreview] call
+  /// completes (fired right after creation, and after every content/
+  /// size/rotation edit) - see [SketchTextContourOffsets]'s own doc
+  /// comment for why these are anchor-relative offsets, not absolute
+  /// points.
+  final List<SketchTextContourOffsets>? previewContoursRelative;
+
+  const SketchTextView({
+    required this.id,
+    required this.content,
+    required this.font,
+    required this.size,
+    required this.anchorPointId,
+    this.rotationDegrees = 0,
+    this.construction = false,
+    this.previewContoursRelative,
+  });
+}
+
 /// Which entity the next tap-to-place commits, while [SketchMode.draw] is
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point, rectangle, arc, polygon, slot, ellipse, spline }
+enum SketchTool { line, circle, point, rectangle, arc, polygon, slot, ellipse, spline, text }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -351,7 +394,7 @@ enum SketchMode { select, draw, dimension }
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
 /// and bare relational Constraints (Vertical/Horizontal, which don't) -
 /// the ribbon distinguishes the two via [SketchController.selectedConstraintHasValue].
-enum SelectionKind { point, line, circle, constraint, arc, ellipse, spline }
+enum SelectionKind { point, line, circle, constraint, arc, ellipse, spline, text }
 
 /// The single hovered-or-selected entity, idle-state only (see
 /// [SketchController.isIdle]) - distinct from the chain-start/circle-center
@@ -518,6 +561,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchArcView> arcs = {};
   final Map<String, SketchEllipseView> ellipses = {};
   final Map<String, SketchSplineView> splines = {};
+  final Map<String, SketchTextView> texts = {};
 
   /// Stage 23b: the sketch-space bounding box of every Point, plus every
   /// Circle's full extent (center +/- radius, since a circle's own Points
@@ -589,6 +633,19 @@ class SketchController extends ChangeNotifier {
         final point = points[id];
         if (point == null) continue;
         include(point.x, point.y);
+      }
+    }
+    for (final text in texts.values) {
+      // Every contour's own outer boundary already fully encloses its
+      // holes, so only outer points are needed for a bound - exact once
+      // the preview has loaded, simply skipped (falls back to whatever
+      // the anchor Point alone already contributed above) before then.
+      final contours = textAbsoluteContours(text);
+      if (contours == null) continue;
+      for (final contour in contours) {
+        for (final p in contour.outer) {
+          include(p.$1, p.$2);
+        }
       }
     }
 
@@ -679,6 +736,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Ellipse';
           case SketchTool.spline:
             return 'Draw: Spline';
+          case SketchTool.text:
+            return 'Draw: Text';
         }
       case SketchMode.dimension:
         return 'Dimension';
@@ -974,7 +1033,12 @@ class SketchController extends ChangeNotifier {
   /// drawn anything. That indicator should only ever appear once there's
   /// actually something to be fully constrained.
   bool get hasGeometry =>
-      lines.isNotEmpty || circles.isNotEmpty || arcs.isNotEmpty || ellipses.isNotEmpty || splines.isNotEmpty;
+      lines.isNotEmpty ||
+      circles.isNotEmpty ||
+      arcs.isNotEmpty ||
+      ellipses.isNotEmpty ||
+      splines.isNotEmpty ||
+      texts.isNotEmpty;
 
   /// Whole-sketch "grounded and fully pinned" - what the padlock icon
   /// (sketch_screen.dart) shows, and (via [isUnderConstrained] below) what
@@ -1225,6 +1289,10 @@ class SketchController extends ChangeNotifier {
         return _ellipseDrawGhost();
       case SketchTool.spline:
         return _splineDrawGhost();
+      case SketchTool.text:
+        // A single, self-terminating tap (see _clickTextTool) - same
+        // "nothing to preview beforehand" reasoning as SketchTool.point.
+        return null;
     }
   }
 
@@ -1745,6 +1813,21 @@ class SketchController extends ChangeNotifier {
       }
     }
 
+    for (final text in texts.values) {
+      final contours = textAbsoluteContours(text);
+      if (contours == null) continue;
+      // Any contour's filled interior counts as a hit (ignoring its own
+      // holes - a tap landing exactly inside e.g. "o"'s counter is a rare
+      // enough edge case that treating the whole glyph's outer shape as
+      // the tap target, same simplification Circle/Ellipse's own ring-
+      // only hit-test already makes, is an acceptable v1 approximation).
+      for (final contour in contours) {
+        if (_pointInPolygon(x, y, contour.outer)) {
+          return SketchSelection(kind: SelectionKind.text, id: text.id);
+        }
+      }
+    }
+
     return null;
   }
 
@@ -2022,6 +2105,9 @@ class SketchController extends ChangeNotifier {
         final spline = splines[hit.id]!;
         final nearerId = _nearestOf(x, y, [...spline.throughPointIds, ...spline.controlPointIds]);
         return nearerId == _originPointId ? null : nearerId;
+      case SelectionKind.text:
+        final text = texts[hit.id]!;
+        return text.anchorPointId == _originPointId ? null : text.anchorPointId;
       case SelectionKind.constraint:
         return null;
     }
@@ -2091,6 +2177,11 @@ class SketchController extends ChangeNotifier {
         return nearerId == _originPointId
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
+      case SelectionKind.text:
+        final text = texts[hit.id]!;
+        return text.anchorPointId == _originPointId
+            ? null
+            : SketchSelection(kind: SelectionKind.point, id: text.anchorPointId);
       case SelectionKind.constraint:
         return null;
     }
@@ -2623,6 +2714,48 @@ class SketchController extends ChangeNotifier {
     return result;
   }
 
+  /// [text]'s own cached preview contours (see [SketchTextView]'s own doc
+  /// comment), repositioned to its anchor Point's *current* position - null
+  /// before the first preview fetch completes, or if the anchor Point has
+  /// since been deleted (a stale/in-flight response racing a local edit).
+  /// Shared by rendering ([SketchCanvas]), hit-testing, and the bounding
+  /// box above so what's drawn/tappable/measured never disagree.
+  List<SketchTextContourOffsets>? textAbsoluteContours(SketchTextView text) {
+    final relative = text.previewContoursRelative;
+    final anchor = points[text.anchorPointId];
+    if (relative == null || anchor == null) return null;
+    return [
+      for (final contour in relative)
+        SketchTextContourOffsets(
+          outer: [for (final p in contour.outer) (p.$1 + anchor.x, p.$2 + anchor.y)],
+          holes: [
+            for (final hole in contour.holes)
+              [for (final p in hole) (p.$1 + anchor.x, p.$2 + anchor.y)],
+          ],
+        ),
+    ];
+  }
+
+  /// The standard even-odd ray-cast point-in-polygon test, mirroring the
+  /// backend's own `app.sketch.profile._loop_contains_point` - used to
+  /// hit-test a tap against a Text entity's own (filled) glyph shape,
+  /// since a Text tap target is its filled interior, not just a thin
+  /// boundary the way every other entity's own hit-test radius is
+  /// (Text is rendered as a solid fill - see [SketchCanvas] - matching
+  /// what will actually be cut/embossed).
+  bool _pointInPolygon(double x, double y, List<(double, double)> vertices) {
+    var inside = false;
+    for (var i = 0; i < vertices.length; i++) {
+      final (x1, y1) = vertices[i];
+      final (x2, y2) = vertices[(i + 1) % vertices.length];
+      if ((y1 > y) != (y2 > y)) {
+        final xIntersect = x1 + (y - y1) * (x2 - x1) / (y2 - y1);
+        if (x < xIntersect) inside = !inside;
+      }
+    }
+    return inside;
+  }
+
   /// A human-readable reason [selection] (if it's a Point) cannot be
   /// deleted, or null if there's none. The sketch origin is the only entity
   /// that's still a hard block - a Point/Line/Circle still referenced by
@@ -2683,6 +2816,7 @@ class SketchController extends ChangeNotifier {
     Set<String> arcs,
     Set<String> ellipses,
     Set<String> splines,
+    Set<String> texts,
     Set<String> constraints
   }) computeDeleteCascade(Iterable<SketchSelection> selection) {
     final pointIds = <String>{};
@@ -2691,6 +2825,7 @@ class SketchController extends ChangeNotifier {
     final arcIds = <String>{};
     final ellipseIds = <String>{};
     final splineIds = <String>{};
+    final textIds = <String>{};
     final constraintIds = <String>{};
     for (final s in selection) {
       switch (s.kind) {
@@ -2706,6 +2841,8 @@ class SketchController extends ChangeNotifier {
           ellipseIds.add(s.id);
         case SelectionKind.spline:
           splineIds.add(s.id);
+        case SelectionKind.text:
+          textIds.add(s.id);
         case SelectionKind.constraint:
           constraintIds.add(s.id);
       }
@@ -2737,6 +2874,11 @@ class SketchController extends ChangeNotifier {
         splineIds.add(spline.id);
       }
     }
+    for (final text in texts.values) {
+      if (pointIds.contains(text.anchorPointId)) {
+        textIds.add(text.id);
+      }
+    }
     for (final entry in constraints.entries) {
       final refs = _constraintReferences(entry.value);
       if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) {
@@ -2750,6 +2892,7 @@ class SketchController extends ChangeNotifier {
       arcs: arcIds,
       ellipses: ellipseIds,
       splines: splineIds,
+      texts: textIds,
       constraints: constraintIds
     );
   }
@@ -2897,6 +3040,8 @@ class SketchController extends ChangeNotifier {
         return 'Ellipse ${ellipses.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.spline:
         return 'Spline ${splines.keys.toList().indexOf(selection.id) + 1}';
+      case SelectionKind.text:
+        return 'Text ${texts.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.constraint:
         return 'Constraint ${constraints.keys.toList().indexOf(selection.id) + 1}';
     }
@@ -2919,6 +3064,7 @@ class SketchController extends ChangeNotifier {
       ..addAll(arcs.keys.map((id) => SketchSelection(kind: SelectionKind.arc, id: id)))
       ..addAll(ellipses.keys.map((id) => SketchSelection(kind: SelectionKind.ellipse, id: id)))
       ..addAll(splines.keys.map((id) => SketchSelection(kind: SelectionKind.spline, id: id)))
+      ..addAll(texts.keys.map((id) => SketchSelection(kind: SelectionKind.text, id: id)))
       // Stage 21 item 4: without this, deleteSelected()'s constraints-first
       // ordering only ever covers constraints the user explicitly tapped -
       // any constraint on a selected Point/Line that select-all itself
@@ -3033,6 +3179,16 @@ class SketchController extends ChangeNotifier {
         selected.add(SketchSelection(kind: SelectionKind.spline, id: spline.id));
       }
     }
+    for (final text in texts.values) {
+      // Conservative, mirroring Circle/Ellipse/Arc above: every outer
+      // contour point must fall inside the rect (holes are always inside
+      // their own outer boundary, so they need no separate check).
+      final contours = textAbsoluteContours(text);
+      if (contours == null) continue;
+      if (contours.every((c) => c.outer.every((p) => insideRect(p.$1, p.$2)))) {
+        selected.add(SketchSelection(kind: SelectionKind.text, id: text.id));
+      }
+    }
     _selectionSet
       ..clear()
       ..addAll(selected);
@@ -3061,6 +3217,7 @@ class SketchController extends ChangeNotifier {
       for (final id in cascade.arcs) SketchSelection(kind: SelectionKind.arc, id: id),
       for (final id in cascade.ellipses) SketchSelection(kind: SelectionKind.ellipse, id: id),
       for (final id in cascade.splines) SketchSelection(kind: SelectionKind.spline, id: id),
+      for (final id in cascade.texts) SketchSelection(kind: SelectionKind.text, id: id),
       for (final id in cascade.constraints) SketchSelection(kind: SelectionKind.constraint, id: id),
     ];
     if (toDelete.isEmpty) return;
@@ -3075,6 +3232,7 @@ class SketchController extends ChangeNotifier {
     final capturedArcs = <SketchArcView>[];
     final capturedEllipses = <SketchEllipseView>[];
     final capturedSplines = <SketchSplineView>[];
+    final capturedTexts = <SketchTextView>[];
     final capturedConstraints = <ConstraintDto>[];
     for (final current in toDelete) {
       switch (current.kind) {
@@ -3098,6 +3256,10 @@ class SketchController extends ChangeNotifier {
           final spline = splines[current.id];
           if (spline != null) capturedSplines.add(spline);
           break;
+        case SelectionKind.text:
+          final text = texts[current.id];
+          if (text != null) capturedTexts.add(text);
+          break;
         case SelectionKind.point:
           final point = points[current.id];
           if (point != null) capturedPoints.add(point);
@@ -3111,13 +3273,13 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       // Backend rejects deleting a Point still referenced by a Line/Circle/
-      // Arc/Ellipse/Spline, and a Line/Circle/Arc/Ellipse/Spline can
-      // itself still be referenced by a Constraint - so deletion must run
-      // in the reverse of creation/dependency order (Constraints, then
-      // Lines/Circles/Arcs/Ellipses/Splines, then Points), regardless of
-      // the order entities happened to be selected/tapped in. Mirrors
+      // Arc/Ellipse/Spline/Text, and a Line/Circle/Arc/Ellipse/Spline/Text
+      // can itself still be referenced by a Constraint - so deletion must
+      // run in the reverse of creation/dependency order (Constraints, then
+      // Lines/Circles/Arcs/Ellipses/Splines/Texts, then Points), regardless
+      // of the order entities happened to be selected/tapped in. Mirrors
       // [_restoreDeletedEntities]'s own (forward) Points ->
-      // Lines/Circles/Arcs/Ellipses/Splines -> Constraints ordering.
+      // Lines/Circles/Arcs/Ellipses/Splines/Texts -> Constraints ordering.
       final constraintsToDelete = toDelete.where((s) => s.kind == SelectionKind.constraint);
       final shapesToDelete = toDelete.where(
         (s) =>
@@ -3125,7 +3287,8 @@ class SketchController extends ChangeNotifier {
             s.kind == SelectionKind.circle ||
             s.kind == SelectionKind.arc ||
             s.kind == SelectionKind.ellipse ||
-            s.kind == SelectionKind.spline,
+            s.kind == SelectionKind.spline ||
+            s.kind == SelectionKind.text,
       );
       final pointsToDelete = toDelete.where((s) => s.kind == SelectionKind.point);
       for (final current in [...constraintsToDelete, ...shapesToDelete, ...pointsToDelete]) {
@@ -3150,6 +3313,10 @@ class SketchController extends ChangeNotifier {
             await _api.deleteSpline(_sketchId!, current.id);
             splines.remove(current.id);
             break;
+          case SelectionKind.text:
+            await _api.deleteText(_sketchId!, current.id);
+            texts.remove(current.id);
+            break;
           case SelectionKind.point:
             await _api.deletePoint(_sketchId!, current.id);
             points.remove(current.id);
@@ -3167,6 +3334,7 @@ class SketchController extends ChangeNotifier {
             capturedArcs,
             capturedEllipses,
             capturedSplines,
+            capturedTexts,
             capturedConstraints,
           ));
       // Bug-fix round 2: always re-solve/refresh here, not just when a
@@ -3201,6 +3369,7 @@ class SketchController extends ChangeNotifier {
     List<SketchArcView> capturedArcs,
     List<SketchEllipseView> capturedEllipses,
     List<SketchSplineView> capturedSplines,
+    List<SketchTextView> capturedTexts,
     List<ConstraintDto> capturedConstraints,
   ) async {
     final idMap = <String, String>{};
@@ -3298,6 +3467,27 @@ class SketchController extends ChangeNotifier {
         controlPointIds: created.controlPointIds,
         construction: created.construction,
       );
+    }
+    for (final text in capturedTexts) {
+      final created = await _api.createText(
+        _sketchId!,
+        text.content,
+        idMap[text.anchorPointId] ?? text.anchorPointId,
+        size: text.size,
+        rotationDegrees: text.rotationDegrees,
+        construction: text.construction,
+      );
+      idMap[text.id] = created.id;
+      texts[created.id] = SketchTextView(
+        id: created.id,
+        content: created.content,
+        font: created.font,
+        size: created.size,
+        anchorPointId: created.anchorPointId,
+        rotationDegrees: created.rotationDegrees,
+        construction: created.construction,
+      );
+      await _refreshTextPreview(created.id);
     }
     for (final constraint in capturedConstraints) {
       await _recreateConstraint(constraint, idMap);
@@ -3529,6 +3719,8 @@ class SketchController extends ChangeNotifier {
         return ellipses[current.id]?.construction;
       case SelectionKind.spline:
         return splines[current.id]?.construction;
+      case SelectionKind.text:
+        return texts[current.id]?.construction;
       case SelectionKind.point:
       case SelectionKind.constraint:
         return null;
@@ -3591,6 +3783,19 @@ class SketchController extends ChangeNotifier {
             throughPointIds: updated.throughPointIds,
             controlPointIds: updated.controlPointIds,
             construction: updated.construction,
+          );
+          break;
+        case SelectionKind.text:
+          final updated = await _api.updateText(_sketchId!, current.id, construction: next);
+          texts[current.id] = SketchTextView(
+            id: updated.id,
+            content: updated.content,
+            font: updated.font,
+            size: updated.size,
+            anchorPointId: updated.anchorPointId,
+            rotationDegrees: updated.rotationDegrees,
+            construction: updated.construction,
+            previewContoursRelative: texts[current.id]?.previewContoursRelative,
           );
           break;
         case SelectionKind.point:
@@ -3840,6 +4045,12 @@ class SketchController extends ChangeNotifier {
           // dimensionable as an ordinary Point) and its
           // SplineTangentConstraints, which aren't user-editable numeric
           // values.
+        case SelectionKind.text:
+          // Likewise, a Text entity's content/size/rotation are plain
+          // direct edits (see setTextProperties, wired to the ribbon's own
+          // "Edit Text" action, mirroring setEllipseMinorRadius), not a
+          // DistanceConstraint-backed dimension - nothing to build a ghost
+          // for here.
         case SelectionKind.point:
         case SelectionKind.constraint:
           _ghosts = [];
@@ -4395,9 +4606,61 @@ class SketchController extends ChangeNotifier {
         construction: spline.construction,
       );
     }
+    for (final text in await _api.listTexts(sketchId)) {
+      texts[text.id] = SketchTextView(
+        id: text.id,
+        content: text.content,
+        font: text.font,
+        size: text.size,
+        anchorPointId: text.anchorPointId,
+        rotationDegrees: text.rotationDegrees,
+        construction: text.construction,
+      );
+    }
     for (final constraint in await _api.listConstraints(sketchId)) {
       constraints[constraint.id] = constraint;
     }
+    // Fetched after every other collection above (so a Text's own anchor
+    // Point is already in [points] to compute anchor-relative offsets
+    // against - see [_refreshTextPreview]) and concurrently, since these
+    // are independent network calls with nothing left to sequence against
+    // each other.
+    await Future.wait([for (final id in texts.keys) _refreshTextPreview(id)]);
+  }
+
+  /// Fetches [textId]'s current server-side outline and re-caches it as
+  /// anchor-relative offsets (see [SketchTextContourOffsets]'s own doc
+  /// comment) - called right after creating a Text, after every
+  /// content/size/rotation edit ([setTextProperties]), and once per Text
+  /// while loading an existing sketch ([_loadExistingContent]). A no-op if
+  /// [textId] or its own anchor Point isn't (yet) known locally - a stale/
+  /// in-flight call racing a local delete.
+  Future<void> _refreshTextPreview(String textId) async {
+    if (_sketchId == null) return;
+    final text = texts[textId];
+    final anchor = text == null ? null : points[text.anchorPointId];
+    if (text == null || anchor == null) return;
+    final contours = await _api.getTextPreview(_sketchId!, textId);
+    texts[textId] = SketchTextView(
+      id: text.id,
+      content: text.content,
+      font: text.font,
+      size: text.size,
+      anchorPointId: text.anchorPointId,
+      rotationDegrees: text.rotationDegrees,
+      construction: text.construction,
+      previewContoursRelative: [
+        for (final contour in contours)
+          SketchTextContourOffsets(
+            outer: [for (final p in contour.outer) (p.$1 - anchor.x, p.$2 - anchor.y)],
+            holes: [
+              for (final hole in contour.holes)
+                [for (final p in hole) (p.$1 - anchor.x, p.$2 - anchor.y)],
+            ],
+          ),
+      ],
+    );
+    notifyListeners();
   }
 
   /// Re-fetches every Constraint from the backend - called after anything
@@ -4554,6 +4817,11 @@ class SketchController extends ChangeNotifier {
 
     if (_activeTool == SketchTool.spline) {
       await _clickSplineTool();
+      return;
+    }
+
+    if (_activeTool == SketchTool.text) {
+      await _clickTextTool();
       return;
     }
 
@@ -5183,6 +5451,110 @@ class SketchController extends ChangeNotifier {
       await _refreshConstraints();
 
       _splineThroughPointIds.clear();
+    });
+  }
+
+  /// The initial content a freshly-placed Text entity is created with -
+  /// unlike every other entity here, Text has no tap sequence that could
+  /// meaningfully preview its final shape (glyph outlines aren't
+  /// something a user "aims" the way a Circle's radius or a Line's
+  /// endpoint is), so [SketchTool.text] is a single, self-terminating tap
+  /// (see [_clickTextTool]) that commits immediately with this
+  /// placeholder, exactly like [SketchTool.point]'s own single-tap
+  /// commit - refined afterward via the ribbon's "Edit Text" action
+  /// ([setTextProperties]), mirroring how [setEllipseMinorRadius] refines
+  /// Ellipse's own minor radius after the fact.
+  static const String _defaultTextContent = 'Text';
+
+  /// [SketchTool.text]: a single, self-terminating tap that places the
+  /// anchor Point (via [_pointIdAtCursor], so it snaps onto/shares an
+  /// existing Point exactly like Circle/Arc/Ellipse/Spline's own anchor
+  /// Points do - unlike [SketchTool.point]'s deliberately-distinct
+  /// Coincident-linked placement) and creates the Text entity immediately
+  /// with [_defaultTextContent] at the backend's own default font/size.
+  Future<void> _clickTextTool() async {
+    _selectionSet.clear();
+    _ribbonVisible = false;
+    await _runGuarded(() async {
+      final anchorPointId = await _pointIdAtCursor();
+      final text = await _api.createText(_sketchId!, _defaultTextContent, anchorPointId);
+      texts[text.id] = SketchTextView(
+        id: text.id,
+        content: text.content,
+        font: text.font,
+        size: text.size,
+        anchorPointId: text.anchorPointId,
+        rotationDegrees: text.rotationDegrees,
+        construction: text.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteText(_sketchId!, text.id);
+        texts.remove(text.id);
+      });
+
+      // Same rule as any other completed entity: one finished entity = one solve call.
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+      await _refreshTextPreview(text.id);
+    });
+  }
+
+  /// The ribbon's "Edit Text" action (mirrors [setEllipseMinorRadius]):
+  /// PATCHes whichever of [content]/[size]/[rotationDegrees] are non-null,
+  /// then re-fetches the preview outline (see [_refreshTextPreview]) since
+  /// any of those can change the actual glyph geometry. Reversible, same
+  /// PATCH-to-the-old-values undo shape [setEllipseMinorRadius] uses.
+  Future<void> setTextProperties(
+    String textId, {
+    String? content,
+    double? size,
+    double? rotationDegrees,
+  }) async {
+    if (_busy || _sketchId == null) return;
+    final text = texts[textId];
+    if (text == null) return;
+    final oldContent = text.content;
+    final oldSize = text.size;
+    final oldRotation = text.rotationDegrees;
+
+    await _runGuarded(() async {
+      final updated = await _api.updateText(
+        _sketchId!,
+        textId,
+        content: content,
+        size: size,
+        rotationDegrees: rotationDegrees,
+      );
+      texts[textId] = SketchTextView(
+        id: updated.id,
+        content: updated.content,
+        font: updated.font,
+        size: updated.size,
+        anchorPointId: updated.anchorPointId,
+        rotationDegrees: updated.rotationDegrees,
+        construction: updated.construction,
+      );
+      _pushUndo(() async {
+        final reverted = await _api.updateText(
+          _sketchId!,
+          textId,
+          content: oldContent,
+          size: oldSize,
+          rotationDegrees: oldRotation,
+        );
+        texts[textId] = SketchTextView(
+          id: reverted.id,
+          content: reverted.content,
+          font: reverted.font,
+          size: reverted.size,
+          anchorPointId: reverted.anchorPointId,
+          rotationDegrees: reverted.rotationDegrees,
+          construction: reverted.construction,
+        );
+        await _refreshTextPreview(textId);
+      });
+      await _refreshTextPreview(textId);
     });
   }
 

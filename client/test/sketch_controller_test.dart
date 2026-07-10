@@ -23,6 +23,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> ellipses = {};
   final Map<String, Map<String, dynamic>> splines = {};
+  final Map<String, Map<String, dynamic>> texts = {};
   final Map<String, Map<String, dynamic>> sketches = {};
   final Map<String, Map<String, dynamic>> constraints = {};
 
@@ -44,6 +45,31 @@ class _FakeBackend {
   int dof = 0;
 
   String _newId(String prefix) => '$prefix-${_nextId++}';
+
+  /// A deterministic fake outline for [text]'s preview endpoint - a single
+  /// rectangle (no holes), sized from its content length/size and placed
+  /// relative to its anchor Point via the same rotate-then-translate
+  /// formula the real backend's `place_local_point` uses, so tests
+  /// exercising rotation/anchor-drag see a real (if not font-accurate)
+  /// shape rather than a hardcoded stand-in.
+  List<Map<String, dynamic>> textPreviewContours(Map<String, dynamic> text) {
+    final anchor = points[text['anchor_point_id'] as String]!;
+    final ax = (anchor['x'] as num).toDouble();
+    final ay = (anchor['y'] as num).toDouble();
+    final size = (text['size'] as num).toDouble();
+    final content = text['content'] as String;
+    final width = content.length * size * 0.6;
+    final rotation = (text['rotation_degrees'] as num).toDouble() * math.pi / 180;
+    final cosR = math.cos(rotation);
+    final sinR = math.sin(rotation);
+    final localCorners = [(0.0, 0.0), (width, 0.0), (width, size), (0.0, size)];
+    final placed = [
+      for (final (x, y) in localCorners) [ax + x * cosR - y * sinR, ay + x * sinR + y * cosR],
+    ];
+    return [
+      {'outer': placed, 'holes': <List<List<double>>>[]},
+    ];
+  }
 
   /// Seeds a Sketch (and its origin Point) as if it had already been
   /// created server-side - e.g. via a SketchFeature - so [adoptSketch] has
@@ -108,6 +134,33 @@ class _FakeBackend {
         spline['construction'] = body['construction'] as bool;
       }
       return _json(spline, 200);
+    }
+
+    final textPreviewMatch =
+        RegExp(r'^/sketch/sketches/[^/]+/texts/([^/]+)/preview$').firstMatch(path);
+    if (textPreviewMatch != null && request.method == 'GET') {
+      final text = texts[textPreviewMatch.group(1)];
+      if (text == null) return http.Response('not found', 404);
+      return _json({'contours': textPreviewContours(text)}, 200);
+    }
+
+    final textDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/texts/(.+)$').firstMatch(path);
+    if (textDeleteMatch != null && request.method == 'DELETE') {
+      texts.remove(textDeleteMatch.group(1));
+      return http.Response('', 204);
+    }
+
+    final textPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/texts/(.+)$').firstMatch(path);
+    if (textPatchMatch != null && request.method == 'PATCH') {
+      final text = texts[textPatchMatch.group(1)];
+      if (text == null) return http.Response('not found', 404);
+      if (body.containsKey('content')) text['content'] = body['content'] as String;
+      if (body.containsKey('size')) text['size'] = (body['size'] as num).toDouble();
+      if (body.containsKey('rotation_degrees')) {
+        text['rotation_degrees'] = (body['rotation_degrees'] as num).toDouble();
+      }
+      if (body.containsKey('construction')) text['construction'] = body['construction'] as bool;
+      return _json(text, 200);
     }
 
     final pointDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/points/(.+)$').firstMatch(path);
@@ -349,6 +402,25 @@ class _FakeBackend {
     }
     if (splinesCollectionMatch && request.method == 'GET') {
       return _jsonList(splines.values.toList(), 200);
+    }
+
+    final textsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/texts$').hasMatch(path);
+    if (textsCollectionMatch && request.method == 'POST') {
+      final id = _newId('text');
+      final text = {
+        'id': id,
+        'content': body['content'] as String,
+        'font': 'Open Sans',
+        'size': (body['size'] as num?)?.toDouble() ?? 10.0,
+        'anchor_point_id': body['anchor_point_id'] as String,
+        'rotation_degrees': (body['rotation_degrees'] as num?)?.toDouble() ?? 0.0,
+        'construction': body['construction'] as bool? ?? false,
+      };
+      texts[id] = text;
+      return _json(text, 201);
+    }
+    if (textsCollectionMatch && request.method == 'GET') {
+      return _jsonList(texts.values.toList(), 200);
     }
 
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
@@ -1855,6 +1927,144 @@ void main() {
     await controller.deleteSelected();
 
     expect(controller.splines, isEmpty);
+  });
+
+  // --- Phase 6.2.6: Text tool -------------------------------------------
+
+  test('activeDrawGhost is always null for the text tool, a single self-terminating tap like the '
+      'point tool', () {
+    controller.selectDrawTool(SketchTool.text);
+
+    expect(controller.activeDrawGhost, isNull);
+  });
+
+  test('the text tool places one Text entity per tap, with default content at the backend\'s '
+      'default font/size/rotation', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(5, 5);
+
+    expect(controller.texts.length, 1);
+    final text = controller.texts.values.single;
+    expect(text.content, 'Text');
+    expect(text.font, 'Open Sans');
+    expect(text.size, 10.0);
+    expect(text.rotationDegrees, 0.0);
+    expect(text.construction, isFalse);
+    expect(controller.points[text.anchorPointId]!.x, closeTo(5, 1e-9));
+    expect(controller.points[text.anchorPointId]!.y, closeTo(5, 1e-9));
+  });
+
+  test('creating a Text entity fetches and caches its preview outline', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(5, 5);
+    final text = controller.texts.values.single;
+
+    final contours = controller.textAbsoluteContours(text);
+
+    expect(contours, isNotNull);
+    expect(contours!.length, 1);
+    expect(contours.first.outer.length, 4);
+    // Default content 'Text' (4 chars) * size 10 * 0.6 = 24 width (see the
+    // fake backend's own textPreviewContours).
+    expect(contours.first.outer[1].$1 - contours.first.outer[0].$1, closeTo(24, 1e-6));
+  });
+
+  test('moving a Text entity\'s anchor Point repositions its cached preview contours with no '
+      're-fetch - see SketchTextContourOffsets\'s own doc comment for why', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(5, 5);
+    final text = controller.texts.values.single;
+    final before = controller.textAbsoluteContours(text)!.first.outer[0];
+    final requestCountBefore = backend.requestLog.length;
+
+    controller.points[text.anchorPointId] = SketchPointView(id: text.anchorPointId, x: 25, y: 25);
+
+    final after = controller.textAbsoluteContours(controller.texts[text.id]!)!.first.outer[0];
+    expect(after.$1 - before.$1, closeTo(20, 1e-9));
+    expect(after.$2 - before.$2, closeTo(20, 1e-9));
+    expect(backend.requestLog.length, requestCountBefore);
+  });
+
+  test('tapping inside a Text entity\'s filled shape, in select mode, recognizes '
+      'SelectionKind.text', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(0, 0); // anchor snaps to the origin
+    controller.exitToSelectMode();
+
+    // Default 'Text' content -> a 24x10 rectangle from (0, 0) to (24, 10)
+    // (see the fake backend's own textPreviewContours) - well inside it.
+    await controller.handleCanvasTap(12, 5);
+
+    expect(controller.selectionSet.length, 1);
+    expect(controller.selectionSet.first.kind, SelectionKind.text);
+  });
+
+  test('computeDeleteCascade for a directly-selected Text reports just the Text', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(5, 5);
+    final textId = controller.texts.keys.single;
+
+    final cascade =
+        controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.text, id: textId)]);
+
+    expect(cascade.texts, {textId});
+    expect(cascade.points, isEmpty);
+  });
+
+  test('computeDeleteCascade cascades a deleted anchor Point to the Text that references it',
+      () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(5, 5);
+    final text = controller.texts.values.single;
+
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.point, id: text.anchorPointId)],
+    );
+
+    expect(cascade.texts, {text.id});
+  });
+
+  test('deleteSelected removes a Text entirely from local state', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(0, 0);
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(12, 5);
+    expect(controller.selection?.kind, SelectionKind.text);
+
+    await controller.deleteSelected();
+
+    expect(controller.texts, isEmpty);
+  });
+
+  test('toggleSelectedConstruction flips a Text entity\'s construction flag', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(0, 0);
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(12, 5);
+    expect(controller.selectedIsConstruction, isFalse);
+
+    await controller.toggleSelectedConstruction();
+
+    expect(controller.texts.values.single.construction, isTrue);
+  });
+
+  test('setTextProperties PATCHes content/size/rotation and refreshes the cached preview',
+      () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(5, 5);
+    final textId = controller.texts.keys.single;
+
+    await controller.setTextProperties(textId, content: 'Hi', size: 20.0, rotationDegrees: 90.0);
+
+    final updated = controller.texts[textId]!;
+    expect(updated.content, 'Hi');
+    expect(updated.size, 20.0);
+    expect(updated.rotationDegrees, 90.0);
+    // 'Hi' (2 chars) * 20 * 0.6 = 24 width, confirming the preview was
+    // re-fetched against the *new* content/size, not stale.
+    final contours = controller.textAbsoluteContours(updated);
+    expect(contours!.first.outer.length, 4);
+    expect(contours.first.outer[1].$1 - contours.first.outer[0].$1, closeTo(24, 1e-6));
   });
 
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------

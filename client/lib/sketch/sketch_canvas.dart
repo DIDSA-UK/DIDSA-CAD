@@ -2216,6 +2216,16 @@ class _SketchPainter extends CustomPainter {
   /// checked first via [loop]'s own entity id so a plain circular fill
   /// isn't drawn in place of the real (possibly non-circular, rotated)
   /// ellipse shape.
+  ///
+  /// Known v1 gap: a Text-contour loop (`loop.pointIds` empty, `line_ids`
+  /// holding just the owning Text entity's id - see
+  /// `app.sketch.profile._text_profile`) has no packed-point convention
+  /// this function recognizes at all, so it safely returns false (no
+  /// crash, simply no green "ready to extrude" overlay drawn) for any
+  /// profile that includes one - Text already renders its own filled
+  /// glyph shape directly (see the dedicated Text loop in [paint]), which
+  /// covers the most important "this is solid" visual signal; the
+  /// additional green overlay other extrudable profiles get is deferred.
   bool _addLoopBoundary(Path path, ProfileLoopDto loop) {
     final points = <Offset>[];
     for (final id in loop.pointIds) {
@@ -2612,6 +2622,71 @@ class _SketchPainter extends CustomPainter {
       } else {
         canvas.drawPath(path, splinePaint);
       }
+    }
+
+    for (final text in controller.texts.values) {
+      final contours = controller.textAbsoluteContours(text);
+      if (contours == null) continue;
+
+      final path = Path()..fillType = PathFillType.evenOdd;
+      for (final contour in contours) {
+        final outerScreen = [for (final p in contour.outer) transform.sketchToScreen(p.$1, p.$2)];
+        if (outerScreen.isEmpty) continue;
+        path.moveTo(outerScreen[0].dx, outerScreen[0].dy);
+        for (var i = 1; i < outerScreen.length; i++) {
+          path.lineTo(outerScreen[i].dx, outerScreen[i].dy);
+        }
+        path.close();
+        for (final hole in contour.holes) {
+          final holeScreen = [for (final p in hole) transform.sketchToScreen(p.$1, p.$2)];
+          if (holeScreen.isEmpty) continue;
+          path.moveTo(holeScreen[0].dx, holeScreen[0].dy);
+          for (var i = 1; i < holeScreen.length; i++) {
+            path.lineTo(holeScreen[i].dx, holeScreen[i].dy);
+          }
+          path.close();
+        }
+      }
+
+      final textIsSelected = isSelected(SelectionKind.text, text.id);
+      final isHovered = hovered?.kind == SelectionKind.text && hovered!.id == text.id;
+      // Text's only defining Point is its anchor (see SketchTextView's own
+      // doc comment - glyph geometry is never decomposed into Points), so
+      // its DOF preview is the same plain single-Point check the origin's
+      // own marker below uses, rather than the per-segment checks every
+      // other curved entity above needs.
+      final textIsOverConstrained = controller.isPointForcedOverConstrained(text.anchorPointId);
+      final textIsFullyConstrained =
+          controller.isFullyConstrained || controller.rigidity.isPointFullyConstrained(text.anchorPointId);
+      final textColor = textIsSelected
+          ? _selectedColor
+          : isHovered
+              ? _hoverColor
+              : textIsOverConstrained
+                  ? _overConstrainedColor
+                  : text.construction
+                      ? _constructionColor
+                      : textIsFullyConstrained
+                          ? _fullyConstrainedColor
+                          : _unconstrainedColor;
+
+      // Unlike every other entity here, Text is rendered as a filled
+      // shape (a translucent preview of the material that will actually
+      // be cut/embossed - see the profile-fill rendering above, the only
+      // other filled rendering in this file) rather than a bare outline -
+      // a stroke-only "T" would be much harder to read as a solid letter.
+      // Dashing (this file's usual construction-geometry cue) has no
+      // meaningful analogue for a fill, so construction status here is
+      // signalled by color alone, same as every other entity's own color
+      // ternary above.
+      canvas.drawPath(path, Paint()..color = textColor.withValues(alpha: 0.55)..style = PaintingStyle.fill);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = textColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = textIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth,
+      );
     }
 
     final originId = controller.originPointId;

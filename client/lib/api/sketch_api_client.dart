@@ -177,6 +177,60 @@ class SplineDto {
       );
 }
 
+class TextDto {
+  final String id;
+  final String content;
+  final String font;
+  final double size;
+  final String anchorPointId;
+  final double rotationDegrees;
+  final bool construction;
+
+  TextDto({
+    required this.id,
+    required this.content,
+    required this.font,
+    required this.size,
+    required this.anchorPointId,
+    this.rotationDegrees = 0,
+    this.construction = false,
+  });
+
+  factory TextDto.fromJson(Map<String, dynamic> json) => TextDto(
+        id: json['id'] as String,
+        content: json['content'] as String,
+        font: json['font'] as String,
+        size: (json['size'] as num).toDouble(),
+        anchorPointId: json['anchor_point_id'] as String,
+        rotationDegrees: (json['rotation_degrees'] as num?)?.toDouble() ?? 0,
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+/// One glyph contour from `GET .../texts/{id}/preview` - `outer`/each of
+/// `holes` a closed `(x, y)` polyline, already positioned/rotated by the
+/// server per the owning Text's own anchor Point/`rotationDegrees` (see
+/// the backend's `TextContourResponse` docstring - no extra client-side
+/// transform is needed to draw these directly).
+class TextContourDto {
+  final List<(double, double)> outer;
+  final List<List<(double, double)>> holes;
+
+  const TextContourDto({required this.outer, this.holes = const []});
+
+  static (double, double) _point(dynamic json) {
+    final list = json as List;
+    return ((list[0] as num).toDouble(), (list[1] as num).toDouble());
+  }
+
+  factory TextContourDto.fromJson(Map<String, dynamic> json) => TextContourDto(
+        outer: (json['outer'] as List).map(_point).toList(),
+        holes: (json['holes'] as List)
+            .map((hole) => (hole as List).map(_point).toList())
+            .toList(),
+      );
+}
+
 /// Base type for the backend's discriminated Constraint union (Stage 12) -
 /// see app/sketch/schemas.py's `ConstraintResponse`. Used by the client both
 /// to *render* existing constraints (Stage 12 item 10's dimension overlays)
@@ -739,6 +793,25 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<TextDto>> listTexts(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/texts'), headers: _headers),
+        (body) => (body as List).map((e) => TextDto.fromJson(e as Map<String, dynamic>)).toList(),
+      );
+
+  /// Every one of a Text entity's own glyph contours, already positioned/
+  /// rotated per its anchor Point/`rotationDegrees` (see [TextContourDto]'s
+  /// own doc comment) - fetched once per content/font/size/rotation change
+  /// and cached client-side (see `SketchTextView`), never polled.
+  Future<List<TextContourDto>> getTextPreview(String sketchId, String textId) => _send(
+        () => _httpClient.get(
+              _uri('/sketch/sketches/$sketchId/texts/$textId/preview'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['contours'] as List)
+            .map((e) => TextContourDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<LineDto> createLine(
     String sketchId,
     String startPointId,
@@ -840,6 +913,34 @@ class SketchApiClient {
         (body) => SplineDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Always creates from an existing anchor Point (mirrors how the client
+  /// creates every other entity here). `font` is left to the backend's own
+  /// default (currently the only allow-listed font, "Open Sans" - see the
+  /// backend's `TextEntity`/`text_fonts` docstrings) since v1 has nothing
+  /// for the client to offer a choice between yet.
+  Future<TextDto> createText(
+    String sketchId,
+    String content,
+    String anchorPointId, {
+    double size = 10.0,
+    double rotationDegrees = 0,
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/texts'),
+              headers: _headers,
+              body: jsonEncode({
+                'content': content,
+                'anchor_point_id': anchorPointId,
+                'size': size,
+                'rotation_degrees': rotationDegrees,
+                'construction': construction,
+              }),
+            ),
+        (body) => TextDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Toggles a Line's construction flag (Make-Construction/Make-Solid) -
   /// `length` is left null since this call never needs to also resize the
   /// line (see backend LineUpdate, where both fields are independently
@@ -918,6 +1019,33 @@ class SketchApiClient {
         (body) => SplineDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Updates any of a Text entity's own directly-editable fields - mirrors
+  /// [updateEllipse]'s "several independently-optional fields" shape.
+  /// Every field here is a plain direct edit (see the backend's
+  /// `TextEntity`/`TextUpdate` docstrings) - omitted fields are left
+  /// unchanged.
+  Future<TextDto> updateText(
+    String sketchId,
+    String textId, {
+    String? content,
+    double? size,
+    double? rotationDegrees,
+    bool? construction,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/texts/$textId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (content != null) 'content': content,
+                if (size != null) 'size': size,
+                if (rotationDegrees != null) 'rotation_degrees': rotationDegrees,
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => TextDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<void> deletePoint(String sketchId, String pointId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/points/$pointId'),
@@ -961,6 +1089,14 @@ class SketchApiClient {
   Future<void> deleteSpline(String sketchId, String splineId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/splines/$splineId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteText(String sketchId, String textId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/texts/$textId'),
               headers: _headers,
             ),
         (_) {},

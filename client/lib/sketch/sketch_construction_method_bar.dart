@@ -35,6 +35,7 @@ class SketchConstructionMethodBar extends StatelessWidget {
                       SketchTool.slot => const Text('Tap centerline start, end, then width'),
                       SketchTool.ellipse => const Text('Tap center, major axis, then minor radius'),
                       SketchTool.spline => const Text('Tap through-points, then Finish'),
+                      SketchTool.text => const Text('Tap to place text'),
                       SketchTool.polygon => _PolygonSidesControl(controller: controller),
                       SketchTool.line || SketchTool.circle || SketchTool.rectangle =>
                         SingleChildScrollView(
