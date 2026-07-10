@@ -80,7 +80,15 @@ void main() {
     await tester.pump();
 
     // Second level: the individual tools, reached via Sketch Entities.
+    // The full tool list (Circle/Arc/Line/Point/Rectangle/Polygon/Slot/
+    // Ellipse/Back) is now taller than fits above the FAB on this test's
+    // default (short) surface size, so SketchSpeedDial wraps it in a
+    // scrollable - ensureVisible scrolls whichever target isn't already
+    // on-screen into view first, same as a real user would scroll to reach
+    // it, rather than assuming a fixed scroll position.
+    await tester.ensureVisible(find.byTooltip('Line'));
     expect(find.byTooltip('Line').hitTestable(), findsOneWidget);
+    await tester.ensureVisible(find.byTooltip('Circle'));
     expect(find.byTooltip('Circle').hitTestable(), findsOneWidget);
     // No chain in progress yet, so there is nothing to Finish.
     expect(find.byTooltip('Finish').hitTestable(), findsNothing);

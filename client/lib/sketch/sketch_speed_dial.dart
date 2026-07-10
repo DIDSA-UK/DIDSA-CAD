@@ -25,8 +25,31 @@ class SketchSpeedDial extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            for (final action in actions)
-              Padding(padding: const EdgeInsets.only(bottom: 8), child: action),
+            if (actions.isNotEmpty)
+              // Bounded + scrollable rather than a bare unconstrained
+              // Column: the Sketch Entities tool list has grown past what
+              // reliably fits above the main FAB on a short viewport (this
+              // Positioned sits in a Stack, which clips by default) - a
+              // plain Column here silently clipped its topmost action off-
+              // screen once Ellipse became the list's 8th tool. Bounding to
+              // a fraction of the screen height keeps this a no-op on any
+              // viewport tall enough to fit everything (every real device
+              // this has been tested on so far), and only engages the
+              // scroll on a short one.
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.6),
+                child: SingleChildScrollView(
+                  reverse: true,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      for (final action in actions)
+                        Padding(padding: const EdgeInsets.only(bottom: 8), child: action),
+                    ],
+                  ),
+                ),
+              ),
             FloatingActionButton(
               heroTag: null,
               onPressed: controller.fabMenu == FabMenuState.closed
