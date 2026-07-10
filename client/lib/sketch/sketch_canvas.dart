@@ -1980,11 +1980,20 @@ class _SketchPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
     switch (ghost) {
       case LineGhost g:
+        // Phase 6.1: same green used elsewhere for an active snap (e.g.
+        // [isHoveringChainStart]) - signals the tap will land exactly
+        // horizontal/vertical and auto-add that constraint.
+        final snapPaint = controller.activeLineSnapAxis == null
+            ? paint
+            : (Paint()
+              ..color = Colors.green
+              ..strokeWidth = 1.5
+              ..style = PaintingStyle.stroke);
         _drawDashedLine(
           canvas,
           transform.sketchToScreen(g.startX, g.startY),
           transform.sketchToScreen(g.endX, g.endY),
-          paint,
+          snapPaint,
         );
       case CircleGhost g:
         final center = transform.sketchToScreen(g.centerX, g.centerY);

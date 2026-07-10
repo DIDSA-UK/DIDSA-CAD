@@ -785,6 +785,49 @@ void main() {
     expect(rect.corner3, (1.0, 4.0));
   });
 
+  // --- Phase 6.1: line snap-to-horizontal/vertical --------------------------
+
+  test('activeLineSnapAxis and the ghost preview snap to horizontal within the angle threshold', () async {
+    controller.selectDrawTool(SketchTool.line);
+    controller.setLineConstructionMethod(LineConstructionMethod.endToEnd);
+    await controller.handleCanvasTap(0, 0);
+
+    // atan2(0.3, 10) ~= 1.7 degrees off horizontal - within the 4 degree
+    // threshold.
+    controller.cursorX = 10;
+    controller.cursorY = 0.3;
+    expect(controller.activeLineSnapAxis, LineSnapAxis.horizontal);
+    final ghost = controller.activeDrawGhost as LineGhost;
+    expect(ghost.endX, 10);
+    expect(ghost.endY, 0); // snapped flat, not the raw cursor's 0.3
+  });
+
+  test('activeLineSnapAxis and the ghost preview snap to vertical within the angle threshold', () async {
+    controller.selectDrawTool(SketchTool.line);
+    controller.setLineConstructionMethod(LineConstructionMethod.endToEnd);
+    await controller.handleCanvasTap(0, 0);
+
+    controller.cursorX = 0.3;
+    controller.cursorY = 10;
+    expect(controller.activeLineSnapAxis, LineSnapAxis.vertical);
+    final ghost = controller.activeDrawGhost as LineGhost;
+    expect(ghost.endX, 0);
+    expect(ghost.endY, 10);
+  });
+
+  test('activeLineSnapAxis is null once the angle is outside the snap threshold', () async {
+    controller.selectDrawTool(SketchTool.line);
+    controller.setLineConstructionMethod(LineConstructionMethod.endToEnd);
+    await controller.handleCanvasTap(0, 0);
+
+    controller.cursorX = 4;
+    controller.cursorY = 5; // far from either axis
+    expect(controller.activeLineSnapAxis, isNull);
+    final ghost = controller.activeDrawGhost as LineGhost;
+    expect(ghost.endX, 4);
+    expect(ghost.endY, 5);
+  });
+
   test('dimensionLabelAt hits a dragged label at its offset position and misses its old default anchor', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
@@ -1552,6 +1595,55 @@ void main() {
 
     expect(controller.errorMessage, isNull);
     expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isNotEmpty);
+  });
+
+  // --- Phase 6.1: auto-constrain on placement when snapped -------------------
+
+  test('placing a near-horizontal line auto-adds a HorizontalConstraint on tap', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0.3); // within the snap threshold
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isNotEmpty);
+  });
+
+  test('placing a near-vertical line auto-adds a VerticalConstraint on tap', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0.3, 10); // within the snap threshold
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isNotEmpty);
+  });
+
+  test('placing a line well off-axis does not auto-add a Horizontal/Vertical constraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(4, 5);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isEmpty);
+  });
+
+  test('closing a chain loop back onto its start never auto-snaps, even if the closing edge is '
+      'exactly axis-aligned', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // chain start: the origin
+    await controller.handleCanvasTap(5, 3); // edge1: ~31 degrees, no snap
+    await controller.handleCanvasTap(8, 0); // edge2: 45 degrees, no snap
+    // Close the loop: the closing edge runs from (8, 0) straight back to the
+    // origin (0, 0) - exactly horizontal - but must never auto-snap, since
+    // its geometry is dictated by the loop closure, not freely aimed.
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    await controller.handleCanvasTap(0, 0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.chainInProgress, isFalse);
+    expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isEmpty);
   });
 
   // --- Stage 13 item 5: Dimension mode + ghost dimensions -------------------

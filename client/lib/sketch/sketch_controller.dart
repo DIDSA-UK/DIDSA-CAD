@@ -73,6 +73,13 @@ enum SketchTool { line, circle, point, rectangle }
 /// other end (see [SketchController._clickMidpointLineTool]).
 enum LineConstructionMethod { endToEnd, midpoint }
 
+/// Phase 6.1: which axis a Line-in-progress is currently snapped to, or
+/// null when its angle is outside [SketchController.lineSnapAngleDegrees]
+/// of both. Drives both the dashed ghost preview (snapped to the axis
+/// rather than the raw cursor) and, on placement, which constraint (if
+/// any) [SketchController._applyLineSnapConstraint] auto-adds.
+enum LineSnapAxis { horizontal, vertical }
+
 /// How a tap-to-place Circle is built while [SketchTool.circle] is active.
 /// [centerRadius] is the original center-then-radius-point placement;
 /// [threePoint] instead takes three points on the circumference and solves
@@ -260,6 +267,11 @@ class SketchController extends ChangeNotifier {
   /// Point before a tap is treated as "close the loop" rather than "place
   /// a new point".
   static const double snapRadius = 0.5;
+
+  /// Phase 6.1: how many degrees off true horizontal/vertical a Line's
+  /// in-progress angle can be before [_lineSnapAxis] stops reporting a
+  /// snap - a few degrees either side of each axis, per the scope doc.
+  static const double lineSnapAngleDegrees = 4.0;
 
   /// The minimum tap hit target, in logical pixels, expressed as a radius.
   /// Entity hit-testing for a discrete tap (select, dimension-target
@@ -885,7 +897,8 @@ class SketchController extends ChangeNotifier {
         if (startId == null) return null;
         final start = points[startId];
         if (start == null) return null;
-        return LineGhost(startX: start.x, startY: start.y, endX: cursorX, endY: cursorY);
+        final snapped = _snappedLineEnd(start.x, start.y, cursorX, cursorY);
+        return LineGhost(startX: start.x, startY: start.y, endX: snapped.$1, endY: snapped.$2);
       case LineConstructionMethod.midpoint:
         final midX = _midpointAnchorX;
         final midY = _midpointAnchorY;
@@ -893,12 +906,63 @@ class SketchController extends ChangeNotifier {
         // Mirrors the real Line _clickMidpointLineTool would create: the
         // cursor becomes one end, its mirror image through the anchor the
         // other.
+        final snapped = _snappedLineEnd(midX, midY, cursorX, cursorY);
         return LineGhost(
-          startX: 2 * midX - cursorX,
-          startY: 2 * midY - cursorY,
-          endX: cursorX,
-          endY: cursorY,
+          startX: 2 * midX - snapped.$1,
+          startY: 2 * midY - snapped.$2,
+          endX: snapped.$1,
+          endY: snapped.$2,
         );
+    }
+  }
+
+  /// Phase 6.1: the axis a Line from ([x0], [y0]) to the cursor at
+  /// ([x1], [y1]) would snap to, or null if its angle is more than
+  /// [lineSnapAngleDegrees] from both horizontal and vertical. Degenerate
+  /// (near-zero-length) segments never snap - there's no meaningful angle
+  /// to measure yet.
+  LineSnapAxis? _lineSnapAxis(double x0, double y0, double x1, double y1) {
+    final dx = x1 - x0;
+    final dy = y1 - y0;
+    if (math.sqrt(dx * dx + dy * dy) < 1e-9) return null;
+    final angleFromHorizontal = math.atan2(dy.abs(), dx.abs()) * 180 / math.pi;
+    if (angleFromHorizontal <= lineSnapAngleDegrees) return LineSnapAxis.horizontal;
+    if (angleFromHorizontal >= 90 - lineSnapAngleDegrees) return LineSnapAxis.vertical;
+    return null;
+  }
+
+  /// The cursor position to actually draw/place the line's free end at,
+  /// snapped onto ([x0], [y0])'s horizontal/vertical line through it when
+  /// [_lineSnapAxis] reports one - otherwise the raw cursor position.
+  (double, double) _snappedLineEnd(double x0, double y0, double x1, double y1) {
+    switch (_lineSnapAxis(x0, y0, x1, y1)) {
+      case LineSnapAxis.horizontal:
+        return (x1, y0);
+      case LineSnapAxis.vertical:
+        return (x0, y1);
+      case null:
+        return (x1, y1);
+    }
+  }
+
+  /// Phase 6.1: which axis the Line tool's current in-progress segment (if
+  /// any) is snapped to - the canvas reads this to color the ghost
+  /// preview, mirroring the existing point/chain-start snap-highlight
+  /// pattern ([isHoveringChainStart]).
+  LineSnapAxis? get activeLineSnapAxis {
+    if (_mode != SketchMode.draw || _activeTool != SketchTool.line) return null;
+    switch (_lineMethod) {
+      case LineConstructionMethod.endToEnd:
+        final startId = _chainStartPointId;
+        if (startId == null) return null;
+        final start = points[startId];
+        if (start == null) return null;
+        return _lineSnapAxis(start.x, start.y, cursorX, cursorY);
+      case LineConstructionMethod.midpoint:
+        final midX = _midpointAnchorX;
+        final midY = _midpointAnchorY;
+        if (midX == null || midY == null) return null;
+        return _lineSnapAxis(midX, midY, cursorX, cursorY);
     }
   }
 
@@ -3391,6 +3455,13 @@ class SketchController extends ChangeNotifier {
     }
 
     final closingLoop = isHoveringChainStart;
+    // Phase 6.1: captured from the start Point and the tap's cursor
+    // position *before* the loop-closing case swaps in a fixed endpoint -
+    // a closing edge's slope is dictated by the loop, not freely aimed, so
+    // it never auto-snaps.
+    final chainStart = points[_chainStartPointId!];
+    final snapAxis =
+        (!closingLoop && chainStart != null) ? _lineSnapAxis(chainStart.x, chainStart.y, cursorX, cursorY) : null;
     await _runGuarded(() async {
       final endPointId =
           closingLoop ? _chainFirstPointId! : await _pointIdAtCursor(excludeId: _chainStartPointId);
@@ -3406,11 +3477,13 @@ class SketchController extends ChangeNotifier {
         await _api.deleteLine(_sketchId!, line.id);
         lines.remove(line.id);
       });
+      await _applyLineSnapConstraint(line.id, snapAxis);
 
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
       await _solveAndTrackDof();
       await _refreshAllPoints();
+      await _refreshConstraints();
 
       if (closingLoop) {
         _chainStartPointId = null;
@@ -3439,6 +3512,7 @@ class SketchController extends ChangeNotifier {
 
     final midX = _midpointAnchorX!;
     final midY = _midpointAnchorY!;
+    final snapAxis = _lineSnapAxis(midX, midY, cursorX, cursorY);
     await _runGuarded(() async {
       final endAId = await _pointIdAtCursor();
       final endA = points[endAId]!;
@@ -3460,12 +3534,28 @@ class SketchController extends ChangeNotifier {
         await _api.deleteLine(_sketchId!, line.id);
         lines.remove(line.id);
       });
+      await _applyLineSnapConstraint(line.id, snapAxis);
 
       await _solveAndTrackDof();
       await _refreshAllPoints();
+      await _refreshConstraints();
       _midpointAnchorX = null;
       _midpointAnchorY = null;
     });
+  }
+
+  /// Phase 6.1: adds the Horizontal/Vertical constraint [axis] implies to
+  /// the just-created [lineId] (a no-op if [axis] is null, i.e. the
+  /// in-progress segment wasn't within [lineSnapAngleDegrees] of either
+  /// axis) - reuses the same backend calls
+  /// [addHorizontalConstraint]/[addVerticalConstraint] make from the
+  /// flyout, just triggered by placement instead of an explicit selection.
+  Future<void> _applyLineSnapConstraint(String lineId, LineSnapAxis? axis) async {
+    if (axis == null) return;
+    final constraint = axis == LineSnapAxis.horizontal
+        ? await _api.createHorizontalConstraint(_sketchId!, lineId)
+        : await _api.createVerticalConstraint(_sketchId!, lineId);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
   }
 
   /// Circle tool's tap handling: first tap places the center Point, second
