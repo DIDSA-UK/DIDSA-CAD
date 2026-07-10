@@ -2061,10 +2061,19 @@ void main() {
     expect(updated.size, 20.0);
     expect(updated.rotationDegrees, 90.0);
     // 'Hi' (2 chars) * 20 * 0.6 = 24 width, confirming the preview was
-    // re-fetched against the *new* content/size, not stale.
+    // re-fetched against the *new* content/size, not stale - checked via
+    // the Euclidean distance between the first two corners (rotation-
+    // invariant), since a 90-degree rotation puts that 24-unit edge along
+    // y, not x (cos(90 deg) approx 0), not along x the way it would be
+    // at the default rotation=0 every other test above uses.
     final contours = controller.textAbsoluteContours(updated);
     expect(contours!.first.outer.length, 4);
-    expect(contours.first.outer[1].$1 - contours.first.outer[0].$1, closeTo(24, 1e-6));
+    final corner0 = contours.first.outer[0];
+    final corner1 = contours.first.outer[1];
+    final edgeLength = math.sqrt(
+      math.pow(corner1.$1 - corner0.$1, 2) + math.pow(corner1.$2 - corner0.$2, 2),
+    );
+    expect(edgeLength, closeTo(24, 1e-6));
   });
 
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------
