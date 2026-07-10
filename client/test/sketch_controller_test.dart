@@ -22,6 +22,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> circles = {};
   final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> ellipses = {};
+  final Map<String, Map<String, dynamic>> splines = {};
   final Map<String, Map<String, dynamic>> sketches = {};
   final Map<String, Map<String, dynamic>> constraints = {};
 
@@ -91,6 +92,22 @@ class _FakeBackend {
         ellipse['construction'] = body['construction'] as bool;
       }
       return _json(ellipse, 200);
+    }
+
+    final splineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
+    if (splineDeleteMatch != null && request.method == 'DELETE') {
+      splines.remove(splineDeleteMatch.group(1));
+      return http.Response('', 204);
+    }
+
+    final splinePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
+    if (splinePatchMatch != null && request.method == 'PATCH') {
+      final spline = splines[splinePatchMatch.group(1)];
+      if (spline == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        spline['construction'] = body['construction'] as bool;
+      }
+      return _json(spline, 200);
     }
 
     final pointDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/points/(.+)$').firstMatch(path);
@@ -281,6 +298,45 @@ class _FakeBackend {
     }
     if (ellipsesCollectionMatch && request.method == 'GET') {
       return _jsonList(ellipses.values.toList(), 200);
+    }
+
+    final splinesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/splines$').hasMatch(path);
+    if (splinesCollectionMatch && request.method == 'POST') {
+      final id = _newId('spline');
+      final throughPointIds = (body['through_point_ids'] as List).cast<String>();
+      final controlPointIds = <String>[];
+      // Mirrors the real backend's Sketch.add_spline, which places 2 control
+      // points per segment at a 1/3-offset along each through-point chord,
+      // plus a spline_tangent constraint per interior joint.
+      for (var i = 0; i < throughPointIds.length - 1; i++) {
+        final p0 = points[throughPointIds[i]]!;
+        final p3 = points[throughPointIds[i + 1]]!;
+        final x0 = p0['x'] as num, y0 = p0['y'] as num;
+        final x3 = p3['x'] as num, y3 = p3['y'] as num;
+        final c1Id = _newId('point');
+        points[c1Id] = {'id': c1Id, 'x': x0 + (x3 - x0) / 3, 'y': y0 + (y3 - y0) / 3};
+        final c2Id = _newId('point');
+        points[c2Id] = {'id': c2Id, 'x': x0 + 2 * (x3 - x0) / 3, 'y': y0 + 2 * (y3 - y0) / 3};
+        controlPointIds.addAll([c1Id, c2Id]);
+      }
+      final tangentConstraintIds = <String>[];
+      for (var i = 0; i < throughPointIds.length - 2; i++) {
+        final constraintId = _newId('constraint');
+        constraints[constraintId] = {'id': constraintId, 'type': 'spline_tangent'};
+        tangentConstraintIds.add(constraintId);
+      }
+      final spline = {
+        'id': id,
+        'through_point_ids': throughPointIds,
+        'control_point_ids': controlPointIds,
+        'tangent_constraint_ids': tangentConstraintIds,
+        'construction': body['construction'] as bool? ?? false,
+      };
+      splines[id] = spline;
+      return _json(spline, 201);
+    }
+    if (splinesCollectionMatch && request.method == 'GET') {
+      return _jsonList(splines.values.toList(), 200);
     }
 
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
@@ -1667,6 +1723,122 @@ void main() {
     );
 
     expect(cascade.ellipses, {ellipse.id});
+  });
+
+  // --- Phase 6.2.5: Spline tool ---------------------------------------------
+
+  test('activeDrawGhost previews nothing while no through-point has been placed yet', () async {
+    controller.selectDrawTool(SketchTool.spline);
+
+    expect(controller.splineInProgress, isFalse);
+    expect(controller.activeDrawGhost, isNull);
+  });
+
+  test('activeDrawGhost previews the straight-segment polyline through every placed through-point '
+      'plus the cursor, while the spline is in progress', () async {
+    controller.selectDrawTool(SketchTool.spline);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.cursorX = 10;
+    controller.cursorY = 0;
+
+    expect(controller.splineInProgress, isTrue);
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<SplineGhost>());
+    final spline = ghost as SplineGhost;
+    expect(spline.throughPoints, [(0.0, 0.0), (5.0, 5.0)]);
+    expect(spline.cursor, (10.0, 0.0));
+  });
+
+  test('the spline tool accumulates through-points across taps with no entity created until Finish, '
+      'then commits exactly one Spline spanning every placed through-point', () async {
+    controller.selectDrawTool(SketchTool.spline);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    expect(controller.splines, isEmpty);
+
+    await controller.handleCanvasTap(10, 0);
+    await controller.finishSpline();
+
+    expect(controller.splineInProgress, isFalse);
+    expect(controller.splines.length, 1);
+    final spline = controller.splines.values.single;
+    expect(spline.throughPointIds.length, 3);
+    expect(controller.points[spline.throughPointIds[0]]!.x, closeTo(0, 1e-9));
+    expect(controller.points[spline.throughPointIds[1]]!.x, closeTo(5, 1e-9));
+    expect(controller.points[spline.throughPointIds[2]]!.x, closeTo(10, 1e-9));
+    // 2 segments (3 through-points) * 2 control points each.
+    expect(spline.controlPointIds.length, 4);
+  });
+
+  test('finishSpline with fewer than 2 through-points clears the in-progress state without creating '
+      'a Spline', () async {
+    controller.selectDrawTool(SketchTool.spline);
+    await controller.handleCanvasTap(0, 0);
+
+    await controller.finishSpline();
+
+    expect(controller.splines, isEmpty);
+    expect(controller.splineInProgress, isFalse);
+  });
+
+  test('tapping a Spline in select mode, away from its through-points, recognizes SelectionKind.spline',
+      () async {
+    controller.selectDrawTool(SketchTool.spline);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.finishSpline();
+    controller.exitToSelectMode();
+
+    // Midway along the (degenerate, colinear-control-point) 2-through-point
+    // spline - away from both through-points.
+    await controller.handleCanvasTap(5, 0);
+
+    expect(controller.selectionSet.length, 1);
+    expect(controller.selectionSet.first.kind, SelectionKind.spline);
+  });
+
+  test('computeDeleteCascade for a directly-selected Spline reports just the Spline', () async {
+    controller.selectDrawTool(SketchTool.spline);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.finishSpline();
+    final splineId = controller.splines.keys.single;
+
+    final cascade =
+        controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.spline, id: splineId)]);
+
+    expect(cascade.splines, {splineId});
+    expect(cascade.points, isEmpty);
+  });
+
+  test('computeDeleteCascade cascades a deleted through-point to the Spline that references it',
+      () async {
+    controller.selectDrawTool(SketchTool.spline);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.finishSpline();
+    final spline = controller.splines.values.single;
+
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.point, id: spline.throughPointIds.first)],
+    );
+
+    expect(cascade.splines, {spline.id});
+  });
+
+  test('deleteSelected removes a Spline entirely from local state', () async {
+    controller.selectDrawTool(SketchTool.spline);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.finishSpline();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(5, 0);
+    expect(controller.selection?.kind, SelectionKind.spline);
+
+    await controller.deleteSelected();
+
+    expect(controller.splines, isEmpty);
   });
 
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------

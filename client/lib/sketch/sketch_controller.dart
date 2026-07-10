@@ -92,11 +92,38 @@ class SketchEllipseView {
   });
 }
 
+class SketchSplineView {
+  final String id;
+  final List<String> throughPointIds;
+  final List<String> controlPointIds;
+  final bool construction;
+
+  const SketchSplineView({
+    required this.id,
+    required this.throughPointIds,
+    required this.controlPointIds,
+    this.construction = false,
+  });
+
+  /// Every cubic segment's 4 defining Point ids (start, control 1,
+  /// control 2, end), in order - the client-side mirror of the backend's
+  /// `Spline.segments()`, used identically by rendering/hit-testing/drag.
+  List<(String, String, String, String)> segments() => [
+        for (var i = 0; i < throughPointIds.length - 1; i++)
+          (
+            throughPointIds[i],
+            controlPointIds[2 * i],
+            controlPointIds[2 * i + 1],
+            throughPointIds[i + 1],
+          ),
+      ];
+}
+
 /// Which entity the next tap-to-place commits, while [SketchMode.draw] is
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point, rectangle, arc, polygon, slot, ellipse }
+enum SketchTool { line, circle, point, rectangle, arc, polygon, slot, ellipse, spline }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -269,6 +296,23 @@ class RectGhost extends DrawGhost {
   const RectGhost({required this.corner0, required this.corner1, required this.corner2, required this.corner3});
 }
 
+/// Previews a Spline-in-progress: every through-point already tapped
+/// ([throughPoints], real Points), plus the cursor as a trial next
+/// through-point - rendered as a plain straight-segment polyline (unlike
+/// the real Spline's smooth cubic segments), matching Slot/Polygon's own
+/// ghost simplification of previewing the *rough* eventual shape rather
+/// than the exact curve a confirming tap sequence would produce. The real
+/// smooth shape only exists once [SketchController.finishSpline] actually
+/// creates the entity (control-handle positions are a backend
+/// implementation detail of `Sketch.add_spline`, not something the client
+/// computes ahead of time).
+class SplineGhost extends DrawGhost {
+  final List<(double, double)> throughPoints;
+  final (double, double) cursor;
+
+  const SplineGhost({required this.throughPoints, required this.cursor});
+}
+
 /// Normalizes [angle] (radians) into `[0, 2*pi)`.
 double normalizeSketchAngle(double angle) {
   const twoPi = 2 * math.pi;
@@ -307,7 +351,7 @@ enum SketchMode { select, draw, dimension }
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
 /// and bare relational Constraints (Vertical/Horizontal, which don't) -
 /// the ribbon distinguishes the two via [SketchController.selectedConstraintHasValue].
-enum SelectionKind { point, line, circle, constraint, arc, ellipse }
+enum SelectionKind { point, line, circle, constraint, arc, ellipse, spline }
 
 /// The single hovered-or-selected entity, idle-state only (see
 /// [SketchController.isIdle]) - distinct from the chain-start/circle-center
@@ -473,6 +517,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchCircleView> circles = {};
   final Map<String, SketchArcView> arcs = {};
   final Map<String, SketchEllipseView> ellipses = {};
+  final Map<String, SketchSplineView> splines = {};
 
   /// Stage 23b: the sketch-space bounding box of every Point, plus every
   /// Circle's full extent (center +/- radius, since a circle's own Points
@@ -534,6 +579,17 @@ class SketchController extends ChangeNotifier {
       );
       include(center.x - majorRadius, center.y - majorRadius);
       include(center.x + majorRadius, center.y + majorRadius);
+    }
+    for (final spline in splines.values) {
+      // A cubic Bezier curve never leaves its own control polygon's convex
+      // hull, so including every through-point and control-handle Point
+      // is an exact (not just conservative) bound - no sampling needed,
+      // unlike Ellipse's own approximation above.
+      for (final id in [...spline.throughPointIds, ...spline.controlPointIds]) {
+        final point = points[id];
+        if (point == null) continue;
+        include(point.x, point.y);
+      }
     }
 
     return Rect.fromLTRB(minX, minY, maxX, maxY);
@@ -621,6 +677,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Slot';
           case SketchTool.ellipse:
             return 'Draw: Ellipse';
+          case SketchTool.spline:
+            return 'Draw: Spline';
         }
       case SketchMode.dimension:
         return 'Dimension';
@@ -716,6 +774,7 @@ class SketchController extends ChangeNotifier {
     _slotCenter2PointId = null;
     _ellipseCenterPointId = null;
     _ellipseMajorPointId = null;
+    _splineThroughPointIds.clear();
     _midpointAnchorX = null;
     _midpointAnchorY = null;
     _threePointFirstX = null;
@@ -803,6 +862,20 @@ class SketchController extends ChangeNotifier {
   String? get ellipseCenterPointId => _ellipseCenterPointId;
   String? get ellipseMajorPointId => _ellipseMajorPointId;
   bool get ellipseInProgress => _ellipseCenterPointId != null;
+
+  final List<String> _splineThroughPointIds = [];
+
+  /// The through-point Points tapped so far for a Spline-in-progress, in
+  /// tap order - unlike every other draw tool's in-progress state (all
+  /// capped at a fixed tap count), this can grow indefinitely; the spline
+  /// is only actually created (one entity, all points at once) by
+  /// [finishSpline]. Mirrors [LineConstructionMethod.endToEnd]'s chain in
+  /// spirit (open-ended repeated taps, an explicit Finish action) but not
+  /// in mechanism - a Line chain creates one new Line entity per tap,
+  /// while a Spline creates nothing at all until [finishSpline] commits
+  /// the whole accumulated list as a single entity.
+  List<String> get splineThroughPointIds => List.unmodifiable(_splineThroughPointIds);
+  bool get splineInProgress => _splineThroughPointIds.isNotEmpty;
 
   double? _midpointAnchorX;
   double? _midpointAnchorY;
@@ -900,7 +973,8 @@ class SketchController extends ChangeNotifier {
   /// make the "fully constrained" indicator light up before the user had
   /// drawn anything. That indicator should only ever appear once there's
   /// actually something to be fully constrained.
-  bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty || arcs.isNotEmpty || ellipses.isNotEmpty;
+  bool get hasGeometry =>
+      lines.isNotEmpty || circles.isNotEmpty || arcs.isNotEmpty || ellipses.isNotEmpty || splines.isNotEmpty;
 
   /// Whole-sketch "grounded and fully pinned" - what the padlock icon
   /// (sketch_screen.dart) shows, and (via [isUnderConstrained] below) what
@@ -1149,7 +1223,26 @@ class SketchController extends ChangeNotifier {
         return _slotDrawGhost();
       case SketchTool.ellipse:
         return _ellipseDrawGhost();
+      case SketchTool.spline:
+        return _splineDrawGhost();
     }
+  }
+
+  /// Spline's tap sequence is open-ended (see [splineThroughPointIds]'s
+  /// own doc comment) - the ghost previews every through-point tapped so
+  /// far plus the cursor as a trial next one, as a plain straight-segment
+  /// polyline (see [SplineGhost]'s own doc comment for why this doesn't
+  /// try to preview the real smooth curve). Null before the first
+  /// through-point is placed - nothing to preview yet.
+  DrawGhost? _splineDrawGhost() {
+    if (_splineThroughPointIds.isEmpty) return null;
+    final throughPoints = <(double, double)>[];
+    for (final id in _splineThroughPointIds) {
+      final point = points[id];
+      if (point == null) return null;
+      throughPoints.add((point.x, point.y));
+    }
+    return SplineGhost(throughPoints: throughPoints, cursor: (cursorX, cursorY));
   }
 
   /// Ellipse's tap sequence is center, then major-axis point, then minor
@@ -1640,6 +1733,18 @@ class SketchController extends ChangeNotifier {
       }
     }
 
+    for (final spline in splines.values) {
+      final sampled = _sampledSplinePoints(spline);
+      if (sampled == null) continue;
+      for (var i = 0; i < sampled.length - 1; i++) {
+        final a = sampled[i];
+        final b = sampled[i + 1];
+        if (_distanceToSegment(x, y, a.$1, a.$2, b.$1, b.$2) <= radius) {
+          return SketchSelection(kind: SelectionKind.spline, id: spline.id);
+        }
+      }
+    }
+
     return null;
   }
 
@@ -1913,6 +2018,10 @@ class SketchController extends ChangeNotifier {
         final ellipse = ellipses[hit.id]!;
         final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
         return nearerId == _originPointId ? null : nearerId;
+      case SelectionKind.spline:
+        final spline = splines[hit.id]!;
+        final nearerId = _nearestOf(x, y, [...spline.throughPointIds, ...spline.controlPointIds]);
+        return nearerId == _originPointId ? null : nearerId;
       case SelectionKind.constraint:
         return null;
     }
@@ -1973,6 +2082,12 @@ class SketchController extends ChangeNotifier {
       case SelectionKind.ellipse:
         final ellipse = ellipses[hit.id]!;
         final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
+        return nearerId == _originPointId
+            ? null
+            : SketchSelection(kind: SelectionKind.point, id: nearerId);
+      case SelectionKind.spline:
+        final spline = splines[hit.id]!;
+        final nearerId = _nearestOf(x, y, [...spline.throughPointIds, ...spline.controlPointIds]);
         return nearerId == _originPointId
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
@@ -2457,6 +2572,57 @@ class SketchController extends ChangeNotifier {
     return math.sqrt(math.pow(px - closestX, 2) + math.pow(py - closestY, 2));
   }
 
+  /// The point at cubic Bezier parameter [t] (in `[0, 1]`) along the curve
+  /// defined by control points [p0]/[p1]/[p2]/[p3] - the standard cubic
+  /// Bezier formula, matching exactly what `Geom_BezierCurve`
+  /// (`app.document.extrude.wire_for_profile`'s own OCCT construction for
+  /// a Spline segment) evaluates, so hit-testing/rendering never disagree
+  /// with the real backend geometry.
+  (double, double) _cubicBezierPoint(
+    (double, double) p0,
+    (double, double) p1,
+    (double, double) p2,
+    (double, double) p3,
+    double t,
+  ) {
+    final mt = 1 - t;
+    final a = mt * mt * mt;
+    final b = 3 * mt * mt * t;
+    final c = 3 * mt * t * t;
+    final d = t * t * t;
+    return (
+      a * p0.$1 + b * p1.$1 + c * p2.$1 + d * p3.$1,
+      a * p0.$2 + b * p1.$2 + c * p2.$2 + d * p3.$2,
+    );
+  }
+
+  /// Samples every segment of [spline] into a single polyline (in the
+  /// same order as [SketchSplineView.segments]) - shared by hit-testing
+  /// and rendering fallbacks so what's tappable and what's (approximately)
+  /// drawn never disagree. Null if any of the Spline's own defining
+  /// Points is missing (a stale/in-flight response racing a local edit).
+  static const int _splineSamplesPerSegment = 16;
+
+  List<(double, double)>? _sampledSplinePoints(SketchSplineView spline) {
+    final result = <(double, double)>[];
+    for (final segment in spline.segments()) {
+      final p0 = points[segment.$1];
+      final p1 = points[segment.$2];
+      final p2 = points[segment.$3];
+      final p3 = points[segment.$4];
+      if (p0 == null || p1 == null || p2 == null || p3 == null) return null;
+      final a = (p0.x, p0.y);
+      final b = (p1.x, p1.y);
+      final c = (p2.x, p2.y);
+      final d = (p3.x, p3.y);
+      final startIndex = result.isEmpty ? 0 : 1; // avoid a duplicate point at each segment join
+      for (var i = startIndex; i <= _splineSamplesPerSegment; i++) {
+        result.add(_cubicBezierPoint(a, b, c, d, i / _splineSamplesPerSegment));
+      }
+    }
+    return result;
+  }
+
   /// A human-readable reason [selection] (if it's a Point) cannot be
   /// deleted, or null if there's none. The sketch origin is the only entity
   /// that's still a hard block - a Point/Line/Circle still referenced by
@@ -2516,6 +2682,7 @@ class SketchController extends ChangeNotifier {
     Set<String> circles,
     Set<String> arcs,
     Set<String> ellipses,
+    Set<String> splines,
     Set<String> constraints
   }) computeDeleteCascade(Iterable<SketchSelection> selection) {
     final pointIds = <String>{};
@@ -2523,6 +2690,7 @@ class SketchController extends ChangeNotifier {
     final circleIds = <String>{};
     final arcIds = <String>{};
     final ellipseIds = <String>{};
+    final splineIds = <String>{};
     final constraintIds = <String>{};
     for (final s in selection) {
       switch (s.kind) {
@@ -2536,6 +2704,8 @@ class SketchController extends ChangeNotifier {
           arcIds.add(s.id);
         case SelectionKind.ellipse:
           ellipseIds.add(s.id);
+        case SelectionKind.spline:
+          splineIds.add(s.id);
         case SelectionKind.constraint:
           constraintIds.add(s.id);
       }
@@ -2562,6 +2732,11 @@ class SketchController extends ChangeNotifier {
         ellipseIds.add(ellipse.id);
       }
     }
+    for (final spline in splines.values) {
+      if ([...spline.throughPointIds, ...spline.controlPointIds].any(pointIds.contains)) {
+        splineIds.add(spline.id);
+      }
+    }
     for (final entry in constraints.entries) {
       final refs = _constraintReferences(entry.value);
       if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) {
@@ -2574,6 +2749,7 @@ class SketchController extends ChangeNotifier {
       circles: circleIds,
       arcs: arcIds,
       ellipses: ellipseIds,
+      splines: splineIds,
       constraints: constraintIds
     );
   }
@@ -2719,6 +2895,8 @@ class SketchController extends ChangeNotifier {
         return 'Arc ${arcs.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.ellipse:
         return 'Ellipse ${ellipses.keys.toList().indexOf(selection.id) + 1}';
+      case SelectionKind.spline:
+        return 'Spline ${splines.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.constraint:
         return 'Constraint ${constraints.keys.toList().indexOf(selection.id) + 1}';
     }
@@ -2740,6 +2918,7 @@ class SketchController extends ChangeNotifier {
       ..addAll(circles.keys.map((id) => SketchSelection(kind: SelectionKind.circle, id: id)))
       ..addAll(arcs.keys.map((id) => SketchSelection(kind: SelectionKind.arc, id: id)))
       ..addAll(ellipses.keys.map((id) => SketchSelection(kind: SelectionKind.ellipse, id: id)))
+      ..addAll(splines.keys.map((id) => SketchSelection(kind: SelectionKind.spline, id: id)))
       // Stage 21 item 4: without this, deleteSelected()'s constraints-first
       // ordering only ever covers constraints the user explicitly tapped -
       // any constraint on a selected Point/Line that select-all itself
@@ -2842,6 +3021,18 @@ class SketchController extends ChangeNotifier {
         selected.add(SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id));
       }
     }
+    for (final spline in splines.values) {
+      // Exact, not conservative: a cubic Bezier never leaves its own
+      // control polygon's convex hull, so "every defining Point is inside
+      // the rect" is both necessary and sufficient.
+      final definingPoints = [
+        for (final id in [...spline.throughPointIds, ...spline.controlPointIds]) points[id],
+      ];
+      if (definingPoints.any((p) => p == null)) continue;
+      if (definingPoints.every((p) => insideRect(p!.x, p.y))) {
+        selected.add(SketchSelection(kind: SelectionKind.spline, id: spline.id));
+      }
+    }
     _selectionSet
       ..clear()
       ..addAll(selected);
@@ -2869,6 +3060,7 @@ class SketchController extends ChangeNotifier {
       for (final id in cascade.circles) SketchSelection(kind: SelectionKind.circle, id: id),
       for (final id in cascade.arcs) SketchSelection(kind: SelectionKind.arc, id: id),
       for (final id in cascade.ellipses) SketchSelection(kind: SelectionKind.ellipse, id: id),
+      for (final id in cascade.splines) SketchSelection(kind: SelectionKind.spline, id: id),
       for (final id in cascade.constraints) SketchSelection(kind: SelectionKind.constraint, id: id),
     ];
     if (toDelete.isEmpty) return;
@@ -2882,6 +3074,7 @@ class SketchController extends ChangeNotifier {
     final capturedCircles = <SketchCircleView>[];
     final capturedArcs = <SketchArcView>[];
     final capturedEllipses = <SketchEllipseView>[];
+    final capturedSplines = <SketchSplineView>[];
     final capturedConstraints = <ConstraintDto>[];
     for (final current in toDelete) {
       switch (current.kind) {
@@ -2901,6 +3094,10 @@ class SketchController extends ChangeNotifier {
           final ellipse = ellipses[current.id];
           if (ellipse != null) capturedEllipses.add(ellipse);
           break;
+        case SelectionKind.spline:
+          final spline = splines[current.id];
+          if (spline != null) capturedSplines.add(spline);
+          break;
         case SelectionKind.point:
           final point = points[current.id];
           if (point != null) capturedPoints.add(point);
@@ -2914,20 +3111,21 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       // Backend rejects deleting a Point still referenced by a Line/Circle/
-      // Arc/Ellipse, and a Line/Circle/Arc/Ellipse can itself still be
-      // referenced by a Constraint - so deletion must run in the reverse
-      // of creation/dependency order (Constraints, then Lines/Circles/
-      // Arcs/Ellipses, then Points), regardless of the order entities
-      // happened to be selected/tapped in. Mirrors
+      // Arc/Ellipse/Spline, and a Line/Circle/Arc/Ellipse/Spline can
+      // itself still be referenced by a Constraint - so deletion must run
+      // in the reverse of creation/dependency order (Constraints, then
+      // Lines/Circles/Arcs/Ellipses/Splines, then Points), regardless of
+      // the order entities happened to be selected/tapped in. Mirrors
       // [_restoreDeletedEntities]'s own (forward) Points ->
-      // Lines/Circles/Arcs/Ellipses -> Constraints ordering.
+      // Lines/Circles/Arcs/Ellipses/Splines -> Constraints ordering.
       final constraintsToDelete = toDelete.where((s) => s.kind == SelectionKind.constraint);
       final shapesToDelete = toDelete.where(
         (s) =>
             s.kind == SelectionKind.line ||
             s.kind == SelectionKind.circle ||
             s.kind == SelectionKind.arc ||
-            s.kind == SelectionKind.ellipse,
+            s.kind == SelectionKind.ellipse ||
+            s.kind == SelectionKind.spline,
       );
       final pointsToDelete = toDelete.where((s) => s.kind == SelectionKind.point);
       for (final current in [...constraintsToDelete, ...shapesToDelete, ...pointsToDelete]) {
@@ -2948,6 +3146,10 @@ class SketchController extends ChangeNotifier {
             await _api.deleteEllipse(_sketchId!, current.id);
             ellipses.remove(current.id);
             break;
+          case SelectionKind.spline:
+            await _api.deleteSpline(_sketchId!, current.id);
+            splines.remove(current.id);
+            break;
           case SelectionKind.point:
             await _api.deletePoint(_sketchId!, current.id);
             points.remove(current.id);
@@ -2964,6 +3166,7 @@ class SketchController extends ChangeNotifier {
             capturedCircles,
             capturedArcs,
             capturedEllipses,
+            capturedSplines,
             capturedConstraints,
           ));
       // Bug-fix round 2: always re-solve/refresh here, not just when a
@@ -2997,6 +3200,7 @@ class SketchController extends ChangeNotifier {
     List<SketchCircleView> capturedCircles,
     List<SketchArcView> capturedArcs,
     List<SketchEllipseView> capturedEllipses,
+    List<SketchSplineView> capturedSplines,
     List<ConstraintDto> capturedConstraints,
   ) async {
     final idMap = <String, String>{};
@@ -3067,6 +3271,24 @@ class SketchController extends ChangeNotifier {
         centerPointId: created.centerPointId,
         majorPointId: created.majorPointId,
         minorRadius: created.minorRadius,
+        construction: created.construction,
+      );
+    }
+    for (final spline in capturedSplines) {
+      // Unlike Circle/Arc/Ellipse, only the through-points are passed
+      // back in - the backend always creates a fresh set of
+      // control-handle Points for a new Spline (see Sketch.add_spline),
+      // so the originals' own ids/positions aren't recreated or reused.
+      final created = await _api.createSpline(
+        _sketchId!,
+        [for (final id in spline.throughPointIds) idMap[id] ?? id],
+        construction: spline.construction,
+      );
+      idMap[spline.id] = created.id;
+      splines[created.id] = SketchSplineView(
+        id: created.id,
+        throughPointIds: created.throughPointIds,
+        controlPointIds: created.controlPointIds,
         construction: created.construction,
       );
     }
@@ -3298,6 +3520,8 @@ class SketchController extends ChangeNotifier {
         return arcs[current.id]?.construction;
       case SelectionKind.ellipse:
         return ellipses[current.id]?.construction;
+      case SelectionKind.spline:
+        return splines[current.id]?.construction;
       case SelectionKind.point:
       case SelectionKind.constraint:
         return null;
@@ -3350,6 +3574,15 @@ class SketchController extends ChangeNotifier {
             centerPointId: updated.centerPointId,
             majorPointId: updated.majorPointId,
             minorRadius: updated.minorRadius,
+            construction: updated.construction,
+          );
+          break;
+        case SelectionKind.spline:
+          final updated = await _api.updateSpline(_sketchId!, current.id, construction: next);
+          splines[current.id] = SketchSplineView(
+            id: updated.id,
+            throughPointIds: updated.throughPointIds,
+            controlPointIds: updated.controlPointIds,
             construction: updated.construction,
           );
           break;
@@ -3593,6 +3826,13 @@ class SketchController extends ChangeNotifier {
             _buildRadiusGhosts(ellipse.centerPointId, ellipse.majorPointId);
           }
           return;
+        case SelectionKind.spline:
+          // A Spline has no single dimension of its own to build a ghost
+          // for - its shape comes entirely from its through-point/
+          // control-handle Points' own positions (each independently
+          // dimensionable as an ordinary Point) and its
+          // SplineTangentConstraints, which aren't user-editable numeric
+          // values.
         case SelectionKind.point:
         case SelectionKind.constraint:
           _ghosts = [];
@@ -4140,6 +4380,14 @@ class SketchController extends ChangeNotifier {
         construction: ellipse.construction,
       );
     }
+    for (final spline in await _api.listSplines(sketchId)) {
+      splines[spline.id] = SketchSplineView(
+        id: spline.id,
+        throughPointIds: spline.throughPointIds,
+        controlPointIds: spline.controlPointIds,
+        construction: spline.construction,
+      );
+    }
     for (final constraint in await _api.listConstraints(sketchId)) {
       constraints[constraint.id] = constraint;
     }
@@ -4294,6 +4542,11 @@ class SketchController extends ChangeNotifier {
 
     if (_activeTool == SketchTool.ellipse) {
       await _clickEllipseTool();
+      return;
+    }
+
+    if (_activeTool == SketchTool.spline) {
+      await _clickSplineTool();
       return;
     }
 
@@ -4846,6 +5099,71 @@ class SketchController extends ChangeNotifier {
 
       _ellipseCenterPointId = null;
       _ellipseMajorPointId = null;
+    });
+  }
+
+  /// Spline tool's tap handling: every tap places one more through-point
+  /// Point and appends it to [splineThroughPointIds] - unlike every other
+  /// draw tool, nothing is actually created server-side until
+  /// [finishSpline] commits the whole accumulated list as one Spline
+  /// entity (see [splineThroughPointIds]'s own doc comment for why).
+  /// Guards against tapping the immediately-previous through-point again
+  /// (same `excludeId` guard every other multi-tap tool uses) but not
+  /// against revisiting an *earlier* one - same as a Line chain, which
+  /// allows exactly that (e.g. to close a loop). The backend itself
+  /// rejects a spline with any duplicate through-point anywhere in the
+  /// list, surfaced via [errorMessage] from [finishSpline] in that rare
+  /// case, rather than the client trying to pre-validate the whole
+  /// accumulated list against every past tap.
+  Future<void> _clickSplineTool() async {
+    final isFirstTap = _splineThroughPointIds.isEmpty;
+    if (isFirstTap) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+    }
+    await _runGuarded(() async {
+      final excludeId = _splineThroughPointIds.isEmpty ? null : _splineThroughPointIds.last;
+      final pointId = await _pointIdAtCursor(excludeId: excludeId);
+      _splineThroughPointIds.add(pointId);
+      notifyListeners();
+    });
+  }
+
+  /// Commits [splineThroughPointIds] as one real Spline entity (a no-op,
+  /// silently clearing state, if fewer than 2 through-points were tapped -
+  /// nothing to create). Mirrors [finishChain] in spirit (ends the
+  /// in-progress tap sequence, stays in [SketchMode.draw] with the Spline
+  /// tool still active for the next one) but does real work first, unlike
+  /// [finishChain]'s pure state-clear - a Spline's Points are collected
+  /// without creating the entity itself until this is called (see
+  /// [splineThroughPointIds]'s own doc comment), so this is where the
+  /// actual API call happens.
+  Future<void> finishSpline() async {
+    if (_splineThroughPointIds.length < 2) {
+      _splineThroughPointIds.clear();
+      notifyListeners();
+      return;
+    }
+    final throughPointIds = List<String>.from(_splineThroughPointIds);
+    await _runGuarded(() async {
+      final spline = await _api.createSpline(_sketchId!, throughPointIds);
+      splines[spline.id] = SketchSplineView(
+        id: spline.id,
+        throughPointIds: spline.throughPointIds,
+        controlPointIds: spline.controlPointIds,
+        construction: spline.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteSpline(_sketchId!, spline.id);
+        splines.remove(spline.id);
+      });
+
+      // Same rule as any other completed entity: one finished entity = one solve call.
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+
+      _splineThroughPointIds.clear();
     });
   }
 

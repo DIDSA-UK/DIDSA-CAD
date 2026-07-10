@@ -81,13 +81,21 @@ class SketchSpeedDial extends StatelessWidget {
           ),
         ];
       case FabMenuState.sketchEntities:
-        final showFinish = controller.activeTool == SketchTool.line && controller.chainInProgress;
+        final showFinishChain = controller.activeTool == SketchTool.line && controller.chainInProgress;
+        final showFinishSpline =
+            controller.activeTool == SketchTool.spline && controller.splineInProgress;
         return [
-          if (showFinish)
+          if (showFinishChain)
             _SpeedDialAction(
               icon: Icons.check_circle_outline,
               label: 'Finish',
               onPressed: controller.finishChain,
+            ),
+          if (showFinishSpline)
+            _SpeedDialAction(
+              icon: Icons.check_circle_outline,
+              label: 'Finish',
+              onPressed: controller.finishSpline,
             ),
           _SpeedDialAction(
             icon: Icons.circle_outlined,
@@ -136,6 +144,12 @@ class SketchSpeedDial extends StatelessWidget {
             label: 'Ellipse',
             selected: controller.activeTool == SketchTool.ellipse,
             onPressed: () => controller.selectDrawTool(SketchTool.ellipse),
+          ),
+          _SpeedDialAction(
+            icon: Icons.gesture,
+            label: 'Spline',
+            selected: controller.activeTool == SketchTool.spline,
+            onPressed: () => controller.selectDrawTool(SketchTool.spline),
           ),
           _SpeedDialAction(
             icon: Icons.arrow_back,

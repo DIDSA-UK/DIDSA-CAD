@@ -1454,6 +1454,27 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// Draws an arbitrary [path] (e.g. a Spline's own multi-segment cubic
+  /// curve) dashed - unlike the fixed-angle walks
+  /// [_drawDashedCircle]/[_drawDashedArc]/[_drawDashedOval] use (each
+  /// shape's own simple parametrization makes an angle-based walk
+  /// natural), a Spline has no single parametrization to walk like that,
+  /// so this instead uses `Path.computeMetrics()` - Flutter's own
+  /// arc-length-based sub-path extraction - to walk fixed *lengths*
+  /// instead, the same on/off dash rhythm in spirit.
+  void _drawDashedPath(Canvas canvas, Path path, Paint paint) {
+    const dashLength = 6.0;
+    const gapLength = 4.0;
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final end = math.min(distance + dashLength, metric.length);
+        canvas.drawPath(metric.extractPath(distance, end), paint);
+        distance += dashLength + gapLength;
+      }
+    }
+  }
+
   /// Draws a dashed arc outline (a construction Arc's version of
   /// [_drawDashedCircle]) - walks [startAngle]/[sweepAngle] (both already
   /// in Flutter's `Canvas.drawArc` convention - see [_arcScreenAngles]) in
@@ -2120,6 +2141,16 @@ class _SketchPainter extends CustomPainter {
         canvas.rotate(-rotation);
         _drawDashedOval(canvas, ovalRect, paint);
         canvas.restore();
+      case SplineGhost g:
+        // See SplineGhost's own doc comment: a plain straight-segment
+        // polyline preview, not the real smooth curve.
+        final screenPoints = [
+          for (final p in g.throughPoints) transform.sketchToScreen(p.$1, p.$2),
+          transform.sketchToScreen(g.cursor.$1, g.cursor.$2),
+        ];
+        for (var i = 0; i < screenPoints.length - 1; i++) {
+          _drawDashedLine(canvas, screenPoints[i], screenPoints[i + 1], paint);
+        }
     }
   }
 
@@ -2212,7 +2243,8 @@ class _SketchPainter extends CustomPainter {
     }
 
     final hasArc = loop.lineIds.any((id) => controller.arcs.containsKey(id));
-    if (!hasArc) {
+    final hasSpline = loop.lineIds.any((id) => controller.splines.containsKey(id));
+    if (!hasArc && !hasSpline) {
       if (points.length == 2) {
         final center = points[0];
         final radius = (points[1] - center).distance;
@@ -2224,18 +2256,41 @@ class _SketchPainter extends CustomPainter {
       return true;
     }
 
-    // A Line/Arc-mixed loop (e.g. a rounded-corner rectangle) - at least 2
-    // points (two Arcs alone can close a full circle), each hop built as
-    // its own straight or curved segment rather than blindly polygon-
-    // connecting every point, mirroring app.document.extrude.wire_for_
-    // profile's identical straight-vs-curved-per-hop distinction on the
-    // backend.
+    // A Line/Arc/Spline-mixed loop (e.g. a rounded-corner rectangle, or a
+    // loop with one curved edge) - at least 2 points (two Arcs alone can
+    // close a full circle), each hop built as its own straight or curved
+    // segment rather than blindly polygon-connecting every point, mirroring
+    // app.document.extrude.wire_for_profile's identical straight-vs-curved-
+    // per-hop distinction on the backend. A Spline hop's own interior
+    // through-points never appear in [loop.pointIds] (only its first/last -
+    // same packed convention as an Arc's or Ellipse's endpoints), so its
+    // full segment list is walked from the SketchSplineView itself, in
+    // through-point order or reversed to match whichever end
+    // [loop.pointIds] visits first.
     if (points.length < 2) return false;
     path.moveTo(points[0].dx, points[0].dy);
     final n = points.length;
     for (var i = 0; i < n; i++) {
       final next = points[(i + 1) % n];
       final entityId = i < loop.lineIds.length ? loop.lineIds[i] : null;
+      final spline = entityId == null ? null : controller.splines[entityId];
+      if (spline != null) {
+        var segments = spline.segments();
+        if (loop.pointIds[i] == spline.throughPointIds.last) {
+          segments = [for (final s in segments.reversed) (s.$4, s.$3, s.$2, s.$1)];
+        }
+        for (final segment in segments) {
+          final c1 = controller.points[segment.$2];
+          final c2 = controller.points[segment.$3];
+          final end = controller.points[segment.$4];
+          if (c1 == null || c2 == null || end == null) return false;
+          final c1Screen = transform.sketchToScreen(c1.x, c1.y);
+          final c2Screen = transform.sketchToScreen(c2.x, c2.y);
+          final endScreen = transform.sketchToScreen(end.x, end.y);
+          path.cubicTo(c1Screen.dx, c1Screen.dy, c2Screen.dx, c2Screen.dy, endScreen.dx, endScreen.dy);
+        }
+        continue;
+      }
       final arc = entityId == null ? null : controller.arcs[entityId];
       final arcCenter = arc == null ? null : controller.points[arc.centerPointId];
       final arcStart = arc == null ? null : controller.points[arc.startPointId];
@@ -2484,6 +2539,81 @@ class _SketchPainter extends CustomPainter {
       canvas.restore();
     }
 
+    for (final spline in controller.splines.values) {
+      final segments = spline.segments();
+      final screenPoints = <Offset>[];
+      for (final segment in segments) {
+        final p0 = controller.points[segment.$1];
+        final p1 = controller.points[segment.$2];
+        final p2 = controller.points[segment.$3];
+        final p3 = controller.points[segment.$4];
+        if (p0 == null || p1 == null || p2 == null || p3 == null) {
+          screenPoints.clear();
+          break;
+        }
+        if (screenPoints.isEmpty) screenPoints.add(transform.sketchToScreen(p0.x, p0.y));
+        screenPoints.add(transform.sketchToScreen(p1.x, p1.y));
+        screenPoints.add(transform.sketchToScreen(p2.x, p2.y));
+        screenPoints.add(transform.sketchToScreen(p3.x, p3.y));
+      }
+      if (screenPoints.isEmpty) continue;
+
+      final splineIsSelected = isSelected(SelectionKind.spline, spline.id);
+      final isHovered = hovered?.kind == SelectionKind.spline && hovered!.id == spline.id;
+      // Same per-entity DOF preview as the other curved entities above,
+      // generalized from a single defining pair to every consecutive
+      // through-point pair - over-constrained if any segment is, fully
+      // constrained only if every segment is (mirrors Arc's own
+      // "both segments must agree" reasoning, generalized to N-1
+      // segments instead of a fixed 2).
+      var splineIsOverConstrained = false;
+      var splineIsFullyConstrained = true;
+      for (var i = 0; i < spline.throughPointIds.length; i++) {
+        if (controller.isPointForcedOverConstrained(spline.throughPointIds[i])) {
+          splineIsOverConstrained = true;
+        }
+      }
+      for (var i = 0; i < spline.throughPointIds.length - 1; i++) {
+        final a = spline.throughPointIds[i];
+        final b = spline.throughPointIds[i + 1];
+        if (controller.rigidity.isSegmentOverConstrained(a, b)) splineIsOverConstrained = true;
+        if (!controller.rigidity.isSegmentFullyConstrained(a, b)) splineIsFullyConstrained = false;
+      }
+      splineIsFullyConstrained = controller.isFullyConstrained || splineIsFullyConstrained;
+
+      final splinePaint = Paint()
+        ..color = splineIsSelected
+            ? _selectedColor
+            : isHovered
+                ? _hoverColor
+                : splineIsOverConstrained
+                    ? _overConstrainedColor
+                    : spline.construction
+                        ? _constructionColor
+                        : splineIsFullyConstrained
+                            ? _fullyConstrainedColor
+                            : _unconstrainedColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = splineIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
+
+      final path = Path()..moveTo(screenPoints[0].dx, screenPoints[0].dy);
+      for (var i = 1; i < screenPoints.length; i += 3) {
+        path.cubicTo(
+          screenPoints[i].dx,
+          screenPoints[i].dy,
+          screenPoints[i + 1].dx,
+          screenPoints[i + 1].dy,
+          screenPoints[i + 2].dx,
+          screenPoints[i + 2].dy,
+        );
+      }
+      if (spline.construction) {
+        _drawDashedPath(canvas, path, splinePaint);
+      } else {
+        canvas.drawPath(path, splinePaint);
+      }
+    }
+
     final originId = controller.originPointId;
     if (originId != null) {
       final origin = controller.points[originId];
@@ -2522,6 +2652,7 @@ class _SketchPainter extends CustomPainter {
     final slotCenter2Id = controller.slotCenter2PointId;
     final ellipseCenterId = controller.ellipseCenterPointId;
     final ellipseMajorId = controller.ellipseMajorPointId;
+    final splineThroughIds = controller.splineInProgress ? controller.splineThroughPointIds : const <String>[];
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
@@ -2532,6 +2663,7 @@ class _SketchPainter extends CustomPainter {
           controller.slotInProgress && (point.id == slotCenter1Id || point.id == slotCenter2Id);
       final isEllipseAnchor = controller.ellipseInProgress &&
           (point.id == ellipseCenterId || point.id == ellipseMajorId);
+      final isSplineThroughPoint = splineThroughIds.contains(point.id);
       final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
@@ -2544,7 +2676,12 @@ class _SketchPainter extends CustomPainter {
       } else if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
         radius = isSnapping ? _pointRadiusSnapping : _pointRadiusEmphasis;
-      } else if (isCircleCenter || isArcAnchor || isPolygonCenter || isSlotAnchor || isEllipseAnchor) {
+      } else if (isCircleCenter ||
+          isArcAnchor ||
+          isPolygonCenter ||
+          isSlotAnchor ||
+          isEllipseAnchor ||
+          isSplineThroughPoint) {
         color = Colors.deepOrange;
         radius = _pointRadiusEmphasis;
       } else if (controller.isPointForcedOverConstrained(point.id)) {

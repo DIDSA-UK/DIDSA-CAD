@@ -71,6 +71,7 @@ class SketchRibbon extends StatelessWidget {
       SelectionKind.circle => 'Circle selected',
       SelectionKind.arc => 'Arc selected',
       SelectionKind.ellipse => 'Ellipse selected',
+      SelectionKind.spline => 'Spline selected',
       SelectionKind.constraint => 'Constraint selected',
     };
   }
@@ -209,14 +210,22 @@ Future<void> _confirmAndDelete(BuildContext context, SketchController controller
   final selectedArcIds = selection.where((s) => s.kind == SelectionKind.arc).map((s) => s.id).toSet();
   final selectedEllipseIds =
       selection.where((s) => s.kind == SelectionKind.ellipse).map((s) => s.id).toSet();
+  final selectedSplineIds =
+      selection.where((s) => s.kind == SelectionKind.spline).map((s) => s.id).toSet();
   final selectedConstraintIds =
       selection.where((s) => s.kind == SelectionKind.constraint).map((s) => s.id).toSet();
   final extraLines = cascade.lines.difference(selectedLineIds).length;
   final extraCircles = cascade.circles.difference(selectedCircleIds).length;
   final extraArcs = cascade.arcs.difference(selectedArcIds).length;
   final extraEllipses = cascade.ellipses.difference(selectedEllipseIds).length;
+  final extraSplines = cascade.splines.difference(selectedSplineIds).length;
   final extraConstraints = cascade.constraints.difference(selectedConstraintIds).length;
-  final hasExtras = extraLines > 0 || extraCircles > 0 || extraArcs > 0 || extraEllipses > 0 || extraConstraints > 0;
+  final hasExtras = extraLines > 0 ||
+      extraCircles > 0 ||
+      extraArcs > 0 ||
+      extraEllipses > 0 ||
+      extraSplines > 0 ||
+      extraConstraints > 0;
 
   if (hasExtras && !controller.suppressDeleteCascadeWarning) {
     final parts = [
@@ -224,6 +233,7 @@ Future<void> _confirmAndDelete(BuildContext context, SketchController controller
       if (extraCircles > 0) '$extraCircles circle${extraCircles == 1 ? '' : 's'}',
       if (extraArcs > 0) '$extraArcs arc${extraArcs == 1 ? '' : 's'}',
       if (extraEllipses > 0) '$extraEllipses ellipse${extraEllipses == 1 ? '' : 's'}',
+      if (extraSplines > 0) '$extraSplines spline${extraSplines == 1 ? '' : 's'}',
       if (extraConstraints > 0) '$extraConstraints constraint${extraConstraints == 1 ? '' : 's'}',
     ];
     var dontWarnAgain = false;

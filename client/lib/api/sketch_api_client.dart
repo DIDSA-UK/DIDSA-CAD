@@ -156,6 +156,27 @@ class EllipseDto {
       );
 }
 
+class SplineDto {
+  final String id;
+  final List<String> throughPointIds;
+  final List<String> controlPointIds;
+  final bool construction;
+
+  SplineDto({
+    required this.id,
+    required this.throughPointIds,
+    required this.controlPointIds,
+    this.construction = false,
+  });
+
+  factory SplineDto.fromJson(Map<String, dynamic> json) => SplineDto(
+        id: json['id'] as String,
+        throughPointIds: (json['through_point_ids'] as List).cast<String>(),
+        controlPointIds: (json['control_point_ids'] as List).cast<String>(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
 /// Base type for the backend's discriminated Constraint union (Stage 12) -
 /// see app/sketch/schemas.py's `ConstraintResponse`. Used by the client both
 /// to *render* existing constraints (Stage 12 item 10's dimension overlays)
@@ -665,6 +686,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<SplineDto>> listSplines(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/splines'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => SplineDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<LineDto> createLine(
     String sketchId,
     String startPointId,
@@ -749,6 +777,23 @@ class SketchApiClient {
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Always creates from through-points that already exist (mirrors how
+  /// the client creates Circle/Arc/Ellipse) - server-side, `Sketch.
+  /// add_spline` creates the control-handle Points and tangent
+  /// constraints, returning them all in the response.
+  Future<SplineDto> createSpline(String sketchId, List<String> throughPointIds, {bool construction = false}) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/splines'),
+              headers: _headers,
+              body: jsonEncode({
+                'through_point_ids': throughPointIds,
+                'construction': construction,
+              }),
+            ),
+        (body) => SplineDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Toggles a Line's construction flag (Make-Construction/Make-Solid) -
   /// `length` is left null since this call never needs to also resize the
   /// line (see backend LineUpdate, where both fields are independently
@@ -812,6 +857,21 @@ class SketchApiClient {
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Toggles a Spline's construction flag - mirrors [updateArc]. There is
+  /// no shape field here: a Spline's shape is driven entirely by its
+  /// through-point/control-handle Points' own positions and its
+  /// SplineTangentConstraints, not edited directly.
+  Future<SplineDto> updateSpline(String sketchId, String splineId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/splines/$splineId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => SplineDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<void> deletePoint(String sketchId, String pointId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/points/$pointId'),
@@ -847,6 +907,14 @@ class SketchApiClient {
   Future<void> deleteEllipse(String sketchId, String ellipseId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteSpline(String sketchId, String splineId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/splines/$splineId'),
               headers: _headers,
             ),
         (_) {},
