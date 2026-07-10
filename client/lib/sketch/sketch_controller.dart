@@ -1685,8 +1685,8 @@ class SketchController extends ChangeNotifier {
   }
 
   /// On-device feedback: session-only display-mode override for a circle's
-  /// radius/diameter dimension - whether it currently reads as "R<value>"
-  /// (false, the default) or "⌀<value*2>" (true), toggleable from the
+  /// radius/diameter dimension - whether it currently reads as `R<value>`
+  /// (false, the default) or `⌀<value*2>` (true), toggleable from the
   /// ribbon once the dimension is selected (see [toggleRadiusDiameterDisplay]).
   /// Needed because the underlying DistanceConstraint always stores the
   /// *radius* value either way (see [confirmGhostValue]'s `distanceValue` -
