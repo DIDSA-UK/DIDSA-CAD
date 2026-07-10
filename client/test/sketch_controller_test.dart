@@ -986,7 +986,9 @@ void main() {
     expect(distances, everyElement(closeTo(8.0, 1e-9)));
   });
 
-  test('deleting an Arc cascades to its center/start/end Points and both radius constraints', () async {
+  test('computeDeleteCascade for a directly-selected Arc reports just the Arc - its center/start/end '
+      'Points stay (same as Circle) and its own radius constraints are backend-auto-cascaded, not '
+      'client-cascaded', () async {
     controller.selectDrawTool(SketchTool.arc);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
@@ -999,7 +1001,26 @@ void main() {
     );
 
     expect(cascade.arcs, {arc.id});
-    expect(cascade.constraints.length, 2);
+    expect(cascade.points, isEmpty);
+    expect(cascade.constraints, isEmpty);
+  });
+
+  test('computeDeleteCascade cascades a deleted Point to the Arc that references it', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    final arc = controller.arcs.values.single;
+    controller.exitToSelectMode();
+
+    // The start Point specifically, not the center (which snapped onto the
+    // origin on the first tap - the origin is never a deletable selection,
+    // see [SketchController.selectAll]'s own exclusion).
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.point, id: arc.startPointId)],
+    );
+
+    expect(cascade.arcs, {arc.id});
   });
 
   test('dimensionLabelAt hits a dragged label at its offset position and misses its old default anchor', () async {
