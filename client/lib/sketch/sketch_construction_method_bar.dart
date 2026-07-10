@@ -32,6 +32,7 @@ class SketchConstructionMethodBar extends StatelessWidget {
                     child: switch (controller.activeTool) {
                       SketchTool.point => const Text('Tap to place a point'),
                       SketchTool.arc => const Text('Tap center, then start, then end'),
+                      SketchTool.polygon => _PolygonSidesControl(controller: controller),
                       SketchTool.line || SketchTool.circle || SketchTool.rectangle =>
                         SingleChildScrollView(
                           scrollDirection: Axis.horizontal,
@@ -111,6 +112,36 @@ class SketchConstructionMethodBar extends StatelessWidget {
       label: Text(label),
       selected: selected,
       onSelected: (_) => onTap(),
+    );
+  }
+}
+
+/// Polygon's "how do you want to build this" isn't a choice of construction
+/// method (there's only one: center then first vertex) - it's a side count,
+/// so this replaces [SketchConstructionMethodBar._methodChips]'s chip row
+/// with a plain -/+ stepper instead, same row slot every other tool's
+/// chips/message occupies.
+class _PolygonSidesControl extends StatelessWidget {
+  final SketchController controller;
+
+  const _PolygonSidesControl({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final sides = controller.polygonSides;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$sides sides'),
+        IconButton(
+          icon: const Icon(Icons.remove_circle_outline),
+          onPressed: sides > 3 ? () => controller.setPolygonSides(sides - 1) : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.add_circle_outline),
+          onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
+        ),
+      ],
     );
   }
 }

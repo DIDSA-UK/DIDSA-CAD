@@ -2055,6 +2055,11 @@ class _SketchPainter extends CustomPainter {
         for (var i = 0; i < corners.length; i++) {
           _drawDashedLine(canvas, corners[i], corners[(i + 1) % corners.length], paint);
         }
+      case PolygonGhost g:
+        final vertices = g.vertices.map((v) => transform.sketchToScreen(v.$1, v.$2)).toList();
+        for (var i = 0; i < vertices.length; i++) {
+          _drawDashedLine(canvas, vertices[i], vertices[(i + 1) % vertices.length], paint);
+        }
     }
   }
 
@@ -2374,11 +2379,13 @@ class _SketchPainter extends CustomPainter {
     final circleCenterId = controller.circleCenterPointId;
     final arcCenterId = controller.arcCenterPointId;
     final arcStartId = controller.arcStartPointId;
+    final polygonCenterId = controller.polygonCenterPointId;
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
       final isArcAnchor = controller.arcInProgress && (point.id == arcCenterId || point.id == arcStartId);
+      final isPolygonCenter = controller.polygonInProgress && point.id == polygonCenterId;
       final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
@@ -2391,7 +2398,7 @@ class _SketchPainter extends CustomPainter {
       } else if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
         radius = isSnapping ? _pointRadiusSnapping : _pointRadiusEmphasis;
-      } else if (isCircleCenter || isArcAnchor) {
+      } else if (isCircleCenter || isArcAnchor || isPolygonCenter) {
         color = Colors.deepOrange;
         radius = _pointRadiusEmphasis;
       } else if (controller.isPointForcedOverConstrained(point.id)) {

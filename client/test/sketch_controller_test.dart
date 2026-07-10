@@ -1339,6 +1339,60 @@ void main() {
     expect(failingController.busy, isFalse);
   });
 
+  // --- Phase 6.2.2: Polygon tool ----------------------------------------------
+
+  test('activeDrawGhost is null while only the polygon center is placed, then previews the full '
+      'N-vertex outline once aiming the first vertex', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(4);
+    await controller.handleCanvasTap(0, 0); // center
+    expect(controller.polygonInProgress, isTrue);
+
+    controller.cursorX = 0;
+    controller.cursorY = 0;
+    expect(controller.activeDrawGhost, isNull); // cursor exactly on center: no defined rotation
+
+    controller.cursorX = 5;
+    controller.cursorY = 0;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<PolygonGhost>());
+    final polygon = ghost as PolygonGhost;
+    expect(polygon.centerX, 0);
+    expect(polygon.centerY, 0);
+    expect(polygon.vertices.length, 4);
+    expect(polygon.vertices[0].$1, closeTo(5, 1e-9));
+    expect(polygon.vertices[0].$2, closeTo(0, 1e-9));
+    // A square's opposite vertex, 180 degrees around.
+    expect(polygon.vertices[2].$1, closeTo(-5, 1e-9));
+    expect(polygon.vertices[2].$2, closeTo(0, 1e-9));
+  });
+
+  test('the polygon tool places center then first vertex across two taps, creating N Points, N Lines, '
+      'and N-1 EqualLengthConstraints', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(5);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // first vertex - radius 10
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.polygonInProgress, isFalse);
+    expect(controller.lines.length, 5);
+    expect(
+      controller.points.length,
+      1 /* origin/center */ + 5,
+    );
+    expect(controller.constraints.values.whereType<EqualLengthConstraintDto>().length, 4);
+  });
+
+  test('setPolygonSides clamps to [3, 20]', () {
+    controller.setPolygonSides(1);
+    expect(controller.polygonSides, 3);
+    controller.setPolygonSides(50);
+    expect(controller.polygonSides, 20);
+    controller.setPolygonSides(8);
+    expect(controller.polygonSides, 8);
+  });
+
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------
 
   test('hoveredEntity is null while a chain is in progress, even right on top of an entity', () async {

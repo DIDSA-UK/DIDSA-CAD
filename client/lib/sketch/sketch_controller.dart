@@ -80,7 +80,7 @@ class SketchArcView {
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point, rectangle, arc }
+enum SketchTool { line, circle, point, rectangle, arc, polygon }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -175,6 +175,20 @@ class ArcGhost extends DrawGhost {
     required this.endX,
     required this.endY,
   });
+}
+
+/// Previews a regular Polygon's [vertices] (already in creation order),
+/// computed live from [centerX]/[centerY] to the cursor acting as the
+/// trial first vertex - see [SketchController._polygonVertices], the same
+/// helper [SketchController._clickPolygonTool] uses for the real
+/// placement, so the ghost never disagrees with what a confirming tap
+/// would create.
+class PolygonGhost extends DrawGhost {
+  final double centerX;
+  final double centerY;
+  final List<(double, double)> vertices;
+
+  const PolygonGhost({required this.centerX, required this.centerY, required this.vertices});
 }
 
 /// Previews a Rectangle's 4 corners, in the same winding order
@@ -517,6 +531,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Rectangle';
           case SketchTool.arc:
             return 'Draw: Arc';
+          case SketchTool.polygon:
+            return 'Draw: Polygon';
         }
       case SketchMode.dimension:
         return 'Dimension';
@@ -607,6 +623,7 @@ class SketchController extends ChangeNotifier {
     _circleCenterPointId = null;
     _arcCenterPointId = null;
     _arcStartPointId = null;
+    _polygonCenterPointId = null;
     _midpointAnchorX = null;
     _midpointAnchorY = null;
     _threePointFirstX = null;
@@ -643,6 +660,30 @@ class SketchController extends ChangeNotifier {
   String? get arcCenterPointId => _arcCenterPointId;
   String? get arcStartPointId => _arcStartPointId;
   bool get arcInProgress => _arcCenterPointId != null;
+
+  String? _polygonCenterPointId;
+
+  /// The center Point of a Polygon placed but not yet completed (waiting
+  /// on the first-vertex-defining tap) - mirrors [circleCenterPointId];
+  /// self-terminating in exactly 2 taps, same as
+  /// [CircleConstructionMethod.centerRadius].
+  String? get polygonCenterPointId => _polygonCenterPointId;
+  bool get polygonInProgress => _polygonCenterPointId != null;
+
+  int _polygonSides = 6;
+
+  /// How many sides the next Polygon placement creates - a plain session
+  /// setting (like [labelOffsetFor]'s drag offsets), not itself persisted
+  /// per-Polygon, so changing it only affects Polygons drawn from then on.
+  int get polygonSides => _polygonSides;
+
+  /// Clamped to [3, 20] - fewer than 3 sides isn't a polygon, and there's
+  /// no real use case above 20 for a sketch tool (it would just look like
+  /// a circle at that point).
+  void setPolygonSides(int sides) {
+    _polygonSides = sides.clamp(3, 20);
+    notifyListeners();
+  }
 
   double? _midpointAnchorX;
   double? _midpointAnchorY;
@@ -961,7 +1002,7 @@ class SketchController extends ChangeNotifier {
   /// circle mid-placement. Hovering/selecting an existing entity, and the
   /// flyout, only ever apply while idle; a bare tap during active drawing
   /// must not trigger either, per the Stage 6 interaction model.
-  bool get isIdle => !chainInProgress && !circleInProgress && !arcInProgress;
+  bool get isIdle => !chainInProgress && !circleInProgress && !arcInProgress && !polygonInProgress;
 
   /// Stage 15 item 1: the live preview of whatever the next tap would
   /// commit, or null when there's nothing in progress to preview (idle, or
@@ -982,7 +1023,61 @@ class SketchController extends ChangeNotifier {
         return _rectangleDrawGhost();
       case SketchTool.arc:
         return _arcDrawGhost();
+      case SketchTool.polygon:
+        return _polygonDrawGhost();
     }
+  }
+
+  /// Polygon's tap sequence is center, then first vertex - self-terminating
+  /// in exactly 2 taps, same as [CircleConstructionMethod.centerRadius].
+  /// While only the center is placed, there's no radius/rotation yet, so
+  /// there's nothing to preview at all (unlike Arc/Circle, which show a
+  /// plain circle first - a Polygon has no meaningful "just a center"
+  /// preview shape). Once aiming the first vertex, the full N-vertex
+  /// outline previews live via [_polygonVertices].
+  DrawGhost? _polygonDrawGhost() {
+    final centerId = _polygonCenterPointId;
+    if (centerId == null) return null;
+    final center = points[centerId];
+    if (center == null) return null;
+    final dx = cursorX - center.x;
+    final dy = cursorY - center.y;
+    if (math.sqrt(dx * dx + dy * dy) < 1e-9) return null;
+    return PolygonGhost(
+      centerX: center.x,
+      centerY: center.y,
+      vertices: _polygonVertices(center.x, center.y, cursorX, cursorY, _polygonSides),
+    );
+  }
+
+  /// [sides] vertices of a regular polygon centered at ([centerX],
+  /// [centerY]), starting at ([firstX], [firstY]) - which fixes both the
+  /// circumradius and rotation - and proceeding counter-clockwise at even
+  /// `360/sides` degree increments. Shared by [_polygonDrawGhost]'s live
+  /// preview and [_clickPolygonTool]'s actual placement, so the Polygon
+  /// that gets created always exactly matches whatever the ghost last
+  /// showed. Callers are responsible for checking ([firstX], [firstY]) is
+  /// not coincident with the center themselves (a zero radius has no
+  /// defined rotation) - this always returns [sides] entries, degenerate
+  /// (all at center) or not.
+  List<(double, double)> _polygonVertices(
+    double centerX,
+    double centerY,
+    double firstX,
+    double firstY,
+    int sides,
+  ) {
+    final dx = firstX - centerX;
+    final dy = firstY - centerY;
+    final radius = math.sqrt(dx * dx + dy * dy);
+    final baseAngle = math.atan2(dy, dx);
+    return [
+      for (var i = 0; i < sides; i++)
+        (
+          centerX + radius * math.cos(baseAngle + 2 * math.pi * i / sides),
+          centerY + radius * math.sin(baseAngle + 2 * math.pi * i / sides),
+        ),
+    ];
   }
 
   /// Arc's tap sequence is center, then start, then end - one stage
@@ -3700,6 +3795,11 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
+    if (_activeTool == SketchTool.polygon) {
+      await _clickPolygonTool();
+      return;
+    }
+
     switch (_lineMethod) {
       case LineConstructionMethod.endToEnd:
         await _clickEndToEndLineTool();
@@ -4002,6 +4102,75 @@ class SketchController extends ChangeNotifier {
 
       _arcCenterPointId = null;
       _arcStartPointId = null;
+    });
+  }
+
+  /// Polygon tool's tap handling: first tap places the center Point,
+  /// second tap places the first vertex (fixing circumradius and
+  /// rotation) and immediately completes the shape - self-terminating,
+  /// like Circle. Computes every vertex position up front via
+  /// [_polygonVertices], places/snaps a real Point at each (reusing
+  /// [_pointIdAt]'s existing-point/midpoint snapping, same as every other
+  /// multi-point placement path), connects them in a cycle with
+  /// [polygonSides] Lines, then chains an EqualLengthConstraint between
+  /// each consecutive pair (N-1 constraints; the last pair's equality
+  /// follows by transitivity) so the shape stays equilateral under drag -
+  /// no new backend entity type or constraint primitive needed, per the
+  /// scope doc's own assessment.
+  Future<void> _clickPolygonTool() async {
+    if (_polygonCenterPointId == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _runGuarded(() async {
+        _polygonCenterPointId = await _pointIdAtCursor();
+      });
+      return;
+    }
+
+    final centerId = _polygonCenterPointId!;
+    await _runGuarded(() async {
+      final center = points[centerId]!;
+      final dx = cursorX - center.x;
+      final dy = cursorY - center.y;
+      if (math.sqrt(dx * dx + dy * dy) < 1e-9) {
+        errorMessage = 'Cannot place a polygon vertex directly on its own center';
+        _polygonCenterPointId = null;
+        return;
+      }
+
+      final positions = _polygonVertices(center.x, center.y, cursorX, cursorY, _polygonSides);
+      final vertexIds = <String>[];
+      for (final (x, y) in positions) {
+        vertexIds.add(await _pointIdAt(x, y, excludeId: centerId));
+      }
+
+      final lineIds = <String>[];
+      for (var i = 0; i < vertexIds.length; i++) {
+        final line = await _api.createLine(_sketchId!, vertexIds[i], vertexIds[(i + 1) % vertexIds.length]);
+        lines[line.id] = SketchLineView(
+          id: line.id,
+          startPointId: line.startPointId,
+          endPointId: line.endPointId,
+          construction: line.construction,
+        );
+        _pushUndo(() async {
+          await _api.deleteLine(_sketchId!, line.id);
+          lines.remove(line.id);
+        });
+        lineIds.add(line.id);
+      }
+
+      for (var i = 0; i < lineIds.length - 1; i++) {
+        final constraint = await _api.createEqualLengthConstraint(_sketchId!, lineIds[i], lineIds[i + 1]);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      }
+
+      // Same rule as a completed Circle/Arc: one finished entity = one solve call.
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+
+      _polygonCenterPointId = null;
     });
   }
 
