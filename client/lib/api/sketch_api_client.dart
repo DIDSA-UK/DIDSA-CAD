@@ -214,6 +214,8 @@ abstract class ConstraintDto {
         return PointLineDistanceConstraintDto.fromJson(json);
       case 'at_midpoint':
         return AtMidpointConstraintDto.fromJson(json);
+      case 'spline_tangent':
+        return SplineTangentConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -464,6 +466,50 @@ class AtMidpointConstraintDto extends ConstraintDto {
         id: json['id'] as String,
         pointId: json['point_id'] as String,
         lineId: json['line_id'] as String,
+      );
+}
+
+/// `Sketch.add_spline`'s own internal, non-user-editable constraint (see
+/// the backend `SplineTangentConstraint`'s docstring) - the client never
+/// creates one of these directly, only ever receives it back from
+/// [SketchApiClient.listConstraints] as part of a Spline's auto-created
+/// state, so there's no matching `createXConstraint` call for it (unlike
+/// every other [ConstraintDto] subtype here).
+class SplineTangentConstraintDto extends ConstraintDto {
+  final String splineId;
+  final String segmentAP0;
+  final String segmentAP1;
+  final String segmentAP2;
+  final String segmentAP3;
+  final String segmentBP0;
+  final String segmentBP1;
+  final String segmentBP2;
+  final String segmentBP3;
+
+  const SplineTangentConstraintDto({
+    required super.id,
+    required this.splineId,
+    required this.segmentAP0,
+    required this.segmentAP1,
+    required this.segmentAP2,
+    required this.segmentAP3,
+    required this.segmentBP0,
+    required this.segmentBP1,
+    required this.segmentBP2,
+    required this.segmentBP3,
+  });
+
+  factory SplineTangentConstraintDto.fromJson(Map<String, dynamic> json) => SplineTangentConstraintDto(
+        id: json['id'] as String,
+        splineId: json['spline_id'] as String,
+        segmentAP0: json['segment_a_p0'] as String,
+        segmentAP1: json['segment_a_p1'] as String,
+        segmentAP2: json['segment_a_p2'] as String,
+        segmentAP3: json['segment_a_p3'] as String,
+        segmentBP0: json['segment_b_p0'] as String,
+        segmentBP1: json['segment_b_p1'] as String,
+        segmentBP2: json['segment_b_p2'] as String,
+        segmentBP3: json['segment_b_p3'] as String,
       );
 }
 

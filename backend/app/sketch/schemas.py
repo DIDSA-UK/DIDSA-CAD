@@ -461,6 +461,20 @@ class AtMidpointConstraintResponse(BaseModel):
     line_id: str
 
 
+class SplineTangentConstraintResponse(BaseModel):
+    type: Literal["spline_tangent"] = "spline_tangent"
+    id: str
+    spline_id: str
+    segment_a_p0: str
+    segment_a_p1: str
+    segment_a_p2: str
+    segment_a_p3: str
+    segment_b_p0: str
+    segment_b_p1: str
+    segment_b_p2: str
+    segment_b_p3: str
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -474,6 +488,7 @@ ConstraintResponse = Union[
     LineDistanceConstraintResponse,
     PointLineDistanceConstraintResponse,
     AtMidpointConstraintResponse,
+    SplineTangentConstraintResponse,
 ]
 
 

@@ -15,6 +15,7 @@ from app.sketch.constraints import (
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    SplineTangentConstraint,
     VerticalConstraint,
 )
 from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch, Spline
@@ -68,6 +69,7 @@ from app.sketch.schemas import (
     SolveResultResponse,
     SplineCreate,
     SplineResponse,
+    SplineTangentConstraintResponse,
     SplineUpdate,
     VerticalConstraintCreate,
     VerticalConstraintResponse,
@@ -271,6 +273,19 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             id=constraint.id,
             point_id=constraint.point_id,
             line_id=constraint.line_id,
+        )
+    if isinstance(constraint, SplineTangentConstraint):
+        return SplineTangentConstraintResponse(
+            id=constraint.id,
+            spline_id=constraint.spline_id,
+            segment_a_p0=constraint.segment_a_p0,
+            segment_a_p1=constraint.segment_a_p1,
+            segment_a_p2=constraint.segment_a_p2,
+            segment_a_p3=constraint.segment_a_p3,
+            segment_b_p0=constraint.segment_b_p0,
+            segment_b_p1=constraint.segment_b_p1,
+            segment_b_p2=constraint.segment_b_p2,
+            segment_b_p3=constraint.segment_b_p3,
         )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 

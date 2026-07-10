@@ -3285,6 +3285,13 @@ class SketchController extends ChangeNotifier {
         construction: spline.construction,
       );
       idMap[spline.id] = created.id;
+      // Same fetch-and-cache as [finishSpline] - these fresh control-handle
+      // Points are new to the client and [_refreshAllPoints] (called after
+      // this by [undo]) only re-fetches ids already known, not these.
+      for (final id in created.controlPointIds) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
       splines[created.id] = SketchSplineView(
         id: created.id,
         throughPointIds: created.throughPointIds,
@@ -5147,6 +5154,18 @@ class SketchController extends ChangeNotifier {
     final throughPointIds = List<String>.from(_splineThroughPointIds);
     await _runGuarded(() async {
       final spline = await _api.createSpline(_sketchId!, throughPointIds);
+      // Unlike every other entity here, a Spline's control-handle Points
+      // are never tapped by the user - the server creates them from
+      // scratch inside Sketch.add_spline (see [splineThroughPointIds]'s
+      // own doc comment) - so, unlike Circle/Arc/Ellipse's own defining
+      // Points, they aren't already in [points] by the time the entity
+      // itself is created. [_refreshAllPoints] alone wouldn't pick them
+      // up either: it only re-fetches ids already in [points], not brand
+      // new ones - so they're fetched and cached here explicitly.
+      for (final id in spline.controlPointIds) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
       splines[spline.id] = SketchSplineView(
         id: spline.id,
         throughPointIds: spline.throughPointIds,

@@ -322,7 +322,19 @@ class _FakeBackend {
       final tangentConstraintIds = <String>[];
       for (var i = 0; i < throughPointIds.length - 2; i++) {
         final constraintId = _newId('constraint');
-        constraints[constraintId] = {'id': constraintId, 'type': 'spline_tangent'};
+        constraints[constraintId] = {
+          'id': constraintId,
+          'type': 'spline_tangent',
+          'spline_id': id,
+          'segment_a_p0': throughPointIds[i],
+          'segment_a_p1': controlPointIds[2 * i],
+          'segment_a_p2': controlPointIds[2 * i + 1],
+          'segment_a_p3': throughPointIds[i + 1],
+          'segment_b_p0': throughPointIds[i + 1],
+          'segment_b_p1': controlPointIds[2 * (i + 1)],
+          'segment_b_p2': controlPointIds[2 * (i + 1) + 1],
+          'segment_b_p3': throughPointIds[i + 2],
+        };
         tangentConstraintIds.add(constraintId);
       }
       final spline = {
@@ -1820,8 +1832,12 @@ void main() {
     await controller.finishSpline();
     final spline = controller.splines.values.single;
 
+    // .last, not .first: the first tap at (0, 0) snaps onto the sketch
+    // origin, which computeDeleteCascade deliberately never cascades from
+    // (the origin can't be deleted - see its own `pointIds.add` guard) -
+    // .last is the second tap's own real, non-origin Point.
     final cascade = controller.computeDeleteCascade(
-      [SketchSelection(kind: SelectionKind.point, id: spline.throughPointIds.first)],
+      [SketchSelection(kind: SelectionKind.point, id: spline.throughPointIds.last)],
     );
 
     expect(cascade.splines, {spline.id});
