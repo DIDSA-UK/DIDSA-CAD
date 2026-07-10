@@ -17,7 +17,7 @@ from app.sketch.constraints import (
     PointLineDistanceConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch
+from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch, Spline
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
@@ -66,6 +66,9 @@ from app.sketch.schemas import (
     SketchResponse,
     SolveRequest,
     SolveResultResponse,
+    SplineCreate,
+    SplineResponse,
+    SplineUpdate,
     VerticalConstraintCreate,
     VerticalConstraintResponse,
 )
@@ -108,6 +111,13 @@ def _get_ellipse_or_404(sketch: Sketch, ellipse_id: str) -> Ellipse:
     entity = sketch.entities.get(ellipse_id)
     if not isinstance(entity, Ellipse):
         raise HTTPException(status_code=404, detail="Ellipse not found")
+    return entity
+
+
+def _get_spline_or_404(sketch: Sketch, spline_id: str) -> Spline:
+    entity = sketch.entities.get(spline_id)
+    if not isinstance(entity, Spline):
+        raise HTTPException(status_code=404, detail="Spline not found")
     return entity
 
 
@@ -162,6 +172,15 @@ def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
         minor_radius=ellipse.minor_radius,
         rotation=ellipse.rotation(sketch.points),
         construction=ellipse.construction,
+    )
+
+
+def _spline_response(spline: Spline) -> SplineResponse:
+    return SplineResponse(
+        id=spline.id,
+        through_point_ids=spline.through_point_ids,
+        control_point_ids=spline.control_point_ids,
+        construction=spline.construction,
     )
 
 
@@ -518,6 +537,46 @@ def delete_ellipse(sketch_id: str, ellipse_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_ellipse_or_404(sketch, ellipse_id)
     sketch.delete_ellipse(ellipse_id)
+
+
+@router.post("/sketches/{sketch_id}/splines", response_model=SplineResponse, status_code=201)
+def create_spline(sketch_id: str, payload: SplineCreate) -> SplineResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        spline = sketch.add_spline(payload.through_point_ids, construction=payload.construction)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _spline_response(spline)
+
+
+@router.get("/sketches/{sketch_id}/splines", response_model=list[SplineResponse])
+def list_splines(sketch_id: str) -> list[SplineResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_spline_response(spline) for spline in sketch.splines()]
+
+
+@router.get("/sketches/{sketch_id}/splines/{spline_id}", response_model=SplineResponse)
+def get_spline(sketch_id: str, spline_id: str) -> SplineResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _spline_response(_get_spline_or_404(sketch, spline_id))
+
+
+@router.patch("/sketches/{sketch_id}/splines/{spline_id}", response_model=SplineResponse)
+def update_spline(sketch_id: str, spline_id: str, payload: SplineUpdate) -> SplineResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    spline = _get_spline_or_404(sketch, spline_id)
+    if payload.construction is not None:
+        spline.construction = payload.construction
+    return _spline_response(spline)
+
+
+@router.delete("/sketches/{sketch_id}/splines/{spline_id}", status_code=204)
+def delete_spline(sketch_id: str, spline_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_spline_or_404(sketch, spline_id)
+    sketch.delete_spline(spline_id)
 
 
 @router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)

@@ -209,7 +209,45 @@ class EllipseUpdate(BaseModel):
     construction: bool | None = None
 
 
-SketchEntityResponse = Union[LineResponse, CircleResponse, ArcResponse, EllipseResponse]
+class SplineCreate(BaseModel):
+    """Create a spline through 2+ existing Points, in order - see the
+    backend's `app.sketch.models.Spline` docstring for what this creates
+    alongside the Spline itself (2 control-handle Points per segment, plus
+    a `SplineTangentConstraint` per interior through-point). Unlike
+    Circle/Arc/Ellipse, there is no existing-vs-computed-point choice
+    here: every through-point must already exist (created via the
+    ordinary `/points` endpoint first), mirroring how a Line chain's own
+    Points are each placed individually before the Line connecting them is
+    created."""
+
+    through_point_ids: list[str]
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_point_count(self) -> "SplineCreate":
+        if len(self.through_point_ids) < 2:
+            raise ValueError("A spline needs at least 2 through-points")
+        return self
+
+
+class SplineResponse(BaseModel):
+    type: Literal["spline"] = "spline"
+    id: str
+    through_point_ids: list[str]
+    control_point_ids: list[str]
+    construction: bool = False
+
+
+class SplineUpdate(BaseModel):
+    """Update a spline's construction flag - mirrors ArcUpdate/CircleUpdate.
+    There is no shape field here: a spline's shape is driven entirely by
+    its through-points/control-handle Points' own positions and its
+    SplineTangentConstraints, not edited directly."""
+
+    construction: bool | None = None
+
+
+SketchEntityResponse = Union[LineResponse, CircleResponse, ArcResponse, EllipseResponse, SplineResponse]
 
 
 class ProfileResponse(BaseModel):

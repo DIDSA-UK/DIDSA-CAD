@@ -111,6 +111,45 @@ class SolverBuilder(Protocol):
         py-slvs has a native primitive for this exact relationship."""
         ...
 
+    def cubic(
+        self, p0_handle: int, p1_handle: int, p2_handle: int, p3_handle: int
+    ) -> int:
+        """Return a py-slvs cubic Bezier curve entity handle (py-slvs's
+        addCubic, SLVS_E_CUBIC) spanning 4 point handles - `p0`/`p3` are the
+        curve's own on-curve endpoints, `p1`/`p2` the two control handles
+        (standard cubic Bezier convention, confirmed against the installed
+        py-slvs by direct empirical test - see SplineTangentConstraint's
+        own doc comment). Creating it (rather than skipping straight to
+        plain Point/DistanceConstraint decomposition, as every other curved
+        entity in this codebase does) is a deliberate choice for Spline
+        specifically: py-slvs has no equivalent of "these 4 points trace a
+        smooth curve" expressible any other way, and Spline's whole point
+        is the tangent-continuity SplineTangentConstraint below builds on
+        top of this."""
+        ...
+
+    def curves_tangent(
+        self, at_end1: bool, at_end2: bool, curve1_handle: int, curve2_handle: int
+    ) -> int:
+        """Add a py-slvs constraint (addCurvesTangent, SLVS_C_CURVE_CURVE_
+        TANGENT) forcing curve1's tangent direction at one of its own ends
+        to match curve2's tangent direction at one of its own ends,
+        returning the resulting py-slvs constraint handle. `at_end1`/
+        `at_end2` select *which* end of each curve - True for a curve's own
+        end (its 4th/`p3` point), False for its own start (`p0`) - verified
+        empirically against the installed py-slvs (no usable documentation
+        exists for these two booleans in the wrapped C library's docs): a
+        two-segment test cubic chain sharing an endpoint, with mismatched
+        initial control-handle directions, converged to a perfectly
+        tangent-continuous join (measured tangent-direction dot product of
+        1.0000) only with `at_end1=True, at_end2=False` - i.e. "curve1's
+        end meets curve2's start" - every other boolean combination left a
+        visible kink (dot product well under 1). SplineTangentConstraint
+        always calls this with the earlier segment as curve1 (at its own
+        end) and the later segment as curve2 (at its own start), matching
+        that verified combination."""
+        ...
+
 
 class Constraint(ABC):
     """Base type for anything that can live in a Sketch's constraint
@@ -530,3 +569,66 @@ class AtMidpointConstraint(Constraint):
             builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
         )
         return builder.at_midpoint(point, line)
+
+
+@dataclass
+class SplineTangentConstraint(Constraint):
+    """Pins two adjacent cubic Bezier segments of a Spline to meet
+    tangent-continuously (no visible kink) at their shared through-point -
+    `add_spline`'s own internal implementation detail, one of these per
+    interior through-point of a Spline with 3+ through-points, auto-created
+    alongside it and auto-cascaded by `delete_spline`, exactly like Arc's
+    own pair of radius DistanceConstraints.
+
+    Each segment is defined by 4 Points (start, control 1, control 2, end -
+    see SolverBuilder.cubic's own doc comment); `segment_a_*` is the
+    earlier segment (its own end, `segment_a_p3`, is the shared
+    through-point) and `segment_b_*` is the later one (its own start,
+    `segment_b_p0`, is that same shared through-point - always equal to
+    `segment_a_p3`, captured separately only so this dataclass doesn't need
+    special-case field access). Cubic entities are rebuilt fresh from their
+    4 Points on every solve (see SolverBuilder.cubic), the same "no
+    persistent solver-side entity, rebuilt every call" convention every
+    other curved entity here already follows for Line segments.
+    """
+
+    id: str
+    spline_id: str
+    segment_a_p0: str
+    segment_a_p1: str
+    segment_a_p2: str
+    segment_a_p3: str
+    segment_b_p0: str
+    segment_b_p1: str
+    segment_b_p2: str
+    segment_b_p3: str
+
+    @property
+    def type(self) -> str:
+        return "spline_tangent"
+
+    def point_ids(self) -> tuple[str, ...]:
+        return (
+            self.segment_a_p0,
+            self.segment_a_p1,
+            self.segment_a_p2,
+            self.segment_a_p3,
+            self.segment_b_p1,
+            self.segment_b_p2,
+            self.segment_b_p3,
+        )
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        segment_a = builder.cubic(
+            builder.point2d(self.segment_a_p0),
+            builder.point2d(self.segment_a_p1),
+            builder.point2d(self.segment_a_p2),
+            builder.point2d(self.segment_a_p3),
+        )
+        segment_b = builder.cubic(
+            builder.point2d(self.segment_b_p0),
+            builder.point2d(self.segment_b_p1),
+            builder.point2d(self.segment_b_p2),
+            builder.point2d(self.segment_b_p3),
+        )
+        return builder.curves_tangent(True, False, segment_a, segment_b)

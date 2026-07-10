@@ -22,7 +22,9 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_Transform,
 )
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
@@ -45,7 +47,7 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
 )
-from app.sketch.models import Arc, Circle, Ellipse, Line, Sketch, SketchEntityRef, SketchEntityType
+from app.sketch.models import Arc, Circle, Ellipse, Line, Sketch, SketchEntityRef, SketchEntityType, Spline
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
@@ -152,7 +154,9 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, ellipse.minor_radius)).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
 
-    if not any(isinstance(sketch.entities.get(entity_id), Arc) for entity_id in profile.line_ids):
+    if not any(
+        isinstance(sketch.entities.get(entity_id), (Arc, Spline)) for entity_id in profile.line_ids
+    ):
         polygon = BRepBuilderAPI_MakePolygon()
         for point_id in profile.point_ids:
             point = sketch.points[point_id]
@@ -160,16 +164,24 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         polygon.Close()
         return polygon.Wire()
 
-    # A Line/Arc-mixed chain: BRepBuilderAPI_MakePolygon has no notion of a
-    # curved segment at all, so each hop is built as its own edge (straight
-    # for a Line, a trimmed circular arc for an Arc) and stitched together
-    # via BRepBuilderAPI_MakeWire, which matches shared vertices regardless
-    # of each edge's own parametric direction - so an Arc edge is always
-    # built from its own canonical start->end Points (see the Arc class
-    # docstring's CCW convention), never from `point_ids[i]`/`point_ids[i+1]`
-    # order, which depends on which direction profile.py's graph walk
-    # happened to trace this loop in and would otherwise risk picking the
-    # circle's *other* (wrong) arc between the same two points.
+    # A Line/Arc/Spline-mixed chain: BRepBuilderAPI_MakePolygon has no
+    # notion of a curved segment at all, so each hop is built as its own
+    # edge(s) (straight for a Line, a trimmed circular arc for an Arc, one
+    # cubic Bezier edge per internal segment for a Spline) and stitched
+    # together via BRepBuilderAPI_MakeWire, which matches shared vertices
+    # regardless of each edge's own parametric direction - so an Arc edge
+    # is always built from its own canonical start->end Points (see the
+    # Arc class docstring's CCW convention), never from
+    # `point_ids[i]`/`point_ids[i+1]` order, which depends on which
+    # direction profile.py's graph walk happened to trace this loop in and
+    # would otherwise risk picking the circle's *other* (wrong) arc
+    # between the same two points. A Spline's own internal through-points
+    # (everything between its first and last) never appear in
+    # `profile.point_ids` at all - only the two ends profile.py's walk
+    # treats as this hop's connection points do - so its own `segments()`
+    # (in the Spline's own through_point_ids order) is walked directly,
+    # reversed when the walk traced it back-to-front (mirroring Arc's own
+    # "never infer direction from point_ids order" reasoning).
     wire_maker = BRepBuilderAPI_MakeWire()
     point_count = len(profile.point_ids)
     for i in range(point_count):
@@ -185,6 +197,18 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
                 basis_point_to_world(basis, start.x, start.y),
                 basis_point_to_world(basis, end.x, end.y),
             ).Edge()
+            wire_maker.Add(edge)
+        elif isinstance(entity, Spline):
+            segments = entity.segments()
+            if profile.point_ids[i] == entity.through_point_ids[-1]:
+                segments = [(p3, p2, p1, p0) for (p0, p1, p2, p3) in reversed(segments)]
+            for p0_id, p1_id, p2_id, p3_id in segments:
+                poles = TColgp_Array1OfPnt(1, 4)
+                for index, point_id in enumerate((p0_id, p1_id, p2_id, p3_id), start=1):
+                    point = sketch.points[point_id]
+                    poles.SetValue(index, basis_point_to_world(basis, point.x, point.y))
+                curve = Geom_BezierCurve(poles)
+                wire_maker.Add(BRepBuilderAPI_MakeEdge(curve).Edge())
         else:
             a = sketch.points[profile.point_ids[i]]
             b = sketch.points[profile.point_ids[(i + 1) % point_count]]
@@ -192,7 +216,7 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
                 basis_point_to_world(basis, a.x, a.y),
                 basis_point_to_world(basis, b.x, b.y),
             ).Edge()
-        wire_maker.Add(edge)
+            wire_maker.Add(edge)
     return wire_maker.Wire()
 
 
@@ -330,13 +354,14 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
             SketchEntityType.CIRCLE,
             SketchEntityType.ARC,
             SketchEntityType.ELLIPSE,
+            SketchEntityType.SPLINE,
         ):
             raise invalid_profile_ref(ref)
         try:
             entity = resolve_sketch_entity(ref)
         except HTTPException:
             raise invalid_profile_ref(ref) from None
-        if not isinstance(entity, (Line, Circle, Arc, Ellipse)):
+        if not isinstance(entity, (Line, Circle, Arc, Ellipse, Spline)):
             raise invalid_profile_ref(ref)
 
         match_index = next(

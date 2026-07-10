@@ -18,6 +18,7 @@ from app.sketch.constraints import (
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    SplineTangentConstraint,
     VerticalConstraint,
 )
 
@@ -265,6 +266,74 @@ class Ellipse(SketchEntity):
         return math.atan2(major.y - center.y, major.x - center.x)
 
 
+@dataclass
+class Spline(SketchEntity):
+    """An open, piecewise-cubic curve through 2+ real, independently
+    addressable "through-points" (`through_point_ids`) - the Points a user
+    actually tapped, each one lying exactly on the curve. Between each
+    consecutive pair of through-points sits one cubic Bezier segment, with
+    its own 2 control-handle Points (also real, draggable Points, held in
+    `control_point_ids`, 2 per segment in segment order) - a Spline with N
+    through-points always has exactly `2 * (N - 1)` control points.
+
+    Unlike Circle/Arc/Ellipse (which all sidestep py-slvs's specialized
+    curve entities entirely, decomposing into plain Points +
+    DistanceConstraints instead), a Spline genuinely uses py-slvs's own
+    cubic Bezier primitive (`SLVS_E_CUBIC`, via `SolverBuilder.cubic`) for
+    each segment, plus a real `SplineTangentConstraint` at every interior
+    through-point (there are `N - 2` of them, one per "join" between two
+    segments) enforcing that the segments meet tangent-continuously rather
+    than kinking - see that constraint's own doc comment for exactly how,
+    including the empirically-verified py-slvs boolean semantics involved.
+    This is a deliberate, higher-effort choice over the simpler
+    plain-Points-with-derived-curve approach every other curved entity
+    here uses (py-slvs does expose a real cubic-curve primitive, unlike
+    Circle/Arc/Ellipse's workarounds - see `SolverBuilder.cubic`'s own
+    doc comment) - it buys genuine solver-enforced tangent continuity as
+    through-points are dragged, at the cost of being the first entity in
+    this codebase to actually create py-slvs curve entities rather than
+    only Points/Lines/Constraints.
+
+    DOES override `endpoint_point_ids()` (like Arc, unlike Circle/Ellipse):
+    a Spline's first/last through-points ARE real chain-connection points
+    for closed-loop detection, so a Line/Arc/Spline chain that closes into
+    a loop is a valid profile via the same generic connectivity walk
+    `profile.py` already runs. A *closed* spline (looping back on itself,
+    standalone like Circle/Ellipse) is not supported - a Spline is always
+    one open edge in a larger chain, or, with only 2 through-points and no
+    other chain members, would need an explicit closing entity same as any
+    2-Point-only shape would.
+    """
+
+    id: str
+    through_point_ids: list[str]
+    control_point_ids: list[str]
+    tangent_constraint_ids: list[str]
+
+    @property
+    def type(self) -> str:
+        return "spline"
+
+    def endpoint_point_ids(self) -> tuple[str, str]:
+        return (self.through_point_ids[0], self.through_point_ids[-1])
+
+    def segments(self) -> list[tuple[str, str, str, str]]:
+        """Every cubic segment's 4 defining Point ids (start, control 1,
+        control 2, end), in order - shared by `add_to_solver`-adjacent
+        code (building `SplineTangentConstraint`s at creation time) and
+        `app.document.extrude.wire_for_profile` (building one OCCT edge
+        per segment)."""
+        return [
+            (
+                self.through_point_ids[i],
+                self.control_point_ids[2 * i],
+                self.control_point_ids[2 * i + 1],
+                self.through_point_ids[i + 1],
+            )
+            for i in range(len(self.through_point_ids) - 1)
+        ]
+
+
 class SketchEntityType(str, Enum):
     """Which kind of Sketch entity a `SketchEntityRef` (below) points at.
     Mirrors app.document.models.SubShapeType's str-Enum pattern so it
@@ -277,6 +346,7 @@ class SketchEntityType(str, Enum):
     CIRCLE = "circle"
     ARC = "arc"
     ELLIPSE = "ellipse"
+    SPLINE = "spline"
 
 
 @dataclass(frozen=True)
@@ -548,6 +618,72 @@ class Sketch:
     def ellipses(self) -> list[Ellipse]:
         return [entity for entity in self.entities.values() if isinstance(entity, Ellipse)]
 
+    def add_spline(self, through_point_ids: list[str], *, construction: bool = False) -> Spline:
+        """Add a Spline through 2+ existing Points, creating 2 control-
+        handle Points per segment (a straight-line-looking 1/3-offset
+        initial placement along each segment's own chord - a reasonable
+        starting shape before the next solve pulls it, via the
+        `SplineTangentConstraint`s created below, into a properly
+        tangent-continuous curve) plus one `SplineTangentConstraint` per
+        interior through-point. See the Spline class's own docstring for
+        why this is built on py-slvs's real cubic-curve primitive rather
+        than the plain-Points-only approach every other curved entity here
+        uses.
+        """
+        if len(through_point_ids) < 2:
+            raise ValueError("A spline needs at least 2 through-points")
+        if len(set(through_point_ids)) != len(through_point_ids):
+            raise ValueError("A spline's through-points must all be distinct")
+        for point_id in through_point_ids:
+            if point_id not in self.points:
+                raise KeyError(point_id)
+
+        control_point_ids: list[str] = []
+        segments: list[tuple[str, str, str, str]] = []
+        for start_id, end_id in zip(through_point_ids, through_point_ids[1:]):
+            start = self.points[start_id]
+            end = self.points[end_id]
+            control1 = self.add_point(
+                start.x + (end.x - start.x) / 3, start.y + (end.y - start.y) / 3
+            )
+            control2 = self.add_point(
+                start.x + (end.x - start.x) * 2 / 3, start.y + (end.y - start.y) * 2 / 3
+            )
+            control_point_ids.append(control1.id)
+            control_point_ids.append(control2.id)
+            segments.append((start_id, control1.id, control2.id, end_id))
+
+        spline_id = str(uuid.uuid4())
+        tangent_constraint_ids: list[str] = []
+        for segment_a, segment_b in zip(segments, segments[1:]):
+            constraint = SplineTangentConstraint(
+                id=str(uuid.uuid4()),
+                spline_id=spline_id,
+                segment_a_p0=segment_a[0],
+                segment_a_p1=segment_a[1],
+                segment_a_p2=segment_a[2],
+                segment_a_p3=segment_a[3],
+                segment_b_p0=segment_b[0],
+                segment_b_p1=segment_b[1],
+                segment_b_p2=segment_b[2],
+                segment_b_p3=segment_b[3],
+            )
+            self.constraints[constraint.id] = constraint
+            tangent_constraint_ids.append(constraint.id)
+
+        spline = Spline(
+            id=spline_id,
+            through_point_ids=list(through_point_ids),
+            control_point_ids=control_point_ids,
+            tangent_constraint_ids=tangent_constraint_ids,
+            construction=construction,
+        )
+        self.entities[spline.id] = spline
+        return spline
+
+    def splines(self) -> list[Spline]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Spline)]
+
     def delete_line(self, line_id: str) -> None:
         """Remove a Line. Its endpoint Points are left untouched - they may
         be shared with other Lines, so only an explicit Point deletion can
@@ -595,6 +731,20 @@ class Sketch:
         del self.entities[ellipse_id]
         self.constraints.pop(ellipse.major_constraint_id, None)
 
+    def delete_spline(self, spline_id: str) -> None:
+        """Remove a Spline and every `SplineTangentConstraint` `add_spline`
+        created alongside it - same "internal implementation detail"
+        exception `delete_circle`/`delete_arc`/`delete_ellipse` already
+        make for their own radius constraint(s). Every through-point and
+        control-handle Point is left untouched, same as
+        `delete_line`/`delete_circle`/`delete_arc`/`delete_ellipse`."""
+        spline = self.entities.get(spline_id)
+        if not isinstance(spline, Spline):
+            raise KeyError(spline_id)
+        del self.entities[spline_id]
+        for constraint_id in spline.tangent_constraint_ids:
+            self.constraints.pop(constraint_id, None)
+
     def _point_deletion_blocker(self, point_id: str) -> str | None:
         """A human-readable reason this Point cannot be deleted, or None if
         deletion is safe. A Point is only ever deleted explicitly, never as
@@ -615,6 +765,10 @@ class Sketch:
                 return f"Point is still referenced by arc {entity.id}"
             if isinstance(entity, Ellipse) and point_id in (entity.center_point_id, entity.major_point_id):
                 return f"Point is still referenced by ellipse {entity.id}"
+            if isinstance(entity, Spline) and (
+                point_id in entity.through_point_ids or point_id in entity.control_point_ids
+            ):
+                return f"Point is still referenced by spline {entity.id}"
         for constraint in self.constraints.values():
             if point_id in constraint.point_ids():
                 return f"Point is still referenced by constraint {constraint.id}"

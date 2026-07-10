@@ -55,6 +55,7 @@ from app.sketch.constraints import (
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    SplineTangentConstraint,
     VerticalConstraint,
 )
 from app.sketch.models import (
@@ -68,6 +69,7 @@ from app.sketch.models import (
     SketchEntity,
     SketchEntityRef,
     SketchEntityType,
+    Spline,
 )
 
 # Bumped whenever the on-disk shape changes in a way that breaks reading an
@@ -88,6 +90,7 @@ _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "line_distance": LineDistanceConstraint,
     "point_line_distance": PointLineDistanceConstraint,
     "at_midpoint": AtMidpointConstraint,
+    "spline_tangent": SplineTangentConstraint,
 }
 
 
@@ -156,6 +159,15 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "major_constraint_id": entity.major_constraint_id,
             "minor_radius": entity.minor_radius,
         }
+    if isinstance(entity, Spline):
+        return {
+            "type": "spline",
+            "id": entity.id,
+            "construction": entity.construction,
+            "through_point_ids": entity.through_point_ids,
+            "control_point_ids": entity.control_point_ids,
+            "tangent_constraint_ids": entity.tangent_constraint_ids,
+        }
     raise NativeFormatError(f"No native export mapping for sketch entity type: {entity.type!r}")
 
 
@@ -194,6 +206,14 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             major_point_id=_require(data, "major_point_id"),
             major_constraint_id=_require(data, "major_constraint_id"),
             minor_radius=_require(data, "minor_radius"),
+        )
+    if entity_type == "spline":
+        return Spline(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            through_point_ids=list(_require(data, "through_point_ids")),
+            control_point_ids=list(_require(data, "control_point_ids")),
+            tangent_constraint_ids=list(_require(data, "tangent_constraint_ids")),
         )
     raise NativeFormatError(f"Unknown native sketch entity type: {entity_type!r}")
 

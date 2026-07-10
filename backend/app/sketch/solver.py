@@ -75,6 +75,7 @@ class _PySlvsBuilder:
         self._points = points
         self._point_handles: dict[str, int] = {}
         self._line_handles: dict[tuple[int, int], int] = {}
+        self._cubic_handles: dict[tuple[int, int, int, int], int] = {}
         self._horizontal_ref_line: int | None = None
         self._vertical_ref_line: int | None = None
         # The Sketch's origin Point (see Sketch.origin_point) is real,
@@ -173,6 +174,23 @@ class _PySlvsBuilder:
                 point_a_handle, point_b_handle, group=_SOLVE_GROUP
             )
         return self._line_handles[key]
+
+    def cubic(
+        self, p0_handle: int, p1_handle: int, p2_handle: int, p3_handle: int
+    ) -> int:
+        key = (p0_handle, p1_handle, p2_handle, p3_handle)
+        if key not in self._cubic_handles:
+            self._cubic_handles[key] = self._system.addCubic(
+                self._workplane, p0_handle, p1_handle, p2_handle, p3_handle, group=_SOLVE_GROUP
+            )
+        return self._cubic_handles[key]
+
+    def curves_tangent(
+        self, at_end1: bool, at_end2: bool, curve1_handle: int, curve2_handle: int
+    ) -> int:
+        return self._system.addCurvesTangent(
+            at_end1, at_end2, curve1_handle, curve2_handle, self._workplane, group=_SOLVE_GROUP
+        )
 
     def angle(self, line_a_handle: int, line_b_handle: int, degrees: float) -> int:
         return self._system.addAngle(
