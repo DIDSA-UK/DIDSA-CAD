@@ -8,6 +8,7 @@ brief's "Knows nothing about Sketch internals" requirement for Extrude.
 """
 
 import logging
+import math
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
@@ -21,7 +22,7 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_Transform,
 )
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
@@ -44,7 +45,7 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
 )
-from app.sketch.models import Arc, Circle, Line, Sketch, SketchEntityRef, SketchEntityType
+from app.sketch.models import Arc, Circle, Ellipse, Line, Sketch, SketchEntityRef, SketchEntityType
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
@@ -86,6 +87,23 @@ def _arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
     return gp_Ax2(basis_point_to_world(basis, center_x, center_y), basis_normal(basis), gp_Dir(x, y, z))
 
 
+def _ellipse_axis(basis: ResolvedPlane, center_x: float, center_y: float, rotation: float) -> gp_Ax2:
+    """The `gp_Ax2` an Ellipse's `gp_Elips` is built against - `gp_Elips`
+    always places its major axis along the `gp_Ax2`'s own X reference
+    direction, so (mirroring `_arc_axis`'s identical reasoning for Arc)
+    that reference direction must be pinned explicitly rather than left to
+    OCCT's arbitrary default: the sketch plane's local +X axis, rotated
+    in-plane by the Ellipse's own `rotation()` (the angle from local +X to
+    its major-axis Point), giving a deterministic major-axis direction
+    that matches the Ellipse class's own convention and the client's 2D
+    rendering."""
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+    dx, dy, dz = xx * cos_r + yx * sin_r, xy * cos_r + yy * sin_r, xz * cos_r + yz * sin_r
+    return gp_Ax2(basis_point_to_world(basis, center_x, center_y), basis_normal(basis), gp_Dir(dx, dy, dz))
+
+
 def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
     """C3: `basis`'s local (x, y) -> world-space embedding - generalizes the
     fixed-plane-only `sketch_point_to_world` this replaces (see
@@ -121,6 +139,17 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         radius = circle.radius(sketch.points)
         axis = gp_Ax2(basis_point_to_world(basis, center.x, center.y), basis_normal(basis))
         edge = BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()
+        return BRepBuilderAPI_MakeWire(edge).Wire()
+
+    if len(profile.line_ids) == 1 and isinstance(sketch.entities.get(profile.line_ids[0]), Ellipse):
+        ellipse = sketch.entities[profile.line_ids[0]]
+        center = sketch.points[ellipse.center_point_id]
+        major_radius = ellipse.major_radius(sketch.points)
+        rotation = ellipse.rotation(sketch.points)
+        axis = _ellipse_axis(basis, center.x, center.y, rotation)
+        # gp_Elips requires MajorRadius >= MinorRadius - already enforced at
+        # creation/update time (see Sketch.add_ellipse/EllipseUpdate).
+        edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, ellipse.minor_radius)).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
 
     if not any(isinstance(sketch.entities.get(entity_id), Arc) for entity_id in profile.line_ids):
@@ -296,13 +325,18 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
 
     selected_indices: set[int] = set()
     for ref in profile_refs:
-        if ref.entity_type not in (SketchEntityType.LINE, SketchEntityType.CIRCLE, SketchEntityType.ARC):
+        if ref.entity_type not in (
+            SketchEntityType.LINE,
+            SketchEntityType.CIRCLE,
+            SketchEntityType.ARC,
+            SketchEntityType.ELLIPSE,
+        ):
             raise invalid_profile_ref(ref)
         try:
             entity = resolve_sketch_entity(ref)
         except HTTPException:
             raise invalid_profile_ref(ref) from None
-        if not isinstance(entity, (Line, Circle, Arc)):
+        if not isinstance(entity, (Line, Circle, Arc, Ellipse)):
             raise invalid_profile_ref(ref)
 
         match_index = next(

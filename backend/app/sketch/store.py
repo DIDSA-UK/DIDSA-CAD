@@ -2,12 +2,13 @@ import uuid
 
 from fastapi import HTTPException
 
-from app.sketch.models import Arc, Circle, Line, Point, Plane, Sketch, SketchEntityRef, SketchEntityType
+from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Plane, Sketch, SketchEntityRef, SketchEntityType
 
 _ENTITY_TYPE_BY_REF: dict[SketchEntityType, type] = {
     SketchEntityType.LINE: Line,
     SketchEntityType.CIRCLE: Circle,
     SketchEntityType.ARC: Arc,
+    SketchEntityType.ELLIPSE: Ellipse,
 }
 
 # Temporary in-memory store, Stage 2 only - see the note in router.py. Pulled
@@ -73,7 +74,7 @@ def _missing_sketch_entity_reference(ref: SketchEntityRef) -> HTTPException:
     )
 
 
-def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle | Arc:
+def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle | Arc | Ellipse:
     """C1: resolves `ref` against the current store - a direct dict lookup
     (`Sketch.points` for POINT, `Sketch.entities` for LINE/CIRCLE/ARC, with
     an `isinstance` check so asking for a LINE at a Point/Circle/Arc's own

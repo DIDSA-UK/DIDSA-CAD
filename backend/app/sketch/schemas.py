@@ -161,7 +161,55 @@ class ArcUpdate(BaseModel):
     construction: bool | None = None
 
 
-SketchEntityResponse = Union[LineResponse, CircleResponse, ArcResponse]
+class EllipseCreate(BaseModel):
+    """Create an ellipse from an existing center Point, plus either an
+    existing major-axis Point's id (explicit sharing) or a major radius
+    and angle (radians from the +x axis), which creates a new major-axis
+    Point - mirrors CircleCreate's existing-vs-computed-point pattern.
+    `minor_radius` is always required directly (see the backend's
+    `app.sketch.models.Ellipse` docstring for why it's a plain value, not
+    a second Point) and must not exceed the major radius."""
+
+    center_point_id: str
+    major_point_id: str | None = None
+    major_radius: float | None = None
+    angle: float | None = None
+    minor_radius: float
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_creation_mode(self) -> "EllipseCreate":
+        if self.major_point_id is not None:
+            if self.major_radius is not None or self.angle is not None:
+                raise ValueError("Provide either 'major_point_id', or 'major_radius' and 'angle', not both")
+        elif self.major_radius is None or self.angle is None:
+            raise ValueError("Provide either 'major_point_id', or both 'major_radius' and 'angle'")
+        return self
+
+
+class EllipseResponse(BaseModel):
+    type: Literal["ellipse"] = "ellipse"
+    id: str
+    center_point_id: str
+    major_point_id: str
+    major_radius: float
+    minor_radius: float
+    rotation: float
+    construction: bool = False
+
+
+class EllipseUpdate(BaseModel):
+    """Update an ellipse's minor radius and/or construction flag.
+    `minor_radius`, unlike a Circle/Arc's radius, has no backing Point/
+    DistanceConstraint (see the Ellipse class docstring) - PATCHing it is
+    the *only* way to change it, mirroring Line's own `length` field
+    (also a directly-editable derived dimension)."""
+
+    minor_radius: float | None = None
+    construction: bool | None = None
+
+
+SketchEntityResponse = Union[LineResponse, CircleResponse, ArcResponse, EllipseResponse]
 
 
 class ProfileResponse(BaseModel):

@@ -17,7 +17,7 @@ from app.sketch.constraints import (
     PointLineDistanceConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Arc, Circle, Line, Point, Sketch
+from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
@@ -39,6 +39,9 @@ from app.sketch.schemas import (
     ConstraintValueUpdate,
     DistanceConstraintCreate,
     DistanceConstraintResponse,
+    EllipseCreate,
+    EllipseResponse,
+    EllipseUpdate,
     EqualLengthConstraintCreate,
     EqualLengthConstraintResponse,
     HorizontalConstraintCreate,
@@ -101,6 +104,13 @@ def _get_arc_or_404(sketch: Sketch, arc_id: str) -> Arc:
     return entity
 
 
+def _get_ellipse_or_404(sketch: Sketch, ellipse_id: str) -> Ellipse:
+    entity = sketch.entities.get(ellipse_id)
+    if not isinstance(entity, Ellipse):
+        raise HTTPException(status_code=404, detail="Ellipse not found")
+    return entity
+
+
 def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
     constraint = sketch.constraints.get(constraint_id)
     if constraint is None:
@@ -140,6 +150,18 @@ def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
         end_point_id=arc.end_point_id,
         radius=arc.radius(sketch.points),
         construction=arc.construction,
+    )
+
+
+def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
+    return EllipseResponse(
+        id=ellipse.id,
+        center_point_id=ellipse.center_point_id,
+        major_point_id=ellipse.major_point_id,
+        major_radius=ellipse.major_radius(sketch.points),
+        minor_radius=ellipse.minor_radius,
+        rotation=ellipse.rotation(sketch.points),
+        construction=ellipse.construction,
     )
 
 
@@ -441,6 +463,61 @@ def delete_arc(sketch_id: str, arc_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_arc_or_404(sketch, arc_id)
     sketch.delete_arc(arc_id)
+
+
+@router.post("/sketches/{sketch_id}/ellipses", response_model=EllipseResponse, status_code=201)
+def create_ellipse(sketch_id: str, payload: EllipseCreate) -> EllipseResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        ellipse = sketch.add_ellipse(
+            payload.center_point_id,
+            payload.major_point_id,
+            major_radius=payload.major_radius,
+            angle=payload.angle,
+            minor_radius=payload.minor_radius,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _ellipse_response(sketch, ellipse)
+
+
+@router.get("/sketches/{sketch_id}/ellipses", response_model=list[EllipseResponse])
+def list_ellipses(sketch_id: str) -> list[EllipseResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_ellipse_response(sketch, ellipse) for ellipse in sketch.ellipses()]
+
+
+@router.get("/sketches/{sketch_id}/ellipses/{ellipse_id}", response_model=EllipseResponse)
+def get_ellipse(sketch_id: str, ellipse_id: str) -> EllipseResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _ellipse_response(sketch, _get_ellipse_or_404(sketch, ellipse_id))
+
+
+@router.patch("/sketches/{sketch_id}/ellipses/{ellipse_id}", response_model=EllipseResponse)
+def update_ellipse(sketch_id: str, ellipse_id: str, payload: EllipseUpdate) -> EllipseResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    ellipse = _get_ellipse_or_404(sketch, ellipse_id)
+    if payload.minor_radius is not None:
+        if payload.minor_radius <= 0:
+            raise HTTPException(status_code=400, detail="An ellipse's minor radius must be positive")
+        if payload.minor_radius > ellipse.major_radius(sketch.points):
+            raise HTTPException(
+                status_code=400, detail="An ellipse's minor radius cannot exceed its major radius"
+            )
+        ellipse.minor_radius = payload.minor_radius
+    if payload.construction is not None:
+        ellipse.construction = payload.construction
+    return _ellipse_response(sketch, ellipse)
+
+
+@router.delete("/sketches/{sketch_id}/ellipses/{ellipse_id}", status_code=204)
+def delete_ellipse(sketch_id: str, ellipse_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_ellipse_or_404(sketch, ellipse_id)
+    sketch.delete_ellipse(ellipse_id)
 
 
 @router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)

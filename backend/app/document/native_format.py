@@ -60,6 +60,7 @@ from app.sketch.constraints import (
 from app.sketch.models import (
     Arc,
     Circle,
+    Ellipse,
     Line,
     Plane,
     Point,
@@ -145,6 +146,16 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "radius_constraint_id": entity.radius_constraint_id,
             "end_radius_constraint_id": entity.end_radius_constraint_id,
         }
+    if isinstance(entity, Ellipse):
+        return {
+            "type": "ellipse",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center_point_id": entity.center_point_id,
+            "major_point_id": entity.major_point_id,
+            "major_constraint_id": entity.major_constraint_id,
+            "minor_radius": entity.minor_radius,
+        }
     raise NativeFormatError(f"No native export mapping for sketch entity type: {entity.type!r}")
 
 
@@ -174,6 +185,15 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             end_point_id=_require(data, "end_point_id"),
             radius_constraint_id=_require(data, "radius_constraint_id"),
             end_radius_constraint_id=_require(data, "end_radius_constraint_id"),
+        )
+    if entity_type == "ellipse":
+        return Ellipse(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center_point_id=_require(data, "center_point_id"),
+            major_point_id=_require(data, "major_point_id"),
+            major_constraint_id=_require(data, "major_constraint_id"),
+            minor_radius=_require(data, "minor_radius"),
         )
     raise NativeFormatError(f"Unknown native sketch entity type: {entity_type!r}")
 
