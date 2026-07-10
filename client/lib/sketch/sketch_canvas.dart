@@ -1542,14 +1542,31 @@ class _SketchPainter extends CustomPainter {
     _drawArrowhead(canvas, p2, unit, color);
   }
 
-  /// Draws a small filled, rounded-rect "chip" centered on [center] with
-  /// [text] in white - shared by every dimension overlay below so they all
-  /// read consistently against busy sketch geometry.
-  void _drawDimensionLabel(Canvas canvas, Offset center, String text, Color color) {
+  /// Draws a small rounded-rect "chip" centered on [center] with [text] -
+  /// shared by every dimension overlay below so they all read consistently
+  /// against busy sketch geometry.
+  ///
+  /// On-device feedback: a *confirmed* dimension's value ([plainBlackText])
+  /// now reads as plain black text on a near-white chip - unambiguous at a
+  /// glance, matching how a real technical drawing renders dimension text -
+  /// instead of white-on-[color] (still loud/legible, but read as more of a
+  /// status indicator than a measurement). [color] still outlines the chip
+  /// (a thin border, not a fill) so the existing orange/purple
+  /// unselected/selected signal survives as a subtle cue rather than
+  /// disappearing outright. A live *ghost* dimension (still being edited,
+  /// not yet confirmed) keeps the original white-on-[color] fill instead -
+  /// [plainBlackText] defaults to false, so [_paintGhostDimensions]'s own
+  /// call site (the only other caller) is unaffected.
+  void _drawDimensionLabel(Canvas canvas, Offset center, String text, Color color,
+      {bool plainBlackText = false}) {
     final textPainter = TextPainter(
       text: TextSpan(
         text: text,
-        style: const TextStyle(color: Colors.white, fontSize: _dimensionFontSize, fontWeight: FontWeight.w600),
+        style: TextStyle(
+          color: plainBlackText ? Colors.black : Colors.white,
+          fontSize: _dimensionFontSize,
+          fontWeight: FontWeight.w600,
+        ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -1560,10 +1577,19 @@ class _SketchPainter extends CustomPainter {
       width: textPainter.width + horizontalPadding * 2,
       height: textPainter.height + verticalPadding * 2,
     );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(chipRect, const Radius.circular(3)),
-      Paint()..color = color,
-    );
+    final chipRRect = RRect.fromRectAndRadius(chipRect, const Radius.circular(3));
+    if (plainBlackText) {
+      canvas.drawRRect(chipRRect, Paint()..color = const Color(0xFFF5F5F5));
+      canvas.drawRRect(
+        chipRRect,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+    } else {
+      canvas.drawRRect(chipRRect, Paint()..color = color);
+    }
     textPainter.paint(canvas, center - Offset(textPainter.width / 2, textPainter.height / 2));
   }
 

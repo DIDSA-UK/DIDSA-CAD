@@ -886,6 +886,42 @@ def test_update_constraint_value_preserves_horizontal_orientation():
     assert updated["distance"] == 25.0
 
 
+def test_update_constraint_value_keeps_the_free_point_on_the_same_side():
+    """On-device feedback: confirming a new dimension value sometimes
+    flipped the free Point to the opposite side of the anchor Point
+    (reported as a dimension "changing polarity", "only some of the time")
+    - py-slvs's squared-distance equation has two mirror-symmetric roots,
+    and the solve (with neither Point anchored) seeds from each Point's
+    current x/y, so a near-degenerate starting separation lets floating-
+    point noise decide which root it converges to. A tiny (0.0001mm)
+    initial x-separation is exactly that near-degenerate case - without
+    re-seeding the free Point along its current direction before solving
+    (see `_reseed_distance_constraint_free_point`), this is the scenario
+    most likely to flip sides."""
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 0.0001, 0.0)
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={
+            "point_a_id": a["id"],
+            "point_b_id": b["id"],
+            "distance": 0.0001,
+            "orientation": "linear",
+        },
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}",
+        json={"value": 10.0},
+    )
+
+    assert response.status_code == 200
+    solved_b = client.get(f"/sketch/sketches/{sketch['id']}/points/{b['id']}").json()
+    # b started on the +x side of a - it must still be there, not flipped to -x.
+    assert solved_b["x"] == pytest.approx(10.0, abs=1e-3)
+
+
 # --- Prompt B item B5: solve response DOF ---------------------------------
 
 

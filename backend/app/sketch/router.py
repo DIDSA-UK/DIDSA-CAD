@@ -1,3 +1,5 @@
+import math
+
 from fastapi import APIRouter, HTTPException
 
 from app.sketch.constraints import (
@@ -445,6 +447,56 @@ def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     del sketch.constraints[constraint_id]
 
 
+def _reseed_distance_constraint_free_point(
+    sketch: Sketch, constraint: DistanceConstraint, new_distance: float
+) -> None:
+    """On-device feedback: py-slvs's `addPointsDistance` is a squared-distance
+    equation with two mirror-symmetric roots either side of `point_a` -
+    `update_constraint_value`'s solve seeds each Point from its *current*
+    stored x/y (see `_PySlvsBuilder.point2d`) with neither point anchored, so
+    it normally converges back to the same side the two Points already sit
+    on - but whenever their current separation (on the constrained axis, for
+    "horizontal"/"vertical"; on both, for "linear") is small enough that
+    floating-point noise dominates the direction, the solve can converge to
+    the *other* mirror root instead, flipping which side of `point_a`
+    `point_b` ends up on. Reported on-device as a dimension's value
+    "changing polarity" on confirm, "only some of the time" - exactly the
+    near-degenerate-seed signature.
+
+    Fixes this by re-seeding `point_b`'s stored position, before the solve
+    ever runs, to sit at exactly `new_distance` along the *current* direction
+    from `point_a` to `point_b` - the solve then starts already on the
+    correct side (a much better initial guess than the old, possibly
+    near-zero, separation), so Newton's method converges back there instead
+    of the arbitrary opposite one. A no-op when the current separation is
+    exactly zero - genuinely no "side" to preserve in that case, not a
+    regression, since no seed choice can resolve that either.
+    """
+    point_a = sketch.points.get(constraint.point_a_id)
+    point_b = sketch.points.get(constraint.point_b_id)
+    if point_a is None or point_b is None:
+        return
+    if constraint.orientation == "horizontal":
+        dx = point_b.x - point_a.x
+        if dx == 0:
+            return
+        point_b.x = point_a.x + math.copysign(new_distance, dx)
+    elif constraint.orientation == "vertical":
+        dy = point_b.y - point_a.y
+        if dy == 0:
+            return
+        point_b.y = point_a.y + math.copysign(new_distance, dy)
+    else:
+        dx = point_b.x - point_a.x
+        dy = point_b.y - point_a.y
+        current_distance = math.hypot(dx, dy)
+        if current_distance == 0:
+            return
+        scale = new_distance / current_distance
+        point_b.x = point_a.x + dx * scale
+        point_b.y = point_a.y + dy * scale
+
+
 @router.patch("/sketches/{sketch_id}/constraints/{constraint_id}", response_model=SolveResultResponse)
 def update_constraint_value(
     sketch_id: str, constraint_id: str, payload: ConstraintValueUpdate
@@ -452,6 +504,7 @@ def update_constraint_value(
     sketch = _get_sketch_or_404(sketch_id)
     constraint = _get_constraint_or_404(sketch, constraint_id)
     if isinstance(constraint, DistanceConstraint):
+        _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
         constraint.distance = payload.value
     elif isinstance(constraint, LineDistanceConstraint):
         constraint.distance = payload.value
