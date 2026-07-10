@@ -606,22 +606,230 @@ ellipse → spline → text), no reprioritization requested.
   4. **Ellipse** — moderate-high; need to confirm py-slvs's constraint
      support for ellipse entities (may be more limited than
      circle/arc) before committing to an approach.
-  5. **Spline** — high; needs a new curve entity type end-to-end
-     (model, solver representation, rendering, hit-testing/dragging of
-     control points) — confirm what curve types py-slvs actually
-     exposes before scoping further, this may need its own design doc.
-  6. **Text (outline, for cutting/embossing)** — highest; effectively a
-     separate feature from the rest of the sketcher — needs font
-     outline extraction (e.g. via a font-parsing/path library) to turn
-     glyphs into sketch curve geometry, unrelated to the constraint
-     solver. Recommend scoping and estimating this one entirely
-     separately from the rest of the sketcher package.
+  5. **Spline** — moderate, revised down from the original "high"
+     estimate now that the open question below is resolved. See
+     **6.2.5** for the full scoping pass: py-slvs does expose a real
+     cubic-Bezier solver primitive (`SLVS_E_CUBIC`/`addCubic`), but v1
+     deliberately doesn't use it, following the same
+     decompose-into-plain-Points precedent Circle/Arc/Ellipse already
+     established.
+  6. **Text (outline, for cutting/embossing)** — high, but now
+     concretely scoped rather than open-ended. See **6.2.6**: OCCT
+     itself (via pythonocc-core) has built-in TrueType-to-BRep
+     conversion, which - if actually reachable in this project's pinned
+     conda build (**unconfirmed, first thing to check**) - avoids
+     needing a new font-parsing dependency at all.
 - **Files**: backend `models.py`/`constraints.py`/`solver.py` (new
   entity + constraint types per shape), `sketch_controller.dart`,
   `sketch_canvas.dart`, `sketch_speed_dial.dart`, `sketch_api_client.dart`
   for each.
-- **Risk**: low→high across the list; sequence in the order above and
-  stop to re-scope before spline/text specifically.
+- **Risk**: low→high across the list; sequence in the order above.
+
+### 6.2.5 Spline tool
+- **Current state**: Arc/Polygon/Slot/Ellipse all shipped (6.2.1-6.2.4);
+  no Spline entity exists client- or backend-side. The original 6.2
+  entry above flagged "confirm what curve types py-slvs actually
+  exposes" as the blocking unknown - now resolved by direct inspection
+  of the installed solver module (`python3.11 -c "from py_slvs import
+  slvs"`, then grepping `slvs.py` for every `SLVS_E_`/`SLVS_C_`
+  constant and `System.add*` method, the same technique that confirmed
+  Ellipse's *lack* of support in 6.2.4): py-slvs genuinely exposes
+  `SLVS_E_CUBIC` (a 4-point cubic Bezier curve entity - two endpoints
+  plus two control handles) via `System.addCubic(wrkpln, p1, p2, p3,
+  p4, group=0, h=0)`, plus `SLVS_C_CUBIC_LINE_TANGENT`/
+  `addCubicLineTangent` and `SLVS_C_CURVE_CURVE_TANGENT`/
+  `addCurvesTangent` for tangency constraints between segments - a
+  materially richer primitive than Arc ever needed (Arc's own
+  `SLVS_E_ARC_OF_CIRCLE` exists in py-slvs too, but this codebase
+  doesn't use it either - see below).
+- **Proposed approach**:
+  1. **Do not use `SLVS_E_CUBIC` in v1.** `solver.py` currently never
+     passes any py-slvs specialized entity type (`SLVS_E_CIRCLE`,
+     `SLVS_E_ARC_OF_CIRCLE`) into the solver at all - grepped directly,
+     zero references. Every curved entity this app has (Circle, Arc)
+     instead decomposes entirely into plain Points plus ordinary
+     `DistanceConstraint`s, with the curve's "circular-ness" enforced
+     geometrically rather than via a native solver primitive (see the
+     Arc class's own docstring: "zero new py-slvs primitives"). This
+     looks like a deliberate architectural choice - `solve_sketch`
+     appears to run in a flat, workplane-less scheme, and every
+     specialized SLVS entity type requires a `wrkpln` (workplane)
+     handle this codebase's solver integration has never had to thread
+     through before. Wiring up real `SLVS_E_CUBIC` entities would be
+     the first time it needed to, which is a materially bigger, riskier
+     lift than anything Arc/Polygon/Slot/Ellipse needed - exactly the
+     kind of thing this scoping pass exists to flag rather than
+     discover mid-implementation.
+  2. **v1: follow the established Ellipse/Arc precedent instead.** A
+     Spline is a chain of real, draggable Points; the smooth curve
+     through them is a plain Catmull-Rom interpolation (passes exactly
+     through each tapped Point, unlike a control-point Bezier where the
+     curve only touches the first/last handle - matches the more
+     intuitive "click points, curve follows them" mental model most
+     sketch-spline tools default to), computed client- and backend-side
+     from those Points' positions - not represented by any new solver
+     primitive, zero new py-slvs machinery, mirroring Ellipse's own
+     "sidestep the solver" design exactly. Every Point stays fully
+     draggable/constrainable like any other Point; only the
+     interpolation shape *between* them is derived, not independently
+     constrainable in v1 (no per-segment tangent-continuity constraint -
+     see item 6 below for where that would go later).
+  3. **Tap sequence**: repeated single-Point taps, reusing Line's
+     existing chain machinery almost verbatim (`chainFirstPointId`-style
+     in-progress state, an explicit Finish action mirroring
+     `finishChain()`) - no new gesture design needed. Minimum 2 points;
+     a straight 2-point "spline" degenerates to a line, which is fine
+     and not worth special-casing away.
+  4. **`endpoint_point_ids()`**: override to return (first point, last
+     point), the same override Arc already has - this alone slots an
+     open Spline into the existing generic Line/Arc chain-walk
+     `profile.py` already does, so it can close a loop together with
+     Lines/Arcs with no `profile.py` changes at all. A *closed* spline
+     (looping back on itself, standalone like Circle/Ellipse) is
+     explicit v1.1 scope, not v1 - v1 only supports a Spline as one
+     open edge in a larger Line/Arc/Spline chain, exactly how Slot's
+     Arcs already participate.
+  5. **OCCT wire construction**: `GeomAPI_Interpolate` (builds a
+     `Geom_BSplineCurve` through an ordered `TColgp_HArray1OfPnt`, i.e.
+     exactly a Catmull-Rom-equivalent interpolation) is the direct,
+     idiomatic OCCT tool for this - `wire_for_profile`'s existing
+     per-hop dispatch (straight edge for a Line, `gp_Circ`-based edge
+     for an Arc) gains a third case: a `BRepBuilderAPI_MakeEdge` built
+     from the interpolated `Geom_BSplineCurve`.
+  6. **Client rendering/hit-testing**: sample the same Catmull-Rom
+     formula at a fixed step count into a polyline - the same
+     "boundary sampling" approach 6.2.4 already used for Ellipse's
+     profile-containment checks - and draw/hit-test it exactly like a
+     Polygon's already-sampled edges (`_distanceToSegment` per hop).
+     A true `Path.cubicTo`-based smooth render is a pure visual
+     upgrade, not required for v1.
+  7. **Explicit v1 non-goal**: tangent-continuity between segments
+     (`addCubicLineTangent`/`addCurvesTangent`, item 1's real
+     primitive) - only worth the `wrkpln` integration risk if a
+     Catmull-Rom fit's visible kinks at sharp turns actually bother
+     users in practice. Flagged as future work, not committed to.
+- **Files**: mirrors Ellipse's own file list exactly - backend
+  `models.py` (`Spline` dataclass + `Sketch.add_spline`/`delete_spline`),
+  `schemas.py`, `router.py` (CRUD), `store.py`, `extrude.py`
+  (`GeomAPI_Interpolate` wire branch), `native_format.py`; `profile.py`
+  needs no changes beyond what `endpoint_point_ids()` already buys for
+  free. Client: `sketch_api_client.dart` (`SplineDto`),
+  `sketch_controller.dart` (tool/ghost/render/hit-test - closely
+  mirrors `_ellipseDrawGhost`/`_clickEllipseTool`'s shape),
+  `sketch_canvas.dart`, `sketch_speed_dial.dart`.
+- **Risk**: moderate, not high - the interpolation math (Catmull-Rom +
+  its OCCT `GeomAPI_Interpolate` equivalent) is new but standard and
+  well-documented; the tap-sequence UI is close to a total reuse of
+  Line's chain tool. The originally-flagged blocking unknown ("confirm
+  what curve types py-slvs actually exposes") is now resolved: real
+  native support exists, but v1 deliberately doesn't reach for it,
+  keeping this in line with every other curved entity this codebase
+  has shipped so far.
+
+### 6.2.6 Text tool (outline, for cutting/embossing)
+- **Current state**: no text/font support anywhere in the codebase -
+  no font-parsing dependency in `backend/environment.yml`, no `Text`
+  concept in `sketch/models.py`, nothing in the client. Explicitly out
+  of scope for every prior 6.2 sub-phase.
+- **Proposed approach**:
+  1. **Key finding, unconfirmed on-device**: OCCT (the library
+     `pythonocc-core` wraps) has built-in TrueType-font-to-BRep
+     conversion via `Font_BRepFont`/`Font_BRepTextBuilder`, and
+     `pythonocc-core`'s own repository additionally ships a convenience
+     Python wrapper for it - `src/Addons/Font3d.cpp`, exposing
+     `text_to_brep(text, fontName, fontAspect, size,
+     isCompositeCurve)` and `register_font(fontPath, fontAspect)` -
+     meaning font-outline extraction may need **no new dependency at
+     all**, just the `pythonocc-core` this project already pins. This
+     is **not yet confirmed for this project's exact build**:
+     `Font3d.cpp` lives in `pythonocc-core`'s `src/Addons` directory,
+     not its auto-generated `OCC.Core.*` bindings, so whether it's
+     actually compiled into `pythonocc-core=7.9.3=novtk*` (the exact
+     pin in `backend/environment.yml`) needs a direct check
+     (`python3.11 -c "from OCC.Core.Addons import text_to_brep"` or
+     wherever it actually lands - exact import path unconfirmed too).
+     This sandbox has no `pythonocc-core` installed at all (`import
+     OCC` -> `ModuleNotFoundError`, the same limitation noted
+     throughout every backend change in this whole document that
+     touches `extrude.py`), so this could not be verified directly in
+     this pass. **This is the single highest-leverage thing to check
+     first**, before any other Text work starts - if it's missing from
+     the `novtk` build, the fallback is a genuinely new dependency
+     (e.g. Python's `fontTools`, walking each glyph's outline table by
+     hand and converting to OCCT edges) - a materially bigger,
+     from-scratch lift that would justify treating Text as its own
+     separate research spike, exactly as the original 6.2 entry above
+     recommended.
+  2. **Recommend NOT decomposing text into constrainable
+     Points/Lines/Splines.** A single word already produces dozens of
+     contours (each letter, plus inner "holes" for closed counters like
+     o/e/a/g), each with many curve segments - materializing all of
+     that as draggable, individually-constrainable sketch Points would
+     be enormous data/UI clutter for no real user benefit (nobody
+     hand-tweaks the curve of a single serif). Every mainstream CAD
+     tool (Fusion 360, SolidWorks, Onshape) treats sketch text the same
+     way: an opaque, regenerate-on-edit object, only "exploded" into
+     real editable curves on explicit user request - a natural v2
+     feature once Spline (6.2.5) exists to explode *into*.
+  3. **New lightweight entity** (e.g. `TextEntity`) - fields: content
+     string, font (a small backend-bundled allowlist for v1, not
+     arbitrary system/uploaded fonts - sidesteps a font-management UI
+     and per-font licensing surface entirely), size, an anchor Point
+     (real, draggable/constrainable, same role as Circle's center), and
+     rotation. Glyph geometry itself is never persisted as Points - it
+     regenerates from these fields on demand, the same
+     recompute-from-parametric-inputs principle every other
+     feature/extrude/fillet in this app already follows.
+  4. **Profile detection**: each contour `text_to_brep` returns becomes
+     its own loop-with-holes - exactly the shape `profile.py`'s
+     existing nested-loop classification (`_classify_nesting`) already
+     handles (built for "a plate with a round hole," generalizes
+     directly to "an 'o' is an outer ring with one hole," "an 'i' is
+     two disjoint outer loops - the stem and the dot," "the whole
+     string is one `MultiProfile` of N disjoint per-letter outer
+     loops"). The new work is a `_text_profile`-style function
+     upstream of that - structurally mirroring `_circle_profile`/
+     `_ellipse_profile`'s "pack the owning entity's id into `line_ids`"
+     convention, but yielding potentially many loops per Text entity
+     instead of exactly one.
+  5. **Client rendering**: no font-outline renderer belongs in Flutter
+     for this - a real preview needs the actual server-generated
+     tessellated outline anyway (same reasoning every curved entity in
+     6.2 needs real geometry for rendering, not an approximation), so
+     add a lightweight preview-outline endpoint (returns each contour
+     as a polyline, mirroring the existing mesh-tessellation endpoints
+     already serving 3D body preview) that the client calls once per
+     content/font/size change, caches, and draws with the same
+     fill/stroke machinery `_addLoopBoundary`/`_profileLoopPath`
+     already use for profile fills.
+  6. **Extrude**: once contours are Profile loops (item 4), extrusion
+     is already fully generic - no `extrude.py` wire-construction
+     changes expected beyond what `_text_profile` needs.
+  7. **Explicit v1 non-goals**: multi-line text/wrapping, arbitrary
+     uploaded fonts, per-character kerning controls beyond the font's
+     own defaults, "explode to editable curves" (deferred to v2, once
+     Spline exists).
+- **Files**: backend - `backend/environment.yml` (only if item 1's
+  on-device check shows the addon is missing and `fontTools` becomes
+  necessary), new `backend/app/sketch/text_geometry.py` (the
+  `text_to_brep` wrapper + font allowlist), `models.py` (`TextEntity`),
+  `schemas.py`, `router.py`, `profile.py` (`_text_profile`), a handful
+  of bundled `.ttf` files as new binary assets - **each bundled font's
+  license must be confirmed to permit redistribution**, a real,
+  easy-to-miss legal check alongside the engineering one. Client: new
+  `sketch_api_client.dart` DTOs + preview-outline fetch,
+  `sketch_controller.dart`/`sketch_canvas.dart` (new tool, anchor-point
+  placement + cached preview rendering), `sketch_speed_dial.dart`.
+- **Risk**: high, but now concretely scoped rather than open-ended -
+  the single biggest unknown (whether OCCT's text-to-BRep is actually
+  reachable through this project's pinned `pythonocc-core` build) is a
+  five-minute on-device check, not a research project. Assuming it
+  checks out, the remaining work (one new lightweight entity type, a
+  `profile.py` loop-source generalization, a preview-tessellation
+  endpoint, font licensing) is real but bounded, and needs no new curve
+  math the way Spline does. If the check fails, escalate this back to
+  "needs its own separate research pass" for the `fontTools` fallback,
+  exactly as the original 6.2 entry anticipated.
 
 ---
 
@@ -945,8 +1153,16 @@ at the end of this section.
    redefinition is simpler against an already-generalized orientation
    model.
 7. **Phase 6.2** (new shape tools) — ongoing backlog, pick off in the
-   confirmed complexity order; spline and text need their own scoping
-   passes when reached.
+   confirmed complexity order. Arc/Polygon/Slot/Ellipse (6.2.1-6.2.4)
+   are done; Spline (6.2.5) and Text (6.2.6) are now scoped (see those
+   sections) but not yet implemented. Do Spline before Text - besides
+   being the lower-risk of the two, Text's recommended v2 "explode to
+   editable curves" feature explodes *into* Spline segments, so having
+   Spline already shipped means that path is buildable later without
+   backfilling anything. Text's own first step, before any other work
+   on it starts, is the five-minute on-device check of whether
+   `pythonocc-core`'s `text_to_brep` addon is actually present in this
+   project's pinned conda build - see 6.2.6.
 8. **Phase 9.1 (v1, frozen-copy Convert Entities)** — can slot in any
    time after Phase 4.1 (needs its plane-projection helpers), genuinely
    client-only, no dependency on Phase 4.3.
