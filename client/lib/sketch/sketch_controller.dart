@@ -76,11 +76,27 @@ class SketchArcView {
   });
 }
 
+class SketchEllipseView {
+  final String id;
+  final String centerPointId;
+  final String majorPointId;
+  final double minorRadius;
+  final bool construction;
+
+  const SketchEllipseView({
+    required this.id,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.minorRadius,
+    this.construction = false,
+  });
+}
+
 /// Which entity the next tap-to-place commits, while [SketchMode.draw] is
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point, rectangle, arc, polygon, slot }
+enum SketchTool { line, circle, point, rectangle, arc, polygon, slot, ellipse }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -218,6 +234,30 @@ class SlotGhost extends DrawGhost {
   });
 }
 
+/// Previews an Ellipse centered at [centerX]/[centerY] with its major-axis
+/// Point at [majorX]/[majorY] (implying both the major radius and the
+/// rotation, same as the real Ellipse a confirming tap would create) and
+/// [minorRadius] - the perpendicular distance from the cursor to the
+/// infinite line through the center along the major axis (see
+/// [SketchController._perpendicularDistanceToLine], the same helper Slot's
+/// width stage already uses), or `0` while only the center and major point
+/// are placed and the cursor hasn't yet set a minor radius.
+class EllipseGhost extends DrawGhost {
+  final double centerX;
+  final double centerY;
+  final double majorX;
+  final double majorY;
+  final double minorRadius;
+
+  const EllipseGhost({
+    required this.centerX,
+    required this.centerY,
+    required this.majorX,
+    required this.majorY,
+    required this.minorRadius,
+  });
+}
+
 /// Previews a Rectangle's 4 corners, in the same winding order
 /// [SketchController._buildRectangle] would use to create its 4 Lines.
 class RectGhost extends DrawGhost {
@@ -267,7 +307,7 @@ enum SketchMode { select, draw, dimension }
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
 /// and bare relational Constraints (Vertical/Horizontal, which don't) -
 /// the ribbon distinguishes the two via [SketchController.selectedConstraintHasValue].
-enum SelectionKind { point, line, circle, constraint, arc }
+enum SelectionKind { point, line, circle, constraint, arc, ellipse }
 
 /// The single hovered-or-selected entity, idle-state only (see
 /// [SketchController.isIdle]) - distinct from the chain-start/circle-center
@@ -432,6 +472,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
   final Map<String, SketchArcView> arcs = {};
+  final Map<String, SketchEllipseView> ellipses = {};
 
   /// Stage 23b: the sketch-space bounding box of every Point, plus every
   /// Circle's full extent (center +/- radius, since a circle's own Points
@@ -477,6 +518,22 @@ class SketchController extends ChangeNotifier {
       // may include a little extra margin from the unswept side.
       include(center.x - radius, center.y - radius);
       include(center.x + radius, center.y + radius);
+    }
+    for (final ellipse in ellipses.values) {
+      final center = points[ellipse.centerPointId];
+      if (center == null) continue;
+      // Conservative: a square of half-width majorRadius around the
+      // center, same simplification the Arc case above uses - the major
+      // radius is always >= the actual bounding-box half-width along
+      // either axis regardless of rotation, since majorRadius >=
+      // minorRadius (enforced at creation/update time).
+      final major = points[ellipse.majorPointId];
+      if (major == null) continue;
+      final majorRadius = math.sqrt(
+        math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
+      );
+      include(center.x - majorRadius, center.y - majorRadius);
+      include(center.x + majorRadius, center.y + majorRadius);
     }
 
     return Rect.fromLTRB(minX, minY, maxX, maxY);
@@ -562,6 +619,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Polygon';
           case SketchTool.slot:
             return 'Draw: Slot';
+          case SketchTool.ellipse:
+            return 'Draw: Ellipse';
         }
       case SketchMode.dimension:
         return 'Dimension';
@@ -655,6 +714,8 @@ class SketchController extends ChangeNotifier {
     _polygonCenterPointId = null;
     _slotCenter1PointId = null;
     _slotCenter2PointId = null;
+    _ellipseCenterPointId = null;
+    _ellipseMajorPointId = null;
     _midpointAnchorX = null;
     _midpointAnchorY = null;
     _threePointFirstX = null;
@@ -728,6 +789,20 @@ class SketchController extends ChangeNotifier {
   String? get slotCenter1PointId => _slotCenter1PointId;
   String? get slotCenter2PointId => _slotCenter2PointId;
   bool get slotInProgress => _slotCenter1PointId != null;
+
+  String? _ellipseCenterPointId;
+  String? _ellipseMajorPointId;
+
+  /// The center/major-axis Points of an Ellipse placed but not yet
+  /// completed (waiting on the minor-radius-defining tap) - mirrors
+  /// [arcCenterPointId]/[arcStartPointId], one tap stage further than a
+  /// Circle's own single center. [ellipseMajorPointId] is null while only
+  /// the center has been placed (the in-progress ghost is then a plain
+  /// [CircleGhost], same as Arc's own first stage - see
+  /// [_ellipseDrawGhost]).
+  String? get ellipseCenterPointId => _ellipseCenterPointId;
+  String? get ellipseMajorPointId => _ellipseMajorPointId;
+  bool get ellipseInProgress => _ellipseCenterPointId != null;
 
   double? _midpointAnchorX;
   double? _midpointAnchorY;
@@ -825,7 +900,7 @@ class SketchController extends ChangeNotifier {
   /// make the "fully constrained" indicator light up before the user had
   /// drawn anything. That indicator should only ever appear once there's
   /// actually something to be fully constrained.
-  bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty || arcs.isNotEmpty;
+  bool get hasGeometry => lines.isNotEmpty || circles.isNotEmpty || arcs.isNotEmpty || ellipses.isNotEmpty;
 
   /// Whole-sketch "grounded and fully pinned" - what the padlock icon
   /// (sketch_screen.dart) shows, and (via [isUnderConstrained] below) what
@@ -1072,7 +1147,48 @@ class SketchController extends ChangeNotifier {
         return _polygonDrawGhost();
       case SketchTool.slot:
         return _slotDrawGhost();
+      case SketchTool.ellipse:
+        return _ellipseDrawGhost();
     }
+  }
+
+  /// Ellipse's tap sequence is center, then major-axis point, then minor
+  /// radius - one stage further than Circle's center-then-radius,
+  /// mirroring Arc's center-then-start-then-end shape. While only the
+  /// center is placed, there's no major radius/rotation yet, so the
+  /// preview is a plain [CircleGhost] (identical to Circle/Arc's own
+  /// first stage). Once the major-axis point is also placed, the minor
+  /// radius is set by the cursor's *perpendicular* distance from the
+  /// major axis (see [_perpendicularDistanceToLine], the same helper
+  /// Slot's width stage uses) - dragging along the major axis itself
+  /// doesn't widen the ellipse, only moving away from it does. Clamped to
+  /// never exceed the major radius, so the ghost never previews something
+  /// a confirming tap couldn't actually create (`gp_Elips` - and the
+  /// backend's own validation - requires majorRadius >= minorRadius).
+  DrawGhost? _ellipseDrawGhost() {
+    final centerId = _ellipseCenterPointId;
+    if (centerId == null) return null;
+    final center = points[centerId];
+    if (center == null) return null;
+
+    final majorId = _ellipseMajorPointId;
+    if (majorId == null) {
+      return CircleGhost(centerX: center.x, centerY: center.y, edgeX: cursorX, edgeY: cursorY);
+    }
+    final major = points[majorId];
+    if (major == null) return null;
+
+    final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+    if (majorRadius < 1e-9) return null;
+    final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
+    if (rawMinorRadius == null || rawMinorRadius < 1e-9) return null;
+    return EllipseGhost(
+      centerX: center.x,
+      centerY: center.y,
+      majorX: major.x,
+      majorY: major.y,
+      minorRadius: math.min(rawMinorRadius, majorRadius),
+    );
   }
 
   /// Slot's tap sequence is centerline-start, then centerline-end, then
@@ -1506,7 +1622,65 @@ class SketchController extends ChangeNotifier {
       }
     }
 
+    for (final ellipse in ellipses.values) {
+      final center = points[ellipse.centerPointId];
+      final major = points[ellipse.majorPointId];
+      if (center == null || major == null) continue;
+      final distanceToEllipse = _approxDistanceToEllipseBoundary(
+        x,
+        y,
+        center.x,
+        center.y,
+        major.x,
+        major.y,
+        ellipse.minorRadius,
+      );
+      if (distanceToEllipse != null && distanceToEllipse <= radius) {
+        return SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id);
+      }
+    }
+
     return null;
+  }
+
+  /// An approximate Euclidean distance from ([x], [y]) to an Ellipse's
+  /// boundary (center at [centerX]/[centerY], major-axis Point at
+  /// [majorX]/[majorY], semi-minor radius [minorRadius]) - exact only when
+  /// the ellipse is actually a circle (majorRadius == minorRadius).
+  /// Computed by scaling ([x], [y]) into the ellipse's local, unrotated
+  /// frame, then measuring how far its *normalized* radial position
+  /// (`sqrt((lx/a)^2 + (ly/b)^2)`, 1.0 exactly on the boundary) is from 1,
+  /// scaled back by the local radial distance - the same "how far off the
+  /// boundary along this ray" idea [_entityAt]'s Circle/Arc cases use
+  /// exactly (there, `a == b`, so this reduces to their identical
+  /// `(distanceToCenter - r).abs()`). Close enough for hit-testing
+  /// tolerance purposes; not used anywhere exactness matters (backend
+  /// profile/extrude geometry is unaffected by this approximation). Null
+  /// if [x]/[y] is exactly at the center (no defined radial direction) or
+  /// the major/minor radius is degenerate.
+  double? _approxDistanceToEllipseBoundary(
+    double x,
+    double y,
+    double centerX,
+    double centerY,
+    double majorX,
+    double majorY,
+    double minorRadius,
+  ) {
+    final majorRadius = math.sqrt(math.pow(majorX - centerX, 2) + math.pow(majorY - centerY, 2));
+    if (majorRadius < 1e-9 || minorRadius < 1e-9) return null;
+    final rotation = math.atan2(majorY - centerY, majorX - centerX);
+    final dx = x - centerX;
+    final dy = y - centerY;
+    final cosR = math.cos(-rotation);
+    final sinR = math.sin(-rotation);
+    final localX = dx * cosR - dy * sinR;
+    final localY = dx * sinR + dy * cosR;
+    final radialDistance = math.sqrt(localX * localX + localY * localY);
+    if (radialDistance < 1e-9) return null;
+    final normalized = math.sqrt(math.pow(localX / majorRadius, 2) + math.pow(localY / minorRadius, 2));
+    if (normalized < 1e-9) return null;
+    return (radialDistance - radialDistance / normalized).abs();
   }
 
   /// The entity nearest the cursor and within hit-test range, or null while
@@ -1735,6 +1909,10 @@ class SketchController extends ChangeNotifier {
         final arc = arcs[hit.id]!;
         final nearerId = _nearestOf(x, y, [arc.centerPointId, arc.startPointId, arc.endPointId]);
         return nearerId == _originPointId ? null : nearerId;
+      case SelectionKind.ellipse:
+        final ellipse = ellipses[hit.id]!;
+        final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
+        return nearerId == _originPointId ? null : nearerId;
       case SelectionKind.constraint:
         return null;
     }
@@ -1789,6 +1967,12 @@ class SketchController extends ChangeNotifier {
       case SelectionKind.arc:
         final arc = arcs[hit.id]!;
         final nearerId = _nearestOf(x, y, [arc.centerPointId, arc.startPointId, arc.endPointId]);
+        return nearerId == _originPointId
+            ? null
+            : SketchSelection(kind: SelectionKind.point, id: nearerId);
+      case SelectionKind.ellipse:
+        final ellipse = ellipses[hit.id]!;
+        final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
         return nearerId == _originPointId
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
@@ -2227,19 +2411,28 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// Whether [c] measures the radius of a Circle or an Arc - either
-  /// [circleForDistanceConstraint] recognizes it, or its point pair
-  /// matches one of some Arc's own two radius-defining DistanceConstraints
-  /// (center-start or center-end, both of which read as the same radius/
-  /// diameter dimension - see the backend's `app.sketch.models.Arc`
-  /// docstring). Used wherever rendering/hit-testing/the ribbon needs to
-  /// know "is this a radius/diameter dimension" without caring which shape
-  /// it belongs to.
+  /// Whether [c] measures the radius of a Circle, an Arc, or an Ellipse's
+  /// major axis - either [circleForDistanceConstraint] recognizes it, its
+  /// point pair matches one of some Arc's own two radius-defining
+  /// DistanceConstraints (center-start or center-end, both of which read
+  /// as the same radius/diameter dimension - see the backend's
+  /// `app.sketch.models.Arc` docstring), or it matches some Ellipse's own
+  /// major-axis DistanceConstraint (center-major, same role as Circle's
+  /// center-radius pair - the Ellipse's minor_radius has no
+  /// DistanceConstraint of its own, see the Ellipse class's docstring, so
+  /// it's never reachable through this path). Used wherever rendering/
+  /// hit-testing/the ribbon needs to know "is this a radius/diameter
+  /// dimension" without caring which shape it belongs to.
   bool isRadiusDistanceConstraint(DistanceConstraintDto c) {
     if (circleForDistanceConstraint(c) != null) return true;
     for (final arc in arcs.values) {
       if (arc.centerPointId == c.pointAId &&
           (arc.startPointId == c.pointBId || arc.endPointId == c.pointBId)) {
+        return true;
+      }
+    }
+    for (final ellipse in ellipses.values) {
+      if (ellipse.centerPointId == c.pointAId && ellipse.majorPointId == c.pointBId) {
         return true;
       }
     }
@@ -2317,12 +2510,19 @@ class SketchController extends ChangeNotifier {
   /// performs the full cascade itself, with the UI layer (see
   /// sketch_ribbon.dart) responsible for warning the user what else is
   /// about to go.
-  ({Set<String> points, Set<String> lines, Set<String> circles, Set<String> arcs, Set<String> constraints})
-      computeDeleteCascade(Iterable<SketchSelection> selection) {
+  ({
+    Set<String> points,
+    Set<String> lines,
+    Set<String> circles,
+    Set<String> arcs,
+    Set<String> ellipses,
+    Set<String> constraints
+  }) computeDeleteCascade(Iterable<SketchSelection> selection) {
     final pointIds = <String>{};
     final lineIds = <String>{};
     final circleIds = <String>{};
     final arcIds = <String>{};
+    final ellipseIds = <String>{};
     final constraintIds = <String>{};
     for (final s in selection) {
       switch (s.kind) {
@@ -2334,6 +2534,8 @@ class SketchController extends ChangeNotifier {
           circleIds.add(s.id);
         case SelectionKind.arc:
           arcIds.add(s.id);
+        case SelectionKind.ellipse:
+          ellipseIds.add(s.id);
         case SelectionKind.constraint:
           constraintIds.add(s.id);
       }
@@ -2355,13 +2557,25 @@ class SketchController extends ChangeNotifier {
         arcIds.add(arc.id);
       }
     }
+    for (final ellipse in ellipses.values) {
+      if (pointIds.contains(ellipse.centerPointId) || pointIds.contains(ellipse.majorPointId)) {
+        ellipseIds.add(ellipse.id);
+      }
+    }
     for (final entry in constraints.entries) {
       final refs = _constraintReferences(entry.value);
       if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) {
         constraintIds.add(entry.key);
       }
     }
-    return (points: pointIds, lines: lineIds, circles: circleIds, arcs: arcIds, constraints: constraintIds);
+    return (
+      points: pointIds,
+      lines: lineIds,
+      circles: circleIds,
+      arcs: arcIds,
+      ellipses: ellipseIds,
+      constraints: constraintIds
+    );
   }
 
   /// Session-scoped opt-out for the delete-cascade confirmation dialog (see
@@ -2503,6 +2717,8 @@ class SketchController extends ChangeNotifier {
         return 'Circle ${circles.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.arc:
         return 'Arc ${arcs.keys.toList().indexOf(selection.id) + 1}';
+      case SelectionKind.ellipse:
+        return 'Ellipse ${ellipses.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.constraint:
         return 'Constraint ${constraints.keys.toList().indexOf(selection.id) + 1}';
     }
@@ -2523,6 +2739,7 @@ class SketchController extends ChangeNotifier {
       ..addAll(lines.keys.map((id) => SketchSelection(kind: SelectionKind.line, id: id)))
       ..addAll(circles.keys.map((id) => SketchSelection(kind: SelectionKind.circle, id: id)))
       ..addAll(arcs.keys.map((id) => SketchSelection(kind: SelectionKind.arc, id: id)))
+      ..addAll(ellipses.keys.map((id) => SketchSelection(kind: SelectionKind.ellipse, id: id)))
       // Stage 21 item 4: without this, deleteSelected()'s constraints-first
       // ordering only ever covers constraints the user explicitly tapped -
       // any constraint on a selected Point/Line that select-all itself
@@ -2609,6 +2826,22 @@ class SketchController extends ChangeNotifier {
         selected.add(SketchSelection(kind: SelectionKind.arc, id: arc.id));
       }
     }
+    for (final ellipse in ellipses.values) {
+      final center = points[ellipse.centerPointId];
+      final major = points[ellipse.majorPointId];
+      if (center == null || major == null) continue;
+      // Conservative: a square of half-width majorRadius around the
+      // center, same simplification [geometryBoundingBox] uses - this
+      // only ever under-selects a marquee-enclosed Ellipse, never wrongly
+      // includes one that isn't fully inside.
+      final majorRadius = math.sqrt(
+        math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
+      );
+      if (insideRect(center.x - majorRadius, center.y - majorRadius) &&
+          insideRect(center.x + majorRadius, center.y + majorRadius)) {
+        selected.add(SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id));
+      }
+    }
     _selectionSet
       ..clear()
       ..addAll(selected);
@@ -2635,6 +2868,7 @@ class SketchController extends ChangeNotifier {
       for (final id in cascade.lines) SketchSelection(kind: SelectionKind.line, id: id),
       for (final id in cascade.circles) SketchSelection(kind: SelectionKind.circle, id: id),
       for (final id in cascade.arcs) SketchSelection(kind: SelectionKind.arc, id: id),
+      for (final id in cascade.ellipses) SketchSelection(kind: SelectionKind.ellipse, id: id),
       for (final id in cascade.constraints) SketchSelection(kind: SelectionKind.constraint, id: id),
     ];
     if (toDelete.isEmpty) return;
@@ -2647,6 +2881,7 @@ class SketchController extends ChangeNotifier {
     final capturedLines = <SketchLineView>[];
     final capturedCircles = <SketchCircleView>[];
     final capturedArcs = <SketchArcView>[];
+    final capturedEllipses = <SketchEllipseView>[];
     final capturedConstraints = <ConstraintDto>[];
     for (final current in toDelete) {
       switch (current.kind) {
@@ -2662,6 +2897,10 @@ class SketchController extends ChangeNotifier {
           final arc = arcs[current.id];
           if (arc != null) capturedArcs.add(arc);
           break;
+        case SelectionKind.ellipse:
+          final ellipse = ellipses[current.id];
+          if (ellipse != null) capturedEllipses.add(ellipse);
+          break;
         case SelectionKind.point:
           final point = points[current.id];
           if (point != null) capturedPoints.add(point);
@@ -2675,15 +2914,20 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       // Backend rejects deleting a Point still referenced by a Line/Circle/
-      // Arc, and a Line/Circle/Arc can itself still be referenced by a
-      // Constraint - so deletion must run in the reverse of creation/
-      // dependency order (Constraints, then Lines/Circles/Arcs, then
-      // Points), regardless of the order entities happened to be selected/
-      // tapped in. Mirrors [_restoreDeletedEntities]'s own (forward)
-      // Points -> Lines/Circles/Arcs -> Constraints ordering.
+      // Arc/Ellipse, and a Line/Circle/Arc/Ellipse can itself still be
+      // referenced by a Constraint - so deletion must run in the reverse
+      // of creation/dependency order (Constraints, then Lines/Circles/
+      // Arcs/Ellipses, then Points), regardless of the order entities
+      // happened to be selected/tapped in. Mirrors
+      // [_restoreDeletedEntities]'s own (forward) Points ->
+      // Lines/Circles/Arcs/Ellipses -> Constraints ordering.
       final constraintsToDelete = toDelete.where((s) => s.kind == SelectionKind.constraint);
       final shapesToDelete = toDelete.where(
-        (s) => s.kind == SelectionKind.line || s.kind == SelectionKind.circle || s.kind == SelectionKind.arc,
+        (s) =>
+            s.kind == SelectionKind.line ||
+            s.kind == SelectionKind.circle ||
+            s.kind == SelectionKind.arc ||
+            s.kind == SelectionKind.ellipse,
       );
       final pointsToDelete = toDelete.where((s) => s.kind == SelectionKind.point);
       for (final current in [...constraintsToDelete, ...shapesToDelete, ...pointsToDelete]) {
@@ -2700,6 +2944,10 @@ class SketchController extends ChangeNotifier {
             await _api.deleteArc(_sketchId!, current.id);
             arcs.remove(current.id);
             break;
+          case SelectionKind.ellipse:
+            await _api.deleteEllipse(_sketchId!, current.id);
+            ellipses.remove(current.id);
+            break;
           case SelectionKind.point:
             await _api.deletePoint(_sketchId!, current.id);
             points.remove(current.id);
@@ -2715,6 +2963,7 @@ class SketchController extends ChangeNotifier {
             capturedLines,
             capturedCircles,
             capturedArcs,
+            capturedEllipses,
             capturedConstraints,
           ));
       // Bug-fix round 2: always re-solve/refresh here, not just when a
@@ -2747,6 +2996,7 @@ class SketchController extends ChangeNotifier {
     List<SketchLineView> capturedLines,
     List<SketchCircleView> capturedCircles,
     List<SketchArcView> capturedArcs,
+    List<SketchEllipseView> capturedEllipses,
     List<ConstraintDto> capturedConstraints,
   ) async {
     final idMap = <String, String>{};
@@ -2800,6 +3050,23 @@ class SketchController extends ChangeNotifier {
         centerPointId: created.centerPointId,
         startPointId: created.startPointId,
         endPointId: created.endPointId,
+        construction: created.construction,
+      );
+    }
+    for (final ellipse in capturedEllipses) {
+      final created = await _api.createEllipse(
+        _sketchId!,
+        idMap[ellipse.centerPointId] ?? ellipse.centerPointId,
+        idMap[ellipse.majorPointId] ?? ellipse.majorPointId,
+        ellipse.minorRadius,
+        construction: ellipse.construction,
+      );
+      idMap[ellipse.id] = created.id;
+      ellipses[created.id] = SketchEllipseView(
+        id: created.id,
+        centerPointId: created.centerPointId,
+        majorPointId: created.majorPointId,
+        minorRadius: created.minorRadius,
         construction: created.construction,
       );
     }
@@ -2948,6 +3215,50 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// [ellipseId]'s current minor radius, or null if it isn't a known
+  /// Ellipse - drives a "Set Minor Radius" ribbon action's pre-filled
+  /// value, mirroring [lineLength].
+  double? ellipseMinorRadius(String ellipseId) => ellipses[ellipseId]?.minorRadius;
+
+  /// Directly PATCHes [ellipseId]'s minor radius - unlike [setLineLength],
+  /// there is no DistanceConstraint to create/update here (see the
+  /// Ellipse class's own docstring for why minor_radius is a plain field
+  /// rather than a second constrained Point), so this always goes
+  /// straight to the backend's PATCH endpoint, mirroring
+  /// [toggleSelectedConstruction]'s direct-PATCH pattern. A no-op if
+  /// [ellipseId] isn't a known Ellipse or [value] fails the backend's own
+  /// 0 < minorRadius <= majorRadius validation (surfaces via
+  /// [errorMessage], same as any other rejected API call).
+  Future<void> setEllipseMinorRadius(String ellipseId, double value) async {
+    if (_busy || _sketchId == null) return;
+    final ellipse = ellipses[ellipseId];
+    if (ellipse == null) return;
+    final oldValue = ellipse.minorRadius;
+
+    await _runGuarded(() async {
+      final updated = await _api.updateEllipse(_sketchId!, ellipseId, minorRadius: value);
+      ellipses[ellipseId] = SketchEllipseView(
+        id: updated.id,
+        centerPointId: updated.centerPointId,
+        majorPointId: updated.majorPointId,
+        minorRadius: updated.minorRadius,
+        construction: updated.construction,
+      );
+      _pushUndo(() async {
+        final reverted = await _api.updateEllipse(_sketchId!, ellipseId, minorRadius: oldValue);
+        ellipses[ellipseId] = SketchEllipseView(
+          id: reverted.id,
+          centerPointId: reverted.centerPointId,
+          majorPointId: reverted.majorPointId,
+          minorRadius: reverted.minorRadius,
+          construction: reverted.construction,
+        );
+      });
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+    });
+  }
+
   /// PATCHes the selected single Constraint's value (new work package item
   /// 3's "change value" ribbon action) - mirrors [confirmGhostValue]'s
   /// PATCH-existing-constraint path, then deselects and closes the ribbon on
@@ -2985,6 +3296,8 @@ class SketchController extends ChangeNotifier {
         return circles[current.id]?.construction;
       case SelectionKind.arc:
         return arcs[current.id]?.construction;
+      case SelectionKind.ellipse:
+        return ellipses[current.id]?.construction;
       case SelectionKind.point:
       case SelectionKind.constraint:
         return null;
@@ -3027,6 +3340,16 @@ class SketchController extends ChangeNotifier {
             centerPointId: updated.centerPointId,
             startPointId: updated.startPointId,
             endPointId: updated.endPointId,
+            construction: updated.construction,
+          );
+          break;
+        case SelectionKind.ellipse:
+          final updated = await _api.updateEllipse(_sketchId!, current.id, construction: next);
+          ellipses[current.id] = SketchEllipseView(
+            id: updated.id,
+            centerPointId: updated.centerPointId,
+            majorPointId: updated.majorPointId,
+            minorRadius: updated.minorRadius,
             construction: updated.construction,
           );
           break;
@@ -3255,6 +3578,19 @@ class SketchController extends ChangeNotifier {
             _ghosts = [];
           } else {
             _buildRadiusGhosts(arc.centerPointId, arc.startPointId);
+          }
+          return;
+        case SelectionKind.ellipse:
+          // Only the major radius is dimensioned this way (backed by a
+          // real DistanceConstraint, same as Circle/Arc) - the minor
+          // radius has no constraint of its own to build a ghost from
+          // (see the Ellipse class's docstring) and is instead edited
+          // directly via [setEllipseMinorRadius].
+          final ellipse = ellipses[sel.first.id];
+          if (ellipse == null) {
+            _ghosts = [];
+          } else {
+            _buildRadiusGhosts(ellipse.centerPointId, ellipse.majorPointId);
           }
           return;
         case SelectionKind.point:
@@ -3795,6 +4131,15 @@ class SketchController extends ChangeNotifier {
         construction: arc.construction,
       );
     }
+    for (final ellipse in await _api.listEllipses(sketchId)) {
+      ellipses[ellipse.id] = SketchEllipseView(
+        id: ellipse.id,
+        centerPointId: ellipse.centerPointId,
+        majorPointId: ellipse.majorPointId,
+        minorRadius: ellipse.minorRadius,
+        construction: ellipse.construction,
+      );
+    }
     for (final constraint in await _api.listConstraints(sketchId)) {
       constraints[constraint.id] = constraint;
     }
@@ -3944,6 +4289,11 @@ class SketchController extends ChangeNotifier {
 
     if (_activeTool == SketchTool.slot) {
       await _clickSlotTool();
+      return;
+    }
+
+    if (_activeTool == SketchTool.ellipse) {
+      await _clickEllipseTool();
       return;
     }
 
@@ -4433,6 +4783,69 @@ class SketchController extends ChangeNotifier {
 
       _slotCenter1PointId = null;
       _slotCenter2PointId = null;
+    });
+  }
+
+  /// Ellipse tool's tap handling: first tap places the center Point,
+  /// second tap places the major-axis Point (together fixing the major
+  /// radius and rotation, same as Arc's center+start Point pair), third
+  /// tap sets the minor radius as the cursor's perpendicular distance
+  /// from the major axis (see [_perpendicularDistanceToLine], the same
+  /// measure [_ellipseDrawGhost] previews) and creates the Ellipse.
+  /// Self-terminating, like Circle/Arc/Slot, so there is no separate
+  /// "finish" step.
+  Future<void> _clickEllipseTool() async {
+    if (_ellipseCenterPointId == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _runGuarded(() async {
+        _ellipseCenterPointId = await _pointIdAtCursor();
+      });
+      return;
+    }
+
+    if (_ellipseMajorPointId == null) {
+      await _runGuarded(() async {
+        _ellipseMajorPointId = await _pointIdAtCursor(excludeId: _ellipseCenterPointId);
+      });
+      return;
+    }
+
+    final centerId = _ellipseCenterPointId!;
+    final majorId = _ellipseMajorPointId!;
+    await _runGuarded(() async {
+      final center = points[centerId]!;
+      final major = points[majorId]!;
+      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
+      final minorRadius = rawMinorRadius == null ? null : math.min(rawMinorRadius, majorRadius);
+      if (minorRadius == null || minorRadius < 1e-9) {
+        errorMessage = 'Cannot place an ellipse with a zero-length major axis or zero minor radius';
+        _ellipseCenterPointId = null;
+        _ellipseMajorPointId = null;
+        return;
+      }
+
+      final ellipse = await _api.createEllipse(_sketchId!, centerId, majorId, minorRadius);
+      ellipses[ellipse.id] = SketchEllipseView(
+        id: ellipse.id,
+        centerPointId: ellipse.centerPointId,
+        majorPointId: ellipse.majorPointId,
+        minorRadius: ellipse.minorRadius,
+        construction: ellipse.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteEllipse(_sketchId!, ellipse.id);
+        ellipses.remove(ellipse.id);
+      });
+
+      // Same rule as a completed Circle/Arc/Polygon/Slot: one finished entity = one solve call.
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+
+      _ellipseCenterPointId = null;
+      _ellipseMajorPointId = null;
     });
   }
 

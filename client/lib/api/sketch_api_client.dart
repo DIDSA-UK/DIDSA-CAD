@@ -126,6 +126,36 @@ class ArcDto {
       );
 }
 
+class EllipseDto {
+  final String id;
+  final String centerPointId;
+  final String majorPointId;
+  final double majorRadius;
+  final double minorRadius;
+  final double rotation;
+  final bool construction;
+
+  EllipseDto({
+    required this.id,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.majorRadius,
+    required this.minorRadius,
+    required this.rotation,
+    this.construction = false,
+  });
+
+  factory EllipseDto.fromJson(Map<String, dynamic> json) => EllipseDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        majorPointId: json['major_point_id'] as String,
+        majorRadius: (json['major_radius'] as num).toDouble(),
+        minorRadius: (json['minor_radius'] as num).toDouble(),
+        rotation: (json['rotation'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
 /// Base type for the backend's discriminated Constraint union (Stage 12) -
 /// see app/sketch/schemas.py's `ConstraintResponse`. Used by the client both
 /// to *render* existing constraints (Stage 12 item 10's dimension overlays)
@@ -628,6 +658,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<EllipseDto>> listEllipses(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/ellipses'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => EllipseDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<LineDto> createLine(
     String sketchId,
     String startPointId,
@@ -687,6 +724,31 @@ class SketchApiClient {
         (body) => ArcDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Always creates from an existing major-axis Point (mirrors how the
+  /// client creates Circle/Arc: the major-axis Point is placed as a real
+  /// Point first, never via the backend's alternate major_radius+angle
+  /// creation path).
+  Future<EllipseDto> createEllipse(
+    String sketchId,
+    String centerPointId,
+    String majorPointId,
+    double minorRadius, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/ellipses'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'major_point_id': majorPointId,
+                'minor_radius': minorRadius,
+                'construction': construction,
+              }),
+            ),
+        (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Toggles a Line's construction flag (Make-Construction/Make-Solid) -
   /// `length` is left null since this call never needs to also resize the
   /// line (see backend LineUpdate, where both fields are independently
@@ -728,6 +790,28 @@ class SketchApiClient {
         (body) => ArcDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Toggles an Ellipse's construction flag and/or resizes its
+  /// `minor_radius` (directly PATCHable, mirroring how a Line's `length`
+  /// is - see the Ellipse class's own docstring for why minor_radius has
+  /// no backing Point/constraint of its own) - mirrors [updateArc].
+  Future<EllipseDto> updateEllipse(
+    String sketchId,
+    String ellipseId, {
+    bool? construction,
+    double? minorRadius,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (minorRadius != null) 'minor_radius': minorRadius,
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<void> deletePoint(String sketchId, String pointId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/points/$pointId'),
@@ -755,6 +839,14 @@ class SketchApiClient {
   Future<void> deleteArc(String sketchId, String arcId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/arcs/$arcId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteEllipse(String sketchId, String ellipseId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
               headers: _headers,
             ),
         (_) {},

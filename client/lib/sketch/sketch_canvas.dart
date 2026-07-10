@@ -1437,6 +1437,23 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// Draws a dashed oval outline within [rect] - used for construction
+  /// Ellipses, mirroring [_drawDashedCircle]'s fixed-angle dash walk
+  /// exactly, generalized from a circular to an elliptical bounding rect
+  /// (`Path.addArc` already supports either - a circle is just the
+  /// special case of an oval with equal width/height).
+  void _drawDashedOval(Canvas canvas, Rect rect, Paint paint) {
+    const dashAngle = 0.12; // radians
+    const gapAngle = 0.08;
+    var angle = 0.0;
+    while (angle < 2 * math.pi) {
+      final sweep = math.min(dashAngle, 2 * math.pi - angle);
+      final path = Path()..addArc(rect, angle, sweep);
+      canvas.drawPath(path, paint);
+      angle += dashAngle + gapAngle;
+    }
+  }
+
   /// Draws a dashed arc outline (a construction Arc's version of
   /// [_drawDashedCircle]) - walks [startAngle]/[sweepAngle] (both already
   /// in Flutter's `Canvas.drawArc` convention - see [_arcScreenAngles]) in
@@ -2087,6 +2104,22 @@ class _SketchPainter extends CustomPainter {
           paint,
         );
         _drawDashedLine(canvas, d, a, paint);
+      case EllipseGhost g:
+        final center = transform.sketchToScreen(g.centerX, g.centerY);
+        final major = transform.sketchToScreen(g.majorX, g.majorY);
+        final majorRadiusPixels = (major - center).distance;
+        final minorRadiusPixels = g.minorRadius * transform.pixelsPerUnit;
+        final rotation = math.atan2(g.majorY - g.centerY, g.majorX - g.centerX);
+        final ovalRect = Rect.fromCenter(
+          center: Offset.zero,
+          width: majorRadiusPixels * 2,
+          height: minorRadiusPixels * 2,
+        );
+        canvas.save();
+        canvas.translate(center.dx, center.dy);
+        canvas.rotate(-rotation);
+        _drawDashedOval(canvas, ovalRect, paint);
+        canvas.restore();
     }
   }
 
@@ -2146,13 +2179,38 @@ class _SketchPainter extends CustomPainter {
   /// every Circle profile, both as an outer loop and as a hole. The same
   /// 2-vs-3+ point count `SketchController._refreshProfile`'s filter uses
   /// tells the two cases apart here: a real polygon loop always has 3+
-  /// points, so an exact 2 is unambiguously a Circle.
+  /// points, so an exact 2 is unambiguously a Circle - unless it's
+  /// actually an Ellipse profile (also reported as exactly 2 Points,
+  /// center + major-axis - see `app.sketch.profile._ellipse_profile`),
+  /// checked first via [loop]'s own entity id so a plain circular fill
+  /// isn't drawn in place of the real (possibly non-circular, rotated)
+  /// ellipse shape.
   bool _addLoopBoundary(Path path, ProfileLoopDto loop) {
     final points = <Offset>[];
     for (final id in loop.pointIds) {
       final point = controller.points[id];
       if (point == null) return false;
       points.add(transform.sketchToScreen(point.x, point.y));
+    }
+
+    final ellipseId = loop.lineIds.length == 1 ? loop.lineIds[0] : null;
+    final ellipse = ellipseId == null ? null : controller.ellipses[ellipseId];
+    if (ellipse != null && points.length == 2) {
+      final center = points[0];
+      final major = points[1];
+      final majorRadiusPixels = (major - center).distance;
+      final minorRadiusPixels = ellipse.minorRadius * transform.pixelsPerUnit;
+      final rotation = math.atan2(
+        controller.points[ellipse.majorPointId]!.y - controller.points[ellipse.centerPointId]!.y,
+        controller.points[ellipse.majorPointId]!.x - controller.points[ellipse.centerPointId]!.x,
+      );
+      final ovalPath = Path()
+        ..addOval(Rect.fromCenter(center: Offset.zero, width: majorRadiusPixels * 2, height: minorRadiusPixels * 2));
+      final matrix = Matrix4.identity()
+        ..translate(center.dx, center.dy)
+        ..rotateZ(-rotation);
+      path.addPath(ovalPath, Offset.zero, matrix4: matrix.storage);
+      return true;
     }
 
     final hasArc = loop.lineIds.any((id) => controller.arcs.containsKey(id));
@@ -2373,6 +2431,61 @@ class _SketchPainter extends CustomPainter {
       }
     }
 
+    for (final ellipse in controller.ellipses.values) {
+      final center = controller.points[ellipse.centerPointId];
+      final major = controller.points[ellipse.majorPointId];
+      if (center == null || major == null) continue;
+      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      final rotation = math.atan2(major.y - center.y, major.x - center.x);
+      final ellipseIsSelected = isSelected(SelectionKind.ellipse, ellipse.id);
+      final isHovered = hovered?.kind == SelectionKind.ellipse && hovered!.id == ellipse.id;
+      // Same per-entity DOF preview as Circle above, treating an
+      // Ellipse's center/major-axis pair as its defining segment - the
+      // minor radius has no Point/constraint pair of its own to check
+      // (see the Ellipse class's docstring), so it plays no part in this
+      // coloring, same as it plays no part in [SketchRigidity.analyze]'s
+      // input.
+      final ellipseIsOverConstrained =
+          controller.rigidity.isSegmentOverConstrained(ellipse.centerPointId, ellipse.majorPointId) ||
+              controller.isPointForcedOverConstrained(ellipse.centerPointId) ||
+              controller.isPointForcedOverConstrained(ellipse.majorPointId);
+      final ellipseIsFullyConstrained = controller.isFullyConstrained ||
+          controller.rigidity.isSegmentFullyConstrained(ellipse.centerPointId, ellipse.majorPointId);
+      final ellipsePaint = Paint()
+        ..color = ellipseIsSelected
+            ? _selectedColor
+            : isHovered
+                ? _hoverColor
+                : ellipseIsOverConstrained
+                    ? _overConstrainedColor
+                    : ellipse.construction
+                        ? _constructionColor
+                        : ellipseIsFullyConstrained
+                            ? _fullyConstrainedColor
+                            : _unconstrainedColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = ellipseIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
+      final centerScreen = transform.sketchToScreen(center.x, center.y);
+      final majorRadiusPixels = majorRadius * transform.pixelsPerUnit;
+      final minorRadiusPixels = ellipse.minorRadius * transform.pixelsPerUnit;
+      final ovalRect = Rect.fromCenter(
+        center: Offset.zero,
+        width: majorRadiusPixels * 2,
+        height: minorRadiusPixels * 2,
+      );
+      canvas.save();
+      canvas.translate(centerScreen.dx, centerScreen.dy);
+      // Undoes ViewTransform.sketchToScreen's Y-flip, same reasoning as
+      // [_arcScreenAngles]'s own negation.
+      canvas.rotate(-rotation);
+      if (ellipse.construction) {
+        _drawDashedOval(canvas, ovalRect, ellipsePaint);
+      } else {
+        canvas.drawOval(ovalRect, ellipsePaint);
+      }
+      canvas.restore();
+    }
+
     final originId = controller.originPointId;
     if (originId != null) {
       final origin = controller.points[originId];
@@ -2409,6 +2522,8 @@ class _SketchPainter extends CustomPainter {
     final polygonCenterId = controller.polygonCenterPointId;
     final slotCenter1Id = controller.slotCenter1PointId;
     final slotCenter2Id = controller.slotCenter2PointId;
+    final ellipseCenterId = controller.ellipseCenterPointId;
+    final ellipseMajorId = controller.ellipseMajorPointId;
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
@@ -2417,6 +2532,8 @@ class _SketchPainter extends CustomPainter {
       final isPolygonCenter = controller.polygonInProgress && point.id == polygonCenterId;
       final isSlotAnchor =
           controller.slotInProgress && (point.id == slotCenter1Id || point.id == slotCenter2Id);
+      final isEllipseAnchor = controller.ellipseInProgress &&
+          (point.id == ellipseCenterId || point.id == ellipseMajorId);
       final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
@@ -2429,7 +2546,7 @@ class _SketchPainter extends CustomPainter {
       } else if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
         radius = isSnapping ? _pointRadiusSnapping : _pointRadiusEmphasis;
-      } else if (isCircleCenter || isArcAnchor || isPolygonCenter || isSlotAnchor) {
+      } else if (isCircleCenter || isArcAnchor || isPolygonCenter || isSlotAnchor || isEllipseAnchor) {
         color = Colors.deepOrange;
         radius = _pointRadiusEmphasis;
       } else if (controller.isPointForcedOverConstrained(point.id)) {

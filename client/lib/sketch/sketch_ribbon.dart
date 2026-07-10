@@ -70,6 +70,7 @@ class SketchRibbon extends StatelessWidget {
       SelectionKind.line => 'Line selected',
       SelectionKind.circle => 'Circle selected',
       SelectionKind.arc => 'Arc selected',
+      SelectionKind.ellipse => 'Ellipse selected',
       SelectionKind.constraint => 'Constraint selected',
     };
   }
@@ -100,6 +101,18 @@ class SketchRibbon extends StatelessWidget {
           onTap: controller.busy
               ? null
               : () => _showSetLengthDialog(context, controller, selectionSet.first.id),
+        ),
+      // Mirrors the Line "Length" chip above - the only Ellipse dimension
+      // with no DistanceConstraint of its own to dimension via Dimension
+      // mode (see the Ellipse class's docstring), so it needs its own
+      // direct-edit entry point here.
+      if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.ellipse)
+        _RibbonActionChip(
+          icon: Icons.straighten,
+          label: 'Minor Radius',
+          onTap: controller.busy
+              ? null
+              : () => _showSetMinorRadiusDialog(context, controller, selectionSet.first.id),
         ),
       if (isConstruction != null)
         _RibbonActionChip(
@@ -194,19 +207,23 @@ Future<void> _confirmAndDelete(BuildContext context, SketchController controller
   final selectedCircleIds =
       selection.where((s) => s.kind == SelectionKind.circle).map((s) => s.id).toSet();
   final selectedArcIds = selection.where((s) => s.kind == SelectionKind.arc).map((s) => s.id).toSet();
+  final selectedEllipseIds =
+      selection.where((s) => s.kind == SelectionKind.ellipse).map((s) => s.id).toSet();
   final selectedConstraintIds =
       selection.where((s) => s.kind == SelectionKind.constraint).map((s) => s.id).toSet();
   final extraLines = cascade.lines.difference(selectedLineIds).length;
   final extraCircles = cascade.circles.difference(selectedCircleIds).length;
   final extraArcs = cascade.arcs.difference(selectedArcIds).length;
+  final extraEllipses = cascade.ellipses.difference(selectedEllipseIds).length;
   final extraConstraints = cascade.constraints.difference(selectedConstraintIds).length;
-  final hasExtras = extraLines > 0 || extraCircles > 0 || extraArcs > 0 || extraConstraints > 0;
+  final hasExtras = extraLines > 0 || extraCircles > 0 || extraArcs > 0 || extraEllipses > 0 || extraConstraints > 0;
 
   if (hasExtras && !controller.suppressDeleteCascadeWarning) {
     final parts = [
       if (extraLines > 0) '$extraLines line${extraLines == 1 ? '' : 's'}',
       if (extraCircles > 0) '$extraCircles circle${extraCircles == 1 ? '' : 's'}',
       if (extraArcs > 0) '$extraArcs arc${extraArcs == 1 ? '' : 's'}',
+      if (extraEllipses > 0) '$extraEllipses ellipse${extraEllipses == 1 ? '' : 's'}',
       if (extraConstraints > 0) '$extraConstraints constraint${extraConstraints == 1 ? '' : 's'}',
     ];
     var dontWarnAgain = false;
@@ -328,6 +345,102 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Set Length'),
+      content: TextField(
+        controller: widget.textController,
+        focusNode: _focusNode,
+        autofocus: true,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(
+          suffixText: 'mm',
+          errorText: _error,
+          border: const OutlineInputBorder(),
+        ),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _cancel,
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('Set'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Prompts for a new minor radius for the given Ellipse, pre-filled with
+/// its current value (2dp), then calls
+/// [SketchController.setEllipseMinorRadius] - mirrors
+/// [_showSetLengthDialog] exactly, the direct-edit counterpart for the one
+/// Ellipse dimension with no DistanceConstraint of its own (see the
+/// Ellipse class's docstring).
+Future<void> _showSetMinorRadiusDialog(
+  BuildContext context,
+  SketchController controller,
+  String ellipseId,
+) async {
+  final currentMinorRadius = controller.ellipseMinorRadius(ellipseId);
+  final textController = TextEditingController(
+    text: currentMinorRadius == null ? '' : currentMinorRadius.toStringAsFixed(2),
+  );
+  final value = await showDialog<double>(
+    context: context,
+    builder: (context) => _SetMinorRadiusDialog(textController: textController),
+  );
+  textController.dispose();
+  if (!context.mounted) return;
+  if (value != null) {
+    controller.setEllipseMinorRadius(ellipseId, value);
+  }
+}
+
+class _SetMinorRadiusDialog extends StatefulWidget {
+  final TextEditingController textController;
+
+  const _SetMinorRadiusDialog({required this.textController});
+
+  @override
+  State<_SetMinorRadiusDialog> createState() => _SetMinorRadiusDialogState();
+}
+
+class _SetMinorRadiusDialogState extends State<_SetMinorRadiusDialog> {
+  String? _error;
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = double.tryParse(widget.textController.text);
+    if (value == null || value <= 0) {
+      setState(() => _error = 'Enter a positive number');
+      return;
+    }
+    _dismiss(value);
+  }
+
+  void _cancel() => _dismiss(null);
+
+  // Same post-frame-callback deferral as _SetLengthDialogState._dismiss -
+  // see that method's own comment for why.
+  void _dismiss(double? value) {
+    _focusNode.unfocus();
+    final navigator = Navigator.of(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (navigator.mounted) navigator.pop(value);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Set Minor Radius'),
       content: TextField(
         controller: widget.textController,
         focusNode: _focusNode,
