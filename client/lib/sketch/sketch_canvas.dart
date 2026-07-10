@@ -2206,9 +2206,7 @@ class _SketchPainter extends CustomPainter {
       );
       final ovalPath = Path()
         ..addOval(Rect.fromCenter(center: Offset.zero, width: majorRadiusPixels * 2, height: minorRadiusPixels * 2));
-      final matrix = Matrix4.identity()
-        ..translate(center.dx, center.dy)
-        ..rotateZ(-rotation);
+      final matrix = Matrix4.translationValues(center.dx, center.dy, 0)..rotateZ(-rotation);
       path.addPath(ovalPath, Offset.zero, matrix4: matrix.storage);
       return true;
     }
