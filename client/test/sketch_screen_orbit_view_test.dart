@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +15,7 @@ import 'package:didsa_cad_client/sketch/sketch_speed_dial.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart' show kCameraVerticalFovRadians;
 
 BodyMeshDto _fakeBody() => BodyMeshDto(
       bodyId: 'body-1',
@@ -297,6 +299,31 @@ void main() {
     final canvasRect = tester.getRect(find.byType(SketchCanvas));
     final backdropRect = tester.getRect(find.byType(PartViewport));
     expect(backdropRect, canvasRect);
+  });
+
+  testWidgets(
+      'on-device feedback: at the default (unpanned, unzoomed) 2D view, the backdrop camera '
+      'target/distance actually land where syncToSketchViewport is supposed to put them',
+      (tester) async {
+    final controller = await _freshController();
+
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, bodies: [_fakeBody()])));
+    await tester.pump();
+    await _settlePartViewport(tester);
+
+    final backdropState = tester.state<PartViewportState>(find.byType(PartViewport));
+    final canvasSize = tester.getSize(find.byType(SketchCanvas));
+
+    // Fresh SketchViewport: zoom=1, panOffset=Offset.zero - pixelsPerUnit=20,
+    // sketchX=sketchY=0, so target should be exactly the XY plane's own
+    // origin (0,0,0), matching SketchPlaneBasis.fixed(xy).origin.
+    expect(backdropState.debugCameraTarget.x, closeTo(0, 1e-6));
+    expect(backdropState.debugCameraTarget.y, closeTo(0, 1e-6));
+    expect(backdropState.debugCameraTarget.z, closeTo(0, 1e-6));
+
+    final expectedDistance =
+        (canvasSize.height / 20.0) / (2 * math.tan(kCameraVerticalFovRadians / 2));
+    expect(backdropState.debugCameraDistance, closeTo(expectedDistance, 1e-6));
   });
 
   testWidgets('a bodyless Sketch keeps the fully-opaque canvas default and shows no backdrop', (tester) async {

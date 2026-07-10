@@ -251,6 +251,16 @@ class PartViewport extends StatefulWidget {
 class PartViewportState extends State<PartViewport> with TickerProviderStateMixin {
   final OrbitCamera _camera = OrbitCamera();
 
+  /// On-device feedback: test-only window into the camera's real
+  /// target/distance, for verifying [syncToSketchViewport]'s actual effect
+  /// directly (the ghost-outline/backdrop mismatch investigation needs to
+  /// see what the camera really ends up at, not just what the math is
+  /// supposed to produce by hand).
+  @visibleForTesting
+  vm.Vector3 get debugCameraTarget => _camera.target;
+  @visibleForTesting
+  double get debugCameraDistance => _camera.distance;
+
   /// Null until `flutter_scene`'s static resources (shaders, default
   /// textures) finish loading - [Scene.render] silently skips frames before
   /// that, so nothing is built until this is non-null.
