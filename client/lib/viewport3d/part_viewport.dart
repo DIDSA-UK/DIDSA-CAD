@@ -818,7 +818,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     Duration duration = const Duration(milliseconds: 400),
   }) async {
     final from = _camera.orientation;
-    final to = orientationFacingPlane(plane);
+    var to = orientationFacingPlane(plane);
+    // On-device feedback: the camera-into-sketch animation sometimes swung
+    // through the *back* of the target plane mid-transition, even though the
+    // final resting orientation (checked statically by
+    // test/orientation_facing_plane_test.dart) was correct - a quaternion
+    // and its negation represent the exact same static rotation (mathematically
+    // indistinguishable, which is exactly why that test couldn't catch this),
+    // but slerp-ing *towards* the "wrong-signed" copy of an otherwise-correct
+    // target takes the long way around instead of the short one. Forcing
+    // `to` onto the same hemisphere as `from` (equivalent to negating - a
+    // quaternion and its negation are the same rotation, so this changes
+    // nothing about where the animation ends, only the path it takes) is the
+    // standard fix for this "double cover" quaternion interpolation pitfall.
+    if (from.x * to.x + from.y * to.y + from.z * to.z + from.w * to.w < 0) {
+      to = vm.Quaternion(-to.x, -to.y, -to.z, -to.w);
+    }
     final controller = AnimationController(vsync: this, duration: duration);
     final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOut);
     void tick() {
