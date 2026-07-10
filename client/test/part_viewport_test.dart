@@ -216,4 +216,57 @@ void main() {
     },
   );
 
+  testWidgets(
+    'on-device feedback: after the initial auto-frame, a later bodies update (e.g. a live '
+    'feature-preview refresh) does not move the camera',
+    (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      Widget buildWith(BodyMeshDto body) => MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 400,
+                height: 400,
+                child: PartViewport(
+                  key: key,
+                  bodies: [body],
+                  selectedPlane: null,
+                  onPlaneTap: (_) {},
+                  onBackgroundTap: () {},
+                ),
+              ),
+            ),
+          );
+
+      await tester.pumpWidget(buildWith(_boxBody));
+      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      await tester.pump();
+
+      final targetAfterFirstFrame = key.currentState!.debugCameraTarget.clone();
+
+      // A different body, shifted well away from the first - simulating a
+      // live preview refresh (e.g. Revolve's axis picker debouncing a new
+      // preview mesh) landing new geometry at a different location.
+      final shiftedBody = BodyMeshDto(
+        bodyId: 'body-1',
+        source: 'computed',
+        mesh: MeshDto(
+          vertices: [
+            [100, 100, 100],
+            [110, 100, 100],
+            [100, 110, 100],
+          ],
+          normals: _boxMesh.normals,
+          triangleIndices: _boxMesh.triangleIndices,
+        ),
+      );
+      await tester.pumpWidget(buildWith(shiftedBody));
+      await tester.pump();
+
+      final targetAfterSecondUpdate = key.currentState!.debugCameraTarget;
+      expect(targetAfterSecondUpdate.x, targetAfterFirstFrame.x);
+      expect(targetAfterSecondUpdate.y, targetAfterFirstFrame.y);
+      expect(targetAfterSecondUpdate.z, targetAfterFirstFrame.z);
+    },
+  );
+
 }

@@ -261,6 +261,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @visibleForTesting
   double get debugCameraDistance => _camera.distance;
 
+  /// On-device feedback: "after selecting axis for revolve, 3d viewport
+  /// moves and shouldn't" - [_syncMeshNode] used to re-center the camera
+  /// target on every single mesh update, not just the first, so any live
+  /// feature-preview refresh (Revolve's axis picker debounces a preview
+  /// mesh fetch the moment an axis is picked; Extrude/Chamfer/Fillet do the
+  /// same on their own inputs) silently snapped the view back to the
+  /// updated body's new centre - disorienting mid-edit, and not how any
+  /// real CAD tool behaves (auto-framing happens once per part/session;
+  /// after that, the camera only moves because the user moved it, or via
+  /// an explicit "Reset View" - see [OrbitCamera.reset]). Tracks whether
+  /// that one-time auto-frame has already happened for this State's own
+  /// lifetime - a genuinely new [PartViewport] (e.g. navigating to a
+  /// different Part) gets a fresh [PartViewportState] and so a fresh,
+  /// unframed camera, exactly as before this fix.
+  bool _hasFramedCamera = false;
+
   /// Null until `flutter_scene`'s static resources (shaders, default
   /// textures) finish loading - [Scene.render] silently skips frames before
   /// that, so nothing is built until this is non-null.
@@ -564,8 +580,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
-      _camera.setTarget(vm.Vector3.zero());
-      _camera.setZoomBoundsForRadius(0);
+      if (!_hasFramedCamera) {
+        _camera.setTarget(vm.Vector3.zero());
+        _camera.setZoomBoundsForRadius(0);
+      }
       return;
     }
     // Stage 11: in wireframe mode, the filled-faces Nodes are skipped
@@ -647,7 +665,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       );
     }
     final bounds = boundsOfBodies(bodies);
-    _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
+    if (!_hasFramedCamera) {
+      _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
+      _hasFramedCamera = true;
+    }
+    // Near/far clip and min/max zoom bounds still track the current
+    // geometry on every update (a body that's grown significantly must not
+    // get far-clipped) - only the target (see above) and, via that, the
+    // camera's overall framing stay put after the first sync.
     _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
     debugPrint(
       '[PartViewport][RenderDebug] bounds: center=${bounds?.center} '
