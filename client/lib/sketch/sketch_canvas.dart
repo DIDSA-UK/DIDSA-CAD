@@ -2060,6 +2060,33 @@ class _SketchPainter extends CustomPainter {
         for (var i = 0; i < vertices.length; i++) {
           _drawDashedLine(canvas, vertices[i], vertices[(i + 1) % vertices.length], paint);
         }
+      case SlotGhost g:
+        final center1 = transform.sketchToScreen(g.center1X, g.center1Y);
+        final center2 = transform.sketchToScreen(g.center2X, g.center2Y);
+        final a = transform.sketchToScreen(g.a.$1, g.a.$2);
+        final b = transform.sketchToScreen(g.b.$1, g.b.$2);
+        final c = transform.sketchToScreen(g.c.$1, g.c.$2);
+        final d = transform.sketchToScreen(g.d.$1, g.d.$2);
+        final radius1 = (a - center1).distance;
+        final radius2 = (c - center2).distance;
+        final (startAngle1, sweepAngle1) = _arcScreenAngles(g.center1X, g.center1Y, g.a.$1, g.a.$2, g.b.$1, g.b.$2);
+        final (startAngle2, sweepAngle2) = _arcScreenAngles(g.center2X, g.center2Y, g.c.$1, g.c.$2, g.d.$1, g.d.$2);
+        _drawDashedArc(
+          canvas,
+          Rect.fromCircle(center: center1, radius: radius1),
+          startAngle1,
+          sweepAngle1,
+          paint,
+        );
+        _drawDashedLine(canvas, b, c, paint);
+        _drawDashedArc(
+          canvas,
+          Rect.fromCircle(center: center2, radius: radius2),
+          startAngle2,
+          sweepAngle2,
+          paint,
+        );
+        _drawDashedLine(canvas, d, a, paint);
     }
   }
 
@@ -2380,12 +2407,16 @@ class _SketchPainter extends CustomPainter {
     final arcCenterId = controller.arcCenterPointId;
     final arcStartId = controller.arcStartPointId;
     final polygonCenterId = controller.polygonCenterPointId;
+    final slotCenter1Id = controller.slotCenter1PointId;
+    final slotCenter2Id = controller.slotCenter2PointId;
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
       final isArcAnchor = controller.arcInProgress && (point.id == arcCenterId || point.id == arcStartId);
       final isPolygonCenter = controller.polygonInProgress && point.id == polygonCenterId;
+      final isSlotAnchor =
+          controller.slotInProgress && (point.id == slotCenter1Id || point.id == slotCenter2Id);
       final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
@@ -2398,7 +2429,7 @@ class _SketchPainter extends CustomPainter {
       } else if (isChainStart) {
         color = isSnapping ? Colors.green : Colors.deepOrange;
         radius = isSnapping ? _pointRadiusSnapping : _pointRadiusEmphasis;
-      } else if (isCircleCenter || isArcAnchor || isPolygonCenter) {
+      } else if (isCircleCenter || isArcAnchor || isPolygonCenter || isSlotAnchor) {
         color = Colors.deepOrange;
         radius = _pointRadiusEmphasis;
       } else if (controller.isPointForcedOverConstrained(point.id)) {

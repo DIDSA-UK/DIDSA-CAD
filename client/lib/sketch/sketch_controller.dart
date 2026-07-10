@@ -80,7 +80,7 @@ class SketchArcView {
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point, rectangle, arc, polygon }
+enum SketchTool { line, circle, point, rectangle, arc, polygon, slot }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -189,6 +189,33 @@ class PolygonGhost extends DrawGhost {
   final List<(double, double)> vertices;
 
   const PolygonGhost({required this.centerX, required this.centerY, required this.vertices});
+}
+
+/// Previews a Slot's two semicircular caps (around [center1X]/[center1Y]
+/// and [center2X]/[center2Y]) and two straight sides connecting [a]-[b]
+/// (around center 1) and [c]-[d] (around center 2) - see
+/// [SketchController._slotCorners]/[_clickSlotTool] for the CCW-outward-
+/// bulge convention that fixes which of [a]/[b] is which.
+class SlotGhost extends DrawGhost {
+  final double center1X;
+  final double center1Y;
+  final double center2X;
+  final double center2Y;
+  final (double, double) a;
+  final (double, double) b;
+  final (double, double) c;
+  final (double, double) d;
+
+  const SlotGhost({
+    required this.center1X,
+    required this.center1Y,
+    required this.center2X,
+    required this.center2Y,
+    required this.a,
+    required this.b,
+    required this.c,
+    required this.d,
+  });
 }
 
 /// Previews a Rectangle's 4 corners, in the same winding order
@@ -533,6 +560,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Arc';
           case SketchTool.polygon:
             return 'Draw: Polygon';
+          case SketchTool.slot:
+            return 'Draw: Slot';
         }
       case SketchMode.dimension:
         return 'Dimension';
@@ -624,6 +653,8 @@ class SketchController extends ChangeNotifier {
     _arcCenterPointId = null;
     _arcStartPointId = null;
     _polygonCenterPointId = null;
+    _slotCenter1PointId = null;
+    _slotCenter2PointId = null;
     _midpointAnchorX = null;
     _midpointAnchorY = null;
     _threePointFirstX = null;
@@ -684,6 +715,19 @@ class SketchController extends ChangeNotifier {
     _polygonSides = sides.clamp(3, 20);
     notifyListeners();
   }
+
+  String? _slotCenter1PointId;
+  String? _slotCenter2PointId;
+
+  /// The two centerline-endpoint Points of a Slot placed but not yet
+  /// completed (waiting on the width-defining tap) - one stage further
+  /// than a Circle's own single center, mirroring Arc's center-then-start
+  /// shape. [slotCenter2PointId] is null while only the first center has
+  /// been placed (the in-progress ghost is then a plain [LineGhost]
+  /// previewing the centerline - see [_slotDrawGhost]).
+  String? get slotCenter1PointId => _slotCenter1PointId;
+  String? get slotCenter2PointId => _slotCenter2PointId;
+  bool get slotInProgress => _slotCenter1PointId != null;
 
   double? _midpointAnchorX;
   double? _midpointAnchorY;
@@ -1002,7 +1046,8 @@ class SketchController extends ChangeNotifier {
   /// circle mid-placement. Hovering/selecting an existing entity, and the
   /// flyout, only ever apply while idle; a bare tap during active drawing
   /// must not trigger either, per the Stage 6 interaction model.
-  bool get isIdle => !chainInProgress && !circleInProgress && !arcInProgress && !polygonInProgress;
+  bool get isIdle =>
+      !chainInProgress && !circleInProgress && !arcInProgress && !polygonInProgress && !slotInProgress;
 
   /// Stage 15 item 1: the live preview of whatever the next tap would
   /// commit, or null when there's nothing in progress to preview (idle, or
@@ -1025,7 +1070,104 @@ class SketchController extends ChangeNotifier {
         return _arcDrawGhost();
       case SketchTool.polygon:
         return _polygonDrawGhost();
+      case SketchTool.slot:
+        return _slotDrawGhost();
     }
+  }
+
+  /// Slot's tap sequence is centerline-start, then centerline-end, then
+  /// width - one stage further than Arc's. While only the first center is
+  /// placed, there's no orientation yet, so the preview is a plain
+  /// [LineGhost] tracking the trial centerline (reusing that type rather
+  /// than inventing a redundant one). Once both centers are placed, the
+  /// width is set by the cursor's *perpendicular* distance from the
+  /// centerline (see [_perpendicularDistanceToLine]) - dragging along the
+  /// centerline itself doesn't widen the slot, only moving away from it
+  /// does, matching how a real slot tool measures width.
+  DrawGhost? _slotDrawGhost() {
+    final c1Id = _slotCenter1PointId;
+    if (c1Id == null) return null;
+    final c1 = points[c1Id];
+    if (c1 == null) return null;
+
+    final c2Id = _slotCenter2PointId;
+    if (c2Id == null) {
+      return LineGhost(startX: c1.x, startY: c1.y, endX: cursorX, endY: cursorY);
+    }
+    final c2 = points[c2Id];
+    if (c2 == null) return null;
+
+    final radius = _perpendicularDistanceToLine(cursorX, cursorY, c1.x, c1.y, c2.x, c2.y);
+    if (radius == null || radius < 1e-9) return null;
+    final corners = _slotCorners(c1.x, c1.y, c2.x, c2.y, radius);
+    if (corners == null) return null;
+    return SlotGhost(
+      center1X: c1.x,
+      center1Y: c1.y,
+      center2X: c2.x,
+      center2Y: c2.y,
+      a: corners.a,
+      b: corners.b,
+      c: corners.c,
+      d: corners.d,
+    );
+  }
+
+  /// The unsigned perpendicular distance from ([px], [py]) to the
+  /// *infinite* line through ([ax], [ay])/([bx], [by]) - unlike
+  /// [_distanceToSegment], this is never clamped to the segment's own
+  /// endpoints, since a Slot's width is measured from the centerline's
+  /// full extent, not just the nearer end. Null if `a`/`b` coincide (no
+  /// line to measure against).
+  double? _perpendicularDistanceToLine(
+    double px,
+    double py,
+    double ax,
+    double ay,
+    double bx,
+    double by,
+  ) {
+    final dx = bx - ax;
+    final dy = by - ay;
+    final length = math.sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) return null;
+    final cross = (px - ax) * dy - (py - ay) * dx;
+    return (cross / length).abs();
+  }
+
+  /// The 4 corners of a Slot's boundary - `a`/`b` are the near/far
+  /// (relative to center 2) ends of the straight side on one side of the
+  /// centerline through ([c1x], [c1y])/([c2x], [c2y]), `c`/`d` the other
+  /// side's, each offset [radius] perpendicular to that centerline. Fixed
+  /// so that Arc 1 (center 1, sweeping `a` -> `b`) and Arc 2 (center 2,
+  /// sweeping `c` -> `d`) each bulge *away* from the other center under
+  /// this file's CCW-in-sketch-space Arc convention (see the backend's
+  /// `app.sketch.models.Arc` docstring) - [_clickSlotTool] relies on this
+  /// exact pairing, verified against a real OCC extrude of the same
+  /// construction in the backend's own Arc tests. Null if the centerline
+  /// is degenerate (the two centers coincide) or [radius] is zero.
+  ({(double, double) a, (double, double) b, (double, double) c, (double, double) d})? _slotCorners(
+    double c1x,
+    double c1y,
+    double c2x,
+    double c2y,
+    double radius,
+  ) {
+    if (radius < 1e-9) return null;
+    final dx = c2x - c1x;
+    final dy = c2y - c1y;
+    final length = math.sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) return null;
+    final dirX = dx / length;
+    final dirY = dy / length;
+    final normalX = -dirY;
+    final normalY = dirX;
+    return (
+      a: (c1x + normalX * radius, c1y + normalY * radius),
+      b: (c1x - normalX * radius, c1y - normalY * radius),
+      c: (c2x - normalX * radius, c2y - normalY * radius),
+      d: (c2x + normalX * radius, c2y + normalY * radius),
+    );
   }
 
   /// Polygon's tap sequence is center, then first vertex - self-terminating
@@ -3800,6 +3942,11 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
+    if (_activeTool == SketchTool.slot) {
+      await _clickSlotTool();
+      return;
+    }
+
     switch (_lineMethod) {
       case LineConstructionMethod.endToEnd:
         await _clickEndToEndLineTool();
@@ -4171,6 +4318,121 @@ class SketchController extends ChangeNotifier {
       await _refreshConstraints();
 
       _polygonCenterPointId = null;
+    });
+  }
+
+  /// Slot tool's tap handling: first tap places the centerline's start
+  /// Point, second tap places its end Point (fixing length and
+  /// orientation), third tap sets the width via its perpendicular
+  /// distance from the centerline and immediately completes the shape -
+  /// self-terminating, like Arc. Builds two Arcs (auto-creating their own
+  /// radius DistanceConstraint pairs server-side, see the backend's
+  /// `Sketch.add_arc`) and two Lines connecting them into one closed loop
+  /// (see [_slotCorners]'s doc comment for the a/b/c/d pairing).
+  ///
+  /// Bug-fix-shaped limitation, accepted for v1: the two Arcs' radii are
+  /// independently constrained (each internally circular, same as any
+  /// standalone Arc), not tied to each other - there's no existing
+  /// constraint primitive for "these two point-pair distances stay equal"
+  /// short of adding real spoke Line entities purely to hang an
+  /// EqualLengthConstraint off of them, which felt like real complexity
+  /// for a v1 tool. Dragging one end of a placed Slot can therefore make
+  /// its two caps different radii; the shape is still exactly correct as
+  /// placed. Same class of pragmatic simplification as Polygon's own
+  /// equal-length-only (not equal-angle) regularity.
+  Future<void> _clickSlotTool() async {
+    if (_slotCenter1PointId == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _runGuarded(() async {
+        _slotCenter1PointId = await _pointIdAtCursor();
+      });
+      return;
+    }
+
+    if (_slotCenter2PointId == null) {
+      await _runGuarded(() async {
+        _slotCenter2PointId = await _pointIdAtCursor(excludeId: _slotCenter1PointId);
+      });
+      return;
+    }
+
+    final c1Id = _slotCenter1PointId!;
+    final c2Id = _slotCenter2PointId!;
+    await _runGuarded(() async {
+      final c1 = points[c1Id]!;
+      final c2 = points[c2Id]!;
+      final radius = _perpendicularDistanceToLine(cursorX, cursorY, c1.x, c1.y, c2.x, c2.y);
+      final corners = radius == null ? null : _slotCorners(c1.x, c1.y, c2.x, c2.y, radius);
+      if (corners == null) {
+        errorMessage = 'Cannot place a slot with a zero-length centerline or zero width';
+        _slotCenter1PointId = null;
+        _slotCenter2PointId = null;
+        return;
+      }
+
+      final aId = await _pointIdAt(corners.a.$1, corners.a.$2, excludeId: c1Id);
+      final bId = await _pointIdAt(corners.b.$1, corners.b.$2, excludeId: c1Id);
+      final cId = await _pointIdAt(corners.c.$1, corners.c.$2, excludeId: c2Id);
+      final dId = await _pointIdAt(corners.d.$1, corners.d.$2, excludeId: c2Id);
+
+      final arc1 = await _api.createArc(_sketchId!, c1Id, aId, bId);
+      arcs[arc1.id] = SketchArcView(
+        id: arc1.id,
+        centerPointId: arc1.centerPointId,
+        startPointId: arc1.startPointId,
+        endPointId: arc1.endPointId,
+        construction: arc1.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteArc(_sketchId!, arc1.id);
+        arcs.remove(arc1.id);
+      });
+
+      final line1 = await _api.createLine(_sketchId!, bId, cId);
+      lines[line1.id] = SketchLineView(
+        id: line1.id,
+        startPointId: line1.startPointId,
+        endPointId: line1.endPointId,
+        construction: line1.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteLine(_sketchId!, line1.id);
+        lines.remove(line1.id);
+      });
+
+      final arc2 = await _api.createArc(_sketchId!, c2Id, cId, dId);
+      arcs[arc2.id] = SketchArcView(
+        id: arc2.id,
+        centerPointId: arc2.centerPointId,
+        startPointId: arc2.startPointId,
+        endPointId: arc2.endPointId,
+        construction: arc2.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteArc(_sketchId!, arc2.id);
+        arcs.remove(arc2.id);
+      });
+
+      final line2 = await _api.createLine(_sketchId!, dId, aId);
+      lines[line2.id] = SketchLineView(
+        id: line2.id,
+        startPointId: line2.startPointId,
+        endPointId: line2.endPointId,
+        construction: line2.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteLine(_sketchId!, line2.id);
+        lines.remove(line2.id);
+      });
+
+      // Same rule as a completed Circle/Arc/Polygon: one finished entity = one solve call.
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+
+      _slotCenter1PointId = null;
+      _slotCenter2PointId = null;
     });
   }
 

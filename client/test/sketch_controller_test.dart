@@ -1393,6 +1393,79 @@ void main() {
     expect(controller.polygonSides, 8);
   });
 
+  // --- Phase 6.2.3: Slot tool -------------------------------------------------
+
+  test('activeDrawGhost previews the centerline while only the first slot center is placed', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    expect(controller.slotInProgress, isTrue);
+
+    controller.cursorX = 20;
+    controller.cursorY = 0;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<LineGhost>());
+    final line = ghost as LineGhost;
+    expect(line.startX, 0);
+    expect(line.startY, 0);
+    expect(line.endX, 20);
+    expect(line.endY, 0);
+  });
+
+  test('activeDrawGhost previews the full slot outline (2 arc caps + 2 straight sides) once both '
+      'centers are placed', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    expect(controller.slotCenter1PointId, isNotNull);
+    expect(controller.slotCenter2PointId, isNotNull);
+
+    // Perpendicular distance from (10, 5) to the y=0 centerline is 5.
+    controller.cursorX = 10;
+    controller.cursorY = 5;
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<SlotGhost>());
+    final slot = ghost as SlotGhost;
+    expect(slot.a.$1, closeTo(0, 1e-9));
+    expect(slot.a.$2, closeTo(5, 1e-9));
+    expect(slot.b.$1, closeTo(0, 1e-9));
+    expect(slot.b.$2, closeTo(-5, 1e-9));
+    expect(slot.c.$1, closeTo(20, 1e-9));
+    expect(slot.c.$2, closeTo(-5, 1e-9));
+    expect(slot.d.$1, closeTo(20, 1e-9));
+    expect(slot.d.$2, closeTo(5, 1e-9));
+  });
+
+  test('the slot tool places both centers then width across three taps, creating 2 Arcs and 2 Lines '
+      'that connect into one closed loop', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(10, 5);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.slotInProgress, isFalse);
+    expect(controller.arcs.length, 2);
+    expect(controller.lines.length, 2);
+    // 2 radius DistanceConstraints per Arc.
+    expect(controller.constraints.values.whereType<DistanceConstraintDto>().length, 4);
+
+    final arc1 = controller.arcs.values.first; // centered at center 1 (the origin)
+    final arc2 = controller.arcs.values.last; // centered at center 2
+    expect(controller.points[arc1.centerPointId]!.x, closeTo(0, 1e-9));
+    expect(controller.points[arc1.centerPointId]!.y, closeTo(0, 1e-9));
+    expect(controller.points[arc2.centerPointId]!.x, closeTo(20, 1e-9));
+    expect(controller.points[arc2.centerPointId]!.y, closeTo(0, 1e-9));
+
+    // The two Lines close the loop: arc1's end -> arc2's start, and arc2's
+    // end back to arc1's start.
+    final line1 = controller.lines.values.first;
+    final line2 = controller.lines.values.last;
+    expect(line1.startPointId, arc1.endPointId);
+    expect(line1.endPointId, arc2.startPointId);
+    expect(line2.startPointId, arc2.endPointId);
+    expect(line2.endPointId, arc1.startPointId);
+  });
+
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------
 
   test('hoveredEntity is null while a chain is in progress, even right on top of an entity', () async {
