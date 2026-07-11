@@ -1468,6 +1468,32 @@ class SketchApiClient {
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// The raw-Point counterpart to [createEqualRadiusConstraint], for a
+  /// caller with no Circle/Arc entity id to tie to - e.g. the Polygon
+  /// tool's own center/vertex pairs (see the backend's
+  /// Sketch.add_equal_radius_constraint_from_points doc comment).
+  Future<ConstraintDto> createEqualRadiusConstraintFromPoints(
+    String sketchId,
+    String center1PointId,
+    String radius1PointId,
+    String center2PointId,
+    String radius2PointId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'equal_radius_points',
+                'center1_point_id': center1PointId,
+                'radius1_point_id': radius1PointId,
+                'center2_point_id': center2PointId,
+                'radius2_point_id': radius2PointId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Stage 13's dimension-edit PATCH: updates an existing `DistanceConstraint`
   /// or `AngleConstraint`'s numeric value and re-solves server-side - see
   /// app/sketch/router.py's `update_constraint_value`. The backend rejects

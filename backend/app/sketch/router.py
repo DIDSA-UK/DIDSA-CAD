@@ -49,6 +49,7 @@ from app.sketch.schemas import (
     EqualLengthConstraintResponse,
     EqualRadiusConstraintCreate,
     EqualRadiusConstraintResponse,
+    EqualRadiusPointsConstraintCreate,
     HorizontalConstraintCreate,
     HorizontalConstraintResponse,
     LineCreate,
@@ -778,6 +779,13 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
         elif isinstance(payload, EqualRadiusConstraintCreate):
             constraint = sketch.add_equal_radius_constraint(
                 payload.entity1_id, payload.entity2_id, radius2_point_id=payload.radius2_point_id
+            )
+        elif isinstance(payload, EqualRadiusPointsConstraintCreate):
+            constraint = sketch.add_equal_radius_constraint_from_points(
+                payload.center1_point_id,
+                payload.radius1_point_id,
+                payload.center2_point_id,
+                payload.radius2_point_id,
             )
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")

@@ -1223,6 +1223,37 @@ class Sketch:
         self.constraints[constraint.id] = constraint
         return constraint
 
+    def add_equal_radius_constraint_from_points(
+        self,
+        center1_point_id: str,
+        radius1_point_id: str,
+        center2_point_id: str,
+        radius2_point_id: str,
+    ) -> EqualRadiusConstraint:
+        """The raw-Point counterpart to `add_equal_radius_constraint`, for
+        callers with no Circle/Arc entity to resolve a center/rim pair from -
+        e.g. a Polygon (Point/Line/Constraint-only, per the client's own
+        Sketch.add_polygon-equivalent) tying each of its vertices to a
+        common center at the same radius, one EqualRadiusConstraint per
+        extra vertex, the same "single real DistanceConstraint + N-1
+        EqualRadiusConstraint ties" shape Arc/Ellipse/Slot already use for
+        their own single-editable-radius design."""
+        for point_id in (center1_point_id, radius1_point_id, center2_point_id, radius2_point_id):
+            if point_id not in self.points:
+                raise KeyError(point_id)
+        if center1_point_id == radius1_point_id or center2_point_id == radius2_point_id:
+            raise ValueError("A radius tie cannot use the same Point for its center and radius")
+
+        constraint = EqualRadiusConstraint(
+            id=str(uuid.uuid4()),
+            center1_point_id=center1_point_id,
+            radius1_point_id=radius1_point_id,
+            center2_point_id=center2_point_id,
+            radius2_point_id=radius2_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
     def add_point_line_distance_constraint(
         self, point_id: str, line_id: str, distance: float
     ) -> PointLineDistanceConstraint:

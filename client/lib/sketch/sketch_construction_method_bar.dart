@@ -145,6 +145,16 @@ class _PolygonSidesControl extends StatelessWidget {
           icon: const Icon(Icons.add_circle_outline),
           onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
         ),
+        const SizedBox(width: 8),
+        // Feedback round: toggles the circumscribed/inscribed guide-circle
+        // preview every real regular polygon's vertices/edge-midpoints
+        // land on - see SketchController.showPolygonGuideCircles's own doc
+        // comment.
+        IconButton(
+          icon: Icon(controller.showPolygonGuideCircles ? Icons.circle_outlined : Icons.circle),
+          tooltip: controller.showPolygonGuideCircles ? 'Hide guide circles' : 'Show guide circles',
+          onPressed: controller.togglePolygonGuideCircles,
+        ),
       ],
     );
   }

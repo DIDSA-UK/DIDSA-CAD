@@ -626,6 +626,21 @@ class _FakeBackend {
             'radius2_point_id': radius2PointId,
           };
           break;
+        case 'equal_radius_points':
+          // Mirrors the real backend's Sketch.add_equal_radius_constraint_
+          // from_points - the Polygon tool's own raw-Point equal-radius
+          // ties, reporting back as a plain 'equal_radius' type same as the
+          // entity-based case above (the two creation paths produce the
+          // same EqualRadiusConstraint shape server-side).
+          constraint = {
+            'id': id,
+            'type': 'equal_radius',
+            'center1_point_id': body['center1_point_id'],
+            'radius1_point_id': body['radius1_point_id'],
+            'center2_point_id': body['center2_point_id'],
+            'radius2_point_id': body['radius2_point_id'],
+          };
+          break;
         default:
           constraint = {
             'id': id,
@@ -1783,7 +1798,9 @@ void main() {
   });
 
   test('the polygon tool places center then first vertex across two taps, creating N Points, N Lines, '
-      'and N-1 EqualLengthConstraints', () async {
+      'N-1 EqualLengthConstraints, one real circumradius DistanceConstraint, and N-1 '
+      'EqualRadiusConstraint ties locking every vertex onto the same circle (feedback round: form is '
+      'now locked, not free-floating)', () async {
     controller.selectDrawTool(SketchTool.polygon);
     controller.setPolygonSides(5);
     await controller.handleCanvasTap(0, 0); // center
@@ -1797,6 +1814,75 @@ void main() {
       1 /* origin/center */ + 5,
     );
     expect(controller.constraints.values.whereType<EqualLengthConstraintDto>().length, 4);
+    final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>().toList();
+    expect(distanceConstraints.length, 1);
+    expect(distanceConstraints.single.distance, closeTo(10, 1e-9));
+    expect(controller.constraints.values.whereType<EqualRadiusConstraintDto>().length, 4);
+  });
+
+  test('a regular polygon survives a vertex drag - equal radii and equal edge lengths are preserved '
+      '(feedback round: dragging used to destroy the shape)', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    // Away from the origin, so the shape isn't topologically grounded to it
+    // and this fake backend's default dof: 0 doesn't make beginPointDrag
+    // treat it as already fully pinned - see isPointFullyPinned.
+    await controller.handleCanvasTap(20, 20);
+    await controller.handleCanvasTap(30, 20);
+    controller.exitToSelectMode();
+    // The circumradius DistanceConstraint's own two points are exactly the
+    // center and the first vertex - the most direct way to identify either
+    // one without guessing at Line ordering.
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    final vertexId = radiusConstraint.pointBId;
+
+    expect(controller.beginPointDrag(vertexId), isTrue);
+    controller.updatePointDrag(8, 6);
+    await controller.endPointDrag();
+
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('togglePolygonGuideCircles flips showPolygonGuideCircles, reflected in the next ghost preview',
+      () async {
+    expect(controller.showPolygonGuideCircles, isTrue);
+    controller.selectDrawTool(SketchTool.polygon);
+    await controller.handleCanvasTap(0, 0);
+    controller.cursorX = 5;
+    controller.cursorY = 0;
+    expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isTrue);
+
+    controller.togglePolygonGuideCircles();
+
+    expect(controller.showPolygonGuideCircles, isFalse);
+    expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isFalse);
+  });
+
+  test('deleteSelected on a directly-selected polygon vertex Point cascades to its tied '
+      'EqualRadiusConstraint (bug fix: _constraintReferences used to omit EqualRadiusConstraintDto, '
+      'so the backend rejected the deletion as still-referenced)', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(5);
+    await controller.handleCanvasTap(20, 20);
+    await controller.handleCanvasTap(30, 20);
+    // A vertex tied only via EqualRadiusConstraint (not the single real
+    // DistanceConstraint, which is already covered by the drag test above) -
+    // any of the equal-radius ties' own radius2_point_id works.
+    final equalRadius = controller.constraints.values.whereType<EqualRadiusConstraintDto>().first;
+    final vertexId = equalRadius.radius2PointId;
+    controller.exitToSelectMode();
+
+    final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: vertexId)]);
+    expect(cascade.constraints, contains(equalRadius.id));
+
+    final vertex = controller.points[vertexId]!;
+    await controller.handleCanvasTap(vertex.x, vertex.y);
+    expect(controller.selection!.id, vertexId);
+
+    await controller.deleteSelected();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.points.containsKey(vertexId), isFalse);
   });
 
   test('setPolygonSides clamps to [3, 20]', () {

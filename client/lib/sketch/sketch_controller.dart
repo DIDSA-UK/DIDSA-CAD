@@ -284,7 +284,17 @@ class PolygonGhost extends DrawGhost {
   final double centerY;
   final List<(double, double)> vertices;
 
-  const PolygonGhost({required this.centerX, required this.centerY, required this.vertices});
+  /// Feedback round: whether to also preview the circumscribed/inscribed
+  /// guide circles every vertex/edge-midpoint lands on - see
+  /// [SketchController.showPolygonGuideCircles]'s own doc comment.
+  final bool showGuideCircles;
+
+  const PolygonGhost({
+    required this.centerX,
+    required this.centerY,
+    required this.vertices,
+    this.showGuideCircles = true,
+  });
 }
 
 /// Previews a Slot's two semicircular caps (around [center1X]/[center1Y]
@@ -994,6 +1004,23 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool _showPolygonGuideCircles = true;
+
+  /// Feedback round: while defining a Polygon, [_polygonDrawGhost] can
+  /// additionally preview the circumscribed circle (through every vertex)
+  /// and the inscribed circle (through every edge's midpoint) every real
+  /// regular polygon's vertices/midpoints always land on - background
+  /// construction-line guides only, toggleable, exactly as requested; not
+  /// persisted geometry (the placed Polygon is locked onto these same two
+  /// circles by its own real solver constraints regardless of whether this
+  /// preview is shown - see [_clickPolygonTool]'s own doc comment).
+  bool get showPolygonGuideCircles => _showPolygonGuideCircles;
+
+  void togglePolygonGuideCircles() {
+    _showPolygonGuideCircles = !_showPolygonGuideCircles;
+    notifyListeners();
+  }
+
   String? _slotCenter1PointId;
   String? _slotCenter2PointId;
 
@@ -1565,6 +1592,7 @@ class SketchController extends ChangeNotifier {
       centerX: center.x,
       centerY: center.y,
       vertices: _polygonVertices(center.x, center.y, cursorX, cursorY, _polygonSides),
+      showGuideCircles: _showPolygonGuideCircles,
     );
   }
 
@@ -2902,6 +2930,18 @@ class SketchController extends ChangeNotifier {
       LineDistanceConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
       PointLineDistanceConstraintDto d => (pointIds: {d.pointId}, lineIds: {d.lineId}),
       AtMidpointConstraintDto d => (pointIds: {d.pointId}, lineIds: {d.lineId}),
+      // Bug fix: previously missing here meant deleting a Polygon vertex or
+      // center Point (only ever referenced by this constraint type, since a
+      // Polygon has no owning entity of its own to auto-cascade its own
+      // ties on delete - unlike Arc/Ellipse/Slot's internal EqualRadius
+      // ties, which ride along with their owning entity's own delete)
+      // wouldn't pull its EqualRadiusConstraint ties into the cascade,
+      // leaving the backend's own still-referenced-by-a-constraint check
+      // (Sketch._point_deletion_blocker) reject the deletion outright.
+      EqualRadiusConstraintDto d => (
+          pointIds: {d.center1PointId, d.radius1PointId, d.center2PointId, d.radius2PointId},
+          lineIds: <String>{},
+        ),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
   }
@@ -5276,11 +5316,23 @@ class SketchController extends ChangeNotifier {
   /// [_polygonVertices], places/snaps a real Point at each (reusing
   /// [_pointIdAt]'s existing-point/midpoint snapping, same as every other
   /// multi-point placement path), connects them in a cycle with
-  /// [polygonSides] Lines, then chains an EqualLengthConstraint between
-  /// each consecutive pair (N-1 constraints; the last pair's equality
-  /// follows by transitivity) so the shape stays equilateral under drag -
-  /// no new backend entity type or constraint primitive needed, per the
-  /// scope doc's own assessment.
+  /// [polygonSides] Lines, then locks the shape with two families of real
+  /// solver constraints (feedback round - dragging any one Point used to
+  /// leave every other Point free, so the "polygon" could be dragged into
+  /// any equilateral-but-irregular shape): a single real DistanceConstraint
+  /// pins the first vertex's own circumradius (the one editable radius
+  /// dimension - mirrors Arc/Ellipse/Slot's own "one real value, N-1 ties"
+  /// design), an EqualRadiusConstraint per remaining vertex ties it to that
+  /// same radius (so every vertex - and, since a chord's length is a
+  /// monotonic function of its central angle for a fixed radius, every
+  /// consecutive pair's angular spacing too - lands on one shared
+  /// circumscribed circle), and the existing EqualLengthConstraint chain
+  /// between consecutive edges (N-1 constraints; the last pair's equality
+  /// follows by transitivity) locks every side to the same length. Equal
+  /// radius plus equal chord length together force equal angles between
+  /// consecutive edges with no separate angle-value constraint needed - see
+  /// the backend's own regular-hexagon convergence test for the reasoning
+  /// and empirical verification.
   Future<void> _clickPolygonTool() async {
     if (_polygonCenterPointId == null) {
       _selectionSet.clear();
@@ -5327,6 +5379,24 @@ class SketchController extends ChangeNotifier {
       for (var i = 0; i < lineIds.length - 1; i++) {
         final constraint = await _api.createEqualLengthConstraint(_sketchId!, lineIds[i], lineIds[i + 1]);
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      }
+
+      final firstVertex = points[vertexIds[0]]!;
+      final circumradius = math.sqrt(
+        math.pow(firstVertex.x - center.x, 2) + math.pow(firstVertex.y - center.y, 2),
+      );
+      final radiusConstraint =
+          await _api.createDistanceConstraint(_sketchId!, centerId, vertexIds[0], circumradius);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, radiusConstraint.id));
+      for (var i = 1; i < vertexIds.length; i++) {
+        final equalRadius = await _api.createEqualRadiusConstraintFromPoints(
+          _sketchId!,
+          centerId,
+          vertexIds[0],
+          centerId,
+          vertexIds[i],
+        );
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, equalRadius.id));
       }
 
       // Same rule as a completed Circle/Arc: one finished entity = one solve call.

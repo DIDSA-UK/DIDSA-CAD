@@ -466,6 +466,18 @@ class EqualRadiusConstraintCreate(BaseModel):
     radius2_point_id: str | None = None
 
 
+class EqualRadiusPointsConstraintCreate(BaseModel):
+    """The raw-Point counterpart to EqualRadiusConstraintCreate, for callers
+    with no Circle/Arc entity id to pass - see
+    Sketch.add_equal_radius_constraint_from_points."""
+
+    type: Literal["equal_radius_points"]
+    center1_point_id: str
+    radius1_point_id: str
+    center2_point_id: str
+    radius2_point_id: str
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
@@ -481,6 +493,7 @@ ConstraintCreate = Union[
     AtMidpointConstraintCreate,
     TangentConstraintCreate,
     EqualRadiusConstraintCreate,
+    EqualRadiusPointsConstraintCreate,
 ]
 
 

@@ -296,6 +296,94 @@ def test_equal_radius_constraint_rejects_a_radius2_point_id_not_belonging_to_the
         sketch.add_equal_radius_constraint(circle1.id, circle2.id, radius2_point_id=unrelated.id)
 
 
+def test_add_equal_radius_constraint_from_points_between_two_raw_point_pairs():
+    """The raw-Point counterpart to add_equal_radius_constraint, for a
+    caller with no Circle/Arc entity id to resolve - e.g. a Polygon (see
+    Sketch.add_equal_radius_constraint_from_points' own doc comment)."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    vertex1 = sketch.add_point(10.0, 0.0)
+    vertex2 = sketch.add_point(0.0, 10.0)
+
+    constraint = sketch.add_equal_radius_constraint_from_points(center.id, vertex1.id, center.id, vertex2.id)
+
+    assert constraint.id in sketch.constraints
+    assert constraint.point_ids() == (center.id, vertex1.id, center.id, vertex2.id)
+
+
+def test_equal_radius_constraint_from_points_rejects_an_unknown_point():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    vertex1 = sketch.add_point(10.0, 0.0)
+    with pytest.raises(KeyError):
+        sketch.add_equal_radius_constraint_from_points(center.id, vertex1.id, center.id, "does-not-exist")
+
+
+def test_equal_radius_constraint_from_points_rejects_the_same_point_as_center_and_radius():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    vertex1 = sketch.add_point(10.0, 0.0)
+    with pytest.raises(ValueError):
+        sketch.add_equal_radius_constraint_from_points(center.id, vertex1.id, center.id, center.id)
+
+
+def test_equal_radius_constraint_from_points_forces_same_radius_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    vertex1 = sketch.add_point(10.0, 0.0)
+    vertex2 = sketch.add_point(0.0, 7.0)
+    sketch.add_distance_constraint(center.id, vertex1.id, 10.0)
+    sketch.add_equal_radius_constraint_from_points(center.id, vertex1.id, center.id, vertex2.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    radius1 = dist_between(sketch, center.id, vertex1.id)
+    radius2 = dist_between(sketch, center.id, vertex2.id)
+    assert radius1 == pytest.approx(radius2)
+
+
+def test_regular_hexagon_built_from_raw_points_stays_regular_after_a_vertex_drag():
+    """A real regular polygon composed from plain Points/Lines/Constraints
+    only (no dedicated backend entity, same as Rectangle - see the client's
+    own Sketch tool for Polygon): a single real DistanceConstraint (one
+    vertex's own circumradius) plus N-1 EqualRadiusConstraint ties locks
+    every vertex onto one circle, and the existing N-1 EqualLengthConstraint
+    chain between consecutive edges locks the side lengths equal - together
+    forcing equal angular spacing between vertices (fixed radius + equal
+    chord length implies equal central angle), i.e. a regular polygon, with
+    no separate angle-value constraint needed. Verified via a real drag +
+    re-solve, mirroring every other shape's own convergence test in this
+    file."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    n = 6
+    radius = 10.0
+    center = sketch.add_point(0.0, 0.0)
+    vertices = [
+        sketch.add_point(radius * math.cos(2 * math.pi * i / n), radius * math.sin(2 * math.pi * i / n))
+        for i in range(n)
+    ]
+    sketch.add_distance_constraint(center.id, vertices[0].id, radius)
+    for vertex in vertices[1:]:
+        sketch.add_equal_radius_constraint_from_points(center.id, vertices[0].id, center.id, vertex.id)
+    lines = [sketch.add_line(vertices[i].id, vertices[(i + 1) % n].id) for i in range(n)]
+    for i in range(n - 1):
+        sketch.add_equal_length_constraint(lines[i].id, lines[i + 1].id)
+
+    # A modest drag of one vertex - within the shape's own scale, like a
+    # real on-canvas gesture, not an unrealistic teleport far outside it.
+    dragged = vertices[0]
+    sketch.points[dragged.id].x = 8.0
+    sketch.points[dragged.id].y = 6.0
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({dragged.id}))
+
+    assert result.converged
+    radii = [dist_between(sketch, center.id, v.id) for v in vertices]
+    assert all(r == pytest.approx(radii[0], abs=1e-6) for r in radii)
+    edge_lengths = [dist_between(sketch, lines[i].start_point_id, lines[i].end_point_id) for i in range(n)]
+    assert all(length == pytest.approx(edge_lengths[0], abs=1e-6) for length in edge_lengths)
+
+
 def test_slot_shaped_sketch_with_tangent_and_equal_radius_constraints_converges_and_survives_a_drag():
     """A real Slot: 2 Arcs + 2 Lines forming a closed loop, one shared
     radius (EqualRadiusConstraint replacing the second Arc's own two
@@ -848,6 +936,53 @@ def test_create_equal_radius_constraint_rejects_same_entity_twice_over_the_api()
     response = client.post(
         f"/sketch/sketches/{sketch['id']}/constraints",
         json={"type": "equal_radius", "entity1_id": circle["id"], "entity2_id": circle["id"]},
+    )
+
+    assert response.status_code == 400
+
+
+def test_create_equal_radius_points_constraint_over_the_api():
+    """The raw-Point counterpart to equal_radius - see
+    Sketch.add_equal_radius_constraint_from_points' own doc comment."""
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    vertex1 = _create_point(sketch["id"], 10.0, 0.0)
+    vertex2 = _create_point(sketch["id"], 0.0, 10.0)
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={
+            "type": "equal_radius_points",
+            "center1_point_id": center["id"],
+            "radius1_point_id": vertex1["id"],
+            "center2_point_id": center["id"],
+            "radius2_point_id": vertex2["id"],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["type"] == "equal_radius"
+    assert body["center1_point_id"] == center["id"]
+    assert body["radius1_point_id"] == vertex1["id"]
+    assert body["center2_point_id"] == center["id"]
+    assert body["radius2_point_id"] == vertex2["id"]
+
+
+def test_create_equal_radius_points_constraint_rejects_the_same_point_as_center_and_radius_over_the_api():
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    vertex1 = _create_point(sketch["id"], 10.0, 0.0)
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={
+            "type": "equal_radius_points",
+            "center1_point_id": center["id"],
+            "radius1_point_id": vertex1["id"],
+            "center2_point_id": center["id"],
+            "radius2_point_id": center["id"],
+        },
     )
 
     assert response.status_code == 400

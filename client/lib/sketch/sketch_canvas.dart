@@ -2120,6 +2120,25 @@ class _SketchPainter extends CustomPainter {
         for (var i = 0; i < vertices.length; i++) {
           _drawDashedLine(canvas, vertices[i], vertices[(i + 1) % vertices.length], paint);
         }
+        if (g.showGuideCircles && vertices.length >= 3) {
+          // Feedback round: the two circles every real regular polygon's
+          // vertices/edge-midpoints always land on - a lighter guide paint
+          // than the polygon outline itself so the two don't visually
+          // compete, toggleable via [SketchController.togglePolygonGuideCircles].
+          final guidePaint = Paint()
+            ..color = paint.color.withValues(alpha: 0.35)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = paint.strokeWidth;
+          final center = transform.sketchToScreen(g.centerX, g.centerY);
+          final circumradiusPixels = (vertices[0] - center).distance;
+          _drawDashedCircle(canvas, center, circumradiusPixels, guidePaint);
+          final firstEdgeMidpoint = Offset(
+            (vertices[0].dx + vertices[1].dx) / 2,
+            (vertices[0].dy + vertices[1].dy) / 2,
+          );
+          final inradiusPixels = (firstEdgeMidpoint - center).distance;
+          _drawDashedCircle(canvas, center, inradiusPixels, guidePaint);
+        }
       case SlotGhost g:
         final center1 = transform.sketchToScreen(g.center1X, g.center1Y);
         final center2 = transform.sketchToScreen(g.center2X, g.center2Y);
