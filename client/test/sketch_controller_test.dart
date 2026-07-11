@@ -1130,6 +1130,113 @@ void main() {
     expect(controller.constraints.length, 2);
   });
 
+  test('on-device feedback: a small clockwise cursor sweep after placing the start Point creates a '
+      'small clockwise-looking arc, not its complementary ~350-degree counter-clockwise sweep',
+      () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(5, 0); // start, angle 0 degrees, radius 5
+
+    // A real cursor-movement event (unlike handleCanvasTap, which jumps
+    // straight to the tap position with no tracked movement in between) -
+    // 10 degrees clockwise from the start Point's own angle.
+    controller.cursorX = 5 * math.cos(-10 * math.pi / 180);
+    controller.cursorY = 5 * math.sin(-10 * math.pi / 180);
+    controller.moveCursorRelative(0, 0, 1);
+
+    final ghost = controller.activeDrawGhost as ArcGhost;
+    // Swapped for preview: the new (swept-to) point reads as "start", the
+    // originally-placed Point reads as "end" - so the backend's own
+    // always-counter-clockwise-from-start-to-end convention still produces
+    // this same small 10-degree arc, not its ~350-degree complement.
+    expect(ghost.startX, closeTo(5 * math.cos(-10 * math.pi / 180), 1e-6));
+    expect(ghost.startY, closeTo(5 * math.sin(-10 * math.pi / 180), 1e-6));
+    expect(ghost.endX, closeTo(5, 1e-6));
+    expect(ghost.endY, closeTo(0, 1e-6));
+
+    await controller.handleCanvasTap(
+      5 * math.cos(-10 * math.pi / 180),
+      5 * math.sin(-10 * math.pi / 180),
+    );
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.arcs.length, 1);
+    final arc = controller.arcs.values.single;
+    final start = controller.points[arc.startPointId]!;
+    final end = controller.points[arc.endPointId]!;
+    expect(start.x, closeTo(5 * math.cos(-10 * math.pi / 180), 1e-6));
+    expect(start.y, closeTo(5 * math.sin(-10 * math.pi / 180), 1e-6));
+    expect(end.x, closeTo(5, 1e-6));
+    expect(end.y, closeTo(0, 1e-6));
+  });
+
+  test('on-device feedback: continuing a clockwise cursor sweep past 180 degrees keeps building the '
+      'same clockwise arc instead of snapping back to the short counter-clockwise interpretation',
+      () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(5, 0); // start, angle 0 degrees, radius 5
+
+    // Sweeps clockwise through -90, -179 degrees, in small steps (each
+    // individually far short of 180 degrees, so every step's own shortest-
+    // path delta is unambiguous), ending at -179 degrees - net just under a
+    // half-circle swept clockwise.
+    for (final degrees in [-30, -60, -90, -120, -150, -179]) {
+      controller.cursorX = 5 * math.cos(degrees * math.pi / 180);
+      controller.cursorY = 5 * math.sin(degrees * math.pi / 180);
+      controller.moveCursorRelative(0, 0, 1);
+    }
+
+    await controller.handleCanvasTap(
+      5 * math.cos(-179 * math.pi / 180),
+      5 * math.sin(-179 * math.pi / 180),
+    );
+
+    expect(controller.errorMessage, isNull);
+    final arc = controller.arcs.values.single;
+    final start = controller.points[arc.startPointId]!;
+    final end = controller.points[arc.endPointId]!;
+    // Swapped, same as the small-sweep case: the swept-to point is "start",
+    // the originally-placed Point is "end" - so the backend's own CCW-from-
+    // start-to-end convention reconstructs this as a ~181-degree sweep
+    // (clockwise-intended), not the short ~179-degree counter-clockwise arc
+    // the raw endpoint angles alone would otherwise suggest.
+    expect(start.x, closeTo(5 * math.cos(-179 * math.pi / 180), 1e-6));
+    expect(start.y, closeTo(5 * math.sin(-179 * math.pi / 180), 1e-6));
+    expect(end.x, closeTo(5, 1e-6));
+    expect(end.y, closeTo(0, 1e-6));
+  });
+
+  group('catmullRomPolyline', () {
+    test('fewer than 2 points passes through unchanged (nothing to draw a curve between)', () {
+      expect(catmullRomPolyline([]), isEmpty);
+      expect(catmullRomPolyline([(1, 2)]), [(1, 2)]);
+    });
+
+    test('passes through every input point exactly, at each span boundary', () {
+      final points = [(0.0, 0.0), (2.0, 3.0), (5.0, 1.0), (7.0, 4.0)];
+      final sampled = catmullRomPolyline(points, segmentsPerSpan: 8);
+      // Each span contributes 8 new samples after the shared starting
+      // point, so span boundaries land at 0, 8, 16, 24.
+      expect(sampled[0], points[0]);
+      expect(sampled[8].$1, closeTo(points[1].$1, 1e-9));
+      expect(sampled[8].$2, closeTo(points[1].$2, 1e-9));
+      expect(sampled[16].$1, closeTo(points[2].$1, 1e-9));
+      expect(sampled[16].$2, closeTo(points[2].$2, 1e-9));
+      expect(sampled[24].$1, closeTo(points[3].$1, 1e-9));
+      expect(sampled[24].$2, closeTo(points[3].$2, 1e-9));
+      expect(sampled.length, 25);
+    });
+
+    test('exactly 2 points degenerates to a straight line (no neighbours to curve toward)', () {
+      final sampled = catmullRomPolyline([(0.0, 0.0), (10.0, 0.0)], segmentsPerSpan: 4);
+      for (final p in sampled) {
+        expect(p.$2, closeTo(0, 1e-9)); // stays exactly on the straight line y=0
+      }
+      expect(sampled.last.$1, closeTo(10, 1e-9));
+    });
+  });
+
   test('tapping an Arc in select mode, away from its defining Points, recognizes SelectionKind.arc', () async {
     controller.selectDrawTool(SketchTool.arc);
     await controller.handleCanvasTap(0, 0); // center

@@ -341,10 +341,10 @@ class RectGhost extends DrawGhost {
 
 /// Previews a Spline-in-progress: every through-point already tapped
 /// ([throughPoints], real Points), plus the cursor as a trial next
-/// through-point - rendered as a plain straight-segment polyline (unlike
-/// the real Spline's smooth cubic segments), matching Slot/Polygon's own
-/// ghost simplification of previewing the *rough* eventual shape rather
-/// than the exact curve a confirming tap sequence would produce. The real
+/// through-point - rendered as a smooth [catmullRomPolyline] approximation
+/// (see its own doc comment for why it's an approximation, not the exact
+/// curve), so the shape reads clearly while placing points instead of the
+/// straight-segment "rough outline" Slot/Polygon's own ghosts use. The real
 /// smooth shape only exists once [SketchController.finishSpline] actually
 /// creates the entity (control-handle positions are a backend
 /// implementation detail of `Sketch.add_spline`, not something the client
@@ -375,6 +375,45 @@ bool angleWithinArcSweep(double angle, double startAngle, double endAngle) {
   final offset = normalizeSketchAngle(angle - startAngle);
   final sweep = normalizeSketchAngle(endAngle - startAngle);
   return offset <= sweep;
+}
+
+/// Samples a smooth Catmull-Rom curve through [points] (at least 2, in
+/// sketch-space coordinates) into a dense polyline - used for
+/// [SplineGhost]'s live preview so it reads as a close approximation of the
+/// eventual smooth curve while placing points, rather than a plain
+/// straight-segment polyline connecting them literally. On-device feedback:
+/// "the spline should preview as I drop points and move the cursor".
+///
+/// Purely a rendering approximation - the real Spline's own control-handle
+/// positions are a backend implementation detail (see [SplineGhost]'s own
+/// doc comment) this deliberately doesn't try to reproduce exactly, only to
+/// look recognizably similar while the shape is still being placed.
+///
+/// Standard uniform Catmull-Rom-to-cubic-Bezier conversion: each span
+/// between consecutive input points uses its two neighbours to shape the
+/// curve, duplicating the first/last point as its own neighbour for the two
+/// end spans (the common convention for an open curve). Passes through
+/// every input point exactly; [segmentsPerSpan] straight sub-segments are
+/// sampled per span (`points.length - 1` spans total).
+List<(double, double)> catmullRomPolyline(List<(double, double)> points, {int segmentsPerSpan = 16}) {
+  if (points.length < 2) return points;
+  final result = <(double, double)>[points.first];
+  for (var i = 0; i < points.length - 1; i++) {
+    final p0 = points[i == 0 ? 0 : i - 1];
+    final p1 = points[i];
+    final p2 = points[i + 1];
+    final p3 = points[i + 2 < points.length ? i + 2 : points.length - 1];
+    final b1 = (p1.$1 + (p2.$1 - p0.$1) / 6, p1.$2 + (p2.$2 - p0.$2) / 6);
+    final b2 = (p2.$1 - (p3.$1 - p1.$1) / 6, p2.$2 - (p3.$2 - p1.$2) / 6);
+    for (var s = 1; s <= segmentsPerSpan; s++) {
+      final t = s / segmentsPerSpan;
+      final mt = 1 - t;
+      final x = mt * mt * mt * p1.$1 + 3 * mt * mt * t * b1.$1 + 3 * mt * t * t * b2.$1 + t * t * t * p2.$1;
+      final y = mt * mt * mt * p1.$2 + 3 * mt * mt * t * b1.$2 + 3 * mt * t * t * b2.$2 + t * t * t * p2.$2;
+      result.add((x, y));
+    }
+  }
+  return result;
 }
 
 /// Stage 13 item 3's feature-flag stub: scaffolds a future user preference
@@ -828,6 +867,7 @@ class SketchController extends ChangeNotifier {
     _circleCenterPointId = null;
     _arcCenterPointId = null;
     _arcStartPointId = null;
+    _resetArcSweepTracking();
     _polygonCenterPointId = null;
     _slotCenter1PointId = null;
     _slotCenter2PointId = null;
@@ -870,6 +910,55 @@ class SketchController extends ChangeNotifier {
   String? get arcCenterPointId => _arcCenterPointId;
   String? get arcStartPointId => _arcStartPointId;
   bool get arcInProgress => _arcCenterPointId != null;
+
+  /// Net signed angle (radians, unwrapped - can exceed +-pi) the cursor has
+  /// swept around [_arcCenterPointId] since [_arcStartPointId] was placed -
+  /// positive is counter-clockwise (this app's sketch-space convention, see
+  /// [normalizeSketchAngle]'s own doc comment), negative clockwise. Tracked
+  /// incrementally (see [_trackArcSweep]) rather than derived from a single
+  /// start-to-cursor snapshot, so a small clockwise swing reads as a small
+  /// clockwise arc rather than always being (mis)interpreted as its
+  /// complementary near-360-degree counter-clockwise sweep, which is what
+  /// the backend's always-CCW-from-start-to-end Arc convention would
+  /// otherwise produce from just the two endpoint angles alone. On-device
+  /// feedback: "the direction of the arc should depend on the direction the
+  /// user moves the cursor after placing the first point".
+  double _arcSweepAccumulator = 0;
+  double? _arcSweepLastAngle;
+
+  /// Updates [_arcSweepAccumulator] for the current cursor position - a
+  /// no-op unless an Arc's start Point is already placed and its end isn't
+  /// yet (see [_arcStartPointId]). Called from every cursor-movement entry
+  /// point ([moveCursorRelative]/[moveCursorAbsoluteScreen]), mirroring how
+  /// those are already this class's sole "the cursor visibly moved" hooks.
+  void _trackArcSweep() {
+    final centerId = _arcCenterPointId;
+    final startId = _arcStartPointId;
+    if (centerId == null || startId == null) return;
+    final center = points[centerId];
+    if (center == null) return;
+    final dx = cursorX - center.x;
+    final dy = cursorY - center.y;
+    if (dx * dx + dy * dy < 1e-18) return; // cursor exactly on center: no defined angle
+    final angle = math.atan2(dy, dx);
+    final lastAngle = _arcSweepLastAngle;
+    if (lastAngle != null) {
+      // Minimal signed delta, wrapped to (-pi, pi] - accumulating this
+      // (rather than just diffing against the start angle each time) is
+      // what lets the total tracked sweep exceed a single lap in either
+      // direction, and correctly keeps accumulating even as the cursor
+      // crosses the atan2 wrap-around seam.
+      var delta = angle - lastAngle;
+      delta -= 2 * math.pi * (delta / (2 * math.pi)).roundToDouble();
+      _arcSweepAccumulator += delta;
+    }
+    _arcSweepLastAngle = angle;
+  }
+
+  void _resetArcSweepTracking() {
+    _arcSweepAccumulator = 0;
+    _arcSweepLastAngle = null;
+  }
 
   String? _polygonCenterPointId;
 
@@ -1524,13 +1613,20 @@ class SketchController extends ChangeNotifier {
 
     final end = _pointOnCircleTowardCursor(center.x, center.y, start.x, start.y);
     if (end == null) return null;
+    // On-device feedback: a net clockwise sweep since the start Point was
+    // placed (see [_arcSweepAccumulator]) swaps which end reads as
+    // "start"/"end" for preview purposes - matching [_clickArcTool]'s own
+    // swap - so the ghost always shows the same small clockwise-looking arc
+    // a confirming tap would actually create, not its complementary
+    // near-360-degree counter-clockwise sweep.
+    final sweptClockwise = _arcSweepAccumulator < 0;
     return ArcGhost(
       centerX: center.x,
       centerY: center.y,
-      startX: start.x,
-      startY: start.y,
-      endX: end.$1,
-      endY: end.$2,
+      startX: sweptClockwise ? end.$1 : start.x,
+      startY: sweptClockwise ? end.$2 : start.y,
+      endX: sweptClockwise ? start.x : end.$1,
+      endY: sweptClockwise ? start.y : end.$2,
     );
   }
 
@@ -4715,6 +4811,7 @@ class SketchController extends ChangeNotifier {
     final scale = touchSensitivity / zoom;
     cursorX += dxPixels * scale;
     cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
+    _trackArcSweep();
     notifyListeners();
   }
 
@@ -4727,6 +4824,7 @@ class SketchController extends ChangeNotifier {
     final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
     cursorX = coord.x;
     cursorY = coord.y;
+    _trackArcSweep();
     notifyListeners();
   }
 
@@ -5083,6 +5181,16 @@ class SketchController extends ChangeNotifier {
     if (_arcStartPointId == null) {
       await _runGuarded(() async {
         _arcStartPointId = await _pointIdAtCursor(excludeId: _arcCenterPointId);
+        final startId = _arcStartPointId;
+        if (startId != null) {
+          // Re-anchors sweep tracking at the start Point's own angle,
+          // rather than wherever the cursor happened to be mid-placement -
+          // see [_arcSweepAccumulator]'s own doc comment.
+          final center = points[_arcCenterPointId!]!;
+          final start = points[startId]!;
+          _arcSweepLastAngle = math.atan2(start.y - center.y, start.x - center.x);
+          _arcSweepAccumulator = 0;
+        }
       });
       return;
     }
@@ -5097,6 +5205,7 @@ class SketchController extends ChangeNotifier {
         errorMessage = 'Cannot place an arc end point directly on its own center';
         _arcCenterPointId = null;
         _arcStartPointId = null;
+        _resetArcSweepTracking();
         return;
       }
 
@@ -5107,7 +5216,19 @@ class SketchController extends ChangeNotifier {
         points.remove(endPoint.id);
       });
 
-      final arc = await _api.createArc(_sketchId!, centerId, startId, endPoint.id);
+      // On-device feedback: the backend's Arc always sweeps counter-
+      // clockwise from its own startPointId to endPointId (see the
+      // backend's app.sketch.models.Arc docstring) - a net-clockwise
+      // cursor sweep since the start Point was placed
+      // (_arcSweepAccumulator < 0) needs the two rim points swapped here so
+      // that CCW interpretation still produces the small clockwise-looking
+      // arc the user actually swept, instead of silently substituting its
+      // complementary near-360-degree counter-clockwise sweep.
+      final sweptClockwise = _arcSweepAccumulator < 0;
+      final arcStartId = sweptClockwise ? endPoint.id : startId;
+      final arcEndId = sweptClockwise ? startId : endPoint.id;
+
+      final arc = await _api.createArc(_sketchId!, centerId, arcStartId, arcEndId);
       arcs[arc.id] = SketchArcView(
         id: arc.id,
         centerPointId: arc.centerPointId,
@@ -5127,6 +5248,7 @@ class SketchController extends ChangeNotifier {
 
       _arcCenterPointId = null;
       _arcStartPointId = null;
+      _resetArcSweepTracking();
     });
   }
 

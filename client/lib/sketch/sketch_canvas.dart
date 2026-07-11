@@ -1671,19 +1671,31 @@ class _SketchPainter extends CustomPainter {
   /// not yet confirmed) keeps the original white-on-[color] fill instead -
   /// [plainBlackText] defaults to false, so [_paintGhostDimensions]'s own
   /// call site (the only other caller) is unaffected.
+  /// The Unicode diameter sign (U+2300) renders visually smaller/thinner
+  /// than digits at the same nominal font size in most fonts (a well-known
+  /// typography mismatch) - on-device feedback confirmed it read as
+  /// noticeably undersized next to the value it prefixes. Bumped by this
+  /// factor whenever [text] starts with it, so the symbol reads as the same
+  /// visual size as the digits that follow.
+  static const double _diameterSymbolScale = 1.35;
+
   void _drawDimensionLabel(Canvas canvas, Offset center, String text, Color color,
       {bool plainBlackText = false}) {
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          color: plainBlackText ? Colors.black : Colors.white,
-          fontSize: _dimensionFontSize,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
+    final baseStyle = TextStyle(
+      color: plainBlackText ? Colors.black : Colors.white,
+      fontSize: _dimensionFontSize,
+      fontWeight: FontWeight.w600,
+    );
+    final isDiameter = text.startsWith('⌀');
+    final textSpan = isDiameter
+        ? TextSpan(
+            children: [
+              TextSpan(text: '⌀', style: baseStyle.copyWith(fontSize: _dimensionFontSize * _diameterSymbolScale)),
+              TextSpan(text: text.substring(1), style: baseStyle),
+            ],
+          )
+        : TextSpan(text: text, style: baseStyle);
+    final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr)..layout();
     const horizontalPadding = 4.0;
     const verticalPadding = 2.0;
     final chipRect = Rect.fromCenter(
@@ -1693,14 +1705,13 @@ class _SketchPainter extends CustomPainter {
     );
     final chipRRect = RRect.fromRectAndRadius(chipRect, const Radius.circular(3));
     if (plainBlackText) {
+      // On-device feedback: a numeric dimension (a measurement) no longer
+      // gets a colored border at all - just the plain near-white chip, so
+      // it reads unambiguously as a value rather than a status indicator.
+      // Constraints (see _paintAxisIndicator/_paintTwoLineGlyph) keep the
+      // solid-color-fill styling below instead, for exactly that "status
+      // indicator" reading.
       canvas.drawRRect(chipRRect, Paint()..color = const Color(0xFFF5F5F5));
-      canvas.drawRRect(
-        chipRRect,
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1,
-      );
     } else {
       canvas.drawRRect(chipRRect, Paint()..color = color);
     }
@@ -1812,7 +1823,12 @@ class _SketchPainter extends CustomPainter {
       );
     } else {
       canvas.drawLine(rimScreen, labelCenter, dimPaint);
-      _drawArrowhead(canvas, rimScreen, direction, color);
+      // On-device feedback: the arrowhead touches the rim either way, but
+      // must point *back towards the centre* (standard radius-dimension
+      // convention - the leader reads as "this far, back to the centre")
+      // rather than outward, which read as a disconnected mark instead of
+      // a continuation of the centre-to-rim line.
+      _drawArrowhead(canvas, rimScreen, -direction, color);
       _drawDimensionLabel(
         canvas,
         labelCenter,
@@ -1851,7 +1867,12 @@ class _SketchPainter extends CustomPainter {
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
   /// Line's midpoint - there's no "value" to dimension, only the
-  /// constraint's existence.
+  /// constraint's existence. On-device feedback: a constraint glyph (also
+  /// used for Coincident's 'Coinc.' label) keeps the solid-color-fill
+  /// styling (white text, no separate border needed since the fill itself
+  /// carries the color) rather than [_drawDimensionLabel]'s numeric-
+  /// dimension styling, so a bare relationship marker reads as a status
+  /// indicator, distinct from an actual measured value.
   void _paintAxisIndicator(
     Canvas canvas,
     String pointAId,
@@ -1864,7 +1885,7 @@ class _SketchPainter extends CustomPainter {
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color, plainBlackText: true);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
   /// Angle dimension: deliberately a numeric-only label rather than a
@@ -1884,6 +1905,7 @@ class _SketchPainter extends CustomPainter {
   /// between each Line's own midpoint - the value-less counterpart to
   /// [_paintAngleDimension]'s anchor, used for Parallel/Perpendicular/
   /// EqualLength/Collinear, which only need to show their own existence.
+  /// Solid-color-fill styling - see [_paintAxisIndicator]'s own doc comment.
   void _paintTwoLineGlyph(
     Canvas canvas,
     String line1Id,
@@ -1896,7 +1918,7 @@ class _SketchPainter extends CustomPainter {
     final midpoint2 = _lineMidpointScreen(line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color, plainBlackText: true);
+    _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
   /// Point-to-Line distance dimension (Stage 23e, [PointLineDistanceConstraintDto]):
@@ -2142,12 +2164,12 @@ class _SketchPainter extends CustomPainter {
         _drawDashedOval(canvas, ovalRect, paint);
         canvas.restore();
       case SplineGhost g:
-        // See SplineGhost's own doc comment: a plain straight-segment
-        // polyline preview, not the real smooth curve.
-        final screenPoints = [
-          for (final p in g.throughPoints) transform.sketchToScreen(p.$1, p.$2),
-          transform.sketchToScreen(g.cursor.$1, g.cursor.$2),
-        ];
+        // See SplineGhost's own doc comment / catmullRomPolyline's own doc
+        // comment: a smooth approximation of the eventual curve, not the
+        // real backend-computed one.
+        final sketchPoints = [...g.throughPoints, g.cursor];
+        final smoothed = catmullRomPolyline(sketchPoints);
+        final screenPoints = [for (final p in smoothed) transform.sketchToScreen(p.$1, p.$2)];
         for (var i = 0; i < screenPoints.length - 1; i++) {
           _drawDashedLine(canvas, screenPoints[i], screenPoints[i + 1], paint);
         }

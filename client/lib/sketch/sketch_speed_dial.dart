@@ -21,10 +21,29 @@ class SketchSpeedDial extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         final actions = _actionsFor(controller);
+        // On-device feedback: "is there a finish button" - the Sketch
+        // Entities category's own "Finish" action (below) only shows while
+        // that category is open, and every tool selection auto-closes the
+        // whole menu (see selectDrawTool) so there's a clear canvas to draw
+        // on - meaning a mid-Spline/mid-chain user had no visible way to
+        // finish without first reopening the menu and navigating back into
+        // Sketch Entities. This persistent copy shows regardless of
+        // fabMenu's own open/closed state, right above the main FAB, for as
+        // long as a Line chain or Spline is actually in progress.
+        final showPersistentFinish = controller.chainInProgress || controller.splineInProgress;
         return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            if (showPersistentFinish)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _SpeedDialAction(
+                  icon: Icons.check_circle_outline,
+                  label: 'Finish',
+                  onPressed: controller.chainInProgress ? controller.finishChain : controller.finishSpline,
+                ),
+              ),
             if (actions.isNotEmpty)
               // Bounded + scrollable rather than a bare unconstrained
               // Column: the Sketch Entities tool list has grown past what
