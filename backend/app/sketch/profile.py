@@ -385,7 +385,7 @@ def _loop_area(sketch: Sketch, profile: Profile) -> float:
         return math.pi * radius * radius
     if _is_ellipse_profile(sketch, profile):
         ellipse = sketch.entities[profile.line_ids[0]]
-        return math.pi * ellipse.major_radius(sketch.points) * ellipse.minor_radius
+        return math.pi * ellipse.major_radius(sketch.points) * ellipse.minor_radius(sketch.points)
 
     vertices = _profile_vertices(sketch, profile)
     signed_area = 0.0
@@ -414,7 +414,8 @@ def _loop_contains_point(sketch: Sketch, profile: Profile, point: tuple[float, f
         cos_r, sin_r = math.cos(-rotation), math.sin(-rotation)
         local_x = dx * cos_r - dy * sin_r
         local_y = dx * sin_r + dy * cos_r
-        return (local_x / major_radius) ** 2 + (local_y / ellipse.minor_radius) ** 2 < 1
+        minor_radius = ellipse.minor_radius(sketch.points)
+        return (local_x / major_radius) ** 2 + (local_y / minor_radius) ** 2 < 1
 
     x, y = point
     vertices = _profile_vertices(sketch, profile)
@@ -639,7 +640,7 @@ def _ellipse_boundary_points(sketch: Sketch, ellipse: Ellipse, steps: int = 64) 
     purpose (an accepted v1 approximation, not exact)."""
     center = sketch.points[ellipse.center_point_id]
     major_radius = ellipse.major_radius(sketch.points)
-    minor_radius = ellipse.minor_radius
+    minor_radius = ellipse.minor_radius(sketch.points)
     rotation = ellipse.rotation(sketch.points)
     cos_r, sin_r = math.cos(rotation), math.sin(rotation)
     points = []

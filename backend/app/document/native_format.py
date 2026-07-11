@@ -158,7 +158,11 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "center_point_id": entity.center_point_id,
             "major_point_id": entity.major_point_id,
             "major_constraint_id": entity.major_constraint_id,
-            "minor_radius": entity.minor_radius,
+            "minor_point_id": entity.minor_point_id,
+            "minor_constraint_id": entity.minor_constraint_id,
+            "major_axis_line_id": entity.major_axis_line_id,
+            "minor_axis_line_id": entity.minor_axis_line_id,
+            "perpendicular_constraint_id": entity.perpendicular_constraint_id,
         }
     if isinstance(entity, Spline):
         return {
@@ -217,7 +221,11 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             center_point_id=_require(data, "center_point_id"),
             major_point_id=_require(data, "major_point_id"),
             major_constraint_id=_require(data, "major_constraint_id"),
-            minor_radius=_require(data, "minor_radius"),
+            minor_point_id=_require(data, "minor_point_id"),
+            minor_constraint_id=_require(data, "minor_constraint_id"),
+            major_axis_line_id=_require(data, "major_axis_line_id"),
+            minor_axis_line_id=_require(data, "minor_axis_line_id"),
+            perpendicular_constraint_id=_require(data, "perpendicular_constraint_id"),
         )
     if entity_type == "spline":
         return Spline(

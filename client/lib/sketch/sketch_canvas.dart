@@ -2262,10 +2262,14 @@ class _SketchPainter extends CustomPainter {
       final center = points[0];
       final major = points[1];
       final majorRadiusPixels = (major - center).distance;
-      final minorRadiusPixels = ellipse.minorRadius * transform.pixelsPerUnit;
+      final centerPoint = controller.points[ellipse.centerPointId]!;
+      final minorPoint = controller.points[ellipse.minorPointId]!;
+      final minorRadiusPixels = (transform.sketchToScreen(minorPoint.x, minorPoint.y) -
+              transform.sketchToScreen(centerPoint.x, centerPoint.y))
+          .distance;
       final rotation = math.atan2(
-        controller.points[ellipse.majorPointId]!.y - controller.points[ellipse.centerPointId]!.y,
-        controller.points[ellipse.majorPointId]!.x - controller.points[ellipse.centerPointId]!.x,
+        controller.points[ellipse.majorPointId]!.y - centerPoint.y,
+        controller.points[ellipse.majorPointId]!.x - centerPoint.x,
       );
       final ovalPath = Path()
         ..addOval(Rect.fromCenter(center: Offset.zero, width: majorRadiusPixels * 2, height: minorRadiusPixels * 2));
@@ -2520,22 +2524,26 @@ class _SketchPainter extends CustomPainter {
       final center = controller.points[ellipse.centerPointId];
       final major = controller.points[ellipse.majorPointId];
       if (center == null || major == null) continue;
+      final minor = controller.points[ellipse.minorPointId];
+      if (minor == null) continue;
       final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      final minorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
       final rotation = math.atan2(major.y - center.y, major.x - center.x);
       final ellipseIsSelected = isSelected(SelectionKind.ellipse, ellipse.id);
       final isHovered = hovered?.kind == SelectionKind.ellipse && hovered!.id == ellipse.id;
-      // Same per-entity DOF preview as Circle above, treating an
-      // Ellipse's center/major-axis pair as its defining segment - the
-      // minor radius has no Point/constraint pair of its own to check
-      // (see the Ellipse class's docstring), so it plays no part in this
-      // coloring, same as it plays no part in [SketchRigidity.analyze]'s
-      // input.
+      // Same per-entity DOF preview as Circle above, now checking both the
+      // major-axis AND minor-axis segments (feedback round: the minor axis
+      // is real, solver-tracked geometry too, see the Ellipse class's
+      // docstring - it's no longer excluded from this coloring).
       final ellipseIsOverConstrained =
           controller.rigidity.isSegmentOverConstrained(ellipse.centerPointId, ellipse.majorPointId) ||
+              controller.rigidity.isSegmentOverConstrained(ellipse.centerPointId, ellipse.minorPointId) ||
               controller.isPointForcedOverConstrained(ellipse.centerPointId) ||
-              controller.isPointForcedOverConstrained(ellipse.majorPointId);
+              controller.isPointForcedOverConstrained(ellipse.majorPointId) ||
+              controller.isPointForcedOverConstrained(ellipse.minorPointId);
       final ellipseIsFullyConstrained = controller.isFullyConstrained ||
-          controller.rigidity.isSegmentFullyConstrained(ellipse.centerPointId, ellipse.majorPointId);
+          (controller.rigidity.isSegmentFullyConstrained(ellipse.centerPointId, ellipse.majorPointId) &&
+              controller.rigidity.isSegmentFullyConstrained(ellipse.centerPointId, ellipse.minorPointId));
       final ellipsePaint = Paint()
         ..color = ellipseIsSelected
             ? _selectedColor
@@ -2552,7 +2560,7 @@ class _SketchPainter extends CustomPainter {
         ..strokeWidth = ellipseIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
       final centerScreen = transform.sketchToScreen(center.x, center.y);
       final majorRadiusPixels = majorRadius * transform.pixelsPerUnit;
-      final minorRadiusPixels = ellipse.minorRadius * transform.pixelsPerUnit;
+      final minorRadiusPixels = minorRadius * transform.pixelsPerUnit;
       final ovalRect = Rect.fromCenter(
         center: Offset.zero,
         width: majorRadiusPixels * 2,

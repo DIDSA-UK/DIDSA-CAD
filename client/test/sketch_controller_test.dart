@@ -124,9 +124,6 @@ class _FakeBackend {
     if (ellipsePatchMatch != null && request.method == 'PATCH') {
       final ellipse = ellipses[ellipsePatchMatch.group(1)];
       if (ellipse == null) return http.Response('not found', 404);
-      if (body.containsKey('minor_radius')) {
-        ellipse['minor_radius'] = (body['minor_radius'] as num).toDouble();
-      }
       if (body.containsKey('construction')) {
         ellipse['construction'] = body['construction'] as bool;
       }
@@ -341,24 +338,68 @@ class _FakeBackend {
         (majorPoint['y'] as num) - (centerPoint['y'] as num),
         (majorPoint['x'] as num) - (centerPoint['x'] as num),
       );
+      final minorRadius = (body['minor_radius'] as num).toDouble();
+      // Mirrors the real backend's Sketch.add_ellipse: a new minor-axis
+      // Point placed exactly perpendicular to the major axis.
+      final minorAngle = rotation + math.pi / 2;
+      final minorPointId = _newId('point');
+      points[minorPointId] = {
+        'id': minorPointId,
+        'x': (centerPoint['x'] as num) + minorRadius * math.cos(minorAngle),
+        'y': (centerPoint['y'] as num) + minorRadius * math.sin(minorAngle),
+      };
+      final majorAxisLineId = _newId('line');
+      lines[majorAxisLineId] = {
+        'id': majorAxisLineId,
+        'start_point_id': body['center_point_id'],
+        'end_point_id': body['major_point_id'],
+        'length': majorRadius,
+        'construction': true,
+      };
+      final minorAxisLineId = _newId('line');
+      lines[minorAxisLineId] = {
+        'id': minorAxisLineId,
+        'start_point_id': body['center_point_id'],
+        'end_point_id': minorPointId,
+        'length': minorRadius,
+        'construction': true,
+      };
       final ellipse = {
         'id': id,
         'center_point_id': body['center_point_id'],
         'major_point_id': body['major_point_id'],
+        'minor_point_id': minorPointId,
+        'major_axis_line_id': majorAxisLineId,
+        'minor_axis_line_id': minorAxisLineId,
         'major_radius': majorRadius,
-        'minor_radius': (body['minor_radius'] as num).toDouble(),
+        'minor_radius': minorRadius,
         'rotation': rotation,
         'construction': body['construction'] as bool? ?? false,
       };
       ellipses[id] = ellipse;
-      // Mirrors the real backend's Sketch.add_ellipse, which auto-creates a
-      // major-axis DistanceConstraint alongside the Ellipse.
-      final constraintId = _newId('constraint');
-      constraints[constraintId] = {
-        'id': constraintId,
+      // Mirrors the real backend's Sketch.add_ellipse, which auto-creates
+      // major-axis and minor-axis DistanceConstraints plus a
+      // PerpendicularConstraint tying the two axis Lines together.
+      final majorConstraintId = _newId('constraint');
+      constraints[majorConstraintId] = {
+        'id': majorConstraintId,
         'point_a_id': body['center_point_id'],
         'point_b_id': body['major_point_id'],
         'distance': majorRadius,
+      };
+      final minorConstraintId = _newId('constraint');
+      constraints[minorConstraintId] = {
+        'id': minorConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': minorPointId,
+        'distance': minorRadius,
+      };
+      final perpendicularConstraintId = _newId('constraint');
+      constraints[perpendicularConstraintId] = {
+        'id': perpendicularConstraintId,
+        'type': 'perpendicular',
+        'line1_id': majorAxisLineId,
+        'line2_id': minorAxisLineId,
       };
       return _json(ellipse, 201);
     }
@@ -1864,7 +1905,7 @@ void main() {
   });
 
   test('the ellipse tool places center, major point, then minor radius across three taps, creating '
-      'one Ellipse and its major-axis constraint', () async {
+      'one Ellipse with real major+minor axis Points, construction Lines, and constraints', () async {
     controller.selectDrawTool(SketchTool.ellipse);
     await controller.handleCanvasTap(0, 0); // center
     await controller.handleCanvasTap(10, 0); // major point - major radius 10
@@ -1877,8 +1918,20 @@ void main() {
     expect(ellipse.minorRadius, closeTo(4, 1e-9));
     expect(controller.points[ellipse.majorPointId]!.x, closeTo(10, 1e-9));
     expect(controller.points[ellipse.majorPointId]!.y, closeTo(0, 1e-9));
-    // One major-axis DistanceConstraint (center-major), unlike Arc's two.
-    expect(controller.constraints.length, 1);
+    // The minor-axis Point is real and placed exactly perpendicular to the
+    // major axis (feedback round: no longer a bare stored float).
+    expect(controller.points[ellipse.minorPointId]!.x, closeTo(0, 1e-9));
+    expect(controller.points[ellipse.minorPointId]!.y, closeTo(4, 1e-9));
+    // Two construction axis Lines, both centered on the Ellipse's own centre.
+    final majorAxisLine = controller.lines[ellipse.majorAxisLineId]!;
+    final minorAxisLine = controller.lines[ellipse.minorAxisLineId]!;
+    expect(majorAxisLine.construction, isTrue);
+    expect(minorAxisLine.construction, isTrue);
+    expect(majorAxisLine.startPointId, ellipse.centerPointId);
+    expect(minorAxisLine.startPointId, ellipse.centerPointId);
+    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, and the
+    // PerpendicularConstraint tying the two axis Lines together.
+    expect(controller.constraints.length, 3);
   });
 
   test('tapping an Ellipse in select mode, away from its defining Points, recognizes SelectionKind.ellipse',
@@ -1889,17 +1942,23 @@ void main() {
     await controller.handleCanvasTap(5, 4); // minor radius 4
     controller.exitToSelectMode();
 
-    // On the ellipse's boundary along its minor axis (0, 4) - away from
-    // both the center and major-axis Points.
-    controller.cursorX = 0;
-    controller.cursorY = 4;
-    await controller.handleCanvasTap(0, 4);
+    // On the ellipse's boundary at 45 degrees - away from the centre,
+    // major-axis Point, AND minor-axis Point (feedback round: the minor
+    // axis is now real, independently-selectable geometry too, so tapping
+    // exactly on it would hit SelectionKind.point instead).
+    const angle = math.pi / 4;
+    final boundaryX = 10 * math.cos(angle);
+    final boundaryY = 4 * math.sin(angle);
+    controller.cursorX = boundaryX;
+    controller.cursorY = boundaryY;
+    await controller.handleCanvasTap(boundaryX, boundaryY);
 
     expect(controller.selectionSet.length, 1);
     expect(controller.selectionSet.first.kind, SelectionKind.ellipse);
   });
 
-  test('selecting an Ellipse in dimension mode builds radius+diameter ghosts for its major axis', () async {
+  test('selecting an Ellipse in dimension mode builds radius+diameter ghosts for both its major and '
+      'minor axes', () async {
     controller.selectDrawTool(SketchTool.ellipse);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
@@ -1907,28 +1966,48 @@ void main() {
     final ellipseId = controller.ellipses.keys.single;
     controller.enterDimensionMode();
 
-    await controller.handleCanvasTap(0, 4);
+    // 45 degrees around the boundary - away from the centre, major-axis
+    // Point, AND minor-axis Point (see the select-mode test's own comment).
+    const angle = math.pi / 4;
+    await controller.handleCanvasTap(10 * math.cos(angle), 4 * math.sin(angle));
 
     expect(controller.dimensionSelection.single.kind, SelectionKind.ellipse);
     expect(controller.dimensionSelection.single.id, ellipseId);
     expect(controller.ghosts.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
+    expect(controller.ghosts.map((g) => g.key), containsAll(['majorradius', 'majordiameter', 'minorradius', 'minordiameter']));
   });
 
-  test('setEllipseMinorRadius PATCHes the Ellipse directly, with no DistanceConstraint involved', () async {
+  test('confirming the minor-axis radius ghost PATCHes its DistanceConstraint, feedback round: the '
+      'minor axis is now real solver-tracked geometry, not a bare field', () async {
     controller.selectDrawTool(SketchTool.ellipse);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
     await controller.handleCanvasTap(5, 4);
     final ellipseId = controller.ellipses.keys.single;
-    expect(controller.ellipseMinorRadius(ellipseId), closeTo(4, 1e-9));
+    final ellipse = controller.ellipses[ellipseId]!;
+    expect(ellipse.minorRadius, closeTo(4, 1e-9));
+    controller.enterDimensionMode();
+    const angle = math.pi / 4;
+    await controller.handleCanvasTap(10 * math.cos(angle), 4 * math.sin(angle));
 
-    await controller.setEllipseMinorRadius(ellipseId, 7.0);
+    await controller.confirmGhostValue('minorradius', 7.0);
 
     expect(controller.errorMessage, isNull);
-    expect(controller.ellipses[ellipseId]!.minorRadius, closeTo(7.0, 1e-9));
-    // Still exactly one Constraint (the major-axis one) - minor_radius has
-    // none of its own.
-    expect(controller.constraints.length, 1);
+    // Feedback round: the minor radius is now PATCHed via its own real
+    // DistanceConstraint (this fake backend doesn't re-solve/move Points on
+    // a constraint edit, mirroring the equivalent Circle radius test above -
+    // the real backend does move the actual Points, exercised end-to-end by
+    // the backend's own pytest suite).
+    final minorConstraint = controller.constraints.values.firstWhere(
+      (c) =>
+          c is DistanceConstraintDto &&
+          ((c.pointAId == ellipse.centerPointId && c.pointBId == ellipse.minorPointId) ||
+              (c.pointAId == ellipse.minorPointId && c.pointBId == ellipse.centerPointId)),
+    ) as DistanceConstraintDto;
+    expect(minorConstraint.distance, closeTo(7.0, 1e-9));
+    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, and the
+    // PerpendicularConstraint tying the two axis Lines together.
+    expect(controller.constraints.length, 3);
   });
 
   test('computeDeleteCascade for a directly-selected Ellipse reports just the Ellipse - its own '

@@ -29,7 +29,7 @@ def test_add_ellipse_from_major_radius_and_angle_creates_a_major_point():
     assert major.x == pytest.approx(10.0)
     assert major.y == pytest.approx(0.0)
     assert ellipse.major_radius(sketch.points) == pytest.approx(10.0)
-    assert ellipse.minor_radius == pytest.approx(4.0)
+    assert ellipse.minor_radius(sketch.points) == pytest.approx(4.0)
     assert ellipse.rotation(sketch.points) == pytest.approx(0.0)
 
 
@@ -43,6 +43,46 @@ def test_add_ellipse_with_existing_major_point():
     assert ellipse.major_point_id == major.id
     assert ellipse.major_radius(sketch.points) == pytest.approx(5.0)
     assert ellipse.rotation(sketch.points) == pytest.approx(math.atan2(4.0, 3.0))
+
+
+def test_add_ellipse_creates_a_minor_point_exactly_perpendicular_to_the_major_axis():
+    """Feedback round: the minor axis is now real, solver-tracked geometry
+    (a Point + DistanceConstraint), not a bare stored float - and its
+    initial placement is exactly perpendicular to the major axis (the
+    PerpendicularConstraint between the two axis Lines then keeps it that
+    way under drag)."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(10.0, 0.0)
+
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=4.0)
+
+    assert ellipse.minor_point_id in sketch.points
+    minor = sketch.points[ellipse.minor_point_id]
+    assert minor.x == pytest.approx(0.0, abs=1e-9)
+    assert minor.y == pytest.approx(4.0)
+    assert ellipse.minor_radius(sketch.points) == pytest.approx(4.0)
+
+
+def test_add_ellipse_creates_two_construction_axis_lines():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(10.0, 0.0)
+
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=4.0)
+
+    major_line = sketch.entities[ellipse.major_axis_line_id]
+    minor_line = sketch.entities[ellipse.minor_axis_line_id]
+    assert major_line.construction is True
+    assert minor_line.construction is True
+    assert {major_line.start_point_id, major_line.end_point_id} == {
+        ellipse.center_point_id,
+        ellipse.major_point_id,
+    }
+    assert {minor_line.start_point_id, minor_line.end_point_id} == {
+        ellipse.center_point_id,
+        ellipse.minor_point_id,
+    }
 
 
 def test_add_ellipse_rejects_same_center_and_major_point():
@@ -77,17 +117,24 @@ def test_add_ellipse_with_unknown_major_point_raises():
         sketch.add_ellipse(center.id, "does-not-exist", minor_radius=1.0)
 
 
-def test_add_ellipse_automatically_creates_one_distance_constraint():
+def test_add_ellipse_automatically_creates_its_own_constraints():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(10.0, 0.0)
 
     ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=4.0)
 
-    assert len(sketch.constraints) == 1
-    constraint = sketch.constraints[ellipse.major_constraint_id]
-    assert set(constraint.point_ids()) == {ellipse.center_point_id, ellipse.major_point_id}
-    assert constraint.distance == pytest.approx(10.0)
+    # 2 radius DistanceConstraints (major, minor) + 1 PerpendicularConstraint.
+    assert len(sketch.constraints) == 3
+    major_constraint = sketch.constraints[ellipse.major_constraint_id]
+    assert set(major_constraint.point_ids()) == {ellipse.center_point_id, ellipse.major_point_id}
+    assert major_constraint.distance == pytest.approx(10.0)
+    minor_constraint = sketch.constraints[ellipse.minor_constraint_id]
+    assert set(minor_constraint.point_ids()) == {ellipse.center_point_id, ellipse.minor_point_id}
+    assert minor_constraint.distance == pytest.approx(4.0)
+    perpendicular = sketch.constraints[ellipse.perpendicular_constraint_id]
+    assert perpendicular.line1_id == ellipse.major_axis_line_id
+    assert perpendicular.line2_id == ellipse.minor_axis_line_id
 
 
 def test_solving_keeps_the_major_point_at_a_fixed_distance_after_moving_center():
@@ -96,8 +143,13 @@ def test_solving_keeps_the_major_point_at_a_fixed_distance_after_moving_center()
     start = sketch.add_point(5.0, 0.0)
     ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
 
-    sketch.points[center.id].x = 30.0
-    sketch.points[center.id].y = -15.0
+    # A real drag re-solves after every incremental move, so Newton's
+    # method always starts close to a valid configuration - a moderate
+    # jump exercises that "moved, must re-satisfy the constraint" behavior
+    # without the artificial stress of teleporting the centre far outside
+    # any neighborhood the (unmoved) major/minor Points could converge from.
+    sketch.points[center.id].x = 10.0
+    sketch.points[center.id].y = -5.0
 
     result = solve_sketch(sketch)
 
@@ -105,6 +157,35 @@ def test_solving_keeps_the_major_point_at_a_fixed_distance_after_moving_center()
     c = sketch.points[ellipse.center_point_id]
     m = sketch.points[ellipse.major_point_id]
     assert math.hypot(m.x - c.x, m.y - c.y) == pytest.approx(5.0)
+
+
+def test_solving_keeps_the_minor_axis_perpendicular_after_dragging_the_major_point():
+    """A real drag: rotating the major axis by dragging its Point must
+    carry the minor axis along with it (via the PerpendicularConstraint),
+    not leave it pointing in its original, now-stale direction."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(10.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=4.0)
+
+    # Drag the major point to a new angle - roughly 30 degrees, not exactly
+    # on the circle of radius 10, to also exercise the radius constraint
+    # re-solving to the correct distance.
+    sketch.points[major.id].x = 9.0
+    sketch.points[major.id].y = 5.5
+
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({major.id}))
+
+    assert result.converged
+    c = sketch.points[ellipse.center_point_id]
+    m = sketch.points[ellipse.major_point_id]
+    n = sketch.points[ellipse.minor_point_id]
+    major_angle = math.atan2(m.y - c.y, m.x - c.x)
+    minor_angle = math.atan2(n.y - c.y, n.x - c.x)
+    angle_diff = abs(((minor_angle - major_angle + math.pi) % (2 * math.pi)) - math.pi)
+    assert angle_diff == pytest.approx(math.pi / 2, abs=1e-6)
+    assert math.hypot(m.x - c.x, m.y - c.y) == pytest.approx(10.0, abs=1e-6)
+    assert math.hypot(n.x - c.x, n.y - c.y) == pytest.approx(4.0, abs=1e-6)
 
 
 def test_ellipse_has_no_endpoints_like_circle():
@@ -116,29 +197,37 @@ def test_ellipse_has_no_endpoints_like_circle():
     assert ellipse.endpoint_point_ids() is None
 
 
-def test_delete_ellipse_removes_its_major_constraint():
+def test_delete_ellipse_removes_its_constraints_and_axis_lines():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(5.0, 0.0)
     ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
-    assert len(sketch.constraints) == 1
+    assert len(sketch.constraints) == 3
 
     sketch.delete_ellipse(ellipse.id)
 
     assert ellipse.id not in sketch.entities
+    assert ellipse.major_axis_line_id not in sketch.entities
+    assert ellipse.minor_axis_line_id not in sketch.entities
     assert sketch.constraints == {}
+    # The Points themselves are left untouched, same as delete_line/delete_circle.
+    assert center.id in sketch.points
+    assert ellipse.major_point_id in sketch.points
+    assert ellipse.minor_point_id in sketch.points
 
 
 def test_point_deletion_is_blocked_while_referenced_by_an_ellipse():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(5.0, 0.0)
-    sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
+    ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
 
     with pytest.raises(ValueError):
         sketch.delete_point(center.id)
     with pytest.raises(ValueError):
         sketch.delete_point(start.id)
+    with pytest.raises(ValueError):
+        sketch.delete_point(ellipse.minor_point_id)
 
 
 # --- Profile detection -------------------------------------------------------
@@ -345,7 +434,11 @@ def test_list_ellipses_returns_every_ellipse_in_the_sketch():
     assert [e["id"] for e in response.json()] == [ellipse["id"]]
 
 
-def test_update_ellipse_minor_radius_over_the_api():
+def test_update_ellipse_minor_radius_by_patching_its_distance_constraint_over_the_api():
+    """Feedback round: minor_radius is no longer a field on EllipseUpdate -
+    like Circle/Arc's own radius, it's edited by PATCHing its backing
+    DistanceConstraint (`minor_constraint_id`) via the ordinary
+    `/constraints/{id}` endpoint."""
     sketch = _create_sketch()
     center = _create_point(sketch["id"], 0.0, 0.0)
     major = _create_point(sketch["id"], 9.0, 0.0)
@@ -355,27 +448,26 @@ def test_update_ellipse_minor_radius_over_the_api():
     ).json()
 
     response = client.patch(
-        f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}", json={"minor_radius": 5.0}
+        f"/sketch/sketches/{sketch['id']}/constraints/{_minor_constraint_id(sketch['id'], ellipse['id'])}",
+        json={"value": 5.0},
     )
-
     assert response.status_code == 200
-    assert response.json()["minor_radius"] == pytest.approx(5.0)
+
+    updated = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}").json()
+    assert updated["minor_radius"] == pytest.approx(5.0)
 
 
-def test_update_ellipse_rejects_minor_radius_exceeding_major_radius():
-    sketch = _create_sketch()
-    center = _create_point(sketch["id"], 0.0, 0.0)
-    major = _create_point(sketch["id"], 9.0, 0.0)
-    ellipse = client.post(
-        f"/sketch/sketches/{sketch['id']}/ellipses",
-        json={"center_point_id": center["id"], "major_point_id": major["id"], "minor_radius": 3.0},
-    ).json()
-
-    response = client.patch(
-        f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}", json={"minor_radius": 50.0}
-    )
-
-    assert response.status_code == 400
+def _minor_constraint_id(sketch_id: str, ellipse_id: str) -> str:
+    constraints = client.get(f"/sketch/sketches/{sketch_id}/constraints").json()
+    ellipse = client.get(f"/sketch/sketches/{sketch_id}/ellipses/{ellipse_id}").json()
+    for constraint in constraints:
+        if (
+            constraint["type"] == "distance"
+            and {constraint["point_a_id"], constraint["point_b_id"]}
+            == {ellipse["center_point_id"], ellipse["minor_point_id"]}
+        ):
+            return constraint["id"]
+    raise AssertionError("minor radius DistanceConstraint not found")
 
 
 def test_delete_ellipse_over_the_api():

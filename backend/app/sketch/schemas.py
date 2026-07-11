@@ -167,9 +167,11 @@ class EllipseCreate(BaseModel):
     existing major-axis Point's id (explicit sharing) or a major radius
     and angle (radians from the +x axis), which creates a new major-axis
     Point - mirrors CircleCreate's existing-vs-computed-point pattern.
-    `minor_radius` is always required directly (see the backend's
-    `app.sketch.models.Ellipse` docstring for why it's a plain value, not
-    a second Point) and must not exceed the major radius."""
+    `minor_radius` always places a brand-new minor-axis Point exactly
+    perpendicular to the major axis (see the backend's
+    `app.sketch.models.Ellipse` docstring - there is no existing-minor-
+    Point sharing option, since a minor-axis Point can only ever come from
+    an Ellipse's own creation) and must not exceed the major radius."""
 
     center_point_id: str
     major_point_id: str | None = None
@@ -193,6 +195,9 @@ class EllipseResponse(BaseModel):
     id: str
     center_point_id: str
     major_point_id: str
+    minor_point_id: str
+    major_axis_line_id: str
+    minor_axis_line_id: str
     major_radius: float
     minor_radius: float
     rotation: float
@@ -200,13 +205,12 @@ class EllipseResponse(BaseModel):
 
 
 class EllipseUpdate(BaseModel):
-    """Update an ellipse's minor radius and/or construction flag.
-    `minor_radius`, unlike a Circle/Arc's radius, has no backing Point/
-    DistanceConstraint (see the Ellipse class docstring) - PATCHing it is
-    the *only* way to change it, mirroring Line's own `length` field
-    (also a directly-editable derived dimension)."""
+    """Update an ellipse's construction flag. There is no radius field
+    here: like Circle/Arc, both of an Ellipse's radii are now driven by
+    real DistanceConstraints (see the Ellipse class docstring) - PATCH
+    `major_constraint_id`/`minor_constraint_id` via the ordinary
+    `/constraints/{id}` endpoint instead."""
 
-    minor_radius: float | None = None
     construction: bool | None = None
 
 

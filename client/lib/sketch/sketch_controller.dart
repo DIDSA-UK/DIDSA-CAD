@@ -80,6 +80,9 @@ class SketchEllipseView {
   final String id;
   final String centerPointId;
   final String majorPointId;
+  final String minorPointId;
+  final String majorAxisLineId;
+  final String minorAxisLineId;
   final double minorRadius;
   final bool construction;
 
@@ -87,6 +90,9 @@ class SketchEllipseView {
     required this.id,
     required this.centerPointId,
     required this.majorPointId,
+    required this.minorPointId,
+    required this.majorAxisLineId,
+    required this.minorAxisLineId,
     required this.minorRadius,
     this.construction = false,
   });
@@ -1882,7 +1888,9 @@ class SketchController extends ChangeNotifier {
     for (final ellipse in ellipses.values) {
       final center = points[ellipse.centerPointId];
       final major = points[ellipse.majorPointId];
-      if (center == null || major == null) continue;
+      final minor = points[ellipse.minorPointId];
+      if (center == null || major == null || minor == null) continue;
+      final liveMinorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
       final distanceToEllipse = _approxDistanceToEllipseBoundary(
         x,
         y,
@@ -1890,7 +1898,7 @@ class SketchController extends ChangeNotifier {
         center.y,
         major.x,
         major.y,
-        ellipse.minorRadius,
+        liveMinorRadius,
       );
       if (distanceToEllipse != null && distanceToEllipse <= radius) {
         return SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id);
@@ -3402,8 +3410,13 @@ class SketchController extends ChangeNotifier {
             arcs.remove(current.id);
             break;
           case SelectionKind.ellipse:
+            final ellipse = ellipses[current.id];
             await _api.deleteEllipse(_sketchId!, current.id);
             ellipses.remove(current.id);
+            if (ellipse != null) {
+              lines.remove(ellipse.majorAxisLineId);
+              lines.remove(ellipse.minorAxisLineId);
+            }
             break;
           case SelectionKind.spline:
             await _api.deleteSpline(_sketchId!, current.id);
@@ -3535,9 +3548,29 @@ class SketchController extends ChangeNotifier {
         id: created.id,
         centerPointId: created.centerPointId,
         majorPointId: created.majorPointId,
+        minorPointId: created.minorPointId,
+        majorAxisLineId: created.majorAxisLineId,
+        minorAxisLineId: created.minorAxisLineId,
         minorRadius: created.minorRadius,
         construction: created.construction,
       );
+      lines[created.majorAxisLineId] = SketchLineView(
+        id: created.majorAxisLineId,
+        startPointId: created.centerPointId,
+        endPointId: created.majorPointId,
+        construction: true,
+      );
+      lines[created.minorAxisLineId] = SketchLineView(
+        id: created.minorAxisLineId,
+        startPointId: created.centerPointId,
+        endPointId: created.minorPointId,
+        construction: true,
+      );
+      // The new minor-axis Point isn't locally known yet - see the main
+      // Ellipse-tool creation flow's own comment for why this needs an
+      // explicit fetch.
+      final minorPoint = await _api.getPoint(_sketchId!, created.minorPointId);
+      points[minorPoint.id] = SketchPointView(id: minorPoint.id, x: minorPoint.x, y: minorPoint.y);
     }
     for (final spline in capturedSplines) {
       // Unlike Circle/Arc/Ellipse, only the through-points are passed
@@ -3730,50 +3763,6 @@ class SketchController extends ChangeNotifier {
     });
   }
 
-  /// [ellipseId]'s current minor radius, or null if it isn't a known
-  /// Ellipse - drives a "Set Minor Radius" ribbon action's pre-filled
-  /// value, mirroring [lineLength].
-  double? ellipseMinorRadius(String ellipseId) => ellipses[ellipseId]?.minorRadius;
-
-  /// Directly PATCHes [ellipseId]'s minor radius - unlike [setLineLength],
-  /// there is no DistanceConstraint to create/update here (see the
-  /// Ellipse class's own docstring for why minor_radius is a plain field
-  /// rather than a second constrained Point), so this always goes
-  /// straight to the backend's PATCH endpoint, mirroring
-  /// [toggleSelectedConstruction]'s direct-PATCH pattern. A no-op if
-  /// [ellipseId] isn't a known Ellipse or [value] fails the backend's own
-  /// 0 < minorRadius <= majorRadius validation (surfaces via
-  /// [errorMessage], same as any other rejected API call).
-  Future<void> setEllipseMinorRadius(String ellipseId, double value) async {
-    if (_busy || _sketchId == null) return;
-    final ellipse = ellipses[ellipseId];
-    if (ellipse == null) return;
-    final oldValue = ellipse.minorRadius;
-
-    await _runGuarded(() async {
-      final updated = await _api.updateEllipse(_sketchId!, ellipseId, minorRadius: value);
-      ellipses[ellipseId] = SketchEllipseView(
-        id: updated.id,
-        centerPointId: updated.centerPointId,
-        majorPointId: updated.majorPointId,
-        minorRadius: updated.minorRadius,
-        construction: updated.construction,
-      );
-      _pushUndo(() async {
-        final reverted = await _api.updateEllipse(_sketchId!, ellipseId, minorRadius: oldValue);
-        ellipses[ellipseId] = SketchEllipseView(
-          id: reverted.id,
-          centerPointId: reverted.centerPointId,
-          majorPointId: reverted.majorPointId,
-          minorRadius: reverted.minorRadius,
-          construction: reverted.construction,
-        );
-      });
-      await _solveAndTrackDof();
-      await _refreshAllPoints();
-    });
-  }
-
   /// PATCHes the selected single Constraint's value (new work package item
   /// 3's "change value" ribbon action) - mirrors [confirmGhostValue]'s
   /// PATCH-existing-constraint path, then deselects and closes the ribbon on
@@ -3868,6 +3857,9 @@ class SketchController extends ChangeNotifier {
             id: updated.id,
             centerPointId: updated.centerPointId,
             majorPointId: updated.majorPointId,
+            minorPointId: updated.minorPointId,
+            majorAxisLineId: updated.majorAxisLineId,
+            minorAxisLineId: updated.minorAxisLineId,
             minorRadius: updated.minorRadius,
             construction: updated.construction,
           );
@@ -4122,16 +4114,19 @@ class SketchController extends ChangeNotifier {
           }
           return;
         case SelectionKind.ellipse:
-          // Only the major radius is dimensioned this way (backed by a
-          // real DistanceConstraint, same as Circle/Arc) - the minor
-          // radius has no constraint of its own to build a ghost from
-          // (see the Ellipse class's docstring) and is instead edited
-          // directly via [setEllipseMinorRadius].
+          // Feedback round: both axes are now real, independently
+          // dimensionable DistanceConstraints (see the Ellipse class's
+          // docstring) - selecting the whole Ellipse offers both axes'
+          // radius+diameter ghosts at once, distinguished by keyPrefix so
+          // they don't collide in the same _ghosts list.
           final ellipse = ellipses[sel.first.id];
           if (ellipse == null) {
             _ghosts = [];
           } else {
-            _buildRadiusGhosts(ellipse.centerPointId, ellipse.majorPointId);
+            _ghosts = [
+              ..._radiusGhosts(ellipse.centerPointId, ellipse.majorPointId, keyPrefix: 'major'),
+              ..._radiusGhosts(ellipse.centerPointId, ellipse.minorPointId, keyPrefix: 'minor'),
+            ];
           }
           return;
         case SelectionKind.spline:
@@ -4144,9 +4139,8 @@ class SketchController extends ChangeNotifier {
         case SelectionKind.text:
           // Likewise, a Text entity's content/size/rotation are plain
           // direct edits (see setTextProperties, wired to the ribbon's own
-          // "Edit Text" action, mirroring setEllipseMinorRadius), not a
-          // DistanceConstraint-backed dimension - nothing to build a ghost
-          // for here.
+          // "Edit Text" action), not a DistanceConstraint-backed dimension -
+          // nothing to build a ghost for here.
         case SelectionKind.point:
         case SelectionKind.constraint:
           _ghosts = [];
@@ -4272,12 +4266,27 @@ class SketchController extends ChangeNotifier {
   /// (center/startPointId - either of an Arc's two radius-defining Points
   /// works equally, see [isRadiusDistanceConstraint]'s own doc comment) -
   /// [centerPointId]/[edgePointId] generalize both shapes' "center Point,
-  /// Point on the circle" pair to one shared builder.
+  /// Point on the circle" pair to one shared builder. [keyPrefix] keeps
+  /// each pair's ghost keys unique when more than one radius ghost pair
+  /// coexists in the same selection (an Ellipse's major and minor axes -
+  /// see [_rebuildDimensionGhosts]'s `SelectionKind.ellipse` case).
+  List<DimensionGhost> _radiusGhosts(String centerPointId, String edgePointId, {String keyPrefix = ''}) => [
+        DimensionGhost(
+          key: '${keyPrefix}radius',
+          kind: GhostKind.radius,
+          pointAId: centerPointId,
+          pointBId: edgePointId,
+        ),
+        DimensionGhost(
+          key: '${keyPrefix}diameter',
+          kind: GhostKind.diameter,
+          pointAId: centerPointId,
+          pointBId: edgePointId,
+        ),
+      ];
+
   void _buildRadiusGhosts(String centerPointId, String edgePointId) {
-    _ghosts = [
-      DimensionGhost(key: 'radius', kind: GhostKind.radius, pointAId: centerPointId, pointBId: edgePointId),
-      DimensionGhost(key: 'diameter', kind: GhostKind.diameter, pointAId: centerPointId, pointBId: edgePointId),
-    ];
+    _ghosts = _radiusGhosts(centerPointId, edgePointId);
   }
 
   /// The angle (degrees, 0-180) between two Lines' direction vectors - the
@@ -4690,6 +4699,9 @@ class SketchController extends ChangeNotifier {
         id: ellipse.id,
         centerPointId: ellipse.centerPointId,
         majorPointId: ellipse.majorPointId,
+        minorPointId: ellipse.minorPointId,
+        majorAxisLineId: ellipse.majorAxisLineId,
+        minorAxisLineId: ellipse.minorAxisLineId,
         minorRadius: ellipse.minorRadius,
         construction: ellipse.construction,
       );
@@ -5542,12 +5554,38 @@ class SketchController extends ChangeNotifier {
         id: ellipse.id,
         centerPointId: ellipse.centerPointId,
         majorPointId: ellipse.majorPointId,
+        minorPointId: ellipse.minorPointId,
+        majorAxisLineId: ellipse.majorAxisLineId,
+        minorAxisLineId: ellipse.minorAxisLineId,
         minorRadius: ellipse.minorRadius,
         construction: ellipse.construction,
+      );
+      // Feedback round: the backend now also creates a real minor-axis
+      // Point (placed exactly perpendicular to the major axis) alongside
+      // the Ellipse - not locally known yet, unlike centerId/majorId which
+      // the earlier taps already placed, so it needs an explicit fetch
+      // (_refreshAllPoints only refreshes already-known Points).
+      final minorPoint = await _api.getPoint(_sketchId!, ellipse.minorPointId);
+      points[minorPoint.id] = SketchPointView(id: minorPoint.id, x: minorPoint.x, y: minorPoint.y);
+      // Two real construction Lines (major/minor axis) - mirrors the Slot
+      // tool's own centerline registration.
+      lines[ellipse.majorAxisLineId] = SketchLineView(
+        id: ellipse.majorAxisLineId,
+        startPointId: ellipse.centerPointId,
+        endPointId: ellipse.majorPointId,
+        construction: true,
+      );
+      lines[ellipse.minorAxisLineId] = SketchLineView(
+        id: ellipse.minorAxisLineId,
+        startPointId: ellipse.centerPointId,
+        endPointId: ellipse.minorPointId,
+        construction: true,
       );
       _pushUndo(() async {
         await _api.deleteEllipse(_sketchId!, ellipse.id);
         ellipses.remove(ellipse.id);
+        lines.remove(ellipse.majorAxisLineId);
+        lines.remove(ellipse.minorAxisLineId);
       });
 
       // Same rule as a completed Circle/Arc/Polygon/Slot: one finished entity = one solve call.
@@ -5645,8 +5683,7 @@ class SketchController extends ChangeNotifier {
   /// (see [_clickTextTool]) that commits immediately with this
   /// placeholder, exactly like [SketchTool.point]'s own single-tap
   /// commit - refined afterward via the ribbon's "Edit Text" action
-  /// ([setTextProperties]), mirroring how [setEllipseMinorRadius] refines
-  /// Ellipse's own minor radius after the fact.
+  /// ([setTextProperties]).
   static const String _defaultTextContent = 'Text';
 
   /// [SketchTool.text]: a single, self-terminating tap that places the
@@ -5683,11 +5720,11 @@ class SketchController extends ChangeNotifier {
     });
   }
 
-  /// The ribbon's "Edit Text" action (mirrors [setEllipseMinorRadius]):
-  /// PATCHes whichever of [content]/[size]/[rotationDegrees] are non-null,
-  /// then re-fetches the preview outline (see [_refreshTextPreview]) since
-  /// any of those can change the actual glyph geometry. Reversible, same
-  /// PATCH-to-the-old-values undo shape [setEllipseMinorRadius] uses.
+  /// The ribbon's "Edit Text" action: PATCHes whichever of
+  /// [content]/[size]/[rotationDegrees] are non-null, then re-fetches the
+  /// preview outline (see [_refreshTextPreview]) since any of those can
+  /// change the actual glyph geometry. Reversible, the same PATCH-to-the-
+  /// old-values undo shape used throughout this file.
   Future<void> setTextProperties(
     String textId, {
     String? content,

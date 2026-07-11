@@ -189,8 +189,11 @@ def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
         id=ellipse.id,
         center_point_id=ellipse.center_point_id,
         major_point_id=ellipse.major_point_id,
+        minor_point_id=ellipse.minor_point_id,
+        major_axis_line_id=ellipse.major_axis_line_id,
+        minor_axis_line_id=ellipse.minor_axis_line_id,
         major_radius=ellipse.major_radius(sketch.points),
-        minor_radius=ellipse.minor_radius,
+        minor_radius=ellipse.minor_radius(sketch.points),
         rotation=ellipse.rotation(sketch.points),
         construction=ellipse.construction,
     )
@@ -580,14 +583,6 @@ def get_ellipse(sketch_id: str, ellipse_id: str) -> EllipseResponse:
 def update_ellipse(sketch_id: str, ellipse_id: str, payload: EllipseUpdate) -> EllipseResponse:
     sketch = _get_sketch_or_404(sketch_id)
     ellipse = _get_ellipse_or_404(sketch, ellipse_id)
-    if payload.minor_radius is not None:
-        if payload.minor_radius <= 0:
-            raise HTTPException(status_code=400, detail="An ellipse's minor radius must be positive")
-        if payload.minor_radius > ellipse.major_radius(sketch.points):
-            raise HTTPException(
-                status_code=400, detail="An ellipse's minor radius cannot exceed its major radius"
-            )
-        ellipse.minor_radius = payload.minor_radius
     if payload.construction is not None:
         ellipse.construction = payload.construction
     return _ellipse_response(sketch, ellipse)

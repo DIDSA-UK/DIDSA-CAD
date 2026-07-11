@@ -104,22 +104,10 @@ class SketchRibbon extends StatelessWidget {
               ? null
               : () => _showSetLengthDialog(context, controller, selectionSet.first.id),
         ),
-      // Mirrors the Line "Length" chip above - the only Ellipse dimension
-      // with no DistanceConstraint of its own to dimension via Dimension
-      // mode (see the Ellipse class's docstring), so it needs its own
-      // direct-edit entry point here.
-      if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.ellipse)
-        _RibbonActionChip(
-          icon: Icons.straighten,
-          label: 'Minor Radius',
-          onTap: controller.busy
-              ? null
-              : () => _showSetMinorRadiusDialog(context, controller, selectionSet.first.id),
-        ),
       // A Text entity has no draggable/tap-driven way to change its own
       // content/size/rotation at all (unlike every geometric entity here,
       // whose shape comes from its Points) - this is its only edit entry
-      // point, mirroring the Line/Ellipse direct-edit chips above.
+      // point, mirroring the Line direct-edit chip above.
       if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.text)
         _RibbonActionChip(
           icon: Icons.edit_outlined,
@@ -373,102 +361,6 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Set Length'),
-      content: TextField(
-        controller: widget.textController,
-        focusNode: _focusNode,
-        autofocus: true,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(
-          suffixText: 'mm',
-          errorText: _error,
-          border: const OutlineInputBorder(),
-        ),
-        onSubmitted: (_) => _submit(),
-      ),
-      actions: [
-        TextButton(
-          onPressed: _cancel,
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: _submit,
-          child: const Text('Set'),
-        ),
-      ],
-    );
-  }
-}
-
-/// Prompts for a new minor radius for the given Ellipse, pre-filled with
-/// its current value (2dp), then calls
-/// [SketchController.setEllipseMinorRadius] - mirrors
-/// [_showSetLengthDialog] exactly, the direct-edit counterpart for the one
-/// Ellipse dimension with no DistanceConstraint of its own (see the
-/// Ellipse class's docstring).
-Future<void> _showSetMinorRadiusDialog(
-  BuildContext context,
-  SketchController controller,
-  String ellipseId,
-) async {
-  final currentMinorRadius = controller.ellipseMinorRadius(ellipseId);
-  final textController = TextEditingController(
-    text: currentMinorRadius == null ? '' : currentMinorRadius.toStringAsFixed(2),
-  );
-  final value = await showDialog<double>(
-    context: context,
-    builder: (context) => _SetMinorRadiusDialog(textController: textController),
-  );
-  textController.dispose();
-  if (!context.mounted) return;
-  if (value != null) {
-    controller.setEllipseMinorRadius(ellipseId, value);
-  }
-}
-
-class _SetMinorRadiusDialog extends StatefulWidget {
-  final TextEditingController textController;
-
-  const _SetMinorRadiusDialog({required this.textController});
-
-  @override
-  State<_SetMinorRadiusDialog> createState() => _SetMinorRadiusDialogState();
-}
-
-class _SetMinorRadiusDialogState extends State<_SetMinorRadiusDialog> {
-  String? _error;
-  final FocusNode _focusNode = FocusNode();
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final value = double.tryParse(widget.textController.text);
-    if (value == null || value <= 0) {
-      setState(() => _error = 'Enter a positive number');
-      return;
-    }
-    _dismiss(value);
-  }
-
-  void _cancel() => _dismiss(null);
-
-  // Same post-frame-callback deferral as _SetLengthDialogState._dismiss -
-  // see that method's own comment for why.
-  void _dismiss(double? value) {
-    _focusNode.unfocus();
-    final navigator = Navigator.of(context);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (navigator.mounted) navigator.pop(value);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Set Minor Radius'),
       content: TextField(
         controller: widget.textController,
         focusNode: _focusNode,

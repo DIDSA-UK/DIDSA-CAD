@@ -210,32 +210,40 @@ class Arc(SketchEntity):
 
 @dataclass
 class Ellipse(SketchEntity):
-    """An ellipse defined by a center Point, a major-axis Point (a real,
-    independently addressable Point on the ellipse along its major axis -
-    its distance from center is the semi-major radius, its direction from
-    center is the major axis's own rotation, exactly mirroring Circle's
-    own center/radius Point pair), and a semi-minor radius stored as a
-    plain float rather than a second Point.
+    """An ellipse defined by a center Point, a major-axis Point, and a
+    minor-axis Point - all three real, independently addressable Points.
+    Both axis Points are solver-tracked via their own DistanceConstraint to
+    center (their distance is that axis's radius, their direction from
+    center is that axis's own rotation), exactly mirroring Circle's own
+    center/radius Point pair. A PerpendicularConstraint between two real
+    construction Lines (`major_axis_line_id`: center to major_point,
+    `minor_axis_line_id`: center to minor_point) keeps the minor axis
+    exactly perpendicular to the major axis under drag - both axes are
+    genuine, visible/selectable sketch geometry, not implied-but-invisible
+    relationships.
 
-    That asymmetry (one radius is solver-tracked via a Point +
-    DistanceConstraint, the other is a bare stored number) is deliberate,
-    not an oversight: a true ellipse's minor axis must stay exactly
-    perpendicular to its major axis, and there is no existing constraint
-    primitive here for "these two Points' directions from a shared origin
-    stay perpendicular" without adding real spoke Line entities purely to
-    hang a PerpendicularConstraint off of them - real complexity for a
-    relationship a plain stored scalar sidesteps entirely. Editing
-    `minor_radius` is a direct PATCH (see `EllipseUpdate`), the same shape
-    Line's own `length` field already uses for a derived-but-directly-
-    editable dimension. `major_radius` must always be >= `minor_radius`
-    (OCCT's own `gp_Elips` requirement, enforced at creation/update time -
-    see `Sketch.add_ellipse`/`app.sketch.router.update_ellipse`).
+    (Feedback round: this replaces an earlier design where minor_radius was
+    a bare stored float with no backing Point, specifically to avoid
+    needing these construction Lines "purely to hang a PerpendicularConstraint
+    off of them" - once a user explicitly wants those construction Lines
+    visible anyway, that objection no longer applies, and a plain stored
+    scalar becomes the odd one out instead of the simplification.)
+
+    `major_radius`/`minor_radius` must always satisfy major >= minor
+    (OCCT's own `gp_Elips` requirement, enforced at creation time - see
+    `Sketch.add_ellipse`). Both are edited the same way Circle/Arc's own
+    radius is: PATCHing the underlying DistanceConstraint
+    (`major_constraint_id`/`minor_constraint_id`) via
+    `app.sketch.router.update_constraint_value`, not a field on the
+    Ellipse itself.
 
     Does NOT override `endpoint_point_ids()`, for the same reason Circle
     doesn't: an Ellipse is always its own standalone closed profile, never
     part of a Line/Arc chain's connectivity graph - see `profile.py`'s
     `_ellipse_profile`/`_is_ellipse_profile`, mirroring Circle's own
-    standalone-profile handling.
+    standalone-profile handling. Its two axis Lines are always
+    `construction=True`, so `profile.py`'s `real_entities` filter already
+    excludes them from that chain-walking graph on its own.
 
     No dedicated py-slvs entity is involved (py-slvs 1.0.6 has no ellipse
     primitive at all, confirmed by inspecting the installed solver module -
@@ -247,7 +255,11 @@ class Ellipse(SketchEntity):
     center_point_id: str
     major_point_id: str
     major_constraint_id: str
-    minor_radius: float
+    minor_point_id: str
+    minor_constraint_id: str
+    major_axis_line_id: str
+    minor_axis_line_id: str
+    perpendicular_constraint_id: str
 
     @property
     def type(self) -> str:
@@ -257,6 +269,11 @@ class Ellipse(SketchEntity):
         center = points[self.center_point_id]
         major = points[self.major_point_id]
         return math.hypot(major.x - center.x, major.y - center.y)
+
+    def minor_radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center_point_id]
+        minor = points[self.minor_point_id]
+        return math.hypot(minor.x - center.x, minor.y - center.y)
 
     def rotation(self, points: dict[str, Point]) -> float:
         """The major axis's direction from center, in radians from the +x
@@ -366,7 +383,7 @@ class TextEntity(SketchEntity):
     `rotation_degrees` is a plain, directly user-set value (unlike
     Ellipse's own `rotation()`, which is *derived* from a second Point) -
     there is no second Point here to derive an angle from, so this is
-    edited the same direct-PATCH way Ellipse's `minor_radius` is.
+    edited the same direct-PATCH way Line's own `length` field is.
 
     Does NOT override `endpoint_point_ids()` (inherits the base class's
     `None`, same as Circle/Ellipse): Text is always its own standalone
@@ -634,8 +651,15 @@ class Sketch:
         existing major-axis Point (explicit sharing) or a new Point
         computed from a major radius and angle (radians from the +x axis),
         mirroring add_circle's existing-vs-computed-point pattern.
-        `minor_radius` is always a plain value (see the Ellipse class
-        docstring), never backed by a Point.
+
+        `minor_radius` places a new minor-axis Point exactly perpendicular
+        to the major axis (never an explicit-sharing option - there is no
+        pre-existing minor-axis Point a caller could already know the id
+        of) - both axis Points get their own real DistanceConstraint, tied
+        together by a PerpendicularConstraint between two new construction
+        Lines (center to each axis Point), so both axes stay genuine,
+        visible sketch geometry that remains perpendicular under drag (see
+        the Ellipse class docstring).
         """
         center = self.points[center_point_id]
         if major_point_id is None:
@@ -644,11 +668,13 @@ class Sketch:
                 center.y + major_radius * math.sin(angle),
             ).id
             distance = major_radius
+            major_angle = angle
         elif major_point_id not in self.points:
             raise KeyError(major_point_id)
         else:
             major_point = self.points[major_point_id]
             distance = math.hypot(major_point.x - center.x, major_point.y - center.y)
+            major_angle = math.atan2(major_point.y - center.y, major_point.x - center.x)
 
         if center_point_id == major_point_id:
             raise ValueError("An ellipse cannot have the same center and major-axis point")
@@ -657,13 +683,28 @@ class Sketch:
         if minor_radius > distance:
             raise ValueError("An ellipse's minor radius cannot exceed its major radius")
 
+        minor_angle = major_angle + math.pi / 2
+        minor_point_id = self.add_point(
+            center.x + minor_radius * math.cos(minor_angle),
+            center.y + minor_radius * math.sin(minor_angle),
+        ).id
+
         major_constraint = self.add_distance_constraint(center_point_id, major_point_id, distance)
+        minor_constraint = self.add_distance_constraint(center_point_id, minor_point_id, minor_radius)
+        major_axis_line = self.add_line(center_point_id, major_point_id, construction=True)
+        minor_axis_line = self.add_line(center_point_id, minor_point_id, construction=True)
+        perpendicular = self.add_perpendicular_constraint(major_axis_line.id, minor_axis_line.id)
+
         ellipse = Ellipse(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,
             major_point_id=major_point_id,
             major_constraint_id=major_constraint.id,
-            minor_radius=minor_radius,
+            minor_point_id=minor_point_id,
+            minor_constraint_id=minor_constraint.id,
+            major_axis_line_id=major_axis_line.id,
+            minor_axis_line_id=minor_axis_line.id,
+            perpendicular_constraint_id=perpendicular.id,
             construction=construction,
         )
         self.entities[ellipse.id] = ellipse
@@ -811,17 +852,23 @@ class Sketch:
         self.constraints.pop(arc.end_radius_constraint_id, None)
 
     def delete_ellipse(self, ellipse_id: str) -> None:
-        """Remove an Ellipse and the major-radius DistanceConstraint
-        `add_ellipse` always creates alongside it - same "internal
-        implementation detail" exception `delete_circle`/`delete_arc`
-        already make for their own radius constraint(s). The center/
-        major-axis Points themselves are left untouched, same as
+        """Remove an Ellipse and everything `add_ellipse` always creates
+        alongside it - both radius DistanceConstraints, the
+        PerpendicularConstraint tying its two axes together, and both axis
+        construction Lines - same "internal implementation detail"
+        exception `delete_circle`/`delete_arc` already make for their own
+        radius constraint(s). The center/major-axis/minor-axis Points
+        themselves are left untouched, same as
         `delete_line`/`delete_circle`/`delete_arc`."""
         ellipse = self.entities.get(ellipse_id)
         if not isinstance(ellipse, Ellipse):
             raise KeyError(ellipse_id)
         del self.entities[ellipse_id]
+        del self.entities[ellipse.major_axis_line_id]
+        del self.entities[ellipse.minor_axis_line_id]
         self.constraints.pop(ellipse.major_constraint_id, None)
+        self.constraints.pop(ellipse.minor_constraint_id, None)
+        self.constraints.pop(ellipse.perpendicular_constraint_id, None)
 
     def delete_spline(self, spline_id: str) -> None:
         """Remove a Spline and every `SplineTangentConstraint` `add_spline`
@@ -863,7 +910,11 @@ class Sketch:
                 entity.end_point_id,
             ):
                 return f"Point is still referenced by arc {entity.id}"
-            if isinstance(entity, Ellipse) and point_id in (entity.center_point_id, entity.major_point_id):
+            if isinstance(entity, Ellipse) and point_id in (
+                entity.center_point_id,
+                entity.major_point_id,
+                entity.minor_point_id,
+            ):
                 return f"Point is still referenced by ellipse {entity.id}"
             if isinstance(entity, Spline) and (
                 point_id in entity.through_point_ids or point_id in entity.control_point_ids

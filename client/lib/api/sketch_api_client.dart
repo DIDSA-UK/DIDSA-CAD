@@ -130,6 +130,9 @@ class EllipseDto {
   final String id;
   final String centerPointId;
   final String majorPointId;
+  final String minorPointId;
+  final String majorAxisLineId;
+  final String minorAxisLineId;
   final double majorRadius;
   final double minorRadius;
   final double rotation;
@@ -139,6 +142,9 @@ class EllipseDto {
     required this.id,
     required this.centerPointId,
     required this.majorPointId,
+    required this.minorPointId,
+    required this.majorAxisLineId,
+    required this.minorAxisLineId,
     required this.majorRadius,
     required this.minorRadius,
     required this.rotation,
@@ -149,6 +155,9 @@ class EllipseDto {
         id: json['id'] as String,
         centerPointId: json['center_point_id'] as String,
         majorPointId: json['major_point_id'] as String,
+        minorPointId: json['minor_point_id'] as String,
+        majorAxisLineId: json['major_axis_line_id'] as String,
+        minorAxisLineId: json['minor_axis_line_id'] as String,
         majorRadius: (json['major_radius'] as num).toDouble(),
         minorRadius: (json['minor_radius'] as num).toDouble(),
         rotation: (json['rotation'] as num).toDouble(),
@@ -1036,22 +1045,16 @@ class SketchApiClient {
         (body) => ArcDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// Toggles an Ellipse's construction flag and/or resizes its
-  /// `minor_radius` (directly PATCHable, mirroring how a Line's `length`
-  /// is - see the Ellipse class's own docstring for why minor_radius has
-  /// no backing Point/constraint of its own) - mirrors [updateArc].
-  Future<EllipseDto> updateEllipse(
-    String sketchId,
-    String ellipseId, {
-    bool? construction,
-    double? minorRadius,
-  }) =>
-      _send(
+  /// Toggles an Ellipse's construction flag - mirrors [updateArc]. There is
+  /// no radius field here: like Circle/Arc, both of an Ellipse's radii are
+  /// now driven by real DistanceConstraints (see the Ellipse class's own
+  /// docstring) - resize either one via [updateConstraintValue] against
+  /// its `major_constraint_id`/`minor_constraint_id` instead.
+  Future<EllipseDto> updateEllipse(String sketchId, String ellipseId, {bool? construction}) => _send(
         () => _httpClient.patch(
               _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
               headers: _headers,
               body: jsonEncode({
-                if (minorRadius != null) 'minor_radius': minorRadius,
                 if (construction != null) 'construction': construction,
               }),
             ),

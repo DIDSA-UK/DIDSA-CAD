@@ -199,8 +199,10 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         rotation = ellipse.rotation(sketch.points)
         axis = _ellipse_axis(basis, center.x, center.y, rotation)
         # gp_Elips requires MajorRadius >= MinorRadius - already enforced at
-        # creation/update time (see Sketch.add_ellipse/EllipseUpdate).
-        edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, ellipse.minor_radius)).Edge()
+        # creation time (see Sketch.add_ellipse); either radius can drift
+        # past that once its own DistanceConstraint is edited post-creation,
+        # same as any other solver-tracked dimension.
+        edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, ellipse.minor_radius(sketch.points))).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
 
     if len(profile.line_ids) == 1 and isinstance(sketch.entities.get(profile.line_ids[0]), TextEntity):
