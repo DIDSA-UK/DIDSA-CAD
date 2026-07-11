@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import 'sketch_controller.dart';
 
@@ -98,7 +99,7 @@ class SketchRibbon extends StatelessWidget {
       // inserted first/leftmost per the brief, ahead of Make Construction.
       if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.line)
         _RibbonActionChip(
-          icon: Icons.straighten,
+          svgAsset: 'assets/icons/ribbon/ribbon_length.svg',
           label: 'Length',
           onTap: controller.busy
               ? null
@@ -110,7 +111,7 @@ class SketchRibbon extends StatelessWidget {
       // point, mirroring the Line direct-edit chip above.
       if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.text)
         _RibbonActionChip(
-          icon: Icons.edit_outlined,
+          svgAsset: 'assets/icons/ribbon/ribbon_edit_text.svg',
           label: 'Edit Text',
           onTap: controller.busy
               ? null
@@ -118,20 +119,24 @@ class SketchRibbon extends StatelessWidget {
         ),
       if (isConstruction != null)
         _RibbonActionChip(
-          icon: isConstruction ? Icons.architecture : Icons.architecture_outlined,
+          // A single delivered glyph covers both states of this toggle -
+          // the label text below it (which does change) already carries
+          // the "which way will this flip" meaning the old two-icon
+          // (architecture/architecture_outlined) placeholder pair used to.
+          svgAsset: 'assets/icons/ribbon/ribbon_make_construction.svg',
           label: isConstruction ? 'Make Solid' : 'Make Construction',
           onTap: controller.busy ? null : controller.toggleSelectedConstruction,
         ),
       for (final option in controller.availableConstraintOptions)
         _RibbonActionChip(
-          icon: _iconFor(option.type),
+          svgAsset: _svgAssetFor(option.type),
           label: option.label,
           onTap: option.wired && !controller.busy
               ? () => controller.applyConstraintOption(option.type)
               : null,
         ),
       _RibbonActionChip(
-        icon: Icons.delete_outline,
+        svgAsset: 'assets/icons/ribbon/ribbon_delete.svg',
         label: 'Delete',
         tooltip: blockedReason,
         onTap: blockedReason == null && !controller.busy
@@ -176,18 +181,18 @@ class SketchRibbon extends StatelessWidget {
     );
   }
 
-  IconData _iconFor(ConstraintOptionType type) {
+  String _svgAssetFor(ConstraintOptionType type) {
     return switch (type) {
-      ConstraintOptionType.vertical => Icons.height,
-      ConstraintOptionType.horizontal => Icons.swap_horiz,
-      ConstraintOptionType.parallel => Icons.drag_handle,
-      ConstraintOptionType.perpendicular => Icons.add,
-      ConstraintOptionType.equalLength => Icons.straighten,
-      ConstraintOptionType.coincident => Icons.join_full,
-      ConstraintOptionType.collinear => Icons.linear_scale,
-      ConstraintOptionType.concentric => Icons.adjust,
-      ConstraintOptionType.equalRadius => Icons.radio_button_unchecked,
-      ConstraintOptionType.tangent => Icons.circle,
+      ConstraintOptionType.vertical => 'assets/icons/ribbon/ribbon_vertical.svg',
+      ConstraintOptionType.horizontal => 'assets/icons/ribbon/ribbon_horizontal.svg',
+      ConstraintOptionType.parallel => 'assets/icons/ribbon/ribbon_parallel.svg',
+      ConstraintOptionType.perpendicular => 'assets/icons/ribbon/ribbon_perpendicular.svg',
+      ConstraintOptionType.equalLength => 'assets/icons/ribbon/ribbon_equal_length.svg',
+      ConstraintOptionType.coincident => 'assets/icons/ribbon/ribbon_coincident.svg',
+      ConstraintOptionType.collinear => 'assets/icons/ribbon/ribbon_collinear.svg',
+      ConstraintOptionType.concentric => 'assets/icons/ribbon/ribbon_concentric.svg',
+      ConstraintOptionType.equalRadius => 'assets/icons/ribbon/ribbon_equal_radius.svg',
+      ConstraintOptionType.tangent => 'assets/icons/ribbon/ribbon_tangent.svg',
     };
   }
 }
@@ -586,7 +591,15 @@ class _RibbonHeader extends StatelessWidget {
           ),
           IconButton(
             tooltip: 'Close',
-            icon: const Icon(Icons.close, size: 20),
+            icon: SvgPicture.asset(
+              'assets/icons/ribbon/ribbon_close.svg',
+              width: 20,
+              height: 20,
+              colorFilter: ColorFilter.mode(
+                Theme.of(context).colorScheme.onSurface,
+                BlendMode.srcIn,
+              ),
+            ),
             onPressed: onClose,
           ),
         ],
@@ -624,7 +637,15 @@ class _SelectedEntitiesList extends StatelessWidget {
             contentPadding: const EdgeInsets.only(left: 16, right: 4),
             title: Text(controller.selectionLabel(selection)),
             trailing: IconButton(
-              icon: const Icon(Icons.close, size: 18),
+              icon: SvgPicture.asset(
+                'assets/icons/ribbon/ribbon_close.svg',
+                width: 18,
+                height: 18,
+                colorFilter: ColorFilter.mode(
+                  Theme.of(context).colorScheme.onSurface,
+                  BlendMode.srcIn,
+                ),
+              ),
               tooltip: 'Remove from selection',
               onPressed: controller.busy ? null : () => controller.deselect(selection),
             ),
@@ -640,13 +661,13 @@ class _SelectedEntitiesList extends StatelessWidget {
 /// is null, which is how unwired [ConstraintOption]s and blocked actions
 /// (e.g. Delete on a still-referenced Point) render per Stage 13 item 6.
 class _RibbonActionChip extends StatelessWidget {
-  final IconData icon;
+  final String svgAsset;
   final String label;
   final VoidCallback? onTap;
   final String? tooltip;
 
   const _RibbonActionChip({
-    required this.icon,
+    required this.svgAsset,
     required this.label,
     required this.onTap,
     this.tooltip,
@@ -655,11 +676,29 @@ class _RibbonActionChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final disabled = onTap == null;
-    final color = disabled ? Colors.grey : null;
+    final color = disabled ? Colors.grey : Theme.of(context).colorScheme.onSurface;
     final column = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        IconButton(icon: Icon(icon, color: color), onPressed: onTap),
+        IconButton(
+          // A plain hover/long-press tooltip naming the action - distinct
+          // from this widget's own [tooltip] field (a *blocked-reason*
+          // explanation, shown only for Delete on a still-referenced
+          // Point/Line, wrapping the whole column below) - both can be
+          // active at once with no conflict, since Flutter tooltips nest
+          // fine and only the innermost one reacts to hovering the icon
+          // itself. Also gives tests a stable, label-based way to find
+          // this button now that the glyph itself is an opaque SVG asset,
+          // not a named IconData.
+          tooltip: label,
+          icon: SvgPicture.asset(
+            svgAsset,
+            width: 24,
+            height: 24,
+            colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+          ),
+          onPressed: onTap,
+        ),
         Text(label, style: TextStyle(fontSize: 11, color: color)),
       ],
     );
@@ -767,7 +806,15 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
           const SizedBox(width: 8),
           IconButton(
             tooltip: 'Apply',
-            icon: const Icon(Icons.check),
+            icon: SvgPicture.asset(
+              'assets/icons/ribbon/ribbon_apply.svg',
+              width: 24,
+              height: 24,
+              colorFilter: ColorFilter.mode(
+                Theme.of(context).colorScheme.onSurface,
+                BlendMode.srcIn,
+              ),
+            ),
             onPressed: widget.controller.busy ? null : _submit,
           ),
         ],

@@ -153,7 +153,7 @@ void main() {
       );
       await tester.pump();
 
-      await tester.tap(find.widgetWithIcon(IconButton, Icons.straighten));
+      await tester.tap(find.byTooltip('Length'));
       await tester.pumpAndSettle();
 
       // The dialog's autofocused TextField is now showing - tapping "Set"

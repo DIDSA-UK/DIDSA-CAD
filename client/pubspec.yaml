@@ -73,6 +73,7 @@ flutter:
     - assets/images/
     - assets/icons/sketch_tools/
     - assets/icons/actions/
+    - assets/icons/ribbon/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
