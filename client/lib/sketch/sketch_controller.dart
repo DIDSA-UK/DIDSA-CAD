@@ -2969,9 +2969,31 @@ class SketchController extends ChangeNotifier {
       }
     }
     for (final ellipse in ellipses.values) {
-      if (pointIds.contains(ellipse.centerPointId) || pointIds.contains(ellipse.majorPointId)) {
+      // Bug fix: an Ellipse's own axis Lines/minor-axis Point are real,
+      // independently selectable/deletable geometry now (see the Ellipse
+      // class's own docstring) - deleting just one of them while leaving
+      // the Ellipse behind would strand it pointing at a Line/Point that
+      // no longer exists. Cascade UP to the Ellipse from either direction,
+      // exactly like every other entity here cascades from its own Points.
+      if (pointIds.contains(ellipse.centerPointId) ||
+          pointIds.contains(ellipse.majorPointId) ||
+          pointIds.contains(ellipse.minorPointId) ||
+          lineIds.contains(ellipse.majorAxisLineId) ||
+          lineIds.contains(ellipse.minorAxisLineId)) {
         ellipseIds.add(ellipse.id);
       }
+    }
+    // The backend's own Sketch.delete_ellipse already deletes both axis
+    // Lines as part of deleting the Ellipse itself - if one of them is also
+    // independently queued in lineIds (selected directly, or pulled in via
+    // a shared Point), deleting it *first* would leave delete_ellipse
+    // trying to delete an already-gone Line. Drop them from lineIds here so
+    // each axis Line is deleted exactly once, via its owning Ellipse.
+    for (final ellipseId in ellipseIds) {
+      final ellipse = ellipses[ellipseId];
+      if (ellipse == null) continue;
+      lineIds.remove(ellipse.majorAxisLineId);
+      lineIds.remove(ellipse.minorAxisLineId);
     }
     for (final spline in splines.values) {
       if ([...spline.throughPointIds, ...spline.controlPointIds].any(pointIds.contains)) {

@@ -212,6 +212,23 @@ def test_delete_ellipse_removes_its_constraints_and_axis_lines():
     assert sketch.constraints == {}
     # The Points themselves are left untouched, same as delete_line/delete_circle.
     assert center.id in sketch.points
+
+
+def test_delete_ellipse_is_a_no_op_if_an_axis_line_was_already_deleted_directly():
+    """Bug fix: a real, on-device 404 - an axis Line can be deleted
+    directly (its own DELETE has no notion of "still owned by an
+    Ellipse"), so it may already be gone by the time delete_ellipse runs.
+    That must not raise (see delete_ellipse's own comment)."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    start = sketch.add_point(5.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
+    sketch.delete_line(ellipse.major_axis_line_id)
+
+    sketch.delete_ellipse(ellipse.id)
+
+    assert ellipse.id not in sketch.entities
+    assert ellipse.minor_axis_line_id not in sketch.entities
     assert ellipse.major_point_id in sketch.points
     assert ellipse.minor_point_id in sketch.points
 

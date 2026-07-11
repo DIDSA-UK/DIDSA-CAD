@@ -2041,6 +2041,62 @@ void main() {
     expect(cascade.ellipses, {ellipse.id});
   });
 
+  test('computeDeleteCascade cascades a deleted minor-axis Point to the Ellipse that references it '
+      '(bug fix: this used to only check the major-axis Point)', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    final ellipse = controller.ellipses.values.single;
+
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.point, id: ellipse.minorPointId)],
+    );
+
+    expect(cascade.ellipses, {ellipse.id});
+  });
+
+  test('computeDeleteCascade cascades a directly-selected axis Line up to its owning Ellipse, and '
+      'drops the Line from its own cascade set - bug fix: deleting the Line first would otherwise '
+      'leave delete_ellipse trying to delete an already-gone Line (the on-device 404)', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    final ellipse = controller.ellipses.values.single;
+
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.line, id: ellipse.majorAxisLineId)],
+    );
+
+    expect(cascade.ellipses, {ellipse.id});
+    expect(cascade.lines, isNot(contains(ellipse.majorAxisLineId)));
+  });
+
+  test('deleteSelected on a directly-selected axis Line deletes the whole Ellipse cleanly with no '
+      'error - end-to-end regression test for the on-device 404', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    final ellipseId = controller.ellipses.keys.single;
+    final ellipse = controller.ellipses[ellipseId]!;
+    controller.exitToSelectMode();
+    // A point 1/4 of the way along the major axis Line (centre (0,0) to
+    // major point (10,0)) - avoiding the exact midpoint, which hit-tests
+    // as its own materializable midpoint target rather than the Line.
+    await controller.handleCanvasTap(2.5, 0);
+    expect(controller.selectionSet.single.kind, SelectionKind.line);
+    expect(controller.selectionSet.single.id, ellipse.majorAxisLineId);
+
+    await controller.deleteSelected();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ellipses.containsKey(ellipseId), isFalse);
+    expect(controller.lines.containsKey(ellipse.majorAxisLineId), isFalse);
+    expect(controller.lines.containsKey(ellipse.minorAxisLineId), isFalse);
+  });
+
   // --- Phase 6.2.5: Spline tool ---------------------------------------------
 
   test('activeDrawGhost previews nothing while no through-point has been placed yet', () async {

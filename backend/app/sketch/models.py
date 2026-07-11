@@ -864,8 +864,13 @@ class Sketch:
         if not isinstance(ellipse, Ellipse):
             raise KeyError(ellipse_id)
         del self.entities[ellipse_id]
-        del self.entities[ellipse.major_axis_line_id]
-        del self.entities[ellipse.minor_axis_line_id]
+        # `.pop(id, None)` rather than `del`, matching the constraint
+        # cleanup below: an axis Line can also be deleted directly (its own
+        # `DELETE /lines/{id}` has no notion of "still owned by an
+        # Ellipse"), so it may already be gone by the time this runs -
+        # that should be a silent no-op here, not a KeyError.
+        self.entities.pop(ellipse.major_axis_line_id, None)
+        self.entities.pop(ellipse.minor_axis_line_id, None)
         self.constraints.pop(ellipse.major_constraint_id, None)
         self.constraints.pop(ellipse.minor_constraint_id, None)
         self.constraints.pop(ellipse.perpendicular_constraint_id, None)
