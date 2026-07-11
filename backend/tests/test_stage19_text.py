@@ -5,6 +5,7 @@ from app.document.native_format import _entity_from_dict, _entity_to_dict
 from app.main import app
 from app.sketch.models import Plane, Sketch, TextEntity
 from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.text_fonts import FONT_ALLOWLIST
 from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
@@ -180,6 +181,30 @@ def test_create_text_over_the_api():
     assert body["anchor_point_id"] == anchor["id"]
     assert body["rotation_degrees"] == 30.0
     assert body["construction"] is False
+
+
+@pytest.mark.parametrize("font", sorted(FONT_ALLOWLIST))
+def test_create_text_with_each_allowlisted_font_over_the_api(font):
+    """Feedback round: expanded FONT_ALLOWLIST from Open Sans alone to 8
+    fonts - every one of them must actually round-trip through the real
+    OCCT font-to-BRep path (app.sketch.text_geometry.text_to_shape), not
+    just be accepted by the request schema's validation, since a font
+    whose embedded family name doesn't match its FONT_ALLOWLIST key would
+    silently fall back to a system font rather than erroring (see
+    text_fonts.py's own doc comment on the allowlist) - the preview
+    endpoint below exercises that real conversion for each one."""
+    sketch = _create_sketch()
+    anchor = _create_point(sketch["id"], 0.0, 0.0)
+
+    created = client.post(
+        f"/sketch/sketches/{sketch['id']}/texts",
+        json={"content": "Hi", "anchor_point_id": anchor["id"], "font": font},
+    ).json()
+    assert created["font"] == font
+
+    preview = client.get(f"/sketch/sketches/{sketch['id']}/texts/{created['id']}/preview")
+    assert preview.status_code == 200
+    assert len(preview.json()["contours"]) > 0
 
 
 def test_create_text_rejects_empty_content():

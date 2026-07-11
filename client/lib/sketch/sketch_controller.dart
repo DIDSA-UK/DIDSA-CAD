@@ -144,6 +144,26 @@ class SketchTextContourOffsets {
   const SketchTextContourOffsets({required this.outer, this.holes = const []});
 }
 
+/// The Text tool's own small, backend-bundled font allowlist, mirrored
+/// here for the "Edit Text" dialog's font picker - see the backend's
+/// `app.sketch.text_fonts.FONT_ALLOWLIST` (same names, same order,
+/// deliberately not fetched from the server: a plain trusted-allowlist
+/// mirror, the same pattern [setPolygonSides]'s own [3, 20] clamp mirrors
+/// the backend's own range rather than round-tripping it). Feedback
+/// round: expanded from Open Sans alone to a spread of registers a
+/// mechanical/engineering drawing might reasonably want - see
+/// text_fonts.py's own doc comment for the reasoning behind each one.
+const List<String> textFontOptions = [
+  'Open Sans',
+  'Roboto',
+  'Lato',
+  'Fira Sans',
+  'IBM Plex Serif',
+  'IBM Plex Mono',
+  'Space Mono',
+  'Rajdhani',
+];
+
 class SketchTextView {
   final String id;
   final String content;
@@ -5803,13 +5823,14 @@ class SketchController extends ChangeNotifier {
   }
 
   /// The ribbon's "Edit Text" action: PATCHes whichever of
-  /// [content]/[size]/[rotationDegrees] are non-null, then re-fetches the
-  /// preview outline (see [_refreshTextPreview]) since any of those can
-  /// change the actual glyph geometry. Reversible, the same PATCH-to-the-
-  /// old-values undo shape used throughout this file.
+  /// [content]/[font]/[size]/[rotationDegrees] are non-null, then
+  /// re-fetches the preview outline (see [_refreshTextPreview]) since any
+  /// of those can change the actual glyph geometry. Reversible, the same
+  /// PATCH-to-the-old-values undo shape used throughout this file.
   Future<void> setTextProperties(
     String textId, {
     String? content,
+    String? font,
     double? size,
     double? rotationDegrees,
   }) async {
@@ -5817,6 +5838,7 @@ class SketchController extends ChangeNotifier {
     final text = texts[textId];
     if (text == null) return;
     final oldContent = text.content;
+    final oldFont = text.font;
     final oldSize = text.size;
     final oldRotation = text.rotationDegrees;
 
@@ -5825,6 +5847,7 @@ class SketchController extends ChangeNotifier {
         _sketchId!,
         textId,
         content: content,
+        font: font,
         size: size,
         rotationDegrees: rotationDegrees,
       );
@@ -5842,6 +5865,7 @@ class SketchController extends ChangeNotifier {
           _sketchId!,
           textId,
           content: oldContent,
+          font: oldFont,
           size: oldSize,
           rotationDegrees: oldRotation,
         );

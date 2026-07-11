@@ -404,12 +404,13 @@ Future<void> _showSetTextPropertiesDialog(
   final contentController = TextEditingController(text: current.content);
   final sizeController = TextEditingController(text: current.size.toStringAsFixed(2));
   final rotationController = TextEditingController(text: current.rotationDegrees.toStringAsFixed(1));
-  final result = await showDialog<({String content, double size, double rotationDegrees})>(
+  final result = await showDialog<({String content, String font, double size, double rotationDegrees})>(
     context: context,
     builder: (context) => _SetTextPropertiesDialog(
       contentController: contentController,
       sizeController: sizeController,
       rotationController: rotationController,
+      initialFont: current.font,
     ),
   );
   contentController.dispose();
@@ -420,6 +421,7 @@ Future<void> _showSetTextPropertiesDialog(
     controller.setTextProperties(
       textId,
       content: result.content,
+      font: result.font,
       size: result.size,
       rotationDegrees: result.rotationDegrees,
     );
@@ -430,11 +432,13 @@ class _SetTextPropertiesDialog extends StatefulWidget {
   final TextEditingController contentController;
   final TextEditingController sizeController;
   final TextEditingController rotationController;
+  final String initialFont;
 
   const _SetTextPropertiesDialog({
     required this.contentController,
     required this.sizeController,
     required this.rotationController,
+    required this.initialFont,
   });
 
   @override
@@ -445,6 +449,17 @@ class _SetTextPropertiesDialogState extends State<_SetTextPropertiesDialog> {
   String? _contentError;
   String? _sizeError;
   final FocusNode _contentFocusNode = FocusNode();
+  late String _font;
+
+  @override
+  void initState() {
+    super.initState();
+    // Feedback round: an existing Text's own font may predate this
+    // dialog's dropdown (or, in principle, no longer be allow-listed) -
+    // falling back to the first option rather than a null dropdown value
+    // keeps the dropdown itself always in a valid, displayable state.
+    _font = textFontOptions.contains(widget.initialFont) ? widget.initialFont : textFontOptions.first;
+  }
 
   @override
   void dispose() {
@@ -461,14 +476,14 @@ class _SetTextPropertiesDialogState extends State<_SetTextPropertiesDialog> {
       _sizeError = size == null || size <= 0 ? 'Enter a positive number' : null;
     });
     if (content.isEmpty || size == null || size <= 0 || rotation == null) return;
-    _dismiss((content: content, size: size, rotationDegrees: rotation));
+    _dismiss((content: content, font: _font, size: size, rotationDegrees: rotation));
   }
 
   void _cancel() => _dismiss(null);
 
   // Same post-frame-callback deferral as _SetLengthDialogState._dismiss -
   // see that method's own comment for why.
-  void _dismiss(({String content, double size, double rotationDegrees})? value) {
+  void _dismiss(({String content, String font, double size, double rotationDegrees})? value) {
     _contentFocusNode.unfocus();
     final navigator = Navigator.of(context);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -492,6 +507,26 @@ class _SetTextPropertiesDialogState extends State<_SetTextPropertiesDialog> {
               errorText: _contentError,
               border: const OutlineInputBorder(),
             ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _font,
+            decoration: const InputDecoration(
+              labelText: 'Font',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              // Not rendered in each font's own face - these TTFs are
+              // OCCT-side only (see text_fonts.py's own doc comment), not
+              // bundled as Flutter asset fonts, so Flutter has no way to
+              // preview them here; the eventual glyph geometry itself
+              // (see [SketchController._refreshTextPreview]) is the real
+              // preview.
+              for (final font in textFontOptions) DropdownMenuItem(value: font, child: Text(font)),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _font = value);
+            },
           ),
           const SizedBox(height: 12),
           TextField(

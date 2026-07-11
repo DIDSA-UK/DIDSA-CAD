@@ -165,6 +165,7 @@ class _FakeBackend {
       final text = texts[textPatchMatch.group(1)];
       if (text == null) return http.Response('not found', 404);
       if (body.containsKey('content')) text['content'] = body['content'] as String;
+      if (body.containsKey('font')) text['font'] = body['font'] as String;
       if (body.containsKey('size')) text['size'] = (body['size'] as num).toDouble();
       if (body.containsKey('rotation_degrees')) {
         text['rotation_degrees'] = (body['rotation_degrees'] as num).toDouble();
@@ -2490,6 +2491,28 @@ void main() {
       math.pow(corner1.$1 - corner0.$1, 2) + math.pow(corner1.$2 - corner0.$2, 2),
     );
     expect(edgeLength, closeTo(24, 1e-6));
+  });
+
+  test('setTextProperties PATCHes font and undoing restores the previous font (feedback round: font '
+      'is now user-editable, not fixed at the backend default)', () async {
+    controller.selectDrawTool(SketchTool.text);
+    await controller.handleCanvasTap(5, 5);
+    final textId = controller.texts.keys.single;
+    expect(controller.texts[textId]!.font, 'Open Sans');
+
+    await controller.setTextProperties(textId, font: 'IBM Plex Mono');
+
+    expect(controller.texts[textId]!.font, 'IBM Plex Mono');
+
+    await controller.undo();
+
+    expect(controller.texts[textId]!.font, 'Open Sans');
+  });
+
+  test('textFontOptions offers a small, fixed set of fonts, defaulting to Open Sans', () {
+    expect(textFontOptions, contains('Open Sans'));
+    expect(textFontOptions.length, greaterThan(1));
+    expect(textFontOptions.toSet().length, textFontOptions.length);
   });
 
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------

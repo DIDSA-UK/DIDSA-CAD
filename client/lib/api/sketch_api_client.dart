@@ -1086,11 +1086,14 @@ class SketchApiClient {
   /// [updateEllipse]'s "several independently-optional fields" shape.
   /// Every field here is a plain direct edit (see the backend's
   /// `TextEntity`/`TextUpdate` docstrings) - omitted fields are left
-  /// unchanged.
+  /// unchanged. `font` must be one of [textFontOptions] (mirrors the
+  /// backend's own FONT_ALLOWLIST validation - an unrecognized value
+  /// still reaches the server, which rejects it with a 422).
   Future<TextDto> updateText(
     String sketchId,
     String textId, {
     String? content,
+    String? font,
     double? size,
     double? rotationDegrees,
     bool? construction,
@@ -1101,6 +1104,7 @@ class SketchApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (content != null) 'content': content,
+                if (font != null) 'font': font,
                 if (size != null) 'size': size,
                 if (rotationDegrees != null) 'rotation_degrees': rotationDegrees,
                 if (construction != null) 'construction': construction,
