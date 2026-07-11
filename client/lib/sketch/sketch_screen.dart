@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/document_api_client.dart' show BodyMeshDto;
 import '../api/sketch_api_client.dart' show CircleDto, LineDto, PointDto;
@@ -216,11 +217,20 @@ class _SketchScreenState extends State<SketchScreen> {
               animation: _controller,
               builder: (context, _) {
                 if (!_controller.hasGeometry) return const SizedBox.shrink();
+                final underConstrained = _controller.isUnderConstrained;
                 return Padding(
                   padding: const EdgeInsets.only(right: 8),
-                  child: Icon(
-                    _controller.isUnderConstrained ? Icons.lock_open : Icons.lock,
-                    size: 18,
+                  child: SvgPicture.asset(
+                    underConstrained
+                        ? 'assets/icons/sketchbar/sketchbar_lock_partial.svg'
+                        : 'assets/icons/sketchbar/sketchbar_lock_full.svg',
+                    key: ValueKey(underConstrained ? 'lock-indicator-partial' : 'lock-indicator-full'),
+                    width: 18,
+                    height: 18,
+                    colorFilter: ColorFilter.mode(
+                      Theme.of(context).colorScheme.onSurface,
+                      BlendMode.srcIn,
+                    ),
                   ),
                 );
               },
@@ -245,7 +255,17 @@ class _SketchScreenState extends State<SketchScreen> {
           AnimatedBuilder(
             animation: _controller,
             builder: (context, _) => IconButton(
-              icon: const Icon(Icons.undo),
+              icon: SvgPicture.asset(
+                'assets/icons/sketchbar/sketchbar_undo.svg',
+                width: 24,
+                height: 24,
+                colorFilter: ColorFilter.mode(
+                  _controller.canUndo
+                      ? Theme.of(context).colorScheme.onSurface
+                      : Theme.of(context).disabledColor,
+                  BlendMode.srcIn,
+                ),
+              ),
               tooltip: 'Undo',
               onPressed: _controller.canUndo ? _controller.undo : null,
             ),
@@ -257,7 +277,15 @@ class _SketchScreenState extends State<SketchScreen> {
             builder: (context, _) {
               if (_controller.mode != SketchMode.select) return const SizedBox.shrink();
               return IconButton(
-                icon: const Icon(Icons.select_all),
+                icon: SvgPicture.asset(
+                  'assets/icons/sketchbar/sketchbar_select_all.svg',
+                  width: 24,
+                  height: 24,
+                  colorFilter: ColorFilter.mode(
+                    Theme.of(context).colorScheme.onSurface,
+                    BlendMode.srcIn,
+                  ),
+                ),
                 tooltip: 'Select all',
                 onPressed: _controller.selectAll,
               );
@@ -318,7 +346,15 @@ class _SketchScreenState extends State<SketchScreen> {
                             heroTag: 'exit-sketch-fab',
                             tooltip: 'Exit Sketch',
                             onPressed: () => Navigator.of(context).pop(),
-                            child: const Icon(Icons.logout),
+                            child: SvgPicture.asset(
+                              'assets/icons/sketchbar/sketchbar_exit.svg',
+                              width: 24,
+                              height: 24,
+                              colorFilter: ColorFilter.mode(
+                                Theme.of(context).colorScheme.onPrimaryContainer,
+                                BlendMode.srcIn,
+                              ),
+                            ),
                           ),
                           if (widget.referenceGhostSegments.isNotEmpty) ...[
                             const SizedBox(height: 8),
@@ -327,7 +363,17 @@ class _SketchScreenState extends State<SketchScreen> {
                               tooltip:
                                   _referenceBodyHidden ? 'Show Reference Body' : 'Hide Reference Body',
                               onPressed: () => setState(() => _referenceBodyHidden = !_referenceBodyHidden),
-                              child: Icon(_referenceBodyHidden ? Icons.visibility_off : Icons.visibility),
+                              child: SvgPicture.asset(
+                                _referenceBodyHidden
+                                    ? 'assets/icons/sketchbar/sketchbar_show_reference_body.svg'
+                                    : 'assets/icons/sketchbar/sketchbar_hide_reference_body.svg',
+                                width: 24,
+                                height: 24,
+                                colorFilter: ColorFilter.mode(
+                                  Theme.of(context).colorScheme.onPrimaryContainer,
+                                  BlendMode.srcIn,
+                                ),
+                              ),
                             ),
                           ],
                           // Phase 4.2: only offered once the Sketch's plane
@@ -352,7 +398,17 @@ class _SketchScreenState extends State<SketchScreen> {
                                   backgroundColor: _orbitViewActive ? theme.colorScheme.primary : null,
                                   foregroundColor: _orbitViewActive ? theme.colorScheme.onPrimary : null,
                                   onPressed: _orbitViewActive ? _exitOrbitView : _enterOrbitView,
-                                  child: const Icon(Icons.view_in_ar),
+                                  child: SvgPicture.asset(
+                                    'assets/icons/sketchbar/sketchbar_orbit_view.svg',
+                                    width: 24,
+                                    height: 24,
+                                    colorFilter: ColorFilter.mode(
+                                      _orbitViewActive
+                                          ? theme.colorScheme.onPrimary
+                                          : theme.colorScheme.onPrimaryContainer,
+                                      BlendMode.srcIn,
+                                    ),
+                                  ),
                                 ),
                               );
                             },
@@ -377,7 +433,15 @@ class _SketchScreenState extends State<SketchScreen> {
                         heroTag: 'sketch-menu-fab',
                         tooltip: 'Menu',
                         onPressed: () => setState(() => _menuOpen = !_menuOpen),
-                        child: const Icon(Icons.menu),
+                        child: SvgPicture.asset(
+                          'assets/icons/sketchbar/sketchbar_menu.svg',
+                          width: 24,
+                          height: 24,
+                          colorFilter: ColorFilter.mode(
+                            Theme.of(context).colorScheme.onPrimaryContainer,
+                            BlendMode.srcIn,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -455,7 +519,15 @@ class _SketchScreenState extends State<SketchScreen> {
                             heroTag: 'orbit-return-to-default-fab',
                             tooltip: 'Return to Default View',
                             onPressed: _returnOrbitToDefaultView,
-                            child: const Icon(Icons.restore),
+                            child: SvgPicture.asset(
+                              'assets/icons/sketchbar/sketchbar_reset_view.svg',
+                              width: 24,
+                              height: 24,
+                              colorFilter: ColorFilter.mode(
+                                Theme.of(context).colorScheme.onPrimaryContainer,
+                                BlendMode.srcIn,
+                              ),
+                            ),
                           )
                         : SketchSpeedDial(controller: _controller),
                   ),
@@ -492,7 +564,15 @@ class _SketchScreenState extends State<SketchScreen> {
                           backgroundColor: active ? theme.colorScheme.primary : null,
                           foregroundColor: active ? theme.colorScheme.onPrimary : null,
                           onPressed: _controller.toggleDragMode,
-                          child: const Icon(Icons.open_with),
+                          child: SvgPicture.asset(
+                            'assets/icons/sketchbar/sketchbar_drag_mode.svg',
+                            width: 24,
+                            height: 24,
+                            colorFilter: ColorFilter.mode(
+                              active ? theme.colorScheme.onPrimary : theme.colorScheme.onPrimaryContainer,
+                              BlendMode.srcIn,
+                            ),
+                          ),
                         );
                       },
                     ),
@@ -800,7 +880,15 @@ class _SketchScreenState extends State<SketchScreen> {
         ListTile(
           dense: true,
           visualDensity: density,
-          leading: const Icon(Icons.opacity_outlined, size: 20),
+          leading: SvgPicture.asset(
+            'assets/icons/sketchbar/sketchbar_body_transparency.svg',
+            width: 20,
+            height: 20,
+            colorFilter: ColorFilter.mode(
+              Theme.of(context).colorScheme.onSurface,
+              BlendMode.srcIn,
+            ),
+          ),
           title: Text('Canvas Transparency', style: titleStyle),
           onTap: () => _pickCanvasOpacity(context),
         ),
@@ -842,7 +930,17 @@ class _SketchScreenState extends State<SketchScreen> {
         ListTile(
           dense: true,
           visualDensity: density,
-          leading: Icon(Icons.circle, color: colorFromHex(_orbitBodyColourHex), size: 20),
+          // A fixed multi-colour glyph, not tinted via ColorFilter like
+          // every other icon here - deliberately picked over the
+          // tintable/live-color-swatch alternatives so the icon always
+          // reads as "colour picker" at a glance; the current selection
+          // itself is only ever shown in the picker sheet this opens, not
+          // baked into this leading icon.
+          leading: SvgPicture.asset(
+            'assets/icons/sketchbar/sketchbar_body_colour_cube.svg',
+            width: 20,
+            height: 20,
+          ),
           title: Text('Body Colour', style: titleStyle),
           onTap: () async {
             final hex = await showColourSwatchSheet(
@@ -858,7 +956,15 @@ class _SketchScreenState extends State<SketchScreen> {
           ListTile(
             dense: true,
             visualDensity: density,
-            leading: const Icon(Icons.opacity_outlined, size: 20),
+            leading: SvgPicture.asset(
+              'assets/icons/sketchbar/sketchbar_body_transparency.svg',
+              width: 20,
+              height: 20,
+              colorFilter: ColorFilter.mode(
+                Theme.of(context).colorScheme.onSurface,
+                BlendMode.srcIn,
+              ),
+            ),
             title: Text('Body Transparency', style: titleStyle),
             onTap: () async {
               final opacity = await showBodyOpacitySheet(context, initialOpacity: _orbitBodyOpacity);

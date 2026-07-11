@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/sketch_api_client.dart';
 import 'plane_indicator.dart';
@@ -789,7 +790,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
               left: 8,
               child: IconButton.filled(
                 tooltip: 'Zoom to fit',
-                icon: const Icon(Icons.center_focus_strong),
+                icon: SvgPicture.asset(
+                  'assets/icons/dimbar/dimbar_zoom_to_fit.svg',
+                  width: 24,
+                  height: 24,
+                  colorFilter: ColorFilter.mode(
+                    Theme.of(context).colorScheme.onPrimary,
+                    BlendMode.srcIn,
+                  ),
+                ),
                 onPressed: () => setState(
                   () => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size),
                 ),
@@ -1272,12 +1281,28 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
               ),
               IconButton(
                 tooltip: 'Confirm',
-                icon: const Icon(Icons.check, size: 18),
+                icon: SvgPicture.asset(
+                  'assets/icons/dimbar/dimbar_confirm.svg',
+                  width: 18,
+                  height: 18,
+                  colorFilter: ColorFilter.mode(
+                    Theme.of(context).colorScheme.onSurface,
+                    BlendMode.srcIn,
+                  ),
+                ),
                 onPressed: _confirm,
               ),
               IconButton(
                 tooltip: 'Cancel',
-                icon: const Icon(Icons.close, size: 18),
+                icon: SvgPicture.asset(
+                  'assets/icons/dimbar/dimbar_exit.svg',
+                  width: 18,
+                  height: 18,
+                  colorFilter: ColorFilter.mode(
+                    Theme.of(context).colorScheme.onSurface,
+                    BlendMode.srcIn,
+                  ),
+                ),
                 onPressed: _cancel,
               ),
             ],

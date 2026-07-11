@@ -160,7 +160,7 @@ void main() {
       // focus, which is the scenario that used to trip the framework's
       // '_dependents.isEmpty' assertion.
       await tester.enterText(find.byType(TextField), '25.00');
-      await tester.tap(find.widgetWithIcon(IconButton, Icons.check));
+      await tester.tap(find.byTooltip('Confirm'));
       // pumpAndSettle can't be used here: SketchCanvas starts its own
       // edge-pan Ticker unconditionally in initState (for edge-panning
       // during a drag), which keeps scheduling frames indefinitely - the

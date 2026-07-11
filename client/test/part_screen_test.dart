@@ -1256,9 +1256,13 @@ void main() {
 
       // find.byTooltip resolves to the tooltip overlay's own positioning
       // surrogate here, not the actual FAB - which can sit outside the test
-      // viewport's bounds and silently miss. find.widgetWithIcon targets the
-      // real rendered button directly.
-      await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.logout));
+      // viewport's bounds and silently miss. A heroTag predicate targets
+      // the real rendered button directly (find.widgetWithIcon no longer
+      // works now that the FAB's glyph is an SVG asset, not a named
+      // IconData).
+      await tester.tap(find.byWidgetPredicate(
+        (w) => w is FloatingActionButton && w.heroTag == 'exit-sketch-fab',
+      ));
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
       // The "Add" FAB carries heroTag: 'add-fab' - while the pop's Hero
       // flight is still in progress, a temporary in-flight copy coexists

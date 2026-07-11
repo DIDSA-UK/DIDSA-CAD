@@ -162,8 +162,8 @@ void main() {
 
     await _pumpSketchScreen(tester, controller);
 
-    expect(find.byIcon(Icons.lock), findsOneWidget);
-    expect(find.byIcon(Icons.lock_open), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-full')), findsOneWidget);
+    expect(find.byKey(const ValueKey('lock-indicator-partial')), findsNothing);
   });
 
   testWidgets(
@@ -173,8 +173,8 @@ void main() {
 
     await _pumpSketchScreen(tester, controller);
 
-    expect(find.byIcon(Icons.lock_open), findsOneWidget);
-    expect(find.byIcon(Icons.lock), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-partial')), findsOneWidget);
+    expect(find.byKey(const ValueKey('lock-indicator-full')), findsNothing);
   });
 
   testWidgets(
@@ -188,7 +188,7 @@ void main() {
     await _pumpSketchScreen(tester, controller);
 
     expect(controller.hasGeometry, isFalse);
-    expect(find.byIcon(Icons.lock), findsNothing);
-    expect(find.byIcon(Icons.lock_open), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-full')), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-partial')), findsNothing);
   });
 }

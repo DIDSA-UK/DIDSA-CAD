@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import 'sketch_controller.dart';
 
@@ -47,7 +48,15 @@ class SketchConstructionMethodBar extends StatelessWidget {
                   const SizedBox(width: 8),
                   TextButton.icon(
                     onPressed: controller.exitToSelectMode,
-                    icon: const Icon(Icons.close),
+                    icon: SvgPicture.asset(
+                      'assets/icons/dimbar/dimbar_exit.svg',
+                      width: 20,
+                      height: 20,
+                      colorFilter: ColorFilter.mode(
+                        Theme.of(context).colorScheme.primary,
+                        BlendMode.srcIn,
+                      ),
+                    ),
                     label: const Text('Exit'),
                   ),
                 ],
@@ -133,16 +142,33 @@ class _PolygonSidesControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sides = controller.polygonSides;
+    final onSurface = Theme.of(context).colorScheme.onSurface;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text('$sides sides'),
         IconButton(
-          icon: const Icon(Icons.remove_circle_outline),
+          icon: SvgPicture.asset(
+            'assets/icons/dimbar/dimbar_polygon_sides_decrease.svg',
+            width: 24,
+            height: 24,
+            colorFilter: ColorFilter.mode(
+              sides > 3 ? onSurface : Theme.of(context).disabledColor,
+              BlendMode.srcIn,
+            ),
+          ),
           onPressed: sides > 3 ? () => controller.setPolygonSides(sides - 1) : null,
         ),
         IconButton(
-          icon: const Icon(Icons.add_circle_outline),
+          icon: SvgPicture.asset(
+            'assets/icons/dimbar/dimbar_polygon_sides_increase.svg',
+            width: 24,
+            height: 24,
+            colorFilter: ColorFilter.mode(
+              sides < 20 ? onSurface : Theme.of(context).disabledColor,
+              BlendMode.srcIn,
+            ),
+          ),
           onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
         ),
         const SizedBox(width: 8),
