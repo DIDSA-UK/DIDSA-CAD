@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
+import 'svg_icon.dart';
 
 /// The display name for the Feature at [index] in [features] - shared
 /// between the tree's own rows and anything else (e.g. the cascade-delete
@@ -34,6 +35,22 @@ String featureDisplayName(List<FeatureDto> features, int index) {
 /// allow-list so it doesn't need updating for every future Feature type
 /// that keeps following that same pattern.
 bool _hasEditPanel(String type) => type != 'import';
+
+/// Maps a Feature's `type` string to its tree-row glyph. `'sketch'` and
+/// `'create_plane'` reuse the same asset their own dedicated section already
+/// shows (Sketches don't get their own section, but Planes do - both still
+/// appear here too since Features lists every Feature unfiltered).
+String _featureTypeAsset(String type) => switch (type) {
+      'sketch' => 'assets/icons/feature/feature_new_sketch.svg',
+      'extrude' => 'assets/icons/feature/feature_extrude.svg',
+      'create_plane' => 'assets/icons/feature/feature_plane.svg',
+      'fillet' => 'assets/icons/feature/feature_fillet.svg',
+      'chamfer' => 'assets/icons/feature/feature_chamfer.svg',
+      'revolve' => 'assets/icons/feature/feature_revolve.svg',
+      'sweep' => 'assets/icons/feature/feature_sweep.svg',
+      'import' => 'assets/icons/feature/parttoolbar_import.svg',
+      _ => 'assets/icons/feature/feature_new_sketch.svg',
+    };
 
 /// The "Build Tree": a Part's currently-computed Bodies (top, collapsible)
 /// followed by its user-authored Features (Sketch/Extrude/etc, also
@@ -343,7 +360,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       initiallyExpanded: false,
       dense: true,
       visualDensity: VisualDensity.compact,
-      leading: const Icon(Icons.view_in_ar, size: 20),
+      leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 20),
       title: const Text('Bodies', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [for (final bodyId in orderedIds) _buildBodyTile(bodyId)],
     );
@@ -362,7 +379,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
-        leading: const Icon(Icons.view_in_ar_outlined, size: 18),
+        leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 18),
         title: Text(
           widget.bodyNames[bodyId] ?? bodyId,
           maxLines: 1,
@@ -392,14 +409,14 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       initiallyExpanded: false,
       dense: true,
       visualDensity: VisualDensity.compact,
-      leading: const Icon(Icons.crop_din, size: 20),
+      leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 20),
       title: const Text('Planes', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [
         for (final feature in planeFeatures)
           ListTile(
             dense: true,
             visualDensity: VisualDensity.compact,
-            leading: const Icon(Icons.crop_din_outlined, size: 18),
+            leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 18),
             title: Text(
               featureDisplayName(widget.features, widget.features.indexOf(feature)),
               maxLines: 1,
@@ -422,7 +439,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       initiallyExpanded: true,
       dense: true,
       visualDensity: VisualDensity.compact,
-      leading: const Icon(Icons.list_alt, size: 20),
+      leading: const SvgIcon('assets/icons/feature/feature_tree.svg', size: 20),
       title: const Text('Features', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [for (final feature in widget.features) _buildFeatureTile(context, feature)],
     );
@@ -446,22 +463,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         dense: true,
         visualDensity: VisualDensity.compact,
         selected: selected,
-        leading: Icon(
-          feature.locked
-              ? Icons.lock
-              : switch (feature.type) {
-                  'extrude' => Icons.view_in_ar,
-                  'create_plane' => Icons.crop_din,
-                  'fillet' => Icons.rounded_corner,
-                  'chamfer' => Icons.change_history,
-                  'revolve' => Icons.rotate_right,
-                  'sweep' => Icons.gesture,
-                  'import' => Icons.file_upload_outlined,
-                  _ => Icons.edit,
-                },
-          size: 20,
-          color: feature.locked ? Colors.grey : Theme.of(context).colorScheme.primary,
-        ),
+        leading: feature.locked
+            ? Icon(Icons.lock, size: 20, color: Colors.grey)
+            : SvgIcon(
+                _featureTypeAsset(feature.type),
+                size: 20,
+                color: Theme.of(context).colorScheme.primary,
+              ),
         title: Text(
           featureDisplayName(widget.features, index),
           maxLines: 1,

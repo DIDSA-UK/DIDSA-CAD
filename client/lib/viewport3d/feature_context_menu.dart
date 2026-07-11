@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// Actions available from a Feature's long-press context menu. Stage 8 adds
 /// [toggleVisibility] above the existing [delete]; Stage 9 adds [extrude]
 /// above both; Prompt F adds [revolve] alongside [extrude]; Sweep adds
@@ -54,7 +56,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
             if (showExtrude)
               ListTile(
                 enabled: canExtrude,
-                leading: const Icon(Icons.view_in_ar),
+                leading: const SvgIcon('assets/icons/feature/feature_extrude.svg'),
                 title: const Text('Extrude'),
                 subtitle: canExtrude ? null : Text(extrudeDisabledReason ?? 'Not available'),
                 onTap: canExtrude
@@ -64,7 +66,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
             if (showRevolve)
               ListTile(
                 enabled: canRevolve,
-                leading: const Icon(Icons.rotate_right),
+                leading: const SvgIcon('assets/icons/feature/feature_revolve.svg'),
                 title: const Text('Revolve'),
                 subtitle: canRevolve ? null : Text(revolveDisabledReason ?? 'Not available'),
                 onTap: canRevolve
@@ -74,7 +76,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
             if (showSweep)
               ListTile(
                 enabled: canSweep,
-                leading: const Icon(Icons.line_axis),
+                leading: const SvgIcon('assets/icons/feature/feature_sweep.svg'),
                 title: const Text('Sweep'),
                 subtitle: canSweep ? null : Text(sweepDisabledReason ?? 'Not available'),
                 onTap: canSweep

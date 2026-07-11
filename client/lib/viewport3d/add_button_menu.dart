@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// Actions available from the floating "Add" button's flyout. Stage 10b adds
 /// [newSketch]; Stage 19b Item 3 adds [feature] (opens the second-level
 /// Feature picker - see [showFeaturePickerSheet]) alongside it.
@@ -16,12 +18,12 @@ Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context) {
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
-            leading: const Icon(Icons.edit_outlined),
+            leading: const SvgIcon('assets/icons/feature/feature_new_sketch.svg'),
             title: const Text('New Sketch'),
             onTap: () => Navigator.of(context).pop(AddButtonMenuAction.newSketch),
           ),
           ListTile(
-            leading: const Icon(Icons.layers_outlined),
+            leading: const SvgIcon('assets/icons/feature/feature_tree.svg'),
             title: const Text('Feature'),
             onTap: () => Navigator.of(context).pop(AddButtonMenuAction.feature),
           ),

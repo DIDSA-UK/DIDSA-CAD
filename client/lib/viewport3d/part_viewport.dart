@@ -17,6 +17,7 @@ import 'scene_preferences.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_geometry_3d.dart';
+import 'svg_icon.dart';
 import 'triad.dart';
 import 'view_preferences.dart';
 
@@ -1638,7 +1639,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               right: 8,
               child: IconButton.filled(
                 tooltip: 'Reset view',
-                icon: const Icon(Icons.center_focus_strong),
+                icon: const SvgIcon('assets/icons/viewport/viewport_reset_view.svg'),
                 // A3: also auto-fits farClip to the current mesh's AABB.
                 onPressed: () => setState(_doRecentre),
               ),

@@ -1,12 +1,14 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
 import 'scene_controls_panel.dart';
 import 'scene_preferences.dart';
 import 'selection_filter.dart';
+import 'svg_icon.dart';
 import 'view_prefs_sheets.dart';
 import 'view_preferences.dart';
 
@@ -216,52 +218,52 @@ class PartToolbar extends StatelessWidget {
     );
   }
 
-  // format, label, icon - each drives one Export ListTile below.
-  static const List<(String, String, IconData)> _exportFormats = [
-    ('step', 'Export STEP', Icons.view_in_ar_outlined),
-    ('stl', 'Export STL', Icons.view_in_ar_outlined),
-    ('obj', 'Export OBJ', Icons.view_in_ar_outlined),
-    ('glb', 'Export glTF', Icons.view_in_ar_outlined),
+  // format, label, icon asset - each drives one Export ListTile below.
+  static const List<(String, String, String)> _exportFormats = [
+    ('step', 'Export STEP', 'assets/icons/feature/parttoolbar_export.svg'),
+    ('stl', 'Export STL', 'assets/icons/feature/parttoolbar_export.svg'),
+    ('obj', 'Export OBJ', 'assets/icons/feature/parttoolbar_export.svg'),
+    ('glb', 'Export glTF', 'assets/icons/feature/parttoolbar_export.svg'),
   ];
 
   Widget _buildFileMenu(BuildContext context) {
     return ExpansionTile(
-      leading: const Icon(Icons.folder_outlined),
+      leading: const SvgIcon('assets/icons/feature/parttoolbar_file.svg'),
       title: const Text('File'),
       children: [
         ListTile(
-          leading: const Icon(Icons.note_add_outlined),
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_new.svg'),
           title: const Text('New'),
           onTap: onStartNew,
         ),
         ListTile(
-          leading: const Icon(Icons.folder_open_outlined),
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_open.svg'),
           title: const Text('Open…'),
           onTap: onOpenNative,
         ),
         ListTile(
-          leading: const Icon(Icons.save_outlined),
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_save.svg'),
           title: const Text('Save'),
           onTap: onSaveNative,
         ),
         ListTile(
-          leading: const Icon(Icons.save_as_outlined),
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_save_as.svg'),
           title: const Text('Save As…'),
           onTap: onSaveAsNative,
         ),
         ListTile(
-          leading: const Icon(Icons.file_upload_outlined),
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_import.svg'),
           title: const Text('Import…'),
           onTap: onImportGeometry,
         ),
         for (final (format, label, icon) in _exportFormats)
           ListTile(
-            leading: Icon(icon),
+            leading: SvgIcon(icon),
             title: Text(label),
             onTap: onExportPart == null ? null : () => onExportPart!(format),
           ),
         ListTile(
-          leading: const Icon(Icons.exit_to_app),
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_exit.svg'),
           title: const Text('Exit'),
           onTap: onExit,
         ),
@@ -278,7 +280,11 @@ class PartToolbar extends StatelessWidget {
         // Bug 7: flutter_scene 0.18.x has no OrthographicCamera, so both
         // settings currently render identically; a subtitle notes this.
         ListTile(
-          leading: Icon(isPerspective ? Icons.check_box : Icons.check_box_outline_blank),
+          leading: SvgIcon(
+            isPerspective
+                ? 'assets/icons/feature/parttoolbar_checkbox_checked.svg'
+                : 'assets/icons/feature/parttoolbar_checkbox_unchecked.svg',
+          ),
           title: const Text('Perspective'),
           subtitle: isPerspective
               ? null
@@ -312,8 +318,10 @@ class PartToolbar extends StatelessWidget {
         ),
         const Divider(height: 1),
         ListTile(
-          leading: Icon(
-            referencePlanesHidden ? Icons.grid_on_outlined : Icons.grid_off_outlined,
+          leading: SvgIcon(
+            referencePlanesHidden
+                ? 'assets/icons/feature/parttoolbar_show_reference_planes.svg'
+                : 'assets/icons/feature/parttoolbar_hide_reference_planes.svg',
           ),
           title: Text(
             referencePlanesHidden ? 'Show Reference Planes' : 'Hide Reference Planes',
@@ -323,7 +331,7 @@ class PartToolbar extends StatelessWidget {
         const Divider(height: 1),
         for (final mode in ViewportRenderMode.values)
           ListTile(
-            leading: Icon(mode.icon),
+            leading: SvgIcon(mode.svgAsset),
             title: Text(mode.label),
             trailing: mode == renderMode ? const Icon(Icons.check) : null,
             onTap: onRenderModeChanged == null ? null : () => onRenderModeChanged!(mode),
@@ -335,18 +343,27 @@ class PartToolbar extends StatelessWidget {
           onTap: onBgColourChanged == null ? null : () => _pickBgColour(context),
         ),
         ListTile(
-          leading: Icon(Icons.circle, color: colorFromHex(bodyColourHex)),
+          // A fixed multi-colour glyph, not tinted like every other icon
+          // here - see sketch_screen.dart's own identical Body Colour entry
+          // for why (deliberately reads as "colour picker" at a glance
+          // rather than reflecting the current selection, unlike the old
+          // Icon(Icons.circle, color: ...) it replaces).
+          leading: SvgPicture.asset(
+            'assets/icons/sketchbar/sketchbar_body_colour_cube.svg',
+            width: 24,
+            height: 24,
+          ),
           title: const Text('Body Colour'),
           onTap: onBodyColourChanged == null ? null : () => _pickBodyColour(context),
         ),
         ListTile(
-          leading: const Icon(Icons.opacity_outlined),
+          leading: const SvgIcon('assets/icons/sketchbar/sketchbar_body_transparency.svg'),
           title: const Text('Body Transparency'),
           onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
         ),
         const Divider(height: 1),
         ExpansionTile(
-          leading: const Icon(Icons.wb_incandescent_outlined),
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_scene.svg'),
           title: const Text('Scene'),
           children: [
             SceneControlsPanel(
@@ -377,7 +394,7 @@ class PartToolbar extends StatelessWidget {
   /// toggleable.
   Widget _buildSelectionFilterMenu(BuildContext context) {
     return ExpansionTile(
-      leading: const Icon(Icons.filter_alt_outlined),
+      leading: const SvgIcon('assets/icons/feature/parttoolbar_selection_filters.svg'),
       title: const Text('Selection Filters'),
       children: [
         _filterToggle(
@@ -426,7 +443,11 @@ class PartToolbar extends StatelessWidget {
   }) {
     return ListTile(
       enabled: onChanged != null,
-      leading: Icon(value ? Icons.check_box : Icons.check_box_outline_blank),
+      leading: SvgIcon(
+        value
+            ? 'assets/icons/feature/parttoolbar_checkbox_checked.svg'
+            : 'assets/icons/feature/parttoolbar_checkbox_unchecked.svg',
+      ),
       title: Text(label),
       onTap: onChanged == null ? null : () => onChanged(!value),
     );

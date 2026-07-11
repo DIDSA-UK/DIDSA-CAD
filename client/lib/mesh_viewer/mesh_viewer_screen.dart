@@ -28,6 +28,7 @@ import '../viewport3d/scene_controls_panel.dart';
 import '../viewport3d/scene_preferences.dart';
 import '../viewport3d/triad.dart';
 import '../viewport3d/view_preferences.dart';
+import '../viewport3d/svg_icon.dart';
 import 'mesh_data.dart';
 import 'mesh_viewer_preferences.dart';
 import 'mesh_viewer_render.dart';
@@ -496,7 +497,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                   enabled: canExport,
                   height: 72,
                   child: const ListTile(
-                    leading: Icon(Icons.save_alt),
+                    leading: SvgIcon('assets/icons/mesh/mesh_export.svg'),
                     title: Text('Export as GLB (reduced)'),
                     subtitle: Text('Keeps textures, downsampled to match'),
                   ),
@@ -506,7 +507,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                   enabled: canExport,
                   height: 72,
                   child: const ListTile(
-                    leading: Icon(Icons.save_alt),
+                    leading: SvgIcon('assets/icons/mesh/mesh_export.svg'),
                     title: Text('Export as STL (reduced)'),
                     subtitle: Text('Geometry only, no textures'),
                   ),

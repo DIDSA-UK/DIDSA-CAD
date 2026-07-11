@@ -40,6 +40,7 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'sweep_panel.dart';
+import 'svg_icon.dart';
 import 'scene_preferences.dart';
 import 'view_preferences.dart';
 
@@ -5408,7 +5409,7 @@ class _PartScreenState extends State<PartScreen> {
                               heroTag: 'feature-tree-fab',
                               tooltip: 'Feature tree',
                               onPressed: _toggleFeatureTree,
-                              child: const Icon(Icons.account_tree_outlined),
+                              child: const SvgIcon('assets/icons/feature/feature_tree.svg'),
                             ),
                         ],
                       ),
@@ -5565,7 +5566,11 @@ class _PartScreenState extends State<PartScreen> {
                     // The icon shows the mode a tap will switch *into*: a
                     // cursor/pointer while in (default) Orbit mode, an
                     // orbit/rotate glyph while in Selection mode.
-                    child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
+                    child: SvgIcon(
+                      _selectionMode
+                          ? 'assets/icons/viewport/viewport_orbit_mode.svg'
+                          : 'assets/icons/viewport/viewport_selection_mode.svg',
+                    ),
                   ),
                   if (!_extrudeActive &&
                       !_createPlaneActive &&
@@ -5580,7 +5585,7 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
-                      child: const Icon(Icons.add),
+                      child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
                     ),
                   ],
                   // Prompt G: the profile picker's own "confirm" FAB, in the

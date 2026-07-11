@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// The "boss" or "cut" choice for a Sweep - Boss/Cut parity with
 /// Extrude/Revolve (this feature's own resolved decision) - mirrors
 /// `revolve_panel.dart`'s [RevolveMode] exactly, as its own separate enum
@@ -109,11 +111,15 @@ class _SweepPanelState extends State<SweepPanel> {
                 const SizedBox(height: 12),
                 SegmentedButton<SweepMode>(
                   segments: const [
-                    ButtonSegment(value: SweepMode.boss, label: Text('Boss'), icon: Icon(Icons.add_box)),
+                    ButtonSegment(
+                      value: SweepMode.boss,
+                      label: Text('Boss'),
+                      icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
+                    ),
                     ButtonSegment(
                       value: SweepMode.cut,
                       label: Text('Cut'),
-                      icon: Icon(Icons.content_cut),
+                      icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
                     ),
                   ],
                   selected: {_mode},

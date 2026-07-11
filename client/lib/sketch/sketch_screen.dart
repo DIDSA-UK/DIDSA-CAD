@@ -10,6 +10,7 @@ import '../viewport3d/part_viewport.dart';
 import '../viewport3d/reference_planes.dart';
 import '../viewport3d/render_mode.dart';
 import '../viewport3d/sketch_geometry_3d.dart';
+import '../viewport3d/svg_icon.dart';
 import '../viewport3d/view_prefs_sheets.dart';
 import '../viewport3d/view_preferences.dart';
 import 'sketch_canvas.dart';
@@ -922,7 +923,7 @@ class _SketchScreenState extends State<SketchScreen> {
           ListTile(
             dense: true,
             visualDensity: density,
-            leading: Icon(mode.icon, size: 20),
+            leading: SvgIcon(mode.svgAsset, size: 20),
             title: Text(mode.label, style: titleStyle),
             trailing: mode == _orbitRenderMode ? const Icon(Icons.check, size: 18) : null,
             onTap: () => setState(() => _orbitRenderMode = mode),

@@ -76,6 +76,9 @@ flutter:
     - assets/icons/ribbon/
     - assets/icons/dimbar/
     - assets/icons/sketchbar/
+    - assets/icons/feature/
+    - assets/icons/viewport/
+    - assets/icons/mesh/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

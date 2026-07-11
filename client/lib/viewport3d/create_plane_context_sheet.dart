@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// C3: actions available from a tap-selected created Plane's fly-up bottom
 /// sheet - mirrors `plane_context_sheet.dart`'s [PlaneContextSheetAction]
 /// for the three fixed reference planes, just for a `CreatePlaneFeature`
@@ -33,7 +35,7 @@ Future<CreatePlaneContextSheetAction?> showCreatePlaneContextSheet(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: Row(
               children: [
-                const Icon(Icons.crop_square, color: Color(0xFFF5A623)),
+                const SvgIcon('assets/icons/feature/feature_plane.svg', color: Color(0xFFF5A623)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text('Plane', style: Theme.of(context).textTheme.titleMedium),
@@ -42,7 +44,7 @@ Future<CreatePlaneContextSheetAction?> showCreatePlaneContextSheet(
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.add_box_outlined),
+            leading: const SvgIcon('assets/icons/feature/feature_new_sketch.svg'),
             title: const Text('Create Sketch on Plane'),
             onTap: () => Navigator.of(context).pop(CreatePlaneContextSheetAction.newSketch),
           ),
