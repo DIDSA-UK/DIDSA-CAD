@@ -302,9 +302,10 @@ class _FakeBackend {
         'construction': false,
       };
       arcs[id] = arc;
-      // Mirrors the real backend's Sketch.add_arc, which auto-creates two
-      // radius DistanceConstraints (center-start, center-end) alongside
-      // the Arc.
+      // Mirrors the real backend's Sketch.add_arc: a single real radius
+      // DistanceConstraint (centre-start), plus the end Point tied to it
+      // via an EqualRadiusConstraint instead of a second independent
+      // DistanceConstraint - see the Arc class's own docstring.
       final startConstraintId = _newId('constraint');
       constraints[startConstraintId] = {
         'id': startConstraintId,
@@ -315,9 +316,11 @@ class _FakeBackend {
       final endConstraintId = _newId('constraint');
       constraints[endConstraintId] = {
         'id': endConstraintId,
-        'point_a_id': body['center_point_id'],
-        'point_b_id': body['end_point_id'],
-        'distance': 1.0,
+        'type': 'equal_radius',
+        'center1_point_id': body['center_point_id'],
+        'radius1_point_id': body['start_point_id'],
+        'center2_point_id': body['center_point_id'],
+        'radius2_point_id': body['end_point_id'],
       };
       return _json(arc, 201);
     }
@@ -1346,7 +1349,10 @@ void main() {
     expect(controller.ghosts.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
   });
 
-  test('confirming a new radius for an Arc updates both of its radius DistanceConstraints', () async {
+  test('confirming a new radius for an Arc updates its one real DistanceConstraint - feedback round: '
+      'an Arc now has a single editable radius, with the end Point tied via EqualRadiusConstraint '
+      'instead of a second independent DistanceConstraint the solver had to be kept in sync by hand',
+      () async {
     controller.selectDrawTool(SketchTool.arc);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
@@ -1358,14 +1364,10 @@ void main() {
     await controller.confirmGhostValue('radius', 8.0);
 
     expect(controller.errorMessage, isNull);
-    // The fake backend's solve is a stub (no real point repositioning), so
-    // this asserts on the two persisted DistanceConstraint values
-    // themselves - what a real solve would then use to reposition both
-    // Points onto the new radius-8 circle.
-    final distances =
-        controller.constraints.values.whereType<DistanceConstraintDto>().map((c) => c.distance).toList();
-    expect(distances, hasLength(2));
-    expect(distances, everyElement(closeTo(8.0, 1e-9)));
+    final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>();
+    expect(distanceConstraints, hasLength(1));
+    expect(distanceConstraints.single.distance, closeTo(8.0, 1e-9));
+    expect(controller.constraints.values.whereType<EqualRadiusConstraintDto>(), hasLength(1));
   });
 
   test('computeDeleteCascade for a directly-selected Arc reports just the Arc - its center/start/end '
@@ -1832,11 +1834,15 @@ void main() {
     final centerline = controller.lines.values.firstWhere((line) => line.construction);
     expect(centerline.startPointId, isNotNull);
     expect(centerline.endPointId, isNotNull);
-    // Only arc1's own 2 radius DistanceConstraints remain - a single
-    // editable radius dimension, not 4 (arc2's own pair were replaced by
-    // EqualRadiusConstraints below).
-    expect(controller.constraints.values.whereType<DistanceConstraintDto>().length, 2);
-    expect(controller.constraints.values.whereType<EqualRadiusConstraintDto>().length, 2);
+    // A single real, editable radius dimension for the whole Slot: arc1's
+    // own one real DistanceConstraint (feedback round: an Arc now has
+    // exactly one, with its own end Point tied via EqualRadiusConstraint
+    // instead of a second independent DistanceConstraint). Every other
+    // radius tie - arc1's own end, arc2's own internal tie (kept - its own
+    // radius DistanceConstraint was deleted, not this), and the 2 new ties
+    // back to arc1 - is an EqualRadiusConstraint instead.
+    expect(controller.constraints.values.whereType<DistanceConstraintDto>().length, 1);
+    expect(controller.constraints.values.whereType<EqualRadiusConstraintDto>().length, 4);
     expect(controller.constraints.values.whereType<TangentConstraintDto>().length, 4);
 
     final arc1 = controller.arcs.values.first; // centered at center 1 (the origin)

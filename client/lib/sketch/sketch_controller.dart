@@ -2721,18 +2721,17 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// Whether [c] measures the radius of a Circle, an Arc, or an Ellipse's
-  /// major axis - either [circleForDistanceConstraint] recognizes it, its
-  /// point pair matches one of some Arc's own two radius-defining
-  /// DistanceConstraints (center-start or center-end, both of which read
-  /// as the same radius/diameter dimension - see the backend's
-  /// `app.sketch.models.Arc` docstring), or it matches some Ellipse's own
-  /// major-axis DistanceConstraint (center-major, same role as Circle's
-  /// center-radius pair - the Ellipse's minor_radius has no
-  /// DistanceConstraint of its own, see the Ellipse class's docstring, so
-  /// it's never reachable through this path). Used wherever rendering/
-  /// hit-testing/the ribbon needs to know "is this a radius/diameter
-  /// dimension" without caring which shape it belongs to.
+  /// Whether [c] measures the radius of a Circle, an Arc, or one of an
+  /// Ellipse's two axes - either [circleForDistanceConstraint] recognizes
+  /// it, its point pair matches an Arc's own single real radius
+  /// DistanceConstraint (center-start - the end Point is tied via
+  /// EqualRadiusConstraint instead, see the backend's
+  /// `app.sketch.models.Arc` docstring, so it's never reachable through
+  /// this path), or it matches some Ellipse's own major- or minor-axis
+  /// DistanceConstraint (center-major or center-minor, same role as
+  /// Circle's center-radius pair). Used wherever rendering/hit-testing/
+  /// the ribbon needs to know "is this a radius/diameter dimension"
+  /// without caring which shape it belongs to.
   bool isRadiusDistanceConstraint(DistanceConstraintDto c) {
     if (circleForDistanceConstraint(c) != null) return true;
     for (final arc in arcs.values) {
@@ -2742,7 +2741,8 @@ class SketchController extends ChangeNotifier {
       }
     }
     for (final ellipse in ellipses.values) {
-      if (ellipse.centerPointId == c.pointAId && ellipse.majorPointId == c.pointBId) {
+      if (ellipse.centerPointId == c.pointAId &&
+          (ellipse.majorPointId == c.pointBId || ellipse.minorPointId == c.pointBId)) {
         return true;
       }
     }
@@ -4564,7 +4564,6 @@ class SketchController extends ChangeNotifier {
       }
       if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
         _showsDiameter[constraintId] = target.kind == GhostKind.diameter;
-        await _syncArcOtherRadiusPoint(pointAId, pointBId, distanceValue);
       }
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -4572,36 +4571,6 @@ class SketchController extends ChangeNotifier {
       _dimensionSelection.clear();
       _activeGhostKey = null;
     });
-  }
-
-  /// Keeps an Arc's *other* radius-defining Point in sync when the user
-  /// edits its radius/diameter dimension via one of the two (start or
-  /// end) - otherwise only the tapped Point's own DistanceConstraint would
-  /// update, leaving the other at the old radius and breaking circularity
-  /// (see the backend's `app.sketch.models.Arc` docstring: two
-  /// independent DistanceConstraints sharing one value at creation, not a
-  /// solver-enforced equal-radius link). A no-op for a Circle's own
-  /// radius/diameter dimension - there is no "other" Point to sync.
-  Future<void> _syncArcOtherRadiusPoint(String centerPointId, String usedPointId, double radius) async {
-    SketchArcView? owner;
-    for (final arc in arcs.values) {
-      if (arc.centerPointId == centerPointId &&
-          (arc.startPointId == usedPointId || arc.endPointId == usedPointId)) {
-        owner = arc;
-        break;
-      }
-    }
-    if (owner == null) return;
-    final otherPointId = owner.startPointId == usedPointId ? owner.endPointId : owner.startPointId;
-    final existing = _findDistanceConstraint(centerPointId, otherPointId);
-    if (existing != null) {
-      final oldValue = existing.distance;
-      await _api.updateConstraintValue(_sketchId!, existing.id, radius);
-      _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
-    } else {
-      final constraint = await _api.createDistanceConstraint(_sketchId!, centerPointId, otherPointId, radius);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-    }
   }
 
   /// Stage 15 item 5 (repointed by Stage 16 item 7): whether [type] is both

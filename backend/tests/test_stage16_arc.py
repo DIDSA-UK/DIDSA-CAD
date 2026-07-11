@@ -71,7 +71,13 @@ def test_add_arc_with_unknown_end_point_raises():
         sketch.add_arc(center.id, start.id, "does-not-exist")
 
 
-def test_add_arc_automatically_creates_two_distance_constraints_at_the_same_radius():
+def test_add_arc_automatically_creates_a_single_radius_constraint_plus_an_equal_radius_tie():
+    """Feedback round: an Arc used to carry two independent
+    DistanceConstraints (one per end), showing two confusingly-separate
+    radius dimensions for one Arc - now there is exactly one real,
+    editable DistanceConstraint (the start Point's), with the end Point
+    tied to it via EqualRadiusConstraint instead (see the Arc class
+    docstring)."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(10.0, 0.0)
@@ -81,10 +87,11 @@ def test_add_arc_automatically_creates_two_distance_constraints_at_the_same_radi
     assert len(sketch.constraints) == 2
     radius_constraint = sketch.constraints[arc.radius_constraint_id]
     end_radius_constraint = sketch.constraints[arc.end_radius_constraint_id]
+    assert radius_constraint.type == "distance"
     assert set(radius_constraint.point_ids()) == {arc.center_point_id, arc.start_point_id}
-    assert set(end_radius_constraint.point_ids()) == {arc.center_point_id, arc.end_point_id}
     assert radius_constraint.distance == pytest.approx(10.0)
-    assert end_radius_constraint.distance == pytest.approx(10.0)
+    assert end_radius_constraint.type == "equal_radius"
+    assert set(end_radius_constraint.point_ids()) == {arc.center_point_id, arc.start_point_id, arc.end_point_id}
 
 
 def test_solving_keeps_both_arc_ends_on_the_same_circle_after_moving_center():

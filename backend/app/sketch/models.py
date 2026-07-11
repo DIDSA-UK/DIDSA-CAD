@@ -161,15 +161,20 @@ class Arc(SketchEntity):
     defining Points.
 
     The radius is a real solver constraint, not a stored number - exactly
-    like Circle's, just doubled: `add_arc` creates a DistanceConstraint
-    pinning the start Point's distance from center, and a second
-    DistanceConstraint pinning the end Point's distance from center to the
-    *same* value, so a drag of either Point (or the center) keeps both
-    ends on the same circle after the next solve. There is no dedicated
-    py-slvs arc entity or "equal radius" constraint involved - two
-    independent DistanceConstraints sharing one initial value achieves the
-    same result with zero new solver primitives, mirroring the project's
-    "reuse existing constraint types" approach to Circle.
+    like Circle's: `add_arc` creates a single DistanceConstraint
+    (`radius_constraint_id`) pinning the start Point's distance from
+    center, plus an EqualRadiusConstraint (`end_radius_constraint_id`,
+    despite the name - kept for API/serialization stability) tying the end
+    Point's distance from center to that *same* solver-tracked value, so a
+    drag of either Point (or the center) keeps both ends on the same
+    circle after the next solve, with only one independently-editable
+    radius dimension (feedback round: a plain second DistanceConstraint
+    here meant an Arc showed two separate, confusingly-independent radius
+    dimensions instead of one). There is no dedicated py-slvs arc entity
+    involved - EqualRadiusConstraint's own centre-to-rim virtual line
+    segment trick (see its own docstring) achieves the same result with no
+    new solver primitives, mirroring the project's "reuse existing
+    constraint types" approach to Circle.
 
     DOES override `endpoint_point_ids()` (unlike Circle): an Arc's
     start/end Points ARE real chain-connection points for closed-loop
@@ -597,11 +602,12 @@ class Sketch:
         of that radius, mirroring add_circle's existing-vs-computed-point
         pattern.
 
-        Both the start and end Point's distance from center become real
-        solver DistanceConstraints, pinned to the *same* radius value at
-        creation - keeps the Arc circular under drag exactly like Circle's
-        own single radius DistanceConstraint, just applied to both
-        defining Points instead of one (see the Arc class docstring).
+        The start Point's distance from center becomes the Arc's one real,
+        independently-editable radius DistanceConstraint; the end Point is
+        tied to that same value via an EqualRadiusConstraint instead of a
+        second independent DistanceConstraint - keeps the Arc circular
+        under drag with a single radius dimension (see the Arc class
+        docstring).
         """
         center = self.points[center_point_id]
         start = self.points[start_point_id]
@@ -621,7 +627,14 @@ class Sketch:
             raise ValueError("An arc's center, start, and end points must all be distinct")
 
         radius_constraint = self.add_distance_constraint(center_point_id, start_point_id, radius)
-        end_radius_constraint = self.add_distance_constraint(center_point_id, end_point_id, radius)
+        end_radius_constraint = EqualRadiusConstraint(
+            id=str(uuid.uuid4()),
+            center1_point_id=center_point_id,
+            radius1_point_id=start_point_id,
+            center2_point_id=center_point_id,
+            radius2_point_id=end_point_id,
+        )
+        self.constraints[end_radius_constraint.id] = end_radius_constraint
         arc = Arc(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,

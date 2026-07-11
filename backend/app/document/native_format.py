@@ -50,12 +50,14 @@ from app.sketch.constraints import (
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
+    EqualRadiusConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     SplineTangentConstraint,
+    TangentConstraint,
     VerticalConstraint,
 )
 from app.sketch.models import (
@@ -92,6 +94,8 @@ _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "point_line_distance": PointLineDistanceConstraint,
     "at_midpoint": AtMidpointConstraint,
     "spline_tangent": SplineTangentConstraint,
+    "tangent": TangentConstraint,
+    "equal_radius": EqualRadiusConstraint,
 }
 
 
