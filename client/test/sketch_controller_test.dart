@@ -80,6 +80,19 @@ class _FakeBackend {
     points[originPointId] = {'id': originPointId, 'x': 0.0, 'y': 0.0};
   }
 
+  /// Resolves a Circle or Arc id to its (centre, radius-defining rim) Point
+  /// id pair - mirrors the real backend's Sketch._center_radius_point_ids
+  /// (an Arc's own start Point, a Circle's own radius Point), just enough
+  /// for this fake's 'tangent'/'equal_radius' constraint cases below.
+  (String, String) _centerRadiusPointIds(String entityId) {
+    final circle = circles[entityId];
+    if (circle != null) {
+      return (circle['center_point_id'] as String, circle['radius_point_id'] as String);
+    }
+    final arc = arcs[entityId]!;
+    return (arc['center_point_id'] as String, arc['start_point_id'] as String);
+  }
+
   http.Response handle(http.Request request) {
     final path = request.url.path;
     requestLog.add('${request.method} $path');
@@ -513,6 +526,29 @@ class _FakeBackend {
             'type': 'at_midpoint',
             'point_id': body['point_id'],
             'line_id': body['line_id'],
+          };
+          break;
+        case 'tangent':
+          final radiusPointId = _centerRadiusPointIds(body['circle_or_arc_id'] as String).$2;
+          constraint = {
+            'id': id,
+            'type': 'tangent',
+            'center_point_id': _centerRadiusPointIds(body['circle_or_arc_id'] as String).$1,
+            'radius_point_id': radiusPointId,
+            'line_id': body['line_id'],
+          };
+          break;
+        case 'equal_radius':
+          final radius1 = _centerRadiusPointIds(body['entity1_id'] as String);
+          final entity2Id = body['entity2_id'] as String;
+          final radius2PointId = body['radius2_point_id'] as String? ?? _centerRadiusPointIds(entity2Id).$2;
+          constraint = {
+            'id': id,
+            'type': 'equal_radius',
+            'center1_point_id': radius1.$1,
+            'radius1_point_id': radius1.$2,
+            'center2_point_id': _centerRadiusPointIds(entity2Id).$1,
+            'radius2_point_id': radius2PointId,
           };
           break;
         default:
@@ -1740,8 +1776,8 @@ void main() {
     expect(slot.d.$2, closeTo(5, 1e-9));
   });
 
-  test('the slot tool places both centers then width across three taps, creating 2 Arcs and 2 Lines '
-      'that connect into one closed loop', () async {
+  test('the slot tool places both centers then width across three taps, creating 2 Arcs, 2 Lines, and a '
+      'construction centerline, wired with a single shared radius and real tangency', () async {
     controller.selectDrawTool(SketchTool.slot);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(20, 0);
@@ -1750,9 +1786,17 @@ void main() {
     expect(controller.errorMessage, isNull);
     expect(controller.slotInProgress, isFalse);
     expect(controller.arcs.length, 2);
-    expect(controller.lines.length, 2);
-    // 2 radius DistanceConstraints per Arc.
-    expect(controller.constraints.values.whereType<DistanceConstraintDto>().length, 4);
+    // 2 straight sides + 1 construction centerline between the two centres.
+    expect(controller.lines.length, 3);
+    final centerline = controller.lines.values.firstWhere((line) => line.construction);
+    expect(centerline.startPointId, isNotNull);
+    expect(centerline.endPointId, isNotNull);
+    // Only arc1's own 2 radius DistanceConstraints remain - a single
+    // editable radius dimension, not 4 (arc2's own pair were replaced by
+    // EqualRadiusConstraints below).
+    expect(controller.constraints.values.whereType<DistanceConstraintDto>().length, 2);
+    expect(controller.constraints.values.whereType<EqualRadiusConstraintDto>().length, 2);
+    expect(controller.constraints.values.whereType<TangentConstraintDto>().length, 4);
 
     final arc1 = controller.arcs.values.first; // centered at center 1 (the origin)
     final arc2 = controller.arcs.values.last; // centered at center 2
@@ -1761,10 +1805,12 @@ void main() {
     expect(controller.points[arc2.centerPointId]!.x, closeTo(20, 1e-9));
     expect(controller.points[arc2.centerPointId]!.y, closeTo(0, 1e-9));
 
-    // The two Lines close the loop: arc1's end -> arc2's start, and arc2's
-    // end back to arc1's start.
-    final line1 = controller.lines.values.first;
-    final line2 = controller.lines.values.last;
+    // The two non-construction Lines close the loop: arc1's end -> arc2's
+    // start, and arc2's end back to arc1's start.
+    final sides = controller.lines.values.where((line) => !line.construction).toList();
+    expect(sides.length, 2);
+    final line1 = sides.first;
+    final line2 = sides.last;
     expect(line1.startPointId, arc1.endPointId);
     expect(line1.endPointId, arc2.startPointId);
     expect(line2.startPointId, arc2.endPointId);

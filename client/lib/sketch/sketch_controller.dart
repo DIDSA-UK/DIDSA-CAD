@@ -5376,6 +5376,21 @@ class SketchController extends ChangeNotifier {
       final cId = await _pointIdAt(corners.c.$1, corners.c.$2, excludeId: c2Id);
       final dId = await _pointIdAt(corners.d.$1, corners.d.$2, excludeId: c2Id);
 
+      // Feedback round: a visible construction line between the two centres,
+      // like every other CAD package's Slot tool - purely a visual/reference
+      // aid, carries no constraint of its own.
+      final centerline = await _api.createLine(_sketchId!, c1Id, c2Id, construction: true);
+      lines[centerline.id] = SketchLineView(
+        id: centerline.id,
+        startPointId: centerline.startPointId,
+        endPointId: centerline.endPointId,
+        construction: centerline.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteLine(_sketchId!, centerline.id);
+        lines.remove(centerline.id);
+      });
+
       final arc1 = await _api.createArc(_sketchId!, c1Id, aId, bId);
       arcs[arc1.id] = SketchArcView(
         id: arc1.id,
@@ -5425,6 +5440,52 @@ class SketchController extends ChangeNotifier {
         await _api.deleteLine(_sketchId!, line2.id);
         lines.remove(line2.id);
       });
+
+      // Feedback round: a Slot should carry a single editable radius
+      // dimension, not one per end-cap arc. arc2's own two auto-created
+      // radius DistanceConstraints (see Sketch.add_arc) are replaced with
+      // EqualRadiusConstraints tying arc2's radius back to arc1's - arc1's
+      // own two constraints stay untouched and remain the one visible/
+      // editable dimension (mirrors a plain Arc's existing two-constraint
+      // circularity, just shared across both end caps).
+      await _refreshConstraints();
+      final arc2Radius = _findDistanceConstraint(c2Id, cId);
+      final arc2EndRadius = _findDistanceConstraint(c2Id, dId);
+      if (arc2Radius != null) {
+        await _api.deleteConstraint(_sketchId!, arc2Radius.id);
+        _pushUndo(() async {
+          await _api.createDistanceConstraint(_sketchId!, c2Id, cId, arc2Radius.distance);
+        });
+      }
+      if (arc2EndRadius != null) {
+        await _api.deleteConstraint(_sketchId!, arc2EndRadius.id);
+        _pushUndo(() async {
+          await _api.createDistanceConstraint(_sketchId!, c2Id, dId, arc2EndRadius.distance);
+        });
+      }
+
+      for (final radiusPointId in [cId, dId]) {
+        final equalRadius = await _api.createEqualRadiusConstraint(
+          _sketchId!,
+          arc1.id,
+          arc2.id,
+          radius2PointId: radiusPointId,
+        );
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, equalRadius.id));
+      }
+
+      // Feedback round: real Tangent constraints (not a hand-placed guess)
+      // pin both arcs flush against both connecting lines - see backend
+      // TangentConstraint's doc comment for why this needs no native
+      // arc-of-circle solver entity. All 4 (one per arc/line pair) are
+      // required for a geometrically valid closed slot; the last 2 are
+      // mathematically implied by the first 2 plus the EqualRadius ties
+      // above, which is why solve_sketch treats that redundancy as still
+      // converged (see solver.py's own comment on result_code 4/5).
+      for (final (arc, line) in [(arc1, line1), (arc1, line2), (arc2, line1), (arc2, line2)]) {
+        final tangent = await _api.createTangentConstraint(_sketchId!, arc.id, line.id);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, tangent.id));
+      }
 
       // Same rule as a completed Circle/Arc/Polygon: one finished entity = one solve call.
       await _solveAndTrackDof();

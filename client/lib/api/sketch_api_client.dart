@@ -270,6 +270,10 @@ abstract class ConstraintDto {
         return AtMidpointConstraintDto.fromJson(json);
       case 'spline_tangent':
         return SplineTangentConstraintDto.fromJson(json);
+      case 'tangent':
+        return TangentConstraintDto.fromJson(json);
+      case 'equal_radius':
+        return EqualRadiusConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -564,6 +568,56 @@ class SplineTangentConstraintDto extends ConstraintDto {
         segmentBP1: json['segment_b_p1'] as String,
         segmentBP2: json['segment_b_p2'] as String,
         segmentBP3: json['segment_b_p3'] as String,
+      );
+}
+
+/// A Slot's/`SketchController.createTangentConstraint`'s own Circle-or-Arc
+/// to Line tangency constraint - see backend `TangentConstraint`'s doc
+/// comment for why it's expressed as a centre-to-rim distance rather than
+/// py-slvs's native arc-of-circle entity.
+class TangentConstraintDto extends ConstraintDto {
+  final String centerPointId;
+  final String radiusPointId;
+  final String lineId;
+
+  const TangentConstraintDto({
+    required super.id,
+    required this.centerPointId,
+    required this.radiusPointId,
+    required this.lineId,
+  });
+
+  factory TangentConstraintDto.fromJson(Map<String, dynamic> json) => TangentConstraintDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
+        lineId: json['line_id'] as String,
+      );
+}
+
+/// Ties two Circles'/Arcs' radii together (e.g. a Slot's two end-cap Arcs)
+/// without a second independently-editable radius dimension - see backend
+/// `EqualRadiusConstraint`'s doc comment.
+class EqualRadiusConstraintDto extends ConstraintDto {
+  final String center1PointId;
+  final String radius1PointId;
+  final String center2PointId;
+  final String radius2PointId;
+
+  const EqualRadiusConstraintDto({
+    required super.id,
+    required this.center1PointId,
+    required this.radius1PointId,
+    required this.center2PointId,
+    required this.radius2PointId,
+  });
+
+  factory EqualRadiusConstraintDto.fromJson(Map<String, dynamic> json) => EqualRadiusConstraintDto(
+        id: json['id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        radius1PointId: json['radius1_point_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
+        radius2PointId: json['radius2_point_id'] as String,
       );
 }
 
@@ -1356,6 +1410,50 @@ class SketchApiClient {
                 'type': 'at_midpoint',
                 'point_id': pointId,
                 'line_id': lineId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Slot tool's own tangency wiring - see TangentConstraintDto's doc comment.
+  Future<ConstraintDto> createTangentConstraint(
+    String sketchId,
+    String circleOrArcId,
+    String lineId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'tangent',
+                'circle_or_arc_id': circleOrArcId,
+                'line_id': lineId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Slot tool's own equal-radius wiring - see EqualRadiusConstraintDto's doc
+  /// comment. [radius2PointId] optionally picks which of entity2's two rim
+  /// Points (for an Arc) this tie is for - a Slot's second end-cap Arc needs
+  /// this called twice, once per rim Point, since it has no single radius
+  /// Point of its own once both its native radius constraints are removed.
+  Future<ConstraintDto> createEqualRadiusConstraint(
+    String sketchId,
+    String entity1Id,
+    String entity2Id, {
+    String? radius2PointId,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'equal_radius',
+                'entity1_id': entity1Id,
+                'entity2_id': entity2Id,
+                if (radius2PointId != null) 'radius2_point_id': radius2PointId,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

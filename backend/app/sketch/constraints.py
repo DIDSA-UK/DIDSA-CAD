@@ -81,6 +81,24 @@ class SolverBuilder(Protocol):
         handle."""
         ...
 
+    def equal_length_point_line_distance(
+        self, point_handle: int, radius_line_handle: int, tangent_line_handle: int
+    ) -> int:
+        """Add a py-slvs constraint (addEqualLengthPointLineDistance,
+        SLVS_C_EQ_LEN_PT_LINE_D) forcing `radius_line_handle`'s own length to
+        equal the perpendicular distance from `point_handle` to
+        `tangent_line_handle`, returning the resulting py-slvs constraint
+        handle. Verified empirically against the installed py-slvs (no
+        usable documentation exists for this primitive in the upstream
+        SolveSpace header either): a virtual centre-to-rim line segment
+        (length = radius) and a free line, constrained this way with
+        `point_handle` = that same centre point, converged to the free line
+        sitting exactly at perpendicular distance = radius from centre -
+        i.e. genuine circle/arc-to-line tangency, expressed with zero new
+        py-slvs entity types (no arc-of-circle entity needed - see
+        TangentConstraint's own doc comment for why that path was avoided)."""
+        ...
+
     def point_on_line(self, point_handle: int, line_handle: int) -> int:
         """Add a py-slvs constraint forcing a point handle onto a
         line-segment entity handle (the point may lie anywhere along the
@@ -415,6 +433,86 @@ class EqualLengthConstraint(Constraint):
         )
         line2 = builder.line_segment(
             builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
+        )
+        return builder.equal_length(line1, line2)
+
+
+@dataclass
+class TangentConstraint(Constraint):
+    """Forces a Circle or Arc to be tangent to a Line - the perpendicular
+    distance from the Circle/Arc's own centre to the Line equals its
+    radius.
+
+    Expressed via SolverBuilder.equal_length_point_line_distance rather
+    than py-slvs's native arc-of-circle entity/addArcLineTangent (the more
+    "obvious"-looking primitive): this codebase's own Arc model already
+    avoids the native arc entity entirely (see Arc's own docstring - "zero
+    new solver primitives"), and empirically (see
+    equal_length_point_line_distance's own doc comment) the native arc
+    entity is unreliable in the installed py-slvs build in this
+    environment, while this point-line-distance approach converges
+    cleanly. `center_point_id`/`radius_point_id` define a virtual
+    centre-to-rim line segment whose length *is* the Circle/Arc's own
+    radius (the same real, solver-tracked radius its own
+    DistanceConstraint(s) already maintain) - this constraint introduces no
+    new numeric value, it only ties an existing radius to an existing
+    Line's distance from that same centre.
+    """
+
+    id: str
+    center_point_id: str
+    radius_point_id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "tangent"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.center_point_id, self.radius_point_id, self.line_start_id, self.line_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        center = builder.point2d(self.center_point_id)
+        radius_line = builder.line_segment(center, builder.point2d(self.radius_point_id))
+        tangent_line = builder.line_segment(
+            builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
+        )
+        return builder.equal_length_point_line_distance(center, radius_line, tangent_line)
+
+
+@dataclass
+class EqualRadiusConstraint(Constraint):
+    """Forces two Circles/Arcs to share the same radius - e.g. a Slot's two
+    end-cap Arcs.
+
+    Expressed via SolverBuilder.equal_length on each one's own virtual
+    centre-to-rim line segment (the same real, solver-tracked radius each
+    Circle's/Arc's own DistanceConstraint(s) already maintain) - no native
+    py-slvs "equal radius" entity-level primitive needed, mirroring
+    TangentConstraint's own reasoning for avoiding the native arc entity.
+    """
+
+    id: str
+    center1_point_id: str
+    radius1_point_id: str
+    center2_point_id: str
+    radius2_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "equal_radius"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.center1_point_id, self.radius1_point_id, self.center2_point_id, self.radius2_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.center1_point_id), builder.point2d(self.radius1_point_id)
+        )
+        line2 = builder.line_segment(
+            builder.point2d(self.center2_point_id), builder.point2d(self.radius2_point_id)
         )
         return builder.equal_length(line1, line2)
 

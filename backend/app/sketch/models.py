@@ -13,12 +13,14 @@ from app.sketch.constraints import (
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
+    EqualRadiusConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     SplineTangentConstraint,
+    TangentConstraint,
     VerticalConstraint,
 )
 
@@ -1056,6 +1058,75 @@ class Sketch:
             line1_end_id=line1.end_point_id,
             line2_start_id=line2.start_point_id,
             line2_end_id=line2.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def _center_radius_point_ids(
+        self, entity_id: str, *, radius_point_id: str | None = None
+    ) -> tuple[str, str]:
+        """Resolves a Circle or Arc id to its (center, radius-defining rim)
+        Point id pair - either rim Point works for TangentConstraint/
+        EqualRadiusConstraint's purposes (both are already equidistant from
+        center by construction, see Circle's/Arc's own radius
+        DistanceConstraint(s)). `radius_point_id` optionally picks which of
+        an Arc's two rim Points (start or end) to resolve to - needed when
+        more than one independent tie to the same Arc's radius is required
+        (e.g. a Slot's second end-cap Arc, whose two rim Points each need
+        their own EqualRadiusConstraint back to the first arc, since unlike
+        Circle an Arc has no single "the" rim Point)."""
+        entity = self.entities.get(entity_id)
+        if isinstance(entity, Circle):
+            if radius_point_id is not None and radius_point_id != entity.radius_point_id:
+                raise ValueError(f"{radius_point_id} is not a rim point of circle {entity_id}")
+            return entity.center_point_id, entity.radius_point_id
+        if isinstance(entity, Arc):
+            if radius_point_id is not None:
+                if radius_point_id not in (entity.start_point_id, entity.end_point_id):
+                    raise ValueError(f"{radius_point_id} is not a rim point of arc {entity_id}")
+                return entity.center_point_id, radius_point_id
+            return entity.center_point_id, entity.start_point_id
+        raise KeyError(entity_id)
+
+    def add_tangent_constraint(self, circle_or_arc_id: str, line_id: str) -> TangentConstraint:
+        center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+
+        constraint = TangentConstraint(
+            id=str(uuid.uuid4()),
+            center_point_id=center_point_id,
+            radius_point_id=radius_point_id,
+            line_id=line_id,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_equal_radius_constraint(
+        self, entity1_id: str, entity2_id: str, *, radius2_point_id: str | None = None
+    ) -> EqualRadiusConstraint:
+        """Ties entity2's radius to entity1's. `radius2_point_id` optionally
+        selects which of entity2's rim Points to tie (see
+        _center_radius_point_ids) - call this twice with each of an Arc's
+        two rim Points to keep it fully circular when both its own radius
+        DistanceConstraints have been replaced by ties to another entity
+        (e.g. a Slot's second end-cap Arc)."""
+        if entity1_id == entity2_id:
+            raise ValueError("A constraint cannot reference the same Circle/Arc twice")
+        center1_point_id, radius1_point_id = self._center_radius_point_ids(entity1_id)
+        center2_point_id, resolved_radius2_point_id = self._center_radius_point_ids(
+            entity2_id, radius_point_id=radius2_point_id
+        )
+
+        constraint = EqualRadiusConstraint(
+            id=str(uuid.uuid4()),
+            center1_point_id=center1_point_id,
+            radius1_point_id=radius1_point_id,
+            center2_point_id=center2_point_id,
+            radius2_point_id=resolved_radius2_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint

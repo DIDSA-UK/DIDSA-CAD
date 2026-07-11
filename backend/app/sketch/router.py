@@ -10,12 +10,14 @@ from app.sketch.constraints import (
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
+    EqualRadiusConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     SplineTangentConstraint,
+    TangentConstraint,
     VerticalConstraint,
 )
 from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch, Spline, TextEntity
@@ -45,6 +47,8 @@ from app.sketch.schemas import (
     EllipseUpdate,
     EqualLengthConstraintCreate,
     EqualLengthConstraintResponse,
+    EqualRadiusConstraintCreate,
+    EqualRadiusConstraintResponse,
     HorizontalConstraintCreate,
     HorizontalConstraintResponse,
     LineCreate,
@@ -71,6 +75,8 @@ from app.sketch.schemas import (
     SplineResponse,
     SplineTangentConstraintResponse,
     SplineUpdate,
+    TangentConstraintCreate,
+    TangentConstraintResponse,
     TextContourResponse,
     TextCreate,
     TextPreviewResponse,
@@ -311,6 +317,21 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             segment_b_p1=constraint.segment_b_p1,
             segment_b_p2=constraint.segment_b_p2,
             segment_b_p3=constraint.segment_b_p3,
+        )
+    if isinstance(constraint, TangentConstraint):
+        return TangentConstraintResponse(
+            id=constraint.id,
+            center_point_id=constraint.center_point_id,
+            radius_point_id=constraint.radius_point_id,
+            line_id=constraint.line_id,
+        )
+    if isinstance(constraint, EqualRadiusConstraint):
+        return EqualRadiusConstraintResponse(
+            id=constraint.id,
+            center1_point_id=constraint.center1_point_id,
+            radius1_point_id=constraint.radius1_point_id,
+            center2_point_id=constraint.center2_point_id,
+            radius2_point_id=constraint.radius2_point_id,
         )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
@@ -755,6 +776,12 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             )
         elif isinstance(payload, AtMidpointConstraintCreate):
             constraint = sketch.add_at_midpoint_constraint(payload.point_id, payload.line_id)
+        elif isinstance(payload, TangentConstraintCreate):
+            constraint = sketch.add_tangent_constraint(payload.circle_or_arc_id, payload.line_id)
+        elif isinstance(payload, EqualRadiusConstraintCreate):
+            constraint = sketch.add_equal_radius_constraint(
+                payload.entity1_id, payload.entity2_id, radius2_point_id=payload.radius2_point_id
+            )
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:

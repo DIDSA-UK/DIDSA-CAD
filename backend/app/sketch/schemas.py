@@ -447,6 +447,19 @@ class AtMidpointConstraintCreate(BaseModel):
     line_id: str
 
 
+class TangentConstraintCreate(BaseModel):
+    type: Literal["tangent"]
+    circle_or_arc_id: str
+    line_id: str
+
+
+class EqualRadiusConstraintCreate(BaseModel):
+    type: Literal["equal_radius"]
+    entity1_id: str
+    entity2_id: str
+    radius2_point_id: str | None = None
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
@@ -460,6 +473,8 @@ ConstraintCreate = Union[
     LineDistanceConstraintCreate,
     PointLineDistanceConstraintCreate,
     AtMidpointConstraintCreate,
+    TangentConstraintCreate,
+    EqualRadiusConstraintCreate,
 ]
 
 
@@ -568,6 +583,23 @@ class SplineTangentConstraintResponse(BaseModel):
     segment_b_p3: str
 
 
+class TangentConstraintResponse(BaseModel):
+    type: Literal["tangent"] = "tangent"
+    id: str
+    center_point_id: str
+    radius_point_id: str
+    line_id: str
+
+
+class EqualRadiusConstraintResponse(BaseModel):
+    type: Literal["equal_radius"] = "equal_radius"
+    id: str
+    center1_point_id: str
+    radius1_point_id: str
+    center2_point_id: str
+    radius2_point_id: str
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -582,6 +614,8 @@ ConstraintResponse = Union[
     PointLineDistanceConstraintResponse,
     AtMidpointConstraintResponse,
     SplineTangentConstraintResponse,
+    TangentConstraintResponse,
+    EqualRadiusConstraintResponse,
 ]
 
 

@@ -13,7 +13,44 @@ from dataclasses import dataclass, field
 
 from py_slvs import slvs
 
+from app.sketch.constraints import (
+    AngleConstraint,
+    CoincidentConstraint,
+    CollinearConstraint,
+    DistanceConstraint,
+    EqualLengthConstraint,
+    EqualRadiusConstraint,
+    HorizontalConstraint,
+    LineDistanceConstraint,
+    ParallelConstraint,
+    PerpendicularConstraint,
+    PointLineDistanceConstraint,
+    SplineTangentConstraint,
+    TangentConstraint,
+    VerticalConstraint,
+)
 from app.sketch.models import Point, Sketch
+
+# Constraint types empirically confirmed to never need py-slvs's own
+# redundancy detection to distrust a converged solve - see `converged`'s
+# own comment in solve_sketch below for why this allowlist exists and, just
+# as importantly, why AtMidpointConstraint is deliberately excluded from it.
+_REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
+    DistanceConstraint,
+    VerticalConstraint,
+    HorizontalConstraint,
+    AngleConstraint,
+    CoincidentConstraint,
+    ParallelConstraint,
+    PerpendicularConstraint,
+    EqualLengthConstraint,
+    CollinearConstraint,
+    LineDistanceConstraint,
+    PointLineDistanceConstraint,
+    SplineTangentConstraint,
+    TangentConstraint,
+    EqualRadiusConstraint,
+)
 
 # Group 1 holds the fixed workplane (origin + normal); group 2 holds every
 # Point/Constraint being solved. There is no need for finer-grained groups
@@ -217,6 +254,13 @@ class _PySlvsBuilder:
             line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def equal_length_point_line_distance(
+        self, point_handle: int, radius_line_handle: int, tangent_line_handle: int
+    ) -> int:
+        return self._system.addEqualLengthPointLineDistance(
+            point_handle, radius_line_handle, tangent_line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
     def point_on_line(self, point_handle: int, line_handle: int) -> int:
         return self._system.addPointOnLine(
             point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
@@ -323,6 +367,39 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
 
     result_code = system.solve(group=_SOLVE_GROUP, reportFailed=True)
     converged = result_code == 0
+    if (
+        not converged
+        and result_code in (4, 5)
+        and any(isinstance(c, (TangentConstraint, EqualRadiusConstraint)) for c in sketch.constraints.values())
+        and all(isinstance(c, _REDUNDANCY_SAFE_CONSTRAINT_TYPES) for c in sketch.constraints.values())
+    ):
+        # A Slot's closed loop of 2 Arcs + 2 Lines, tied together with
+        # Tangent/EqualRadius constraints, is *mathematically* over-
+        # determined by exactly one redundant equation (radius + centre
+        # positions alone fully determine every rim Point once tangency and
+        # equal-radius are enforced). Upstream SolveSpace documents this
+        # exact situation as SLVS_RESULT_REDUNDANT_OKAY=4 ("solved
+        # correctly despite a redundant constraint"); the installed py-slvs
+        # fork here (realthunder/solvespace) empirically reports 5 for it
+        # instead - confirmed by comparing a genuinely inconsistent system
+        # (contradictory DistanceConstraints on the same two points,
+        # result_code=1, never 4/5) against a Slot's own constraint set,
+        # which converges to numerically exact tangency (perpendicular
+        # distance from each Arc's centre to each Line equals its radius,
+        # to 4 decimal places) across varied starting positions, a live
+        # point drag, and a live radius edit - every time.
+        #
+        # This override is intentionally narrow rather than a blanket
+        # `result_code in (0, 4, 5)`: `_REDUNDANCY_SAFE_CONSTRAINT_TYPES`
+        # excludes AtMidpointConstraint on purpose, because
+        # test_two_at_midpoint_constraints_on_the_same_point_is_singular_
+        # once_hv_ties_diagonals_together (test_stage15_constraints.py)
+        # proves the *same* result_code can also mean a genuinely under-
+        # constrained shape (an HV-constrained rectangle whose width/
+        # height/position are never actually pinned) that py-slvs
+        # nonetheless reports as dof == 0 - a real false positive a
+        # blanket override would have silently reintroduced.
+        converged = True
 
     for point_id in builder.solved_point_ids():
         handle = builder.handle_for_point(point_id)
