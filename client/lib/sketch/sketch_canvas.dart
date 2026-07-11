@@ -1041,6 +1041,100 @@ String? _ghostKeyAt(SketchController controller, ViewTransform transform, Offset
   return null;
 }
 
+/// On-device feedback: default distance (screen pixels) a radius/diameter
+/// dimension's leader shoulder sits past the circle/arc's rim, along the
+/// leader direction, before the horizontal landing leg to the label - see
+/// [_radialDimensionGeometry], shared by [_SketchPainter._paintRadiusDiameterDimension]
+/// (which draws it) and [_constraintLabelCenter] (which hit-tests/drags the
+/// label), so they can never disagree about where things are.
+const double _radialLegLength = 24.0;
+
+/// Screen-space geometry for a radius/diameter dimension's leader - see
+/// [_radialDimensionGeometry]. [touchScreen] is where the leader's arrow
+/// touches the circle/arc boundary; [touchCanvasAngle] is that touch
+/// point's angle (Flutter canvas convention: 0 = +X, positive = clockwise)
+/// around [centerScreen], used by [_SketchPainter] to test it against an
+/// Arc's own drawn sweep. [shoulderScreen] is the kink between the radial
+/// leader and the horizontal landing leg to [labelCenter].
+/// [oppositeTouchScreen] is the diametrically-opposite touch point (on the
+/// far side of the centre) - always computed (cheap), but only drawn for a
+/// diameter dimension.
+class RadialDimensionGeometry {
+  final Offset centerScreen;
+  final double radiusPixels;
+  final double touchCanvasAngle;
+  final Offset touchScreen;
+  final Offset shoulderScreen;
+  final Offset labelCenter;
+  final Offset oppositeTouchScreen;
+
+  const RadialDimensionGeometry({
+    required this.centerScreen,
+    required this.radiusPixels,
+    required this.touchCanvasAngle,
+    required this.touchScreen,
+    required this.shoulderScreen,
+    required this.labelCenter,
+    required this.oppositeTouchScreen,
+  });
+}
+
+/// Technical-drawing-norms pass: a radius/diameter leader used to always
+/// point at the constraint's own (arbitrary, fixed-at-creation) rim/start/
+/// end Point regardless of where its label had been dragged - a better UX
+/// makes the leader actually point wherever the label currently sits,
+/// sweeping continuously around the centre as the label is dragged, with
+/// the arrowhead always landing exactly on the circle/arc's boundary at
+/// that angle (never on a fixed, possibly poorly-placed Point). [c]'s own
+/// [DistanceConstraintDto.pointBId] is used only to derive the *default*
+/// angle (where the leader points before it's ever been dragged) - once
+/// [labelOffset] is non-zero, the touch point is recomputed purely from
+/// [c]'s centre Point, its solved radius ([DistanceConstraintDto.distance]),
+/// and the angle implied by the dragged label position. Returns null if
+/// either endpoint Point is missing or the radius is degenerate.
+RadialDimensionGeometry? _radialDimensionGeometry(
+  SketchController controller,
+  ViewTransform transform,
+  DistanceConstraintDto c,
+  Offset labelOffset,
+) {
+  final center = controller.points[c.pointAId];
+  final rim = controller.points[c.pointBId];
+  if (center == null || rim == null) return null;
+  final centerScreen = transform.sketchToScreen(center.x, center.y);
+  final radiusPixels = c.distance * transform.pixelsPerUnit;
+  if (radiusPixels < 1e-6) return null;
+
+  final rimScreen = transform.sketchToScreen(rim.x, rim.y);
+  final defaultDelta = rimScreen - centerScreen;
+  final defaultLength = defaultDelta.distance;
+  final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
+
+  final desiredLabel = centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + labelOffset;
+  final desiredDelta = desiredLabel - centerScreen;
+  final touchCanvasAngle = desiredDelta.distance < 1e-6
+      ? math.atan2(defaultDirection.dy, defaultDirection.dx)
+      : math.atan2(desiredDelta.dy, desiredDelta.dx);
+  final direction = Offset(math.cos(touchCanvasAngle), math.sin(touchCanvasAngle));
+  final touchScreen = centerScreen + direction * radiusPixels;
+  final shoulderScreen = touchScreen + direction * _radialLegLength;
+  // The horizontal landing leg's Y is the shoulder's own Y (guaranteeing it
+  // reads as perfectly horizontal); its X follows the label's own dragged
+  // X, so dragging horizontally slides the landing left/right independent
+  // of the leader's angle.
+  final labelCenter = Offset(desiredLabel.dx, shoulderScreen.dy);
+
+  return RadialDimensionGeometry(
+    centerScreen: centerScreen,
+    radiusPixels: radiusPixels,
+    touchCanvasAngle: touchCanvasAngle,
+    touchScreen: touchScreen,
+    shoulderScreen: shoulderScreen,
+    labelCenter: labelCenter,
+    oppositeTouchScreen: centerScreen * 2 - touchScreen,
+  );
+}
+
 /// A Point pair's screen-space midpoint - null if either Point is missing.
 /// Shared by [_constraintLabelCenter]'s Vertical/Horizontal cases, mirroring
 /// [_SketchPainter._paintAxisIndicator]'s own midpoint layout.
@@ -1056,35 +1150,42 @@ Offset? _pointPairMidpointScreen(
   return (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
 }
 
-/// [constraint]'s on-screen label center, for hit-testing a [SketchMode.select]
-/// tap against it (new work package item 4) - mirrors each of
-/// [_SketchPainter._paintDimensionOverlays]'s per-type layouts exactly, so a
-/// tap is recognized precisely where the label is actually drawn.
+/// [constraint]'s actual on-screen label center (with [labelOffset] already
+/// applied), for hit-testing a [SketchMode.select] tap against it (new work
+/// package item 4) - mirrors each of [_SketchPainter._paintDimensionOverlays]'s
+/// per-type layouts exactly, so a tap is recognized precisely where the
+/// label is actually drawn.
 Offset? _constraintLabelCenter(
   SketchController controller,
   ViewTransform transform,
   ConstraintDto constraint,
+  Offset labelOffset,
 ) {
   switch (constraint) {
     case DistanceConstraintDto c:
       if (controller.isRadiusDistanceConstraint(c)) {
-        // Must mirror _paintRadiusDiameterDimension's base anchor exactly
-        // (including its own 24.0 leg length), or dragging/hit-testing a
-        // radius/diameter dimension's label would disagree with where it's
-        // actually drawn.
-        final center = controller.points[c.pointAId];
-        final rim = controller.points[c.pointBId];
-        if (center == null || rim == null) return null;
-        final centerScreen = transform.sketchToScreen(center.x, center.y);
-        final rimScreen = transform.sketchToScreen(rim.x, rim.y);
-        final delta = rimScreen - centerScreen;
-        final length = delta.distance;
-        final direction = length < 1e-6 ? const Offset(1, 0) : delta / length;
-        const legLength = 24.0;
-        return rimScreen + direction * legLength;
+        // _radialDimensionGeometry already bakes labelOffset into its own
+        // anchor math (it drives the leader's angle, not just a post-hoc
+        // translation) - see its own doc comment - so it's returned as-is,
+        // unlike every other case below.
+        return _radialDimensionGeometry(controller, transform, c, labelOffset)?.labelCenter;
       }
-      final a = controller.points[c.pointAId];
-      final b = controller.points[c.pointBId];
+      // Technical-drawing-norms pass: an Ellipse axis constraint (still
+      // centre-to-tip under the hood) renders/hit-tests as an ordinary
+      // tip-to-tip length dimension instead - see
+      // [SketchController.ellipseAxisForDistanceConstraint]'s own doc
+      // comment.
+      final ellipseAxis = controller.ellipseAxisForDistanceConstraint(c);
+      final String pointAId;
+      final String pointBId;
+      if (ellipseAxis != null) {
+        (pointAId, pointBId) = ellipseAxis;
+      } else {
+        pointAId = c.pointAId;
+        pointBId = c.pointBId;
+      }
+      final a = controller.points[pointAId];
+      final b = controller.points[pointBId];
       if (a == null || b == null) return null;
       final aScreen = transform.sketchToScreen(a.x, a.y);
       final bScreen = transform.sketchToScreen(b.x, b.y);
@@ -1095,10 +1196,10 @@ Offset? _constraintLabelCenter(
       switch (c.orientation) {
         case 'vertical':
           final offsetX = math.max(aScreen.dx, bScreen.dx) + 18.0;
-          return Offset(offsetX, (aScreen.dy + bScreen.dy) / 2);
+          return Offset(offsetX, (aScreen.dy + bScreen.dy) / 2) + labelOffset;
         case 'horizontal':
           final offsetY = math.max(aScreen.dy, bScreen.dy) + 18.0;
-          return Offset((aScreen.dx + bScreen.dx) / 2, offsetY);
+          return Offset((aScreen.dx + bScreen.dx) / 2, offsetY) + labelOffset;
         default:
           final delta = bScreen - aScreen;
           final length = delta.distance;
@@ -1106,17 +1207,19 @@ Offset? _constraintLabelCenter(
           final normal = Offset(-delta.dy, delta.dx) / length;
           const offsetDistance = 18.0;
           final offset = normal * offsetDistance;
-          return (aScreen + offset + bScreen + offset) / 2;
+          return (aScreen + offset + bScreen + offset) / 2 + labelOffset;
       }
     case VerticalConstraintDto c:
-      return _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+      final base = _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+      return base == null ? null : base + labelOffset;
     case HorizontalConstraintDto c:
-      return _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+      final base = _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+      return base == null ? null : base + labelOffset;
     case AngleConstraintDto c:
       final midpoint1 = _lineMidpointScreenFor(controller, transform, c.line1Id);
       final midpoint2 = _lineMidpointScreenFor(controller, transform, c.line2Id);
       if (midpoint1 == null || midpoint2 == null) return null;
-      return (midpoint1 + midpoint2) / 2;
+      return (midpoint1 + midpoint2) / 2 + labelOffset;
     case LineDistanceConstraintDto c:
       final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
       final midB = _lineMidpointScreenFor(controller, transform, c.line2Id);
@@ -1127,40 +1230,45 @@ Offset? _constraintLabelCenter(
       final normal = Offset(-delta.dy, delta.dx) / length;
       const offsetDistance = 18.0;
       final offset = normal * offsetDistance;
-      return (midA + offset + midB + offset) / 2;
+      return (midA + offset + midB + offset) / 2 + labelOffset;
     // Stage 23e: extends label rendering/hit-testing to every remaining
     // constraint type. AtMidpointConstraintDto is deliberately excluded -
     // Stage 22 decided it renders no badge at all, since it's purely a
     // construction-time fixup with nothing useful to label or delete from
     // the canvas.
     case CoincidentConstraintDto c:
-      return _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+      final base = _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
+      return base == null ? null : base + labelOffset;
     case ParallelConstraintDto c:
-      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      return base == null ? null : base + labelOffset;
     case PerpendicularConstraintDto c:
-      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      return base == null ? null : base + labelOffset;
     case EqualLengthConstraintDto c:
-      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      return base == null ? null : base + labelOffset;
     case CollinearConstraintDto c:
-      return _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
+      return base == null ? null : base + labelOffset;
     case PointLineDistanceConstraintDto c:
       final point = controller.points[c.pointId];
       final lineMid = _lineMidpointScreenFor(controller, transform, c.lineId);
       if (point == null || lineMid == null) return null;
       final pointScreen = transform.sketchToScreen(point.x, point.y);
-      return (pointScreen + lineMid) / 2;
+      return (pointScreen + lineMid) / 2 + labelOffset;
     default:
       return null;
   }
 }
 
 /// The id of whichever currently-rendered Constraint's label [canvasPos]
-/// landed within [radius] of, or null if it missed all of them - the
-/// label's *actual* position, i.e. [_constraintLabelCenter]'s default
-/// anchor plus [SketchController.labelOffsetFor] (Stage 15 item 2), so
-/// this never disagrees with where [_SketchPainter] actually draws it
-/// after a drag. Public (unlike its sibling hit-testers in this file) so
-/// it's directly unit-testable without pumping a real widget tree - see
+/// landed within [radius] of, or null if it missed all of them - see
+/// [_constraintLabelCenter]'s own doc comment on how [SketchController.
+/// labelOffsetFor] (Stage 15 item 2) is folded in, so this never disagrees
+/// with where [_SketchPainter] actually draws it after a drag. Public
+/// (unlike its sibling hit-testers in this file) so it's directly
+/// unit-testable without pumping a real widget tree - see
 /// [_SketchCanvasState._handleDragModeTap], which checks this first,
 /// ahead of a Point/Line grab.
 String? dimensionLabelAt(
@@ -1170,9 +1278,9 @@ String? dimensionLabelAt(
   double radius,
 ) {
   for (final entry in controller.constraints.entries) {
-    final center = _constraintLabelCenter(controller, transform, entry.value);
-    if (center == null) continue;
-    final actual = center + controller.labelOffsetFor(entry.key);
+    final labelOffset = controller.labelOffsetFor(entry.key);
+    final actual = _constraintLabelCenter(controller, transform, entry.value, labelOffset);
+    if (actual == null) continue;
     if ((canvasPos - actual).distance <= radius) {
       return entry.key;
     }
@@ -1388,11 +1496,22 @@ class _SketchPainter extends CustomPainter {
   /// shade.
   static const Color _overConstrainedColor = Color(0xFFB71C1C);
 
-  /// Stage 12 item 10's dimension-overlay color - the prompt only names
-  /// this color for the Vertical/Horizontal glyphs, but using it for every
-  /// overlay (Distance/Angle too) keeps them all visually distinct from
-  /// entity colors without inventing an unspecified palette.
-  static const Color _dimensionColor = Color(0xFFF5A623);
+  /// Technical-drawing-norms pass: a real measured dimension's line/
+  /// extension-line/arrowhead geometry (Distance, Radius/Diameter,
+  /// LineDistance, Angle, PointLineDistance - every case [_paintDimensionOverlays]
+  /// passes `plainBlackText: true` for) now reads as plain black, matching
+  /// ISO 128/ASME Y14.2 convention (a dimension line is a thin black line,
+  /// not a status color) - distinct from [_constraintBadgeColor] below,
+  /// which stays the original amber for the value-less relationship badges
+  /// (V/H/Coincident/Parallel/etc.) that have no real technical-drawing
+  /// equivalent to match and are meant to read as a status indicator, not a
+  /// measurement.
+  static const Color _dimensionLineColor = Colors.black;
+
+  /// Stage 12 item 10's original dimension-overlay color, now scoped to
+  /// just the value-less constraint badges - see [_dimensionLineColor]'s
+  /// own doc comment for why real dimensions no longer share this color.
+  static const Color _constraintBadgeColor = Color(0xFFF5A623);
 
   /// Stage 13 item 5/6's ghost-dimension colors: dashed grey by default,
   /// blue for the ghost currently being edited, dimmer grey for the
@@ -1422,6 +1541,15 @@ class _SketchPainter extends CustomPainter {
   static const double _dimensionFontSize = 9.5; // was 11
   static const double _snapHighlightPointRadius = 3.0; // was 4 (snap/coincident highlight base)
   static const double _midpointSnapIndicatorRadius = 6.5; // was 9
+
+  /// Technical-drawing-norms pass: a dimension/extension/leader line reads
+  /// thinner than the entity lines it measures - about 3/4 of
+  /// [_lineStrokeWidth] - so it's visually subordinate to the geometry,
+  /// matching standard technical-drawing weight hierarchy (dimension lines
+  /// thinner than visible/object lines). Was a bare `1` duplicated at every
+  /// dimension paint call site; centralized here like every other constant
+  /// in this block.
+  static const double _dimensionStrokeWidth = _lineStrokeWidth * 0.75;
 
   /// Draws [start]-to-[end] as a dashed segment - used for construction
   /// Lines. There's no dashed-stroke primitive on [Canvas]/[Paint], so this
@@ -1552,7 +1680,11 @@ class _SketchPainter extends CustomPainter {
     for (final entry in controller.constraints.entries) {
       final isSelected =
           selectionSet.any((s) => s.kind == SelectionKind.constraint && s.id == entry.key);
-      final color = isSelected ? _selectedColor : _dimensionColor;
+      // Two colors sharing the same selected override - see
+      // _dimensionLineColor's own doc comment for why measurements and
+      // badges no longer share one unselected color.
+      final dimensionColor = isSelected ? _selectedColor : _dimensionLineColor;
+      final badgeColor = isSelected ? _selectedColor : _constraintBadgeColor;
       final labelOffset = controller.labelOffsetFor(entry.key);
       switch (entry.value) {
         case DistanceConstraintDto c:
@@ -1560,35 +1692,35 @@ class _SketchPainter extends CustomPainter {
             _paintRadiusDiameterDimension(
               canvas,
               c,
-              color,
+              dimensionColor,
               labelOffset,
               controller.showsDiameterFor(entry.key),
             );
           } else {
-            _paintDistanceDimension(canvas, c, color, labelOffset);
+            _paintDistanceDimension(canvas, c, dimensionColor, labelOffset);
           }
         case VerticalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', color, labelOffset);
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'V', badgeColor, labelOffset);
         case HorizontalConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', color, labelOffset);
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', badgeColor, labelOffset);
         case AngleConstraintDto c:
-          _paintAngleDimension(canvas, c, color, labelOffset);
+          _paintAngleDimension(canvas, c, dimensionColor, labelOffset);
         case LineDistanceConstraintDto c:
-          _paintLineDistanceDimension(canvas, c, color, labelOffset);
+          _paintLineDistanceDimension(canvas, c, dimensionColor, labelOffset);
         // Stage 23e: every remaining constraint type gets a small label too
         // (AtMidpointConstraintDto stays excluded - see _constraintLabelCenter).
         case CoincidentConstraintDto c:
-          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'Coinc.', color, labelOffset);
+          _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'Coinc.', badgeColor, labelOffset);
         case ParallelConstraintDto c:
-          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '∥', color, labelOffset);
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '∥', badgeColor, labelOffset);
         case PerpendicularConstraintDto c:
-          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '⟂', color, labelOffset);
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '⟂', badgeColor, labelOffset);
         case EqualLengthConstraintDto c:
-          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '=', color, labelOffset);
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '=', badgeColor, labelOffset);
         case CollinearConstraintDto c:
-          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, 'Collin.', color, labelOffset);
+          _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, 'Collin.', badgeColor, labelOffset);
         case PointLineDistanceConstraintDto c:
-          _paintPointLineDistanceDimension(canvas, c, color, labelOffset);
+          _paintPointLineDistanceDimension(canvas, c, dimensionColor, labelOffset);
         default:
           break;
       }
@@ -1614,14 +1746,6 @@ class _SketchPainter extends CustomPainter {
   /// dimension there too, same as a real CAD tool allows.
   static const double _defaultDimensionOffset = 18.0;
   static const double _minDimensionOffsetMagnitude = 6.0;
-
-  /// On-device feedback: default distance (screen pixels) a radius/diameter
-  /// dimension's label sits past the circle's rim, along the leader
-  /// direction, before any drag offset - see [_paintRadiusDiameterDimension]
-  /// and [_constraintLabelCenter] (top-level function below), which must
-  /// derive the exact same base anchor or dragging/hit-testing this label
-  /// would disagree with where it's actually drawn.
-  static const double _radialLegLength = 24.0;
 
   double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
     if (labelOffset == Offset.zero) return _defaultDimensionOffset;
@@ -1747,17 +1871,36 @@ class _SketchPainter extends CustomPainter {
   /// layout, offset perpendicular to the constrained points by a fixed
   /// pixel amount (so it reads clearly regardless of zoom), labeled with
   /// the constraint's own [DistanceConstraintDto.distance] (the solved
-  /// value, not a measurement of the current screen geometry).
+  /// value, not a measurement of the current screen geometry). Also handles
+  /// an Ellipse axis constraint (see [SketchController.
+  /// ellipseAxisForDistanceConstraint]) - technical-drawing-norms pass: an
+  /// Ellipse has no uniform "radius", so each axis reads as an ordinary
+  /// tip-to-tip length dimension here instead of [_paintRadiusDiameterDimension]'s
+  /// radial leader, with the label doubled from the underlying (still
+  /// centre-based, semi-axis) constraint value - the same "double for
+  /// display" trick a Circle's diameter already uses.
   void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color, Offset labelOffset) {
-    final a = controller.points[c.pointAId];
-    final b = controller.points[c.pointBId];
+    final ellipseAxis = controller.ellipseAxisForDistanceConstraint(c);
+    final String pointAId;
+    final String pointBId;
+    final double displayValue;
+    if (ellipseAxis != null) {
+      (pointAId, pointBId) = ellipseAxis;
+      displayValue = c.distance * 2;
+    } else {
+      pointAId = c.pointAId;
+      pointBId = c.pointBId;
+      displayValue = c.distance;
+    }
+    final a = controller.points[pointAId];
+    final b = controller.points[pointBId];
     if (a == null || b == null) return;
     final aScreen = transform.sketchToScreen(a.x, a.y);
     final bScreen = transform.sketchToScreen(b.x, b.y);
 
     final dimPaint = Paint()
       ..color = color
-      ..strokeWidth = 1;
+      ..strokeWidth = _dimensionStrokeWidth;
 
     // Bug-fix: this used to always lay out as a plain linear dimension (an
     // offset line parallel to a-b), even for horizontal/vertical
@@ -1795,23 +1938,24 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 
-    _drawDimensionLabel(canvas, (p1 + p2) / 2, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, (p1 + p2) / 2, displayValue.toStringAsFixed(2), color, plainBlackText: true);
   }
 
-  /// Radial (radius/diameter) dimension for a Circle's DistanceConstraint -
-  /// see [SketchController.circleForDistanceConstraint]/[SketchController.
-  /// showsDiameterFor]. A radius dimension is a single leader from the
-  /// circle's rim (the constraint's own [DistanceConstraintDto.pointBId],
-  /// which already sits exactly on the circle) outward to the label,
-  /// arrowhead touching the rim; a diameter dimension spans the whole
-  /// circle (rim point through centre to the diametrically-opposite
-  /// point), arrowheads at both ends - on-device feedback: "Include arrow,
-  /// leader, dim", distinguishing a circle's size measurement from a plain
-  /// two-point dimension so it reads unambiguously rather than as an
-  /// arbitrary diagonal distance. [_radialLegLength]'s base anchor must
-  /// match [_constraintLabelCenter]'s own (top-level function below)
-  /// exactly, or dragging/hit-testing this label would disagree with where
-  /// it's actually drawn.
+  /// Radial (radius/diameter) dimension for a Circle or Arc's
+  /// DistanceConstraint - see [SketchController.circleForDistanceConstraint]/
+  /// [SketchController.arcForDistanceConstraint]/[SketchController.showsDiameterFor].
+  /// On-device feedback: the leader now points wherever the label has been
+  /// dragged (see [_radialDimensionGeometry]'s own doc comment), touching
+  /// the boundary's actual geometry at that angle rather than the
+  /// constraint's own fixed rim/start/end Point - "a better user experience
+  /// shows the dimension actually pointing to the arc or circle". A radius
+  /// dimension is a single leader from the touch point (arrowhead pointing
+  /// back toward centre) out to a shoulder, then a horizontal landing leg
+  /// to the label; a diameter dimension spans the whole circle (touch point
+  /// through centre to the diametrically-opposite point), arrowheads at
+  /// both ends, same shoulder/landing leg on the near side. For an Arc
+  /// whose touch angle falls outside its own drawn sweep, a dashed grey
+  /// extension fills the gap - see [_paintArcExtensionIfNeeded].
   void _paintRadiusDiameterDimension(
     Canvas canvas,
     DistanceConstraintDto c,
@@ -1819,49 +1963,100 @@ class _SketchPainter extends CustomPainter {
     Offset labelOffset,
     bool showsDiameter,
   ) {
-    final center = controller.points[c.pointAId];
-    final rim = controller.points[c.pointBId];
-    if (center == null || rim == null) return;
-    final centerScreen = transform.sketchToScreen(center.x, center.y);
-    final rimScreen = transform.sketchToScreen(rim.x, rim.y);
-    final delta = rimScreen - centerScreen;
-    final length = delta.distance;
-    final direction = length < 1e-6 ? const Offset(1, 0) : delta / length;
-    final labelCenter = rimScreen + direction * _radialLegLength + labelOffset;
+    final geometry = _radialDimensionGeometry(controller, transform, c, labelOffset);
+    if (geometry == null) return;
+
+    _paintArcExtensionIfNeeded(canvas, controller.arcForDistanceConstraint(c), c, geometry);
 
     final dimPaint = Paint()
       ..color = color
-      ..strokeWidth = 1;
+      ..strokeWidth = _dimensionStrokeWidth;
+    final direction = Offset(math.cos(geometry.touchCanvasAngle), math.sin(geometry.touchCanvasAngle));
 
     if (showsDiameter) {
-      final oppositeScreen = centerScreen * 2 - rimScreen;
-      canvas.drawLine(oppositeScreen, rimScreen, dimPaint);
-      canvas.drawLine(rimScreen, labelCenter, dimPaint);
-      _drawArrowhead(canvas, rimScreen, direction, color);
-      _drawArrowhead(canvas, oppositeScreen, -direction, color);
+      canvas.drawLine(geometry.oppositeTouchScreen, geometry.touchScreen, dimPaint);
+      canvas.drawLine(geometry.touchScreen, geometry.shoulderScreen, dimPaint);
+      canvas.drawLine(geometry.shoulderScreen, geometry.labelCenter, dimPaint);
+      _drawArrowhead(canvas, geometry.touchScreen, direction, color);
+      _drawArrowhead(canvas, geometry.oppositeTouchScreen, -direction, color);
       _drawDimensionLabel(
         canvas,
-        labelCenter,
+        geometry.labelCenter,
         '⌀${(c.distance * 2).toStringAsFixed(2)}',
         color,
         plainBlackText: true,
       );
     } else {
-      canvas.drawLine(rimScreen, labelCenter, dimPaint);
-      // On-device feedback: the arrowhead touches the rim either way, but
-      // must point *back towards the centre* (standard radius-dimension
+      canvas.drawLine(geometry.touchScreen, geometry.shoulderScreen, dimPaint);
+      canvas.drawLine(geometry.shoulderScreen, geometry.labelCenter, dimPaint);
+      // On-device feedback: the arrowhead touches the boundary either way,
+      // but must point *back towards the centre* (standard radius-dimension
       // convention - the leader reads as "this far, back to the centre")
       // rather than outward, which read as a disconnected mark instead of
       // a continuation of the centre-to-rim line.
-      _drawArrowhead(canvas, rimScreen, -direction, color);
+      _drawArrowhead(canvas, geometry.touchScreen, -direction, color);
       _drawDimensionLabel(
         canvas,
-        labelCenter,
+        geometry.labelCenter,
         'R${c.distance.toStringAsFixed(2)}',
         color,
         plainBlackText: true,
       );
     }
+  }
+
+  /// Dashed grey (arc-extension) color - visually distinct from every real
+  /// entity/dimension color so it reads unambiguously as "not really
+  /// there", the same role [_referenceGhostColor] plays for a reference
+  /// body's own ghost wireframe.
+  static const Color _arcExtensionColor = Color(0xFF999999);
+
+  /// On-device feedback: a radius/diameter leader is free to point anywhere
+  /// around the full circle (dragging the label sweeps it continuously),
+  /// but an Arc only actually draws part of that circle - if [geometry]'s
+  /// touch angle falls in the "missing" part, this fills the gap with a
+  /// dashed grey arc from whichever of [arc]'s two ends is angularly
+  /// nearer (the shorter extension), so the arrowhead still visibly lands
+  /// on something rather than floating in empty space. A full Circle (or
+  /// any other shape - [arc] is null) draws nothing extra, since every
+  /// angle is already real geometry.
+  void _paintArcExtensionIfNeeded(
+    Canvas canvas,
+    SketchArcView? arc,
+    DistanceConstraintDto c,
+    RadialDimensionGeometry geometry,
+  ) {
+    if (arc == null) return;
+    final center = controller.points[arc.centerPointId];
+    final start = controller.points[arc.startPointId];
+    final end = controller.points[arc.endPointId];
+    if (center == null || start == null || end == null) return;
+    final startAngle = normalizeSketchAngle(math.atan2(start.y - center.y, start.x - center.x));
+    final endAngle = normalizeSketchAngle(math.atan2(end.y - center.y, end.x - center.x));
+    // touchCanvasAngle is in Flutter's Y-down canvas convention; negate
+    // back to the sketch's Y-up/CCW convention to compare against the
+    // Arc's own sweep (see _arcScreenAngles' own doc comment on this same
+    // negation).
+    final touchSketchAngle = normalizeSketchAngle(-geometry.touchCanvasAngle);
+    if (angleWithinArcSweep(touchSketchAngle, startAngle, endAngle)) return;
+
+    final gapSize = normalizeSketchAngle(startAngle - endAngle);
+    final distFromEnd = normalizeSketchAngle(touchSketchAngle - endAngle);
+    final nearEnd = distFromEnd <= gapSize - distFromEnd;
+
+    final touchSketchX = center.x + math.cos(touchSketchAngle) * c.distance;
+    final touchSketchY = center.y + math.sin(touchSketchAngle) * c.distance;
+
+    final (dashStartAngle, dashSweepAngle) = nearEnd
+        ? _arcScreenAngles(center.x, center.y, end.x, end.y, touchSketchX, touchSketchY)
+        : _arcScreenAngles(center.x, center.y, touchSketchX, touchSketchY, start.x, start.y);
+
+    final rect = Rect.fromCircle(center: geometry.centerScreen, radius: geometry.radiusPixels);
+    final dashPaint = Paint()
+      ..color = _arcExtensionColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _dimensionStrokeWidth;
+    _drawDashedArc(canvas, rect, dashStartAngle, dashSweepAngle, dashPaint);
   }
 
   /// Line-to-line distance dimension (Stage 16 item 9's `LineDistanceConstraint`):
@@ -1881,7 +2076,7 @@ class _SketchPainter extends CustomPainter {
 
     final dimPaint = Paint()
       ..color = color
-      ..strokeWidth = 1;
+      ..strokeWidth = _dimensionStrokeWidth;
     _drawExtensionLine(canvas, midA, midA + offset, dimPaint);
     _drawExtensionLine(canvas, midB, midB + offset, dimPaint);
     canvas.drawLine(midA + offset, midB + offset, dimPaint);

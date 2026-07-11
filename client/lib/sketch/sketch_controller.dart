@@ -2773,32 +2773,57 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// Whether [c] measures the radius of a Circle, an Arc, or one of an
-  /// Ellipse's two axes - either [circleForDistanceConstraint] recognizes
-  /// it, its point pair matches an Arc's own single real radius
-  /// DistanceConstraint (center-start - the end Point is tied via
-  /// EqualRadiusConstraint instead, see the backend's
-  /// `app.sketch.models.Arc` docstring, so it's never reachable through
-  /// this path), or it matches some Ellipse's own major- or minor-axis
-  /// DistanceConstraint (center-major or center-minor, same role as
-  /// Circle's center-radius pair). Used wherever rendering/hit-testing/
-  /// the ribbon needs to know "is this a radius/diameter dimension"
-  /// without caring which shape it belongs to.
-  bool isRadiusDistanceConstraint(DistanceConstraintDto c) {
-    if (circleForDistanceConstraint(c) != null) return true;
+  /// The Arc a [DistanceConstraintDto] measures the radius of - mirrors
+  /// [circleForDistanceConstraint] for the Arc case (center-start; the end
+  /// Point is tied via EqualRadiusConstraint instead, see the backend's
+  /// `app.sketch.models.Arc` docstring, so it's never reachable through this
+  /// path). Used by [_SketchPainter]'s radius/diameter leader to know
+  /// whether/how to dashed-arc-extend past the Arc's own drawn sweep.
+  SketchArcView? arcForDistanceConstraint(DistanceConstraintDto c) {
     for (final arc in arcs.values) {
       if (arc.centerPointId == c.pointAId &&
           (arc.startPointId == c.pointBId || arc.endPointId == c.pointBId)) {
-        return true;
+        return arc;
       }
     }
+    return null;
+  }
+
+  /// The Ellipse axis (major or minor) a [DistanceConstraintDto] measures
+  /// the centre-to-tip semi-length of - `(negPointId, posPointId)`, the
+  /// axis's two real tip Points - or null for a constraint unrelated to any
+  /// Ellipse. Technical-drawing-norms pass: an Ellipse has no uniform
+  /// "radius" the way a Circle/Arc does, so its axes are no longer
+  /// [isRadiusDistanceConstraint]-classified at all - each instead renders
+  /// as an ordinary tip-to-tip length dimension (see [_SketchPainter.
+  /// _paintDistanceDimension]), with the displayed value doubled from the
+  /// underlying (still centre-based, semi-axis) constraint's own [c].distance
+  /// - the same "double the stored value for display" trick a Circle's
+  /// diameter display already uses, just applied to a straight dimension
+  /// instead of a radial one. The underlying DistanceConstraint itself is
+  /// unchanged (still centre-to-tip, still what the ghost-drag editor
+  /// PATCHes) - this only changes how a *confirmed* axis constraint renders.
+  (String, String)? ellipseAxisForDistanceConstraint(DistanceConstraintDto c) {
     for (final ellipse in ellipses.values) {
-      if (ellipse.centerPointId == c.pointAId &&
-          (ellipse.majorPointId == c.pointBId || ellipse.minorPointId == c.pointBId)) {
-        return true;
+      if (ellipse.centerPointId != c.pointAId) continue;
+      if (ellipse.majorPointId == c.pointBId) {
+        return (ellipse.majorPointNegId, ellipse.majorPointId);
+      }
+      if (ellipse.minorPointId == c.pointBId) {
+        return (ellipse.minorPointNegId, ellipse.minorPointId);
       }
     }
-    return false;
+    return null;
+  }
+
+  /// Whether [c] measures the radius of a Circle or an Arc -
+  /// [circleForDistanceConstraint]/[arcForDistanceConstraint] recognize
+  /// either case. An Ellipse's axes are deliberately excluded (see
+  /// [ellipseAxisForDistanceConstraint]'s own doc comment) - used wherever
+  /// rendering/hit-testing/the ribbon needs to know "is this a radial
+  /// leader-style dimension" without caring which shape it belongs to.
+  bool isRadiusDistanceConstraint(DistanceConstraintDto c) {
+    return circleForDistanceConstraint(c) != null || arcForDistanceConstraint(c) != null;
   }
 
   double _distanceToSegment(
