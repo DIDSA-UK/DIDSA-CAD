@@ -130,7 +130,9 @@ class EllipseDto {
   final String id;
   final String centerPointId;
   final String majorPointId;
+  final String majorPointNegId;
   final String minorPointId;
+  final String minorPointNegId;
   final String majorAxisLineId;
   final String minorAxisLineId;
   final double majorRadius;
@@ -142,7 +144,9 @@ class EllipseDto {
     required this.id,
     required this.centerPointId,
     required this.majorPointId,
+    required this.majorPointNegId,
     required this.minorPointId,
+    required this.minorPointNegId,
     required this.majorAxisLineId,
     required this.minorAxisLineId,
     required this.majorRadius,
@@ -155,7 +159,9 @@ class EllipseDto {
         id: json['id'] as String,
         centerPointId: json['center_point_id'] as String,
         majorPointId: json['major_point_id'] as String,
+        majorPointNegId: json['major_point_neg_id'] as String,
         minorPointId: json['minor_point_id'] as String,
+        minorPointNegId: json['minor_point_neg_id'] as String,
         majorAxisLineId: json['major_axis_line_id'] as String,
         minorAxisLineId: json['minor_axis_line_id'] as String,
         majorRadius: (json['major_radius'] as num).toDouble(),

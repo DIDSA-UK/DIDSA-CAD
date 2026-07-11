@@ -343,7 +343,9 @@ class _FakeBackend {
       );
       final minorRadius = (body['minor_radius'] as num).toDouble();
       // Mirrors the real backend's Sketch.add_ellipse: a new minor-axis
-      // Point placed exactly perpendicular to the major axis.
+      // Point placed exactly perpendicular to the major axis, plus a
+      // negative-tip Point per axis (diametrically opposite the positive
+      // tip) so each axis Line spans its full diameter.
       final minorAngle = rotation + math.pi / 2;
       final minorPointId = _newId('point');
       points[minorPointId] = {
@@ -351,27 +353,41 @@ class _FakeBackend {
         'x': (centerPoint['x'] as num) + minorRadius * math.cos(minorAngle),
         'y': (centerPoint['y'] as num) + minorRadius * math.sin(minorAngle),
       };
+      final majorPointNegId = _newId('point');
+      points[majorPointNegId] = {
+        'id': majorPointNegId,
+        'x': (centerPoint['x'] as num) - majorRadius * math.cos(rotation),
+        'y': (centerPoint['y'] as num) - majorRadius * math.sin(rotation),
+      };
+      final minorPointNegId = _newId('point');
+      points[minorPointNegId] = {
+        'id': minorPointNegId,
+        'x': (centerPoint['x'] as num) - minorRadius * math.cos(minorAngle),
+        'y': (centerPoint['y'] as num) - minorRadius * math.sin(minorAngle),
+      };
       final majorAxisLineId = _newId('line');
       lines[majorAxisLineId] = {
         'id': majorAxisLineId,
-        'start_point_id': body['center_point_id'],
+        'start_point_id': majorPointNegId,
         'end_point_id': body['major_point_id'],
-        'length': majorRadius,
+        'length': majorRadius * 2,
         'construction': true,
       };
       final minorAxisLineId = _newId('line');
       lines[minorAxisLineId] = {
         'id': minorAxisLineId,
-        'start_point_id': body['center_point_id'],
+        'start_point_id': minorPointNegId,
         'end_point_id': minorPointId,
-        'length': minorRadius,
+        'length': minorRadius * 2,
         'construction': true,
       };
       final ellipse = {
         'id': id,
         'center_point_id': body['center_point_id'],
         'major_point_id': body['major_point_id'],
+        'major_point_neg_id': majorPointNegId,
         'minor_point_id': minorPointId,
+        'minor_point_neg_id': minorPointNegId,
         'major_axis_line_id': majorAxisLineId,
         'minor_axis_line_id': minorAxisLineId,
         'major_radius': majorRadius,
@@ -381,8 +397,9 @@ class _FakeBackend {
       };
       ellipses[id] = ellipse;
       // Mirrors the real backend's Sketch.add_ellipse, which auto-creates
-      // major-axis and minor-axis DistanceConstraints plus a
-      // PerpendicularConstraint tying the two axis Lines together.
+      // major-axis and minor-axis DistanceConstraints, an AtMidpointConstraint
+      // per axis (pinning center as the midpoint of the full axis Line), plus
+      // a PerpendicularConstraint tying the two axis Lines together.
       final majorConstraintId = _newId('constraint');
       constraints[majorConstraintId] = {
         'id': majorConstraintId,
@@ -396,6 +413,20 @@ class _FakeBackend {
         'point_a_id': body['center_point_id'],
         'point_b_id': minorPointId,
         'distance': minorRadius,
+      };
+      final majorMidpointConstraintId = _newId('constraint');
+      constraints[majorMidpointConstraintId] = {
+        'id': majorMidpointConstraintId,
+        'type': 'at_midpoint',
+        'point_id': body['center_point_id'],
+        'line_id': majorAxisLineId,
+      };
+      final minorMidpointConstraintId = _newId('constraint');
+      constraints[minorMidpointConstraintId] = {
+        'id': minorMidpointConstraintId,
+        'type': 'at_midpoint',
+        'point_id': body['center_point_id'],
+        'line_id': minorAxisLineId,
       };
       final perpendicularConstraintId = _newId('constraint');
       constraints[perpendicularConstraintId] = {
@@ -1928,16 +1959,20 @@ void main() {
     // major axis (feedback round: no longer a bare stored float).
     expect(controller.points[ellipse.minorPointId]!.x, closeTo(0, 1e-9));
     expect(controller.points[ellipse.minorPointId]!.y, closeTo(4, 1e-9));
-    // Two construction axis Lines, both centered on the Ellipse's own centre.
+    // Two full-diameter construction axis Lines (negative tip to positive
+    // tip), not center-to-tip spokes - feedback round.
     final majorAxisLine = controller.lines[ellipse.majorAxisLineId]!;
     final minorAxisLine = controller.lines[ellipse.minorAxisLineId]!;
     expect(majorAxisLine.construction, isTrue);
     expect(minorAxisLine.construction, isTrue);
-    expect(majorAxisLine.startPointId, ellipse.centerPointId);
-    expect(minorAxisLine.startPointId, ellipse.centerPointId);
-    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, and the
-    // PerpendicularConstraint tying the two axis Lines together.
-    expect(controller.constraints.length, 3);
+    expect({majorAxisLine.startPointId, majorAxisLine.endPointId},
+        {ellipse.majorPointNegId, ellipse.majorPointId});
+    expect({minorAxisLine.startPointId, minorAxisLine.endPointId},
+        {ellipse.minorPointNegId, ellipse.minorPointId});
+    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, 2
+    // AtMidpointConstraints (center pinned to each axis Line's midpoint),
+    // and the PerpendicularConstraint tying the two axis Lines together.
+    expect(controller.constraints.length, 5);
   });
 
   test('tapping an Ellipse in select mode, away from its defining Points, recognizes SelectionKind.ellipse',
@@ -2011,9 +2046,10 @@ void main() {
               (c.pointAId == ellipse.minorPointId && c.pointBId == ellipse.centerPointId)),
     ) as DistanceConstraintDto;
     expect(minorConstraint.distance, closeTo(7.0, 1e-9));
-    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, and the
-    // PerpendicularConstraint tying the two axis Lines together.
-    expect(controller.constraints.length, 3);
+    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, 2
+    // AtMidpointConstraints, and the PerpendicularConstraint tying the two
+    // axis Lines together.
+    expect(controller.constraints.length, 5);
   });
 
   test('computeDeleteCascade for a directly-selected Ellipse reports just the Ellipse - its own '

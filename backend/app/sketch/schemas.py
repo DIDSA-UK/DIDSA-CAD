@@ -195,7 +195,9 @@ class EllipseResponse(BaseModel):
     id: str
     center_point_id: str
     major_point_id: str
+    major_point_neg_id: str
     minor_point_id: str
+    minor_point_neg_id: str
     major_axis_line_id: str
     minor_axis_line_id: str
     major_radius: float

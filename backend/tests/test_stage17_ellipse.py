@@ -64,7 +64,10 @@ def test_add_ellipse_creates_a_minor_point_exactly_perpendicular_to_the_major_ax
     assert ellipse.minor_radius(sketch.points) == pytest.approx(4.0)
 
 
-def test_add_ellipse_creates_two_construction_axis_lines():
+def test_add_ellipse_creates_two_full_diameter_construction_axis_lines():
+    """Feedback round: each axis Line now spans its full diameter
+    (negative tip to positive tip), not just center-to-tip, so there is a
+    real Point at all 4 axis/ellipse intersections."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     major = sketch.add_point(10.0, 0.0)
@@ -76,13 +79,19 @@ def test_add_ellipse_creates_two_construction_axis_lines():
     assert major_line.construction is True
     assert minor_line.construction is True
     assert {major_line.start_point_id, major_line.end_point_id} == {
-        ellipse.center_point_id,
+        ellipse.major_point_neg_id,
         ellipse.major_point_id,
     }
     assert {minor_line.start_point_id, minor_line.end_point_id} == {
-        ellipse.center_point_id,
+        ellipse.minor_point_neg_id,
         ellipse.minor_point_id,
     }
+    major_neg = sketch.points[ellipse.major_point_neg_id]
+    minor_neg = sketch.points[ellipse.minor_point_neg_id]
+    assert major_neg.x == pytest.approx(-10.0)
+    assert major_neg.y == pytest.approx(0.0, abs=1e-9)
+    assert minor_neg.x == pytest.approx(0.0, abs=1e-9)
+    assert minor_neg.y == pytest.approx(-4.0)
 
 
 def test_add_ellipse_rejects_same_center_and_major_point():
@@ -124,14 +133,22 @@ def test_add_ellipse_automatically_creates_its_own_constraints():
 
     ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=4.0)
 
-    # 2 radius DistanceConstraints (major, minor) + 1 PerpendicularConstraint.
-    assert len(sketch.constraints) == 3
+    # 2 radius DistanceConstraints (major, minor) + 2 AtMidpointConstraints
+    # (center pinned to the midpoint of each full axis Line) + 1
+    # PerpendicularConstraint.
+    assert len(sketch.constraints) == 5
     major_constraint = sketch.constraints[ellipse.major_constraint_id]
     assert set(major_constraint.point_ids()) == {ellipse.center_point_id, ellipse.major_point_id}
     assert major_constraint.distance == pytest.approx(10.0)
     minor_constraint = sketch.constraints[ellipse.minor_constraint_id]
     assert set(minor_constraint.point_ids()) == {ellipse.center_point_id, ellipse.minor_point_id}
     assert minor_constraint.distance == pytest.approx(4.0)
+    major_midpoint = sketch.constraints[ellipse.major_midpoint_constraint_id]
+    assert major_midpoint.point_id == ellipse.center_point_id
+    assert major_midpoint.line_id == ellipse.major_axis_line_id
+    minor_midpoint = sketch.constraints[ellipse.minor_midpoint_constraint_id]
+    assert minor_midpoint.point_id == ellipse.center_point_id
+    assert minor_midpoint.line_id == ellipse.minor_axis_line_id
     perpendicular = sketch.constraints[ellipse.perpendicular_constraint_id]
     assert perpendicular.line1_id == ellipse.major_axis_line_id
     assert perpendicular.line2_id == ellipse.minor_axis_line_id
@@ -202,7 +219,7 @@ def test_delete_ellipse_removes_its_constraints_and_axis_lines():
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(5.0, 0.0)
     ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
-    assert len(sketch.constraints) == 3
+    assert len(sketch.constraints) == 5
 
     sketch.delete_ellipse(ellipse.id)
 
@@ -245,6 +262,10 @@ def test_point_deletion_is_blocked_while_referenced_by_an_ellipse():
         sketch.delete_point(start.id)
     with pytest.raises(ValueError):
         sketch.delete_point(ellipse.minor_point_id)
+    with pytest.raises(ValueError):
+        sketch.delete_point(ellipse.major_point_neg_id)
+    with pytest.raises(ValueError):
+        sketch.delete_point(ellipse.minor_point_neg_id)
 
 
 # --- Profile detection -------------------------------------------------------

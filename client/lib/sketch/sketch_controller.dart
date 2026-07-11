@@ -80,7 +80,9 @@ class SketchEllipseView {
   final String id;
   final String centerPointId;
   final String majorPointId;
+  final String majorPointNegId;
   final String minorPointId;
+  final String minorPointNegId;
   final String majorAxisLineId;
   final String minorAxisLineId;
   final double minorRadius;
@@ -90,7 +92,9 @@ class SketchEllipseView {
     required this.id,
     required this.centerPointId,
     required this.majorPointId,
+    required this.majorPointNegId,
     required this.minorPointId,
+    required this.minorPointNegId,
     required this.majorAxisLineId,
     required this.minorAxisLineId,
     required this.minorRadius,
@@ -2977,7 +2981,9 @@ class SketchController extends ChangeNotifier {
       // exactly like every other entity here cascades from its own Points.
       if (pointIds.contains(ellipse.centerPointId) ||
           pointIds.contains(ellipse.majorPointId) ||
+          pointIds.contains(ellipse.majorPointNegId) ||
           pointIds.contains(ellipse.minorPointId) ||
+          pointIds.contains(ellipse.minorPointNegId) ||
           lineIds.contains(ellipse.majorAxisLineId) ||
           lineIds.contains(ellipse.minorAxisLineId)) {
         ellipseIds.add(ellipse.id);
@@ -3570,7 +3576,9 @@ class SketchController extends ChangeNotifier {
         id: created.id,
         centerPointId: created.centerPointId,
         majorPointId: created.majorPointId,
+        majorPointNegId: created.majorPointNegId,
         minorPointId: created.minorPointId,
+        minorPointNegId: created.minorPointNegId,
         majorAxisLineId: created.majorAxisLineId,
         minorAxisLineId: created.minorAxisLineId,
         minorRadius: created.minorRadius,
@@ -3578,21 +3586,23 @@ class SketchController extends ChangeNotifier {
       );
       lines[created.majorAxisLineId] = SketchLineView(
         id: created.majorAxisLineId,
-        startPointId: created.centerPointId,
+        startPointId: created.majorPointNegId,
         endPointId: created.majorPointId,
         construction: true,
       );
       lines[created.minorAxisLineId] = SketchLineView(
         id: created.minorAxisLineId,
-        startPointId: created.centerPointId,
+        startPointId: created.minorPointNegId,
         endPointId: created.minorPointId,
         construction: true,
       );
-      // The new minor-axis Point isn't locally known yet - see the main
-      // Ellipse-tool creation flow's own comment for why this needs an
-      // explicit fetch.
-      final minorPoint = await _api.getPoint(_sketchId!, created.minorPointId);
-      points[minorPoint.id] = SketchPointView(id: minorPoint.id, x: minorPoint.x, y: minorPoint.y);
+      // The new minor-axis and negative-tip Points aren't locally known
+      // yet - see the main Ellipse-tool creation flow's own comment for
+      // why this needs an explicit fetch.
+      for (final id in [created.minorPointId, created.majorPointNegId, created.minorPointNegId]) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
     }
     for (final spline in capturedSplines) {
       // Unlike Circle/Arc/Ellipse, only the through-points are passed
@@ -3879,7 +3889,9 @@ class SketchController extends ChangeNotifier {
             id: updated.id,
             centerPointId: updated.centerPointId,
             majorPointId: updated.majorPointId,
+            majorPointNegId: updated.majorPointNegId,
             minorPointId: updated.minorPointId,
+            minorPointNegId: updated.minorPointNegId,
             majorAxisLineId: updated.majorAxisLineId,
             minorAxisLineId: updated.minorAxisLineId,
             minorRadius: updated.minorRadius,
@@ -4690,7 +4702,9 @@ class SketchController extends ChangeNotifier {
         id: ellipse.id,
         centerPointId: ellipse.centerPointId,
         majorPointId: ellipse.majorPointId,
+        majorPointNegId: ellipse.majorPointNegId,
         minorPointId: ellipse.minorPointId,
+        minorPointNegId: ellipse.minorPointNegId,
         majorAxisLineId: ellipse.majorAxisLineId,
         minorAxisLineId: ellipse.minorAxisLineId,
         minorRadius: ellipse.minorRadius,
@@ -5545,30 +5559,37 @@ class SketchController extends ChangeNotifier {
         id: ellipse.id,
         centerPointId: ellipse.centerPointId,
         majorPointId: ellipse.majorPointId,
+        majorPointNegId: ellipse.majorPointNegId,
         minorPointId: ellipse.minorPointId,
+        minorPointNegId: ellipse.minorPointNegId,
         majorAxisLineId: ellipse.majorAxisLineId,
         minorAxisLineId: ellipse.minorAxisLineId,
         minorRadius: ellipse.minorRadius,
         construction: ellipse.construction,
       );
       // Feedback round: the backend now also creates a real minor-axis
-      // Point (placed exactly perpendicular to the major axis) alongside
-      // the Ellipse - not locally known yet, unlike centerId/majorId which
-      // the earlier taps already placed, so it needs an explicit fetch
-      // (_refreshAllPoints only refreshes already-known Points).
-      final minorPoint = await _api.getPoint(_sketchId!, ellipse.minorPointId);
-      points[minorPoint.id] = SketchPointView(id: minorPoint.id, x: minorPoint.x, y: minorPoint.y);
-      // Two real construction Lines (major/minor axis) - mirrors the Slot
-      // tool's own centerline registration.
+      // Point and two negative-tip Points (placed exactly perpendicular to
+      // the major axis / diametrically opposite each positive tip)
+      // alongside the Ellipse - not locally known yet, unlike
+      // centerId/majorId which the earlier taps already placed, so they
+      // need an explicit fetch (_refreshAllPoints only refreshes
+      // already-known Points).
+      for (final id in [ellipse.minorPointId, ellipse.majorPointNegId, ellipse.minorPointNegId]) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
+      // Two real, full-diameter construction Lines (major/minor axis,
+      // spanning negative tip to positive tip) - mirrors the Slot tool's
+      // own centerline registration.
       lines[ellipse.majorAxisLineId] = SketchLineView(
         id: ellipse.majorAxisLineId,
-        startPointId: ellipse.centerPointId,
+        startPointId: ellipse.majorPointNegId,
         endPointId: ellipse.majorPointId,
         construction: true,
       );
       lines[ellipse.minorAxisLineId] = SketchLineView(
         id: ellipse.minorAxisLineId,
-        startPointId: ellipse.centerPointId,
+        startPointId: ellipse.minorPointNegId,
         endPointId: ellipse.minorPointId,
         construction: true,
       );

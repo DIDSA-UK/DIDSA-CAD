@@ -215,24 +215,23 @@ class Arc(SketchEntity):
 
 @dataclass
 class Ellipse(SketchEntity):
-    """An ellipse defined by a center Point, a major-axis Point, and a
-    minor-axis Point - all three real, independently addressable Points.
-    Both axis Points are solver-tracked via their own DistanceConstraint to
-    center (their distance is that axis's radius, their direction from
-    center is that axis's own rotation), exactly mirroring Circle's own
-    center/radius Point pair. A PerpendicularConstraint between two real
-    construction Lines (`major_axis_line_id`: center to major_point,
-    `minor_axis_line_id`: center to minor_point) keeps the minor axis
-    exactly perpendicular to the major axis under drag - both axes are
-    genuine, visible/selectable sketch geometry, not implied-but-invisible
-    relationships.
-
-    (Feedback round: this replaces an earlier design where minor_radius was
-    a bare stored float with no backing Point, specifically to avoid
-    needing these construction Lines "purely to hang a PerpendicularConstraint
-    off of them" - once a user explicitly wants those construction Lines
-    visible anyway, that objection no longer applies, and a plain stored
-    scalar becomes the odd one out instead of the simplification.)
+    """An ellipse defined by a center Point and two pairs of axis-tip
+    Points (`major_point_id`/`major_point_neg_id`, `minor_point_id`/
+    `minor_point_neg_id`) - all five real, independently addressable
+    Points. Each axis's *positive* tip is solver-tracked via its own
+    DistanceConstraint to center (its distance is that axis's radius, its
+    direction from center is that axis's own rotation), exactly mirroring
+    Circle's own center/radius Point pair. Its *negative* tip is the
+    reflection of the positive one through center, pinned there via an
+    AtMidpointConstraint (`major_midpoint_constraint_id`/
+    `minor_midpoint_constraint_id`) that forces center to be the midpoint
+    of the full axis Line spanning tip-to-tip - so both axes are real,
+    full-diameter construction Lines (`major_axis_line_id`/
+    `minor_axis_line_id`) with a genuine Point at all 4 axis/ellipse
+    intersections, not center-to-tip spokes (feedback round). A
+    PerpendicularConstraint between the two full axis Lines
+    (`perpendicular_constraint_id`) keeps the minor axis exactly
+    perpendicular to the major axis under drag.
 
     `major_radius`/`minor_radius` must always satisfy major >= minor
     (OCCT's own `gp_Elips` requirement, enforced at creation time - see
@@ -253,15 +252,19 @@ class Ellipse(SketchEntity):
     No dedicated py-slvs entity is involved (py-slvs 1.0.6 has no ellipse
     primitive at all, confirmed by inspecting the installed solver module -
     unlike Arc, which at least has an unused one) - this is pure Point +
-    DistanceConstraint reuse, same as Circle/Arc.
+    DistanceConstraint/AtMidpointConstraint reuse, same as Circle/Arc.
     """
 
     id: str
     center_point_id: str
     major_point_id: str
+    major_point_neg_id: str
     major_constraint_id: str
+    major_midpoint_constraint_id: str
     minor_point_id: str
+    minor_point_neg_id: str
     minor_constraint_id: str
+    minor_midpoint_constraint_id: str
     major_axis_line_id: str
     minor_axis_line_id: str
     perpendicular_constraint_id: str
@@ -668,11 +671,13 @@ class Sketch:
         `minor_radius` places a new minor-axis Point exactly perpendicular
         to the major axis (never an explicit-sharing option - there is no
         pre-existing minor-axis Point a caller could already know the id
-        of) - both axis Points get their own real DistanceConstraint, tied
-        together by a PerpendicularConstraint between two new construction
-        Lines (center to each axis Point), so both axes stay genuine,
-        visible sketch geometry that remains perpendicular under drag (see
-        the Ellipse class docstring).
+        of). Both axis Points get their own real DistanceConstraint to
+        center; a second Point per axis, placed diametrically opposite and
+        pinned there via AtMidpointConstraint (center = the midpoint of the
+        full tip-to-tip axis Line), gives each axis a real, full-diameter
+        construction Line with a Point at all 4 axis/ellipse intersections
+        (see the Ellipse class docstring) - tied together by a
+        PerpendicularConstraint so both axes stay perpendicular under drag.
         """
         center = self.points[center_point_id]
         if major_point_id is None:
@@ -701,20 +706,34 @@ class Sketch:
             center.x + minor_radius * math.cos(minor_angle),
             center.y + minor_radius * math.sin(minor_angle),
         ).id
+        major_point_neg_id = self.add_point(
+            center.x - distance * math.cos(major_angle),
+            center.y - distance * math.sin(major_angle),
+        ).id
+        minor_point_neg_id = self.add_point(
+            center.x - minor_radius * math.cos(minor_angle),
+            center.y - minor_radius * math.sin(minor_angle),
+        ).id
 
         major_constraint = self.add_distance_constraint(center_point_id, major_point_id, distance)
         minor_constraint = self.add_distance_constraint(center_point_id, minor_point_id, minor_radius)
-        major_axis_line = self.add_line(center_point_id, major_point_id, construction=True)
-        minor_axis_line = self.add_line(center_point_id, minor_point_id, construction=True)
+        major_axis_line = self.add_line(major_point_neg_id, major_point_id, construction=True)
+        minor_axis_line = self.add_line(minor_point_neg_id, minor_point_id, construction=True)
+        major_midpoint = self.add_at_midpoint_constraint(center_point_id, major_axis_line.id)
+        minor_midpoint = self.add_at_midpoint_constraint(center_point_id, minor_axis_line.id)
         perpendicular = self.add_perpendicular_constraint(major_axis_line.id, minor_axis_line.id)
 
         ellipse = Ellipse(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,
             major_point_id=major_point_id,
+            major_point_neg_id=major_point_neg_id,
             major_constraint_id=major_constraint.id,
+            major_midpoint_constraint_id=major_midpoint.id,
             minor_point_id=minor_point_id,
+            minor_point_neg_id=minor_point_neg_id,
             minor_constraint_id=minor_constraint.id,
+            minor_midpoint_constraint_id=minor_midpoint.id,
             major_axis_line_id=major_axis_line.id,
             minor_axis_line_id=minor_axis_line.id,
             perpendicular_constraint_id=perpendicular.id,
@@ -866,13 +885,13 @@ class Sketch:
 
     def delete_ellipse(self, ellipse_id: str) -> None:
         """Remove an Ellipse and everything `add_ellipse` always creates
-        alongside it - both radius DistanceConstraints, the
-        PerpendicularConstraint tying its two axes together, and both axis
-        construction Lines - same "internal implementation detail"
-        exception `delete_circle`/`delete_arc` already make for their own
-        radius constraint(s). The center/major-axis/minor-axis Points
-        themselves are left untouched, same as
-        `delete_line`/`delete_circle`/`delete_arc`."""
+        alongside it - both radius DistanceConstraints, both
+        AtMidpointConstraints, the PerpendicularConstraint tying its two
+        axes together, and both full-diameter axis construction Lines -
+        same "internal implementation detail" exception `delete_circle`/
+        `delete_arc` already make for their own radius constraint(s). The
+        center/major/minor/major-neg/minor-neg Points themselves are left
+        untouched, same as `delete_line`/`delete_circle`/`delete_arc`."""
         ellipse = self.entities.get(ellipse_id)
         if not isinstance(ellipse, Ellipse):
             raise KeyError(ellipse_id)
@@ -886,6 +905,8 @@ class Sketch:
         self.entities.pop(ellipse.minor_axis_line_id, None)
         self.constraints.pop(ellipse.major_constraint_id, None)
         self.constraints.pop(ellipse.minor_constraint_id, None)
+        self.constraints.pop(ellipse.major_midpoint_constraint_id, None)
+        self.constraints.pop(ellipse.minor_midpoint_constraint_id, None)
         self.constraints.pop(ellipse.perpendicular_constraint_id, None)
 
     def delete_spline(self, spline_id: str) -> None:
@@ -931,7 +952,9 @@ class Sketch:
             if isinstance(entity, Ellipse) and point_id in (
                 entity.center_point_id,
                 entity.major_point_id,
+                entity.major_point_neg_id,
                 entity.minor_point_id,
+                entity.minor_point_neg_id,
             ):
                 return f"Point is still referenced by ellipse {entity.id}"
             if isinstance(entity, Spline) and (
