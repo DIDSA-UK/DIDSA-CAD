@@ -103,19 +103,11 @@ class SketchSpeedDial extends StatelessWidget {
         final showFinishChain = controller.activeTool == SketchTool.line && controller.chainInProgress;
         final showFinishSpline =
             controller.activeTool == SketchTool.spline && controller.splineInProgress;
-        return [
-          if (showFinishChain)
-            _SpeedDialAction(
-              icon: Icons.check_circle_outline,
-              label: 'Finish',
-              onPressed: controller.finishChain,
-            ),
-          if (showFinishSpline)
-            _SpeedDialAction(
-              icon: Icons.check_circle_outline,
-              label: 'Finish',
-              onPressed: controller.finishSpline,
-            ),
+        // On-device feedback: 10 tools in one vertical column ran too tall
+        // even with the scroll fallback above - two rows of 5 keeps the
+        // whole menu roughly square instead of a long ladder, so it fits
+        // above the main FAB on more viewports without scrolling.
+        final tools = [
           _SpeedDialAction(
             icon: Icons.circle_outlined,
             label: 'Circle',
@@ -176,6 +168,33 @@ class SketchSpeedDial extends StatelessWidget {
             selected: controller.activeTool == SketchTool.text,
             onPressed: () => controller.selectDrawTool(SketchTool.text),
           ),
+        ];
+        final splitAt = (tools.length / 2).ceil();
+        Widget rowOf(List<_SpeedDialAction> rowTools) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < rowTools.length; i++)
+                  Padding(
+                    padding: EdgeInsets.only(left: i == 0 ? 0 : 8),
+                    child: rowTools[i],
+                  ),
+              ],
+            );
+        return [
+          if (showFinishChain)
+            _SpeedDialAction(
+              icon: Icons.check_circle_outline,
+              label: 'Finish',
+              onPressed: controller.finishChain,
+            ),
+          if (showFinishSpline)
+            _SpeedDialAction(
+              icon: Icons.check_circle_outline,
+              label: 'Finish',
+              onPressed: controller.finishSpline,
+            ),
+          rowOf(tools.sublist(0, splitAt)),
+          rowOf(tools.sublist(splitAt)),
           _SpeedDialAction(
             icon: Icons.arrow_back,
             label: 'Back',
