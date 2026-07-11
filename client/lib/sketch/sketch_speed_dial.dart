@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import 'sketch_controller.dart';
 
@@ -39,7 +40,7 @@ class SketchSpeedDial extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _SpeedDialAction(
-                  icon: Icons.check_circle_outline,
+                  svgAsset: 'assets/icons/actions/action_finish.svg',
                   label: 'Finish',
                   onPressed: controller.chainInProgress ? controller.finishChain : controller.finishSpline,
                 ),
@@ -89,12 +90,12 @@ class SketchSpeedDial extends StatelessWidget {
       case FabMenuState.categories:
         return [
           _SpeedDialAction(
-            icon: Icons.straighten,
+            svgAsset: 'assets/icons/actions/action_dimensions.svg',
             label: 'Dimensions',
             onPressed: controller.enterDimensionMode,
           ),
           _SpeedDialAction(
-            icon: Icons.edit,
+            svgAsset: 'assets/icons/actions/action_sketch_entities.svg',
             label: 'Sketch Entities',
             onPressed: controller.showSketchEntitiesCategory,
           ),
@@ -109,61 +110,61 @@ class SketchSpeedDial extends StatelessWidget {
         // above the main FAB on more viewports without scrolling.
         final tools = [
           _SpeedDialAction(
-            icon: Icons.circle_outlined,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_circle.svg',
             label: 'Circle',
             selected: controller.activeTool == SketchTool.circle,
             onPressed: () => controller.selectDrawTool(SketchTool.circle),
           ),
           _SpeedDialAction(
-            icon: Icons.donut_large,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_arc.svg',
             label: 'Arc',
             selected: controller.activeTool == SketchTool.arc,
             onPressed: () => controller.selectDrawTool(SketchTool.arc),
           ),
           _SpeedDialAction(
-            icon: Icons.show_chart,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_line.svg',
             label: 'Line',
             selected: controller.activeTool == SketchTool.line,
             onPressed: () => controller.selectDrawTool(SketchTool.line),
           ),
           _SpeedDialAction(
-            icon: Icons.control_point,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_point.svg',
             label: 'Point',
             selected: controller.activeTool == SketchTool.point,
             onPressed: () => controller.selectDrawTool(SketchTool.point),
           ),
           _SpeedDialAction(
-            icon: Icons.crop_square,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_rectangle.svg',
             label: 'Rectangle',
             selected: controller.activeTool == SketchTool.rectangle,
             onPressed: () => controller.selectDrawTool(SketchTool.rectangle),
           ),
           _SpeedDialAction(
-            icon: Icons.hexagon_outlined,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_polygon.svg',
             label: 'Polygon',
             selected: controller.activeTool == SketchTool.polygon,
             onPressed: () => controller.selectDrawTool(SketchTool.polygon),
           ),
           _SpeedDialAction(
-            icon: Icons.rectangle_outlined,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_slot.svg',
             label: 'Slot',
             selected: controller.activeTool == SketchTool.slot,
             onPressed: () => controller.selectDrawTool(SketchTool.slot),
           ),
           _SpeedDialAction(
-            icon: Icons.egg_outlined,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_ellipse.svg',
             label: 'Ellipse',
             selected: controller.activeTool == SketchTool.ellipse,
             onPressed: () => controller.selectDrawTool(SketchTool.ellipse),
           ),
           _SpeedDialAction(
-            icon: Icons.gesture,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_spline.svg',
             label: 'Spline',
             selected: controller.activeTool == SketchTool.spline,
             onPressed: () => controller.selectDrawTool(SketchTool.spline),
           ),
           _SpeedDialAction(
-            icon: Icons.text_fields,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_text.svg',
             label: 'Text',
             selected: controller.activeTool == SketchTool.text,
             onPressed: () => controller.selectDrawTool(SketchTool.text),
@@ -183,20 +184,20 @@ class SketchSpeedDial extends StatelessWidget {
         return [
           if (showFinishChain)
             _SpeedDialAction(
-              icon: Icons.check_circle_outline,
+              svgAsset: 'assets/icons/actions/action_finish.svg',
               label: 'Finish',
               onPressed: controller.finishChain,
             ),
           if (showFinishSpline)
             _SpeedDialAction(
-              icon: Icons.check_circle_outline,
+              svgAsset: 'assets/icons/actions/action_finish.svg',
               label: 'Finish',
               onPressed: controller.finishSpline,
             ),
           rowOf(tools.sublist(0, splitAt)),
           rowOf(tools.sublist(splitAt)),
           _SpeedDialAction(
-            icon: Icons.arrow_back,
+            svgAsset: 'assets/icons/actions/action_back.svg',
             label: 'Back',
             onPressed: controller.backToFabCategories,
           ),
@@ -206,13 +207,13 @@ class SketchSpeedDial extends StatelessWidget {
 }
 
 class _SpeedDialAction extends StatelessWidget {
-  final IconData icon;
+  final String svgAsset;
   final String label;
   final VoidCallback? onPressed;
   final bool selected;
 
   const _SpeedDialAction({
-    required this.icon,
+    required this.svgAsset,
     required this.label,
     required this.onPressed,
     this.selected = false,
@@ -221,13 +222,25 @@ class _SpeedDialAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    // Every glyph here uses `currentColor` for its own fill/stroke (see the
+    // didsa-cad-icons hand-off brief's own spec) - a ColorFilter with
+    // BlendMode.srcIn re-tints every non-transparent pixel uniformly,
+    // mirroring how Icon(icon, color: ...) already tints Material's own
+    // icon font glyphs, so selected/unselected reads exactly like the
+    // IconData-based FABs elsewhere in the sketcher.
+    final foreground = selected ? colorScheme.onPrimary : colorScheme.onSurfaceVariant;
     return FloatingActionButton.small(
       heroTag: null,
       tooltip: label,
       backgroundColor: selected ? colorScheme.primary : null,
-      foregroundColor: selected ? colorScheme.onPrimary : null,
+      foregroundColor: foreground,
       onPressed: onPressed,
-      child: Icon(icon),
+      child: SvgPicture.asset(
+        svgAsset,
+        width: 24,
+        height: 24,
+        colorFilter: ColorFilter.mode(foreground, BlendMode.srcIn),
+      ),
     );
   }
 }
