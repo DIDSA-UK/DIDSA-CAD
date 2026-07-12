@@ -1437,15 +1437,24 @@ Offset? _constraintLabelCenter(
       if (midpoint1 == null || midpoint2 == null) return null;
       return (midpoint1 + midpoint2) / 2 + labelOffset;
     case LineDistanceConstraintDto c:
+      // Bug fix: must mirror _paintLineDistanceDimension's own perpendicular-
+      // foot layout exactly (see that method's own doc comment), or hit-
+      // testing/dragging this label would target the old, visibly-wrong
+      // midpoint-to-midpoint position instead of where it's actually drawn.
       final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
-      final midB = _lineMidpointScreenFor(controller, transform, c.line2Id);
-      if (midA == null || midB == null) return null;
-      final delta = midB - midA;
-      final length = delta.distance;
-      if (length < 1e-6) return null;
-      final normal = Offset(-delta.dy, delta.dx) / length;
+      final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+      final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+      if (midA == null || endpointsA == null || endpointsB == null) return null;
+      final dirA = endpointsA.$2 - endpointsA.$1;
+      final lengthA = dirA.distance;
+      if (lengthA < 1e-6) return null;
+      final alongA = dirA / lengthA;
+      final perpToA = Offset(-dirA.dy, dirA.dx) / lengthA;
+      final toLineB = endpointsB.$1 - midA;
+      final t = toLineB.dx * perpToA.dx + toLineB.dy * perpToA.dy;
+      final midB = midA + perpToA * t;
       const offsetDistance = 18.0;
-      final offset = normal * offsetDistance;
+      final offset = alongA * offsetDistance;
       return (midA + offset + midB + offset) / 2 + labelOffset;
     // Stage 23e: extends label rendering/hit-testing to every remaining
     // constraint type. AtMidpointConstraintDto is deliberately excluded -
@@ -2291,15 +2300,51 @@ class _SketchPainter extends CustomPainter {
   /// [_paintDistanceDimension], but anchored at each Line's current midpoint
   /// rather than two Points, since a `LineDistanceConstraint` references
   /// Lines directly and creates no Points of its own.
+  ///
+  /// Bug fix (on-device feedback: "this looks like the linear distance
+  /// between midpoints" for what's supposed to be a perpendicular-distance
+  /// dimension between two parallel Lines): it used to draw the dimension
+  /// segment straight from Line 1's own midpoint to Line 2's own midpoint -
+  /// only visually perpendicular when both Lines happen to have their
+  /// midpoint at the same offset along their (shared, parallel) direction;
+  /// any length mismatch between the two Lines put the two midpoints at
+  /// different heights along that direction, drawing a visibly diagonal
+  /// segment even though [c.distance] itself (the solver's own value) was
+  /// always the correct perpendicular measurement. Now anchors at Line 1's
+  /// midpoint and finds the foot of the perpendicular from there onto Line
+  /// 2's own (infinite) line - exact, not an approximation, because
+  /// `LineDistanceConstraint` is only ever offered for a parallel pair (see
+  /// `canApplyConstraint`'s own gating), so the perpendicular to Line 1 is
+  /// guaranteed perpendicular to Line 2 too, and the projection is
+  /// independent of which point on Line 2 is used to find it.
   void _paintLineDistanceDimension(Canvas canvas, LineDistanceConstraintDto c, Color color, Offset labelOffset) {
     final midA = _lineMidpointScreen(c.line1Id);
-    final midB = _lineMidpointScreen(c.line2Id);
-    if (midA == null || midB == null) return;
+    final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+    final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+    if (midA == null || endpointsA == null || endpointsB == null) return;
+    final dirA = endpointsA.$2 - endpointsA.$1;
+    final lengthA = dirA.distance;
+    if (lengthA < 1e-6) return;
+    // `alongA` runs parallel to Line 1 itself; `perpToA` is the true
+    // perpendicular, and (by construction below) also the direction the
+    // dimension segment itself ends up running in - the two must not be
+    // confused: the *offset* nudging the extension lines/label sideways
+    // needs to run parallel to the Lines (`alongA`), same as every other
+    // dimension type here, not along the dimension segment itself.
+    final alongA = dirA / lengthA;
+    final perpToA = Offset(-dirA.dy, dirA.dx) / lengthA;
+    // Signed distance from midA to Line 2's own infinite line, measured
+    // along `perpToA` - exact regardless of which of Line 2's two Points is
+    // used here, since `perpToA` is perpendicular to Line 2's own direction
+    // too (the parallel-pair precondition above).
+    final toLineB = endpointsB.$1 - midA;
+    final t = toLineB.dx * perpToA.dx + toLineB.dy * perpToA.dy;
+    final midB = midA + perpToA * t;
+
     final delta = midB - midA;
     final length = delta.distance;
     if (length < 1e-6) return;
-    final normal = Offset(-delta.dy, delta.dx) / length;
-    final offset = normal * _dimensionOffsetDistance(normal, labelOffset);
+    final offset = alongA * _dimensionOffsetDistance(alongA, labelOffset);
 
     final dimPaint = Paint()
       ..color = color

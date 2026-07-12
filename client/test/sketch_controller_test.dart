@@ -4063,6 +4063,40 @@ void main() {
     expect(dimensionLabelAt(controller, transform, const Offset(548, 240), 5), constraintId);
   });
 
+  test(
+      'Bug fix: a LineDistanceConstraint between mismatched-length parallel Lines anchors '
+      "perpendicular to Line 1, not at Line 2's own (differently-positioned) midpoint - the old "
+      'midpoint-to-midpoint layout drew a visibly diagonal dimension whenever the two Lines\' '
+      'lengths differed, even though the labeled value was always the correct perpendicular '
+      'distance', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(5, 4);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0.1, 8); // Line 1, away from its own midpoint (0, 5)
+    await controller.handleCanvasTap(5.1, 2.7); // Line 2, away from its own midpoint (5, 2)
+    await controller.confirmGhostValue('lineDistance', 5.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is LineDistanceConstraintDto).key;
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // The perpendicular foot from Line 1's own midpoint (0, 5) onto Line
+    // 2's infinite line (x = 5) lands at world (5, 5) - not Line 2's own
+    // midpoint (5, 2), which the pre-fix code anchored on instead (that
+    // would have produced a diagonal dimension segment, not a horizontal
+    // one perpendicular to both vertical Lines). The label offset (18px,
+    // parallel to both Lines - i.e. vertically, screen -y) then centers on
+    // (450, 182): x is the mean of midA.dx=400 and midB.dx=500; y is
+    // (200 - 18) for both, since the offset is purely vertical here.
+    const expectedAnchor = Offset(450, 182);
+
+    expect(dimensionLabelAt(controller, transform, expectedAnchor, 5), constraintId);
+  });
+
   test('two non-parallel Lines selected in dimension mode show an angle ghost', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
