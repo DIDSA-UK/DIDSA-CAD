@@ -785,8 +785,17 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                 );
               },
             ),
+            // Bug-fix: top:8 used to sit directly underneath (and get
+            // obscured by) SketchScreen's own "Menu" FAB - a screen-level
+            // Positioned(top: 8, left: 8) drawn on top of this whole canvas
+            // (see sketch_screen.dart's 'sketch-menu-fab') - both anchored
+            // to the exact same corner since SketchCanvas fills the full
+            // screen. Dropped by the same ~64px one FAB's footprint plus a
+            // gap that the drag-mode FAB already uses to clear
+            // PlaneIndicator at the opposite corner (see that Positioned's
+            // own bug-fix comment in sketch_screen.dart).
             Positioned(
-              top: 8,
+              top: 72,
               left: 8,
               child: IconButton.filled(
                 tooltip: 'Zoom to fit',
