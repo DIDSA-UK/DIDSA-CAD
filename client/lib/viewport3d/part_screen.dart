@@ -120,6 +120,15 @@ class _SketchOrientation {
   final int rotationQuarterTurns;
 }
 
+/// Which flow the orientation confirm step's shared UI (see
+/// `_confirmingSketchOrientation` and friends) is currently running:
+/// [newSketch] (via [_PartScreenState._addSketchFeature] - Cancel discards
+/// the still-empty Feature) or [redefine] (via [_PartScreenState.
+/// _redefineSketchOrientation], reached from a Sketch's long-press context
+/// menu - Cancel reverts the already-live-PATCHed orientation instead,
+/// since the Feature has real content).
+enum _PendingOrientationMode { newSketch, redefine }
+
 class _PartScreenState extends State<PartScreen> {
   late final DocumentApiClient _api;
 
@@ -2473,9 +2482,13 @@ class _PartScreenState extends State<PartScreen> {
   /// mode ([_onPlaneTap]), and (C3) a created Plane's own context sheet's
   /// "Create Sketch on Plane" action ([_onCreatePlaneContextAction]).
   ///
-  /// C3: a custom-plane Sketch has no [ReferencePlaneKind] to animate the
-  /// camera toward (see [_openSketchWithAnimation]'s own doc comment) - skips
-  /// the animation for that case, same graceful degradation.
+  /// Bug fix: a custom-plane Sketch used to skip the orientation confirm
+  /// step entirely and open immediately - [SketchPlaneBasis.withOrientation]
+  /// now applies flip/rotation to any resolved basis, not just a fixed
+  /// [ReferencePlaneKind]'s, so both cases go through the same step. The
+  /// camera-fly-to-plane animation still only runs for a fixed plane (no
+  /// [PartViewport] API animates toward an arbitrary custom basis) - a
+  /// separate, orthogonal nicety from the step actually appearing.
   Future<void> _addSketchFeature({ReferencePlaneKind? plane, String? planeFeatureId}) async {
     final part = _part;
     if (part == null || _busy) return;
@@ -2493,39 +2506,92 @@ class _PartScreenState extends State<PartScreen> {
     });
 
     final feature = created;
-    if (feature != null && mounted) {
-      if (fixedPlane != null) {
-        // On-device feedback: orientation had no visual feedback and no
-        // creation-time entry point at all - only a hamburger-menu sheet
-        // reachable from inside the 2D editor, after already committing to
-        // a plane. This step lets the user see + adjust it, live, in the
-        // 3D viewport, before the sketch is ever opened - see
-        // _confirmPendingOrientation/_cancelPendingOrientation. Custom
-        // planes ([planeFeatureId] case) keep the old immediate-open
-        // behaviour: [SketchPlaneBasis.oriented] only knows how to apply
-        // flip/rotation to a fixed [ReferencePlaneKind]'s own axis table,
-        // not an arbitrary custom plane's resolved basis.
-        await _viewportKey.currentState?.animateToPlane(fixedPlane);
-        if (!mounted) return;
-        setState(() {
-          _pendingOrientationFeature = feature;
-          _pendingOrientationPlane = fixedPlane;
-          _pendingOrientationFlip = false;
-          _pendingOrientationRotation = 0;
-        });
-        return;
-      }
-      final basis = planeFeatureId != null ? _customPlaneBasis(planeFeatureId) : null;
-      await _openSketch(feature, basis: basis);
+    if (feature == null || !mounted) return;
+    final rawBasis =
+        fixedPlane != null ? SketchPlaneBasis.fixed(fixedPlane) : _customPlaneBasis(planeFeatureId!);
+    if (rawBasis == null) {
+      // Defensive fallback (unresolved custom-plane geometry) - same
+      // graceful "can't resolve, just open" degradation every other
+      // basis-dependent call site in this file already uses.
+      await _openSketch(feature, basis: null);
+      return;
     }
+    if (fixedPlane != null) {
+      // On-device feedback: orientation had no visual feedback and no
+      // creation-time entry point at all - only a hamburger-menu sheet
+      // reachable from inside the 2D editor, after already committing to
+      // a plane. This step lets the user see + adjust it, live, in the 3D
+      // viewport, before the sketch is ever opened - see
+      // _confirmPendingOrientation/_cancelPendingOrientation.
+      await _viewportKey.currentState?.animateToPlane(fixedPlane);
+      if (!mounted) return;
+    }
+    setState(() {
+      _pendingOrientationFeature = feature;
+      _pendingOrientationRawBasis = rawBasis;
+      _pendingOrientationFlip = false;
+      _pendingOrientationRotation = 0;
+      _pendingOrientationMode = _PendingOrientationMode.newSketch;
+    });
   }
 
-  /// See [_addSketchFeature]'s own doc comment for why this step exists
-  /// only for a fixed [ReferencePlaneKind].
+  /// Sketcher-roadmap feedback round: reopens the orientation confirm step
+  /// for an *existing* Sketch Feature, from its long-press context menu
+  /// entry - the 2D-only hamburger-menu sheet this used to be the only way
+  /// to reach (no 3D reference for the user to judge flip/rotate against)
+  /// is gone; this is the sole remaining entry point, reusing the exact
+  /// same 3D-viewport step [_addSketchFeature] shows for a brand new
+  /// Sketch. Preloads the Sketch's own current flip/rotation (rather than
+  /// resetting to the default) and records them in
+  /// [_pendingOrientationOriginalFlip]/[_pendingOrientationOriginalRotation]
+  /// so Cancel can revert the live PATCHes [_adjustPendingOrientation]
+  /// already makes - unlike a brand new Sketch, this Feature already has
+  /// real content, so Cancel must never delete it (see
+  /// [_cancelPendingOrientation]'s own doc comment).
+  Future<void> _redefineSketchOrientation(FeatureDto feature) async {
+    if (_busy) return;
+    final planeFeatureId = feature.planeFeatureId;
+    SketchPlaneBasis? rawBasis;
+    bool currentFlip = false;
+    int currentRotation = 0;
+    _SketchOrientation? orientation;
+    if (planeFeatureId != null) {
+      rawBasis = _customPlaneBasis(planeFeatureId);
+    } else {
+      orientation = await _planeOfFeature(feature);
+      if (orientation != null) {
+        rawBasis = SketchPlaneBasis.fixed(orientation.plane);
+        currentFlip = orientation.flip;
+        currentRotation = orientation.rotationQuarterTurns;
+      }
+    }
+    if (rawBasis == null || !mounted) return;
+    if (orientation != null) {
+      await _viewportKey.currentState?.animateToPlane(
+        orientation.plane,
+        flip: currentFlip,
+        rotationQuarterTurns: currentRotation,
+      );
+      if (!mounted) return;
+    }
+    setState(() {
+      _pendingOrientationFeature = feature;
+      _pendingOrientationRawBasis = rawBasis;
+      _pendingOrientationFlip = currentFlip;
+      _pendingOrientationRotation = currentRotation;
+      _pendingOrientationOriginalFlip = currentFlip;
+      _pendingOrientationOriginalRotation = currentRotation;
+      _pendingOrientationMode = _PendingOrientationMode.redefine;
+    });
+  }
+
   FeatureDto? _pendingOrientationFeature;
-  ReferencePlaneKind? _pendingOrientationPlane;
+  SketchPlaneBasis? _pendingOrientationRawBasis;
   bool _pendingOrientationFlip = false;
   int _pendingOrientationRotation = 0;
+  _PendingOrientationMode _pendingOrientationMode = _PendingOrientationMode.newSketch;
+  bool _pendingOrientationOriginalFlip = false;
+  int _pendingOrientationOriginalRotation = 0;
 
   bool get _confirmingSketchOrientation => _pendingOrientationFeature != null;
 
@@ -2533,10 +2599,9 @@ class _PartScreenState extends State<PartScreen> {
   /// flip/rotation the user has tapped so far this step - null outside
   /// [_confirmingSketchOrientation].
   SketchPlaneBasis? get _pendingOrientationBasis {
-    final plane = _pendingOrientationPlane;
-    if (plane == null) return null;
-    return SketchPlaneBasis.oriented(
-      plane,
+    final raw = _pendingOrientationRawBasis;
+    if (raw == null) return null;
+    return raw.withOrientation(
       flip: _pendingOrientationFlip,
       rotationQuarterTurns: _pendingOrientationRotation,
     );
@@ -2567,35 +2632,68 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// [_PendingOrientationMode.newSketch] opens the just-created Sketch (the
+  /// original behaviour); [_PendingOrientationMode.redefine] just closes
+  /// the step and refreshes this Feature's rendered geometry in the main 3D
+  /// viewport - the orientation was already PATCHed live by
+  /// [_adjustPendingOrientation], and there's an existing 2D canvas the
+  /// user didn't ask to be dropped into.
   Future<void> _confirmPendingOrientation() async {
     final feature = _pendingOrientationFeature;
     if (feature == null) return;
     final basis = _pendingOrientationBasis;
+    final mode = _pendingOrientationMode;
     setState(() {
       _pendingOrientationFeature = null;
-      _pendingOrientationPlane = null;
+      _pendingOrientationRawBasis = null;
     });
-    await _openSketch(feature, basis: basis);
+    if (mode == _PendingOrientationMode.newSketch) {
+      await _openSketch(feature, basis: basis);
+    } else {
+      await _refreshSketchGeometries();
+    }
   }
 
-  /// Discards the just-created (still-empty) SketchFeature outright, same
-  /// as the preview-cleanup pattern used elsewhere in this file (e.g. the
-  /// Extrude-preview Cancel path) - safe because nothing was ever drawn
-  /// into it, unlike deleting an existing Sketch a user has actually
-  /// worked in.
+  /// [_PendingOrientationMode.newSketch]: discards the just-created
+  /// (still-empty) SketchFeature outright, same as the preview-cleanup
+  /// pattern used elsewhere in this file (e.g. the Extrude-preview Cancel
+  /// path) - safe because nothing was ever drawn into it, unlike deleting
+  /// an existing Sketch a user has actually worked in.
+  ///
+  /// [_PendingOrientationMode.redefine]: the Feature already has real
+  /// content, so Cancel must never delete it - instead reverts the live
+  /// PATCHes [_adjustPendingOrientation] already made back to whatever the
+  /// orientation was before this step started
+  /// ([_pendingOrientationOriginalFlip]/[_pendingOrientationOriginalRotation]).
   Future<void> _cancelPendingOrientation() async {
     final feature = _pendingOrientationFeature;
     final part = _part;
+    final mode = _pendingOrientationMode;
+    final originalFlip = _pendingOrientationOriginalFlip;
+    final originalRotation = _pendingOrientationOriginalRotation;
     setState(() {
       _pendingOrientationFeature = null;
-      _pendingOrientationPlane = null;
+      _pendingOrientationRawBasis = null;
     });
-    if (feature == null || part == null) return;
-    await _runGuarded(() async {
-      await _api.deleteFeature(part.id, feature.id);
-      await _refreshFeatures();
-      await _refreshSketchGeometries();
-    });
+    if (feature == null) return;
+    if (mode == _PendingOrientationMode.newSketch) {
+      if (part == null) return;
+      await _runGuarded(() async {
+        await _api.deleteFeature(part.id, feature.id);
+        await _refreshFeatures();
+        await _refreshSketchGeometries();
+      });
+    } else {
+      if (feature.sketchId == null) return;
+      await _runGuarded(() async {
+        await _sketchApi.updateSketchOrientation(
+          feature.sketchId!,
+          flip: originalFlip,
+          rotationQuarterTurns: originalRotation,
+        );
+        await _refreshSketchGeometries();
+      });
+    }
   }
 
   /// A tap that landed on a reference plane rectangle in the 3D viewport.
@@ -3171,6 +3269,7 @@ class _PartScreenState extends State<PartScreen> {
       showSweep: isSketchFeature,
       canSweep: canSweep,
       sweepDisabledReason: extrudeDisabledReason,
+      showRedefineOrientation: isSketchFeature,
     );
     if (!mounted || action == null) return;
 
@@ -3181,6 +3280,8 @@ class _PartScreenState extends State<PartScreen> {
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
       case FeatureContextMenuAction.sweep:
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
+      case FeatureContextMenuAction.redefineOrientation:
+        await _redefineSketchOrientation(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -5612,16 +5713,20 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
-                // On-device feedback: the new-sketch orientation confirm
-                // step's controls - bottom-centered so it doesn't collide
-                // with the plane-selection banner's own top-centered spot
-                // (the two are never shown at once: this only appears once
+                // On-device feedback: the orientation confirm step's
+                // controls - bottom-centered so it doesn't collide with the
+                // plane-selection banner's own top-centered spot (the two
+                // are never shown at once: this only appears once
                 // [_planeSelectionMode] has already exited via
-                // [_onPlaneTap]). Flip/rotate PATCH the pending Sketch's
-                // real orientation immediately (see
-                // [_adjustPendingOrientation]'s own doc comment); Confirm
-                // opens the 2D editor, Cancel discards the still-empty
-                // Sketch outright.
+                // [_onPlaneTap]). Shared between a brand new Sketch
+                // ([_addSketchFeature]) and redefining an existing one's
+                // orientation ([_redefineSketchOrientation], from its
+                // long-press context menu - the sole entry point for that
+                // now, replacing the old 2D-only hamburger-menu sheet).
+                // Flip/rotate PATCH the pending Sketch's real orientation
+                // immediately (see [_adjustPendingOrientation]'s own doc
+                // comment); Confirm/Cancel behave differently per
+                // [_pendingOrientationMode] - see their own doc comments.
                 if (_confirmingSketchOrientation)
                   Positioned(
                     bottom: 8,
@@ -5682,7 +5787,11 @@ class _PartScreenState extends State<PartScreen> {
                                 const SizedBox(width: 4),
                                 FilledButton(
                                   onPressed: _busy ? null : _confirmPendingOrientation,
-                                  child: const Text('Continue'),
+                                  child: Text(
+                                    _pendingOrientationMode == _PendingOrientationMode.newSketch
+                                        ? 'Continue'
+                                        : 'Done',
+                                  ),
                                 ),
                               ],
                             ),

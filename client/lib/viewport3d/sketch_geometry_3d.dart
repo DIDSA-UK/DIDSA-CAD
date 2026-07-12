@@ -82,17 +82,27 @@ class SketchPlaneBasis {
     ReferencePlaneKind plane, {
     required bool flip,
     required int rotationQuarterTurns,
-  }) {
-    final base = SketchPlaneBasis.fixed(plane);
-    var xAxis = flip ? -base.xAxis : base.xAxis;
-    var yAxis = base.yAxis;
+  }) =>
+      SketchPlaneBasis.fixed(plane).withOrientation(flip: flip, rotationQuarterTurns: rotationQuarterTurns);
+
+  /// [oriented]'s own flip-then-rotate transform, generalized to start from
+  /// any orthonormal basis rather than only [fixed]'s three fixed planes -
+  /// a custom (`create_plane`) plane's own resolved basis is exactly as
+  /// valid a starting point (still just `origin`/`xAxis`/`yAxis`/`normal`),
+  /// so a Sketch anchored to one can support the same flip/rotate
+  /// orientation controls a fixed-plane Sketch already does. Bug fix: the
+  /// orientation confirm step never triggered for a custom-plane Sketch at
+  /// all - see `part_screen.dart`'s `_addSketchFeature`.
+  SketchPlaneBasis withOrientation({required bool flip, required int rotationQuarterTurns}) {
+    var xAxis = flip ? -this.xAxis : this.xAxis;
+    var yAxis = this.yAxis;
     for (var i = 0; i < rotationQuarterTurns % 4; i++) {
       final nextX = yAxis;
       final nextY = -xAxis;
       xAxis = nextX;
       yAxis = nextY;
     }
-    return SketchPlaneBasis(origin: base.origin, xAxis: xAxis, yAxis: yAxis, normal: base.normal);
+    return SketchPlaneBasis(origin: origin, xAxis: xAxis, yAxis: yAxis, normal: normal);
   }
 }
 

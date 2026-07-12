@@ -899,18 +899,6 @@ class _SketchScreenState extends State<SketchScreen> {
       shrinkWrap: true,
       padding: EdgeInsets.zero,
       children: [
-        // Sketcher-roadmap Phase 5: lives outside the View/3D View branch
-        // below (always visible in either mode) - orientation is a
-        // property of the Sketch itself, not a display preference, and
-        // affects the same live 3D embedding regardless of which view is
-        // currently showing.
-        ListTile(
-          dense: true,
-          visualDensity: density,
-          leading: const Icon(Icons.rotate_90_degrees_ccw, size: 20),
-          title: Text('Sketch Orientation', style: titleStyle),
-          onTap: () => _pickOrientation(context),
-        ),
         if (_orbitViewActive)
           _build3DViewMenu(context, density, titleStyle, showBodyTransparency: true)
         else ...[
@@ -1095,22 +1083,6 @@ class _SketchScreenState extends State<SketchScreen> {
     if (opacity != null) setState(() => _canvasOpacity = opacity);
   }
 
-  /// Sketcher-roadmap Phase 5: the sole UI entry point for
-  /// [SketchController.setOrientation] - the backend/client plumbing for
-  /// discrete flip/90° rotation has existed since Phase 5's earlier
-  /// rounds, but nothing ever called it. Reachable from the hamburger
-  /// menu both while creating a new Sketch and while re-opening an
-  /// existing one (this is the same screen either way) - no separate
-  /// "retrospective redefine" entry point is needed, since orientation
-  /// is never baked into stored Point coordinates (see `Sketch.
-  /// set_orientation`'s own doc comment): changing it on an existing
-  /// Sketch is exactly as safe as setting it on a brand new one.
-  Future<void> _pickOrientation(BuildContext context) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      builder: (sheetContext) => _OrientationSheet(controller: _controller),
-    );
-  }
 }
 
 /// One tappable swatch in [_SketchScreenState._pickCanvasColor]'s sheet -
@@ -1207,93 +1179,3 @@ class _CanvasOpacitySheetState extends State<_CanvasOpacitySheet> {
   }
 }
 
-/// Sketcher-roadmap Phase 5: [_SketchScreenState._pickOrientation]'s sheet -
-/// unlike [_CanvasOpacitySheet] (a session-only local preference that pops
-/// its chosen value for the caller to apply), this calls [SketchController.
-/// setOrientation] directly and immediately on each tap, since orientation
-/// is real Sketch state on the backend, not something to stage and apply
-/// once. Wrapped in an [AnimatedBuilder] on [controller] (a [ChangeNotifier])
-/// rather than tracking local state, so the displayed rotation/flip always
-/// reflects whatever the backend actually confirmed - including staying
-/// visibly unchanged if a request is still in flight or somehow failed,
-/// rather than a locally-optimistic value that could drift from it.
-class _OrientationSheet extends StatelessWidget {
-  final SketchController controller;
-  const _OrientationSheet({required this.controller});
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        final rotationDegrees = controller.rotationQuarterTurns * 90;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Sketch Orientation', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 4),
-                Text(
-                  "Rotates or mirrors this Sketch's local X/Y axes within its plane - "
-                  'existing geometry keeps its own coordinates; only how it embeds in 3D moves.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    IconButton.filledTonal(
-                      tooltip: 'Rotate 90° counter-clockwise',
-                      icon: const Icon(Icons.rotate_90_degrees_ccw),
-                      onPressed: controller.busy
-                          ? null
-                          : () => controller.setOrientation(
-                                flip: controller.flip,
-                                rotationQuarterTurns: (controller.rotationQuarterTurns - 1) % 4,
-                              ),
-                    ),
-                    Text('$rotationDegrees°', style: Theme.of(context).textTheme.titleLarge),
-                    IconButton.filledTonal(
-                      tooltip: 'Rotate 90° clockwise',
-                      icon: const Icon(Icons.rotate_90_degrees_cw),
-                      onPressed: controller.busy
-                          ? null
-                          : () => controller.setOrientation(
-                                flip: controller.flip,
-                                rotationQuarterTurns: (controller.rotationQuarterTurns + 1) % 4,
-                              ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Flip'),
-                  subtitle: const Text('Mirrors the local X axis'),
-                  value: controller.flip,
-                  onChanged: controller.busy
-                      ? null
-                      : (value) => controller.setOrientation(
-                            flip: value,
-                            rotationQuarterTurns: controller.rotationQuarterTurns,
-                          ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Done'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
