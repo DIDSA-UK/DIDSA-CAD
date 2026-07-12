@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -2433,6 +2434,27 @@ class SketchController extends ChangeNotifier {
   double? _dragOriginPointX;
   double? _dragOriginPointY;
 
+  /// Bug fix: dragging used to move only the dragged Point (an unconstrained
+  /// PATCH) and never re-solve until the drag ended - one big single-step
+  /// re-solve, anchored at wherever the cursor was finally dropped. For a
+  /// tightly-coupled constraint system (e.g. a regular Polygon's equal-
+  /// length/equal-radius/angle chain) that single big jump gives Newton's
+  /// method no reason to stay on the same continuous branch it started on,
+  /// so it can converge to a different, also-locally-valid but visually
+  /// wrong root (a folded/self-intersecting polygon, a flipped dimension) -
+  /// reported on-device as shapes "breaking" mid-drag. [updatePointDrag] now
+  /// also re-solves periodically *during* the drag (throttled - a real
+  /// network round trip per solve, not free), each step seeded from the
+  /// last converged state, so it can't jump distant roots. [_lastDragSolveAt]
+  /// resets per-drag so a fresh drag always solves on its first move rather
+  /// than inheriting a previous drag's throttle timing; [_dragSolveInFlight]
+  /// drops (rather than queues) a new solve while one's still outstanding,
+  /// the same "stale requests are dropped, not queued" tradeoff every other
+  /// unsequenced PATCH in this file already makes.
+  DateTime? _lastDragSolveAt;
+  bool _dragSolveInFlight = false;
+  static const _dragSolveThrottle = Duration(milliseconds: 120);
+
   /// The Point currently being live-dragged via [beginPointDrag], or null if
   /// no drag is in progress - the canvas reads this to suppress its normal
   /// hover/cursor-move handling while a drag owns pointer-move events.
@@ -2475,6 +2497,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginCursorY = cursorY;
     _dragOriginPointX = point.x;
     _dragOriginPointY = point.y;
+    _lastDragSolveAt = null;
     notifyListeners();
     return true;
   }
@@ -2494,10 +2517,16 @@ class SketchController extends ChangeNotifier {
   /// so every other on-canvas reader (the entity itself, any dimension
   /// overlay anchored to it) tracks the drag the same way it tracks any
   /// other backend-confirmed position - no separate "ghost position"
-  /// concept. Solving is deferred to [endPointDrag]; mid-drag the raw
-  /// dragged position is shown as-is; rapid out-of-order responses are
-  /// accepted silently, same tradeoff as every other unsequenced PATCH in
-  /// this file.
+  /// concept. The dragged Point itself always shows the raw dragged
+  /// position, exactly under the touch; every *other* Point is periodically
+  /// re-solved into place as the drag continues (throttled - see
+  /// [_maybeSolveDuringDrag]), rather than staying frozen until
+  /// [endPointDrag]'s single final solve - the fix for constraint systems
+  /// (a regular Polygon's equal-length/equal-radius/angle chain especially)
+  /// that could converge to a different, wrong-looking root when solved as
+  /// one big jump instead of many small ones. Rapid out-of-order responses
+  /// are accepted silently, same tradeoff as every other unsequenced PATCH
+  /// in this file.
   Future<void> updatePointDrag(double x, double y) async {
     final pointId = _draggingPointId;
     final originCursorX = _dragOriginCursorX;
@@ -2526,9 +2555,56 @@ class SketchController extends ChangeNotifier {
       if (_draggingPointId != pointId) return;
       points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
+      _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
     } on ApiException catch (e) {
       errorMessage = e.message;
       notifyListeners();
+    }
+  }
+
+  /// Fires a throttled solve anchored at [anchorPointIds] (the Point(s)
+  /// currently being dragged - one for [updatePointDrag], both endpoints for
+  /// [updateLineDrag]) - a no-op if one already ran within
+  /// [_dragSolveThrottle], or one is still in flight (dropped, not queued,
+  /// so a slow network never leaves a backlog of stale solves to work
+  /// through after the user has already moved on). Deliberately
+  /// fire-and-forget (not awaited by the caller) so a slow solve never
+  /// delays the dragged Point(s)' own 1:1 cursor tracking. [isStillActive]
+  /// re-checks that the same drag is still the one in progress once the
+  /// (possibly slow) network round trip completes.
+  void _maybeSolveDuringDrag(List<String> anchorPointIds, bool Function() isStillActive) {
+    if (_dragSolveInFlight) return;
+    final now = DateTime.now();
+    if (_lastDragSolveAt != null && now.difference(_lastDragSolveAt!) < _dragSolveThrottle) return;
+    _lastDragSolveAt = now;
+    _dragSolveInFlight = true;
+    unawaited(_solveDuringDrag(anchorPointIds, isStillActive));
+  }
+
+  Future<void> _solveDuringDrag(List<String> anchorPointIds, bool Function() isStillActive) async {
+    try {
+      await _api.solve(_sketchId!, anchorPointIds: anchorPointIds);
+      // The drag may have ended (or moved to different geometry) while this
+      // request was in flight - stale results are dropped, same convention
+      // as every unsequenced PATCH in this file.
+      if (!isStillActive()) return;
+      final fresh = await _api.listPoints(_sketchId!);
+      if (!isStillActive()) return;
+      final anchorSet = anchorPointIds.toSet();
+      for (final p in fresh) {
+        // The anchored Point(s) keep tracking the cursor exactly (see
+        // [updatePointDrag]/[updateLineDrag]'s own doc comments) - only
+        // every *other* Point reflows here.
+        if (anchorSet.contains(p.id)) continue;
+        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+      }
+      notifyListeners();
+    } on ApiException catch (_) {
+      // Best-effort: a failed mid-drag solve just means the rest of the
+      // Sketch doesn't reflow this tick - the drag's own final solve on
+      // release is authoritative regardless of what happens here.
+    } finally {
+      _dragSolveInFlight = false;
     }
   }
 
@@ -2614,6 +2690,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginLineStartY = start.y;
     _dragOriginLineEndX = end.x;
     _dragOriginLineEndY = end.y;
+    _lastDragSolveAt = null;
     notifyListeners();
     return true;
   }
@@ -2623,7 +2700,8 @@ class SketchController extends ChangeNotifier {
   /// origin position (same origin-relative math as [updatePointDrag], so
   /// the Line never "jumps" to be exactly under the cursor on the first
   /// move). PATCHes both endpoints immediately, same backend-is-truth
-  /// tracking as [updatePointDrag].
+  /// tracking as [updatePointDrag] - including the same throttled mid-drag
+  /// solve for every *other* Point (see [_maybeSolveDuringDrag]).
   Future<void> updateLineDrag(double x, double y) async {
     final lineId = _draggingLineId;
     final originCursorX = _dragOriginCursorX;
@@ -2656,6 +2734,10 @@ class SketchController extends ChangeNotifier {
       if (_draggingLineId != lineId) return;
       points[line.endPointId] = SketchPointView(id: updatedEnd.id, x: updatedEnd.x, y: updatedEnd.y);
       notifyListeners();
+      _maybeSolveDuringDrag(
+        [line.startPointId, line.endPointId],
+        () => _draggingLineId == lineId,
+      );
     } on ApiException catch (e) {
       errorMessage = e.message;
       notifyListeners();
