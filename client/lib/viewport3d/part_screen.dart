@@ -5624,18 +5624,22 @@ class _PartScreenState extends State<PartScreen> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 IconButton(
+                                  // Bug fix: swapped - on-device feedback
+                                  // reported these two felt reversed
+                                  // (rotate_left visually rotated the
+                                  // plate clockwise, and vice versa).
                                   tooltip: 'Rotate 90° counter-clockwise',
                                   icon: const Icon(Icons.rotate_left),
                                   onPressed: _busy
                                       ? null
-                                      : () => _adjustPendingOrientation(rotationDelta: -1),
+                                      : () => _adjustPendingOrientation(rotationDelta: 1),
                                 ),
                                 IconButton(
                                   tooltip: 'Rotate 90° clockwise',
                                   icon: const Icon(Icons.rotate_right),
                                   onPressed: _busy
                                       ? null
-                                      : () => _adjustPendingOrientation(rotationDelta: 1),
+                                      : () => _adjustPendingOrientation(rotationDelta: -1),
                                 ),
                                 IconButton(
                                   tooltip: _pendingOrientationFlip ? 'Un-flip' : 'Flip',

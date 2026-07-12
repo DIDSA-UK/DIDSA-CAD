@@ -11,16 +11,16 @@ import 'sketch_geometry_3d.dart' show SketchPlaneBasis;
 /// New-sketch orientation confirm step (on-device feedback): renders
 /// directly over [PartViewport]'s own 3D scene, anchored to [basis].origin
 /// in real 3D space:
-///  - an "up" arrow along [basis].yAxis and a "right" arrow along
+///  - a "VERTICAL" arrow along [basis].yAxis and a "HORIZONTAL" arrow along
 ///    [basis].xAxis - the sketch's own local +Y/+X (see
 ///    [SketchPlaneBasis.oriented]'s own doc comment) - both via
 ///    [worldToScreen], the same screen-space-billboard technique
 ///    `viewport3d/triad.dart`'s own compass gizmo uses.
 ///  - a semi-opaque white square standing in for the sketch canvas itself,
 ///    bottom-left corner pinned exactly at the origin and extending along
-///    +xAxis/+yAxis, with "SKETCH" lettered on it - both genuinely laid
-///    flat on the plane (not a screen-facing billboard label like the
-///    arrows' own text), via [planeTransform]'s perspective-correct
+///    +xAxis/+yAxis, with "Sketch" lettered in its own bottom-left corner -
+///    both genuinely laid flat on the plane (not a screen-facing billboard
+///    label like the arrows' own text), via [planeTransform]'s perspective-correct
 ///    local-to-pixel [Matrix4], so the square/word visibly rotate and
 ///    mirror exactly as [basis]'s own axes do when the user flips/rotates
 ///    - not just conceptually but literally, since both are built directly
@@ -55,9 +55,9 @@ class SketchOrientationIndicator extends StatelessWidget {
   }
 }
 
-const Color _rightArrowColor =
+const Color _horizontalArrowColor =
     Color(0xFFE8364A); // matches triad.dart's triadColorX
-const Color _upArrowColor =
+const Color _verticalArrowColor =
     Color(0xFF27AE60); // matches triad.dart's triadColorY
 
 /// Builds the perspective-correct [Matrix4] mapping a "local sketch-plane"
@@ -125,40 +125,41 @@ class _SketchOrientationPainter extends CustomPainter {
     final distance = (camera.position - basis.origin).length;
     final armLengthWorld = distance.clamp(0.5, 500.0) * 0.2;
 
-    final rightScreen = worldToScreen(
+    final horizontalScreen = worldToScreen(
         camera, viewportSize, basis.origin + basis.xAxis * armLengthWorld);
-    final upScreen = worldToScreen(
+    final verticalScreen = worldToScreen(
         camera, viewportSize, basis.origin + basis.yAxis * armLengthWorld);
 
-    final rightPaint = Paint()
-      ..color = _rightArrowColor
+    final horizontalPaint = Paint()
+      ..color = _horizontalArrowColor
       ..strokeWidth = 2.5
       ..style = PaintingStyle.stroke;
-    final upPaint = Paint()
-      ..color = _upArrowColor
+    final verticalPaint = Paint()
+      ..color = _verticalArrowColor
       ..strokeWidth = 2.5
       ..style = PaintingStyle.stroke;
 
-    if (rightScreen != null) {
-      canvas.drawLine(origin, rightScreen, rightPaint);
-      _drawArrowhead(canvas, origin, rightScreen, _rightArrowColor);
-      _drawLabel(
-          canvas, rightScreen + const Offset(14, 0), 'RIGHT', _rightArrowColor);
+    if (horizontalScreen != null) {
+      canvas.drawLine(origin, horizontalScreen, horizontalPaint);
+      _drawArrowhead(canvas, origin, horizontalScreen, _horizontalArrowColor);
+      _drawLabel(canvas, horizontalScreen + const Offset(14, 0), 'HORIZONTAL',
+          _horizontalArrowColor);
     }
-    if (upScreen != null) {
-      canvas.drawLine(origin, upScreen, upPaint);
-      _drawArrowhead(canvas, origin, upScreen, _upArrowColor);
-      _drawLabel(canvas, upScreen + const Offset(0, -14), 'UP', _upArrowColor);
+    if (verticalScreen != null) {
+      canvas.drawLine(origin, verticalScreen, verticalPaint);
+      _drawArrowhead(canvas, origin, verticalScreen, _verticalArrowColor);
+      _drawLabel(canvas, verticalScreen + const Offset(0, -14), 'VERTICAL',
+          _verticalArrowColor);
     }
 
     _paintCanvasPlate(canvas, armLengthWorld * 0.85);
   }
 
-  /// The "SKETCH" plate: a semi-opaque white square, bottom-left corner at
+  /// The "Sketch" plate: a semi-opaque white square, bottom-left corner at
   /// [basis].origin, extending [size] world-length-units along
-  /// [basis].xAxis/[basis].yAxis, with "SKETCH" lettered across it - see
-  /// this file's own header doc comment for why this is drawn through
-  /// [planeTransform] rather than as a screen-facing label.
+  /// [basis].xAxis/[basis].yAxis, lettered "Sketch" in its own bottom-left
+  /// corner - see this file's own header doc comment for why this is drawn
+  /// through [planeTransform] rather than as a screen-facing label.
   void _paintCanvasPlate(Canvas canvas, double size) {
     final transform = planeTransform(camera, viewportSize, basis);
     canvas.save();
@@ -178,14 +179,9 @@ class _SketchOrientationPainter extends CustomPainter {
         ..strokeWidth = size * 0.01,
     );
 
-    // Text is painted in its own locally-flipped sub-space: TextPainter
-    // always lays glyphs out assuming +y is "down the page" from the paint
-    // offset, but this outer transform's local +v is [basis].yAxis
-    // ("sketch up") - without the extra flip here, "SKETCH" would render
-    // upside-down whenever actually viewed right-side-up on the plane.
     final textPainter = TextPainter(
       text: TextSpan(
-        text: 'SKETCH',
+        text: 'Sketch',
         style: TextStyle(
           color: Colors.black,
           fontSize: size * 0.22,
@@ -195,11 +191,19 @@ class _SketchOrientationPainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
+    // Text is painted in its own locally-flipped sub-space: TextPainter
+    // always lays glyphs out assuming +y is "down the page" from the paint
+    // offset, but this outer transform's local +v is [basis].yAxis
+    // ("sketch up") - without the extra flip here, "Sketch" would render
+    // upside-down whenever actually viewed right-side-up on the plane.
+    // Anchored so the text's own bottom-left corner sits at (padding,
+    // padding) - i.e. in the square's bottom-left corner, the same corner
+    // pinned to the origin - rather than centred.
+    final padding = size * 0.06;
     canvas.save();
-    canvas.translate(size / 2, size / 2);
+    canvas.translate(padding, padding);
     canvas.scale(1, -1);
-    textPainter.paint(
-        canvas, Offset(-textPainter.width / 2, -textPainter.height / 2));
+    textPainter.paint(canvas, Offset(0, -textPainter.height));
     canvas.restore();
 
     canvas.restore();
