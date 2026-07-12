@@ -148,6 +148,25 @@ def basis_point(basis: ResolvedPlane, x: float, y: float) -> Vector3:
     return (ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
 
 
+def world_point_to_basis(basis: ResolvedPlane, point: Vector3) -> tuple[float, float]:
+    """The inverse of `basis_point`: a world-space `point`'s local (x, y)
+    within `basis`. `x_axis`/`y_axis` are always unit vectors (every
+    `ResolvedPlane` this codebase ever produces is right-handed and
+    orthonormal - see e.g. `_PLANE_BASIS`'s own doc comment), so projecting
+    `point - origin` onto each via a plain dot product recovers exactly the
+    coefficients `basis_point` would have needed to reproduce it - no
+    matrix inversion needed.
+
+    Sketcher-roadmap Phase 4.3 v1: the one piece `app.document.create_plane.
+    resolve_external_vertex_position` needs to turn a Body vertex's
+    resolved world position into the Sketch-local (x, y) an
+    `ExternalVertexReference` Point is materialized at."""
+    dx, dy, dz = _sub(point, basis.origin)
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    return (dx * xx + dy * xy + dz * xz, dx * yx + dy * yy + dz * yz)
+
+
 def _basis_vector(basis: ResolvedPlane, dx: float, dy: float) -> Vector3:
     """The world-space *direction* (not position - no `origin` offset) for a
     local-space delta `(dx, dy)` in `basis` - correct because `basis_point`

@@ -309,11 +309,22 @@ def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset())
     later solve (with no anchor) finally pulls the Point back to satisfy
     the Constraint. Retrying immediately here gives the same end state
     without the confusing delay.
+
+    Sketcher-roadmap Phase 4.3 v1: every id in `sketch.external_references`
+    (a Point tracking a Body vertex from outside this Sketch) is pinned
+    exactly like the origin already is, on *both* attempts - unlike
+    `anchor_point_ids`, an external reference is never dropped on retry,
+    since it represents fixed real-world geometry this Sketch has no
+    business moving under any circumstance. This Sketch has no OCCT/Part
+    access to *refresh* those positions from the Body's current topology
+    (see `app.document.create_plane.refresh_external_references` for that
+    half) - this only ever pins whatever `(x, y)` the Point already holds.
     """
 
-    result = _solve_sketch_once(sketch, anchor_point_ids)
+    external_point_ids = frozenset(sketch.external_references)
+    result = _solve_sketch_once(sketch, anchor_point_ids | external_point_ids)
     if anchor_point_ids and not result.converged:
-        result = _solve_sketch_once(sketch, frozenset())
+        result = _solve_sketch_once(sketch, external_point_ids)
     if result.converged:
         _fix_circle_cardinal_point_signs(sketch)
     return result

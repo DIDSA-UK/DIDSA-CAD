@@ -53,6 +53,17 @@ class SketchFeatureResponse(BaseModel):
     # B1: what this Feature contributes, for the client tree's grouping
     # (B3) - see app.document.models.Feature.produces.
     produces: Produces
+    # Sketcher-roadmap Phase 4.3 v1: true whenever at least one of this
+    # Sketch's `external_references` (a Point tracking a Body vertex) no
+    # longer resolves against the Part's *current* Bodies - resolved live
+    # on every response the same soft-fail-without-raising way
+    # `_create_plane_feature_response`'s own `origin`/`normal` fields
+    # already are (see `app.document.router._feature_response`'s
+    # SketchFeature branch), so one Sketch with a since-broken reference
+    # never fails the whole `GET .../features` list. Always false for a
+    # Sketch with no external references at all - the common case, and the
+    # only case before this field existed.
+    has_lost_reference: bool = False
 
 
 class SketchEntityRefSchema(BaseModel):
@@ -140,6 +151,21 @@ class SubShapeRefSchema(BaseModel):
     body_id: str
     shape_type: SubShapeType
     index: int
+
+
+class ExternalVertexReferenceCreate(BaseModel):
+    """Sketcher-roadmap Phase 4.3 v1: the payload for the new materialize-
+    a-body-vertex-as-a-Point endpoint - the wire counterpart to
+    `app.sketch.models.ExternalVertexReference`. Deliberately its own small
+    schema rather than reusing `SubShapeRefSchema` directly (which carries
+    a `shape_type` that would always have to be `vertex` here anyway, per
+    v1's own explicit scope - see the roadmap doc's own "vertices only in
+    v1" reasoning) - `app.document.router` converts this into the domain
+    `ExternalVertexReference` at the same boundary every other schema/
+    dataclass pair here already converts at."""
+
+    body_id: str
+    vertex_index: int
 
 
 class PointRefSchema(BaseModel):

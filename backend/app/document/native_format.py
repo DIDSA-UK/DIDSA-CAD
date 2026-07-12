@@ -64,6 +64,7 @@ from app.sketch.models import (
     Arc,
     Circle,
     Ellipse,
+    ExternalVertexReference,
     Line,
     Plane,
     Point,
@@ -296,6 +297,11 @@ def _sketch_to_dict(sketch: Sketch) -> dict:
         "points": [_point_to_dict(p) for p in sketch.points.values()],
         "entities": [_entity_to_dict(e) for e in sketch.entities.values()],
         "constraints": [_constraint_to_dict(c) for c in sketch.constraints.values()],
+        # Sketcher-roadmap Phase 4.3 v1.
+        "external_references": [
+            {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
+            for point_id, ref in sketch.external_references.items()
+        ],
     }
 
 
@@ -319,6 +325,13 @@ def _sketch_from_dict(data: dict) -> Sketch:
     for constraint_data in data.get("constraints", []):
         constraint = _constraint_from_dict(constraint_data)
         sketch.constraints[constraint.id] = constraint
+    # Sketcher-roadmap Phase 4.3 v1 - defaulted to `[]`, same "a file saved
+    # before this feature existed has no opinion on it" reasoning as
+    # flip/rotation_quarter_turns above.
+    for ref_data in data.get("external_references", []):
+        sketch.external_references[ref_data["point_id"]] = ExternalVertexReference(
+            body_id=ref_data["body_id"], vertex_index=ref_data["vertex_index"]
+        )
     return sketch
 
 

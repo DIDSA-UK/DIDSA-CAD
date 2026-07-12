@@ -7,7 +7,11 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.chamfer import resolve_chamfer
-from app.document.create_plane import resolve_create_plane
+from app.document.create_plane import (
+    refresh_external_references,
+    resolve_create_plane,
+    resolve_external_vertex_position,
+)
 from app.document.extrude import compute_part_bodies, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
@@ -49,6 +53,7 @@ from app.document.schemas import (
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
     CreatePlaneFeatureUpdate,
+    ExternalVertexReferenceCreate,
     ExtrudeFeatureCreate,
     ExtrudeFeatureResponse,
     ExtrudeFeatureUpdate,
@@ -77,8 +82,9 @@ from app.document.schemas import (
 )
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
-from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
+from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.schemas import PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
 logger = logging.getLogger(__name__)
@@ -199,12 +205,36 @@ def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> C
     )
 
 
+def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
+    """Sketcher-roadmap Phase 4.3 v1: whether `feature`'s own Sketch has at
+    least one `external_references` entry that no longer resolves against
+    the Part's *current* Bodies - same soft-fail-without-raising story as
+    `_create_plane_feature_response`'s own `origin`/`normal` resolution:
+    any failure (an unresolvable reference, or the Part's Bodies failing to
+    compute at all for an unrelated reason) is treated as "lost" rather
+    than propagating and failing the whole `GET .../features` list.
+    Short-circuits to `False` without touching OCCT at all for the common
+    case (a Sketch with no external references), so this costs nothing for
+    every Sketch that doesn't use the feature."""
+    sketch = all_sketches().get(feature.sketch_id)
+    if sketch is None or not sketch.external_references:
+        return False
+    try:
+        bodies = compute_part_bodies(part)
+        lost_point_ids = refresh_external_references(part, sketch, bodies)
+    except HTTPException:
+        logger.warning("SketchFeature %s could not refresh its external references", feature.id)
+        return True
+    return bool(lost_point_ids)
+
+
 def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, SketchFeature):
         return SketchFeatureResponse(
             id=feature.id,
             sketch_id=feature.sketch_id,
             plane_feature_id=feature.plane_feature_id,
+            has_lost_reference=_sketch_has_lost_reference(part, feature),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -712,6 +742,49 @@ def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchF
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
+
+
+def _get_sketch_feature_or_404(part: Part, feature_id: str) -> SketchFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SketchFeature):
+        raise HTTPException(
+            status_code=400,
+            detail="feature_id does not refer to a SketchFeature in this Part",
+        )
+    return feature
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references",
+    response_model=PointResponse,
+    status_code=201,
+)
+def create_external_vertex_reference(
+    part_id: str, feature_id: str, payload: ExternalVertexReferenceCreate
+) -> PointResponse:
+    """Sketcher-roadmap Phase 4.3 v1: the centre-point circle tool's sibling
+    for body geometry - materializes `payload` (a Body vertex) as a real
+    Point in this SketchFeature's own Sketch, so every existing dimension/
+    ghost/undo/persistence code path (all of it Sketch-Point-id-shaped,
+    see the roadmap doc's own reasoning) works against it unmodified from
+    here on. Fails closed with the same structured `missing_reference` 422
+    every other `SubShapeRef` resolution already uses (via
+    `resolve_external_vertex_position` -> `resolve_subshape_from_bodies`)
+    if `payload` doesn't resolve against this Part's current Bodies.
+
+    Only ever reachable for a Part-backed Sketch (unlike the standalone
+    `/sketch` API's own point-creation endpoints) - a bare Sketch created
+    directly via that API has no Bodies to reference at all, which is
+    exactly why this lives in the document router rather than
+    `app.sketch.router`."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    ref = ExternalVertexReference(body_id=payload.body_id, vertex_index=payload.vertex_index)
+    bodies = compute_part_bodies(part)
+    x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
+    point = sketch.add_external_vertex_reference(x, y, ref)
+    return PointResponse(id=point.id, x=point.x, y=point.y)
 
 
 @router.post(

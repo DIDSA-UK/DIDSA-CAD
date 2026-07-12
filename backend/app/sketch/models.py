@@ -48,6 +48,29 @@ class Point:
     y: float
 
 
+@dataclass(frozen=True)
+class ExternalVertexReference:
+    """Sketcher-roadmap Phase 4.3 v1: names a Body vertex from *outside*
+    this Sketch entirely - `body_id` plus a plain OCCT `topexp.MapShapes`
+    vertex index, the same 0-based scheme `app.document.models.SubShapeRef`
+    already uses for `SubShapeType.VERTEX`.
+
+    Deliberately a small, sketch-layer-only value type rather than importing
+    `SubShapeRef` itself - the sketch layer never depends on the document
+    layer anywhere in this codebase (the reverse is true throughout: e.g.
+    `app.document.create_plane` imports `app.sketch.models`, never the other
+    way around), so the document layer converts to/from this type at its
+    own API boundary (`app.document.router`'s external-reference endpoint)
+    instead of this module reaching upward for a document-layer type.
+
+    See `Sketch.external_references`'s own doc comment for how a Point
+    carrying one of these is created and kept in sync.
+    """
+
+    body_id: str
+    vertex_index: int
+
+
 @dataclass
 class SketchEntity(ABC):
     """Base type for anything that can live in a Sketch's entity collection.
@@ -524,6 +547,20 @@ class Sketch:
     constraints: dict[str, Constraint] = field(default_factory=dict)
     flip: bool = False
     rotation_quarter_turns: int = 0
+    # Sketcher-roadmap Phase 4.3 v1: Point id -> the Body vertex it tracks.
+    # Such a Point is real and ordinary in every other respect (any existing
+    # DistanceConstraint/ghost/undo/persistence code path works against it
+    # unmodified - see the roadmap doc's own "materialize rather than
+    # invent a parallel system" reasoning) except two things this dict
+    # drives: `solve_sketch` always pins every id in here into the fixed
+    # solver group, the same way the origin already is (see that function's
+    # own doc comment), and the document layer re-resolves/refreshes each
+    # one's (x, y) from the Body's *current* topology at its own natural
+    # touch points (a Sketch has no OCCT access itself to do this on its
+    # own - see `app.document.create_plane.refresh_external_references`),
+    # leaving the Point at its last-known position (and reporting the id as
+    # lost) whenever a reference no longer resolves.
+    external_references: dict[str, ExternalVertexReference] = field(default_factory=dict)
     _origin_point_id: str | None = field(default=None, repr=False)
 
     def set_orientation(self, *, flip: bool, rotation_quarter_turns: int) -> None:
@@ -538,6 +575,18 @@ class Sketch:
     def add_point(self, x: float, y: float) -> Point:
         point = Point(id=str(uuid.uuid4()), x=x, y=y)
         self.points[point.id] = point
+        return point
+
+    def add_external_vertex_reference(self, x: float, y: float, ref: ExternalVertexReference) -> Point:
+        """Sketcher-roadmap Phase 4.3 v1: materializes `ref` as a real Point
+        at its already-resolved-and-projected `(x, y)` (the document layer
+        computes this - see `app.document.create_plane.
+        resolve_external_vertex_position` - since resolving a Body vertex
+        needs OCCT/Part access this Sketch itself never has), and records
+        the mapping in `external_references` so `solve_sketch` pins it and
+        the document layer can later refresh/validate it."""
+        point = self.add_point(x, y)
+        self.external_references[point.id] = ref
         return point
 
     @property
@@ -1121,6 +1170,7 @@ class Sketch:
         if blocker is not None:
             raise ValueError(blocker)
         del self.points[point_id]
+        self.external_references.pop(point_id, None)
 
     def add_distance_constraint(
         self,
