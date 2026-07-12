@@ -52,11 +52,20 @@ class SketchCircleView {
   final String radiusPointId;
   final bool construction;
 
+  /// `[north, east, south, west]` - see the backend's
+  /// `Circle.cardinal_point_ids` docstring for how each is solver-locked.
+  /// Real, independently selectable/draggable Points, same as
+  /// [radiusPointId] - added so a Circle has usable snap/pick targets
+  /// beyond the single arbitrary [radiusPointId], always aligned to the
+  /// sketch's own global axes regardless of where [radiusPointId] sits.
+  final List<String> cardinalPointIds;
+
   const SketchCircleView({
     required this.id,
     required this.centerPointId,
     required this.radiusPointId,
     this.construction = false,
+    this.cardinalPointIds = const [],
   });
 }
 
@@ -2242,11 +2251,11 @@ class SketchController extends ChangeNotifier {
         return nearerId == _originPointId ? null : nearerId;
       case SelectionKind.circle:
         final circle = circles[hit.id]!;
-        final center = points[circle.centerPointId]!;
-        final radiusPoint = points[circle.radiusPointId]!;
-        final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);
-        final distToRadius = math.pow(x - radiusPoint.x, 2) + math.pow(y - radiusPoint.y, 2);
-        final nearerId = distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+        final nearerId = _nearestOf(
+          x,
+          y,
+          [circle.centerPointId, circle.radiusPointId, ...circle.cardinalPointIds],
+        );
         // Mirrors the Line case above - the origin is never offered.
         return nearerId == _originPointId ? null : nearerId;
       case SelectionKind.arc:
@@ -2269,10 +2278,9 @@ class SketchController extends ChangeNotifier {
     }
   }
 
-  /// The id, among [pointIds], whose Point sits nearest ([x], [y]) -
-  /// shared by [dragTargetPointIdAt]/[dragGrabTargetAt]'s Arc case (3
-  /// candidate Points: center/start/end) since Circle's own inline
-  /// 2-candidate ternary doesn't generalize cleanly to a third.
+  /// The id, among [pointIds], whose Point sits nearest ([x], [y]) - shared
+  /// by [dragTargetPointIdAt]/[dragGrabTargetAt]'s Circle (center/radius/
+  /// four cardinal points) and Arc (center/start/end) cases, among others.
   String _nearestOf(double x, double y, List<String> pointIds) {
     var bestId = pointIds.first;
     var bestDistSq = double.infinity;
@@ -2307,11 +2315,11 @@ class SketchController extends ChangeNotifier {
         return hit;
       case SelectionKind.circle:
         final circle = circles[hit.id]!;
-        final center = points[circle.centerPointId]!;
-        final radiusPoint = points[circle.radiusPointId]!;
-        final distToCenter = math.pow(x - center.x, 2) + math.pow(y - center.y, 2);
-        final distToRadius = math.pow(x - radiusPoint.x, 2) + math.pow(y - radiusPoint.y, 2);
-        final nearerId = distToCenter <= distToRadius ? circle.centerPointId : circle.radiusPointId;
+        final nearerId = _nearestOf(
+          x,
+          y,
+          [circle.centerPointId, circle.radiusPointId, ...circle.cardinalPointIds],
+        );
         return nearerId == _originPointId
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
@@ -3629,7 +3637,15 @@ class SketchController extends ChangeNotifier {
         centerPointId: created.centerPointId,
         radiusPointId: created.radiusPointId,
         construction: created.construction,
+        cardinalPointIds: created.cardinalPointIds,
       );
+      // The four cardinal Points are always freshly created server-side
+      // (see Circle.cardinal_point_ids' own docstring) - same
+      // fetch-and-cache as Ellipse's own minor/negative-tip Points above.
+      for (final id in created.cardinalPointIds) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
     }
     for (final arc in capturedArcs) {
       final created = await _api.createArc(
@@ -3956,6 +3972,7 @@ class SketchController extends ChangeNotifier {
             centerPointId: updated.centerPointId,
             radiusPointId: updated.radiusPointId,
             construction: updated.construction,
+            cardinalPointIds: updated.cardinalPointIds,
           );
           break;
         case SelectionKind.arc:
@@ -4771,6 +4788,7 @@ class SketchController extends ChangeNotifier {
         centerPointId: circle.centerPointId,
         radiusPointId: circle.radiusPointId,
         construction: circle.construction,
+        cardinalPointIds: circle.cardinalPointIds,
       );
     }
     for (final arc in await _api.listArcs(sketchId)) {
@@ -5246,7 +5264,15 @@ class SketchController extends ChangeNotifier {
         centerPointId: circle.centerPointId,
         radiusPointId: circle.radiusPointId,
         construction: circle.construction,
+        cardinalPointIds: circle.cardinalPointIds,
       );
+      // The four cardinal Points are always freshly created server-side -
+      // see Circle.cardinal_point_ids' own docstring (same fetch-and-cache
+      // pattern _restoreDeletedEntities' own circle case uses).
+      for (final id in circle.cardinalPointIds) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
       _pushUndo(() async {
         await _api.deleteCircle(_sketchId!, circle.id);
         circles.remove(circle.id);
@@ -5968,7 +5994,14 @@ class SketchController extends ChangeNotifier {
         centerPointId: circle.centerPointId,
         radiusPointId: circle.radiusPointId,
         construction: circle.construction,
+        cardinalPointIds: circle.cardinalPointIds,
       );
+      // The four cardinal Points are always freshly created server-side -
+      // see Circle.cardinal_point_ids' own docstring.
+      for (final id in circle.cardinalPointIds) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
       _pushUndo(() async {
         await _api.deleteCircle(_sketchId!, circle.id);
         circles.remove(circle.id);

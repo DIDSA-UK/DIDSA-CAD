@@ -82,12 +82,17 @@ class CircleDto {
   final double radius;
   final bool construction;
 
+  /// `[north, east, south, west]` - see the backend's
+  /// `Circle.cardinal_point_ids` docstring for how each is solver-locked.
+  final List<String> cardinalPointIds;
+
   CircleDto({
     required this.id,
     required this.centerPointId,
     required this.radiusPointId,
     required this.radius,
     this.construction = false,
+    this.cardinalPointIds = const [],
   });
 
   factory CircleDto.fromJson(Map<String, dynamic> json) => CircleDto(
@@ -96,6 +101,9 @@ class CircleDto {
         radiusPointId: json['radius_point_id'] as String,
         radius: (json['radius'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        cardinalPointIds: (json['cardinal_point_ids'] as List<dynamic>? ?? const [])
+            .map((e) => e as String)
+            .toList(),
       );
 }
 
