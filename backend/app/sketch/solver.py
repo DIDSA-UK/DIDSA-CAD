@@ -184,14 +184,51 @@ class _PySlvsBuilder:
             self._vertical_ref_line = self._system.addLineSegment(p0, p1, group=_FIXED_GROUP)
         return self._vertical_ref_line
 
-    def horizontal_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
-        return self._system.addPointsProjectDistance(
-            value, point_a_handle, point_b_handle, self._horizontal_ref_line_handle(), group=_SOLVE_GROUP
-        )
+    def horizontal_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
+        return self._project_distance(point_a_id, point_b_id, value, "x", self._horizontal_ref_line_handle())
 
-    def vertical_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+    def vertical_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
+        return self._project_distance(point_a_id, point_b_id, value, "y", self._vertical_ref_line_handle())
+
+    def _project_distance(
+        self, point_a_id: str, point_b_id: str, value: float, axis: str, ref_line_handle: int
+    ) -> int:
+        # Bug-fix round (on-device feedback, Phase 4.3): confirmed
+        # empirically against the installed py-slvs build -
+        # `addPointsProjectDistance` is a genuinely *signed* constraint,
+        # not the unsigned magnitude `horizontal_distance`/`vertical_
+        # distance`'s own doc comments used to assume (that assumption was
+        # copied from `_fix_circle_cardinal_point_signs`'s finding, which
+        # only holds there because it always uses a *zero* value - sign is
+        # meaningless for `-0.0 == 0.0`). Confirmed via direct experiment:
+        # for a positive `value`, `addPointsProjectDistance(value, a, b,
+        # ref_line)` deterministically solves `proj(b - a) == -value`,
+        # regardless of either Point's initial position (this is not a
+        # Newton-branch-selection ambiguity - re-seeding the free Point's
+        # initial guess, including seeding it exactly at the "expected"
+        # answer, made no difference at all).
+        #
+        # Rather than hardcode a fixed sign convention (which would just
+        # move the "which side does it land on" surprise from "always
+        # wrong" to "deterministic but arbitrary, and still wrong half the
+        # time depending on tap order" - confirmed by testing both), this
+        # chooses the sign that preserves whichever side point_b *already*
+        # sits on relative to point_a along this axis, before the solve -
+        # the same "nudge the value, don't teleport the geometry" behaviour
+        # a CAD user expects when refining a dimension, and the same
+        # left-alone-if-already-satisfied default a Newton solver would
+        # give if this primitive weren't seed-independent. Defaults to the
+        # positive side only when the two Points start out exactly level
+        # (or plumb) with each other, i.e. there is no existing side to
+        # preserve.
+        point_a = self._points[point_a_id]
+        point_b = self._points[point_b_id]
+        current_separation = getattr(point_b, axis) - getattr(point_a, axis)
+        signed_value = -abs(value) if current_separation < 0 else abs(value)
+        point_a_handle = self.point2d(point_a_id)
+        point_b_handle = self.point2d(point_b_id)
         return self._system.addPointsProjectDistance(
-            value, point_a_handle, point_b_handle, self._vertical_ref_line_handle(), group=_SOLVE_GROUP
+            -signed_value, point_a_handle, point_b_handle, ref_line_handle, group=_SOLVE_GROUP
         )
 
     def vertical(self, point_a_handle: int, point_b_handle: int) -> int:
@@ -338,12 +375,15 @@ def _fix_circle_cardinal_point_signs(sketch: Sketch) -> None:
     Each cardinal Point is solver-pinned by an `EqualRadiusConstraint`
     (radius) plus a zero-value `DistanceConstraint` (same X or Y as
     centre) - together those admit *two* valid positions (e.g. "same X,
-    radius away" is satisfied by both North and South), and there is no
-    signed one-axis distance primitive in the installed py-slvs binding
-    (`addPointsProjectDistance` takes an unsigned magnitude - confirmed
-    empirically: neither a negative `value` nor swapping the two Point
-    arguments changes which side it converges to) to rule the wrong one
-    out at the constraint level. In practice this means a large jump in
+    radius away" is satisfied by both North and South). At this *zero*
+    value, `addPointsProjectDistance` gives no way to rule the wrong one
+    out at the constraint level - confirmed empirically: neither a
+    negative `value` nor swapping the two Point arguments changes which
+    side it converges to, since `-0.0 == 0.0` either way. (This is
+    specific to the zero-value case here - for a *nonzero* value the same
+    primitive is fully signed and deterministic, see `_PySlvsBuilder.
+    _project_distance`'s own doc comment for the unrelated bug that
+    surfaced there.) In practice this means a large jump in
     centre's position (typing new coordinates, or a big/fast drag) can
     converge to the mirrored solution instead of the nearer, correct one -
     Newton's method just finds *a* valid position close to the previous

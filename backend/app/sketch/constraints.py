@@ -23,15 +23,17 @@ class SolverBuilder(Protocol):
         returning the resulting py-slvs constraint handle."""
         ...
 
-    def horizontal_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
-        """Pin only the X (workplane U) separation between two point
-        handles to `value`, leaving their Y separation free. py-slvs 1.0.6
-        has no dedicated horizontal-distance primitive - see solver.py for
-        how this is built from addPointsProjectDistance against a fixed
-        horizontal reference line."""
+    def horizontal_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
+        """Pin only the X (workplane U) separation between two Points to
+        `value` (a non-negative magnitude), leaving their Y separation
+        free. Takes Point ids rather than already-resolved handles (unlike
+        `distance` above) because the underlying py-slvs primitive is
+        sign-sensitive - see solver.py's `_PySlvsBuilder.horizontal_
+        distance` for why the sign is chosen from each Point's *current*
+        position rather than being a fixed convention."""
         ...
 
-    def vertical_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+    def vertical_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
         """Same as `horizontal_distance`, but pins the Y (workplane V)
         separation instead, leaving X free."""
         ...
@@ -224,12 +226,12 @@ class DistanceConstraint(Constraint):
         return (self.point_a_id, self.point_b_id)
 
     def add_to_solver(self, builder: SolverBuilder) -> int:
+        if self.orientation == "horizontal":
+            return builder.horizontal_distance(self.point_a_id, self.point_b_id, self.distance)
+        if self.orientation == "vertical":
+            return builder.vertical_distance(self.point_a_id, self.point_b_id, self.distance)
         point_a = builder.point2d(self.point_a_id)
         point_b = builder.point2d(self.point_b_id)
-        if self.orientation == "horizontal":
-            return builder.horizontal_distance(point_a, point_b, self.distance)
-        if self.orientation == "vertical":
-            return builder.vertical_distance(point_a, point_b, self.distance)
         return builder.distance(point_a, point_b, self.distance)
 
 
