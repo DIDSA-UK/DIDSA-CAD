@@ -16,6 +16,7 @@ import 'scene_preferences.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_geometry_3d.dart';
+import 'sketch_orientation_indicator.dart';
 import 'svg_icon.dart';
 import 'triad.dart';
 import 'view_preferences.dart';
@@ -212,6 +213,15 @@ class PartViewport extends StatefulWidget {
   /// changes once the user actually orbits it themselves.
   final ReferencePlaneKind? initialViewPlane;
 
+  /// New-sketch orientation confirm step (on-device feedback: the indicator
+  /// must track the camera live as the user orbits, not just refresh on a
+  /// flip/rotate tap) - non-null shows [SketchOrientationIndicator] for
+  /// this basis, rendered inside this widget's own [build] (not as an
+  /// external overlay in [PartScreen]) specifically so it repaints on every
+  /// orbit/pan/zoom-triggered rebuild this State already does for itself,
+  /// with no separate camera-change plumbing needed.
+  final SketchPlaneBasis? sketchOrientationBasis;
+
   const PartViewport({
     super.key,
     this.bodies = const [],
@@ -243,6 +253,7 @@ class PartViewport extends StatefulWidget {
     this.onFarClipChanged,
     this.sketchLineLoopGroup,
     this.initialViewPlane,
+    this.sketchOrientationBasis,
   });
 
   @override
@@ -261,20 +272,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   vm.Vector3 get debugCameraTarget => _camera.target;
   @visibleForTesting
   double get debugCameraDistance => _camera.distance;
-
-  /// New-sketch orientation confirm step (Fix: 3D-viewport orientation
-  /// indicator): lets a caller project a world point to screen space (see
-  /// `screen_projection.dart`'s `worldToScreen`) for an overlay anchored to
-  /// real 3D geometry, the same [PerspectiveCamera]/[Size] pair
-  /// [screenPointToRay] itself already uses for the reverse direction. A
-  /// snapshot, not a live stream: the caller re-reads this after every
-  /// state change it cares about (e.g. once after [animateToPlane]
-  /// settles) rather than this class pushing updates on every orbit/pan/
-  /// zoom frame - acceptable for a short, usually-camera-locked
-  /// confirmation step; a caller wanting to track free orbit live would
-  /// need this turned into a real listenable, not attempted here.
-  PerspectiveCamera get camera => _camera.cameraFor(_viewportSize);
-  Size get viewportSize => _viewportSize;
 
   /// On-device feedback: "after selecting axis for revolve, 3d viewport
   /// moves and shouldn't" - [_syncMeshNode] used to re-center the camera
@@ -1614,6 +1611,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 child: CustomPaint(
                   size: size,
                   painter: _CursorCrosshairPainter(position: _cursorPosition!, hasHover: _hoverHit != null),
+                ),
+              ),
+            // On-device feedback: rendered as part of this State's own
+            // build (not an external overlay driven by a stale snapshot -
+            // see [PartViewport.sketchOrientationBasis]'s own doc comment)
+            // so it repaints with a fresh [_camera]/[size] on every
+            // orbit/pan/zoom this State already triggers a rebuild for.
+            if (widget.sketchOrientationBasis != null)
+              Positioned.fill(
+                child: SketchOrientationIndicator(
+                  camera: _camera.cameraFor(size),
+                  viewportSize: size,
+                  basis: widget.sketchOrientationBasis!,
                 ),
               ),
           ],

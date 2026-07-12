@@ -5013,25 +5013,14 @@ class _PartScreenState extends State<PartScreen> {
                   farClip: _farClip,
                   onFarClipChanged: _onFarClipChanged,
                   sketchLineLoopGroup: _sketchLineLoopGroup,
+                  // On-device feedback: must track the camera live as the
+                  // user orbits, not just refresh on a flip/rotate tap -
+                  // see [PartViewport.sketchOrientationBasis]'s own doc
+                  // comment for why this is a widget parameter into
+                  // PartViewport's own build rather than an external
+                  // overlay here.
+                  sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
                 ),
-                // On-device feedback: 3D-viewport visual feedback for the
-                // new-sketch orientation confirm step - see
-                // [_addSketchFeature]'s own doc comment. Rebuilt (a fresh
-                // camera/viewportSize snapshot) on every
-                // [_adjustPendingOrientation] call, which is the only
-                // camera-relevant state change expected during this short
-                // step - see [PartViewportState.camera]'s own doc comment
-                // for why this isn't a live-orbit-tracking overlay.
-                if (_confirmingSketchOrientation &&
-                    _pendingOrientationBasis != null &&
-                    _viewportKey.currentState != null)
-                  Positioned.fill(
-                    child: SketchOrientationIndicator(
-                      camera: _viewportKey.currentState!.camera,
-                      viewportSize: _viewportKey.currentState!.viewportSize,
-                      basis: _pendingOrientationBasis!,
-                    ),
-                  ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
                 // a decoration on PartViewport itself, so its own layout
@@ -5611,23 +5600,29 @@ class _PartScreenState extends State<PartScreen> {
                 if (_confirmingSketchOrientation)
                   Positioned(
                     bottom: 8,
-                    left: 0,
-                    right: 0,
+                    left: 8,
+                    right: 8,
                     child: SafeArea(
                       top: false,
                       child: Center(
                         child: Material(
                           elevation: 4,
                           borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          // Bug fix: this row of controls used to overflow
+                          // on a narrow screen (no scroll fallback) - it
+                          // also used to sit right underneath the
+                          // bottom-right mode-toggle/Add FAB column, which
+                          // painted on top and made Continue untappable
+                          // (see the floatingActionButton hiding rule
+                          // above for that half of the fix). Wrapped in a
+                          // horizontal scroll view as a hard guarantee
+                          // against overflow on any screen width.
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Padding(
-                                  padding: EdgeInsets.symmetric(horizontal: 4),
-                                  child: Text('Set sketch orientation'),
-                                ),
                                 IconButton(
                                   tooltip: 'Rotate 90° counter-clockwise',
                                   icon: const Icon(Icons.rotate_left),
@@ -5655,6 +5650,7 @@ class _PartScreenState extends State<PartScreen> {
                                   onPressed: _busy ? null : _cancelPendingOrientation,
                                   child: const Text('Cancel'),
                                 ),
+                                const SizedBox(width: 4),
                                 FilledButton(
                                   onPressed: _busy ? null : _confirmPendingOrientation,
                                   child: const Text('Continue'),
@@ -5759,7 +5755,13 @@ class _PartScreenState extends State<PartScreen> {
       // own bottom-sheet content, which sits in the body Stack rather than
       // a real `Scaffold.bottomSheet` Scaffold could otherwise push this
       // FAB above automatically.
-      floatingActionButton: _toolbarOpen
+      // Bug fix: the mode-toggle/Add FAB column sits bottom-right
+      // (Scaffold's default floatingActionButtonLocation) and paints after
+      // the whole body Stack, so it was covering the orientation confirm
+      // step's own bottom banner - specifically its Continue button,
+      // making the step impossible to accept. Hidden outright during that
+      // step, same as it already is while [_toolbarOpen].
+      floatingActionButton: _toolbarOpen || _confirmingSketchOrientation
           ? null
           : Padding(
               padding: EdgeInsets.only(

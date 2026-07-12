@@ -21,7 +21,9 @@ void main() {
       expect(screen.dy, closeTo(300, 1e-6));
     });
 
-    test('is the exact inverse of screenPointToRay at the near plane, for a point directly in view', () {
+    test(
+        'is the exact inverse of screenPointToRay at the near plane, for a point directly in view',
+        () {
       final camera = PerspectiveCamera(
         position: vm.Vector3(0, 0, -10),
         target: vm.Vector3.zero(),
@@ -45,7 +47,9 @@ void main() {
       expect(roundTripped.dy, closeTo(originalScreenPoint.dy, 0.5));
     });
 
-    test('a world point up and to the left of the target projects up-left of screen centre', () {
+    test(
+        'a world point up and to the left of the target projects up-left of screen centre',
+        () {
       final camera = PerspectiveCamera(
         position: vm.Vector3(0, 0, -10),
         target: vm.Vector3.zero(),
