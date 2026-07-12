@@ -809,7 +809,11 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
               left: 8,
               child: AnimatedBuilder(
                 animation: widget.controller,
-                builder: (context, _) => PlaneIndicator(plane: widget.controller.plane),
+                builder: (context, _) => PlaneIndicator(
+                  plane: widget.controller.plane,
+                  flip: widget.controller.flip,
+                  rotationQuarterTurns: widget.controller.rotationQuarterTurns,
+                ),
               ),
             ),
           ],

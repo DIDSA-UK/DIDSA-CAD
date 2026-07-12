@@ -28,12 +28,27 @@ class SketchDto {
   final String? plane;
   final String originPointId;
 
-  SketchDto({required this.id, required this.plane, required this.originPointId});
+  /// Sketcher-roadmap Phase 5: this Sketch's own discrete orientation
+  /// within [plane] - see the backend's `app.sketch.models.Sketch` own
+  /// docstring. Meaningless (and always the identity default) for a
+  /// `plane == null` Sketch, same as [plane]'s own null case.
+  final bool flip;
+  final int rotationQuarterTurns;
+
+  SketchDto({
+    required this.id,
+    required this.plane,
+    required this.originPointId,
+    this.flip = false,
+    this.rotationQuarterTurns = 0,
+  });
 
   factory SketchDto.fromJson(Map<String, dynamic> json) => SketchDto(
         id: json['id'] as String,
         plane: json['plane'] as String?,
         originPointId: json['origin_point_id'] as String,
+        flip: json['flip'] as bool? ?? false,
+        rotationQuarterTurns: (json['rotation_quarter_turns'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -797,17 +812,36 @@ class SketchApiClient {
     return response.body;
   }
 
-  Future<SketchDto> createSketch({String plane = 'XY'}) => _send(
+  Future<SketchDto> createSketch({String plane = 'XY', bool flip = false, int rotationQuarterTurns = 0}) =>
+      _send(
         () => _httpClient.post(
               _uri('/sketch/sketches'),
               headers: _headers,
-              body: jsonEncode({'plane': plane}),
+              body: jsonEncode({
+                'plane': plane,
+                'flip': flip,
+                'rotation_quarter_turns': rotationQuarterTurns,
+              }),
             ),
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<SketchDto> getSketch(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId'), headers: _headers),
+        (body) => SketchDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Sketcher-roadmap Phase 5's retrospective-redefine entry point - both
+  /// fields required together, mirroring the backend's own
+  /// `SketchOrientationUpdate` (see that class's own doc comment for why
+  /// this isn't independently-optional like most other PATCH bodies here).
+  Future<SketchDto> updateSketchOrientation(String sketchId, {required bool flip, required int rotationQuarterTurns}) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/orientation'),
+              headers: _headers,
+              body: jsonEncode({'flip': flip, 'rotation_quarter_turns': rotationQuarterTurns}),
+            ),
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 

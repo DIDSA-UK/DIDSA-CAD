@@ -643,6 +643,36 @@ class SketchController extends ChangeNotifier {
   /// which 3D plane it's actually on.
   String? get plane => _plane;
 
+  bool _flip = false;
+  int _rotationQuarterTurns = 0;
+
+  /// Sketcher-roadmap Phase 5: this Sketch's own discrete orientation
+  /// within [plane] - see the backend's `SketchDto.flip`/
+  /// `rotationQuarterTurns` (mirroring `app.sketch.models.Sketch`'s own
+  /// fields). Drives [PlaneIndicator]'s axis labels; the flat 2D canvas
+  /// itself is unaffected (a Sketch's own Points are always rendered in
+  /// local (x, y), regardless of orientation - only the 3D embedding
+  /// moves).
+  bool get flip => _flip;
+  int get rotationQuarterTurns => _rotationQuarterTurns;
+
+  /// Sets this Sketch's orientation via the backend's retrospective-
+  /// redefine endpoint - see `SketchApiClient.updateSketchOrientation`'s
+  /// own doc comment. A no-op (returns immediately) while [_sketchId] is
+  /// unresolved (mirrors every other backend-touching method here).
+  Future<void> setOrientation({required bool flip, required int rotationQuarterTurns}) async {
+    if (_sketchId == null) return;
+    await _runGuarded(() async {
+      final updated = await _api.updateSketchOrientation(
+        _sketchId!,
+        flip: flip,
+        rotationQuarterTurns: rotationQuarterTurns,
+      );
+      _flip = updated.flip;
+      _rotationQuarterTurns = updated.rotationQuarterTurns;
+    });
+  }
+
   final Map<String, SketchPointView> points = {};
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
@@ -4895,6 +4925,8 @@ class SketchController extends ChangeNotifier {
     _sketchId = sketch.id;
     _originPointId = sketch.originPointId;
     _plane = sketch.plane;
+    _flip = sketch.flip;
+    _rotationQuarterTurns = sketch.rotationQuarterTurns;
     points[sketch.originPointId] = SketchPointView(id: sketch.originPointId, x: 0, y: 0);
   }
 

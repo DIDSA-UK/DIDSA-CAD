@@ -68,6 +68,31 @@ class SketchPlaneBasis {
             normal: vm.Vector3(1, 0, 0),
           ),
       };
+
+  /// Sketcher-roadmap Phase 5: [fixed]'s own xAxis/yAxis, with a Sketch's
+  /// own `flip`/`rotationQuarterTurns` (see [SketchDto.flip]/
+  /// [SketchDto.rotationQuarterTurns]) applied on top - mirrors the
+  /// backend's `app.document.plane_geometry.oriented_basis_for_plane`
+  /// exactly (same flip-then-rotate order, same "a 90-degree CCW turn maps
+  /// xAxis -> yAxis, yAxis -> -xAxis" formula), so a Sketch's rendered
+  /// geometry always lines up with where its Extrude actually builds
+  /// material once the orientation is anything other than the default.
+  factory SketchPlaneBasis.oriented(
+    ReferencePlaneKind plane, {
+    required bool flip,
+    required int rotationQuarterTurns,
+  }) {
+    final base = SketchPlaneBasis.fixed(plane);
+    var xAxis = flip ? -base.xAxis : base.xAxis;
+    var yAxis = base.yAxis;
+    for (var i = 0; i < rotationQuarterTurns % 4; i++) {
+      final nextX = yAxis;
+      final nextY = -xAxis;
+      xAxis = nextX;
+      yAxis = nextY;
+    }
+    return SketchPlaneBasis(origin: base.origin, xAxis: xAxis, yAxis: yAxis, normal: base.normal);
+  }
 }
 
 /// Maps a Sketch-local 2D point onto its [basis] in 3D world space, for
