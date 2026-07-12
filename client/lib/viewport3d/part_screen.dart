@@ -2438,9 +2438,19 @@ class _PartScreenState extends State<PartScreen> {
         final points = await _sketchApi.listPoints(sketchId);
         final lines = await _sketchApi.listLines(sketchId);
         final circles = await _sketchApi.listCircles(sketchId);
+        final arcs = await _sketchApi.listArcs(sketchId);
+        final ellipses = await _sketchApi.listEllipses(sketchId);
+        final splines = await _sketchApi.listSplines(sketchId);
         updatedLines[feature.id] = lines;
-        final geometry =
-            sketchGeometry3DFrom(basis: basis, points: points, lines: lines, circles: circles);
+        final geometry = sketchGeometry3DFrom(
+          basis: basis,
+          points: points,
+          lines: lines,
+          circles: circles,
+          arcs: arcs,
+          ellipses: ellipses,
+          splines: splines,
+        );
         if (!geometry.isEmpty) updated[feature.id] = geometry;
       } catch (_) {
         // Swallow - see doc comment above.

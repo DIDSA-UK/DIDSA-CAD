@@ -196,6 +196,136 @@ void main() {
       expect(geometry.isEmpty, isFalse);
     });
 
+    // Bug fix: Arc/Ellipse/Spline had no 3D representation at all before -
+    // see sketchGeometry3DFrom's own doc comment.
+    test('resolves an Arc into a world-space polyline sweeping CCW from start to end, with a parallel id', () {
+      final arcPoints = [
+        ...points,
+        PointDto(id: 'p4', x: 0, y: 10),
+      ];
+      final arc = ArcDto(id: 'a1', centerPointId: 'p1', startPointId: 'p2', endPointId: 'p4', radius: 10);
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: arcPoints,
+        lines: const [],
+        circles: const [],
+        arcs: [arc],
+      );
+
+      expect(geometry.arcPolylines, hasLength(1));
+      expect(geometry.arcIds, ['a1']);
+      final polyline = geometry.arcPolylines.single;
+      // Starts exactly at the start Point (0 degrees) and sweeps CCW to the
+      // end Point (90 degrees) - matches sketch_canvas.dart's own
+      // _arcScreenAngles/angleWithinArcSweep convention.
+      expect(polyline.first.x, closeTo(10, 1e-6));
+      expect(polyline.first.y, closeTo(0, 1e-6));
+      expect(polyline.last.x, closeTo(0, 1e-6));
+      expect(polyline.last.y, closeTo(10, 1e-6));
+      for (final p in polyline) {
+        expect(p.length, closeTo(10, 1e-6));
+      }
+    });
+
+    test('an Arc referencing a missing point is skipped, not thrown', () {
+      final arc = ArcDto(id: 'a1', centerPointId: 'p1', startPointId: 'missing', endPointId: 'p2', radius: 10);
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: points,
+        lines: const [],
+        circles: const [],
+        arcs: [arc],
+      );
+
+      expect(geometry.arcPolylines, isEmpty);
+      expect(geometry.arcIds, isEmpty);
+    });
+
+    test('resolves an Ellipse into a closed polygon using its own majorRadius/minorRadius/rotation', () {
+      final ellipse = EllipseDto(
+        id: 'e1',
+        centerPointId: 'p1',
+        majorPointId: 'p2',
+        majorPointNegId: 'unused-1',
+        minorPointId: 'unused-2',
+        minorPointNegId: 'unused-3',
+        majorAxisLineId: 'unused-4',
+        minorAxisLineId: 'unused-5',
+        majorRadius: 10,
+        minorRadius: 5,
+        rotation: 0,
+      );
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: points,
+        lines: const [],
+        circles: const [],
+        ellipses: [ellipse],
+      );
+
+      expect(geometry.ellipsePolygons, hasLength(1));
+      expect(geometry.ellipseIds, ['e1']);
+      final polygon = geometry.ellipsePolygons.single;
+      // Closed loop, first point on the major axis (10, 0), a quarter turn
+      // later on the minor axis (0, 5) - unrotated (rotation: 0).
+      expect(polygon.first.x, closeTo(10, 1e-6));
+      expect(polygon.first.y, closeTo(0, 1e-6));
+      expect(polygon.last.x, closeTo(polygon.first.x, 1e-6));
+      expect(polygon.last.y, closeTo(polygon.first.y, 1e-6));
+      final quarterIndex = circleSegments3D ~/ 4;
+      expect(polygon[quarterIndex].x, closeTo(0, 1e-6));
+      expect(polygon[quarterIndex].y, closeTo(5, 1e-6));
+    });
+
+    test('resolves a Spline into a world-space polyline through its cubic Bezier segments', () {
+      final splinePoints = [
+        ...points,
+        PointDto(id: 'p4', x: 3, y: 0),
+        PointDto(id: 'p5', x: 7, y: 0),
+      ];
+      final spline = SplineDto(
+        id: 's1',
+        throughPointIds: const ['p1', 'p2'],
+        controlPointIds: const ['p4', 'p5'],
+      );
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: splinePoints,
+        lines: const [],
+        circles: const [],
+        splines: [spline],
+      );
+
+      expect(geometry.splinePolylines, hasLength(1));
+      expect(geometry.splineIds, ['s1']);
+      final polyline = geometry.splinePolylines.single;
+      // Collinear through/control points (all on y=0) reduce the cubic to a
+      // straight line from (0,0) to (10,0), regardless of parametrization.
+      expect(polyline.first.x, closeTo(0, 1e-6));
+      expect(polyline.last.x, closeTo(10, 1e-6));
+      for (final p in polyline) {
+        expect(p.y, closeTo(0, 1e-6));
+      }
+    });
+
+    test('a Spline referencing a missing point is skipped, not thrown', () {
+      final spline = SplineDto(
+        id: 's1',
+        throughPointIds: const ['p1', 'missing'],
+        controlPointIds: const ['p1', 'p2'],
+      );
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: points,
+        lines: const [],
+        circles: const [],
+        splines: [spline],
+      );
+
+      expect(geometry.splinePolylines, isEmpty);
+      expect(geometry.splineIds, isEmpty);
+    });
+
     test('every given Point is projected into points/pointIds, regardless of Line/Circle use', () {
       final geometry = sketchGeometry3DFrom(
         basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),

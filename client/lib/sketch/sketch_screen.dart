@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/document_api_client.dart' show BodyMeshDto;
-import '../api/sketch_api_client.dart' show CircleDto, LineDto, PointDto;
+import '../api/sketch_api_client.dart' show ArcDto, CircleDto, EllipseDto, LineDto, PointDto, SplineDto;
 import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/reference_planes.dart';
@@ -51,6 +51,62 @@ List<LineDto> _lineDtosFrom(SketchController controller) => [
             ),
             construction: line.construction,
           ),
+    ];
+
+/// Bug fix: Orbit View's own Sketch-geometry render used to only convert
+/// Points/Lines/Circles, silently dropping Arc/Ellipse/Spline - this and
+/// [_ellipseDtosFrom]/[_splineDtosFrom] close that gap, mirroring the same
+/// fix in `part_screen.dart`'s main 3D Part viewport - see
+/// [sketchGeometry3DFrom]'s own doc comment.
+List<ArcDto> _arcDtosFrom(SketchController controller) => [
+      for (final arc in controller.arcs.values)
+        if (controller.points[arc.centerPointId] != null && controller.points[arc.startPointId] != null)
+          ArcDto(
+            id: arc.id,
+            centerPointId: arc.centerPointId,
+            startPointId: arc.startPointId,
+            endPointId: arc.endPointId,
+            radius: _sketchPointDistance(
+              controller.points[arc.centerPointId]!,
+              controller.points[arc.startPointId]!,
+            ),
+            construction: arc.construction,
+          ),
+    ];
+
+List<EllipseDto> _ellipseDtosFrom(SketchController controller) => [
+      for (final ellipse in controller.ellipses.values)
+        if (controller.points[ellipse.centerPointId] != null && controller.points[ellipse.majorPointId] != null)
+          EllipseDto(
+            id: ellipse.id,
+            centerPointId: ellipse.centerPointId,
+            majorPointId: ellipse.majorPointId,
+            majorPointNegId: ellipse.majorPointNegId,
+            minorPointId: ellipse.minorPointId,
+            minorPointNegId: ellipse.minorPointNegId,
+            majorAxisLineId: ellipse.majorAxisLineId,
+            minorAxisLineId: ellipse.minorAxisLineId,
+            majorRadius: _sketchPointDistance(
+              controller.points[ellipse.centerPointId]!,
+              controller.points[ellipse.majorPointId]!,
+            ),
+            minorRadius: ellipse.minorRadius,
+            rotation: math.atan2(
+              controller.points[ellipse.majorPointId]!.y - controller.points[ellipse.centerPointId]!.y,
+              controller.points[ellipse.majorPointId]!.x - controller.points[ellipse.centerPointId]!.x,
+            ),
+            construction: ellipse.construction,
+          ),
+    ];
+
+List<SplineDto> _splineDtosFrom(SketchController controller) => [
+      for (final spline in controller.splines.values)
+        SplineDto(
+          id: spline.id,
+          throughPointIds: spline.throughPointIds,
+          controlPointIds: spline.controlPointIds,
+          construction: spline.construction,
+        ),
     ];
 
 List<CircleDto> _circleDtosFrom(SketchController controller) => [
@@ -765,6 +821,9 @@ class _SketchScreenState extends State<SketchScreen> {
             points: _pointDtosFrom(_controller),
             lines: _lineDtosFrom(_controller),
             circles: _circleDtosFrom(_controller),
+            arcs: _arcDtosFrom(_controller),
+            ellipses: _ellipseDtosFrom(_controller),
+            splines: _splineDtosFrom(_controller),
           ),
         },
         referencePlanesHidden: true,
