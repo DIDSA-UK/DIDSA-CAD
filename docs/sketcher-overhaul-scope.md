@@ -489,35 +489,200 @@ below.
   between two camera/input models cleanly.
 
 ### 4.3 Dimensioning from body edges/points + yellow "lost reference" tree indicator
-- **Current state**: not supported at all today. Sketch constraints and
-  dimensions only ever reference in-sketch `PointDto`/`LineDto`
-  entities; there is no concept of a sketch entity referencing external
-  body geometry (edges/vertices from other features) anywhere in
-  `models.py`, `constraints.py`, or the client dimension code. Separately,
-  the feature-tree already has a reusable pattern for this kind of
-  status color: `feature_tree_panel.dart:449-464` conditionally colors a
-  feature's icon (grey when `locked`) — a direct template to extend
-  with a `hasLostReference` yellow state.
-- **Proposed approach**: this is the largest, most structural item in
-  the package. Needs: (a) a new backend concept of an "external
-  reference" on a sketch (edge/vertex id + snapshot of its geometry at
-  reference time, so a dimension can still render/solve even before
-  the live lookup resolves), (b) staleness detection when the
-  referenced feature is edited/deleted (re-resolve on model change,
-  flag `hasLostReference` if the id no longer resolves), (c) client
-  picking UI to let the user select body edges/points while placing a
-  dimension, (d) the tree-icon yellow state reusing the existing
-  color-branch pattern. Recommend scoping this as its own follow-up
-  design doc rather than folding into the rest of this package — it's
-  materially bigger than every other item here and touches the core
-  data model (a sketch referencing something outside itself for the
-  first time).
-- **Files**: `models.py`, `schemas.py`, `solver.py` (external refs feed
-  the solve as fixed inputs), `router.py`, `sketch_dimension_bar.dart`,
-  `sketch_controller.dart`, `feature_tree_panel.dart`.
-- **Risk**: high — new data model concept, cross-feature staleness
-  tracking, and new picking UX all at once. Treat as its own
-  mini-project.
+- **Current state (re-confirmed via a dedicated research pass)**: not
+  supported at all today, and every piece of it is genuinely new -
+  there is no existing partial version of any of this to extend.
+  - **Phase 4.1's "ghost" body outline carries no ids.**
+    `referenceGhostSegments` (`part_screen.dart`'s `_openSketch`, via
+    `edgeSegmentsFromMesh` + `projectMeshEdgesOntoPlane`) is a flat
+    `List<((double,double),(double,double))>` of anonymous 2D segments -
+    `edgeSegmentsFromMesh` (`mesh_geometry.dart`) reads only the raw
+    `mesh.edges` coordinate floats and explicitly discards
+    `mesh.edgeIds`. It is also not currently hit-testable at all:
+    `sketch_controller.dart`'s dimension-mode tap resolver
+    (`_resolveSelectableAt`) never consults it. The ghost is a pure
+    render-only backdrop today.
+  - **A real, precedented stable-reference mechanism already exists,
+    just not wired into the sketch canvas.** `SubShapeRef` (`{body_id,
+    shape_type: EDGE|FACE|VERTEX, index}`, `document/models.py:191-216`)
+    is exactly the "point at a specific piece of a Body" primitive this
+    phase needs - already used end-to-end by `CreatePlaneFeature`'s
+    edge/vertex/face refs, `FilletFeature`/`ChamferFeature`'s
+    `edge_refs`. Resolution is always re-derived, never cached
+    (`resolve_subshape_from_bodies`, `extrude.py:927-945`, re-walks
+    `topexp.MapShapes` against the *current* body every time) and fails
+    closed with a structured `missing_reference` 422 when the index no
+    longer resolves (`_missing_reference`, `extrude.py:905-924`). The
+    3D viewport already has a full pick pipeline onto this type
+    (`selection_hit_test.dart`'s `SelectionEntityRef` -> `part_screen.dart`
+    building `SubShapeRefDto`s from taps, e.g. line ~3886 for edges) -
+    none of it reaches the 2D sketch canvas.
+  - **The solver already has the one mechanism this phase actually
+    needs: a Point that's real but pinned.** `_PySlvsBuilder.point2d`
+    (`solver.py:140-150`) puts a Point into py-slvs's never-solved
+    `_FIXED_GROUP` whenever its id is the Sketch's own origin *or* is
+    in the caller-supplied `anchor_point_ids` set (the drag-solve
+    mechanism) - using whatever `(x, y)` that Point's own dataclass
+    already holds. There is no existing way to pin a Point whose
+    `(x, y)` comes from *outside* `sketch.points` (i.e. a body-vertex
+    projection) - but the pinning half of the mechanism is exactly what
+    an external reference needs, and it's already point-id-based, not
+    tied to any special Point subtype.
+  - **No staleness/dirty flag exists anywhere on a `Feature` today.**
+    Every "is this reference still good" check in the codebase is
+    pull-based, not a persisted flag: re-derive from the Part's current
+    state on read, then either succeed or fail closed. The one
+    existing precedent for surfacing a broken reference to the client
+    without hard-failing the whole response is
+    `_create_plane_feature_response` (`router.py:159-199`): resolve in
+    a `try`, and on `HTTPException` soft-fail specific fields to `None`
+    rather than raising. There is no existing `hasLostReference`-shaped
+    boolean on any Feature or its response schema.
+  - **`feature_tree_panel.dart`'s "locked -> grey" branch is a real,
+    directly-extensible template**, but it's two independent ternaries
+    on one `ListTile` (`_buildFeatureTile`, lines ~450-489) - the
+    `leading` icon color/glyph and the `subtitle` text each already
+    switch on `feature.locked` separately, alongside a third,
+    independent `hidden`-driven `Opacity`/trailing-icon channel. A
+    `hasLostReference` state needs its own branch alongside (not
+    instead of) `locked`, since a Feature could in principle be both.
+  - **The dimension-pick pipeline is entirely Sketch-Point/Line-id
+    shaped**, and would need a new case threaded through every layer:
+    `SelectionKind` (`sketch_controller.dart:485`, no body-entity
+    variant), `DimensionGhost` (`pointAId`/`pointBId`/`lineAId`/
+    `lineBId` - always Sketch-internal id strings), `confirmGhostValue`
+    (`sketch_controller.dart:4655-4785`, its `DistanceConstraint`
+    creation calls only ever take two Sketch Point ids), and
+    `sketch_dimension_bar.dart`'s entity-label `switch` (no body-entity
+    case).
+- **Proposed approach**: fold the new "external reference" concept into
+  the *existing* Point-based machinery as far as possible, rather than
+  adding a second, parallel dimensioning system. Concretely:
+  1. **A body reference materializes as a real, ordinary Sketch
+     `Point`** - not a new geometry primitive. `Sketch` gains
+     `external_references: dict[str, SubShapeRef]` (Point id ->
+     the Body vertex it tracks) alongside its existing `points` dict.
+     A new endpoint, `POST /sketch/sketches/{id}/external-references`
+     (body: a `SubShapeRefSchema`, `shape_type` restricted to `VERTEX`
+     in v1 - see item 6), resolves the vertex's current 3D position via
+     the existing `resolve_subshape` + the plane-projection helpers
+     `create_plane.py`'s `_basis_for_sketch` already exposes, creates a
+     real `Point` at the projected `(x, y)`, records the mapping in
+     `external_references`, and returns the new `PointResponse` -
+     identical shape to any other Point creation endpoint.
+  2. **Every solve re-resolves and re-pins every external Point before
+     building the solver.** `solve_sketch` gains a pre-pass: for each
+     `(point_id, ref)` in `external_references`, re-resolve `ref`
+     against the Part's current bodies (same `resolve_subshape`
+     call as creation); on success, overwrite that Point's `(x, y)`
+     with the freshly-projected position and add its id to the
+     existing `anchor_point_ids` fixed set (`_PySlvsBuilder` needs no
+     changes at all - it already treats "is this id in the pinned set"
+     as the only question that matters); on failure, leave the Point at
+     its last-known `(x, y)` (so the rest of the sketch doesn't
+     visually collapse) and record the id in a new
+     `lost_reference_point_ids` field on `SolveResult`, mirroring the
+     existing `blamed_constraint_ids`/
+     `solver_reported_failed_constraint_ids` pattern exactly.
+  3. **Dimensioning to an external Point needs zero new constraint
+     types.** Once step 1 has materialized it as a real `Point`, every
+     existing path - `DistanceConstraint`, the V/H/linear ghost trio,
+     `circleForDistanceConstraint`'s radius/diameter machinery if ever
+     relevant, undo/redo, native-format persistence - already works
+     against it unmodified, because none of that code path
+     distinguishes *how* a Point came to exist. This is the core reason
+     to materialize rather than invent a parallel "external point"
+     concept: it collapses what would otherwise be a second dimension
+     system back into the first one.
+  4. **Client picking UX**: extend `edgeSegmentsFromMesh`/
+     `projectMeshEdgesOntoPlane`'s pipeline to also carry each
+     segment's endpoint `topology_vertex_ids` through to a new
+     `SketchScreen`/`SketchController` field (e.g.
+     `referenceGhostVertices: List<(String bodyId, int vertexId, double
+     x, double y)>`, populated from `MeshDto.topologyVertexIds`, which
+     the pipeline currently drops on the floor exactly the way
+     `edgeIds` is dropped) - the projected positions already exist as a
+     side effect of the segment projection, this is purely "stop
+     discarding data that's already computed." Add a new
+     `SelectionKind.bodyVertex` case; dimension-mode tap-resolution
+     hit-tests these ghost vertex markers (small, always-visible
+     crosshairs on the ghost outline, distinct from the dashed line
+     styling) alongside the existing Point/Line/Circle candidates. On
+     first pick, immediately call the new endpoint from item 1 to
+     materialize the real Point, then hand its id into the *existing*
+     `_dimensionSelection`/`_rebuildDimensionGhosts` flow unchanged - a
+     picked body vertex is indistinguishable from a picked Point from
+     that call onward. Re-picking the same ghost vertex a second time
+     (e.g. after cancelling) should reuse the already-materialized
+     Point rather than creating a duplicate - check
+     `external_references`'s values for a matching `SubShapeRef` first.
+  5. **`hasLostReference` at the Feature level**: `SketchFeatureResponse`
+     gains a `has_lost_reference: bool`, computed the same soft-fail-
+     without-raising way `_create_plane_feature_response` already
+     computes its `origin`/`normal` fields - attempt to resolve every
+     entry in the Sketch's `external_references`; any failure sets the
+     flag `true` without failing the whole feature-list response.
+     `build_feature_graph` (`document/graph.py`) gains one more
+     `depends_on` source: a `SketchFeature` depends on
+     `base_feature_id(ref.body_id)` for every external reference its
+     Sketch holds, so cascade-delete/rebuild ordering (already fully
+     general over `depends_on`) accounts for it with no changes to the
+     graph algorithm itself. Client: `feature_tree_panel.dart`'s
+     `_buildFeatureTile` gains a third, independent branch alongside
+     `locked`/`hidden` - e.g. a yellow warning-triangle overlay badge
+     on the existing `leading` icon (kept independent of, not
+     replacing, the lock-grey branch, since both could be true at
+     once) plus an amber `subtitle` override ("Lost reference" takes
+     display priority over "Editable"/"Imported"/"Locked").
+  6. **Explicit v1 scope: Body *vertices* only, not full edges.** A
+     vertex projects to exactly one `(x, y)` and slots into the
+     Point-reuse design in item 3 with zero new constraint machinery.
+     Referencing a whole edge (for e.g. a point-to-edge distance, or an
+     edge-to-edge parallel/perpendicular tie) needs either a new
+     Point-to-external-line distance constraint type or projecting the
+     edge as a synthetic, similarly-pinned two-Point Line - a real
+     follow-on but materially more work (a new `PointLineDistance`-
+     style solver path, or Line-level external-reference plumbing
+     mirroring everything in items 1-2 a second time), and edge-vertex
+     picking already covers the most common real case (dimensioning a
+     new hole/feature off an existing corner). Flag as v2, matching how
+     9.1 was split into a frozen-copy v1 and an associative-link v2 for
+     the same "ship the simpler half first" reason.
+  7. **Explicit v1 non-goal: editing/moving the source geometry through
+     the sketch.** An external reference Point is read-only from the
+     sketch's own drag/edit tools in v1 (its position is always
+     overwritten by the item-2 pre-pass on the next solve regardless of
+     any local edit) - worth a `SketchPointView`-level `isExternal`
+     flag purely so the client can refuse a drag attempt with a clear
+     reason, rather than silently reverting it after the next solve.
+- **Files**: backend - `models.py` (`Sketch.external_references`,
+  `SubShapeRef` reuse), `schemas.py` (`SketchOrientationUpdate`-style new
+  request/response shapes, `SolveResult.lost_reference_point_ids`),
+  `solver.py` (the re-resolve-and-pin pre-pass), `router.py` (new
+  external-reference endpoint, `SketchFeatureResponse.has_lost_reference`),
+  `graph.py` (one more `depends_on` source), `create_plane.py` (reused
+  plane-projection helper), `native_format.py` (persist
+  `external_references`). Client - `sketch_api_client.dart`
+  (`SubShapeRefDto` reuse, new endpoint call,
+  `lostReferencePointIds`), `part_screen.dart`/`mesh_geometry.dart`
+  (stop discarding `topology_vertex_ids` through the ghost-projection
+  pipeline), `sketch_controller.dart` (`SelectionKind.bodyVertex`,
+  ghost-vertex hit-testing, materialize-on-pick), `sketch_canvas.dart`
+  (ghost-vertex marker rendering), `sketch_dimension_bar.dart` (new
+  chip case), `feature_tree_panel.dart` (yellow lost-reference branch).
+- **Risk**: high, but more contained than the original scoping pass
+  assumed - v1 reuses `SubShapeRef`'s already-precedented resolve/
+  fail-closed pattern verbatim and reuses the Point/DistanceConstraint
+  machinery verbatim; the two genuinely new pieces are the solver's
+  re-resolve-and-pin pre-pass (small, mechanical, same shape as the
+  existing anchor-pinning code) and the Feature-graph/staleness wiring
+  (new field, but follows an existing soft-fail precedent exactly). The
+  main remaining risk is UX, not architecture: making body-vertex ghost
+  markers discoverable/tappable at a useful hit-radius without cluttering
+  the canvas, and getting the "materialize on first pick, reuse
+  thereafter" de-duplication right so repeated dimensioning off the same
+  corner doesn't spawn duplicate Points. Treat as its own mini-project
+  as originally recommended; v1 (vertex-only) is the unit to ship first.
 
 ---
 
