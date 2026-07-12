@@ -136,12 +136,39 @@ class Circle(SketchEntity):
     Sketch and then nested against them by centroid containment (a Circle
     fully inside a Line-chain polygon becomes a hole in it, and vice
     versa). See `profile.py`'s `detect_profile`/`_classify_nesting`.
+
+    On-device feedback: a Circle's only edge-Point was `radius_point_id`,
+    wherever it happened to land when the Circle was drawn - a poor snap/
+    connection target since it sits at an arbitrary angle, not one a user
+    would predict. `cardinal_point_ids` adds four more, real, independently
+    addressable Points at the circle's own North/East/South/West (angles
+    90/0/270/180 degrees from +x, i.e. always aligned to the *sketch's*
+    global axes, not to wherever `radius_point_id` sits) - in that fixed
+    `[north, east, south, west]` order, mirroring `Spline`'s own
+    `through_point_ids`/`control_point_ids` list-of-Points convention
+    rather than four separate named fields. Each is solver-locked (see
+    `add_circle`) via an `EqualRadiusConstraint` against the circle's own
+    `radius_point_id` (so it always stays exactly on the circle, in sync
+    with any radius edit - no separate, independently-driftable radius
+    value) plus a zero-value `DistanceConstraint` pinning it to the correct
+    global axis through center (`orientation="horizontal"` for North/South,
+    `"vertical"` for East/West - a `DistanceConstraint` of exactly 0 along
+    the fixed reference direction `SolverBuilder.horizontal_distance`/
+    `vertical_distance` project onto, not a Euclidean/near-degenerate
+    zero-length constraint). `cardinal_constraint_ids` holds all eight of
+    those auxiliary constraints' ids (four EqualRadius, four zero-distance),
+    order not significant - see `Sketch.delete_circle` for why they need to
+    be tracked at all (cleaned up alongside the Circle itself, same
+    "internal implementation detail" exception `radius_constraint_id`
+    already gets).
     """
 
     id: str
     center_point_id: str
     radius_point_id: str
     radius_constraint_id: str
+    cardinal_point_ids: list[str]
+    cardinal_constraint_ids: list[str]
 
     @property
     def type(self) -> str:
@@ -575,15 +602,66 @@ class Sketch:
             raise ValueError("A circle cannot have the same center and radius point")
 
         radius_constraint = self.add_distance_constraint(center_point_id, radius_point_id, distance)
+        cardinal_point_ids, cardinal_constraint_ids = self._add_cardinal_points(
+            center_point_id, radius_point_id, distance
+        )
         circle = Circle(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,
             radius_point_id=radius_point_id,
             radius_constraint_id=radius_constraint.id,
+            cardinal_point_ids=cardinal_point_ids,
+            cardinal_constraint_ids=cardinal_constraint_ids,
             construction=construction,
         )
         self.entities[circle.id] = circle
         return circle
+
+    # North/East/South/West, in that fixed order - see Circle's own
+    # `cardinal_point_ids` doc comment.
+    _CARDINAL_ANGLES: tuple[float, ...] = (math.pi / 2, 0.0, 3 * math.pi / 2, math.pi)
+    _CARDINAL_ORIENTATIONS: tuple[Literal["horizontal", "vertical"], ...] = (
+        "horizontal",  # North: pin X to match center, Y free (set by EqualRadius)
+        "vertical",  # East: pin Y to match center, X free
+        "horizontal",  # South
+        "vertical",  # West
+    )
+
+    def _add_cardinal_points(
+        self, center_point_id: str, radius_point_id: str, radius: float
+    ) -> tuple[list[str], list[str]]:
+        """Creates the four North/East/South/West Points `add_circle` gives
+        every new Circle (see `Circle.cardinal_point_ids`'s own doc
+        comment) - each solver-locked onto the circle at its own fixed
+        global-axis angle via an `EqualRadiusConstraint` against
+        [radius_point_id] (stays in sync with any later radius edit) plus a
+        zero-value `DistanceConstraint` pinning it to the correct axis
+        through center. Returns `(point_ids, constraint_ids)`, both in the
+        shape `Circle.cardinal_point_ids`/`cardinal_constraint_ids` expect.
+        """
+        center = self.points[center_point_id]
+        point_ids: list[str] = []
+        constraint_ids: list[str] = []
+        for angle, orientation in zip(self._CARDINAL_ANGLES, self._CARDINAL_ORIENTATIONS):
+            point = self.add_point(
+                center.x + radius * math.cos(angle),
+                center.y + radius * math.sin(angle),
+            )
+            equal_radius = EqualRadiusConstraint(
+                id=str(uuid.uuid4()),
+                center1_point_id=center_point_id,
+                radius1_point_id=radius_point_id,
+                center2_point_id=center_point_id,
+                radius2_point_id=point.id,
+            )
+            self.constraints[equal_radius.id] = equal_radius
+            axis_constraint = self.add_distance_constraint(
+                center_point_id, point.id, 0.0, orientation=orientation
+            )
+            point_ids.append(point.id)
+            constraint_ids.append(equal_radius.id)
+            constraint_ids.append(axis_constraint.id)
+        return point_ids, constraint_ids
 
     def circles(self) -> list[Circle]:
         return [entity for entity in self.entities.values() if isinstance(entity, Circle)]
@@ -858,17 +936,21 @@ class Sketch:
         del self.entities[line_id]
 
     def delete_circle(self, circle_id: str) -> None:
-        """Remove a Circle and the radius DistanceConstraint that `add_circle`
-        always creates alongside it (that constraint is an internal
-        implementation detail of the Circle, not something the user added
-        independently, so it is the one exception to "never auto-delete
-        what a deletion didn't explicitly target"). The center/radius
-        Points themselves are left untouched, same as `delete_line`."""
+        """Remove a Circle and every constraint `add_circle` always creates
+        alongside it - the radius DistanceConstraint plus the eight
+        cardinal-point constraints (see `Circle.cardinal_constraint_ids`'s
+        own doc comment) - all internal implementation details of the
+        Circle, not something the user added independently, so they are
+        the one exception to "never auto-delete what a deletion didn't
+        explicitly target". The center/radius/cardinal Points themselves
+        are left untouched, same as `delete_line`."""
         circle = self.entities.get(circle_id)
         if not isinstance(circle, Circle):
             raise KeyError(circle_id)
         del self.entities[circle_id]
         self.constraints.pop(circle.radius_constraint_id, None)
+        for constraint_id in circle.cardinal_constraint_ids:
+            self.constraints.pop(constraint_id, None)
 
     def delete_arc(self, arc_id: str) -> None:
         """Remove an Arc and the two radius DistanceConstraints `add_arc`

@@ -313,8 +313,59 @@ def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset())
 
     result = _solve_sketch_once(sketch, anchor_point_ids)
     if anchor_point_ids and not result.converged:
-        return _solve_sketch_once(sketch, frozenset())
+        result = _solve_sketch_once(sketch, frozenset())
+    if result.converged:
+        _fix_circle_cardinal_point_signs(sketch)
     return result
+
+
+def _fix_circle_cardinal_point_signs(sketch: Sketch) -> None:
+    """Corrects a Circle's four cardinal Points (see `Circle.
+    cardinal_point_ids`'s own doc comment) back onto their own designated
+    side of centre, if this solve flipped one to its mirror position.
+
+    Each cardinal Point is solver-pinned by an `EqualRadiusConstraint`
+    (radius) plus a zero-value `DistanceConstraint` (same X or Y as
+    centre) - together those admit *two* valid positions (e.g. "same X,
+    radius away" is satisfied by both North and South), and there is no
+    signed one-axis distance primitive in the installed py-slvs binding
+    (`addPointsProjectDistance` takes an unsigned magnitude - confirmed
+    empirically: neither a negative `value` nor swapping the two Point
+    arguments changes which side it converges to) to rule the wrong one
+    out at the constraint level. In practice this means a large jump in
+    centre's position (typing new coordinates, or a big/fast drag) can
+    converge to the mirrored solution instead of the nearer, correct one -
+    Newton's method just finds *a* valid position close to the previous
+    one, and "close" stops meaning "on the right side" once centre has
+    moved far enough. Since both solutions are exact mirror images of each
+    other through centre (this is a discrete 2-fold ambiguity, not a
+    partial/approximate error), the fix is a cheap direct reflection
+    rather than a re-solve: whichever coordinate the flipped Point's own
+    constraint left unconstrained (X for North/South, Y for East/West) is
+    checked against its expected sign relative to centre, and mirrored
+    through centre if it's backwards.
+    """
+    for circle in sketch.circles():
+        if len(circle.cardinal_point_ids) != 4:
+            continue
+        center = sketch.points.get(circle.center_point_id)
+        if center is None:
+            continue
+        north_id, east_id, south_id, west_id = circle.cardinal_point_ids
+        for point_id, expect_positive, axis in (
+            (north_id, True, "y"),
+            (east_id, True, "x"),
+            (south_id, False, "y"),
+            (west_id, False, "x"),
+        ):
+            point = sketch.points.get(point_id)
+            if point is None:
+                continue
+            actual = point.y - center.y if axis == "y" else point.x - center.x
+            is_positive = actual > 0
+            if is_positive != expect_positive and actual != 0:
+                point.x = 2 * center.x - point.x
+                point.y = 2 * center.y - point.y
 
 
 def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> SolveResult:

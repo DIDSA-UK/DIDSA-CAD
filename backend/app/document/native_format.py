@@ -142,6 +142,8 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "center_point_id": entity.center_point_id,
             "radius_point_id": entity.radius_point_id,
             "radius_constraint_id": entity.radius_constraint_id,
+            "cardinal_point_ids": entity.cardinal_point_ids,
+            "cardinal_constraint_ids": entity.cardinal_constraint_ids,
         }
     if isinstance(entity, Arc):
         return {
@@ -211,6 +213,8 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             center_point_id=_require(data, "center_point_id"),
             radius_point_id=_require(data, "radius_point_id"),
             radius_constraint_id=_require(data, "radius_constraint_id"),
+            cardinal_point_ids=_require(data, "cardinal_point_ids"),
+            cardinal_constraint_ids=_require(data, "cardinal_constraint_ids"),
         )
     if entity_type == "arc":
         return Arc(

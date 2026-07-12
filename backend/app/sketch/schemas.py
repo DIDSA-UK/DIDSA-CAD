@@ -110,6 +110,9 @@ class CircleResponse(BaseModel):
     radius_point_id: str
     radius: float
     construction: bool = False
+    # [north, east, south, west] - see the backend's Circle.cardinal_point_ids
+    # docstring for how each is solver-locked.
+    cardinal_point_ids: list[str]
 
 
 class CircleUpdate(BaseModel):

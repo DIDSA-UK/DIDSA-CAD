@@ -60,8 +60,11 @@ def test_add_circle_automatically_creates_a_distance_constraint():
 
     circle = sketch.add_circle(center.id, edge.id)
 
-    assert len(sketch.constraints) == 1
-    constraint = next(iter(sketch.constraints.values()))
+    # The radius constraint, plus two auxiliary constraints (EqualRadius +
+    # a zero-value axis DistanceConstraint) per cardinal point - see
+    # Circle.cardinal_constraint_ids' own docstring.
+    assert len(sketch.constraints) == 1 + len(circle.cardinal_constraint_ids)
+    constraint = sketch.constraints[circle.radius_constraint_id]
     assert set(constraint.point_ids()) == {circle.center_point_id, circle.radius_point_id}
     assert constraint.distance == pytest.approx(10.0)
 
@@ -109,6 +112,76 @@ def test_circle_center_and_radius_point_can_be_explicitly_shared_with_a_line():
     assert line.start_point_id == circle.center_point_id
     result = solve_sketch(sketch)
     assert result.converged
+
+
+# --- Cardinal points ----------------------------------------------------------
+
+
+def test_add_circle_creates_four_cardinal_points_in_north_east_south_west_order():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
+
+    assert len(circle.cardinal_point_ids) == 4
+    north, east, south, west = (sketch.points[pid] for pid in circle.cardinal_point_ids)
+    assert (north.x, north.y) == pytest.approx((0.0, 5.0))
+    assert (east.x, east.y) == pytest.approx((5.0, 0.0))
+    assert (south.x, south.y) == pytest.approx((0.0, -5.0))
+    assert (west.x, west.y) == pytest.approx((-5.0, 0.0))
+    # Every id is unique and distinct from the center/radius points.
+    all_ids = {circle.center_point_id, circle.radius_point_id, *circle.cardinal_point_ids}
+    assert len(all_ids) == 6
+
+
+def test_cardinal_points_stay_on_circle_after_moving_center():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
+
+    sketch.points[center.id].x = 100.0
+    sketch.points[center.id].y = -50.0
+    result = solve_sketch(sketch)
+    assert result.converged
+
+    new_center = sketch.points[center.id]
+    north, east, south, west = (sketch.points[pid] for pid in circle.cardinal_point_ids)
+    assert (north.x, north.y) == pytest.approx((new_center.x, new_center.y + 5.0))
+    assert (east.x, east.y) == pytest.approx((new_center.x + 5.0, new_center.y))
+    assert (south.x, south.y) == pytest.approx((new_center.x, new_center.y - 5.0))
+    assert (west.x, west.y) == pytest.approx((new_center.x - 5.0, new_center.y))
+
+
+def test_cardinal_points_track_a_radius_edit_via_equal_radius():
+    """The cardinal points are tied to the *same* solver-tracked radius
+    value as radius_point_id (via EqualRadiusConstraint), not a second,
+    independently-editable distance - editing the circle's own radius
+    constraint must move all four in sync, with nothing else to PATCH."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
+
+    sketch.constraints[circle.radius_constraint_id].distance = 12.0
+    result = solve_sketch(sketch)
+    assert result.converged
+
+    for point in (sketch.points[pid] for pid in circle.cardinal_point_ids):
+        assert math.hypot(point.x - center.x, point.y - center.y) == pytest.approx(12.0)
+
+
+def test_delete_circle_removes_cardinal_constraints_but_leaves_cardinal_points():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
+    cardinal_point_ids = list(circle.cardinal_point_ids)
+    cardinal_constraint_ids = list(circle.cardinal_constraint_ids)
+
+    sketch.delete_circle(circle.id)
+
+    assert circle.id not in sketch.entities
+    for constraint_id in cardinal_constraint_ids:
+        assert constraint_id not in sketch.constraints
+    for point_id in cardinal_point_ids:
+        assert point_id in sketch.points
 
 
 # --- Profile detection -------------------------------------------------------

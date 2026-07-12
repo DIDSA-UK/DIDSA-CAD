@@ -171,6 +171,7 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         radius_point_id=circle.radius_point_id,
         radius=circle.radius(sketch.points),
         construction=circle.construction,
+        cardinal_point_ids=circle.cardinal_point_ids,
     )
 
 
