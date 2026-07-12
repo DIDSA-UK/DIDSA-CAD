@@ -2707,6 +2707,28 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// Bug fix (on-device feedback: a visually-closed shape wasn't picked up
+  /// as a profile, with no clue why): draws a dashed red ring around every
+  /// Point in [SketchController.profileBranchPointIds] - a real T-junction
+  /// (3+ non-construction Lines/Arcs/Splines meeting at one Point) the
+  /// backend's closed-loop detection correctly excludes from a simple
+  /// cycle, most often created by an auto-Coincident drag-snap landing on
+  /// an existing joint instead of a chain's one true open end. Makes the
+  /// "why doesn't this close" question answerable by just looking at the
+  /// canvas instead of reading the Extrude error text.
+  void _paintProfileBranchPoints(Canvas canvas) {
+    if (controller.profileBranchPointIds.isEmpty) return;
+    final paint = Paint()
+      ..color = _overConstrainedColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    for (final pointId in controller.profileBranchPointIds) {
+      final point = controller.points[pointId];
+      if (point == null) continue;
+      _drawDashedCircle(canvas, transform.sketchToScreen(point.x, point.y), 10, paint);
+    }
+  }
+
   /// One outer [loop]'s fill path, with a hole punched out for each of its
   /// `innerLoops` via [PathFillType.evenOdd] - returns null if the loop's
   /// own boundary can't be built (see [_addLoopBoundary]). A hole that
@@ -2895,6 +2917,7 @@ class _SketchPainter extends CustomPainter {
     }
 
     _paintClosedProfileFill(canvas);
+    _paintProfileBranchPoints(canvas);
 
     final hovered = controller.hoveredEntity(transform.pixelsPerUnit);
     final selectionSet = controller.selectionSet;

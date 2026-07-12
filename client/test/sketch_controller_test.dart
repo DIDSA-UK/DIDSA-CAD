@@ -788,6 +788,20 @@ class _FakeBackend {
       adjacency.putIfAbsent(b, () => []).add(a);
     }
     final involved = degree.keys.toList();
+    final branchPointIds = degree.entries.where((e) => e.value > 2).map((e) => e.key).toList();
+    if (branchPointIds.isNotEmpty) {
+      // Mirrors the real backend's BRANCH status: a Point used by 3+ Lines
+      // (a T-junction) excludes the whole component from loop tracing -
+      // needed to test SketchController.profileBranchPointIds /
+      // SketchCanvas._paintProfileBranchPoints.
+      return {
+        'status': 'branch',
+        'detail': '${branchPointIds.length} point(s) are used by more than two entities.',
+        'profile': null,
+        'branch_point_ids': branchPointIds,
+        'loops': <Map<String, dynamic>>[],
+      };
+    }
     final isClosedLoop = involved.length >= 3 &&
         degree.values.every((d) => d == 2) &&
         lines.length == involved.length;
@@ -1694,6 +1708,39 @@ void main() {
     await controller.deleteSelected();
 
     expect(controller.closedProfileFills, isEmpty);
+  });
+
+  test(
+      'Bug fix: profileBranchPointIds surfaces the T-junction Point when a third Line lands on an '
+      'existing closed-loop corner, so a visually-closed shape shows why it is not picked up as a '
+      'profile', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.cursorX = 0.1;
+    controller.cursorY = 0.1;
+    await controller.handleCanvasTap(0.1, 0.1); // closes the triangle at (0, 0)
+    expect(controller.closedProfileFills, isNotEmpty);
+    expect(controller.profileBranchPointIds, isEmpty);
+
+    final corner = controller.lines.values
+        .map((l) => l.startPointId)
+        .toSet()
+        .intersection(controller.lines.values.map((l) => l.endPointId).toSet())
+        .first;
+    final cornerPoint = controller.points[corner]!;
+
+    // A third Line landing on that same corner (not a new, separate Point)
+    // makes it a real T-junction - three non-construction Lines meeting at
+    // one Point - which correctly excludes the loop from closed-profile
+    // detection, unlike the earlier "closing an open chain" case.
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(cornerPoint.x, cornerPoint.y);
+    await controller.handleCanvasTap(10, 10);
+
+    expect(controller.closedProfileFills, isEmpty);
+    expect(controller.profileBranchPointIds, contains(corner));
   });
 
   test('ensureSketch tracks the real backend origin Point at (0, 0)', () {

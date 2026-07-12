@@ -755,11 +755,17 @@ class ProfileLoopDto {
 
 /// Result of a Sketch's closed-Profile check. [status]/[detail] drive the
 /// Extrude context-menu gate; [fillableLoops] drives the sketch canvas's
-/// profile-area fill. The backend's `branch_point_ids` (multi-loop detail)
-/// isn't needed by either consumer, so it's left unparsed.
+/// profile-area fill. [branchPointIds] (previously left unparsed - "isn't
+/// needed by either consumer") now backs a diagnostic marker for the
+/// `BRANCH` status: a Point used by 3+ non-construction entities, which is
+/// exactly what silently defeats closed-loop detection at a spot that can
+/// otherwise look closed on screen (see the bug report this was added for -
+/// a spiral/nautilus-shaped sketch where an accidental Coincident tie
+/// landed on an existing joint instead of the chain's one true open end).
 class ProfileDetectionDto {
   static const String closedLoop = 'closed_loop';
   static const String multipleLoops = 'multiple_loops';
+  static const String branch = 'branch';
 
   final String status;
   final String detail;
@@ -770,7 +776,18 @@ class ProfileDetectionDto {
   /// `multiple_loops` (C2's MultiProfile), empty for every other status.
   final List<ProfileLoopDto> fillableLoops;
 
-  ProfileDetectionDto({required this.status, required this.detail, this.fillableLoops = const []});
+  /// Every Point id the backend's closed-loop detection found connected to
+  /// 3+ non-construction Lines/Arcs/Splines - only populated for the
+  /// `branch` status (see `app.sketch.profile.detect_profile`'s own
+  /// `ProfileResult.branch_point_ids`).
+  final List<String> branchPointIds;
+
+  ProfileDetectionDto({
+    required this.status,
+    required this.detail,
+    this.fillableLoops = const [],
+    this.branchPointIds = const [],
+  });
 
   bool get isClosedLoop => status == closedLoop;
 
@@ -790,6 +807,7 @@ class ProfileDetectionDto {
       fillableLoops: profile != null
           ? [ProfileLoopDto.fromJson(profile)]
           : (loops ?? []).map((loop) => ProfileLoopDto.fromJson(loop as Map<String, dynamic>)).toList(),
+      branchPointIds: (json['branch_point_ids'] as List<dynamic>? ?? []).cast<String>(),
     );
   }
 }

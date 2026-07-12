@@ -3073,7 +3073,12 @@ class _PartScreenState extends State<PartScreen> {
   Future<String?> _checkExtrudeEligibility(FeatureDto feature) async {
     try {
       final profile = await _sketchApi.getProfile(feature.sketchId!);
-      return profile.isExtrudable ? null : 'Sketch does not contain a closed profile';
+      // Bug fix: used to always show the same generic reason regardless of
+      // *why* - the backend's own `detail` (e.g. "N point(s) are used by
+      // more than two entities" for a branch/T-junction) is what actually
+      // tells the user what to go fix, so surface it instead of discarding
+      // it - see ProfileDetectionDto.detail's own doc comment.
+      return profile.isExtrudable ? null : 'Sketch does not contain a closed profile: ${profile.detail}';
     } catch (_) {
       return 'Sketch does not contain a closed profile';
     }

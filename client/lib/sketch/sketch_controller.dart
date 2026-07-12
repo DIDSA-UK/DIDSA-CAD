@@ -6698,6 +6698,20 @@ class SketchController extends ChangeNotifier {
   /// canvas at all - see [SketchCanvas._paintClosedProfileFill].
   List<ProfileLoopDto> get closedProfileFills => _closedProfileFills;
 
+  List<String> _profileBranchPointIds = const [];
+
+  /// Bug fix (on-device feedback: a shape that looked closed on screen
+  /// wasn't picked up as a profile, with no clue why): every Point the
+  /// backend's closed-loop detection found connected to 3+ non-construction
+  /// Lines/Arcs/Splines - a real T-junction, not a rendering glitch, most
+  /// often created by an auto-Coincident drag-snap (see
+  /// [ProfileDetectionDto.branchPointIds]'s own doc comment) landing on an
+  /// existing joint instead of a chain's one true open end. Empty whenever
+  /// the last profile check wasn't `branch`. [SketchCanvas] renders a
+  /// distinct marker at each id so the offending point is visible without
+  /// leaving the sketcher.
+  List<String> get profileBranchPointIds => _profileBranchPointIds;
+
   Future<void> _refreshProfile() async {
     final profile = await _api.getProfile(_sketchId!);
     // >= 2, not >= 3: a Line-chain polygon loop needs at least 3 points,
@@ -6708,6 +6722,7 @@ class SketchController extends ChangeNotifier {
     // dropped every Circle profile - bug fix, previously untested since
     // earlier on-device rounds only exercised Line-chain rectangles.
     _closedProfileFills = profile.fillableLoops.where((loop) => loop.pointIds.length >= 2).toList();
+    _profileBranchPointIds = profile.branchPointIds;
   }
 
   // --- Stage 19b item 4: undo --------------------------------------------
