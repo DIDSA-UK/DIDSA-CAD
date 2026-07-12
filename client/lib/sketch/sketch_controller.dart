@@ -626,6 +626,10 @@ class SketchController extends ChangeNotifier {
   String? _sketchId;
   String? get sketchId => _sketchId;
 
+  // Sketcher-roadmap Phase 4.3 v1 - see [adoptSketch]'s own doc comment.
+  String? _documentPartId;
+  String? _documentSketchFeatureId;
+
   String? _originPointId;
 
   /// The id of this Sketch's real backend origin Point (0, 0) - null until
@@ -4309,6 +4313,52 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Sketcher-roadmap Phase 4.3 v1: "bodyId:vertexIndex" -> the real Point
+  // id [pickReferenceGhostVertex] already materialized for it, so re-
+  // picking the same ghost vertex (e.g. after cancelling a pick, or to
+  // dimension a second thing off the same corner) reuses that Point
+  // rather than creating a duplicate. Session-only, like every other
+  // client-side view cache in this file - reset on reload, never sent to
+  // the backend (the backend's own source of truth is `Sketch.
+  // external_references`, keyed by Point id in the other direction).
+  final Map<String, String> _externalReferencePointIds = {};
+
+  /// Sketcher-roadmap Phase 4.3 v1: dimension-mode's own body-vertex pick -
+  /// called by [SketchCanvas] when a tap lands on one of its own
+  /// `referenceGhostVertices` markers rather than any real sketch entity
+  /// (see that widget's own hit-testing). Materializes the vertex as a
+  /// real backend Point on first pick (reusing the same Point on every
+  /// later re-pick, via [_externalReferencePointIds]), then hands it
+  /// straight to [_applyDimensionHit] as an ordinary [SelectionKind.point]
+  /// hit - a materialized external-reference Point is indistinguishable
+  /// from any other Point from this call onward, so every existing ghost-
+  /// building/confirm/undo path already works against it unmodified. A
+  /// no-op if this Sketch wasn't opened from a Part (no [_documentPartId]/
+  /// [_documentSketchFeatureId] to call the endpoint with) - there are no
+  /// Bodies to reference at all in that case.
+  Future<void> pickReferenceGhostVertex(String bodyId, int vertexIndex) async {
+    if (_busy || _sketchId == null) return;
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    if (partId == null || sketchFeatureId == null) return;
+
+    final cacheKey = '$bodyId:$vertexIndex';
+    final existingId = _externalReferencePointIds[cacheKey];
+    if (existingId != null && points.containsKey(existingId)) {
+      _applyDimensionHit(SketchSelection(kind: SelectionKind.point, id: existingId));
+      return;
+    }
+
+    SketchSelection? hit;
+    await _runGuarded(() async {
+      final point = await _api.createExternalVertexReference(partId, sketchFeatureId, bodyId, vertexIndex);
+      points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      _externalReferencePointIds[cacheKey] = point.id;
+      hit = SketchSelection(kind: SelectionKind.point, id: point.id);
+    });
+    _applyDimensionHit(hit);
+  }
+
   /// Dispatches [_dimensionSelection]'s current shape onto a ghost set, per
   /// the new work package's combination table: one Line -> length; one
   /// Circle or Arc -> radius+diameter; two Points, or a Point+Line
@@ -4858,8 +4908,17 @@ class SketchController extends ChangeNotifier {
   /// have real content from a previous editing session, so this also loads
   /// every existing Point/Line/Circle - re-entering a Sketch must reflect
   /// what the backend actually has, not start from an empty canvas.
-  Future<void> adoptSketch(String sketchId) async {
+  ///
+  /// Sketcher-roadmap Phase 4.3 v1: [partId]/[sketchFeatureId] (both null
+  /// unless this Sketch was opened from [PartScreen] - see
+  /// `SketchScreen.documentPartId`/`sketchFeatureId`'s own doc comment) are
+  /// only ever needed for [pickReferenceGhostVertex]'s materialize-a-Body-
+  /// vertex call, which only makes sense for a Sketch that actually belongs
+  /// to a Part with Bodies to reference in the first place.
+  Future<void> adoptSketch(String sketchId, {String? partId, String? sketchFeatureId}) async {
     if (_sketchId != null) return;
+    _documentPartId = partId;
+    _documentSketchFeatureId = sketchFeatureId;
     await _runGuarded(() async {
       final sketch = await _api.getSketch(sketchId);
       _adoptSketchDto(sketch);

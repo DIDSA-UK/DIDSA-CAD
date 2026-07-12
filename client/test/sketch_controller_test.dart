@@ -44,6 +44,12 @@ class _FakeBackend {
   /// gates entirely on the last-seen solve result.
   int dof = 0;
 
+  /// Sketcher-roadmap Phase 4.3 v1: how many times the materialize-a-
+  /// Body-vertex endpoint has actually been hit - lets a test assert a
+  /// re-pick of the same ghost vertex reused the cached Point rather than
+  /// making a second network round trip.
+  int externalReferenceRequestCount = 0;
+
   String _newId(String prefix) => '$prefix-${_nextId++}';
 
   /// A deterministic fake outline for [text]'s preview endpoint - a single
@@ -217,6 +223,25 @@ class _FakeBackend {
     if (pointsCollectionMatch && request.method == 'POST') {
       final id = _newId('point');
       final point = {'id': id, 'x': body['x'], 'y': body['y']};
+      points[id] = point;
+      return _json(point, 201);
+    }
+
+    // Sketcher-roadmap Phase 4.3 v1: materializes a Body vertex as a real
+    // Point - the fake backend doesn't have real Bodies to resolve
+    // against, so it just deterministically derives an (x, y) from
+    // body_id/vertex_index, good enough to exercise the client's own
+    // materialize-once/reuse-on-repick logic.
+    final externalReferenceMatch =
+        RegExp(r'^/document/parts/[^/]+/features/sketch/[^/]+/external-references$').hasMatch(path);
+    if (externalReferenceMatch && request.method == 'POST') {
+      externalReferenceRequestCount++;
+      final id = _newId('point');
+      final point = {
+        'id': id,
+        'x': (body['body_id'] as String).length.toDouble(),
+        'y': (body['vertex_index'] as num).toDouble(),
+      };
       points[id] = point;
       return _json(point, 201);
     }
@@ -2871,6 +2896,70 @@ void main() {
     expect(freshController.points['origin-99']!.x, 0);
     expect(freshController.points['origin-99']!.y, 0);
     expect(freshController.errorMessage, isNull);
+  });
+
+  group('pickReferenceGhostVertex (Sketcher-roadmap Phase 4.3 v1)', () {
+    Future<(SketchController, _FakeBackend)> adoptedController() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      return (freshController, freshBackend);
+    }
+
+    test('materializes a real Point and adds it to the dimension pick', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+
+      await freshController.pickReferenceGhostVertex('body-1', 3);
+
+      expect(freshBackend.externalReferenceRequestCount, 1);
+      expect(freshController.dimensionSelection, hasLength(1));
+      expect(freshController.dimensionSelection.single.kind, SelectionKind.point);
+      final pointId = freshController.dimensionSelection.single.id;
+      expect(freshController.points.containsKey(pointId), isTrue);
+      expect(freshController.errorMessage, isNull);
+    });
+
+    test('re-picking the same body vertex reuses the already-materialized Point', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+      await freshController.pickReferenceGhostVertex('body-1', 3);
+      final firstPointId = freshController.dimensionSelection.single.id;
+      // Toggling the same pick off (mirrors _applyDimensionHit's own
+      // "tapping an already-picked entity again removes it" rule).
+      await freshController.pickReferenceGhostVertex('body-1', 3);
+      expect(freshController.dimensionSelection, isEmpty);
+
+      await freshController.pickReferenceGhostVertex('body-1', 3);
+
+      expect(freshBackend.externalReferenceRequestCount, 1); // still just the one network call
+      expect(freshController.dimensionSelection.single.id, firstPointId);
+    });
+
+    test('picking two different body vertices materializes two distinct Points, showing dimension ghosts',
+        () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+
+      await freshController.pickReferenceGhostVertex('body-1', 0);
+      await freshController.pickReferenceGhostVertex('body-1', 1);
+
+      expect(freshBackend.externalReferenceRequestCount, 2);
+      expect(freshController.dimensionSelection, hasLength(2));
+      expect(freshController.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    });
+
+    test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
+      // The shared `controller` from setUp() called ensureSketch(), which
+      // never sets these - the same as any Sketch reached outside PartScreen.
+      controller.enterDimensionMode();
+
+      await controller.pickReferenceGhostVertex('body-1', 0);
+
+      expect(controller.dimensionSelection, isEmpty);
+    });
   });
 
   test('adoptSketch loads an existing Sketch\'s Points, Lines, and Circles, not just its origin', () async {

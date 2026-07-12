@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../api/document_api_client.dart' show MeshDto;
 import '../api/sketch_api_client.dart';
 import 'mesh_geometry.dart' show kVertexMarkerWidth, vertexMarkerSegments;
 import 'reference_planes.dart';
@@ -130,6 +131,29 @@ List<((double, double), (double, double))> projectMeshEdgesOntoPlane(
       for (final segment in segments)
         (worldPointToSketch(basis, segment.$1), worldPointToSketch(basis, segment.$2)),
     ];
+
+/// Sketcher-roadmap Phase 4.3 v1: the per-point analogue of
+/// [projectMeshEdgesOntoPlane] - projects a Body's real B-rep vertices
+/// (`MeshDto.topologyVertices`/`topologyVertexIds`, already computed
+/// server-side independently of the triangle mesh - see
+/// `backend/app/document/mesh.py`'s `_extract_topology_vertices`) onto
+/// [basis], ready for [SketchCanvas]'s ghost-overlay pick targets. [bodyId]
+/// is threaded through unchanged (not itself projected) so a picked ghost
+/// vertex round-trips into a real `SubShapeRef`/materialize-a-Point call -
+/// see [SketchController.pickReferenceGhostVertex].
+List<(String, int, double, double)> projectMeshVerticesOntoPlane(
+  SketchPlaneBasis basis,
+  String bodyId,
+  MeshDto mesh,
+) {
+  final result = <(String, int, double, double)>[];
+  for (var i = 0; i < mesh.topologyVertices.length; i++) {
+    final v = mesh.topologyVertices[i];
+    final (x, y) = worldPointToSketch(basis, vm.Vector3(v[0], v[1], v[2]));
+    result.add((bodyId, mesh.topologyVertexIds[i], x, y));
+  }
+  return result;
+}
 
 /// Segments approximating a rendered Circle outline - high enough to read as
 /// round at [referencePlaneSize]-ish scales without costing much per circle.

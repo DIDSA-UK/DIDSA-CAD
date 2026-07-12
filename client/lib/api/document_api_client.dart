@@ -253,6 +253,15 @@ class FeatureDto {
   /// straight reference.
   final List<SketchEntityRefDto> pathRefs;
 
+  /// Sketcher-roadmap Phase 4.3 v1: only meaningful on a `"sketch"`
+  /// Feature - true whenever at least one of its Sketch's external Body-
+  /// vertex references no longer resolves (see the backend's
+  /// `SketchFeatureResponse.has_lost_reference`'s own doc comment).
+  /// Defaults to `false`, matching the backend's own default for a Sketch
+  /// with no external references, or any Feature type that predates this
+  /// field entirely.
+  final bool hasLostReference;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -285,6 +294,7 @@ class FeatureDto {
     this.mode,
     this.profileRefs = const [],
     this.pathRefs = const [],
+    this.hasLostReference = false,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -344,6 +354,7 @@ class FeatureDto {
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
             const [],
+        hasLostReference: json['has_lost_reference'] as bool? ?? false,
       );
 }
 

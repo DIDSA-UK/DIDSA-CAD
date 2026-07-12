@@ -31,6 +31,10 @@ class SketchCanvas extends StatefulWidget {
   /// opened from [PartScreen] at all.
   final List<((double, double), (double, double))> referenceGhostSegments;
 
+  /// Sketcher-roadmap Phase 4.3 v1: [referenceGhostSegments]'s own pick
+  /// targets - see [SketchScreen.referenceGhostVertices]'s own doc comment.
+  final List<(String, int, double, double)> referenceGhostVertices;
+
   /// Stage 12 item 9's Hide/Show Reference Body toggle - owned by
   /// [SketchScreen] (mirrors `PartScreen._referencePlanesHidden`'s pattern),
   /// just threaded through here for the painter to honor.
@@ -64,6 +68,7 @@ class SketchCanvas extends StatefulWidget {
     super.key,
     required this.controller,
     this.referenceGhostSegments = const [],
+    this.referenceGhostVertices = const [],
     this.referenceBodyHidden = false,
     this.constraintLabelsVisible = true,
     this.canvasColor = defaultColor,
@@ -450,6 +455,19 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         controller.tapGhost(hitKey);
         return;
       }
+      // Sketcher-roadmap Phase 4.3 v1: only reachable once a tap misses
+      // every real ghost/value-editor, and (see hasEntityNear below) every
+      // real sketch entity too - the reference body's own ghost geometry
+      // is a backdrop, so it never steals a tap real geometry would
+      // otherwise have won.
+      final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+      if (!controller.hasEntityNear(controller.cursorX, controller.cursorY, hitRadius)) {
+        final ghostVertex = _referenceGhostVertexAt(transform, cursorScreen);
+        if (ghostVertex != null) {
+          controller.pickReferenceGhostVertex(ghostVertex.$1, ghostVertex.$2);
+          return;
+        }
+      }
     }
     // Drag-mode's pick-up/drop gesture: a tap while nothing is grabbed
     // picks up whichever Point/Line sits at the cursor; a tap while
@@ -474,6 +492,23 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     }
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     controller.handleCanvasTap(controller.cursorX, controller.cursorY, hitRadius);
+  }
+
+  /// Sketcher-roadmap Phase 4.3 v1: the `(bodyId, vertexIndex)` of whichever
+  /// [SketchCanvas.referenceGhostVertices] marker [screenPosition] landed
+  /// on, or null if it missed all of them - mirrors [_ghostKeyAt]'s own
+  /// hit-radius, but lives on this State (not as a top-level function like
+  /// [_ghostKeyAt]) since ghost vertices are this widget's own prop, not
+  /// something the controller knows about (see [SketchController.
+  /// pickReferenceGhostVertex]'s own doc comment for why).
+  (String, int)? _referenceGhostVertexAt(ViewTransform transform, Offset screenPosition) {
+    for (final (bodyId, vertexIndex, x, y) in widget.referenceGhostVertices) {
+      final vertexScreen = transform.sketchToScreen(x, y);
+      if ((screenPosition - vertexScreen).distance <= _ghostHitRadiusPixels) {
+        return (bodyId, vertexIndex);
+      }
+    }
+    return null;
   }
 
   /// [_dispatchTap]'s drag-mode branch: drops whatever's grabbed if
@@ -718,6 +753,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                       controller: widget.controller,
                       transform: transform,
                       referenceGhostSegments: widget.referenceGhostSegments,
+                      referenceGhostVertices: widget.referenceGhostVertices,
                       referenceBodyHidden: widget.referenceBodyHidden,
                       labelsVisible: widget.constraintLabelsVisible,
                       canvasColor: widget.canvasColor,
@@ -1465,6 +1501,7 @@ class _SketchPainter extends CustomPainter {
   final SketchController controller;
   final ViewTransform transform;
   final List<((double, double), (double, double))> referenceGhostSegments;
+  final List<(String, int, double, double)> referenceGhostVertices;
   final bool referenceBodyHidden;
   final bool labelsVisible;
   final Color canvasColor;
@@ -1474,6 +1511,7 @@ class _SketchPainter extends CustomPainter {
     required this.controller,
     required this.transform,
     this.referenceGhostSegments = const [],
+    this.referenceGhostVertices = const [],
     this.referenceBodyHidden = false,
     this.labelsVisible = true,
     this.canvasColor = SketchCanvas.defaultColor,
@@ -2660,6 +2698,22 @@ class _SketchPainter extends CustomPainter {
         final start = transform.sketchToScreen(segment.$1.$1, segment.$1.$2);
         final end = transform.sketchToScreen(segment.$2.$1, segment.$2.$2);
         _drawDashedLine(canvas, start, end, ghostPaint);
+      }
+    }
+
+    // Sketcher-roadmap Phase 4.3 v1: the reference body's own pick targets
+    // for body-vertex dimensioning (see SketchController.
+    // pickReferenceGhostVertex) - small, solid dots (distinct from the
+    // dashed wireframe above) so they read as tappable rather than just
+    // more outline. Only in SketchMode.dimension - a select-mode/draw-mode
+    // canvas has nothing to do with them, and drawing them unconditionally
+    // would just be visual clutter on every other body corner.
+    if (!referenceBodyHidden &&
+        referenceGhostVertices.isNotEmpty &&
+        controller.mode == SketchMode.dimension) {
+      final vertexPaint = Paint()..color = _referenceGhostColor;
+      for (final (_, _, x, y) in referenceGhostVertices) {
+        canvas.drawCircle(transform.sketchToScreen(x, y), 3.5, vertexPaint);
       }
     }
 

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'package:didsa_cad_client/api/document_api_client.dart' show MeshDto;
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
@@ -21,6 +22,48 @@ void main() {
 
     test('YZ maps local x onto world Y and zeroes X', () {
       expect(sketchPointToWorld(SketchPlaneBasis.fixed(ReferencePlaneKind.yz), 3, 4), vm.Vector3(0, 3, 4));
+    });
+  });
+
+  group('projectMeshVerticesOntoPlane', () {
+    test('projects each topology vertex through the basis, threading bodyId/vertexIndex unchanged', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: [
+          [3.0, 4.0, 0.0],
+          [-3.0, 0.0, 4.0],
+        ],
+        topologyVertexIds: [7, 12],
+      );
+
+      final result = projectMeshVerticesOntoPlane(
+        SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        'body-1',
+        mesh,
+      );
+
+      expect(result, [('body-1', 7, 3.0, 4.0), ('body-1', 12, -3.0, 0.0)]);
+    });
+
+    test('is the exact inverse of sketchPointToWorld for a non-trivial plane', () {
+      final basis = SketchPlaneBasis.fixed(ReferencePlaneKind.xz);
+      final world = sketchPointToWorld(basis, 5.0, -2.0);
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        topologyVertices: [
+          [world.x, world.y, world.z],
+        ],
+        topologyVertexIds: [0],
+      );
+
+      final result = projectMeshVerticesOntoPlane(basis, 'body-1', mesh);
+
+      expect(result.single.$3, closeTo(5.0, 1e-9));
+      expect(result.single.$4, closeTo(-2.0, 1e-9));
     });
   });
 

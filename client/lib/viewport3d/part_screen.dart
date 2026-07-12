@@ -4724,6 +4724,15 @@ class _PartScreenState extends State<PartScreen> {
     final ghostSegments = basis != null
         ? projectMeshEdgesOntoPlane(basis, allEdgeSegments)
         : const <((double, double), (double, double))>[];
+    // Sketcher-roadmap Phase 4.3 v1: the ghost outline's own pick targets
+    // for body-vertex dimensioning - see SketchController.
+    // pickReferenceGhostVertex's own doc comment.
+    final ghostVertices = basis != null
+        ? [
+            for (final body in _visibleBodies)
+              ...projectMeshVerticesOntoPlane(basis, body.bodyId, body.mesh),
+          ]
+        : const <(String, int, double, double)>[];
 
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -4731,7 +4740,10 @@ class _PartScreenState extends State<PartScreen> {
           controller: SketchController(api: widget.sketchApiFactory?.call()),
           adoptSketchId: feature.sketchId,
           referenceGhostSegments: ghostSegments,
+          referenceGhostVertices: ghostVertices,
           bodies: _visibleBodies,
+          documentPartId: _part?.id,
+          sketchFeatureId: feature.id,
         ),
       ),
     );

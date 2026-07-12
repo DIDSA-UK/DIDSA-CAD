@@ -463,13 +463,28 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         dense: true,
         visualDensity: VisualDensity.compact,
         selected: selected,
-        leading: feature.locked
-            ? Icon(Icons.lock, size: 26, color: Colors.grey)
-            : SvgIcon(
-                _featureTypeAsset(feature.type),
-                size: 26,
-                color: Theme.of(context).colorScheme.primary,
+        // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
+        // independent overlay badge - kept alongside (not instead of) the
+        // locked-vs-editable icon/glyph below, since a Feature could in
+        // principle be both locked and carrying a lost reference at once.
+        leading: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            feature.locked
+                ? Icon(Icons.lock, size: 26, color: Colors.grey)
+                : SvgIcon(
+                    _featureTypeAsset(feature.type),
+                    size: 26,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+            if (feature.hasLostReference)
+              Positioned(
+                right: -2,
+                bottom: -2,
+                child: Icon(Icons.warning_rounded, size: 14, color: Colors.amber.shade800),
               ),
+          ],
+        ),
         title: Text(
           featureDisplayName(widget.features, index),
           maxLines: 1,
@@ -477,14 +492,18 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           style: _rowTitleStyle,
         ),
         subtitle: Text(
-          feature.locked
-              ? 'Locked'
-              : _hasEditPanel(feature.type)
-                  ? 'Editable'
-                  : 'Imported',
+          feature.hasLostReference
+              ? 'Lost reference'
+              : feature.locked
+                  ? 'Locked'
+                  : _hasEditPanel(feature.type)
+                      ? 'Editable'
+                      : 'Imported',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: _rowSubtitleStyle,
+          style: feature.hasLostReference
+              ? _rowSubtitleStyle.copyWith(color: Colors.amber.shade800, fontWeight: FontWeight.bold)
+              : _rowSubtitleStyle,
         ),
         trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
         onTap: () {

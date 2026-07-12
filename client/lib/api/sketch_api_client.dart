@@ -862,6 +862,30 @@ class SketchApiClient {
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Sketcher-roadmap Phase 4.3 v1: materializes a Body vertex (from the
+  /// same Part this Sketch's own SketchFeature - [sketchFeatureId] - lives
+  /// in) as a real Point in this Sketch, so it can be dimensioned against
+  /// exactly like any other Point from here on - see the backend's
+  /// `app.document.router.create_external_vertex_reference` doc comment.
+  /// Lives on this client (not `DocumentApiClient`) purely so
+  /// [SketchController] doesn't need a second API client threaded through
+  /// it just for this one call - `_uri` takes a full path regardless of
+  /// which router it happens to hit.
+  Future<PointDto> createExternalVertexReference(
+    String partId,
+    String sketchFeatureId,
+    String bodyId,
+    int vertexIndex,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'vertex_index': vertexIndex}),
+            ),
+        (body) => PointDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<List<PointDto>> listPoints(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/points'), headers: _headers),
         (body) => (body as List)

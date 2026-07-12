@@ -96,12 +96,34 @@ class SketchScreen extends StatefulWidget {
   /// isolated tests), in which case the toggle simply shows no bodies.
   final List<BodyMeshDto> bodies;
 
+  /// Sketcher-roadmap Phase 4.3 v1: [referenceGhostSegments]'s own pick
+  /// targets - each existing Body vertex projected onto this Sketch's
+  /// plane the same way, as `(bodyId, vertexIndex, x, y)` - so a dimension-
+  /// mode tap near one can be resolved back to a real Body vertex and
+  /// materialized as a Point (see [SketchController.
+  /// pickReferenceGhostVertex]). Empty outside [PartScreen], same as
+  /// [referenceGhostSegments].
+  final List<(String, int, double, double)> referenceGhostVertices;
+
+  /// Sketcher-roadmap Phase 4.3 v1: the owning Part's id and this Sketch's
+  /// own SketchFeature id - both null unless this screen was opened from
+  /// [PartScreen] (a bare Sketch reached via the standalone `/sketch` API,
+  /// e.g. in isolated tests, has no Part/Bodies to reference at all).
+  /// Threaded straight into [SketchController.adoptSketch] - see that
+  /// method's own doc comment for why [pickReferenceGhostVertex] needs
+  /// them.
+  final String? documentPartId;
+  final String? sketchFeatureId;
+
   const SketchScreen({
     super.key,
     this.controller,
     this.adoptSketchId,
     this.referenceGhostSegments = const [],
+    this.referenceGhostVertices = const [],
     this.bodies = const [],
+    this.documentPartId,
+    this.sketchFeatureId,
   });
 
   @override
@@ -169,7 +191,11 @@ class _SketchScreenState extends State<SketchScreen> {
     _controller = widget.controller ?? SketchController();
     final adoptSketchId = widget.adoptSketchId;
     if (adoptSketchId != null) {
-      _controller.adoptSketch(adoptSketchId);
+      _controller.adoptSketch(
+        adoptSketchId,
+        partId: widget.documentPartId,
+        sketchFeatureId: widget.sketchFeatureId,
+      );
     } else {
       _controller.ensureSketch();
     }
@@ -750,6 +776,7 @@ class _SketchScreenState extends State<SketchScreen> {
         SketchCanvas(
           controller: _controller,
           referenceGhostSegments: widget.referenceGhostSegments,
+          referenceGhostVertices: widget.referenceGhostVertices,
           referenceBodyHidden: _referenceBodyHidden,
           constraintLabelsVisible: _constraintLabelsVisible,
           canvasColor: _canvasColor,
