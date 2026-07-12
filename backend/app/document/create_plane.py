@@ -60,6 +60,7 @@ from app.document.models import (
     SubShapeType,
 )
 from app.document.plane_geometry import (
+    apply_orientation,
     arbitrary_perpendicular_basis,
     basis_point,
     oriented_basis_for_plane,
@@ -413,13 +414,23 @@ def _basis_for_sketch(
     bypassing the Document/Part/Feature layer entirely, or a hand-built
     `Part` in a unit test) - such a Sketch is never anchored to a custom
     plane (there is no `SketchFeature.plane_feature_id` to read), so it must
-    already carry a fixed `plane`."""
+    already carry a fixed `plane`.
+
+    Bug fix: the custom-plane branch used to return the anchor plane's
+    resolved basis unmodified, silently ignoring `sketch.flip`/`sketch.
+    rotation_quarter_turns` - a custom-plane Sketch's orientation controls
+    had no effect on the real Extrude solid, only on its own rendering
+    (which already applied orientation correctly client-side). Both
+    branches now go through `apply_orientation` the same way."""
     sketch_feature_id = sketch_feature_id_for_sketch(part, sketch.id)
     sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id else None
     if isinstance(sketch_feature, SketchFeature) and sketch_feature.plane_feature_id is not None:
         plane_feature = part.get_feature(sketch_feature.plane_feature_id)
         assert isinstance(plane_feature, CreatePlaneFeature)
-        return resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
+        anchor_basis = resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
+        return apply_orientation(
+            anchor_basis, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns
+        )
     assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
     return oriented_basis_for_plane(sketch.plane, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
 

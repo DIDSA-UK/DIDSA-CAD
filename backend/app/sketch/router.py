@@ -382,12 +382,13 @@ def get_sketch(sketch_id: str) -> SketchResponse:
 def update_sketch_orientation(sketch_id: str, payload: SketchOrientationUpdate) -> SketchResponse:
     """Sketcher-roadmap Phase 5: the retrospective-redefine entry point -
     just flips two fields (see `Sketch.set_orientation`'s own doc comment
-    for why this needs no re-projection of any existing Point). A no-op
-    (200, unchanged) for a `plane is None` Sketch is deliberately *not*
-    special-cased here - the fields are simply stored and ignored
-    downstream (see `Sketch`'s own docstring), matching this project's
-    general "store what's given, resolve meaning at read time" pattern
-    rather than rejecting a value that's harmless to hold."""
+    for why this needs no re-projection of any existing Point). Works
+    identically for a `plane is None` Sketch (one anchored to a custom
+    `CreatePlaneFeature` rather than a fixed `Plane`) - `app.document.
+    create_plane._basis_for_sketch` applies these fields via
+    `apply_orientation` for that case too (bug fix: it used to silently
+    ignore them for a custom-plane Sketch), matching this project's
+    general "store what's given, resolve meaning at read time" pattern."""
     sketch = _get_sketch_or_404(sketch_id)
     sketch.set_orientation(flip=payload.flip, rotation_quarter_turns=payload.rotation_quarter_turns)
     return _sketch_response(sketch)

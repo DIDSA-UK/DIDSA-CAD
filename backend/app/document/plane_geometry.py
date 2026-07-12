@@ -85,15 +85,28 @@ def oriented_basis_for_plane(plane: Plane, *, flip: bool, rotation_quarter_turns
     read `origin`/`x_axis`/`y_axis` off whatever `ResolvedPlane` they're
     given, so a Sketch's oriented basis flows through identically to the
     unoriented one everywhere those already do."""
-    x_axis = _PLANE_BASIS[plane].x_axis
-    y_axis = _PLANE_BASIS[plane].y_axis
+    return apply_orientation(_PLANE_BASIS[plane], flip=flip, rotation_quarter_turns=rotation_quarter_turns)
+
+
+def apply_orientation(basis: ResolvedPlane, *, flip: bool, rotation_quarter_turns: int) -> ResolvedPlane:
+    """`oriented_basis_for_plane`'s own flip-then-rotate transform,
+    generalized to start from any `ResolvedPlane` rather than only a fixed
+    `Plane`'s - a custom (`CreatePlaneFeature`) plane's own resolved basis
+    is exactly as valid a starting point. Bug fix: `_basis_for_sketch`
+    (app.document.create_plane) used to resolve a custom-plane Sketch's
+    embedding straight from `resolve_create_plane_from_bodies`, silently
+    ignoring that Sketch's own `flip`/`rotation_quarter_turns` entirely -
+    the orientation confirm step's flip/rotate controls had no effect on
+    the real Extrude solid for a custom-plane Sketch, only on its 2D/3D
+    sketch-environment rendering (which built its own basis correctly via
+    `SketchPlaneBasis.oriented`/`.withOrientation` client-side)."""
+    x_axis = basis.x_axis
+    y_axis = basis.y_axis
     if flip:
         x_axis = tuple(-c for c in x_axis)
     for _ in range(rotation_quarter_turns):
         x_axis, y_axis = y_axis, tuple(-c for c in x_axis)
-    return ResolvedPlane(
-        origin=_PLANE_BASIS[plane].origin, normal=_PLANE_BASIS[plane].normal, x_axis=x_axis, y_axis=y_axis
-    )
+    return ResolvedPlane(origin=basis.origin, normal=basis.normal, x_axis=x_axis, y_axis=y_axis)
 
 
 def _cross(a: Vector3, b: Vector3) -> Vector3:
