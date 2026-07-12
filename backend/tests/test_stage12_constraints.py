@@ -59,9 +59,42 @@ def test_angle_constraint_produces_correct_angle_after_solve():
     angle2 = math.atan2(p2b.y - p2a.y, p2b.x - p2a.x)
     angle_between = math.degrees(abs(angle1 - angle2))
     angle_between = angle_between % 180
-    assert angle_between == pytest.approx(30.0, abs=0.01) or angle_between == pytest.approx(
-        150.0, abs=0.01
-    )
+    # d=(10, 1) seeds Line 2 at ~5.7 degrees from Line 1 - clearly closer to
+    # the 30 degree target than to its supplement (150) - so the fix (see
+    # test below) should deterministically land on 30, not either.
+    assert angle_between == pytest.approx(30.0, abs=0.01)
+
+
+def test_angle_constraint_preserves_the_supplementary_configuration_when_that_is_what_the_seed_already_has():
+    """Bug fix: py-slvs's addAngle has a `supplement` flag choosing between
+    constraining to `degrees` or to its supplement (180 - degrees) - this
+    codebase always passed False, so a Sketch already sitting near the
+    *supplementary* configuration (e.g. mid-drag, or one interior angle of
+    a Polygon while its neighbours hold the primary angle) would be forced
+    to snap down to the primary angle instead of staying where it already
+    was - reported on-device as a dimension "flipping polarity" and, for a
+    Polygon, breaking its regular shape. d=(-10, 1) seeds Line 2 at ~170.9
+    degrees from Line 1, i.e. close to 150 (30's supplement) - the fix
+    should recognise that and preserve ~150, not force 30."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(0.0, 0.0)
+    d = sketch.add_point(-10.0, 1.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_horizontal_constraint(line1.id)
+    sketch.add_angle_constraint(line1.id, line2.id, 30.0)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    p1a, p1b = sketch.points[a.id], sketch.points[b.id]
+    p2a, p2b = sketch.points[c.id], sketch.points[d.id]
+    angle1 = math.atan2(p1b.y - p1a.y, p1b.x - p1a.x)
+    angle2 = math.atan2(p2b.y - p2a.y, p2b.x - p2a.x)
+    angle_between = math.degrees(abs(angle1 - angle2)) % 180
+    assert angle_between == pytest.approx(150.0, abs=0.01)
 
 
 def test_construction_line_excluded_from_profile_detection_even_when_closing_a_loop():

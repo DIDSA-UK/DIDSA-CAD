@@ -9,6 +9,7 @@ Over-constrained/unsatisfiable systems are solved anyway, never rejected.
 See SolveResult for how non-convergence is reported.
 """
 
+import math
 from dataclasses import dataclass, field
 
 from py_slvs import slvs
@@ -266,10 +267,57 @@ class _PySlvsBuilder:
             at_end1, at_end2, curve1_handle, curve2_handle, self._workplane, group=_SOLVE_GROUP
         )
 
-    def angle(self, line_a_handle: int, line_b_handle: int, degrees: float) -> int:
-        return self._system.addAngle(
-            degrees, False, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+    def angle(
+        self,
+        line_a_handle: int,
+        line_b_handle: int,
+        degrees: float,
+        line_a_start_id: str,
+        line_a_end_id: str,
+        line_b_start_id: str,
+        line_b_end_id: str,
+    ) -> int:
+        supplement = self._angle_needs_supplement(
+            degrees, line_a_start_id, line_a_end_id, line_b_start_id, line_b_end_id
         )
+        return self._system.addAngle(
+            degrees, supplement, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def _angle_needs_supplement(
+        self, degrees: float, line_a_start_id: str, line_a_end_id: str, line_b_start_id: str, line_b_end_id: str
+    ) -> bool:
+        """py-slvs's addAngle takes a `supplement` flag choosing between
+        constraining the angle to `degrees` or to its supplement
+        (180 - degrees) - confirmed by direct experiment against the
+        installed py-slvs build that this is a genuine, un-auto-resolved
+        ambiguity (unlike the ordinary +/- sign of an angle/distance, which
+        Newton's method already picks correctly to match whichever side the
+        seed geometry is already on, from any seed, however far off).
+        Always passing `False` here meant a Sketch already sitting near the
+        *supplementary* configuration (e.g. one interior angle of a Polygon,
+        mid-drag, while its neighbours hold the primary angle) would be
+        forced to snap the ~135 degrees it already had to 45 - reported
+        on-device as a dimension "flipping polarity" and, for a Polygon
+        specifically, breaking its regular shape.
+
+        Chooses whichever of `degrees`/`180 - degrees` is closer to the
+        Lines' currently *measured* angle (the same "preserve what's
+        already true" principle `_project_distance` below already uses for
+        horizontal_distance/vertical_distance's sign) - a no-op returning
+        False when either Line has zero current length, since there is no
+        current angle to preserve in that case."""
+        a_start, a_end = self._points[line_a_start_id], self._points[line_a_end_id]
+        b_start, b_end = self._points[line_b_start_id], self._points[line_b_end_id]
+        a_dx, a_dy = a_end.x - a_start.x, a_end.y - a_start.y
+        b_dx, b_dy = b_end.x - b_start.x, b_end.y - b_start.y
+        a_len = math.hypot(a_dx, a_dy)
+        b_len = math.hypot(b_dx, b_dy)
+        if a_len == 0 or b_len == 0:
+            return False
+        cos_theta = max(-1.0, min(1.0, (a_dx * b_dx + a_dy * b_dy) / (a_len * b_len)))
+        current_angle = math.degrees(math.acos(cos_theta))
+        return abs((180.0 - degrees) - current_angle) < abs(degrees - current_angle)
 
     def coincident(self, point_a_handle: int, point_b_handle: int) -> int:
         return self._system.addPointsCoincident(

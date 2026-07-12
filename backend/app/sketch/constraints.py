@@ -55,10 +55,29 @@ class SolverBuilder(Protocol):
         than points directly."""
         ...
 
-    def angle(self, line_a_handle: int, line_b_handle: int, degrees: float) -> int:
+    def angle(
+        self,
+        line_a_handle: int,
+        line_b_handle: int,
+        degrees: float,
+        line_a_start_id: str,
+        line_a_end_id: str,
+        line_b_start_id: str,
+        line_b_end_id: str,
+    ) -> int:
         """Add a py-slvs angle constraint between two line-segment entity
         handles (target angle in degrees), returning the resulting py-slvs
-        constraint handle."""
+        constraint handle. Also takes each Line's endpoint Point ids (unlike
+        every other handle-only method here) because py-slvs's addAngle has
+        a `supplement` flag choosing between an angle and its supplement
+        (180 - degrees) - a genuine, confirmed-by-experiment ambiguity
+        distinct from the ordinary +/- mirror-root case (which Newton's
+        method already resolves correctly from any seed on its own, see
+        solver.py's `_PySlvsBuilder.angle`). The Point ids let the
+        implementation pick whichever of the two matches the Lines'
+        *current* live angle, the same "preserve what's already true rather
+        than snap to an arbitrary convention" principle `_project_distance`
+        already uses for horizontal_distance/vertical_distance."""
         ...
 
     def coincident(self, point_a_handle: int, point_b_handle: int) -> int:
@@ -333,7 +352,15 @@ class AngleConstraint(Constraint):
         line2 = builder.line_segment(
             builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
         )
-        return builder.angle(line1, line2, self.angle_degrees)
+        return builder.angle(
+            line1,
+            line2,
+            self.angle_degrees,
+            self.line1_start_id,
+            self.line1_end_id,
+            self.line2_start_id,
+            self.line2_end_id,
+        )
 
 
 @dataclass
