@@ -719,7 +719,29 @@ references` dict v1 built.
 continuous rotation — confirmed. Simpler solver-basis math (a small
 fixed set of basis transforms rather than an arbitrary angle), and a
 much simpler axis-arrow indicator to keep in sync.
-- **Current state**: `Sketch.plane` is only a fixed enum
+
+**Status: discrete flip/90° rotate is fully implemented and wired to a
+UI entry point; reference-axis alignment is not built at all.** The data
+model (`Sketch.flip`/`rotation_quarter_turns`), the `PATCH .../orientation`
+endpoint, and `plane_indicator.dart` reading live orientation state
+(rather than a hardcoded per-plane table) all landed in an earlier round
+- but nothing called any of it until now: `sketch_screen.dart`'s
+hamburger menu gained a "Sketch Orientation" entry (`_pickOrientation`)
+opening a bottom sheet (`_OrientationSheet`) with rotate-90°-CW/CCW
+buttons and a Flip switch, calling `SketchController.setOrientation`
+directly on each tap. One entry point covers both the creation-time and
+retrospective-redefine cases the original proposal below called out
+separately - `SketchScreen` is the same screen either way, and
+orientation is never baked into stored Point coordinates (see `Sketch.
+set_orientation`'s own doc comment), so redefining it on an existing
+Sketch is exactly as safe as setting it on a brand new one; no separate
+long-press/tree entry point was needed. Reference-axis alignment (pick
+an edge/line to set as the local X axis) remains fully unscoped new
+work - there is no reference-direction concept anywhere in the backend,
+only the 4 discrete rotation states.
+
+- **Current state (superseded by the Status note above; kept for the
+  original before/after research)**: `Sketch.plane` is only a fixed enum
   (`Plane.XY|XZ|YZ`, `models.py:25-31,208`) or `None` when anchored to a
   custom `CreatePlaneFeature` — there is no independent
   orientation/flip/rotate/reference-axis state on a sketch at all. The

@@ -9,6 +9,7 @@ import 'package:http/testing.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
+import 'package:didsa_cad_client/sketch/plane_indicator.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart';
 import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 import 'package:didsa_cad_client/sketch/sketch_speed_dial.dart';
@@ -40,12 +41,31 @@ BodyMeshDto _fakeBody() => BodyMeshDto(
 /// Phase 4.2's Orbit View toggle. A minimal fake backend - [ensureSketch]
 /// only ever calls `POST /sketch/sketches` (see
 /// `SketchController._adoptSketchDto`, which needs nothing else to set
-/// `plane`), so nothing further is stubbed.
+/// `plane`), so nothing further is stubbed - plus, since Phase 5, the
+/// orientation-picker sheet's own PATCH.
 http.Response _handle(http.Request request) {
   if (request.url.path == '/sketch/sketches' && request.method == 'POST') {
     return http.Response(
       jsonEncode({'id': 'sketch-1', 'plane': 'XY', 'origin_point_id': 'origin-1'}),
       201,
+    );
+  }
+  // Sketcher-roadmap Phase 5: echoes back whatever flip/rotation_quarter_
+  // turns was sent, same as the real backend's Sketch.set_orientation -
+  // the mod-4 normalization itself is a domain-model concern already
+  // tested at that layer (test_stage2_sketch.py's own orientation tests),
+  // not re-verified through this fake.
+  if (request.url.path == '/sketch/sketches/sketch-1/orientation' && request.method == 'PATCH') {
+    final body = jsonDecode(request.body) as Map<String, dynamic>;
+    return http.Response(
+      jsonEncode({
+        'id': 'sketch-1',
+        'plane': 'XY',
+        'origin_point_id': 'origin-1',
+        'flip': body['flip'],
+        'rotation_quarter_turns': body['rotation_quarter_turns'],
+      }),
+      200,
     );
   }
   return http.Response('not found: ${request.method} ${request.url.path}', 404);
@@ -357,5 +377,105 @@ void main() {
     await tester.pump();
 
     expect(find.byType(PartViewport), findsNothing);
+  });
+
+  group('Sketch Orientation (Sketcher-roadmap Phase 5)', () {
+    testWidgets('the hamburger menu offers a Sketch Orientation entry that opens a sheet showing 0°',
+        (tester) async {
+      final controller = await _freshController();
+
+      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Menu'));
+      await tester.pump();
+
+      await tester.tap(find.text('Sketch Orientation'));
+      await tester.pump();
+
+      expect(find.text('0°'), findsOneWidget);
+      expect(find.byTooltip('Rotate 90° clockwise'), findsOneWidget);
+      expect(find.byTooltip('Rotate 90° counter-clockwise'), findsOneWidget);
+    });
+
+    testWidgets(
+        'tapping Rotate 90° clockwise PATCHes the backend and the sheet updates to reflect the '
+        'confirmed value', (tester) async {
+      final controller = await _freshController();
+
+      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Menu'));
+      await tester.pump();
+      await tester.tap(find.text('Sketch Orientation'));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Rotate 90° clockwise'));
+      await tester.pump();
+
+      expect(controller.rotationQuarterTurns, 1);
+      expect(find.text('90°'), findsOneWidget);
+    });
+
+    testWidgets(
+        'tapping Rotate 90° counter-clockwise from the identity orientation wraps around to 270° '
+        '(the backend normalizes -1 mod 4)', (tester) async {
+      final controller = await _freshController();
+
+      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Menu'));
+      await tester.pump();
+      await tester.tap(find.text('Sketch Orientation'));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Rotate 90° counter-clockwise'));
+      await tester.pump();
+
+      expect(controller.rotationQuarterTurns, 3);
+      expect(find.text('270°'), findsOneWidget);
+    });
+
+    testWidgets('toggling Flip PATCHes the backend with the new flip value, leaving rotation unchanged',
+        (tester) async {
+      final controller = await _freshController();
+
+      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Menu'));
+      await tester.pump();
+      await tester.tap(find.text('Sketch Orientation'));
+      await tester.pump();
+
+      expect(controller.flip, isFalse);
+      // Drives the switch's own callback directly, mirroring this file's
+      // existing Slider-driving pattern (see the Body Transparency test
+      // above) rather than a synthetic tap - a modal bottom sheet's exact
+      // on-screen geometry has proven environment-fragile in this headless
+      // CI runner.
+      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).onChanged!(true);
+      await tester.pump();
+
+      expect(controller.flip, isTrue);
+      expect(controller.rotationQuarterTurns, 0);
+    });
+
+    testWidgets(
+        "PlaneIndicator (the bottom-left axis-arrows widget) receives the confirmed orientation "
+        'live, with no further action needed beyond the rotate tap itself', (tester) async {
+      final controller = await _freshController();
+
+      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+      await tester.pump();
+      expect(tester.widget<PlaneIndicator>(find.byType(PlaneIndicator)).rotationQuarterTurns, 0);
+
+      await tester.tap(find.byTooltip('Menu'));
+      await tester.pump();
+      await tester.tap(find.text('Sketch Orientation'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Rotate 90° clockwise'));
+      await tester.pump();
+
+      expect(tester.widget<PlaneIndicator>(find.byType(PlaneIndicator)).rotationQuarterTurns, 1);
+    });
   });
 }
