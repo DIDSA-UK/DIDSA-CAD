@@ -10,7 +10,6 @@ import '../api/document_api_client.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
-import 'plane_axes_triad.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'scene_preferences.dart';
@@ -300,8 +299,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Map<ReferencePlaneKind, Node> _planeNodes = {};
   Map<String, Node> _sketchNodes = {};
   Map<String, Node> _createPlaneNodes = {};
-  Map<ReferencePlaneKind, Node> _planeAxesNodes = {};
-  Map<String, Node> _createPlaneAxesNodes = {};
 
   /// Set if GPU/scene setup throws - without this, that failure would only
   /// ever reach the console (it happens inside an unawaited Future), leaving
@@ -766,37 +763,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _planeNodes.values) {
       scene.remove(node);
     }
-    for (final node in _planeAxesNodes.values) {
-      scene.remove(node);
-    }
     if (widget.referencePlanesHidden) {
       _planeNodes = {};
-      _planeAxesNodes = {};
       return;
     }
     _planeNodes = {
       for (final plane in ReferencePlaneKind.values)
         plane: buildReferencePlaneNode(plane, selected: _isPlaneSelected(plane)),
     };
-    // See plane_axes_triad.dart's own doc comment: each fixed plane's real
-    // embedded local X(red)/Y(green) axes, drawn at its own position, so
-    // they can be visually compared against triad.dart's world compass -
-    // a left-handed/mismatched basis on any of these three shows up
-    // immediately as a red or green arrow pointing the "wrong" way.
-    _planeAxesNodes = {};
-    for (final plane in ReferencePlaneKind.values) {
-      final basis = SketchPlaneBasis.fixed(plane);
-      _planeAxesNodes[plane] = buildAxesTriadNode(
-        'ref-${plane.apiValue}',
-        vm.Vector3.zero(),
-        basis.xAxis,
-        basis.yAxis,
-      );
-    }
     for (final node in _planeNodes.values) {
-      scene.add(node);
-    }
-    for (final node in _planeAxesNodes.values) {
       scene.add(node);
     }
   }
@@ -830,9 +805,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _createPlaneNodes.values) {
       scene.remove(node);
     }
-    for (final node in _createPlaneAxesNodes.values) {
-      scene.remove(node);
-    }
     _createPlaneNodes = {
       for (final entry in widget.createPlanes.entries)
         entry.key: buildCreatePlaneNode(
@@ -844,26 +816,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           selected: _isCreatePlaneSelected(entry.key),
         ),
     };
-    // Mirrors _syncReferencePlaneNodes' own axes triads, for a created
-    // Plane's own (arbitrary-orientation) resolved basis - see
-    // plane_axes_triad.dart's doc comment for why this matters just as
-    // much here as for the three fixed planes, if not more (a created
-    // Plane's basis comes from several different backend resolution
-    // paths - OFFSET_FACE, NORMAL_TO_LINE_AT_POINT, MIDPLANE, THREE_POINTS
-    // - any one of which could independently get chirality wrong).
-    _createPlaneAxesNodes = {
-      for (final entry in widget.createPlanes.entries)
-        entry.key: buildAxesTriadNode(
-          'create-${entry.key}',
-          entry.value.origin,
-          entry.value.xAxis,
-          entry.value.yAxis,
-        ),
-    };
     for (final node in _createPlaneNodes.values) {
-      scene.add(node);
-    }
-    for (final node in _createPlaneAxesNodes.values) {
       scene.add(node);
     }
   }
@@ -1621,8 +1574,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     ..._planeNodes.values,
                     ..._sketchNodes.values,
                     ..._createPlaneNodes.values,
-                    ..._planeAxesNodes.values,
-                    ..._createPlaneAxesNodes.values,
                     ..._edgesNodes.values,
                     if (_hoverNode != null) _hoverNode!,
                     if (_selectedEdgesNode != null) _selectedEdgesNode!,
