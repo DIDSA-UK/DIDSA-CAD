@@ -262,6 +262,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @visibleForTesting
   double get debugCameraDistance => _camera.distance;
 
+  /// New-sketch orientation confirm step (Fix: 3D-viewport orientation
+  /// indicator): lets a caller project a world point to screen space (see
+  /// `screen_projection.dart`'s `worldToScreen`) for an overlay anchored to
+  /// real 3D geometry, the same [PerspectiveCamera]/[Size] pair
+  /// [screenPointToRay] itself already uses for the reverse direction. A
+  /// snapshot, not a live stream: the caller re-reads this after every
+  /// state change it cares about (e.g. once after [animateToPlane]
+  /// settles) rather than this class pushing updates on every orbit/pan/
+  /// zoom frame - acceptable for a short, usually-camera-locked
+  /// confirmation step; a caller wanting to track free orbit live would
+  /// need this turned into a real listenable, not attempted here.
+  PerspectiveCamera get camera => _camera.cameraFor(_viewportSize);
+  Size get viewportSize => _viewportSize;
+
   /// On-device feedback: "after selecting axis for revolve, 3d viewport
   /// moves and shouldn't" - [_syncMeshNode] used to re-center the camera
   /// target on every single mesh update, not just the first, so any live

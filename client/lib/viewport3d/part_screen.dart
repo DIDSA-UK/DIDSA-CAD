@@ -39,6 +39,7 @@ import 'selection_filter.dart';
 import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
+import 'sketch_orientation_indicator.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
 import 'scene_preferences.dart';
@@ -2480,16 +2481,108 @@ class _PartScreenState extends State<PartScreen> {
 
     final feature = created;
     if (feature != null && mounted) {
-      SketchPlaneBasis? basis;
       if (fixedPlane != null) {
+        // On-device feedback: orientation had no visual feedback and no
+        // creation-time entry point at all - only a hamburger-menu sheet
+        // reachable from inside the 2D editor, after already committing to
+        // a plane. This step lets the user see + adjust it, live, in the
+        // 3D viewport, before the sketch is ever opened - see
+        // _confirmPendingOrientation/_cancelPendingOrientation. Custom
+        // planes ([planeFeatureId] case) keep the old immediate-open
+        // behaviour: [SketchPlaneBasis.oriented] only knows how to apply
+        // flip/rotation to a fixed [ReferencePlaneKind]'s own axis table,
+        // not an arbitrary custom plane's resolved basis.
         await _viewportKey.currentState?.animateToPlane(fixedPlane);
         if (!mounted) return;
-        basis = SketchPlaneBasis.fixed(fixedPlane);
-      } else if (planeFeatureId != null) {
-        basis = _customPlaneBasis(planeFeatureId);
+        setState(() {
+          _pendingOrientationFeature = feature;
+          _pendingOrientationPlane = fixedPlane;
+          _pendingOrientationFlip = false;
+          _pendingOrientationRotation = 0;
+        });
+        return;
       }
+      final basis = planeFeatureId != null ? _customPlaneBasis(planeFeatureId) : null;
       await _openSketch(feature, basis: basis);
     }
+  }
+
+  /// See [_addSketchFeature]'s own doc comment for why this step exists
+  /// only for a fixed [ReferencePlaneKind].
+  FeatureDto? _pendingOrientationFeature;
+  ReferencePlaneKind? _pendingOrientationPlane;
+  bool _pendingOrientationFlip = false;
+  int _pendingOrientationRotation = 0;
+
+  bool get _confirmingSketchOrientation => _pendingOrientationFeature != null;
+
+  /// [SketchOrientationIndicator]'s own live basis, reflecting whatever
+  /// flip/rotation the user has tapped so far this step - null outside
+  /// [_confirmingSketchOrientation].
+  SketchPlaneBasis? get _pendingOrientationBasis {
+    final plane = _pendingOrientationPlane;
+    if (plane == null) return null;
+    return SketchPlaneBasis.oriented(
+      plane,
+      flip: _pendingOrientationFlip,
+      rotationQuarterTurns: _pendingOrientationRotation,
+    );
+  }
+
+  /// Applies [flip]/[rotationDelta] and PATCHes the pending Sketch's real
+  /// orientation right away (not deferred to confirm) - so
+  /// [SketchOrientationIndicator] and the eventual [_openSketch] can never
+  /// disagree, and so the same backend endpoint [SketchController.
+  /// setOrientation] already uses stays the single source of truth rather
+  /// than this screen re-deriving/duplicating what "confirm" should send.
+  Future<void> _adjustPendingOrientation({bool? flip, int rotationDelta = 0}) async {
+    final feature = _pendingOrientationFeature;
+    if (feature?.sketchId == null || _busy) return;
+    final nextFlip = flip ?? _pendingOrientationFlip;
+    final nextRotation = (_pendingOrientationRotation + rotationDelta) % 4;
+    await _runGuarded(() async {
+      await _sketchApi.updateSketchOrientation(
+        feature!.sketchId!,
+        flip: nextFlip,
+        rotationQuarterTurns: nextRotation,
+      );
+    });
+    if (!mounted) return;
+    setState(() {
+      _pendingOrientationFlip = nextFlip;
+      _pendingOrientationRotation = nextRotation;
+    });
+  }
+
+  Future<void> _confirmPendingOrientation() async {
+    final feature = _pendingOrientationFeature;
+    if (feature == null) return;
+    final basis = _pendingOrientationBasis;
+    setState(() {
+      _pendingOrientationFeature = null;
+      _pendingOrientationPlane = null;
+    });
+    await _openSketch(feature, basis: basis);
+  }
+
+  /// Discards the just-created (still-empty) SketchFeature outright, same
+  /// as the preview-cleanup pattern used elsewhere in this file (e.g. the
+  /// Extrude-preview Cancel path) - safe because nothing was ever drawn
+  /// into it, unlike deleting an existing Sketch a user has actually
+  /// worked in.
+  Future<void> _cancelPendingOrientation() async {
+    final feature = _pendingOrientationFeature;
+    final part = _part;
+    setState(() {
+      _pendingOrientationFeature = null;
+      _pendingOrientationPlane = null;
+    });
+    if (feature == null || part == null) return;
+    await _runGuarded(() async {
+      await _api.deleteFeature(part.id, feature.id);
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
   }
 
   /// A tap that landed on a reference plane rectangle in the 3D viewport.
@@ -2517,6 +2610,11 @@ class _PartScreenState extends State<PartScreen> {
       _addSketchFeature(plane: plane);
       return;
     }
+    // Confirm/Cancel are the only way out of the orientation confirm step
+    // (see _confirmingSketchOrientation's own doc comment) - a stray plane
+    // tap underneath its banner shouldn't pop open an unrelated context
+    // sheet mid-flow.
+    if (_confirmingSketchOrientation) return;
     setState(() {
       _selectedPlane = plane;
       _featureTreeVisible = false;
@@ -4798,6 +4896,7 @@ class _PartScreenState extends State<PartScreen> {
       // own "Confirm/Cancel are the only way out" panels once open - see
       // [_openFilletPanel].
       canPop: !_planeSelectionMode &&
+          !_confirmingSketchOrientation &&
           !_sketchPickerActive &&
           !_revolveSketchPickerActive &&
           !_sweepSketchPickerActive &&
@@ -4805,7 +4904,9 @@ class _PartScreenState extends State<PartScreen> {
           !_pathPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_sketchPickerActive) {
+        if (_confirmingSketchOrientation) {
+          _cancelPendingOrientation();
+        } else if (_sketchPickerActive) {
           _cancelSketchPicker();
         } else if (_revolveSketchPickerActive) {
           _cancelRevolveSketchPicker();
@@ -4913,6 +5014,24 @@ class _PartScreenState extends State<PartScreen> {
                   onFarClipChanged: _onFarClipChanged,
                   sketchLineLoopGroup: _sketchLineLoopGroup,
                 ),
+                // On-device feedback: 3D-viewport visual feedback for the
+                // new-sketch orientation confirm step - see
+                // [_addSketchFeature]'s own doc comment. Rebuilt (a fresh
+                // camera/viewportSize snapshot) on every
+                // [_adjustPendingOrientation] call, which is the only
+                // camera-relevant state change expected during this short
+                // step - see [PartViewportState.camera]'s own doc comment
+                // for why this isn't a live-orbit-tracking overlay.
+                if (_confirmingSketchOrientation &&
+                    _pendingOrientationBasis != null &&
+                    _viewportKey.currentState != null)
+                  Positioned.fill(
+                    child: SketchOrientationIndicator(
+                      camera: _viewportKey.currentState!.camera,
+                      viewportSize: _viewportKey.currentState!.viewportSize,
+                      basis: _pendingOrientationBasis!,
+                    ),
+                  ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
                 // a decoration on PartViewport itself, so its own layout
@@ -5391,6 +5510,7 @@ class _PartScreenState extends State<PartScreen> {
                 // underneath/overlapping A4's banner.
                 if (!_featureTreeVisible &&
                     !_planeSelectionMode &&
+                    !_confirmingSketchOrientation &&
                     !_extrudeActive &&
                     !_createPlaneActive &&
                     !_filletActive &&
@@ -5470,6 +5590,74 @@ class _PartScreenState extends State<PartScreen> {
                                 TextButton(
                                   onPressed: _cancelPlaneSelectionMode,
                                   child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // On-device feedback: the new-sketch orientation confirm
+                // step's controls - bottom-centered so it doesn't collide
+                // with the plane-selection banner's own top-centered spot
+                // (the two are never shown at once: this only appears once
+                // [_planeSelectionMode] has already exited via
+                // [_onPlaneTap]). Flip/rotate PATCH the pending Sketch's
+                // real orientation immediately (see
+                // [_adjustPendingOrientation]'s own doc comment); Confirm
+                // opens the 2D editor, Cancel discards the still-empty
+                // Sketch outright.
+                if (_confirmingSketchOrientation)
+                  Positioned(
+                    bottom: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      top: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(horizontal: 4),
+                                  child: Text('Set sketch orientation'),
+                                ),
+                                IconButton(
+                                  tooltip: 'Rotate 90° counter-clockwise',
+                                  icon: const Icon(Icons.rotate_left),
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _adjustPendingOrientation(rotationDelta: -1),
+                                ),
+                                IconButton(
+                                  tooltip: 'Rotate 90° clockwise',
+                                  icon: const Icon(Icons.rotate_right),
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _adjustPendingOrientation(rotationDelta: 1),
+                                ),
+                                IconButton(
+                                  tooltip: _pendingOrientationFlip ? 'Un-flip' : 'Flip',
+                                  icon: const Icon(Icons.flip),
+                                  isSelected: _pendingOrientationFlip,
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _adjustPendingOrientation(flip: !_pendingOrientationFlip),
+                                ),
+                                const SizedBox(width: 4),
+                                TextButton(
+                                  onPressed: _busy ? null : _cancelPendingOrientation,
+                                  child: const Text('Cancel'),
+                                ),
+                                FilledButton(
+                                  onPressed: _busy ? null : _confirmPendingOrientation,
+                                  child: const Text('Continue'),
                                 ),
                               ],
                             ),
