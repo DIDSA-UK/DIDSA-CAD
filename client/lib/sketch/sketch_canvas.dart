@@ -2397,6 +2397,38 @@ class _SketchPainter extends CustomPainter {
     return (transform.sketchToScreen(start.x, start.y) + transform.sketchToScreen(end.x, end.y)) / 2;
   }
 
+  /// Fix #7 (Sketcher-roadmap feedback round): draws the same circumscribed
+  /// + inscribed dashed guide circles the in-progress Polygon ghost shows
+  /// (see the `PolygonGhost` case in [_paintActiveDrawGhost]) for every
+  /// already-*placed* Polygon too, live off its current Point positions (so
+  /// it tracks a drag, same as any other geometry), gated by the same
+  /// [SketchController.showPolygonGuideCircles] toggle - see
+  /// [PlacedPolygon]'s own doc comment for why this reads off a
+  /// session-local list rather than any backend entity.
+  void _paintPolygonGuideCircles(Canvas canvas) {
+    if (!controller.showPolygonGuideCircles) return;
+    final polygons = controller.polygons;
+    if (polygons.isEmpty) return;
+    final guidePaint = Paint()
+      ..color = _constructionColor.withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    for (final polygon in polygons) {
+      final centerPoint = controller.points[polygon.centerPointId];
+      if (centerPoint == null || polygon.vertexPointIds.length < 3) continue;
+      final vertices = polygon.vertexPointIds.map((id) => controller.points[id]).toList();
+      if (vertices.any((v) => v == null)) continue;
+      final center = transform.sketchToScreen(centerPoint.x, centerPoint.y);
+      final vertex0 = transform.sketchToScreen(vertices[0]!.x, vertices[0]!.y);
+      final vertex1 = transform.sketchToScreen(vertices[1]!.x, vertices[1]!.y);
+      final circumradiusPixels = (vertex0 - center).distance;
+      _drawDashedCircle(canvas, center, circumradiusPixels, guidePaint);
+      final firstEdgeMidpoint = Offset((vertex0.dx + vertex1.dx) / 2, (vertex0.dy + vertex1.dy) / 2);
+      final inradiusPixels = (firstEdgeMidpoint - center).distance;
+      _drawDashedCircle(canvas, center, inradiusPixels, guidePaint);
+    }
+  }
+
   /// Stage 13 item 5's ghost dimensions: every entry in
   /// [SketchController.ghosts], dashed and labeled '?' (or '⌀?' for a
   /// diameter ghost) regardless of the live geometric value - see
@@ -3294,6 +3326,7 @@ class _SketchPainter extends CustomPainter {
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
     }
 
+    _paintPolygonGuideCircles(canvas);
     if (labelsVisible) _paintDimensionOverlays(canvas);
     _paintGhosts(canvas);
     _paintInProgressConstructionPicks(canvas);

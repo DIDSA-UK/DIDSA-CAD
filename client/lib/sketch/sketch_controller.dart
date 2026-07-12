@@ -85,6 +85,23 @@ class SketchArcView {
   });
 }
 
+/// Fix #7 (Sketcher-roadmap feedback round): the Polygon tool is a
+/// shortcut, not a real backend entity (see [SketchController._clickPolygonTool]'s
+/// own doc comment - it only ever creates plain Points/Lines/Constraints,
+/// same as it always has), so there is nothing server-side to persist a
+/// "this is a Polygon" fact against, or to reload it from on a fresh
+/// sketch load. This is a session-only, client-local record of one placed
+/// Polygon purely so [SketchController.showPolygonGuideCircles] can keep
+/// drawing its circumscribed/inscribed guide circles - the same two the
+/// in-progress ghost already shows via [PolygonGhost.showGuideCircles] -
+/// after placement too, not just while still drawing it.
+class PlacedPolygon {
+  final String centerPointId;
+  final List<String> vertexPointIds;
+
+  const PlacedPolygon({required this.centerPointId, required this.vertexPointIds});
+}
+
 class SketchEllipseView {
   final String id;
   final String centerPointId;
@@ -1074,15 +1091,34 @@ class SketchController extends ChangeNotifier {
   /// and the inscribed circle (through every edge's midpoint) every real
   /// regular polygon's vertices/midpoints always land on - background
   /// construction-line guides only, toggleable, exactly as requested; not
-  /// persisted geometry (the placed Polygon is locked onto these same two
+  /// persisted *geometry* (the placed Polygon is locked onto these same two
   /// circles by its own real solver constraints regardless of whether this
-  /// preview is shown - see [_clickPolygonTool]'s own doc comment).
+  /// preview is shown - see [_clickPolygonTool]'s own doc comment). This
+  /// same flag also gates [_SketchPainter]'s rendering of both guide
+  /// circles for every already-placed Polygon in [polygons], not just the
+  /// in-progress ghost - Fix #7's own "toggle after placement" request.
   bool get showPolygonGuideCircles => _showPolygonGuideCircles;
 
   void togglePolygonGuideCircles() {
     _showPolygonGuideCircles = !_showPolygonGuideCircles;
     notifyListeners();
   }
+
+  final List<PlacedPolygon> _polygons = [];
+
+  /// Every Polygon placed this session whose defining Points are all still
+  /// present - see [PlacedPolygon]'s own doc comment for why this is a
+  /// session-only, client-local record rather than real backend state.
+  /// Filtered fresh on every read (rather than eagerly pruned on delete)
+  /// since a Polygon's center/vertex Points can be removed via any number
+  /// of paths (direct delete, cascading delete, undo) - simplest to just
+  /// never trust a stale entry instead of hooking cleanup into all of them.
+  List<PlacedPolygon> get polygons => [
+        for (final polygon in _polygons)
+          if (points.containsKey(polygon.centerPointId) &&
+              polygon.vertexPointIds.every(points.containsKey))
+            polygon,
+      ];
 
   String? _slotCenter1PointId;
   String? _slotCenter2PointId;
@@ -5703,6 +5739,17 @@ class SketchController extends ChangeNotifier {
         );
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, equalRadius.id));
       }
+
+      // Fix #7: tracks this Polygon purely so its guide circles can keep
+      // rendering after placement, toggleable via
+      // [showPolygonGuideCircles]/[togglePolygonGuideCircles] - see
+      // [PlacedPolygon]'s own doc comment for why this is session-only,
+      // client-local bookkeeping rather than real backend state.
+      final polygon = PlacedPolygon(centerPointId: centerId, vertexPointIds: List.unmodifiable(vertexIds));
+      _polygons.add(polygon);
+      _pushUndo(() async {
+        _polygons.remove(polygon);
+      });
 
       // Same rule as a completed Circle/Arc: one finished entity = one solve call.
       await _solveAndTrackDof();

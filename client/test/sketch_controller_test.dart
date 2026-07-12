@@ -1983,6 +1983,45 @@ void main() {
     expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isFalse);
   });
 
+  test(
+      'Fix #7: a placed polygon is tracked in controller.polygons so its guide circles can keep '
+      'rendering after placement, and undo removes the tracking entry', () async {
+    expect(controller.polygons, isEmpty);
+
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(5);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+
+    expect(controller.polygons, hasLength(1));
+    final polygon = controller.polygons.single;
+    expect(polygon.centerPointId, isNotEmpty);
+    expect(polygon.vertexPointIds, hasLength(5));
+
+    await controller.undo();
+
+    expect(controller.polygons, isEmpty);
+  });
+
+  test('a placed polygon drops out of controller.polygons once one of its Points is deleted',
+      () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(4);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    expect(controller.polygons, hasLength(1));
+
+    final vertexId = controller.polygons.single.vertexPointIds.first;
+    controller.exitToSelectMode();
+    final vertex = controller.points[vertexId]!;
+    await controller.handleCanvasTap(vertex.x, vertex.y);
+    expect(controller.selection!.id, vertexId);
+
+    await controller.deleteSelected();
+
+    expect(controller.polygons, isEmpty);
+  });
+
   test('deleteSelected on a directly-selected polygon vertex Point cascades to its tied '
       'EqualRadiusConstraint (bug fix: _constraintReferences used to omit EqualRadiusConstraintDto, '
       'so the backend rejected the deletion as still-referenced)', () async {
