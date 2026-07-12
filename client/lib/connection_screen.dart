@@ -225,7 +225,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                                 child: const Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    SvgIcon('assets/icons/mesh/mesh_view_file.svg', color: Colors.white70, size: 20),
+                                    SvgIcon('assets/icons/mesh/mesh_view_file.svg', color: Colors.white70, size: 26),
                                     SizedBox(width: 8),
                                     Flexible(
                                       child: Text(
@@ -247,7 +247,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                                   MaterialPageRoute(builder: (_) => const MeshViewerSettingsScreen()),
                                 ),
                                 child: const Center(
-                                  child: SvgIcon('assets/icons/mesh/mesh_settings.svg', color: Colors.white70, size: 20),
+                                  child: SvgIcon('assets/icons/mesh/mesh_settings.svg', color: Colors.white70, size: 26),
                                 ),
                               ),
                             ),

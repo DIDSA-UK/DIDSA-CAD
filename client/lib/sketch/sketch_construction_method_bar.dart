@@ -50,8 +50,8 @@ class SketchConstructionMethodBar extends StatelessWidget {
                     onPressed: controller.exitToSelectMode,
                     icon: SvgPicture.asset(
                       'assets/icons/dimbar/dimbar_exit.svg',
-                      width: 20,
-                      height: 20,
+                      width: 26,
+                      height: 26,
                       colorFilter: ColorFilter.mode(
                         Theme.of(context).colorScheme.primary,
                         BlendMode.srcIn,
@@ -150,8 +150,8 @@ class _PolygonSidesControl extends StatelessWidget {
         IconButton(
           icon: SvgPicture.asset(
             'assets/icons/dimbar/dimbar_polygon_sides_decrease.svg',
-            width: 24,
-            height: 24,
+            width: 30,
+            height: 30,
             colorFilter: ColorFilter.mode(
               sides > 3 ? onSurface : Theme.of(context).disabledColor,
               BlendMode.srcIn,
@@ -162,8 +162,8 @@ class _PolygonSidesControl extends StatelessWidget {
         IconButton(
           icon: SvgPicture.asset(
             'assets/icons/dimbar/dimbar_polygon_sides_increase.svg',
-            width: 24,
-            height: 24,
+            width: 30,
+            height: 30,
             colorFilter: ColorFilter.mode(
               sides < 20 ? onSurface : Theme.of(context).disabledColor,
               BlendMode.srcIn,

@@ -226,8 +226,8 @@ class _SketchScreenState extends State<SketchScreen> {
                         ? 'assets/icons/sketchbar/sketchbar_lock_partial.svg'
                         : 'assets/icons/sketchbar/sketchbar_lock_full.svg',
                     key: ValueKey(underConstrained ? 'lock-indicator-partial' : 'lock-indicator-full'),
-                    width: 18,
-                    height: 18,
+                    width: 24,
+                    height: 24,
                     colorFilter: ColorFilter.mode(
                       Theme.of(context).colorScheme.onSurface,
                       BlendMode.srcIn,
@@ -258,8 +258,8 @@ class _SketchScreenState extends State<SketchScreen> {
             builder: (context, _) => IconButton(
               icon: SvgPicture.asset(
                 'assets/icons/sketchbar/sketchbar_undo.svg',
-                width: 24,
-                height: 24,
+                width: 30,
+                height: 30,
                 colorFilter: ColorFilter.mode(
                   _controller.canUndo
                       ? Theme.of(context).colorScheme.onSurface
@@ -280,8 +280,8 @@ class _SketchScreenState extends State<SketchScreen> {
               return IconButton(
                 icon: SvgPicture.asset(
                   'assets/icons/sketchbar/sketchbar_select_all.svg',
-                  width: 24,
-                  height: 24,
+                  width: 30,
+                  height: 30,
                   colorFilter: ColorFilter.mode(
                     Theme.of(context).colorScheme.onSurface,
                     BlendMode.srcIn,
@@ -349,8 +349,8 @@ class _SketchScreenState extends State<SketchScreen> {
                             onPressed: () => Navigator.of(context).pop(),
                             child: SvgPicture.asset(
                               'assets/icons/sketchbar/sketchbar_exit.svg',
-                              width: 24,
-                              height: 24,
+                              width: 30,
+                              height: 30,
                               colorFilter: ColorFilter.mode(
                                 Theme.of(context).colorScheme.onPrimaryContainer,
                                 BlendMode.srcIn,
@@ -368,8 +368,8 @@ class _SketchScreenState extends State<SketchScreen> {
                                 _referenceBodyHidden
                                     ? 'assets/icons/sketchbar/sketchbar_show_reference_body.svg'
                                     : 'assets/icons/sketchbar/sketchbar_hide_reference_body.svg',
-                                width: 24,
-                                height: 24,
+                                width: 30,
+                                height: 30,
                                 colorFilter: ColorFilter.mode(
                                   Theme.of(context).colorScheme.onPrimaryContainer,
                                   BlendMode.srcIn,
@@ -401,8 +401,8 @@ class _SketchScreenState extends State<SketchScreen> {
                                   onPressed: _orbitViewActive ? _exitOrbitView : _enterOrbitView,
                                   child: SvgPicture.asset(
                                     'assets/icons/sketchbar/sketchbar_orbit_view.svg',
-                                    width: 24,
-                                    height: 24,
+                                    width: 30,
+                                    height: 30,
                                     colorFilter: ColorFilter.mode(
                                       _orbitViewActive
                                           ? theme.colorScheme.onPrimary
@@ -436,8 +436,8 @@ class _SketchScreenState extends State<SketchScreen> {
                         onPressed: () => setState(() => _menuOpen = !_menuOpen),
                         child: SvgPicture.asset(
                           'assets/icons/sketchbar/sketchbar_menu.svg',
-                          width: 24,
-                          height: 24,
+                          width: 30,
+                          height: 30,
                           colorFilter: ColorFilter.mode(
                             Theme.of(context).colorScheme.onPrimaryContainer,
                             BlendMode.srcIn,
@@ -522,8 +522,8 @@ class _SketchScreenState extends State<SketchScreen> {
                             onPressed: _returnOrbitToDefaultView,
                             child: SvgPicture.asset(
                               'assets/icons/sketchbar/sketchbar_reset_view.svg',
-                              width: 24,
-                              height: 24,
+                              width: 30,
+                              height: 30,
                               colorFilter: ColorFilter.mode(
                                 Theme.of(context).colorScheme.onPrimaryContainer,
                                 BlendMode.srcIn,
@@ -567,8 +567,8 @@ class _SketchScreenState extends State<SketchScreen> {
                           onPressed: _controller.toggleDragMode,
                           child: SvgPicture.asset(
                             'assets/icons/sketchbar/sketchbar_drag_mode.svg',
-                            width: 24,
-                            height: 24,
+                            width: 30,
+                            height: 30,
                             colorFilter: ColorFilter.mode(
                               active ? theme.colorScheme.onPrimary : theme.colorScheme.onPrimaryContainer,
                               BlendMode.srcIn,
@@ -883,8 +883,8 @@ class _SketchScreenState extends State<SketchScreen> {
           visualDensity: density,
           leading: SvgPicture.asset(
             'assets/icons/sketchbar/sketchbar_body_transparency.svg',
-            width: 20,
-            height: 20,
+            width: 26,
+            height: 26,
             colorFilter: ColorFilter.mode(
               Theme.of(context).colorScheme.onSurface,
               BlendMode.srcIn,
@@ -923,7 +923,7 @@ class _SketchScreenState extends State<SketchScreen> {
           ListTile(
             dense: true,
             visualDensity: density,
-            leading: SvgIcon(mode.svgAsset, size: 20),
+            leading: SvgIcon(mode.svgAsset, size: 26),
             title: Text(mode.label, style: titleStyle),
             trailing: mode == _orbitRenderMode ? const Icon(Icons.check, size: 18) : null,
             onTap: () => setState(() => _orbitRenderMode = mode),
@@ -939,8 +939,8 @@ class _SketchScreenState extends State<SketchScreen> {
           // baked into this leading icon.
           leading: SvgPicture.asset(
             'assets/icons/sketchbar/sketchbar_body_colour_cube.svg',
-            width: 20,
-            height: 20,
+            width: 26,
+            height: 26,
           ),
           title: Text('Body Colour', style: titleStyle),
           onTap: () async {
@@ -959,8 +959,8 @@ class _SketchScreenState extends State<SketchScreen> {
             visualDensity: density,
             leading: SvgPicture.asset(
               'assets/icons/sketchbar/sketchbar_body_transparency.svg',
-              width: 20,
-              height: 20,
+              width: 26,
+              height: 26,
               colorFilter: ColorFilter.mode(
                 Theme.of(context).colorScheme.onSurface,
                 BlendMode.srcIn,

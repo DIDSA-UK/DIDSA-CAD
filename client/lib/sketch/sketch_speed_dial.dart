@@ -237,8 +237,8 @@ class _SpeedDialAction extends StatelessWidget {
       onPressed: onPressed,
       child: SvgPicture.asset(
         svgAsset,
-        width: 24,
-        height: 24,
+        width: 30,
+        height: 30,
         colorFilter: ColorFilter.mode(foreground, BlendMode.srcIn),
       ),
     );

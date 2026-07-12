@@ -885,6 +885,23 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
+  test(
+      'feedback round: a freshly-drawn circle\'s auto-created radius dimension starts hidden, '
+      'and only becomes visible once the user explicitly confirms it via the ghost flow', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(controller.isHiddenDimension(radiusConstraint.id), isTrue);
+
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 5); // on the circle's edge
+    await controller.confirmGhostValue('radius', 5.0);
+
+    expect(controller.isHiddenDimension(radiusConstraint.id), isFalse);
+  });
+
   test('a third tap after a completed circle starts a fresh circle', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0);
@@ -2861,6 +2878,47 @@ void main() {
     expect(freshController.circles['circle-a']!.centerPointId, 'point-a');
     expect(freshController.circles['circle-a']!.radiusPointId, 'point-b');
     expect(freshController.errorMessage, isNull);
+  });
+
+  test(
+      'feedback round: isCardinalAxisConstraint identifies a circle\'s cardinal-point '
+      'axis constraint and excludes its own radius constraint', () async {
+    final freshBackend = _FakeBackend();
+    freshBackend.seedSketch('sketch-101', 'origin-101');
+    freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+    freshBackend.points['point-b'] = {'id': 'point-b', 'x': 5.0, 'y': 0.0};
+    freshBackend.points['point-north'] = {'id': 'point-north', 'x': 0.0, 'y': 5.0};
+    freshBackend.circles['circle-a'] = {
+      'id': 'circle-a',
+      'center_point_id': 'point-a',
+      'radius_point_id': 'point-b',
+      'radius': 5.0,
+      'construction': false,
+      'cardinal_point_ids': ['point-north', 'point-east', 'point-south', 'point-west'],
+    };
+    freshBackend.constraints['radius-constraint'] = {
+      'id': 'radius-constraint',
+      'point_a_id': 'point-a',
+      'point_b_id': 'point-b',
+      'distance': 5.0,
+    };
+    freshBackend.constraints['cardinal-constraint'] = {
+      'id': 'cardinal-constraint',
+      'point_a_id': 'point-a',
+      'point_b_id': 'point-north',
+      'distance': 0.0,
+    };
+    final mockClient = MockClient((request) async => freshBackend.handle(request));
+    final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+
+    await freshController.adoptSketch('sketch-101');
+
+    final radiusConstraint =
+        freshController.constraints['radius-constraint']! as DistanceConstraintDto;
+    final cardinalConstraint =
+        freshController.constraints['cardinal-constraint']! as DistanceConstraintDto;
+    expect(freshController.isCardinalAxisConstraint(radiusConstraint), isFalse);
+    expect(freshController.isCardinalAxisConstraint(cardinalConstraint), isTrue);
   });
 
   // --- Stage 13 item 4: FAB categories --------------------------------------

@@ -350,8 +350,8 @@ class PartToolbar extends StatelessWidget {
           // Icon(Icons.circle, color: ...) it replaces).
           leading: SvgPicture.asset(
             'assets/icons/sketchbar/sketchbar_body_colour_cube.svg',
-            width: 24,
-            height: 24,
+            width: 30,
+            height: 30,
           ),
           title: const Text('Body Colour'),
           onTap: onBodyColourChanged == null ? null : () => _pickBodyColour(context),

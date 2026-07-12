@@ -792,8 +792,8 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                 tooltip: 'Zoom to fit',
                 icon: SvgPicture.asset(
                   'assets/icons/dimbar/dimbar_zoom_to_fit.svg',
-                  width: 24,
-                  height: 24,
+                  width: 30,
+                  height: 30,
                   colorFilter: ColorFilter.mode(
                     Theme.of(context).colorScheme.onPrimary,
                     BlendMode.srcIn,
@@ -1046,11 +1046,15 @@ String? _ghostKeyAt(SketchController controller, ViewTransform transform, Offset
 }
 
 /// On-device feedback: default distance (screen pixels) a radius/diameter
-/// dimension's leader shoulder sits past the circle/arc's rim, along the
-/// leader direction, before the horizontal landing leg to the label - see
-/// [_radialDimensionGeometry], shared by [_SketchPainter._paintRadiusDiameterDimension]
-/// (which draws it) and [_constraintLabelCenter] (which hit-tests/drags the
-/// label), so they can never disagree about where things are.
+/// dimension's label rests past the circle/arc's rim, along the entity's
+/// own default direction, the very first time it's drawn (before the user
+/// has ever dragged its label) - purely an initial resting offset, *not* a
+/// minimum/maximum on where the label can subsequently be placed (an
+/// earlier version of [_radialDimensionGeometry] also used this to clamp
+/// the label's final on-screen distance from the rim, which is exactly
+/// what made it impossible to drag a label to live anywhere the user
+/// wanted, including inside the circle's own boundary - see that
+/// function's own doc comment).
 const double _radialLegLength = 24.0;
 
 /// Screen-space geometry for a radius/diameter dimension's leader - see
@@ -1058,8 +1062,13 @@ const double _radialLegLength = 24.0;
 /// touches the circle/arc boundary; [touchCanvasAngle] is that touch
 /// point's angle (Flutter canvas convention: 0 = +X, positive = clockwise)
 /// around [centerScreen], used by [_SketchPainter] to test it against an
-/// Arc's own drawn sweep. [shoulderScreen] is the kink between the radial
-/// leader and the horizontal landing leg to [labelCenter].
+/// Arc's own drawn sweep. [shoulderScreen] and [labelCenter] are always
+/// the same point (kept as two fields so [_SketchPainter]'s existing
+/// two-segment draw calls stay harmless no-ops on the second segment) -
+/// [touchCanvasAngle] is derived from [labelCenter]'s own bearing from
+/// [centerScreen], so the straight line from [touchScreen] to
+/// [labelCenter] is always already radially aligned; no separate kink is
+/// needed to keep it touching the boundary at the right angle.
 /// [oppositeTouchScreen] is the diametrically-opposite touch point (on the
 /// far side of the centre) - always computed (cheap), but only drawn for a
 /// diameter dimension.
@@ -1096,6 +1105,21 @@ class RadialDimensionGeometry {
 /// [c]'s centre Point, its solved radius ([DistanceConstraintDto.distance]),
 /// and the angle implied by the dragged label position. Returns null if
 /// either endpoint Point is missing or the radius is degenerate.
+///
+/// Bug-fix round: [labelCenter] is now exactly [labelOffset] applied to the
+/// default resting position - the *entire* drag is honoured, not just its
+/// horizontal component. An earlier version clamped the label's final
+/// distance from centre back onto a fixed [_radialLegLength] "shoulder"
+/// (only the horizontal drag component ever reached the screen; vertical
+/// drag only ever fed into the touch angle, never the label's own resting
+/// distance), which made it impossible to park the label anywhere close to,
+/// or inside, the circle's own boundary - exactly the restriction reported
+/// as "the length of the arrow before the leg is the limiting factor".
+/// Since [touchCanvasAngle] is derived from this same [labelCenter]'s
+/// bearing from [centerScreen], [touchScreen] and [labelCenter] always sit
+/// on one straight radial line by construction - already "the arrow aligned
+/// to the leader line" technical-drawing norms call for - so no separate
+/// kink is needed to reach it.
 RadialDimensionGeometry? _radialDimensionGeometry(
   SketchController controller,
   ViewTransform transform,
@@ -1114,19 +1138,18 @@ RadialDimensionGeometry? _radialDimensionGeometry(
   final defaultLength = defaultDelta.distance;
   final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
 
-  final desiredLabel = centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + labelOffset;
-  final desiredDelta = desiredLabel - centerScreen;
+  final labelCenter = centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + labelOffset;
+  final desiredDelta = labelCenter - centerScreen;
   final touchCanvasAngle = desiredDelta.distance < 1e-6
       ? math.atan2(defaultDirection.dy, defaultDirection.dx)
       : math.atan2(desiredDelta.dy, desiredDelta.dx);
   final direction = Offset(math.cos(touchCanvasAngle), math.sin(touchCanvasAngle));
   final touchScreen = centerScreen + direction * radiusPixels;
-  final shoulderScreen = touchScreen + direction * _radialLegLength;
-  // The horizontal landing leg's Y is the shoulder's own Y (guaranteeing it
-  // reads as perfectly horizontal); its X follows the label's own dragged
-  // X, so dragging horizontally slides the landing left/right independent
-  // of the leader's angle.
-  final labelCenter = Offset(desiredLabel.dx, shoulderScreen.dy);
+  // Always the same point as labelCenter (see this function's own doc
+  // comment) - kept as a separate field only so [_SketchPainter]'s
+  // touch->shoulder->label two-segment draw stays valid (the second
+  // segment is simply a harmless zero-length no-op).
+  final shoulderScreen = labelCenter;
 
   return RadialDimensionGeometry(
     centerScreen: centerScreen,
@@ -1167,6 +1190,10 @@ Offset? _constraintLabelCenter(
 ) {
   switch (constraint) {
     case DistanceConstraintDto c:
+      // Cardinal-point axis constraints (see SketchController.
+      // isCardinalAxisConstraint's own doc comment) are pure solver plumbing
+      // - never rendered, so never hit-testable either.
+      if (controller.isCardinalAxisConstraint(c)) return null;
       if (controller.isRadiusDistanceConstraint(c)) {
         // _radialDimensionGeometry already bakes labelOffset into its own
         // anchor math (it drives the leader's angle, not just a post-hoc
@@ -1395,8 +1422,8 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
                 tooltip: 'Confirm',
                 icon: SvgPicture.asset(
                   'assets/icons/dimbar/dimbar_confirm.svg',
-                  width: 18,
-                  height: 18,
+                  width: 24,
+                  height: 24,
                   colorFilter: ColorFilter.mode(
                     Theme.of(context).colorScheme.onSurface,
                     BlendMode.srcIn,
@@ -1408,8 +1435,8 @@ class _GhostValueEditorState extends State<_GhostValueEditor> {
                 tooltip: 'Cancel',
                 icon: SvgPicture.asset(
                   'assets/icons/dimbar/dimbar_exit.svg',
-                  width: 18,
-                  height: 18,
+                  width: 24,
+                  height: 24,
                   colorFilter: ColorFilter.mode(
                     Theme.of(context).colorScheme.onSurface,
                     BlendMode.srcIn,
@@ -1692,6 +1719,13 @@ class _SketchPainter extends CustomPainter {
       final labelOffset = controller.labelOffsetFor(entry.key);
       switch (entry.value) {
         case DistanceConstraintDto c:
+          // Cardinal-point axis constraints are pure solver plumbing (see
+          // SketchController.isCardinalAxisConstraint) - never drawn.
+          if (controller.isCardinalAxisConstraint(c)) break;
+          // Auto-created radius/diameter/axis dimensions stay hidden until
+          // the user explicitly confirms one via the ghost-value flow (see
+          // SketchController.isHiddenDimension's own doc comment).
+          if (controller.isHiddenDimension(entry.key)) break;
           if (controller.isRadiusDistanceConstraint(c)) {
             _paintRadiusDiameterDimension(
               canvas,

@@ -593,8 +593,8 @@ class _RibbonHeader extends StatelessWidget {
             tooltip: 'Close',
             icon: SvgPicture.asset(
               'assets/icons/ribbon/ribbon_close.svg',
-              width: 20,
-              height: 20,
+              width: 26,
+              height: 26,
               colorFilter: ColorFilter.mode(
                 Theme.of(context).colorScheme.onSurface,
                 BlendMode.srcIn,
@@ -639,8 +639,8 @@ class _SelectedEntitiesList extends StatelessWidget {
             trailing: IconButton(
               icon: SvgPicture.asset(
                 'assets/icons/ribbon/ribbon_close.svg',
-                width: 18,
-                height: 18,
+                width: 24,
+                height: 24,
                 colorFilter: ColorFilter.mode(
                   Theme.of(context).colorScheme.onSurface,
                   BlendMode.srcIn,
@@ -693,8 +693,8 @@ class _RibbonActionChip extends StatelessWidget {
           tooltip: label,
           icon: SvgPicture.asset(
             svgAsset,
-            width: 24,
-            height: 24,
+            width: 30,
+            height: 30,
             colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
           ),
           onPressed: onTap,
@@ -808,8 +808,8 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
             tooltip: 'Apply',
             icon: SvgPicture.asset(
               'assets/icons/ribbon/ribbon_apply.svg',
-              width: 24,
-              height: 24,
+              width: 30,
+              height: 30,
               colorFilter: ColorFilter.mode(
                 Theme.of(context).colorScheme.onSurface,
                 BlendMode.srcIn,

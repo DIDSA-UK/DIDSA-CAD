@@ -2785,6 +2785,36 @@ class SketchController extends ChangeNotifier {
 
   bool showsDiameterFor(String constraintId) => _showsDiameter[constraintId] ?? false;
 
+  /// Feedback round: a freshly-drawn Circle/Arc/Ellipse auto-creates its own
+  /// radius/diameter (or, for an Ellipse, axis-length) `DistanceConstraint`
+  /// server-side (see e.g. `Sketch.add_circle`) purely so the point pair is
+  /// pinned rigid from the moment it's drawn - not because the user asked
+  /// for a dimension. Showing that value immediately clutters every new
+  /// shape with an uninvited "R12.00" the user never placed. Constraint ids
+  /// in this set stay unrendered by [_SketchPainter._paintDimensionOverlays]
+  /// until the user actually asks for the dimension via the existing
+  /// ghost-confirm flow (tap the "?" ghost, confirm a value - even the same
+  /// one), at which point [confirmGhostValue] removes the id here. Populated
+  /// only at genuine new-draw call sites (Circle/Arc/Ellipse/Slot tools),
+  /// never by [_restoreDeletedEntities] (an undo, where the dimension's
+  /// prior visibility is unknowable anyway) or [toggleSelectedConstruction]/
+  /// a full refresh (which touch no constraints). Session-only, like
+  /// [_showsDiameter]/[_labelOffsets] - never sent to the backend, reset on
+  /// reload.
+  final Set<String> _hiddenDimensionConstraintIds = {};
+
+  bool isHiddenDimension(String constraintId) => _hiddenDimensionConstraintIds.contains(constraintId);
+
+  /// Hides the auto-created radius/diameter DistanceConstraint between
+  /// [pointAId]/[pointBId] (either order), if one exists - see
+  /// [_hiddenDimensionConstraintIds]'s own doc comment. Called right after
+  /// a fresh Circle/Arc/Ellipse/Slot draw's own [_refreshConstraints], once
+  /// the auto-created constraint's real id is known.
+  void _hideAutoRadiusDimension(String pointAId, String pointBId) {
+    final constraint = _findDistanceConstraint(pointAId, pointBId);
+    if (constraint != null) _hiddenDimensionConstraintIds.add(constraint.id);
+  }
+
   /// Flips [constraintId]'s R/⌀ display mode - only meaningful for a
   /// [circleForDistanceConstraint]-eligible dimension, but harmless to call
   /// for any id (just sets an unused map entry) since [SketchRibbon] only
@@ -2862,6 +2892,27 @@ class SketchController extends ChangeNotifier {
   /// leader-style dimension" without caring which shape it belongs to.
   bool isRadiusDistanceConstraint(DistanceConstraintDto c) {
     return circleForDistanceConstraint(c) != null || arcForDistanceConstraint(c) != null;
+  }
+
+  /// Whether [c] is one of a Circle's 4 cardinal-point axis-alignment
+  /// constraints (see `app.sketch.models.Sketch._add_cardinal_points`) - a
+  /// zero-value DistanceConstraint from the circle's centre to one of its
+  /// north/east/south/west Points, pinning that point onto the horizontal or
+  /// vertical axis through the centre. These exist purely as solver plumbing
+  /// (so the cardinal points stay draggable-yet-locked-to-the-circle) and
+  /// were never meant to be user-visible dimensions - always zero, always
+  /// redundant with the circle's own radius, showing "0.00" on the canvas
+  /// would just be distracting. Used by [_SketchPainter]/[_paintDimensionOverlays]
+  /// and [_constraintLabelCenter] to skip these entirely (no render, no hit
+  /// test), unlike [isRadiusDistanceConstraint]'s constraints which render as
+  /// radial leaders.
+  bool isCardinalAxisConstraint(DistanceConstraintDto c) {
+    for (final circle in circles.values) {
+      if (circle.centerPointId == c.pointAId && circle.cardinalPointIds.contains(c.pointBId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   double _distanceToSegment(
@@ -4708,6 +4759,10 @@ class SketchController extends ChangeNotifier {
       }
       if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
         _showsDiameter[constraintId] = target.kind == GhostKind.diameter;
+        // The user just deliberately confirmed this radius/diameter/axis
+        // value - it's no longer an uninvited auto-created dimension, see
+        // _hiddenDimensionConstraintIds' own doc comment.
+        _hiddenDimensionConstraintIds.remove(constraintId);
       }
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -5314,6 +5369,7 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
+      _hideAutoRadiusDimension(circle.centerPointId, circle.radiusPointId);
 
       _circleCenterPointId = null;
     });
@@ -5405,6 +5461,8 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
+      _hideAutoRadiusDimension(arc.centerPointId, arc.startPointId);
+      _hideAutoRadiusDimension(arc.centerPointId, arc.endPointId);
 
       _arcCenterPointId = null;
       _arcStartPointId = null;
@@ -5681,6 +5739,8 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
+      _hideAutoRadiusDimension(c1Id, aId);
+      _hideAutoRadiusDimension(c1Id, bId);
 
       _slotCenter1PointId = null;
       _slotCenter2PointId = null;
@@ -5777,6 +5837,8 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
+      _hideAutoRadiusDimension(ellipse.centerPointId, ellipse.majorPointId);
+      _hideAutoRadiusDimension(ellipse.centerPointId, ellipse.minorPointId);
 
       _ellipseCenterPointId = null;
       _ellipseMajorPointId = null;
@@ -6042,6 +6104,7 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
+      _hideAutoRadiusDimension(circle.centerPointId, circle.radiusPointId);
     });
   }
 

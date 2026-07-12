@@ -360,7 +360,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       initiallyExpanded: false,
       dense: true,
       visualDensity: VisualDensity.compact,
-      leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 20),
+      leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 26),
       title: const Text('Bodies', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [for (final bodyId in orderedIds) _buildBodyTile(bodyId)],
     );
@@ -379,7 +379,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
-        leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 18),
+        leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 24),
         title: Text(
           widget.bodyNames[bodyId] ?? bodyId,
           maxLines: 1,
@@ -409,14 +409,14 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       initiallyExpanded: false,
       dense: true,
       visualDensity: VisualDensity.compact,
-      leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 20),
+      leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 26),
       title: const Text('Planes', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [
         for (final feature in planeFeatures)
           ListTile(
             dense: true,
             visualDensity: VisualDensity.compact,
-            leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 18),
+            leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 24),
             title: Text(
               featureDisplayName(widget.features, widget.features.indexOf(feature)),
               maxLines: 1,
@@ -439,7 +439,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       initiallyExpanded: true,
       dense: true,
       visualDensity: VisualDensity.compact,
-      leading: const SvgIcon('assets/icons/feature/feature_tree.svg', size: 20),
+      leading: const SvgIcon('assets/icons/feature/feature_tree.svg', size: 26),
       title: const Text('Features', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [for (final feature in widget.features) _buildFeatureTile(context, feature)],
     );
@@ -464,10 +464,10 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         visualDensity: VisualDensity.compact,
         selected: selected,
         leading: feature.locked
-            ? Icon(Icons.lock, size: 20, color: Colors.grey)
+            ? Icon(Icons.lock, size: 26, color: Colors.grey)
             : SvgIcon(
                 _featureTypeAsset(feature.type),
-                size: 20,
+                size: 26,
                 color: Theme.of(context).colorScheme.primary,
               ),
         title: Text(
