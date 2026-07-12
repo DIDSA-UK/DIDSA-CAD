@@ -925,7 +925,13 @@ class _SketchScreenState extends State<SketchScreen> {
         ListTile(
           dense: true,
           visualDensity: density,
-          leading: Icon(Icons.palette_outlined, color: _canvasColor, size: 20),
+          // On-device feedback: used to tint this glyph to match the
+          // selected canvas colour, which made it disappear entirely
+          // against a similarly-light background (e.g. the default white/
+          // near-white swatches) - a fixed colour, matching every other
+          // menu row's icon here, keeps it always legible regardless of
+          // what's currently selected.
+          leading: const Icon(Icons.palette_outlined, size: 20),
           title: Text('Canvas Colour', style: titleStyle),
           onTap: () => _pickCanvasColor(context),
         ),

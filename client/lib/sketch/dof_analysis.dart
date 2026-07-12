@@ -264,8 +264,15 @@ class SketchRigidity {
       if (rootA != rootB) parent[rootA] = rootB;
     }
 
+    // Provisional DistanceConstraints (see DistanceConstraintDto.provisional)
+    // are skipped by the backend solver entirely - mirror that here so this
+    // local preview agrees with SketchController.isFullyConstrained's own
+    // backend-derived padlock instead of colouring an unconfirmed shape
+    // green.
     final descriptions = [
-      for (final constraint in constraints) describeConstraint(constraint, lineStartPointId, lineEndPointId),
+      for (final constraint in constraints)
+        if (!(constraint is DistanceConstraintDto && constraint.provisional))
+          describeConstraint(constraint, lineStartPointId, lineEndPointId),
     ];
 
     for (final description in descriptions) {

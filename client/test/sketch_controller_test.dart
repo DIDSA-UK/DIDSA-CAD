@@ -114,6 +114,19 @@ class _FakeBackend {
       return http.Response('', 204);
     }
 
+    final linePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/(.+)$').firstMatch(path);
+    if (linePatchMatch != null && request.method == 'PATCH') {
+      final line = lines[linePatchMatch.group(1)];
+      if (line == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        line['construction'] = body['construction'] as bool;
+      }
+      if (body.containsKey('length')) {
+        line['length'] = (body['length'] as num).toDouble();
+      }
+      return _json(line, 200);
+    }
+
     final circleDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/circles/(.+)$').firstMatch(path);
     if (circleDeleteMatch != null && request.method == 'DELETE') {
       return http.Response('', 204);
@@ -204,6 +217,9 @@ class _FakeBackend {
         constraint['angle_degrees'] = value;
       } else {
         constraint['distance'] = value;
+        // Mirrors the real backend: any explicit value PATCH confirms the
+        // constraint, clearing `provisional` (see update_constraint_value).
+        constraint['provisional'] = false;
       }
       return _json(_solveResultBody(), 200);
     }
@@ -355,13 +371,15 @@ class _FakeBackend {
       };
       circles[id] = circle;
       // Mirrors the real backend's Sketch.add_circle, which auto-creates a
-      // radius DistanceConstraint alongside the Circle.
+      // radius DistanceConstraint alongside the Circle, starting
+      // provisional (see DistanceConstraint.provisional).
       final constraintId = _newId('constraint');
       constraints[constraintId] = {
         'id': constraintId,
         'point_a_id': body['center_point_id'],
         'point_b_id': radiusPointId,
         'distance': requestedRadius,
+        'provisional': true,
       };
       return _json(circle, 201);
     }
@@ -391,6 +409,7 @@ class _FakeBackend {
         'point_a_id': body['center_point_id'],
         'point_b_id': body['start_point_id'],
         'distance': 1.0,
+        'provisional': true,
       };
       final endConstraintId = _newId('constraint');
       constraints[endConstraintId] = {
@@ -485,6 +504,7 @@ class _FakeBackend {
         'point_a_id': body['center_point_id'],
         'point_b_id': body['major_point_id'],
         'distance': majorRadius,
+        'provisional': true,
       };
       final minorConstraintId = _newId('constraint');
       constraints[minorConstraintId] = {
@@ -492,6 +512,7 @@ class _FakeBackend {
         'point_a_id': body['center_point_id'],
         'point_b_id': minorPointId,
         'distance': minorRadius,
+        'provisional': true,
       };
       final majorMidpointConstraintId = _newId('constraint');
       constraints[majorMidpointConstraintId] = {
@@ -727,6 +748,7 @@ class _FakeBackend {
             'point_b_id': body['point_b_id'],
             'distance': (body['distance'] as num).toDouble(),
             'orientation': body['orientation'] as String? ?? 'linear',
+            'provisional': body['provisional'] as bool? ?? false,
           };
       }
       constraints[id] = constraint;
@@ -971,7 +993,7 @@ void main() {
     await controller.handleCanvasTap(5, 0);
 
     final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
-    expect(controller.isHiddenDimension(radiusConstraint.id), isTrue);
+    expect(radiusConstraint.provisional, isTrue);
 
     controller.enterDimensionMode();
     // On the boundary but not on the north cardinal point itself (see
@@ -979,7 +1001,8 @@ void main() {
     await controller.handleCanvasTap(5, 0);
     await controller.confirmGhostValue('radius', 5.0);
 
-    expect(controller.isHiddenDimension(radiusConstraint.id), isFalse);
+    final confirmed = controller.constraints[radiusConstraint.id] as DistanceConstraintDto;
+    expect(confirmed.provisional, isFalse);
   });
 
   test('a third tap after a completed circle starts a fresh circle', () async {
@@ -2564,6 +2587,72 @@ void main() {
     await controller.toggleSelectedConstruction();
 
     expect(controller.texts.values.single.construction, isTrue);
+  });
+
+  group('multi-selection Make Construction/Make Solid (on-device feedback)', () {
+    Future<void> placeTwoLines() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(5, 5);
+      await controller.handleCanvasTap(15, 5);
+      controller.finishChain();
+      await controller.handleCanvasTap(5, 50);
+      await controller.handleCanvasTap(15, 50);
+      controller.finishChain();
+      controller.exitToSelectMode();
+    }
+
+    test('offers only Make Const. when every selected Line is solid', () async {
+      await placeTwoLines();
+      controller.selectInRect(const Rect.fromLTRB(0, 0, 20, 60));
+      expect(controller.selectionSet.length, greaterThanOrEqualTo(2));
+
+      final toggles = controller.availableConstructionToggles;
+
+      expect(toggles.showMakeConstruction, isTrue);
+      expect(toggles.showMakeSolid, isFalse);
+    });
+
+    test('setSelectedConstruction(true) marks every selected Line construction at once', () async {
+      await placeTwoLines();
+      controller.selectInRect(const Rect.fromLTRB(0, 0, 20, 60));
+
+      await controller.setSelectedConstruction(true);
+
+      expect(controller.lines.values.every((line) => line.construction), isTrue);
+    });
+
+    test('offers both Make Const. and Make Solid once the selection mixes construction and solid '
+        'entities', () async {
+      await placeTwoLines();
+      final firstLineId = controller.lines.keys.first;
+      controller.selectInRect(const Rect.fromLTRB(4, 4, 16, 6)); // just the first Line + endpoints
+      expect(controller.selectionSet.any((s) => s.kind == SelectionKind.line && s.id == firstLineId),
+          isTrue);
+      await controller.setSelectedConstruction(true);
+      expect(controller.lines[firstLineId]!.construction, isTrue);
+
+      controller.selectInRect(const Rect.fromLTRB(0, 0, 20, 60)); // both Lines now
+      final toggles = controller.availableConstructionToggles;
+
+      expect(toggles.showMakeConstruction, isTrue); // the still-solid second Line
+      expect(toggles.showMakeSolid, isTrue); // the now-construction first Line
+    });
+
+    test('setSelectedConstruction(false) only touches entities that need to change', () async {
+      await placeTwoLines();
+      final firstLineId = controller.lines.keys.first;
+      controller.selectInRect(const Rect.fromLTRB(4, 4, 16, 6));
+      await controller.setSelectedConstruction(true); // first Line -> construction
+      controller.selectInRect(const Rect.fromLTRB(0, 0, 20, 60)); // both Lines, mixed state
+      backend.requestLog.clear();
+
+      await controller.setSelectedConstruction(false); // Make Solid
+
+      expect(controller.lines.values.every((line) => !line.construction), isTrue);
+      // Only the one Line that actually needed to change was PATCHed - the
+      // already-solid second Line was skipped, not redundantly re-sent.
+      expect(backend.requestLog.where((r) => r.contains('/lines/$firstLineId')), hasLength(1));
+    });
   });
 
   test('setTextProperties PATCHes content/size/rotation and refreshes the cached preview',

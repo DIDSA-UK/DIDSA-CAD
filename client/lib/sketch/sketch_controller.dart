@@ -2789,36 +2789,6 @@ class SketchController extends ChangeNotifier {
 
   bool showsDiameterFor(String constraintId) => _showsDiameter[constraintId] ?? false;
 
-  /// Feedback round: a freshly-drawn Circle/Arc/Ellipse auto-creates its own
-  /// radius/diameter (or, for an Ellipse, axis-length) `DistanceConstraint`
-  /// server-side (see e.g. `Sketch.add_circle`) purely so the point pair is
-  /// pinned rigid from the moment it's drawn - not because the user asked
-  /// for a dimension. Showing that value immediately clutters every new
-  /// shape with an uninvited "R12.00" the user never placed. Constraint ids
-  /// in this set stay unrendered by [_SketchPainter._paintDimensionOverlays]
-  /// until the user actually asks for the dimension via the existing
-  /// ghost-confirm flow (tap the "?" ghost, confirm a value - even the same
-  /// one), at which point [confirmGhostValue] removes the id here. Populated
-  /// only at genuine new-draw call sites (Circle/Arc/Ellipse/Slot tools),
-  /// never by [_restoreDeletedEntities] (an undo, where the dimension's
-  /// prior visibility is unknowable anyway) or [toggleSelectedConstruction]/
-  /// a full refresh (which touch no constraints). Session-only, like
-  /// [_showsDiameter]/[_labelOffsets] - never sent to the backend, reset on
-  /// reload.
-  final Set<String> _hiddenDimensionConstraintIds = {};
-
-  bool isHiddenDimension(String constraintId) => _hiddenDimensionConstraintIds.contains(constraintId);
-
-  /// Hides the auto-created radius/diameter DistanceConstraint between
-  /// [pointAId]/[pointBId] (either order), if one exists - see
-  /// [_hiddenDimensionConstraintIds]'s own doc comment. Called right after
-  /// a fresh Circle/Arc/Ellipse/Slot draw's own [_refreshConstraints], once
-  /// the auto-created constraint's real id is known.
-  void _hideAutoRadiusDimension(String pointAId, String pointBId) {
-    final constraint = _findDistanceConstraint(pointAId, pointBId);
-    if (constraint != null) _hiddenDimensionConstraintIds.add(constraint.id);
-  }
-
   /// Flips [constraintId]'s R/⌀ display mode - only meaningful for a
   /// [circleForDistanceConstraint]-eligible dimension, but harmless to call
   /// for any id (just sets an unused map entry) since [SketchRibbon] only
@@ -4022,23 +3992,95 @@ class SketchController extends ChangeNotifier {
   /// multi-entity selection.
   bool? get selectedIsConstruction {
     if (_selectionSet.length != 1) return null;
-    final current = _selectionSet.first;
-    switch (current.kind) {
+    return _constructionFlagOf(_selectionSet.first);
+  }
+
+  /// The one entity kind -> current-construction-flag lookup shared by
+  /// [selectedIsConstruction], [availableConstructionToggles], and every
+  /// construction-toggling method below - `null` for a kind with no such
+  /// flag at all (Point/Constraint).
+  bool? _constructionFlagOf(SketchSelection selection) => switch (selection.kind) {
+        SelectionKind.line => lines[selection.id]?.construction,
+        SelectionKind.circle => circles[selection.id]?.construction,
+        SelectionKind.arc => arcs[selection.id]?.construction,
+        SelectionKind.ellipse => ellipses[selection.id]?.construction,
+        SelectionKind.spline => splines[selection.id]?.construction,
+        SelectionKind.text => texts[selection.id]?.construction,
+        SelectionKind.point || SelectionKind.constraint => null,
+      };
+
+  /// Sets [target]'s construction flag to [construction] via the backend
+  /// PATCH endpoint and updates local state - the single-entity core
+  /// [toggleSelectedConstruction]/[setSelectedConstruction] both apply
+  /// per target, factored out once those two calling shapes (exactly-one
+  /// vs. every-applicable-entity-in-a-multi-selection) needed to share it.
+  /// Caller's responsibility to wrap in [_runGuarded] and to have already
+  /// confirmed [target]'s kind actually has a construction flag.
+  Future<void> _applyConstruction(SketchSelection target, bool construction) async {
+    switch (target.kind) {
       case SelectionKind.line:
-        return lines[current.id]?.construction;
+        final updated = await _api.updateLine(_sketchId!, target.id, construction: construction);
+        lines[target.id] = SketchLineView(
+          id: updated.id,
+          startPointId: updated.startPointId,
+          endPointId: updated.endPointId,
+          construction: updated.construction,
+        );
       case SelectionKind.circle:
-        return circles[current.id]?.construction;
+        final updated = await _api.updateCircle(_sketchId!, target.id, construction: construction);
+        circles[target.id] = SketchCircleView(
+          id: updated.id,
+          centerPointId: updated.centerPointId,
+          radiusPointId: updated.radiusPointId,
+          construction: updated.construction,
+          cardinalPointIds: updated.cardinalPointIds,
+        );
       case SelectionKind.arc:
-        return arcs[current.id]?.construction;
+        final updated = await _api.updateArc(_sketchId!, target.id, construction: construction);
+        arcs[target.id] = SketchArcView(
+          id: updated.id,
+          centerPointId: updated.centerPointId,
+          startPointId: updated.startPointId,
+          endPointId: updated.endPointId,
+          construction: updated.construction,
+        );
       case SelectionKind.ellipse:
-        return ellipses[current.id]?.construction;
+        final updated = await _api.updateEllipse(_sketchId!, target.id, construction: construction);
+        ellipses[target.id] = SketchEllipseView(
+          id: updated.id,
+          centerPointId: updated.centerPointId,
+          majorPointId: updated.majorPointId,
+          majorPointNegId: updated.majorPointNegId,
+          minorPointId: updated.minorPointId,
+          minorPointNegId: updated.minorPointNegId,
+          majorAxisLineId: updated.majorAxisLineId,
+          minorAxisLineId: updated.minorAxisLineId,
+          minorRadius: updated.minorRadius,
+          construction: updated.construction,
+        );
       case SelectionKind.spline:
-        return splines[current.id]?.construction;
+        final updated = await _api.updateSpline(_sketchId!, target.id, construction: construction);
+        splines[target.id] = SketchSplineView(
+          id: updated.id,
+          throughPointIds: updated.throughPointIds,
+          controlPointIds: updated.controlPointIds,
+          construction: updated.construction,
+        );
       case SelectionKind.text:
-        return texts[current.id]?.construction;
+        final updated = await _api.updateText(_sketchId!, target.id, construction: construction);
+        texts[target.id] = SketchTextView(
+          id: updated.id,
+          content: updated.content,
+          font: updated.font,
+          size: updated.size,
+          anchorPointId: updated.anchorPointId,
+          rotationDegrees: updated.rotationDegrees,
+          construction: updated.construction,
+          previewContoursRelative: texts[target.id]?.previewContoursRelative,
+        );
       case SelectionKind.point:
       case SelectionKind.constraint:
-        return null;
+        break;
     }
   }
 
@@ -4049,79 +4091,36 @@ class SketchController extends ChangeNotifier {
     final currentlyConstruction = selectedIsConstruction;
     if (currentlyConstruction == null || _busy || _sketchId == null) return;
     final current = _selectionSet.first;
+    await _runGuarded(() => _applyConstruction(current, !currentlyConstruction));
+  }
 
+  /// On-device feedback: which of Make-Construction/Make-Solid the ribbon
+  /// should offer for the current (possibly multi-entity) [selectionSet] -
+  /// [selectedIsConstruction]'s multi-selection sibling. Both come back
+  /// true when the selection mixes construction and solid entities (there's
+  /// no single "next state" to toggle to at that point, so both directions
+  /// are offered as separate actions instead - see [setSelectedConstruction]).
+  ({bool showMakeConstruction, bool showMakeSolid}) get availableConstructionToggles {
+    final flags = _selectionSet.map(_constructionFlagOf).whereType<bool>().toList();
+    if (flags.isEmpty) return (showMakeConstruction: false, showMakeSolid: false);
+    return (showMakeConstruction: flags.contains(false), showMakeSolid: flags.contains(true));
+  }
+
+  /// Sets every applicable entity in [selectionSet] (Line/Circle/Arc/
+  /// Ellipse/Spline/Text - anything [_constructionFlagOf] resolves) to
+  /// [construction], skipping any already in that state. [toggleSelected
+  /// Construction]'s multi-selection sibling - see [availableConstruction
+  /// Toggles]'s own doc comment for when the ribbon offers this instead of
+  /// (or alongside) the single toggle.
+  Future<void> setSelectedConstruction(bool construction) async {
+    if (_busy || _sketchId == null) return;
+    final targets = _selectionSet
+        .where((selection) => _constructionFlagOf(selection) == !construction)
+        .toList();
+    if (targets.isEmpty) return;
     await _runGuarded(() async {
-      final next = !currentlyConstruction;
-      switch (current.kind) {
-        case SelectionKind.line:
-          final updated = await _api.updateLine(_sketchId!, current.id, construction: next);
-          lines[current.id] = SketchLineView(
-            id: updated.id,
-            startPointId: updated.startPointId,
-            endPointId: updated.endPointId,
-            construction: updated.construction,
-          );
-          break;
-        case SelectionKind.circle:
-          final updated = await _api.updateCircle(_sketchId!, current.id, construction: next);
-          circles[current.id] = SketchCircleView(
-            id: updated.id,
-            centerPointId: updated.centerPointId,
-            radiusPointId: updated.radiusPointId,
-            construction: updated.construction,
-            cardinalPointIds: updated.cardinalPointIds,
-          );
-          break;
-        case SelectionKind.arc:
-          final updated = await _api.updateArc(_sketchId!, current.id, construction: next);
-          arcs[current.id] = SketchArcView(
-            id: updated.id,
-            centerPointId: updated.centerPointId,
-            startPointId: updated.startPointId,
-            endPointId: updated.endPointId,
-            construction: updated.construction,
-          );
-          break;
-        case SelectionKind.ellipse:
-          final updated = await _api.updateEllipse(_sketchId!, current.id, construction: next);
-          ellipses[current.id] = SketchEllipseView(
-            id: updated.id,
-            centerPointId: updated.centerPointId,
-            majorPointId: updated.majorPointId,
-            majorPointNegId: updated.majorPointNegId,
-            minorPointId: updated.minorPointId,
-            minorPointNegId: updated.minorPointNegId,
-            majorAxisLineId: updated.majorAxisLineId,
-            minorAxisLineId: updated.minorAxisLineId,
-            minorRadius: updated.minorRadius,
-            construction: updated.construction,
-          );
-          break;
-        case SelectionKind.spline:
-          final updated = await _api.updateSpline(_sketchId!, current.id, construction: next);
-          splines[current.id] = SketchSplineView(
-            id: updated.id,
-            throughPointIds: updated.throughPointIds,
-            controlPointIds: updated.controlPointIds,
-            construction: updated.construction,
-          );
-          break;
-        case SelectionKind.text:
-          final updated = await _api.updateText(_sketchId!, current.id, construction: next);
-          texts[current.id] = SketchTextView(
-            id: updated.id,
-            content: updated.content,
-            font: updated.font,
-            size: updated.size,
-            anchorPointId: updated.anchorPointId,
-            rotationDegrees: updated.rotationDegrees,
-            construction: updated.construction,
-            previewContoursRelative: texts[current.id]?.previewContoursRelative,
-          );
-          break;
-        case SelectionKind.point:
-        case SelectionKind.constraint:
-          break;
+      for (final target in targets) {
+        await _applyConstruction(target, construction);
       }
     });
   }
@@ -4872,10 +4871,6 @@ class SketchController extends ChangeNotifier {
       }
       if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
         _showsDiameter[constraintId] = target.kind == GhostKind.diameter;
-        // The user just deliberately confirmed this radius/diameter/axis
-        // value - it's no longer an uninvited auto-created dimension, see
-        // _hiddenDimensionConstraintIds' own doc comment.
-        _hiddenDimensionConstraintIds.remove(constraintId);
       }
       await _refreshAllPoints();
       await _refreshConstraints();
@@ -5499,7 +5494,6 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
-      _hideAutoRadiusDimension(circle.centerPointId, circle.radiusPointId);
 
       _circleCenterPointId = null;
     });
@@ -5591,8 +5585,6 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
-      _hideAutoRadiusDimension(arc.centerPointId, arc.startPointId);
-      _hideAutoRadiusDimension(arc.centerPointId, arc.endPointId);
 
       _arcCenterPointId = null;
       _arcStartPointId = null;
@@ -5667,17 +5659,39 @@ class SketchController extends ChangeNotifier {
         lineIds.add(line.id);
       }
 
+      // Equal side lengths alone leave a regular-looking polygon free to
+      // collapse into a non-regular (even self-intersecting) shape under
+      // drag - equal radii (below) rule out that particular degenerate
+      // branch, but empirically not all of them (verified directly against
+      // the solver: equal-length + equal-radius alone can still converge
+      // with non-adjacent vertices coincident). Pinning the angle between
+      // every consecutive pair of edges to the same exterior angle
+      // (360/n degrees) closes that gap and keeps the shape genuinely
+      // rigid/regular under an incremental drag - see Fix #6.
+      final exteriorAngleDegrees = 360.0 / vertexIds.length;
       for (var i = 0; i < lineIds.length - 1; i++) {
-        final constraint = await _api.createEqualLengthConstraint(_sketchId!, lineIds[i], lineIds[i + 1]);
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+        final equalLength = await _api.createEqualLengthConstraint(_sketchId!, lineIds[i], lineIds[i + 1]);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, equalLength.id));
+        final angle =
+            await _api.createAngleConstraint(_sketchId!, lineIds[i], lineIds[i + 1], exteriorAngleDegrees);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, angle.id));
       }
 
       final firstVertex = points[vertexIds[0]]!;
       final circumradius = math.sqrt(
         math.pow(firstVertex.x - center.x, 2) + math.pow(firstVertex.y - center.y, 2),
       );
-      final radiusConstraint =
-          await _api.createDistanceConstraint(_sketchId!, centerId, vertexIds[0], circumradius);
+      // Provisional: pins the shape rigid for editing/rendering, but the
+      // solver skips it until the user confirms a real radius value (see
+      // DistanceConstraintDto.provisional) - the polygon tool is a
+      // shortcut, not itself a dimensioning action (Fix #6/#7).
+      final radiusConstraint = await _api.createDistanceConstraint(
+        _sketchId!,
+        centerId,
+        vertexIds[0],
+        circumradius,
+        provisional: true,
+      );
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, radiusConstraint.id));
       for (var i = 1; i < vertexIds.length; i++) {
         final equalRadius = await _api.createEqualRadiusConstraintFromPoints(
@@ -5832,13 +5846,25 @@ class SketchController extends ChangeNotifier {
       if (arc2Radius != null) {
         await _api.deleteConstraint(_sketchId!, arc2Radius.id);
         _pushUndo(() async {
-          await _api.createDistanceConstraint(_sketchId!, c2Id, cId, arc2Radius.distance);
+          await _api.createDistanceConstraint(
+            _sketchId!,
+            c2Id,
+            cId,
+            arc2Radius.distance,
+            provisional: arc2Radius.provisional,
+          );
         });
       }
       if (arc2EndRadius != null) {
         await _api.deleteConstraint(_sketchId!, arc2EndRadius.id);
         _pushUndo(() async {
-          await _api.createDistanceConstraint(_sketchId!, c2Id, dId, arc2EndRadius.distance);
+          await _api.createDistanceConstraint(
+            _sketchId!,
+            c2Id,
+            dId,
+            arc2EndRadius.distance,
+            provisional: arc2EndRadius.provisional,
+          );
         });
       }
 
@@ -5869,8 +5895,6 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
-      _hideAutoRadiusDimension(c1Id, aId);
-      _hideAutoRadiusDimension(c1Id, bId);
 
       _slotCenter1PointId = null;
       _slotCenter2PointId = null;
@@ -5967,8 +5991,6 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
-      _hideAutoRadiusDimension(ellipse.centerPointId, ellipse.majorPointId);
-      _hideAutoRadiusDimension(ellipse.centerPointId, ellipse.minorPointId);
 
       _ellipseCenterPointId = null;
       _ellipseMajorPointId = null;
@@ -6234,7 +6256,6 @@ class SketchController extends ChangeNotifier {
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
-      _hideAutoRadiusDimension(circle.centerPointId, circle.radiusPointId);
     });
   }
 

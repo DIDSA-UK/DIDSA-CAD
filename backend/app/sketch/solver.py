@@ -456,6 +456,11 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
 
     constraint_id_by_handle: dict[int, str] = {}
     for constraint in sketch.constraints.values():
+        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
+            # Not yet confirmed by the user - contributes zero DOF-removal,
+            # exactly as if it didn't exist, until confirmed (see
+            # DistanceConstraint.provisional's own doc comment).
+            continue
         handle = constraint.add_to_solver(builder)
         constraint_id_by_handle[handle] = constraint.id
 

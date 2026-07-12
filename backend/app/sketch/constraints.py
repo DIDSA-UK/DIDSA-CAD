@@ -217,6 +217,17 @@ class DistanceConstraint(Constraint):
     point_b_id: str
     distance: float
     orientation: Literal["linear", "horizontal", "vertical"] = field(default="linear")
+    # True for a size-defining DistanceConstraint auto-created by a shape
+    # tool (Circle/Arc/Ellipse/Slot/Polygon radius etc.) purely to pin the
+    # geometry rigid at placement time, before the user has actually chosen
+    # a size - not because the user asked for a dimension. A provisional
+    # constraint is skipped entirely by the solver (see solver.py's main
+    # constraint loop) so it removes zero DOF and the shape correctly
+    # reports as under-constrained until either a real value is confirmed
+    # (see update_constraint_value, which clears this flag) or the user
+    # adds their own dimension. Always False for constraints the user
+    # created or confirmed themselves.
+    provisional: bool = field(default=False)
 
     @property
     def type(self) -> str:

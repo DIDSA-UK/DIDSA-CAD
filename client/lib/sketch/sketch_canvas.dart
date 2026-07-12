@@ -973,6 +973,11 @@ class _GhostLayout {
 /// own `offsetDistance`, just renamed for this file's ghost-only geometry.
 const double _ghostOffsetPixels = 20.0;
 
+/// Fixed screen-pixel radius of the angle ghost's arc, centered on the two
+/// Lines' virtual intersection - independent of either Line's actual
+/// length or the current zoom, same convention as [_ghostOffsetPixels].
+const double _angleGhostArcRadiusPixels = 40.0;
+
 /// A Line's current midpoint in screen space - null if the Line or either
 /// endpoint Point is missing. Shared by [_layoutGhost]'s line-anchored
 /// ghost kinds and [_constraintLabelCenter]'s Angle case, mirroring
@@ -986,6 +991,44 @@ Offset? _lineMidpointScreenFor(SketchController controller, ViewTransform transf
   if (start == null || end == null) return null;
   return (transform.sketchToScreen(start.x, start.y) + transform.sketchToScreen(end.x, end.y)) / 2;
 }
+
+/// A Line's two endpoints in screen space - [_lineMidpointScreenFor]'s
+/// full-geometry sibling, needed by the angle ghost's arc layout below
+/// (which needs each Line's actual direction, not just its midpoint).
+(Offset, Offset)? _lineEndpointsScreenFor(
+  SketchController controller,
+  ViewTransform transform,
+  String? lineId,
+) {
+  final line = controller.lines[lineId];
+  if (line == null) return null;
+  final start = controller.points[line.startPointId];
+  final end = controller.points[line.endPointId];
+  if (start == null || end == null) return null;
+  return (transform.sketchToScreen(start.x, start.y), transform.sketchToScreen(end.x, end.y));
+}
+
+/// Where the infinite lines through (a1, a2) and (b1, b2) cross - null if
+/// they're too close to parallel for that intersection to be numerically
+/// meaningful (the angle ghost's own caller already only reaches this for
+/// Lines confirmed non-parallel by [SketchController._linesAreParallel],
+/// but a shallow angle can still place the intersection arbitrarily far
+/// off-screen, which this also guards against by returning null past
+/// [_maxAngleIntersectionDistance]).
+Offset? _lineIntersectionScreen(Offset a1, Offset a2, Offset b1, Offset b2) {
+  final denom = (a1.dx - a2.dx) * (b1.dy - b2.dy) - (a1.dy - a2.dy) * (b1.dx - b2.dx);
+  if (denom.abs() < 1e-9) return null;
+  final t = ((a1.dx - b1.dx) * (b1.dy - b2.dy) - (a1.dy - b1.dy) * (b1.dx - b2.dx)) / denom;
+  final point = a1 + (a2 - a1) * t;
+  if (!point.dx.isFinite || !point.dy.isFinite) return null;
+  if ((point - a1).distance > _maxAngleIntersectionDistance) return null;
+  return point;
+}
+
+/// See [_lineIntersectionScreen]'s own doc comment - screen pixels, well
+/// past any plausible viewport size, so this only ever rejects a
+/// genuinely degenerate (near-parallel-enough-to-blow-up) case.
+const double _maxAngleIntersectionDistance = 20000.0;
 
 /// The midpoint between two Lines' own midpoints - the "between the two
 /// entities" anchor heuristic (Stage 23e) shared by every value-less
@@ -1027,15 +1070,61 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
     ]);
   }
 
+  // On-device feedback: an arc between the two Lines (centered on their
+  // virtual intersection, even though they don't share an endpoint) reads
+  // as an actual angle at a glance, the way a straight line meeting at a
+  // point never did. Falls back to the previous straight-line-to-midpoint
+  // layout for the rare degenerate case [_lineIntersectionScreen] itself
+  // already guards against (near-parallel enough that the intersection is
+  // numerically unreliable or implausibly far off-screen).
   if (ghost.kind == GhostKind.angle) {
+    final endpointsA = _lineEndpointsScreenFor(controller, transform, ghost.lineAId);
+    final endpointsB = _lineEndpointsScreenFor(controller, transform, ghost.lineBId);
     final midA = _lineMidpointScreenFor(controller, transform, ghost.lineAId);
     final midB = _lineMidpointScreenFor(controller, transform, ghost.lineBId);
     if (midA == null || midB == null) return null;
-    final labelCenter = (midA + midB) / 2;
-    return _GhostLayout(labelCenter, [
-      [midA, labelCenter],
-      [midB, labelCenter],
-    ]);
+
+    final intersection = endpointsA != null && endpointsB != null
+        ? _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2)
+        : null;
+    if (intersection == null) {
+      final labelCenter = (midA + midB) / 2;
+      return _GhostLayout(labelCenter, [
+        [midA, labelCenter],
+        [midB, labelCenter],
+      ]);
+    }
+
+    // Direction toward each Line's own midpoint (always on the actual
+    // drawn segment, unlike either endpoint, which can land on either
+    // side of an intersection outside the segment itself) - so the arc
+    // sweeps through the angle the two drawn Lines actually appear to
+    // make, not its supplementary angle on the far side of the
+    // intersection.
+    final directionA = midA - intersection;
+    final directionB = midB - intersection;
+    if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+      final labelCenter = (midA + midB) / 2;
+      return _GhostLayout(labelCenter, [
+        [midA, labelCenter],
+        [midB, labelCenter],
+      ]);
+    }
+    final angleA = math.atan2(directionA.dy, directionA.dx);
+    var sweep = math.atan2(directionB.dy, directionB.dx) - angleA;
+    // Normalize to (-pi, pi] - the shorter way around, i.e. the actual
+    // angle between the Lines rather than its reflex complement.
+    if (sweep > math.pi) sweep -= 2 * math.pi;
+    if (sweep <= -math.pi) sweep += 2 * math.pi;
+
+    const segmentCount = 20;
+    final radius = _angleGhostArcRadiusPixels;
+    Offset pointAt(double angle) => intersection + Offset(math.cos(angle), math.sin(angle)) * radius;
+    final segments = <List<Offset>>[
+      for (var i = 0; i < segmentCount; i++)
+        [pointAt(angleA + sweep * i / segmentCount), pointAt(angleA + sweep * (i + 1) / segmentCount)],
+    ];
+    return _GhostLayout(pointAt(angleA + sweep / 2), segments);
   }
 
   final a = controller.points[ghost.pointAId];
@@ -1821,9 +1910,11 @@ class _SketchPainter extends CustomPainter {
           // SketchController.isCardinalAxisConstraint) - never drawn.
           if (controller.isCardinalAxisConstraint(c)) break;
           // Auto-created radius/diameter/axis dimensions stay hidden until
-          // the user explicitly confirms one via the ghost-value flow (see
-          // SketchController.isHiddenDimension's own doc comment).
-          if (controller.isHiddenDimension(entry.key)) break;
+          // the user explicitly confirms a value - `provisional` is the
+          // solver-authoritative signal for exactly that (see
+          // DistanceConstraintDto.provisional's own doc comment); the
+          // backend clears it the moment update_constraint_value runs.
+          if (c.provisional) break;
           if (controller.isRadiusDistanceConstraint(c)) {
             _paintRadiusDiameterDimension(
               canvas,
@@ -2254,7 +2345,10 @@ class _SketchPainter extends CustomPainter {
     final midpoint2 = _lineMidpointScreen(c.line2Id);
     if (midpoint1 == null || midpoint2 == null) return;
     final midpoint = (midpoint1 + midpoint2) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, '∠${c.angleDegrees.toStringAsFixed(1)}°', color, plainBlackText: true);
+    // On-device feedback: dropped the leading '∠' glyph - the trailing '°'
+    // already unambiguously marks this as an angle, and the extra symbol
+    // read as redundant clutter.
+    _drawDimensionLabel(canvas, midpoint + labelOffset, '${c.angleDegrees.toStringAsFixed(1)}°', color, plainBlackText: true);
   }
 
   /// Generic two-Line glyph (Stage 23e): a small text chip at the midpoint

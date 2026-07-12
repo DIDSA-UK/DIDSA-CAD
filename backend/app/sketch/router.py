@@ -241,6 +241,7 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             point_b_id=constraint.point_b_id,
             distance=constraint.distance,
             orientation=constraint.orientation,
+            provisional=constraint.provisional,
         )
     if isinstance(constraint, VerticalConstraint):
         return VerticalConstraintResponse(
@@ -771,7 +772,11 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
     try:
         if isinstance(payload, DistanceConstraintCreate):
             constraint = sketch.add_distance_constraint(
-                payload.point_a_id, payload.point_b_id, payload.distance, payload.orientation
+                payload.point_a_id,
+                payload.point_b_id,
+                payload.distance,
+                payload.orientation,
+                provisional=payload.provisional,
             )
         elif isinstance(payload, VerticalConstraintCreate):
             constraint = sketch.add_vertical_constraint(payload.line_id)
@@ -895,6 +900,10 @@ def update_constraint_value(
     if isinstance(constraint, DistanceConstraint):
         _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
         constraint.distance = payload.value
+        # Any explicit value PATCH is the user confirming a size (this is
+        # the same endpoint the ghost-confirm flow already calls) - clears
+        # `provisional` without needing a separate confirm flag/endpoint.
+        constraint.provisional = False
     elif isinstance(constraint, LineDistanceConstraint):
         constraint.distance = payload.value
     elif isinstance(constraint, AngleConstraint):

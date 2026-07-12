@@ -1394,6 +1394,56 @@ at the end of this section.
     the perspective-camera visual-fidelity question is actually
     answered on a real device.
 
+## Phase 10 — Extrude an open profile with thickness ("thin feature")
+
+### 10.1 Thicken an open sketch chain into a solid
+On-device feedback: today's Extrude only ever works from a *closed*
+profile - an open chain (a wall-like outline with no closing segment)
+can't be extruded at all. Every mainstream CAD tool offers a second mode
+for exactly this shape: sweep the open chain along the extrude axis
+*and* thicken it by a wall thickness in-plane, producing a solid shell
+(a "thin feature" / sheet-metal-style wall) rather than requiring the
+profile to already enclose an area.
+- **Current state**: `app.document.extrude.EXTRUDABLE_STATUSES` is
+  `{CLOSED_LOOP, MULTIPLE_LOOPS}` only (`extrude.py:77`) - an open
+  chain reports `ProfileStatus.NO_LOOP` (`app/sketch/profile.py:24-25`,
+  whose own docstring already lumps "no connectable entities" and "an
+  open chain" together as the same non-extrudable case) and
+  `_solid_for_extrude_feature` skips the feature entirely with a
+  logged warning when no closed profile is found (`extrude.py:494`) -
+  there is no code path anywhere that builds a solid from an open wire.
+- **Proposed approach**: a new `ExtrudeType` (or a `thickness` field on
+  the existing open-profile case, mutually exclusive with today's
+  closed-profile boss/cut modes) that, given a selected open chain,
+  builds an *offset* wire in the sketch plane at `thickness` distance
+  (via OCCT's `BRepOffsetAPI_MakeOffset`, open-wire mode - handles
+  square/round/miter join style at the offset's own corners), forms a
+  closed profile from the original wire + offset wire + two end caps,
+  then extrudes that the same way today's boss/cut path already does.
+  Needs its own profile-detection outcome (an "open, extrudable-with-
+  thickness" status alongside `CLOSED_LOOP`) rather than reusing
+  `NO_LOOP`, since `select_profiles`/the picker UI need to distinguish
+  "closed, pick me directly" from "open, needs a thickness value" at
+  the point of profile selection. Client: the Extrude panel gains a
+  thickness field, shown only when the picked profile is this new open
+  kind; picking still reuses the existing `SketchEntityRefSchema`-based
+  profile-ref flow, no new reference type needed.
+- **Open questions worth resolving before implementation**: which side
+  the thickness grows (inward/outward/symmetric - probably a toggle,
+  matching how boss/cut's own start/end distance already offers
+  symmetric-vs-asymmetric), and what happens at a chain's two open
+  ends (flat end caps square to the chain's own end tangent is the
+  simplest default, matching most CAD tools' "thin feature" behaviour).
+- **Files**: `app/sketch/profile.py` (new open-extrudable status),
+  `app/document/extrude.py` (thin-wall solid construction),
+  `app/document/models.py`/`schemas.py` (thickness field), Extrude
+  panel client-side (`part_screen.dart`'s `_openExtrudePanel` family).
+- **Risk**: medium-high - real new OCCT geometry work
+  (`BRepOffsetAPI_MakeOffset` on an open wire, plus correctly capping
+  both ends into a single closed shell before extruding), though it
+  reuses the existing boss/cut extrude path once that closed shell
+  exists, and doesn't touch anything already shipped.
+
 ## Cross-cutting notes (architecture fit)
 
 Raised and resolved while scoping Phase 3, but relevant to the whole

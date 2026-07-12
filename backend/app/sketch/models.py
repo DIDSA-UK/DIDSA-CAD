@@ -668,7 +668,12 @@ class Sketch:
         this always creates a DistanceConstraint between the center and
         radius Points (reusing the existing constraint type as-is, since a
         radius IS a distance constraint), so subsequent solves keep it
-        accurate as either Point moves.
+        accurate as either Point moves. It starts `provisional=True` - it
+        pins the shape rigid for editing/rendering purposes, but is skipped
+        by the solver's DOF accounting until the user actually confirms a
+        radius value (see DistanceConstraint.provisional), so a freshly
+        drawn circle correctly reports as under-constrained rather than
+        fully constrained with no user-visible dimension.
         """
         center = self.points[center_point_id]
         radius_point_is_north = radius_point_id is None and angle is None
@@ -692,7 +697,9 @@ class Sketch:
         if center_point_id == radius_point_id:
             raise ValueError("A circle cannot have the same center and radius point")
 
-        radius_constraint = self.add_distance_constraint(center_point_id, radius_point_id, distance)
+        radius_constraint = self.add_distance_constraint(
+            center_point_id, radius_point_id, distance, provisional=True
+        )
         if radius_point_is_north:
             # North already has its real radius Distance constraint (just
             # created above) - only needs the same axis-alignment pin every
@@ -820,7 +827,9 @@ class Sketch:
         if len({center_point_id, start_point_id, end_point_id}) != 3:
             raise ValueError("An arc's center, start, and end points must all be distinct")
 
-        radius_constraint = self.add_distance_constraint(center_point_id, start_point_id, radius)
+        radius_constraint = self.add_distance_constraint(
+            center_point_id, start_point_id, radius, provisional=True
+        )
         end_radius_constraint = EqualRadiusConstraint(
             id=str(uuid.uuid4()),
             center1_point_id=center_point_id,
@@ -906,8 +915,12 @@ class Sketch:
             center.y - minor_radius * math.sin(minor_angle),
         ).id
 
-        major_constraint = self.add_distance_constraint(center_point_id, major_point_id, distance)
-        minor_constraint = self.add_distance_constraint(center_point_id, minor_point_id, minor_radius)
+        major_constraint = self.add_distance_constraint(
+            center_point_id, major_point_id, distance, provisional=True
+        )
+        minor_constraint = self.add_distance_constraint(
+            center_point_id, minor_point_id, minor_radius, provisional=True
+        )
         major_axis_line = self.add_line(major_point_neg_id, major_point_id, construction=True)
         minor_axis_line = self.add_line(minor_point_neg_id, minor_point_id, construction=True)
         major_midpoint = self.add_at_midpoint_constraint(center_point_id, major_axis_line.id)
@@ -1178,6 +1191,8 @@ class Sketch:
         point_b_id: str,
         distance: float,
         orientation: Literal["linear", "horizontal", "vertical"] = "linear",
+        *,
+        provisional: bool = False,
     ) -> DistanceConstraint:
         if point_a_id not in self.points:
             raise KeyError(point_a_id)
@@ -1192,6 +1207,7 @@ class Sketch:
             point_b_id=point_b_id,
             distance=distance,
             orientation=orientation,
+            provisional=provisional,
         )
         self.constraints[constraint.id] = constraint
         return constraint

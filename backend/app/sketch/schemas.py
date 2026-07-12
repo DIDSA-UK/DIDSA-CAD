@@ -407,6 +407,11 @@ class DistanceConstraintCreate(BaseModel):
     # with a default so pre-Prompt-B clients/tests that never send this
     # field keep working unmodified.
     orientation: Literal["linear", "horizontal", "vertical"] = "linear"
+    # See DistanceConstraint.provisional (constraints.py) for the full
+    # rationale. Defaults False so ordinary user-created dimensions (the
+    # vast majority of calls to this endpoint) behave exactly as before;
+    # only the shape tools' own size-defining calls set this True.
+    provisional: bool = False
 
 
 class VerticalConstraintCreate(BaseModel):
@@ -527,6 +532,7 @@ class DistanceConstraintResponse(BaseModel):
     point_b_id: str
     distance: float
     orientation: Literal["linear", "horizontal", "vertical"] = "linear"
+    provisional: bool = False
 
 
 class VerticalConstraintResponse(BaseModel):

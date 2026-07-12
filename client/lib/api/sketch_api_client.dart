@@ -348,12 +348,20 @@ class DistanceConstraintDto extends ConstraintDto {
   /// item B3).
   final String orientation;
 
+  /// True for a size-defining DistanceConstraint a shape tool auto-created
+  /// purely to pin geometry rigid at placement time, before the user has
+  /// confirmed a real size - see backend `DistanceConstraint.provisional`'s
+  /// own doc comment. The solver skips it entirely, so it removes zero DOF
+  /// until confirmed; the client must not render it as a dimension either.
+  final bool provisional;
+
   const DistanceConstraintDto({
     required super.id,
     required this.pointAId,
     required this.pointBId,
     required this.distance,
     this.orientation = 'linear',
+    this.provisional = false,
   });
 
   factory DistanceConstraintDto.fromJson(Map<String, dynamic> json) => DistanceConstraintDto(
@@ -362,6 +370,7 @@ class DistanceConstraintDto extends ConstraintDto {
         pointBId: json['point_b_id'] as String,
         distance: (json['distance'] as num).toDouble(),
         orientation: json['orientation'] as String? ?? 'linear',
+        provisional: json['provisional'] as bool? ?? false,
       );
 }
 
@@ -1361,12 +1370,18 @@ class SketchApiClient {
   /// only the X or Y separation, leaving the other axis free, so a
   /// horizontal/vertical dimension keeps its axis-locked nature after a
   /// solve instead of degrading into a plain linear distance.
+  /// [provisional] marks a size-defining constraint a shape tool is
+  /// auto-creating purely to pin geometry rigid at placement time, before
+  /// the user has chosen a real size - see backend
+  /// `DistanceConstraint.provisional`'s own doc comment. Leave it false
+  /// (default) for any dimension the user actually asked for.
   Future<ConstraintDto> createDistanceConstraint(
     String sketchId,
     String pointAId,
     String pointBId,
     double distance, {
     String orientation = 'linear',
+    bool provisional = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1377,6 +1392,7 @@ class SketchApiClient {
                 'point_b_id': pointBId,
                 'distance': distance,
                 'orientation': orientation,
+                'provisional': provisional,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

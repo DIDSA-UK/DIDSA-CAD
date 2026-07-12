@@ -92,7 +92,7 @@ class SketchRibbon extends StatelessWidget {
         selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.point
             ? controller.selectedPointDeleteBlockedReason
             : null;
-    final isConstruction = controller.selectedIsConstruction;
+    final constructionToggles = controller.availableConstructionToggles;
 
     final chips = <Widget>[
       // Stage 19b item 6: only meaningful for a single selected Line -
@@ -117,15 +117,24 @@ class SketchRibbon extends StatelessWidget {
               ? null
               : () => _showSetTextPropertiesDialog(context, controller, selectionSet.first.id),
         ),
-      if (isConstruction != null)
+      // On-device feedback: now works across a multi-entity selection (not
+      // just exactly one Line/Circle/etc), applying to every applicable
+      // entity in the selection at once - see [SketchController.
+      // availableConstructionToggles]'s own doc comment. Both chips render
+      // simultaneously when the selection mixes construction and solid
+      // entities, since there's no single "next state" to toggle to at
+      // that point.
+      if (constructionToggles.showMakeConstruction)
         _RibbonActionChip(
-          // A single delivered glyph covers both states of this toggle -
-          // the label text below it (which does change) already carries
-          // the "which way will this flip" meaning the old two-icon
-          // (architecture/architecture_outlined) placeholder pair used to.
           svgAsset: 'assets/icons/ribbon/ribbon_make_construction.svg',
-          label: isConstruction ? 'Make Solid' : 'Make Construction',
-          onTap: controller.busy ? null : controller.toggleSelectedConstruction,
+          label: 'Make Const.',
+          onTap: controller.busy ? null : () => controller.setSelectedConstruction(true),
+        ),
+      if (constructionToggles.showMakeSolid)
+        _RibbonActionChip(
+          svgAsset: 'assets/icons/ribbon/ribbon_make_construction.svg',
+          label: 'Make Solid',
+          onTap: controller.busy ? null : () => controller.setSelectedConstruction(false),
         ),
       for (final option in controller.availableConstraintOptions)
         _RibbonActionChip(
