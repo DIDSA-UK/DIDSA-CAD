@@ -35,6 +35,11 @@ class SketchCanvas extends StatefulWidget {
   /// targets - see [SketchScreen.referenceGhostVertices]'s own doc comment.
   final List<(String, int, double, double)> referenceGhostVertices;
 
+  /// Sketcher-roadmap Phase 4.3 v2: the whole-edge analogue of
+  /// [referenceGhostVertices] - see [SketchScreen.referenceGhostEdges]'s
+  /// own doc comment.
+  final List<(String, int, (double, double), (double, double))> referenceGhostEdges;
+
   /// Stage 12 item 9's Hide/Show Reference Body toggle - owned by
   /// [SketchScreen] (mirrors `PartScreen._referencePlanesHidden`'s pattern),
   /// just threaded through here for the painter to honor.
@@ -69,6 +74,7 @@ class SketchCanvas extends StatefulWidget {
     required this.controller,
     this.referenceGhostSegments = const [],
     this.referenceGhostVertices = const [],
+    this.referenceGhostEdges = const [],
     this.referenceBodyHidden = false,
     this.constraintLabelsVisible = true,
     this.canvasColor = defaultColor,
@@ -467,6 +473,16 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
           controller.pickReferenceGhostVertex(ghostVertex.$1, ghostVertex.$2);
           return;
         }
+        // Sketcher-roadmap Phase 4.3 v2: only reached once a tap misses
+        // every ghost vertex too - a vertex sits exactly at the end of
+        // every edge that touches it, so checking edges second means a
+        // corner tap always resolves to the (more specific) vertex pick,
+        // never its ambiguous choice of two adjacent edges.
+        final ghostEdge = _referenceGhostEdgeAt(transform, cursorScreen);
+        if (ghostEdge != null) {
+          controller.pickReferenceGhostEdge(ghostEdge.$1, ghostEdge.$2);
+          return;
+        }
       }
     }
     // Drag-mode's pick-up/drop gesture: a tap while nothing is grabbed
@@ -506,6 +522,23 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       final vertexScreen = transform.sketchToScreen(x, y);
       if ((screenPosition - vertexScreen).distance <= _ghostHitRadiusPixels) {
         return (bodyId, vertexIndex);
+      }
+    }
+    return null;
+  }
+
+  /// Sketcher-roadmap Phase 4.3 v2: [_referenceGhostVertexAt]'s whole-edge
+  /// sibling - the `(bodyId, edgeIndex)` of whichever [SketchCanvas.
+  /// referenceGhostEdges] segment [screenPosition] landed within
+  /// [_ghostHitRadiusPixels] of, or null if it missed all of them. Only
+  /// ever checked after [_referenceGhostVertexAt] has already missed (see
+  /// [_dispatchTap]'s own comment).
+  (String, int)? _referenceGhostEdgeAt(ViewTransform transform, Offset screenPosition) {
+    for (final (bodyId, edgeIndex, start, end) in widget.referenceGhostEdges) {
+      final startScreen = transform.sketchToScreen(start.$1, start.$2);
+      final endScreen = transform.sketchToScreen(end.$1, end.$2);
+      if (_distanceToSegmentScreen(screenPosition, startScreen, endScreen) <= _ghostHitRadiusPixels) {
+        return (bodyId, edgeIndex);
       }
     }
     return null;
@@ -1075,6 +1108,24 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
 /// count as tapping that ghost - generous, in the same spirit as Stage 13
 /// item 3's 44px touch target, since a ghost's rendered pill is small.
 const double _ghostHitRadiusPixels = 20.0;
+
+/// Screen-space point-to-segment distance - shared by
+/// [_SketchCanvasState._referenceGhostEdgeAt] (the only caller that needs
+/// segment, rather than point, hit-testing against ghost data). Clamped to
+/// the segment's own extent (not the infinite line through it), same
+/// convention as [SketchController]'s own sketch-space `_distanceToSegment`
+/// - that one lives in a different file/library and operates in sketch
+/// units, so this is its screen-pixel counterpart rather than a shared
+/// import.
+double _distanceToSegmentScreen(Offset point, Offset start, Offset end) {
+  final segment = end - start;
+  final lengthSquared = segment.dx * segment.dx + segment.dy * segment.dy;
+  if (lengthSquared < 1e-9) return (point - start).distance;
+  var t = ((point - start).dx * segment.dx + (point - start).dy * segment.dy) / lengthSquared;
+  t = t.clamp(0.0, 1.0);
+  final closest = start + segment * t;
+  return (point - closest).distance;
+}
 
 /// The key of whichever currently-rendered ghost's label [screenPosition]
 /// landed on, or null if it missed all of them - see

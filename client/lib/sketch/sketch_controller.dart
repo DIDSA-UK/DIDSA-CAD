@@ -4359,6 +4359,57 @@ class SketchController extends ChangeNotifier {
     _applyDimensionHit(hit);
   }
 
+  // Sketcher-roadmap Phase 4.3 v2: "bodyId:edgeIndex" -> the real Line id
+  // [pickReferenceGhostEdge] already materialized for it - same reuse-on-
+  // re-pick reasoning as [_externalReferencePointIds].
+  final Map<String, String> _externalReferenceLineIds = {};
+
+  /// Sketcher-roadmap Phase 4.3 v2: dimension-mode's own body-edge pick -
+  /// [pickReferenceGhostVertex]'s sibling, called by [SketchCanvas] when a
+  /// tap lands on the dashed ghost outline itself rather than one of its
+  /// vertex markers. Materializes the whole edge as a real, pinned Line
+  /// (via two external-reference Points - see the backend's
+  /// `create_external_edge_reference` doc comment) on first pick, reusing
+  /// the same Line on every later re-pick via
+  /// [_externalReferenceLineIds], then hands it straight to
+  /// [_applyDimensionHit] as an ordinary [SelectionKind.line] hit - once
+  /// materialized, a picked ghost edge is indistinguishable from any other
+  /// Line, so every existing ghost-building/confirm/undo path (length,
+  /// parallel/perpendicular, LineDistance, ...) already works against it
+  /// unmodified. Same no-op guard as [pickReferenceGhostVertex] for a bare,
+  /// non-Part Sketch.
+  Future<void> pickReferenceGhostEdge(String bodyId, int edgeIndex) async {
+    if (_busy || _sketchId == null) return;
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    if (partId == null || sketchFeatureId == null) return;
+
+    final cacheKey = '$bodyId:$edgeIndex';
+    final existingId = _externalReferenceLineIds[cacheKey];
+    if (existingId != null && lines.containsKey(existingId)) {
+      _applyDimensionHit(SketchSelection(kind: SelectionKind.line, id: existingId));
+      return;
+    }
+
+    SketchSelection? hit;
+    await _runGuarded(() async {
+      final result = await _api.createExternalEdgeReference(partId, sketchFeatureId, bodyId, edgeIndex);
+      points[result.startPoint.id] =
+          SketchPointView(id: result.startPoint.id, x: result.startPoint.x, y: result.startPoint.y);
+      points[result.endPoint.id] =
+          SketchPointView(id: result.endPoint.id, x: result.endPoint.x, y: result.endPoint.y);
+      lines[result.line.id] = SketchLineView(
+        id: result.line.id,
+        startPointId: result.line.startPointId,
+        endPointId: result.line.endPointId,
+        construction: result.line.construction,
+      );
+      _externalReferenceLineIds[cacheKey] = result.line.id;
+      hit = SketchSelection(kind: SelectionKind.line, id: result.line.id);
+    });
+    _applyDimensionHit(hit);
+  }
+
   /// Dispatches [_dimensionSelection]'s current shape onto a ghost set, per
   /// the new work package's combination table: one Line -> length; one
   /// Circle or Arc -> radius+diameter; two Points, or a Point+Line

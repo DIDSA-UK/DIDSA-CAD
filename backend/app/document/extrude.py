@@ -27,7 +27,7 @@ from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_V
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
-from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire, topods
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
@@ -943,6 +943,33 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
         raise _missing_reference(ref)
 
     return shape_map.FindKey(ref.index + 1)
+
+
+def edge_endpoint_vertex_refs(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> tuple[SubShapeRef, SubShapeRef]:
+    """Sketcher-roadmap Phase 4.3 v2: the two Body vertices at `ref`'s (an
+    EDGE) endpoints, as their own VERTEX `SubShapeRef`s against the same
+    body. Lets an edge external reference reuse v1's vertex-materialize
+    machinery (`create_plane.resolve_external_vertex_position` +
+    `Sketch.add_external_vertex_reference`) twice rather than inventing
+    any edge-specific solver/projection path - see the roadmap doc's own
+    v2 scoping (item 6): an edge materializes as two Points plus a real
+    Line between them, not a new constraint type.
+
+    Indices are 0-based, into the same per-body `TopAbs_VERTEX` map
+    `_TOPABS_FOR_SUBSHAPE_TYPE`/`app.document.mesh._extract_topology_
+    vertices` already use, so they line up with a client's own
+    `topology_vertex_ids` directly."""
+    edge_shape = resolve_subshape_from_bodies(bodies, ref)
+    edge = topods.Edge(edge_shape)
+    start_vertex, end_vertex = TopoDS_Vertex(), TopoDS_Vertex()
+    topexp.Vertices(edge, start_vertex, end_vertex)
+
+    vertex_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(bodies[ref.body_id], TopAbs_VERTEX, vertex_map)
+    return (
+        SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=vertex_map.FindIndex(start_vertex) - 1),
+        SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=vertex_map.FindIndex(end_vertex) - 1),
+    )
 
 
 def resolve_subshape(

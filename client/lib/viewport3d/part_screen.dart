@@ -4733,6 +4733,18 @@ class _PartScreenState extends State<PartScreen> {
               ...projectMeshVerticesOntoPlane(basis, body.bodyId, body.mesh),
           ]
         : const <(String, int, double, double)>[];
+    // Sketcher-roadmap Phase 4.3 v2: the same ghost outline's own pick
+    // targets for whole-body-edge dimensioning - see SketchController.
+    // pickReferenceGhostEdge's own doc comment. Deliberately its own list
+    // rather than reusing [ghostSegments] (Phase 4.1's plain, id-less
+    // wireframe still drives the actual dashed-line rendering unchanged) -
+    // this one only exists to carry (bodyId, edgeId) through to a tap.
+    final ghostEdges = basis != null
+        ? [
+            for (final body in _visibleBodies)
+              ...projectMeshEdgesOntoPlaneWithIds(basis, body.bodyId, body.mesh),
+          ]
+        : const <(String, int, (double, double), (double, double))>[];
 
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -4741,6 +4753,7 @@ class _PartScreenState extends State<PartScreen> {
           adoptSketchId: feature.sketchId,
           referenceGhostSegments: ghostSegments,
           referenceGhostVertices: ghostVertices,
+          referenceGhostEdges: ghostEdges,
           bodies: _visibleBodies,
           documentPartId: _part?.id,
           sketchFeatureId: feature.id,

@@ -333,8 +333,11 @@ changes.
 
 ## Phase 4 — 3D context while sketching
 
-**Status: 4.1 and 4.2 implemented together (see below); 4.3 deferred per
-its own recommendation.** An Orbit View toggle FAB (`sketch_screen.dart`)
+**Status: 4.1 and 4.2 implemented together (see below); 4.3 v1 and v2 both
+implemented (see 4.3's own section) - shipped as two separate, sequenced
+rounds per the "no working checkpoint in between" risk this section
+originally flagged, not bundled together.** An Orbit View toggle FAB
+(`sketch_screen.dart`)
 swaps the flat 2D `SketchCanvas` for a read-only, look-only `PartViewport`
 embedding the Part's Body meshes (shaded, at a fixed ~25% transparent
 opacity - direction (a) from 4.1's proposed approach) alongside this
@@ -489,6 +492,29 @@ below.
   between two camera/input models cleanly.
 
 ### 4.3 Dimensioning from body edges/points + yellow "lost reference" tree indicator
+**Status: v1 (vertices) and v2 (whole edges) both implemented, pending
+on-device verification.** v1 shipped first (per this section's own item
+6 recommendation) and was verified on-device, which surfaced an unrelated
+pre-existing horizontal/vertical-dimension sign bug (fixed separately -
+see the bug-fix in `solver.py`'s `_PySlvsBuilder._project_distance`). v2
+followed immediately after, built *from* v1 exactly as item 6 anticipated:
+an edge materializes as two Points (v1's own vertex-materialize call,
+reused twice - `app.document.extrude.edge_endpoint_vertex_refs` finds
+the edge's two endpoint vertices, `create_external_edge_reference` is the
+new endpoint) plus a real `Line` between them, needing zero new solver/
+constraint machinery - a pinned Line is already rigid once both endpoints
+are pinned Points, and `solve_sketch`'s existing external-reference
+re-pin pass already re-resolves both on every solve regardless of which
+Sketch entity references them. Client: `SketchController.
+pickReferenceGhostEdge` mirrors `pickReferenceGhostVertex` exactly (same
+materialize-once/reuse-on-repick cache, same "hand the result to
+`_applyDimensionHit` as an ordinary entity" trick - `SelectionKind.line`
+rather than a new kind), and the ghost outline's dashed rendering (Phase
+4.1) is now also hit-testable via a new, separately-tracked
+`referenceGhostEdges` list carrying `(bodyId, edgeIndex)` per segment.
+`has_lost_reference`/the feature-tree badge needed no changes at all for
+v2 - both endpoint Points already flow through the same `external_
+references` dict v1 built.
 - **Current state (re-confirmed via a dedicated research pass)**: not
   supported at all today, and every piece of it is genuinely new -
   there is no existing partial version of any of this to extend.

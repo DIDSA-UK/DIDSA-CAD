@@ -12,6 +12,7 @@ from app.document.models import (
     SweepMode,
 )
 from app.sketch.models import Plane, SketchEntityType
+from app.sketch.schemas import LineResponse, PointResponse
 
 
 class PartCreate(BaseModel):
@@ -166,6 +167,30 @@ class ExternalVertexReferenceCreate(BaseModel):
 
     body_id: str
     vertex_index: int
+
+
+class ExternalEdgeReferenceCreate(BaseModel):
+    """Sketcher-roadmap Phase 4.3 v2: the payload for the materialize-a-
+    body-edge endpoint - same "deliberately its own small schema, not
+    `SubShapeRefSchema`" reasoning as `ExternalVertexReferenceCreate`
+    above (`shape_type` would always be `edge` here)."""
+
+    body_id: str
+    edge_index: int
+
+
+class ExternalEdgeReferenceResponse(BaseModel):
+    """Sketcher-roadmap Phase 4.3 v2: an edge external reference
+    materializes as two Points (each exactly like
+    `ExternalVertexReferenceCreate`'s own response would return) plus a
+    real Line between them - this bundles all three into one response so
+    the client can populate its local Point/Line state from a single
+    round trip, the same way `create_line`'s own response already
+    carries everything a freshly-created Line's endpoints need."""
+
+    line: LineResponse
+    start_point: PointResponse
+    end_point: PointResponse
 
 
 class PointRefSchema(BaseModel):

@@ -50,6 +50,10 @@ class _FakeBackend {
   /// making a second network round trip.
   int externalReferenceRequestCount = 0;
 
+  /// Sketcher-roadmap Phase 4.3 v2: the materialize-a-Body-edge endpoint's
+  /// own request counter, mirroring [externalReferenceRequestCount].
+  int externalEdgeReferenceRequestCount = 0;
+
   String _newId(String prefix) => '$prefix-${_nextId++}';
 
   /// A deterministic fake outline for [text]'s preview endpoint - a single
@@ -245,6 +249,37 @@ class _FakeBackend {
       points[id] = point;
       return _json(point, 201);
     }
+
+    // Sketcher-roadmap Phase 4.3 v2: materializes a Body edge as a real,
+    // pinned Line (two fresh Points plus a Line between them) - same
+    // "fake backend has no real Bodies, just deterministically derive
+    // something from body_id/edge_index" reasoning as the vertex route
+    // above.
+    final externalEdgeReferenceMatch = RegExp(
+      r'^/document/parts/[^/]+/features/sketch/[^/]+/external-references/edge$',
+    ).hasMatch(path);
+    if (externalEdgeReferenceMatch && request.method == 'POST') {
+      externalEdgeReferenceRequestCount++;
+      final bodyId = body['body_id'] as String;
+      final edgeIndex = (body['edge_index'] as num).toDouble();
+      final startId = _newId('point');
+      final endId = _newId('point');
+      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex};
+      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex};
+      points[startId] = startPoint;
+      points[endId] = endPoint;
+      final lineId = _newId('line');
+      final line = {
+        'id': lineId,
+        'start_point_id': startId,
+        'end_point_id': endId,
+        'length': 10.0,
+        'construction': false,
+      };
+      lines[lineId] = line;
+      return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
+    }
+
     if (pointsCollectionMatch && request.method == 'GET') {
       return _jsonList(points.values.toList(), 200);
     }
@@ -2957,6 +2992,72 @@ void main() {
       controller.enterDimensionMode();
 
       await controller.pickReferenceGhostVertex('body-1', 0);
+
+      expect(controller.dimensionSelection, isEmpty);
+    });
+  });
+
+  group('pickReferenceGhostEdge (Sketcher-roadmap Phase 4.3 v2)', () {
+    Future<(SketchController, _FakeBackend)> adoptedController() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      return (freshController, freshBackend);
+    }
+
+    test('materializes a real Line (and its two endpoint Points) and adds it to the dimension pick',
+        () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+
+      await freshController.pickReferenceGhostEdge('body-1', 0);
+
+      expect(freshBackend.externalEdgeReferenceRequestCount, 1);
+      expect(freshController.dimensionSelection, hasLength(1));
+      expect(freshController.dimensionSelection.single.kind, SelectionKind.line);
+      final lineId = freshController.dimensionSelection.single.id;
+      final line = freshController.lines[lineId];
+      expect(line, isNotNull);
+      expect(freshController.points.containsKey(line!.startPointId), isTrue);
+      expect(freshController.points.containsKey(line.endPointId), isTrue);
+      expect(freshController.ghosts.map((g) => g.key).toSet(), {'length'});
+      expect(freshController.errorMessage, isNull);
+    });
+
+    test('re-picking the same body edge reuses the already-materialized Line', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+      await freshController.pickReferenceGhostEdge('body-1', 0);
+      final firstLineId = freshController.dimensionSelection.single.id;
+      // Toggling the same pick off (mirrors _applyDimensionHit's own
+      // "tapping an already-picked entity again removes it" rule).
+      await freshController.pickReferenceGhostEdge('body-1', 0);
+      expect(freshController.dimensionSelection, isEmpty);
+
+      await freshController.pickReferenceGhostEdge('body-1', 0);
+
+      expect(freshBackend.externalEdgeReferenceRequestCount, 1); // still just the one network call
+      expect(freshController.dimensionSelection.single.id, firstLineId);
+    });
+
+    test('picking two different (parallel) body edges shows a lineDistance ghost', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+
+      await freshController.pickReferenceGhostEdge('body-1', 0);
+      await freshController.pickReferenceGhostEdge('body-1', 1);
+
+      expect(freshBackend.externalEdgeReferenceRequestCount, 2);
+      expect(freshController.dimensionSelection, hasLength(2));
+      expect(freshController.ghosts.map((g) => g.key).toSet(), {'lineDistance'});
+    });
+
+    test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
+      controller.enterDimensionMode();
+
+      await controller.pickReferenceGhostEdge('body-1', 0);
 
       expect(controller.dimensionSelection, isEmpty);
     });

@@ -90,6 +90,26 @@ class LineDto {
       );
 }
 
+/// Sketcher-roadmap Phase 4.3 v2: the wire counterpart to the backend's
+/// `ExternalEdgeReferenceResponse` - bundles the materialized Line
+/// alongside both of its freshly-materialized endpoint Points, so
+/// [SketchApiClient.createExternalEdgeReference]'s single round trip
+/// carries everything [SketchController.pickReferenceGhostEdge] needs to
+/// update local state without a follow-up fetch.
+class ExternalEdgeReferenceDto {
+  final LineDto line;
+  final PointDto startPoint;
+  final PointDto endPoint;
+
+  ExternalEdgeReferenceDto({required this.line, required this.startPoint, required this.endPoint});
+
+  factory ExternalEdgeReferenceDto.fromJson(Map<String, dynamic> json) => ExternalEdgeReferenceDto(
+        line: LineDto.fromJson(json['line'] as Map<String, dynamic>),
+        startPoint: PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
+        endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
+      );
+}
+
 class CircleDto {
   final String id;
   final String centerPointId;
@@ -884,6 +904,26 @@ class SketchApiClient {
               body: jsonEncode({'body_id': bodyId, 'vertex_index': vertexIndex}),
             ),
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Sketcher-roadmap Phase 4.3 v2: [createExternalVertexReference]'s
+  /// edge-shaped sibling - materializes a whole Body edge as a real,
+  /// pinned Line (via two external-reference Points, see the backend's
+  /// `create_external_edge_reference` doc comment) rather than a single
+  /// Point.
+  Future<ExternalEdgeReferenceDto> createExternalEdgeReference(
+    String partId,
+    String sketchFeatureId,
+    String bodyId,
+    int edgeIndex,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references/edge'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex}),
+            ),
+        (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<List<PointDto>> listPoints(String sketchId) => _send(

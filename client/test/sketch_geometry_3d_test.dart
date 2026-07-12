@@ -67,6 +67,54 @@ void main() {
     });
   });
 
+  group('projectMeshEdgesOntoPlaneWithIds', () {
+    test('projects each edge segment through the basis, threading bodyId/edgeId unchanged', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        edges: [
+          0.0, 0.0, 0.0, 10.0, 0.0, 0.0, // segment 0: edge id 5
+          0.0, 0.0, 0.0, 0.0, 10.0, 0.0, // segment 1: edge id 6
+        ],
+        edgeIds: [5, 6],
+      );
+
+      final result = projectMeshEdgesOntoPlaneWithIds(
+        SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        'body-1',
+        mesh,
+      );
+
+      expect(result, [
+        ('body-1', 5, (0.0, 0.0), (10.0, 0.0)),
+        ('body-1', 6, (0.0, 0.0), (0.0, 10.0)),
+      ]);
+    });
+
+    test('a curved edge\'s several consecutive segments all carry that edge\'s same id', () {
+      final mesh = MeshDto(
+        vertices: const [],
+        normals: const [],
+        triangleIndices: const [],
+        edges: [
+          0.0, 0.0, 0.0, 1.0, 1.0, 0.0,
+          1.0, 1.0, 0.0, 2.0, 0.0, 0.0,
+        ],
+        edgeIds: [3, 3],
+      );
+
+      final result = projectMeshEdgesOntoPlaneWithIds(
+        SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        'body-1',
+        mesh,
+      );
+
+      expect(result.map((e) => e.$2).toSet(), {3});
+      expect(result, hasLength(2));
+    });
+  });
+
   group('sketchGeometry3DFrom', () {
     final points = [
       PointDto(id: 'p1', x: 0, y: 0),

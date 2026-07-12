@@ -105,6 +105,16 @@ class SketchScreen extends StatefulWidget {
   /// [referenceGhostSegments].
   final List<(String, int, double, double)> referenceGhostVertices;
 
+  /// Sketcher-roadmap Phase 4.3 v2: the whole-edge analogue of
+  /// [referenceGhostVertices] - each existing Body edge's endpoints
+  /// projected onto this Sketch's plane, as `(bodyId, edgeIndex,
+  /// (startX,startY), (endX,endY))`, so a dimension-mode tap on the
+  /// dashed ghost outline itself (not just one of its vertices) can be
+  /// resolved back to a real Body edge and materialized as a Line (see
+  /// [SketchController.pickReferenceGhostEdge]). Empty outside
+  /// [PartScreen], same as [referenceGhostVertices].
+  final List<(String, int, (double, double), (double, double))> referenceGhostEdges;
+
   /// Sketcher-roadmap Phase 4.3 v1: the owning Part's id and this Sketch's
   /// own SketchFeature id - both null unless this screen was opened from
   /// [PartScreen] (a bare Sketch reached via the standalone `/sketch` API,
@@ -121,6 +131,7 @@ class SketchScreen extends StatefulWidget {
     this.adoptSketchId,
     this.referenceGhostSegments = const [],
     this.referenceGhostVertices = const [],
+    this.referenceGhostEdges = const [],
     this.bodies = const [],
     this.documentPartId,
     this.sketchFeatureId,
@@ -777,6 +788,7 @@ class _SketchScreenState extends State<SketchScreen> {
           controller: _controller,
           referenceGhostSegments: widget.referenceGhostSegments,
           referenceGhostVertices: widget.referenceGhostVertices,
+          referenceGhostEdges: widget.referenceGhostEdges,
           referenceBodyHidden: _referenceBodyHidden,
           constraintLabelsVisible: _constraintLabelsVisible,
           canvasColor: _canvasColor,

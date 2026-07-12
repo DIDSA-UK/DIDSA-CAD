@@ -155,6 +155,39 @@ List<(String, int, double, double)> projectMeshVerticesOntoPlane(
   return result;
 }
 
+/// Sketcher-roadmap Phase 4.3 v2: the per-edge analogue of
+/// [projectMeshVerticesOntoPlane] - projects a Body's real edge polylines
+/// (`MeshDto.edges`/`edgeIds`, the same dense per-segment id
+/// `SelectionEntityRef`'s own edge picking in the 3D viewport already
+/// trusts as a `SubShapeRef.index` for Fillet/Chamfer - see
+/// `selection_hit_test.dart`) onto [basis], ready for [SketchCanvas]'s
+/// ghost-overlay pick targets. [bodyId]/edge id are threaded through
+/// unchanged (not projected) so a picked ghost edge round-trips into a
+/// real `SubShapeRef`/materialize-an-edge call - see
+/// [SketchController.pickReferenceGhostEdge]. A curved edge's several
+/// consecutive mesh segments all carry that edge's *same* id, exactly
+/// like [edgeSegmentsFromMesh] (mesh_geometry.dart) already assumes for
+/// rendering - deliberately a separate list from that one rather than
+/// adding ids onto it, since [edgeSegmentsFromMesh]'s own id-less
+/// segments still drive the unrelated Phase 4.1 ghost wireframe render
+/// unchanged.
+List<(String, int, (double, double), (double, double))> projectMeshEdgesOntoPlaneWithIds(
+  SketchPlaneBasis basis,
+  String bodyId,
+  MeshDto mesh,
+) {
+  final result = <(String, int, (double, double), (double, double))>[];
+  var segmentIndex = 0;
+  for (var i = 0; i + 5 < mesh.edges.length; i += 6) {
+    final start = worldPointToSketch(basis, vm.Vector3(mesh.edges[i], mesh.edges[i + 1], mesh.edges[i + 2]));
+    final end =
+        worldPointToSketch(basis, vm.Vector3(mesh.edges[i + 3], mesh.edges[i + 4], mesh.edges[i + 5]));
+    result.add((bodyId, mesh.edgeIds[segmentIndex], start, end));
+    segmentIndex++;
+  }
+  return result;
+}
+
 /// Segments approximating a rendered Circle outline - high enough to read as
 /// round at [referencePlaneSize]-ish scales without costing much per circle.
 const int circleSegments3D = 32;
