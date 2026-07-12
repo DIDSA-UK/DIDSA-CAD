@@ -752,8 +752,16 @@ class _SketchScreenState extends State<SketchScreen> {
         onPlaneTap: (_) {},
         onBackgroundTap: () {},
         sketchGeometries: {
+          // Bug fix: was SketchPlaneBasis.fixed(planeKind), silently
+          // discarding this Sketch's own orientation - drew the user's own
+          // geometry in the wrong 3D position relative to the real body
+          // backdrop whenever flip/rotationQuarterTurns wasn't the default.
           (_controller.sketchId ?? 'active-sketch'): sketchGeometry3DFrom(
-            basis: SketchPlaneBasis.fixed(planeKind),
+            basis: SketchPlaneBasis.oriented(
+              planeKind,
+              flip: _controller.flip,
+              rotationQuarterTurns: _controller.rotationQuarterTurns,
+            ),
             points: _pointDtosFrom(_controller),
             lines: _lineDtosFrom(_controller),
             circles: _circleDtosFrom(_controller),
@@ -764,6 +772,8 @@ class _SketchScreenState extends State<SketchScreen> {
         bodyColourHex: _orbitBodyColourHex,
         bodyOpacity: _orbitBodyOpacity,
         initialViewPlane: planeKind,
+        initialViewFlip: _controller.flip,
+        initialViewRotationQuarterTurns: _controller.rotationQuarterTurns,
       );
     }
     return Stack(
@@ -781,6 +791,8 @@ class _SketchScreenState extends State<SketchScreen> {
                 renderMode: _orbitRenderMode,
                 bodyColourHex: _orbitBodyColourHex,
                 initialViewPlane: planeKind,
+                initialViewFlip: _controller.flip,
+                initialViewRotationQuarterTurns: _controller.rotationQuarterTurns,
               ),
             ),
           ),
@@ -813,6 +825,8 @@ class _SketchScreenState extends State<SketchScreen> {
       pixelsPerUnit: SketchViewport.basePixelsPerUnit * zoom,
       panOffsetPx: panOffset,
       canvasSize: canvasSize,
+      flip: _controller.flip,
+      rotationQuarterTurns: _controller.rotationQuarterTurns,
     );
   }
 
@@ -824,7 +838,11 @@ class _SketchScreenState extends State<SketchScreen> {
   void _returnOrbitToDefaultView() {
     final planeKind = _planeKind;
     if (planeKind == null) return;
-    _orbitViewportKey.currentState?.animateToPlane(planeKind);
+    _orbitViewportKey.currentState?.animateToPlane(
+      planeKind,
+      flip: _controller.flip,
+      rotationQuarterTurns: _controller.rotationQuarterTurns,
+    );
   }
 
   /// On-device feedback: entering Orbit View should always start at 4.1's
@@ -853,7 +871,11 @@ class _SketchScreenState extends State<SketchScreen> {
     _orbitViewExiting = true;
     final planeKind = _planeKind;
     if (planeKind != null) {
-      await _orbitViewportKey.currentState?.animateToPlane(planeKind);
+      await _orbitViewportKey.currentState?.animateToPlane(
+        planeKind,
+        flip: _controller.flip,
+        rotationQuarterTurns: _controller.rotationQuarterTurns,
+      );
     }
     _orbitViewExiting = false;
     if (!mounted) return;

@@ -170,7 +170,7 @@ class _SketchOrientationPainter extends CustomPainter {
 
     final square = Rect.fromLTRB(0, 0, size, size);
     canvas.drawRect(
-        square, Paint()..color = Colors.white.withValues(alpha: 0.75));
+        square, Paint()..color = Colors.white.withValues(alpha: 0.5));
     canvas.drawRect(
       square,
       Paint()

@@ -109,6 +109,17 @@ class PartScreen extends StatefulWidget {
   State<PartScreen> createState() => _PartScreenState();
 }
 
+/// A Sketch's plane plus its own stored orientation (flip/rotation) - bundled
+/// together so callers that resolve a Feature's Sketch can't accidentally
+/// drop the orientation and fall back to the raw, unoriented plane basis.
+class _SketchOrientation {
+  const _SketchOrientation({required this.plane, required this.flip, required this.rotationQuarterTurns});
+
+  final ReferencePlaneKind plane;
+  final bool flip;
+  final int rotationQuarterTurns;
+}
+
 class _PartScreenState extends State<PartScreen> {
   late final DocumentApiClient _api;
 
@@ -1949,7 +1960,9 @@ class _PartScreenState extends State<PartScreen> {
     if (sketchId == null) return null;
     final sketch = await _sketchApi.getSketch(sketchId);
     final plane = referencePlaneKindFromApiValue(sketch.plane);
-    return plane == null ? null : SketchPlaneBasis.fixed(plane);
+    return plane == null
+        ? null
+        : SketchPlaneBasis.oriented(plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
   }
 
   /// C2: resolves a `SelectionEntityRef.sketchFeatureId` (a Feature id) back
@@ -3093,21 +3106,33 @@ class _PartScreenState extends State<PartScreen> {
       await _openSketch(feature, basis: _customPlaneBasis(planeFeatureId));
       return;
     }
-    final plane = await _planeOfFeature(feature);
+    final orientation = await _planeOfFeature(feature);
     if (!mounted) return;
+    final plane = orientation?.plane;
     if (plane != null) {
-      await _viewportKey.currentState?.animateToPlane(plane);
+      await _viewportKey.currentState?.animateToPlane(
+        plane,
+        flip: orientation!.flip,
+        rotationQuarterTurns: orientation.rotationQuarterTurns,
+      );
       if (!mounted) return;
     }
-    await _openSketch(feature, basis: plane == null ? null : SketchPlaneBasis.fixed(plane));
+    await _openSketch(
+      feature,
+      basis: plane == null
+          ? null
+          : SketchPlaneBasis.oriented(plane, flip: orientation!.flip, rotationQuarterTurns: orientation.rotationQuarterTurns),
+    );
   }
 
-  Future<ReferencePlaneKind?> _planeOfFeature(FeatureDto feature) async {
+  Future<_SketchOrientation?> _planeOfFeature(FeatureDto feature) async {
     final sketchId = feature.sketchId;
     if (sketchId == null) return null;
     try {
       final sketch = await _sketchApi.getSketch(sketchId);
-      return referencePlaneKindFromApiValue(sketch.plane);
+      final plane = referencePlaneKindFromApiValue(sketch.plane);
+      if (plane == null) return null;
+      return _SketchOrientation(plane: plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
     } catch (_) {
       return null;
     }

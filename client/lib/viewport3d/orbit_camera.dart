@@ -331,8 +331,26 @@ class OrbitCamera {
 /// `(-xAxis.z, yAxis.z, -normal.z)` - built directly below and handed to
 /// [vm.Quaternion.fromRotation], with no multiplication/composition-order risk
 /// at all.
-vm.Quaternion orientationFacingPlane(ReferencePlaneKind plane) {
-  final basis = SketchPlaneBasis.fixed(plane);
+/// Bug fix (on-device feedback: "the animation to sketch has dropped
+/// working and should account for user selected sketch orientation"):
+/// [flip]/[rotationQuarterTurns] default to the identity (matching every
+/// pre-existing call site's behaviour unchanged), but a caller framing a
+/// Sketch that has its own non-default orientation (see
+/// `SketchDto.flip`/`SketchDto.rotationQuarterTurns`) should pass it
+/// through here - otherwise the camera frames the plane's *raw* basis
+/// while the Sketch's own geometry (and its Extrude) is actually embedded
+/// via the *oriented* one, a mismatch between "which way the camera is
+/// looking" and "which way the content is actually laid out".
+vm.Quaternion orientationFacingPlane(
+  ReferencePlaneKind plane, {
+  bool flip = false,
+  int rotationQuarterTurns = 0,
+}) {
+  final basis = SketchPlaneBasis.oriented(
+    plane,
+    flip: flip,
+    rotationQuarterTurns: rotationQuarterTurns,
+  );
   final targetRight = -basis.xAxis;
   final targetUp = basis.yAxis;
   final targetBack = -basis.normal;

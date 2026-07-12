@@ -213,6 +213,15 @@ class PartViewport extends StatefulWidget {
   /// changes once the user actually orbits it themselves.
   final ReferencePlaneKind? initialViewPlane;
 
+  /// Bug fix: the Sketch's own [initialViewPlane]-relative orientation (see
+  /// `SketchDto.flip`/`SketchDto.rotationQuarterTurns`) - defaults to the
+  /// identity, but a caller entering an oriented Sketch's Orbit View should
+  /// pass the real values, or the initial camera facing (and everything
+  /// [syncToSketchViewport] frames against) disagrees with how that
+  /// Sketch's own geometry is actually embedded.
+  final bool initialViewFlip;
+  final int initialViewRotationQuarterTurns;
+
   /// New-sketch orientation confirm step (on-device feedback: the indicator
   /// must track the camera live as the user orbits, not just refresh on a
   /// flip/rotate tap) - non-null shows [SketchOrientationIndicator] for
@@ -253,6 +262,8 @@ class PartViewport extends StatefulWidget {
     this.onFarClipChanged,
     this.sketchLineLoopGroup,
     this.initialViewPlane,
+    this.initialViewFlip = false,
+    this.initialViewRotationQuarterTurns = 0,
     this.sketchOrientationBasis,
   });
 
@@ -393,7 +404,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // Orbit View entry fix: start facing the given plane exactly, rather
     // than OrbitCamera's own angled default - see [PartViewport.initialViewPlane].
     if (widget.initialViewPlane != null) {
-      _camera.orientation = orientationFacingPlane(widget.initialViewPlane!);
+      _camera.orientation = orientationFacingPlane(
+        widget.initialViewPlane!,
+        flip: widget.initialViewFlip,
+        rotationQuarterTurns: widget.initialViewRotationQuarterTurns,
+      );
     }
     debugPrint('[PartViewport] Scene.initializeStaticResources()...');
     Scene.initializeStaticResources().then((_) {
@@ -850,12 +865,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// `AnimationController` is disposed) - every call past the first would
   /// throw on `AnimationController(vsync: this, ...)` below, silently
   /// rejecting this method's Future before `_openSketch` ever runs.
+  /// Bug fix: [flip]/[rotationQuarterTurns] default to the identity - a
+  /// caller entering a Sketch that has its own non-default orientation
+  /// (see `SketchDto.flip`/`SketchDto.rotationQuarterTurns`) should pass it
+  /// through, or the camera frames the plane's raw/unoriented basis while
+  /// the Sketch's own geometry - and its Extrude - is actually embedded via
+  /// the oriented one, a real mismatch, not just a cosmetic one.
   Future<void> animateToPlane(
     ReferencePlaneKind plane, {
     Duration duration = const Duration(milliseconds: 400),
+    bool flip = false,
+    int rotationQuarterTurns = 0,
   }) async {
     final from = _camera.orientation;
-    var to = orientationFacingPlane(plane);
+    var to = orientationFacingPlane(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns);
     // On-device feedback: the camera-into-sketch animation sometimes swung
     // through the *back* of the target plane mid-transition, even though the
     // final resting orientation (checked statically by
@@ -912,14 +935,24 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// pixelsPerUnit` world units at that target, matching flutter_scene's
   /// fixed `kCameraVerticalFovRadians` perspective FOV ([OrbitCamera] has
   /// no orthographic option - see its own doc comment on `isPerspective`).
+  /// Bug fix: [flip]/[rotationQuarterTurns] default to the identity - a
+  /// caller syncing an oriented Sketch's own backdrop should pass the real
+  /// values (see `SketchDto.flip`/`SketchDto.rotationQuarterTurns`), or the
+  /// backdrop's camera target is derived from the plane's raw/unoriented
+  /// basis while the ghost-outline overlay drawn on top of it (and the
+  /// Sketch's own eventual Extrude) both use the oriented one - the two
+  /// visibly drift out of registration with each other whenever orientation
+  /// isn't the default.
   void syncToSketchViewport({
     required ReferencePlaneKind plane,
     required double pixelsPerUnit,
     required Offset panOffsetPx,
     required Size canvasSize,
+    bool flip = false,
+    int rotationQuarterTurns = 0,
   }) {
     if (pixelsPerUnit <= 0 || canvasSize.isEmpty) return;
-    final basis = SketchPlaneBasis.fixed(plane);
+    final basis = SketchPlaneBasis.oriented(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns);
     // Inverse of ViewTransform.sketchToScreen at screen-centre (originScreen
     // = screenCentre + panOffsetPx): the sketch-space point currently
     // rendered at the canvas's own centre.
