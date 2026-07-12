@@ -268,12 +268,30 @@ class _FakeBackend {
     final circlesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/circles$').hasMatch(path);
     if (circlesCollectionMatch && request.method == 'POST') {
       final id = _newId('circle');
+      var radiusPointId = body['radius_point_id'] as String?;
+      final requestedRadius = (body['radius'] as num?)?.toDouble() ?? 1.0;
+      final cardinalPointIds = <String>[];
+      if (radiusPointId == null) {
+        // Centre-point circle tool's own mode (bare radius, no
+        // radius_point_id/angle) - mirrors the real backend's
+        // Sketch.add_circle: the new Point becomes the circle's own north
+        // cardinal point directly.
+        final center = points[body['center_point_id'] as String]!;
+        radiusPointId = _newId('point');
+        points[radiusPointId] = {
+          'id': radiusPointId,
+          'x': (center['x'] as num).toDouble(),
+          'y': (center['y'] as num).toDouble() + requestedRadius,
+        };
+        cardinalPointIds.add(radiusPointId);
+      }
       final circle = {
         'id': id,
         'center_point_id': body['center_point_id'],
-        'radius_point_id': body['radius_point_id'],
-        'radius': 1.0,
+        'radius_point_id': radiusPointId,
+        'radius': requestedRadius,
         'construction': false,
+        'cardinal_point_ids': cardinalPointIds,
       };
       circles[id] = circle;
       // Mirrors the real backend's Sketch.add_circle, which auto-creates a
@@ -282,8 +300,8 @@ class _FakeBackend {
       constraints[constraintId] = {
         'id': constraintId,
         'point_a_id': body['center_point_id'],
-        'point_b_id': body['radius_point_id'],
-        'distance': 1.0,
+        'point_b_id': radiusPointId,
+        'distance': requestedRadius,
       };
       return _json(circle, 201);
     }
@@ -896,7 +914,9 @@ void main() {
     expect(controller.isHiddenDimension(radiusConstraint.id), isTrue);
 
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(0, 5); // on the circle's edge
+    // On the boundary but not on the north cardinal point itself (see
+    // SketchController._clickCircleTool's own doc comment).
+    await controller.handleCanvasTap(5, 0);
     await controller.confirmGhostValue('radius', 5.0);
 
     expect(controller.isHiddenDimension(radiusConstraint.id), isFalse);
@@ -905,7 +925,7 @@ void main() {
   test('a third tap after a completed circle starts a fresh circle', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
     expect(controller.circles.length, 1);
 
     await controller.handleCanvasTap(20, 20);
@@ -1631,7 +1651,13 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  test('a circle cannot snap both center and radius onto the origin', () async {
+  test('a circle cannot be completed with a zero radius - tapping back on the centre is rejected', () async {
+    // Feedback round: the second tap now only ever measures a *distance*
+    // from the centre (see SketchController._clickCircleTool's own doc
+    // comment) - there is no more point-snap/reuse-avoidance step to test
+    // here, so tapping back on the exact centre position is simply a
+    // zero-radius circle, rejected outright rather than silently falling
+    // back to some other nearby Point the way a Line's second tap does.
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0); // center snaps to the origin
     expect(controller.circleCenterPointId, controller.originPointId);
@@ -1639,11 +1665,9 @@ void main() {
     // Still hovering the origin for the radius tap.
     await controller.handleCanvasTap(0, 0);
 
-    expect(controller.circles.length, 1);
-    final circle = controller.circles.values.first;
-    expect(circle.centerPointId, controller.originPointId);
-    expect(circle.radiusPointId, isNot(controller.originPointId));
-    expect(controller.errorMessage, isNull);
+    expect(controller.circles.length, 0);
+    expect(controller.circleInProgress, isFalse);
+    expect(controller.errorMessage, isNotNull);
   });
 
   test('moveCursorRelative sensitivity scales inversely with zoom', () {
@@ -2587,9 +2611,12 @@ void main() {
     final circleId = controller.circles.keys.first;
 
     // On the circle's edge (radius 5, centered on the origin) but not near
-    // either of its two real Points.
-    controller.cursorX = 0;
-    controller.cursorY = 5;
+    // either of its two real Points - the centre, or the north cardinal
+    // point the radius tap now creates (see SketchController._clickCircleTool's
+    // own doc comment: the second tap only ever measures a distance, so
+    // (5, 0) itself - east - is empty space, unlike north at (0, 5).
+    controller.cursorX = 5;
+    controller.cursorY = 0;
 
     final hovered = controller.hoveredEntity();
     expect(hovered, isNotNull);
@@ -3267,7 +3294,11 @@ void main() {
     await controller.handleCanvasTap(10, 0); // radius point -> radius 10
     controller.enterDimensionMode();
 
-    await controller.handleCanvasTap(0, 10); // on the circle's edge
+    // On the boundary but not on the north cardinal point the radius tap
+    // now creates (see SketchController._clickCircleTool's own doc comment
+    // - the second tap only ever measures a distance, so east (10, 0) is
+    // empty space, unlike north at (0, 10)).
+    await controller.handleCanvasTap(10, 0);
 
     expect(controller.ghosts.map((g) => g.key).toSet(), {'radius', 'diameter'});
 
@@ -3285,7 +3316,7 @@ void main() {
     await controller.handleCanvasTap(0, 0); // center
     await controller.handleCanvasTap(10, 0); // radius point -> radius 10
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(0, 10); // on the circle's edge
+    await controller.handleCanvasTap(10, 0); // on the circle's edge
 
     await controller.confirmGhostValue('diameter', 40.0);
 
@@ -3295,7 +3326,7 @@ void main() {
     // Re-picking the same circle and confirming the radius ghost this time
     // must flip the same (now-existing) constraint's display mode back.
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(0, 10);
+    await controller.handleCanvasTap(10, 0);
     await controller.confirmGhostValue('radius', 20.0);
 
     expect(controller.showsDiameterFor(constraint.id), isFalse);
@@ -3308,7 +3339,7 @@ void main() {
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(0, 10);
+    await controller.handleCanvasTap(10, 0);
     await controller.confirmGhostValue('radius', 10.0);
     final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
 
@@ -3332,7 +3363,7 @@ void main() {
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(0, 10);
+    await controller.handleCanvasTap(10, 0);
     await controller.confirmGhostValue('radius', 10.0);
     final constraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
     expect(controller.showsDiameterFor(constraint.id), isFalse);
@@ -3353,17 +3384,21 @@ void main() {
       '24px along the centre-to-rim direction, not the generic two-point diagonal midpoint', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0); // centre
-    await controller.handleCanvasTap(10, 0); // radius point -> radius 10, rim direction = +X
+    // The second tap only ever measures a distance (radius 10) - the radius
+    // point it creates is always the north cardinal point, i.e. rim
+    // direction is always +Y, regardless of where this tap lands.
+    await controller.handleCanvasTap(10, 0);
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(0, 10);
+    await controller.handleCanvasTap(10, 0); // on the boundary, not on a real Point
     await controller.confirmGhostValue('radius', 10.0);
     final constraintId =
         controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
 
     const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
-    // centre (0,0) -> screen (400,300); rim (10,0) -> screen (600,300);
-    // direction = +X, so the base anchor is 24px further along +X: (624,300).
-    const radialAnchor = Offset(624, 300);
+    // centre (0,0) -> screen (400,300); rim (0,10) -> screen (400,100);
+    // direction = -Y on screen (+Y in sketch space), so the base anchor is
+    // 24px further along it: (400, 300 - (200 + 24)) = (400, 76).
+    const radialAnchor = Offset(400, 76);
 
     expect(dimensionLabelAt(controller, transform, radialAnchor, 5), constraintId);
   });
@@ -3997,8 +4032,10 @@ void main() {
     await controller.handleCanvasTap(23, 0);
     controller.exitToSelectMode();
 
-    await controller.handleCanvasTap(0, 5); // first circle's edge, away from center/radius point
-    await controller.handleCanvasTap(20, 3); // second circle's edge
+    // East of each circle, not the north cardinal point the radius tap
+    // creates (see SketchController._clickCircleTool's own doc comment).
+    await controller.handleCanvasTap(5, 0); // first circle's edge
+    await controller.handleCanvasTap(23, 0); // second circle's edge
 
     expect(controller.selectionSet.length, 2);
     for (final type in ConstraintOptionType.values) {
@@ -4017,7 +4054,7 @@ void main() {
     controller.finishChain();
     controller.exitToSelectMode();
 
-    await controller.handleCanvasTap(0, 5); // the circle's edge
+    await controller.handleCanvasTap(5, 0); // the circle's edge, not its north cardinal point
     await controller.handleCanvasTap(25, 10.1); // the line, away from its midpoint
 
     expect(controller.selectionSet.length, 2);

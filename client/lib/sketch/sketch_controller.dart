@@ -2894,7 +2894,7 @@ class SketchController extends ChangeNotifier {
     return circleForDistanceConstraint(c) != null || arcForDistanceConstraint(c) != null;
   }
 
-  /// Whether [c] is one of a Circle's 4 cardinal-point axis-alignment
+  /// Whether [c] is one of a Circle's cardinal-point axis-alignment
   /// constraints (see `app.sketch.models.Sketch._add_cardinal_points`) - a
   /// zero-value DistanceConstraint from the circle's centre to one of its
   /// north/east/south/west Points, pinning that point onto the horizontal or
@@ -2906,7 +2906,19 @@ class SketchController extends ChangeNotifier {
   /// and [_constraintLabelCenter] to skip these entirely (no render, no hit
   /// test), unlike [isRadiusDistanceConstraint]'s constraints which render as
   /// radial leaders.
+  ///
+  /// The centre-point circle tool's own mode (see [circleForDistanceConstraint]'s
+  /// own doc comment) makes [c].distance load-bearing here, not just the
+  /// point pair: that mode's radius point *is* the north cardinal point, so
+  /// centre->north carries two distinct DistanceConstraints - the real,
+  /// user-facing radius one (never hidden, whatever its value) and this
+  /// method's own always-zero axis pin - both sharing the exact same point
+  /// pair, indistinguishable by id alone since a Circle's own
+  /// `cardinal_constraint_ids` are never sent to the client (see the
+  /// backend's `CircleResponse`). Requiring [c].distance to be (near) zero
+  /// is what tells them apart.
   bool isCardinalAxisConstraint(DistanceConstraintDto c) {
+    if (c.distance.abs() > 1e-9) return false;
     for (final circle in circles.values) {
       if (circle.centerPointId == c.pointAId && circle.cardinalPointIds.contains(c.pointBId)) {
         return true;
@@ -5328,10 +5340,12 @@ class SketchController extends ChangeNotifier {
   }
 
   /// Circle tool's tap handling: first tap places the center Point, second
-  /// tap places the radius Point, creates the Circle (which auto-creates
-  /// its radius DistanceConstraint server-side), and solves -
-  /// self-terminating, unlike a Line chain, so there is no separate
-  /// "finish" step.
+  /// tap only ever measures a *distance* from it (never an angle - see
+  /// [SketchApiClient.createCircleWithVerticalRadius]'s own doc comment),
+  /// creates the Circle (which auto-creates its radius DistanceConstraint
+  /// server-side, on what becomes the circle's own north cardinal point),
+  /// and solves - self-terminating, unlike a Line chain, so there is no
+  /// separate "finish" step.
   Future<void> _clickCircleTool() async {
     if (!circleInProgress) {
       _selectionSet.clear();
@@ -5343,9 +5357,15 @@ class SketchController extends ChangeNotifier {
     }
 
     await _runGuarded(() async {
-      final radiusPointId = await _pointIdAtCursor(excludeId: _circleCenterPointId);
+      final center = points[_circleCenterPointId!]!;
+      final radius = math.sqrt(math.pow(cursorX - center.x, 2) + math.pow(cursorY - center.y, 2));
+      if (radius < 1e-9) {
+        errorMessage = 'Cannot place a circle with zero radius';
+        _circleCenterPointId = null;
+        return;
+      }
 
-      final circle = await _api.createCircle(_sketchId!, _circleCenterPointId!, radiusPointId);
+      final circle = await _api.createCircleWithVerticalRadius(_sketchId!, _circleCenterPointId!, radius);
       circles[circle.id] = SketchCircleView(
         id: circle.id,
         centerPointId: circle.centerPointId,

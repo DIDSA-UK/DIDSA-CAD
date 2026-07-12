@@ -961,6 +961,32 @@ class SketchApiClient {
         (body) => CircleDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// The centre-point circle tool's own mode (see the backend's
+  /// `Sketch.add_circle` doc comment): no radius Point id at all, just a
+  /// bare [radius] - the backend creates the radius-defining Point as the
+  /// circle's own north cardinal point directly (vertically above centre,
+  /// real Distance constraint), not a fifth, separately-floating Point, so
+  /// with the centre grounded a single dimension is enough to fully
+  /// constrain the circle.
+  Future<CircleDto> createCircleWithVerticalRadius(
+    String sketchId,
+    String centerPointId,
+    double radius, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/circles'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'radius': radius,
+                'construction': construction,
+              }),
+            ),
+        (body) => CircleDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<ArcDto> createArc(
     String sketchId,
     String centerPointId,

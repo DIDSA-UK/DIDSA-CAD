@@ -606,9 +606,14 @@ class Sketch:
         construction: bool = False,
     ) -> Circle:
         """Add a Circle from an existing center Point to either an existing
-        radius Point (explicit sharing) or a new Point computed from a
-        radius and angle (radians from the +x axis), mirroring add_line's
-        existing-vs-computed-point pattern.
+        radius Point (explicit sharing), a new Point computed from a radius
+        and angle (radians from the +x axis), or - when [angle] is omitted
+        entirely alongside a bare [radius] - the centre-point circle tool's
+        own mode: the new Point becomes the circle's north cardinal point
+        directly (see `_add_cardinal_points`'s own doc comment) rather than
+        a fifth, separately-floating Point, so it's vertically above centre
+        by construction and a single radius dimension plus grounding the
+        centre is enough to fully constrain the whole circle.
 
         The radius is a real solver constraint, not just a stored number:
         this always creates a DistanceConstraint between the center and
@@ -617,7 +622,13 @@ class Sketch:
         accurate as either Point moves.
         """
         center = self.points[center_point_id]
-        if radius_point_id is None:
+        radius_point_is_north = radius_point_id is None and angle is None
+        if radius_point_is_north:
+            if radius is None:
+                raise ValueError("Provide either 'radius_point_id', or 'radius' (optionally with 'angle')")
+            radius_point_id = self.add_point(center.x, center.y + radius).id
+            distance = radius
+        elif radius_point_id is None:
             radius_point_id = self.add_point(
                 center.x + radius * math.cos(angle),
                 center.y + radius * math.sin(angle),
@@ -633,9 +644,22 @@ class Sketch:
             raise ValueError("A circle cannot have the same center and radius point")
 
         radius_constraint = self.add_distance_constraint(center_point_id, radius_point_id, distance)
-        cardinal_point_ids, cardinal_constraint_ids = self._add_cardinal_points(
-            center_point_id, radius_point_id, distance
-        )
+        if radius_point_is_north:
+            # North already has its real radius Distance constraint (just
+            # created above) - only needs the same axis-alignment pin every
+            # cardinal point gets, not an EqualRadius tie back to itself.
+            axis_constraint = self.add_distance_constraint(
+                center_point_id, radius_point_id, 0.0, orientation=self._CARDINAL_ORIENTATIONS[0]
+            )
+            other_point_ids, other_constraint_ids = self._add_cardinal_points(
+                center_point_id, radius_point_id, distance, skip_north=True
+            )
+            cardinal_point_ids = [radius_point_id, *other_point_ids]
+            cardinal_constraint_ids = [axis_constraint.id, *other_constraint_ids]
+        else:
+            cardinal_point_ids, cardinal_constraint_ids = self._add_cardinal_points(
+                center_point_id, radius_point_id, distance
+            )
         circle = Circle(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,
@@ -659,21 +683,30 @@ class Sketch:
     )
 
     def _add_cardinal_points(
-        self, center_point_id: str, radius_point_id: str, radius: float
+        self, center_point_id: str, radius_point_id: str, radius: float, *, skip_north: bool = False
     ) -> tuple[list[str], list[str]]:
-        """Creates the four North/East/South/West Points `add_circle` gives
-        every new Circle (see `Circle.cardinal_point_ids`'s own doc
-        comment) - each solver-locked onto the circle at its own fixed
-        global-axis angle via an `EqualRadiusConstraint` against
-        [radius_point_id] (stays in sync with any later radius edit) plus a
-        zero-value `DistanceConstraint` pinning it to the correct axis
-        through center. Returns `(point_ids, constraint_ids)`, both in the
-        shape `Circle.cardinal_point_ids`/`cardinal_constraint_ids` expect.
+        """Creates North/East/South/West Points `add_circle` gives every new
+        Circle (see `Circle.cardinal_point_ids`'s own doc comment) - each
+        solver-locked onto the circle at its own fixed global-axis angle via
+        an `EqualRadiusConstraint` against [radius_point_id] (stays in sync
+        with any later radius edit) plus a zero-value `DistanceConstraint`
+        pinning it to the correct axis through center. Returns
+        `(point_ids, constraint_ids)`, both in the shape
+        `Circle.cardinal_point_ids`/`cardinal_constraint_ids` expect.
+
+        [skip_north] omits North from this loop entirely - used by
+        `add_circle`'s own centre-point-circle-tool mode, where
+        [radius_point_id] already *is* North (real Distance constraint, no
+        EqualRadius needed against itself) and this only needs to add the
+        remaining East/South/West.
         """
         center = self.points[center_point_id]
         point_ids: list[str] = []
         constraint_ids: list[str] = []
-        for angle, orientation in zip(self._CARDINAL_ANGLES, self._CARDINAL_ORIENTATIONS):
+        angles_orientations = list(zip(self._CARDINAL_ANGLES, self._CARDINAL_ORIENTATIONS))
+        if skip_north:
+            angles_orientations = angles_orientations[1:]
+        for angle, orientation in angles_orientations:
             point = self.add_point(
                 center.x + radius * math.cos(angle),
                 center.y + radius * math.sin(angle),

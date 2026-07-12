@@ -99,10 +99,13 @@ class LineResponse(BaseModel):
 
 
 class CircleCreate(BaseModel):
-    """Create a circle from an existing center Point, plus either an
-    existing radius Point's id (explicit sharing) or a radius and angle
-    (radians from the +x axis), which creates a new radius Point -
-    mirroring LineCreate's existing-vs-computed-point pattern."""
+    """Create a circle from an existing center Point, plus one of three
+    ways to define the radius Point: an existing Point's id (explicit
+    sharing), a radius and angle (radians from the +x axis) which creates a
+    new Point at that position, or - the centre-point circle tool's own
+    mode - a bare radius with no angle at all, which creates the new Point
+    as the circle's own north cardinal point (vertically above centre) -
+    see `Sketch.add_circle`'s own doc comment."""
 
     center_point_id: str
     radius_point_id: str | None = None
@@ -114,9 +117,9 @@ class CircleCreate(BaseModel):
     def check_creation_mode(self) -> "CircleCreate":
         if self.radius_point_id is not None:
             if self.radius is not None or self.angle is not None:
-                raise ValueError("Provide either 'radius_point_id', or 'radius' and 'angle', not both")
-        elif self.radius is None or self.angle is None:
-            raise ValueError("Provide either 'radius_point_id', or both 'radius' and 'angle'")
+                raise ValueError("Provide either 'radius_point_id', or 'radius' (optionally with 'angle'), not both")
+        elif self.radius is None:
+            raise ValueError("Provide either 'radius_point_id', or 'radius' (optionally with 'angle')")
         return self
 
 
