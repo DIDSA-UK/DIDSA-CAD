@@ -66,6 +66,36 @@ def sketch_basis_for_plane(plane: Plane) -> ResolvedPlane:
     return _PLANE_BASIS[plane]
 
 
+def oriented_basis_for_plane(plane: Plane, *, flip: bool, rotation_quarter_turns: int) -> ResolvedPlane:
+    """Sketcher-roadmap Phase 5: `sketch_basis_for_plane(plane)`'s own
+    x_axis/y_axis, with a Sketch's own `flip`/`rotation_quarter_turns`
+    (see `Sketch`'s own doc comment) applied on top - `origin`/`normal`
+    are unaffected (a flip/rotation happens *within* the plane, not out of
+    it). `flip` mirrors the local +X axis (negates `x_axis`) first;
+    `rotation_quarter_turns` (already normalized into `0..3` by
+    `Sketch.set_orientation` - an out-of-range value here would silently
+    rotate the wrong number of times) then rotates the resulting
+    (x_axis, y_axis) pair 90 degrees CCW around `normal`, that many times.
+    A single 90-degree CCW turn maps `x_axis -> y_axis`, `y_axis ->
+    -x_axis` (the standard axis-rotation formula: for a right-handed
+    (x_axis, y_axis, normal) triple, rotating the *frame* by +90 degrees
+    around `normal` sends old +Y where new +X now points).
+
+    `basis_point`/`_basis_vector` below are unaffected - they only ever
+    read `origin`/`x_axis`/`y_axis` off whatever `ResolvedPlane` they're
+    given, so a Sketch's oriented basis flows through identically to the
+    unoriented one everywhere those already do."""
+    x_axis = _PLANE_BASIS[plane].x_axis
+    y_axis = _PLANE_BASIS[plane].y_axis
+    if flip:
+        x_axis = tuple(-c for c in x_axis)
+    for _ in range(rotation_quarter_turns):
+        x_axis, y_axis = y_axis, tuple(-c for c in x_axis)
+    return ResolvedPlane(
+        origin=_PLANE_BASIS[plane].origin, normal=_PLANE_BASIS[plane].normal, x_axis=x_axis, y_axis=y_axis
+    )
+
+
 def _cross(a: Vector3, b: Vector3) -> Vector3:
     ax, ay, az = a
     bx, by, bz = b

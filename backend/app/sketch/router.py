@@ -69,6 +69,7 @@ from app.sketch.schemas import (
     ProfileDetectionResponse,
     ProfileResponse,
     SketchCreate,
+    SketchOrientationUpdate,
     SketchResponse,
     SolveRequest,
     SolveResultResponse,
@@ -354,16 +355,41 @@ def _solve_result_response(result: SolveResult) -> SolveResultResponse:
     )
 
 
+def _sketch_response(sketch: Sketch) -> SketchResponse:
+    return SketchResponse(
+        id=sketch.id,
+        plane=sketch.plane,
+        origin_point_id=sketch.origin_point().id,
+        flip=sketch.flip,
+        rotation_quarter_turns=sketch.rotation_quarter_turns,
+    )
+
+
 @router.post("/sketches", response_model=SketchResponse, status_code=201)
 def create_sketch(payload: SketchCreate) -> SketchResponse:
-    sketch = _create_sketch(payload.plane)
-    return SketchResponse(id=sketch.id, plane=sketch.plane, origin_point_id=sketch.origin_point().id)
+    sketch = _create_sketch(payload.plane, flip=payload.flip, rotation_quarter_turns=payload.rotation_quarter_turns)
+    return _sketch_response(sketch)
 
 
 @router.get("/sketches/{sketch_id}", response_model=SketchResponse)
 def get_sketch(sketch_id: str) -> SketchResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return SketchResponse(id=sketch.id, plane=sketch.plane, origin_point_id=sketch.origin_point().id)
+    return _sketch_response(sketch)
+
+
+@router.patch("/sketches/{sketch_id}/orientation", response_model=SketchResponse)
+def update_sketch_orientation(sketch_id: str, payload: SketchOrientationUpdate) -> SketchResponse:
+    """Sketcher-roadmap Phase 5: the retrospective-redefine entry point -
+    just flips two fields (see `Sketch.set_orientation`'s own doc comment
+    for why this needs no re-projection of any existing Point). A no-op
+    (200, unchanged) for a `plane is None` Sketch is deliberately *not*
+    special-cased here - the fields are simply stored and ignored
+    downstream (see `Sketch`'s own docstring), matching this project's
+    general "store what's given, resolve meaning at read time" pattern
+    rather than rejecting a value that's harmless to hold."""
+    sketch = _get_sketch_or_404(sketch_id)
+    sketch.set_orientation(flip=payload.flip, rotation_quarter_turns=payload.rotation_quarter_turns)
+    return _sketch_response(sketch)
 
 
 @router.post("/sketches/{sketch_id}/points", response_model=PointResponse, status_code=201)

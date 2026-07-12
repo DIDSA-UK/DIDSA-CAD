@@ -9,6 +9,11 @@ from app.sketch.text_fonts import DEFAULT_FONT, FONT_ALLOWLIST
 
 class SketchCreate(BaseModel):
     plane: Plane
+    # Sketcher-roadmap Phase 5 - see app.sketch.models.Sketch's own
+    # docstring for what these mean; ignored (never applied) for a
+    # None-plane Sketch, but this endpoint always creates a fixed-plane one.
+    flip: bool = False
+    rotation_quarter_turns: int = 0
 
 
 class SketchResponse(BaseModel):
@@ -18,6 +23,18 @@ class SketchResponse(BaseModel):
     # populated for a Sketch created through the standalone /sketch API.
     plane: Plane | None
     origin_point_id: str
+    flip: bool = False
+    rotation_quarter_turns: int = 0
+
+
+class SketchOrientationUpdate(BaseModel):
+    """Sketcher-roadmap Phase 5: the request body for `PATCH .../orientation`
+    - both fields required (not optional-and-partial like most other PATCH
+    bodies in this file) since flip/rotation are only ever meaningful set
+    together as a single new orientation, not independently patched."""
+
+    flip: bool
+    rotation_quarter_turns: int
 
 
 class PointCreate(BaseModel):

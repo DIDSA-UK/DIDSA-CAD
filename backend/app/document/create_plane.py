@@ -61,6 +61,7 @@ from app.document.models import (
 from app.document.plane_geometry import (
     arbitrary_perpendicular_basis,
     basis_point,
+    oriented_basis_for_plane,
     resolve_normal_to_line_at_point,
     resolve_three_points,
     sketch_basis_for_plane,
@@ -418,7 +419,7 @@ def _basis_for_sketch(
         assert isinstance(plane_feature, CreatePlaneFeature)
         return resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
     assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
-    return sketch_basis_for_plane(sketch.plane)
+    return oriented_basis_for_plane(sketch.plane, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
 
 
 def resolve_sketch_basis(

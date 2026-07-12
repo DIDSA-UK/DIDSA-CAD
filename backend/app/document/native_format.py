@@ -290,6 +290,9 @@ def _sketch_to_dict(sketch: Sketch) -> dict:
         "id": sketch.id,
         "plane": sketch.plane.value if sketch.plane is not None else None,
         "origin_point_id": sketch.origin_point_id,
+        # Sketcher-roadmap Phase 5.
+        "flip": sketch.flip,
+        "rotation_quarter_turns": sketch.rotation_quarter_turns,
         "points": [_point_to_dict(p) for p in sketch.points.values()],
         "entities": [_entity_to_dict(e) for e in sketch.entities.values()],
         "constraints": [_constraint_to_dict(c) for c in sketch.constraints.values()],
@@ -300,6 +303,13 @@ def _sketch_from_dict(data: dict) -> Sketch:
     plane_value = data.get("plane")
     sketch = Sketch(id=_require(data, "id"), plane=Plane(plane_value) if plane_value is not None else None)
     sketch._origin_point_id = data.get("origin_point_id")
+    # Sketcher-roadmap Phase 5 - defaulted (not _require'd), unlike most
+    # other fields in this function: a native file saved before this
+    # feature existed has no opinion on orientation, and the identity
+    # orientation is the correct, harmless default for it.
+    sketch.set_orientation(
+        flip=data.get("flip", False), rotation_quarter_turns=data.get("rotation_quarter_turns", 0)
+    )
     for point_data in data.get("points", []):
         point = _point_from_dict(point_data)
         sketch.points[point.id] = point

@@ -54,13 +54,20 @@ def replace_all_sketches(sketches: dict[str, Sketch]) -> None:
     _sketches = sketches
 
 
-def create_sketch(plane: Plane | None) -> Sketch:
+def create_sketch(plane: Plane | None, *, flip: bool = False, rotation_quarter_turns: int = 0) -> Sketch:
     """C3: `plane` is `None` only for a Sketch created via the Document
     layer's custom-plane-anchor path (see `app.document.router.
     create_sketch_feature`/`Sketch`'s own docstring) - the standalone
     `/sketch` API's `SketchCreate.plane` stays a required `Plane`, so every
-    caller reachable from there still always passes a real one."""
+    caller reachable from there still always passes a real one.
+
+    Sketcher-roadmap Phase 5: `flip`/`rotation_quarter_turns` default to
+    the identity orientation, so the Document layer's own call site (which
+    never passes them - a custom-plane-anchored Sketch's orientation is
+    the `CreatePlaneFeature` basis itself, not this Sketch's own fields,
+    see `Sketch`'s own docstring) is unaffected."""
     sketch = Sketch(id=str(uuid.uuid4()), plane=plane)
+    sketch.set_orientation(flip=flip, rotation_quarter_turns=rotation_quarter_turns)
     _sketches[sketch.id] = sketch
     return sketch
 

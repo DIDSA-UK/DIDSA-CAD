@@ -495,6 +495,26 @@ class Sketch:
     has no notion of a Part/Feature/CreatePlaneFeature at all) always has a
     real `plane` - `None` only ever appears for a custom-plane-anchored
     Sketch created through the Document layer.
+
+    Sketcher-roadmap Phase 5: `flip`/`rotation_quarter_turns` are this
+    Sketch's own orientation *within* its fixed `plane` - meaningless (and
+    ignored) for a `plane is None` Sketch, whose anchor is instead a full,
+    independently-orientable `CreatePlaneFeature` basis. Deliberately kept
+    as two small discrete fields rather than baking the flip/rotation into
+    every Point's stored (x, y) - the solver only ever sees this Sketch's
+    flat local (x, y) space (see `solver.py`'s own workplane, which is
+    orientation-agnostic - always the identity origin/normal regardless of
+    `plane`), so nothing about constraint-solving needs to change here at
+    all, and "redefining" a Sketch's orientation after the fact (long-press
+    re-entry into the same picker) is just flipping these two fields, not a
+    re-projection of any existing geometry - see
+    `app.document.plane_geometry.oriented_basis_for_plane`, the one place
+    that actually turns `(flip, rotation_quarter_turns)` into a real
+    world-space basis, for how a fixed-plane Sketch's local (x, y) maps
+    into 3D. `rotation_quarter_turns` is always normalized into `0..3` (a
+    90-degree-CCW-per-step rotation of the plane's own default in-plane
+    basis, applied after `flip`); values outside that range are never
+    stored (see `Sketch.set_orientation`).
     """
 
     id: str
@@ -502,7 +522,18 @@ class Sketch:
     points: dict[str, Point] = field(default_factory=dict)
     entities: dict[str, SketchEntity] = field(default_factory=dict)
     constraints: dict[str, Constraint] = field(default_factory=dict)
+    flip: bool = False
+    rotation_quarter_turns: int = 0
     _origin_point_id: str | None = field(default=None, repr=False)
+
+    def set_orientation(self, *, flip: bool, rotation_quarter_turns: int) -> None:
+        """The one mutator for `flip`/`rotation_quarter_turns` - normalizes
+        `rotation_quarter_turns` into `0..3` (a quarter-turn count has no
+        meaningful value outside that range; -1 and 3 are the same physical
+        orientation) so every reader can assume that range without its own
+        modulo."""
+        self.flip = flip
+        self.rotation_quarter_turns = rotation_quarter_turns % 4
 
     def add_point(self, x: float, y: float) -> Point:
         point = Point(id=str(uuid.uuid4()), x=x, y=y)
