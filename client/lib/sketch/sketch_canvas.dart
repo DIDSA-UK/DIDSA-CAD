@@ -2447,12 +2447,11 @@ class _SketchPainter extends CustomPainter {
   /// (see the `PolygonGhost` case in [_paintActiveDrawGhost]) for every
   /// already-*placed* Polygon too, live off its current Point positions (so
   /// it tracks a drag, same as any other geometry), gated by the same
-  /// [SketchController.showPolygonGuideCircles] toggle - see
-  /// [PlacedPolygon]'s own doc comment for why this reads off a
-  /// session-local list rather than any backend entity.
+  /// [SketchController.showPolygonGuideCircles] toggle - reads off
+  /// [SketchController.polygons], the real persisted-entity map.
   void _paintPolygonGuideCircles(Canvas canvas) {
     if (!controller.showPolygonGuideCircles) return;
-    final polygons = controller.polygons;
+    final polygons = controller.polygons.values;
     if (polygons.isEmpty) return;
     final guidePaint = Paint()
       ..color = _constructionColor.withValues(alpha: 0.35)

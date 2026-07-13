@@ -22,6 +22,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> circles = {};
   final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> ellipses = {};
+  final Map<String, Map<String, dynamic>> polygons = {};
   final Map<String, Map<String, dynamic>> splines = {};
   final Map<String, Map<String, dynamic>> texts = {};
   final Map<String, Map<String, dynamic>> sketches = {};
@@ -151,6 +152,30 @@ class _FakeBackend {
         ellipse['construction'] = body['construction'] as bool;
       }
       return _json(ellipse, 200);
+    }
+
+    final polygonDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/(.+)$').firstMatch(path);
+    if (polygonDeleteMatch != null && request.method == 'DELETE') {
+      final polygon = polygons.remove(polygonDeleteMatch.group(1));
+      if (polygon != null) {
+        for (final lineId in (polygon['line_ids'] as List).cast<String>()) {
+          lines.remove(lineId);
+        }
+        for (final constraintId in (polygon['_constraint_ids'] as List).cast<String>()) {
+          constraints.remove(constraintId);
+        }
+      }
+      return http.Response('', 204);
+    }
+
+    final polygonPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/(.+)$').firstMatch(path);
+    if (polygonPatchMatch != null && request.method == 'PATCH') {
+      final polygon = polygons[polygonPatchMatch.group(1)];
+      if (polygon == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        polygon['construction'] = body['construction'] as bool;
+      }
+      return _json(polygon, 200);
     }
 
     final splineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
@@ -539,6 +564,101 @@ class _FakeBackend {
     }
     if (ellipsesCollectionMatch && request.method == 'GET') {
       return _jsonList(ellipses.values.toList(), 200);
+    }
+
+    final polygonsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons$').hasMatch(path);
+    if (polygonsCollectionMatch && request.method == 'POST') {
+      final id = _newId('polygon');
+      final sides = body['sides'] as int;
+      final centerPoint = points[body['center_point_id']]!;
+      final firstVertex = points[body['first_vertex_point_id']]!;
+      final cx = (centerPoint['x'] as num).toDouble();
+      final cy = (centerPoint['y'] as num).toDouble();
+      final radius = math.sqrt(
+        math.pow((firstVertex['x'] as num) - cx, 2) + math.pow((firstVertex['y'] as num) - cy, 2),
+      );
+      final baseAngle = math.atan2((firstVertex['y'] as num) - cy, (firstVertex['x'] as num) - cx);
+      // Mirrors the real backend's Sketch.add_polygon: the first vertex is
+      // reused as-is, every other vertex is a fresh Point placed evenly
+      // around the circle.
+      final vertexPointIds = <String>[body['first_vertex_point_id'] as String];
+      for (var i = 1; i < sides; i++) {
+        final angle = baseAngle + 2 * math.pi * i / sides;
+        final vertexId = _newId('point');
+        points[vertexId] = {'id': vertexId, 'x': cx + radius * math.cos(angle), 'y': cy + radius * math.sin(angle)};
+        vertexPointIds.add(vertexId);
+      }
+      final lineIds = <String>[];
+      for (var i = 0; i < sides; i++) {
+        final lineId = _newId('line');
+        lines[lineId] = {
+          'id': lineId,
+          'start_point_id': vertexPointIds[i],
+          'end_point_id': vertexPointIds[(i + 1) % sides],
+          'length': 1.0,
+          'construction': false,
+        };
+        lineIds.add(lineId);
+      }
+      final constraintIds = <String>[];
+      final radiusConstraintId = _newId('constraint');
+      constraints[radiusConstraintId] = {
+        'id': radiusConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': vertexPointIds[0],
+        'distance': radius,
+        'provisional': true,
+      };
+      constraintIds.add(radiusConstraintId);
+      for (var i = 1; i < sides; i++) {
+        final equalRadiusId = _newId('constraint');
+        constraints[equalRadiusId] = {
+          'id': equalRadiusId,
+          'type': 'equal_radius',
+          'center1_point_id': body['center_point_id'],
+          'radius1_point_id': vertexPointIds[0],
+          'center2_point_id': body['center_point_id'],
+          'radius2_point_id': vertexPointIds[i],
+        };
+        constraintIds.add(equalRadiusId);
+      }
+      for (var i = 1; i < sides; i++) {
+        final equalLengthId = _newId('constraint');
+        constraints[equalLengthId] = {
+          'id': equalLengthId,
+          'type': 'equal_length',
+          'line1_id': lineIds[i - 1],
+          'line2_id': lineIds[i],
+        };
+        constraintIds.add(equalLengthId);
+        final angleId = _newId('constraint');
+        constraints[angleId] = {
+          'id': angleId,
+          'type': 'angle',
+          'line1_id': lineIds[i - 1],
+          'line2_id': lineIds[i],
+          'angle_degrees': 360.0 / sides,
+        };
+        constraintIds.add(angleId);
+      }
+      final polygon = {
+        'id': id,
+        'center_point_id': body['center_point_id'],
+        'vertex_point_ids': vertexPointIds,
+        'line_ids': lineIds,
+        'radius': radius,
+        'sides': sides,
+        'construction': body['construction'] as bool? ?? false,
+        // Not part of the real API response - kept only so this fake's own
+        // DELETE handler above knows which Constraints to cascade, mirroring
+        // the real backend's Sketch.delete_polygon.
+        '_constraint_ids': constraintIds,
+      };
+      polygons[id] = polygon;
+      return _json(polygon, 201);
+    }
+    if (polygonsCollectionMatch && request.method == 'GET') {
+      return _jsonList(polygons.values.toList(), 200);
     }
 
     final splinesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/splines$').hasMatch(path);
@@ -2041,7 +2161,7 @@ void main() {
     await controller.handleCanvasTap(5, 0);
 
     expect(controller.polygons, hasLength(1));
-    final polygon = controller.polygons.single;
+    final polygon = controller.polygons.values.single;
     expect(polygon.centerPointId, isNotEmpty);
     expect(polygon.vertexPointIds, hasLength(5));
 
@@ -2058,7 +2178,7 @@ void main() {
     await controller.handleCanvasTap(5, 0);
     expect(controller.polygons, hasLength(1));
 
-    final vertexId = controller.polygons.single.vertexPointIds.first;
+    final vertexId = controller.polygons.values.single.vertexPointIds.first;
     controller.exitToSelectMode();
     final vertex = controller.points[vertexId]!;
     await controller.handleCanvasTap(vertex.x, vertex.y);

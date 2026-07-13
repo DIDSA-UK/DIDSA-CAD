@@ -214,6 +214,42 @@ class EllipseDto {
       );
 }
 
+/// A regular N-gon - see the backend's `app.sketch.models.Polygon`
+/// docstring for how [vertexPointIds]/[lineIds] are ordered and what the
+/// solver constraint chain underneath them does. Bug fix (sketcher-roadmap
+/// feedback round): Polygon used to have no persisted entity at all, just
+/// plain Points/Lines/Constraints the client orchestrated across several
+/// calls - this DTO is new alongside the backend entity.
+class PolygonDto {
+  final String id;
+  final String centerPointId;
+  final List<String> vertexPointIds;
+  final List<String> lineIds;
+  final double radius;
+  final int sides;
+  final bool construction;
+
+  PolygonDto({
+    required this.id,
+    required this.centerPointId,
+    required this.vertexPointIds,
+    required this.lineIds,
+    required this.radius,
+    required this.sides,
+    this.construction = false,
+  });
+
+  factory PolygonDto.fromJson(Map<String, dynamic> json) => PolygonDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        vertexPointIds: (json['vertex_point_ids'] as List).cast<String>(),
+        lineIds: (json['line_ids'] as List).cast<String>(),
+        radius: (json['radius'] as num).toDouble(),
+        sides: json['sides'] as int,
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
 class SplineDto {
   final String id;
   final List<String> throughPointIds;
@@ -988,6 +1024,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<PolygonDto>> listPolygons(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/polygons'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => PolygonDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<List<SplineDto>> listSplines(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/splines'), headers: _headers),
         (body) => (body as List)
@@ -1124,6 +1167,34 @@ class SketchApiClient {
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Always creates from an existing center Point and an existing first-
+  /// vertex Point (mirrors how the client creates Circle/Arc/Ellipse) -
+  /// server-side, `Sketch.add_polygon` creates every other vertex, the
+  /// edge Lines, and the whole radius/equal-radius/equal-length/angle
+  /// constraint chain atomically, returning it all in the response. Bug
+  /// fix: replaces the old client-orchestrated multi-call sequence (create
+  /// each vertex Point, each Line, each constraint one at a time).
+  Future<PolygonDto> createPolygon(
+    String sketchId,
+    String centerPointId,
+    String firstVertexPointId,
+    int sides, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/polygons'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'first_vertex_point_id': firstVertexPointId,
+                'sides': sides,
+                'construction': construction,
+              }),
+            ),
+        (body) => PolygonDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Always creates from through-points that already exist (mirrors how
   /// the client creates Circle/Arc/Ellipse) - server-side, `Sketch.
   /// add_spline` creates the control-handle Points and tangent
@@ -1226,6 +1297,21 @@ class SketchApiClient {
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Toggles a Polygon's construction flag - mirrors [updateArc]. There is
+  /// no radius field here either: a Polygon's radius is driven by its own
+  /// DistanceConstraint (see the backend's `Sketch.add_polygon`), resized
+  /// via [updateConstraintValue] instead.
+  Future<PolygonDto> updatePolygon(String sketchId, String polygonId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/polygons/$polygonId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => PolygonDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Toggles a Spline's construction flag - mirrors [updateArc]. There is
   /// no shape field here: a Spline's shape is driven entirely by its
   /// through-point/control-handle Points' own positions and its
@@ -1307,6 +1393,14 @@ class SketchApiClient {
   Future<void> deleteEllipse(String sketchId, String ellipseId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deletePolygon(String sketchId, String polygonId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/polygons/$polygonId'),
               headers: _headers,
             ),
         (_) {},

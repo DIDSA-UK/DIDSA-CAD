@@ -86,21 +86,32 @@ class SketchArcView {
   });
 }
 
-/// Fix #7 (Sketcher-roadmap feedback round): the Polygon tool is a
-/// shortcut, not a real backend entity (see [SketchController._clickPolygonTool]'s
-/// own doc comment - it only ever creates plain Points/Lines/Constraints,
-/// same as it always has), so there is nothing server-side to persist a
-/// "this is a Polygon" fact against, or to reload it from on a fresh
-/// sketch load. This is a session-only, client-local record of one placed
-/// Polygon purely so [SketchController.showPolygonGuideCircles] can keep
-/// drawing its circumscribed/inscribed guide circles - the same two the
-/// in-progress ghost already shows via [PolygonGhost.showGuideCircles] -
-/// after placement too, not just while still drawing it.
-class PlacedPolygon {
+/// A regular Polygon - see the backend's `app.sketch.models.Polygon`
+/// docstring for how [vertexPointIds]/[lineIds] are ordered and what the
+/// solver constraint chain underneath them does. Bug fix (sketcher-roadmap
+/// feedback round): the Polygon tool used to be a client-only shortcut with
+/// no backend entity of its own (see the old `PlacedPolygon`'s doc comment,
+/// which this replaces) - a real, persisted, single-atomic-call entity now
+/// backs it, the same as Arc/Ellipse, letting [SketchController.
+/// showPolygonGuideCircles] survive a fresh sketch reload (not just the
+/// same session) and letting a vertex drag be reliably recognized as one
+/// (see [beginPointDrag]).
+class SketchPolygonView {
+  final String id;
   final String centerPointId;
   final List<String> vertexPointIds;
+  final List<String> lineIds;
+  final int sides;
+  final bool construction;
 
-  const PlacedPolygon({required this.centerPointId, required this.vertexPointIds});
+  const SketchPolygonView({
+    required this.id,
+    required this.centerPointId,
+    required this.vertexPointIds,
+    required this.lineIds,
+    required this.sides,
+    this.construction = false,
+  });
 }
 
 class SketchEllipseView {
@@ -700,6 +711,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchCircleView> circles = {};
   final Map<String, SketchArcView> arcs = {};
   final Map<String, SketchEllipseView> ellipses = {};
+  final Map<String, SketchPolygonView> polygons = {};
   final Map<String, SketchSplineView> splines = {};
   final Map<String, SketchTextView> texts = {};
 
@@ -1096,30 +1108,16 @@ class SketchController extends ChangeNotifier {
   /// circles by its own real solver constraints regardless of whether this
   /// preview is shown - see [_clickPolygonTool]'s own doc comment). This
   /// same flag also gates [_SketchPainter]'s rendering of both guide
-  /// circles for every already-placed Polygon in [polygons], not just the
-  /// in-progress ghost - Fix #7's own "toggle after placement" request.
+  /// circles for every already-placed Polygon in [polygons] (a real,
+  /// persisted field - see [SketchPolygonView]'s own doc comment - declared
+  /// alongside [arcs]/[ellipses] above), not just the in-progress ghost -
+  /// Fix #7's own "toggle after placement" request.
   bool get showPolygonGuideCircles => _showPolygonGuideCircles;
 
   void togglePolygonGuideCircles() {
     _showPolygonGuideCircles = !_showPolygonGuideCircles;
     notifyListeners();
   }
-
-  final List<PlacedPolygon> _polygons = [];
-
-  /// Every Polygon placed this session whose defining Points are all still
-  /// present - see [PlacedPolygon]'s own doc comment for why this is a
-  /// session-only, client-local record rather than real backend state.
-  /// Filtered fresh on every read (rather than eagerly pruned on delete)
-  /// since a Polygon's center/vertex Points can be removed via any number
-  /// of paths (direct delete, cascading delete, undo) - simplest to just
-  /// never trust a stale entry instead of hooking cleanup into all of them.
-  List<PlacedPolygon> get polygons => [
-        for (final polygon in _polygons)
-          if (points.containsKey(polygon.centerPointId) &&
-              polygon.vertexPointIds.every(points.containsKey))
-            polygon,
-      ];
 
   String? _slotCenter1PointId;
   String? _slotCenter2PointId;
@@ -3201,6 +3199,7 @@ class SketchController extends ChangeNotifier {
     Set<String> circles,
     Set<String> arcs,
     Set<String> ellipses,
+    Set<String> polygons,
     Set<String> splines,
     Set<String> texts,
     Set<String> constraints
@@ -3210,6 +3209,7 @@ class SketchController extends ChangeNotifier {
     final circleIds = <String>{};
     final arcIds = <String>{};
     final ellipseIds = <String>{};
+    final polygonIds = <String>{};
     final splineIds = <String>{};
     final textIds = <String>{};
     final constraintIds = <String>{};
@@ -3279,6 +3279,27 @@ class SketchController extends ChangeNotifier {
       lineIds.remove(ellipse.majorAxisLineId);
       lineIds.remove(ellipse.minorAxisLineId);
     }
+    for (final polygon in polygons.values) {
+      // Same reasoning as the Ellipse block above - a Polygon's own edge
+      // Lines/vertex Points are real, independently selectable/deletable
+      // geometry, so cascade UP to the Polygon from either direction.
+      if (pointIds.contains(polygon.centerPointId) ||
+          polygon.vertexPointIds.any(pointIds.contains) ||
+          polygon.lineIds.any(lineIds.contains)) {
+        polygonIds.add(polygon.id);
+      }
+    }
+    // The backend's own Sketch.delete_polygon already deletes every one of
+    // its edge Lines as part of deleting the Polygon itself - same
+    // "already-gone Line" concern the Ellipse block above avoids for its
+    // own 2 axis Lines, generalized to all `sides` of them here.
+    for (final polygonId in polygonIds) {
+      final polygon = polygons[polygonId];
+      if (polygon == null) continue;
+      for (final lineId in polygon.lineIds) {
+        lineIds.remove(lineId);
+      }
+    }
     for (final spline in splines.values) {
       if ([...spline.throughPointIds, ...spline.controlPointIds].any(pointIds.contains)) {
         splineIds.add(spline.id);
@@ -3301,6 +3322,7 @@ class SketchController extends ChangeNotifier {
       circles: circleIds,
       arcs: arcIds,
       ellipses: ellipseIds,
+      polygons: polygonIds,
       splines: splineIds,
       texts: textIds,
       constraints: constraintIds
@@ -3644,6 +3666,10 @@ class SketchController extends ChangeNotifier {
     final capturedSplines = <SketchSplineView>[];
     final capturedTexts = <SketchTextView>[];
     final capturedConstraints = <ConstraintDto>[];
+    // Polygon has no SelectionKind (see the comment on cascade.polygons'
+    // own deletion loop below), so it's captured separately here rather
+    // than inside the toDelete switch below.
+    final capturedPolygons = [for (final id in cascade.polygons) polygons[id]].whereType<SketchPolygonView>().toList();
     for (final current in toDelete) {
       switch (current.kind) {
         case SelectionKind.line:
@@ -3701,6 +3727,21 @@ class SketchController extends ChangeNotifier {
             s.kind == SelectionKind.text,
       );
       final pointsToDelete = toDelete.where((s) => s.kind == SelectionKind.point);
+      // Polygon isn't independently tap-selectable (no SelectionKind.polygon
+      // - only its own vertex Points/edge Lines are, same as it always was
+      // before it became a real entity), so it isn't routed through the
+      // generic toDelete/SketchSelection list above - deleted directly here
+      // instead, in the same "before its own Points" dependency slot
+      // shapesToDelete already occupies. delete_polygon cascades its own
+      // radius/equal-radius/equal-length/angle constraints server-side
+      // regardless of whether this client's local cascade computation
+      // identified them individually - refreshConstraints() below re-syncs
+      // the local cache afterward, same as every other entity's own
+      // internal constraints already rely on.
+      for (final id in cascade.polygons) {
+        await _api.deletePolygon(_sketchId!, id);
+        polygons.remove(id);
+      }
       for (final current in [...constraintsToDelete, ...shapesToDelete, ...pointsToDelete]) {
         switch (current.kind) {
           case SelectionKind.line:
@@ -3748,6 +3789,7 @@ class SketchController extends ChangeNotifier {
             capturedCircles,
             capturedArcs,
             capturedEllipses,
+            capturedPolygons,
             capturedSplines,
             capturedTexts,
             capturedConstraints,
@@ -3783,6 +3825,7 @@ class SketchController extends ChangeNotifier {
     List<SketchCircleView> capturedCircles,
     List<SketchArcView> capturedArcs,
     List<SketchEllipseView> capturedEllipses,
+    List<SketchPolygonView> capturedPolygons,
     List<SketchSplineView> capturedSplines,
     List<SketchTextView> capturedTexts,
     List<ConstraintDto> capturedConstraints,
@@ -3886,6 +3929,39 @@ class SketchController extends ChangeNotifier {
       // yet - see the main Ellipse-tool creation flow's own comment for
       // why this needs an explicit fetch.
       for (final id in [created.minorPointId, created.majorPointNegId, created.minorPointNegId]) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
+    }
+    for (final polygon in capturedPolygons) {
+      final created = await _api.createPolygon(
+        _sketchId!,
+        idMap[polygon.centerPointId] ?? polygon.centerPointId,
+        idMap[polygon.vertexPointIds[0]] ?? polygon.vertexPointIds[0],
+        polygon.sides,
+        construction: polygon.construction,
+      );
+      idMap[polygon.id] = created.id;
+      polygons[created.id] = SketchPolygonView(
+        id: created.id,
+        centerPointId: created.centerPointId,
+        vertexPointIds: created.vertexPointIds,
+        lineIds: created.lineIds,
+        sides: created.sides,
+        construction: created.construction,
+      );
+      for (var i = 0; i < created.lineIds.length; i++) {
+        lines[created.lineIds[i]] = SketchLineView(
+          id: created.lineIds[i],
+          startPointId: created.vertexPointIds[i],
+          endPointId: created.vertexPointIds[(i + 1) % created.vertexPointIds.length],
+        );
+      }
+      // Vertex 0 is the (already-restored) first vertex passed above -
+      // vertices 1..sides-1 are freshly created server-side by
+      // add_polygon and aren't locally known yet, same as Ellipse's own
+      // minor/negative-tip Points above.
+      for (final id in created.vertexPointIds.skip(1)) {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
@@ -5134,6 +5210,16 @@ class SketchController extends ChangeNotifier {
         construction: ellipse.construction,
       );
     }
+    for (final polygon in await _api.listPolygons(sketchId)) {
+      polygons[polygon.id] = SketchPolygonView(
+        id: polygon.id,
+        centerPointId: polygon.centerPointId,
+        vertexPointIds: polygon.vertexPointIds,
+        lineIds: polygon.lineIds,
+        sides: polygon.sides,
+        construction: polygon.construction,
+      );
+    }
     for (final spline in await _api.listSplines(sketchId)) {
       splines[spline.id] = SketchSplineView(
         id: spline.id,
@@ -5713,27 +5799,17 @@ class SketchController extends ChangeNotifier {
   /// Polygon tool's tap handling: first tap places the center Point,
   /// second tap places the first vertex (fixing circumradius and
   /// rotation) and immediately completes the shape - self-terminating,
-  /// like Circle. Computes every vertex position up front via
-  /// [_polygonVertices], places/snaps a real Point at each (reusing
-  /// [_pointIdAt]'s existing-point/midpoint snapping, same as every other
-  /// multi-point placement path), connects them in a cycle with
-  /// [polygonSides] Lines, then locks the shape with two families of real
-  /// solver constraints (feedback round - dragging any one Point used to
-  /// leave every other Point free, so the "polygon" could be dragged into
-  /// any equilateral-but-irregular shape): a single real DistanceConstraint
-  /// pins the first vertex's own circumradius (the one editable radius
-  /// dimension - mirrors Arc/Ellipse/Slot's own "one real value, N-1 ties"
-  /// design), an EqualRadiusConstraint per remaining vertex ties it to that
-  /// same radius (so every vertex - and, since a chord's length is a
-  /// monotonic function of its central angle for a fixed radius, every
-  /// consecutive pair's angular spacing too - lands on one shared
-  /// circumscribed circle), and the existing EqualLengthConstraint chain
-  /// between consecutive edges (N-1 constraints; the last pair's equality
-  /// follows by transitivity) locks every side to the same length. Equal
-  /// radius plus equal chord length together force equal angles between
-  /// consecutive edges with no separate angle-value constraint needed - see
-  /// the backend's own regular-hexagon convergence test for the reasoning
-  /// and empirical verification.
+  /// like Circle. Only the center and first-vertex Points are placed/
+  /// snapped client-side (reusing [_pointIdAt]'s existing-point/midpoint
+  /// snapping, same as every other multi-point placement path) - every
+  /// other vertex, the [polygonSides] edge Lines, and the whole radius/
+  /// equal-radius/equal-length/angle solver constraint chain that locks
+  /// the shape rigid under drag (see the backend's `Sketch.add_polygon`
+  /// docstring for the constraint reasoning) are created atomically by a
+  /// single [SketchApiClient.createPolygon] call - a real, persisted
+  /// Polygon entity, not the old multi-call client orchestration this
+  /// replaces (see [SketchPolygonView]'s own doc comment for why that
+  /// mattered).
   Future<void> _clickPolygonTool() async {
     if (_polygonCenterPointId == null) {
       _selectionSet.clear();
@@ -5755,85 +5831,43 @@ class SketchController extends ChangeNotifier {
         return;
       }
 
-      final positions = _polygonVertices(center.x, center.y, cursorX, cursorY, _polygonSides);
-      final vertexIds = <String>[];
-      for (final (x, y) in positions) {
-        vertexIds.add(await _pointIdAt(x, y, excludeId: centerId));
-      }
+      final firstVertexId = await _pointIdAt(cursorX, cursorY, excludeId: centerId);
 
-      final lineIds = <String>[];
-      for (var i = 0; i < vertexIds.length; i++) {
-        final line = await _api.createLine(_sketchId!, vertexIds[i], vertexIds[(i + 1) % vertexIds.length]);
-        lines[line.id] = SketchLineView(
-          id: line.id,
-          startPointId: line.startPointId,
-          endPointId: line.endPointId,
-          construction: line.construction,
-        );
-        _pushUndo(() async {
-          await _api.deleteLine(_sketchId!, line.id);
-          lines.remove(line.id);
-        });
-        lineIds.add(line.id);
-      }
-
-      // Equal side lengths alone leave a regular-looking polygon free to
-      // collapse into a non-regular (even self-intersecting) shape under
-      // drag - equal radii (below) rule out that particular degenerate
-      // branch, but empirically not all of them (verified directly against
-      // the solver: equal-length + equal-radius alone can still converge
-      // with non-adjacent vertices coincident). Pinning the angle between
-      // every consecutive pair of edges to the same exterior angle
-      // (360/n degrees) closes that gap and keeps the shape genuinely
-      // rigid/regular under an incremental drag - see Fix #6.
-      final exteriorAngleDegrees = 360.0 / vertexIds.length;
-      for (var i = 0; i < lineIds.length - 1; i++) {
-        final equalLength = await _api.createEqualLengthConstraint(_sketchId!, lineIds[i], lineIds[i + 1]);
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, equalLength.id));
-        final angle =
-            await _api.createAngleConstraint(_sketchId!, lineIds[i], lineIds[i + 1], exteriorAngleDegrees);
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, angle.id));
-      }
-
-      final firstVertex = points[vertexIds[0]]!;
-      final circumradius = math.sqrt(
-        math.pow(firstVertex.x - center.x, 2) + math.pow(firstVertex.y - center.y, 2),
+      final polygon = await _api.createPolygon(_sketchId!, centerId, firstVertexId, _polygonSides);
+      polygons[polygon.id] = SketchPolygonView(
+        id: polygon.id,
+        centerPointId: polygon.centerPointId,
+        vertexPointIds: polygon.vertexPointIds,
+        lineIds: polygon.lineIds,
+        sides: polygon.sides,
+        construction: polygon.construction,
       );
-      // Provisional: pins the shape rigid for editing/rendering, but the
-      // solver skips it until the user confirms a real radius value (see
-      // DistanceConstraintDto.provisional) - the polygon tool is a
-      // shortcut, not itself a dimensioning action (Fix #6/#7).
-      final radiusConstraint = await _api.createDistanceConstraint(
-        _sketchId!,
-        centerId,
-        vertexIds[0],
-        circumradius,
-        provisional: true,
-      );
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, radiusConstraint.id));
-      for (var i = 1; i < vertexIds.length; i++) {
-        final equalRadius = await _api.createEqualRadiusConstraintFromPoints(
-          _sketchId!,
-          centerId,
-          vertexIds[0],
-          centerId,
-          vertexIds[i],
+      for (var i = 0; i < polygon.lineIds.length; i++) {
+        lines[polygon.lineIds[i]] = SketchLineView(
+          id: polygon.lineIds[i],
+          startPointId: polygon.vertexPointIds[i],
+          endPointId: polygon.vertexPointIds[(i + 1) % polygon.vertexPointIds.length],
         );
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, equalRadius.id));
       }
-
-      // Fix #7: tracks this Polygon purely so its guide circles can keep
-      // rendering after placement, toggleable via
-      // [showPolygonGuideCircles]/[togglePolygonGuideCircles] - see
-      // [PlacedPolygon]'s own doc comment for why this is session-only,
-      // client-local bookkeeping rather than real backend state.
-      final polygon = PlacedPolygon(centerPointId: centerId, vertexPointIds: List.unmodifiable(vertexIds));
-      _polygons.add(polygon);
+      // Vertex 0 is the (already-known) firstVertexId placed/snapped above -
+      // vertices 1..sides-1 are freshly created server-side by add_polygon
+      // and aren't locally known yet, same as Ellipse's own minor/negative-
+      // tip Points (_refreshAllPoints only refreshes ids already in `points`,
+      // it never discovers new ones).
+      for (final id in polygon.vertexPointIds.skip(1)) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
       _pushUndo(() async {
-        _polygons.remove(polygon);
+        await _api.deletePolygon(_sketchId!, polygon.id);
+        polygons.remove(polygon.id);
+        for (final lineId in polygon.lineIds) {
+          lines.remove(lineId);
+        }
       });
 
-      // Same rule as a completed Circle/Arc: one finished entity = one solve call.
+      // Same rule as a completed Circle/Arc: one finished entity = one solve
+      // call.
       await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
