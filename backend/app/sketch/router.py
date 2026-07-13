@@ -20,7 +20,7 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Sketch, Spline, TextEntity
+from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Polygon, Sketch, Spline, TextEntity
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
@@ -66,6 +66,9 @@ from app.sketch.schemas import (
     PointLineDistanceConstraintResponse,
     PointResponse,
     PointUpdate,
+    PolygonCreate,
+    PolygonResponse,
+    PolygonUpdate,
     ProfileDetectionResponse,
     ProfileResponse,
     SketchCreate,
@@ -127,6 +130,13 @@ def _get_ellipse_or_404(sketch: Sketch, ellipse_id: str) -> Ellipse:
     entity = sketch.entities.get(ellipse_id)
     if not isinstance(entity, Ellipse):
         raise HTTPException(status_code=404, detail="Ellipse not found")
+    return entity
+
+
+def _get_polygon_or_404(sketch: Sketch, polygon_id: str) -> Polygon:
+    entity = sketch.entities.get(polygon_id)
+    if not isinstance(entity, Polygon):
+        raise HTTPException(status_code=404, detail="Polygon not found")
     return entity
 
 
@@ -201,6 +211,18 @@ def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
         minor_radius=ellipse.minor_radius(sketch.points),
         rotation=ellipse.rotation(sketch.points),
         construction=ellipse.construction,
+    )
+
+
+def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
+    return PolygonResponse(
+        id=polygon.id,
+        center_point_id=polygon.center_point_id,
+        vertex_point_ids=polygon.vertex_point_ids,
+        line_ids=polygon.line_ids,
+        radius=polygon.radius(sketch.points),
+        sides=polygon.sides,
+        construction=polygon.construction,
     )
 
 
@@ -625,6 +647,51 @@ def delete_ellipse(sketch_id: str, ellipse_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_ellipse_or_404(sketch, ellipse_id)
     sketch.delete_ellipse(ellipse_id)
+
+
+@router.post("/sketches/{sketch_id}/polygons", response_model=PolygonResponse, status_code=201)
+def create_polygon(sketch_id: str, payload: PolygonCreate) -> PolygonResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        polygon = sketch.add_polygon(
+            payload.center_point_id,
+            payload.first_vertex_point_id,
+            payload.sides,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _polygon_response(sketch, polygon)
+
+
+@router.get("/sketches/{sketch_id}/polygons", response_model=list[PolygonResponse])
+def list_polygons(sketch_id: str) -> list[PolygonResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_polygon_response(sketch, polygon) for polygon in sketch.polygons()]
+
+
+@router.get("/sketches/{sketch_id}/polygons/{polygon_id}", response_model=PolygonResponse)
+def get_polygon(sketch_id: str, polygon_id: str) -> PolygonResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _polygon_response(sketch, _get_polygon_or_404(sketch, polygon_id))
+
+
+@router.patch("/sketches/{sketch_id}/polygons/{polygon_id}", response_model=PolygonResponse)
+def update_polygon(sketch_id: str, polygon_id: str, payload: PolygonUpdate) -> PolygonResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    polygon = _get_polygon_or_404(sketch, polygon_id)
+    if payload.construction is not None:
+        polygon.construction = payload.construction
+    return _polygon_response(sketch, polygon)
+
+
+@router.delete("/sketches/{sketch_id}/polygons/{polygon_id}", status_code=204)
+def delete_polygon(sketch_id: str, polygon_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_polygon_or_404(sketch, polygon_id)
+    sketch.delete_polygon(polygon_id)
 
 
 @router.post("/sketches/{sketch_id}/splines", response_model=SplineResponse, status_code=201)

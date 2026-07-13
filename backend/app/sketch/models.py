@@ -344,6 +344,63 @@ class Ellipse(SketchEntity):
 
 
 @dataclass
+class Polygon(SketchEntity):
+    """A regular N-gon defined by a center Point and `sides` vertex Points
+    (`vertex_point_ids`, in order, connected in a cycle by `line_ids`) -
+    real, independently addressable Points/Lines, same as every other
+    entity here.
+
+    Bug fix (sketcher-roadmap feedback round): a Polygon used to be a
+    client-only shortcut with no persisted entity of its own - just plain
+    Points/Lines/Constraints the client orchestrated across several
+    sequential API calls, with nothing server-side to reliably identify
+    "these N points + these constraints form a Polygon" later (e.g. to
+    reinterpret dragging a vertex as a circumradius edit rather than an
+    unconstrained 2D point move - see `SketchController`'s own drag
+    handling). `add_polygon` now creates everything atomically in one call,
+    mirroring Arc/Ellipse.
+
+    The first vertex's (`vertex_point_ids[0]`) distance from center is the
+    Polygon's one real, independently-editable radius DistanceConstraint
+    (`radius_constraint_id`) - exactly like Circle/Arc/Ellipse's own single-
+    editable-radius design. Every other vertex is tied to that same value
+    via its own EqualRadiusConstraint (`equal_radius_constraint_ids`, one
+    per remaining vertex, via `add_equal_radius_constraint_from_points`
+    since a Polygon has no owning Circle/Arc to resolve a center/rim pair
+    from). Consecutive edges are pinned to equal length
+    (`equal_length_constraint_ids`) and to the same exterior angle,
+    `360/sides` degrees (`angle_constraint_ids`) - `sides - 1` of each
+    (the last pair's equality follows by transitivity) - which together
+    keep the shape genuinely rigid/regular under an incremental drag (see
+    the regular-hexagon convergence test this mirrors).
+
+    Does NOT override `endpoint_point_ids()` (unlike Arc): a Polygon's own
+    Lines already form a closed loop by themselves, so it's always its own
+    standalone closed profile, never part of a larger Line chain's
+    connectivity graph - same reasoning as Circle/Ellipse.
+    """
+
+    id: str
+    center_point_id: str
+    vertex_point_ids: list[str]
+    line_ids: list[str]
+    radius_constraint_id: str
+    equal_radius_constraint_ids: list[str]
+    equal_length_constraint_ids: list[str]
+    angle_constraint_ids: list[str]
+    sides: int
+
+    @property
+    def type(self) -> str:
+        return "polygon"
+
+    def radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center_point_id]
+        vertex = points[self.vertex_point_ids[0]]
+        return math.hypot(vertex.x - center.x, vertex.y - center.y)
+
+
+@dataclass
 class Spline(SketchEntity):
     """An open, piecewise-cubic curve through 2+ real, independently
     addressable "through-points" (`through_point_ids`) - the Points a user
@@ -474,6 +531,7 @@ class SketchEntityType(str, Enum):
     CIRCLE = "circle"
     ARC = "arc"
     ELLIPSE = "ellipse"
+    POLYGON = "polygon"
     SPLINE = "spline"
     TEXT = "text"
 
@@ -949,6 +1007,100 @@ class Sketch:
     def ellipses(self) -> list[Ellipse]:
         return [entity for entity in self.entities.values() if isinstance(entity, Ellipse)]
 
+    def add_polygon(
+        self,
+        center_point_id: str,
+        first_vertex_point_id: str,
+        sides: int,
+        *,
+        construction: bool = False,
+    ) -> Polygon:
+        """Add a regular Polygon from an existing center Point and an
+        existing first-vertex Point (together fixing the circumradius and
+        rotation, same as Arc's center/start pair) - every other vertex is
+        computed here (same regular-polygon math the client's own
+        `_polygonVertices` ghost-preview uses: `center + radius *
+        (cos(baseAngle + 2*pi*i/sides), sin(...))`, `baseAngle` being the
+        first vertex's own angle from center) and created as a brand new
+        Point, mirroring Arc's own `end_angle` path - there is no existing-
+        Point-sharing option for these, since a regular polygon's other
+        vertices can only ever come from its own creation.
+
+        See the Polygon class docstring for what the constraint chain does
+        and why."""
+        if sides < 3:
+            raise ValueError("A polygon must have at least 3 sides")
+        center = self.points[center_point_id]
+        first_vertex = self.points[first_vertex_point_id]
+        radius = math.hypot(first_vertex.x - center.x, first_vertex.y - center.y)
+        if radius == 0:
+            raise ValueError("A polygon's first vertex cannot coincide with its center point")
+        base_angle = math.atan2(first_vertex.y - center.y, first_vertex.x - center.x)
+
+        vertex_point_ids = [first_vertex_point_id]
+        for i in range(1, sides):
+            angle = base_angle + 2 * math.pi * i / sides
+            vertex_point_ids.append(
+                self.add_point(center.x + radius * math.cos(angle), center.y + radius * math.sin(angle)).id
+            )
+
+        line_ids = [
+            self.add_line(vertex_point_ids[i], vertex_point_ids[(i + 1) % sides]).id for i in range(sides)
+        ]
+
+        # Provisional: pins the shape rigid for editing/rendering, but the
+        # solver skips it until the user confirms a real radius value (see
+        # DistanceConstraint.provisional) - the polygon tool is a shortcut,
+        # not itself a dimensioning action.
+        radius_constraint = self.add_distance_constraint(
+            center_point_id, first_vertex_point_id, radius, provisional=True
+        )
+        equal_radius_constraint_ids = [
+            self.add_equal_radius_constraint_from_points(
+                center_point_id, first_vertex_point_id, center_point_id, vertex_point_ids[i]
+            ).id
+            for i in range(1, sides)
+        ]
+
+        # Equal side lengths alone leave a regular-looking polygon free to
+        # collapse into a non-regular (even self-intersecting) shape under
+        # drag - equal radii (above) rule out that particular degenerate
+        # branch, but not all of them (confirmed directly against the
+        # solver: equal-length + equal-radius alone can still converge with
+        # non-adjacent vertices coincident). Pinning the angle between every
+        # consecutive pair of edges to the same exterior angle (360/sides
+        # degrees) closes that gap and keeps the shape genuinely
+        # rigid/regular under an incremental drag - see the regular-hexagon
+        # convergence test this mirrors.
+        exterior_angle_degrees = 360.0 / sides
+        equal_length_constraint_ids = []
+        angle_constraint_ids = []
+        for i in range(sides - 1):
+            equal_length_constraint_ids.append(
+                self.add_equal_length_constraint(line_ids[i], line_ids[i + 1]).id
+            )
+            angle_constraint_ids.append(
+                self.add_angle_constraint(line_ids[i], line_ids[i + 1], exterior_angle_degrees).id
+            )
+
+        polygon = Polygon(
+            id=str(uuid.uuid4()),
+            center_point_id=center_point_id,
+            vertex_point_ids=vertex_point_ids,
+            line_ids=line_ids,
+            radius_constraint_id=radius_constraint.id,
+            equal_radius_constraint_ids=equal_radius_constraint_ids,
+            equal_length_constraint_ids=equal_length_constraint_ids,
+            angle_constraint_ids=angle_constraint_ids,
+            sides=sides,
+            construction=construction,
+        )
+        self.entities[polygon.id] = polygon
+        return polygon
+
+    def polygons(self) -> list[Polygon]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Polygon)]
+
     def add_spline(self, through_point_ids: list[str], *, construction: bool = False) -> Spline:
         """Add a Spline through 2+ existing Points, creating 2 control-
         handle Points per segment (a straight-line-looking 1/3-offset
@@ -1117,6 +1269,36 @@ class Sketch:
         self.constraints.pop(ellipse.minor_midpoint_constraint_id, None)
         self.constraints.pop(ellipse.perpendicular_constraint_id, None)
 
+    def delete_polygon(self, polygon_id: str) -> None:
+        """Remove a Polygon and everything `add_polygon` always creates
+        alongside it - all `sides` edge Lines and every constraint in its
+        radius/equal-radius/equal-length/angle chain - same "internal
+        implementation detail" exception `delete_circle`/`delete_arc`/
+        `delete_ellipse` already make for their own radius constraint(s).
+        The center and every vertex Point (including the `sides - 1` this
+        Polygon itself created fresh) are left untouched, same as
+        `delete_line`/`delete_circle`/`delete_arc`/`delete_ellipse` -
+        consistent with this codebase's own "an entity never auto-deletes
+        the Points it's built from, even ones only it ever created" rule."""
+        polygon = self.entities.get(polygon_id)
+        if not isinstance(polygon, Polygon):
+            raise KeyError(polygon_id)
+        del self.entities[polygon_id]
+        # `.pop(id, None)` rather than `del`, matching `delete_ellipse`'s own
+        # axis-line cleanup: a Polygon's own Line can also be deleted
+        # directly (its own `DELETE /lines/{id}` has no notion of "still
+        # owned by a Polygon"), so it may already be gone by the time this
+        # runs - that should be a silent no-op here, not a KeyError.
+        for line_id in polygon.line_ids:
+            self.entities.pop(line_id, None)
+        self.constraints.pop(polygon.radius_constraint_id, None)
+        for constraint_id in (
+            *polygon.equal_radius_constraint_ids,
+            *polygon.equal_length_constraint_ids,
+            *polygon.angle_constraint_ids,
+        ):
+            self.constraints.pop(constraint_id, None)
+
     def delete_spline(self, spline_id: str) -> None:
         """Remove a Spline and every `SplineTangentConstraint` `add_spline`
         created alongside it - same "internal implementation detail"
@@ -1165,6 +1347,11 @@ class Sketch:
                 entity.minor_point_neg_id,
             ):
                 return f"Point is still referenced by ellipse {entity.id}"
+            if isinstance(entity, Polygon) and point_id in (
+                entity.center_point_id,
+                *entity.vertex_point_ids,
+            ):
+                return f"Point is still referenced by polygon {entity.id}"
             if isinstance(entity, Spline) and (
                 point_id in entity.through_point_ids or point_id in entity.control_point_ids
             ):

@@ -68,6 +68,7 @@ from app.sketch.models import (
     Line,
     Plane,
     Point,
+    Polygon,
     Sketch,
     SketchEntity,
     SketchEntityRef,
@@ -175,6 +176,20 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "minor_axis_line_id": entity.minor_axis_line_id,
             "perpendicular_constraint_id": entity.perpendicular_constraint_id,
         }
+    if isinstance(entity, Polygon):
+        return {
+            "type": "polygon",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center_point_id": entity.center_point_id,
+            "vertex_point_ids": entity.vertex_point_ids,
+            "line_ids": entity.line_ids,
+            "radius_constraint_id": entity.radius_constraint_id,
+            "equal_radius_constraint_ids": entity.equal_radius_constraint_ids,
+            "equal_length_constraint_ids": entity.equal_length_constraint_ids,
+            "angle_constraint_ids": entity.angle_constraint_ids,
+            "sides": entity.sides,
+        }
     if isinstance(entity, Spline):
         return {
             "type": "spline",
@@ -243,6 +258,19 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             major_axis_line_id=_require(data, "major_axis_line_id"),
             minor_axis_line_id=_require(data, "minor_axis_line_id"),
             perpendicular_constraint_id=_require(data, "perpendicular_constraint_id"),
+        )
+    if entity_type == "polygon":
+        return Polygon(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center_point_id=_require(data, "center_point_id"),
+            vertex_point_ids=list(_require(data, "vertex_point_ids")),
+            line_ids=list(_require(data, "line_ids")),
+            radius_constraint_id=_require(data, "radius_constraint_id"),
+            equal_radius_constraint_ids=list(_require(data, "equal_radius_constraint_ids")),
+            equal_length_constraint_ids=list(_require(data, "equal_length_constraint_ids")),
+            angle_constraint_ids=list(_require(data, "angle_constraint_ids")),
+            sides=_require(data, "sides"),
         )
     if entity_type == "spline":
         return Spline(

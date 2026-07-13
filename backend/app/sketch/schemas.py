@@ -1,6 +1,6 @@
 from typing import Literal, Union
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.sketch.models import Plane
 from app.sketch.profile import ProfileStatus
@@ -235,6 +235,41 @@ class EllipseUpdate(BaseModel):
     real DistanceConstraints (see the Ellipse class docstring) - PATCH
     `major_constraint_id`/`minor_constraint_id` via the ordinary
     `/constraints/{id}` endpoint instead."""
+
+    construction: bool | None = None
+
+
+class PolygonCreate(BaseModel):
+    """Create a regular Polygon from an existing center Point and an
+    existing first-vertex Point (together fixing the circumradius and
+    rotation), plus a side count - see the backend's
+    `app.sketch.models.Sketch.add_polygon` docstring for what this creates.
+    Unlike Arc/Ellipse there is no "computed point" alternative for the
+    first vertex - the client always places/snaps it as a real Point
+    first, exactly as it always has for the Polygon tool's own first tap."""
+
+    center_point_id: str
+    first_vertex_point_id: str
+    sides: int = Field(ge=3)
+    construction: bool = False
+
+
+class PolygonResponse(BaseModel):
+    type: Literal["polygon"] = "polygon"
+    id: str
+    center_point_id: str
+    vertex_point_ids: list[str]
+    line_ids: list[str]
+    radius: float
+    sides: int
+    construction: bool = False
+
+
+class PolygonUpdate(BaseModel):
+    """Update a polygon's construction flag - mirrors ArcUpdate/EllipseUpdate.
+    There is no radius field here either: a polygon's radius is driven by
+    its own DistanceConstraint (see Sketch.add_polygon), not edited
+    directly."""
 
     construction: bool | None = None
 

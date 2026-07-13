@@ -9,6 +9,7 @@ from app.sketch.models import (
     Line,
     Point,
     Plane,
+    Polygon,
     Sketch,
     SketchEntityRef,
     SketchEntityType,
@@ -21,6 +22,7 @@ _ENTITY_TYPE_BY_REF: dict[SketchEntityType, type] = {
     SketchEntityType.CIRCLE: Circle,
     SketchEntityType.ARC: Arc,
     SketchEntityType.ELLIPSE: Ellipse,
+    SketchEntityType.POLYGON: Polygon,
     SketchEntityType.SPLINE: Spline,
     SketchEntityType.TEXT: TextEntity,
 }
