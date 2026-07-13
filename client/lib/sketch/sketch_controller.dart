@@ -2458,6 +2458,34 @@ class SketchController extends ChangeNotifier {
   /// hover/cursor-move handling while a drag owns pointer-move events.
   String? get draggingPointId => _draggingPointId;
 
+  /// The Polygon [pointId] is a vertex of, or null if it isn't one -
+  /// [beginPointDrag]/[updatePointDrag]/[endPointDrag] use this to
+  /// reinterpret a vertex drag as a circumradius-dimension edit rather than
+  /// a free geometric move (see [updatePointDrag]'s own doc comment for
+  /// why): every vertex, not just index 0, resizes the same shared circle.
+  SketchPolygonView? _polygonForVertex(String pointId) {
+    for (final polygon in polygons.values) {
+      if (polygon.vertexPointIds.contains(pointId)) return polygon;
+    }
+    return null;
+  }
+
+  /// [polygon]'s one real circumradius `DistanceConstraint` (center to
+  /// vertex 0) - identified the same way the controller's own tests do,
+  /// by its two endpoint Points, since [SketchPolygonView] itself doesn't
+  /// carry the constraint id (the API response only exposes the derived
+  /// [PolygonDto.radius] value, not which Constraint produced it).
+  DistanceConstraintDto? _polygonRadiusConstraint(SketchPolygonView polygon) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == polygon.centerPointId &&
+          constraint.pointBId == polygon.vertexPointIds[0]) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// Starts a live drag of [pointId] (new work package item 8) - false (and
   /// no-op) if busy, there's no sketch yet, or a label drag is already in
   /// progress (mutually exclusive with [beginLabelDrag] - Stage 15 item 2),
@@ -2476,19 +2504,28 @@ class SketchController extends ChangeNotifier {
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
-    // Phase 3 (3.2): a Point in an over-constrained cluster already has a
-    // redundant/conflicting Constraint pinning it - dragging it wouldn't
-    // move it anywhere the solver would actually let it stay, so refuse
-    // the grab rather than start a drag that's guaranteed to snap back.
-    // sketch_canvas.dart colors these Points red so this isn't a silent
-    // no-op. Checks every red source (see [isPointForcedOverConstrained]),
-    // not just [rigidity]'s own structural verdict.
-    if (isPointForcedOverConstrained(pointId)) return false;
-    // Bug-fix round: a fully constrained *and* grounded Point (rendered
-    // green - see [isPointFullyPinned]'s own doc comment) has nowhere
-    // left to move into either, same reasoning as the over-constrained
-    // case above but for the opposite ("done", not "broken") reason.
-    if (isPointFullyPinned(pointId)) return false;
+    // A Polygon vertex drag is reinterpreted as editing its circumradius
+    // dimension (see [updatePointDrag]'s own doc comment), not a free
+    // geometric move - the over/fully-constrained gating below exists to
+    // refuse drags that have nowhere to go, which doesn't apply to
+    // changing a dimension's target value (same as any other confirmed
+    // dimension, e.g. [confirmGhostValue], never checks isFullyConstrained
+    // either).
+    if (_polygonForVertex(pointId) == null) {
+      // Phase 3 (3.2): a Point in an over-constrained cluster already has a
+      // redundant/conflicting Constraint pinning it - dragging it wouldn't
+      // move it anywhere the solver would actually let it stay, so refuse
+      // the grab rather than start a drag that's guaranteed to snap back.
+      // sketch_canvas.dart colors these Points red so this isn't a silent
+      // no-op. Checks every red source (see [isPointForcedOverConstrained]),
+      // not just [rigidity]'s own structural verdict.
+      if (isPointForcedOverConstrained(pointId)) return false;
+      // Bug-fix round: a fully constrained *and* grounded Point (rendered
+      // green - see [isPointFullyPinned]'s own doc comment) has nowhere
+      // left to move into either, same reasoning as the over-constrained
+      // case above but for the opposite ("done", not "broken") reason.
+      if (isPointFullyPinned(pointId)) return false;
+    }
     final point = points[pointId]!;
     _draggingPointId = pointId;
     _dragOriginCursorX = cursorX;
@@ -2525,6 +2562,15 @@ class SketchController extends ChangeNotifier {
   /// one big jump instead of many small ones. Rapid out-of-order responses
   /// are accepted silently, same tradeoff as every other unsequenced PATCH
   /// in this file.
+  ///
+  /// Task #94 (deferred item): dragging a Polygon vertex is reinterpreted
+  /// as editing its circumradius dimension rather than moving the vertex
+  /// freely. Once its own real circumradius `DistanceConstraint` is
+  /// confirmed (no longer provisional - see `DistanceConstraint.
+  /// provisional`'s own doc comment), it actively resists a raw point PATCH
+  /// exactly like any other confirmed dimension would, so a plain drag
+  /// would just fight the constraint back to the old size instead of
+  /// resizing the shape. See [_maybeUpdatePolygonRadiusDuringDrag].
   Future<void> updatePointDrag(double x, double y) async {
     final pointId = _draggingPointId;
     final originCursorX = _dragOriginCursorX;
@@ -2541,6 +2587,23 @@ class SketchController extends ChangeNotifier {
     }
     final newX = originPointX + (x - originCursorX);
     final newY = originPointY + (y - originCursorY);
+
+    final polygon = _polygonForVertex(pointId);
+    if (polygon != null) {
+      final center = points[polygon.centerPointId];
+      final radiusConstraint = center == null ? null : _polygonRadiusConstraint(polygon);
+      if (center == null || radiusConstraint == null) return;
+      final newRadius = math.sqrt(math.pow(newX - center.x, 2) + math.pow(newY - center.y, 2));
+      if (newRadius < 1e-9) return;
+      // Speculative local move for immediate 1:1 cursor tracking, same as
+      // the raw-PATCH case below - the throttled radius update then pulls
+      // every vertex (including this one) onto the actual resized circle.
+      points[pointId] = SketchPointView(id: pointId, x: newX, y: newY);
+      notifyListeners();
+      _maybeUpdatePolygonRadiusDuringDrag(radiusConstraint.id, newRadius, () => _draggingPointId == pointId);
+      return;
+    }
+
     try {
       final updated = await _api.updatePoint(_sketchId!, pointId, newX, newY);
       // [endPointDrag] clears _draggingPointId synchronously before it solves
@@ -2606,10 +2669,59 @@ class SketchController extends ChangeNotifier {
     }
   }
 
+  /// [_maybeSolveDuringDrag]'s counterpart for a Polygon-vertex drag (see
+  /// [updatePointDrag]'s own doc comment) - throttled/dropped-not-queued the
+  /// same way, sharing [_dragSolveInFlight]/[_lastDragSolveAt] with the
+  /// regular drag path so the two can never both be in flight at once (a
+  /// drag is always either a Polygon-vertex radius edit or a plain point
+  /// move, never both).
+  void _maybeUpdatePolygonRadiusDuringDrag(String constraintId, double radius, bool Function() isStillActive) {
+    if (_dragSolveInFlight) return;
+    final now = DateTime.now();
+    if (_lastDragSolveAt != null && now.difference(_lastDragSolveAt!) < _dragSolveThrottle) return;
+    _lastDragSolveAt = now;
+    _dragSolveInFlight = true;
+    unawaited(_updatePolygonRadiusDuringDrag(constraintId, radius, isStillActive));
+  }
+
+  /// Unlike [_solveDuringDrag] (which keeps the dragged Point(s) themselves
+  /// exactly under the touch and only reflows every *other* Point), every
+  /// vertex here - including the dragged one - takes whatever position the
+  /// resize actually solved to: this is a dimension edit, not a free move,
+  /// so the vertex belongs wherever the newly-sized circle actually put it,
+  /// not wherever the cursor happens to be.
+  Future<void> _updatePolygonRadiusDuringDrag(
+    String constraintId,
+    double radius,
+    bool Function() isStillActive,
+  ) async {
+    try {
+      await _api.updateConstraintValue(_sketchId!, constraintId, radius);
+      if (!isStillActive()) return;
+      final fresh = await _api.listPoints(_sketchId!);
+      if (!isStillActive()) return;
+      for (final p in fresh) {
+        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+      }
+      notifyListeners();
+    } on ApiException catch (_) {
+      // Best-effort, same tradeoff as [_solveDuringDrag].
+    } finally {
+      _dragSolveInFlight = false;
+    }
+  }
+
   /// Ends the current Point drag (if any) and re-solves from the dropped
   /// position, same backend-is-truth refresh as every other mutation - any
   /// remaining constraints (e.g. a Line this Point anchors staying the
   /// right length) settle here rather than during the drag itself.
+  ///
+  /// Task #94 (deferred item): a Polygon-vertex drag (see [updatePointDrag]'s
+  /// own doc comment) ends by confirming its circumradius dimension at the
+  /// dropped radius, instead of pinning the dropped position directly -
+  /// undo restores the dimension's old value, not the vertex's old (x, y),
+  /// same pattern [confirmGhostValue] already uses for every other confirmed
+  /// dimension.
   Future<void> endPointDrag() async {
     final pointId = _draggingPointId;
     if (pointId == null) return;
@@ -2621,6 +2733,27 @@ class SketchController extends ChangeNotifier {
     _dragOriginCursorY = null;
     _dragOriginPointX = null;
     _dragOriginPointY = null;
+
+    final polygon = _polygonForVertex(pointId);
+    if (polygon != null) {
+      final center = points[polygon.centerPointId];
+      final radiusConstraint = center == null ? null : _polygonRadiusConstraint(polygon);
+      await _runGuarded(() async {
+        if (center != null && radiusConstraint != null) {
+          final newRadius = math.sqrt(math.pow(droppedPoint.x - center.x, 2) + math.pow(droppedPoint.y - center.y, 2));
+          if (newRadius >= 1e-9) {
+            final oldRadius = radiusConstraint.distance;
+            await _api.updateConstraintValue(_sketchId!, radiusConstraint.id, newRadius);
+            _pushUndo(() async => _api.updateConstraintValue(_sketchId!, radiusConstraint.id, oldRadius));
+          }
+        }
+        await _solveAndTrackDof();
+        await _refreshAllPoints();
+        await _refreshConstraints();
+      });
+      return;
+    }
+
     await _runGuarded(() async {
       _pushUndo(() async {
         final restored = await _api.updatePoint(_sketchId!, pointId, originX, originY);

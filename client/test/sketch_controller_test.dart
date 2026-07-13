@@ -241,10 +241,37 @@ class _FakeBackend {
       if (constraint['type'] == 'angle') {
         constraint['angle_degrees'] = value;
       } else {
+        final oldDistance = (constraint['distance'] as num).toDouble();
         constraint['distance'] = value;
         // Mirrors the real backend: any explicit value PATCH confirms the
         // constraint, clearing `provisional` (see update_constraint_value).
         constraint['provisional'] = false;
+        // Task #94: a Polygon's own circumradius DistanceConstraint (center
+        // to vertex 0) is the *only* thing pinning the shape's absolute
+        // size - equal-length/equal-radius/angle alone only fix its shape,
+        // not its scale - so resizing it uniformly scales every vertex
+        // about the center, same as a real solve would settle to. Good
+        // enough to exercise the client's own vertex-drag-as-circumradius-
+        // edit logic against real, moved geometry rather than just a
+        // stored constraint value.
+        if (oldDistance > 1e-9) {
+          for (final polygon in polygons.values) {
+            final vertexPointIds = (polygon['vertex_point_ids'] as List).cast<String>();
+            if (polygon['center_point_id'] == constraint['point_a_id'] &&
+                vertexPointIds.first == constraint['point_b_id']) {
+              final center = points[polygon['center_point_id']]!;
+              final cx = (center['x'] as num).toDouble();
+              final cy = (center['y'] as num).toDouble();
+              final scale = value / oldDistance;
+              for (final vertexId in vertexPointIds) {
+                final vertex = points[vertexId]!;
+                vertex['x'] = cx + ((vertex['x'] as num).toDouble() - cx) * scale;
+                vertex['y'] = cy + ((vertex['y'] as num).toDouble() - cy) * scale;
+              }
+              break;
+            }
+          }
+        }
       }
       return _json(_solveResultBody(), 200);
     }
@@ -2133,6 +2160,80 @@ void main() {
     await controller.endPointDrag();
 
     expect(controller.errorMessage, isNull);
+  });
+
+  test(
+      'task #94: dragging a Polygon vertex resizes its circumradius dimension instead of the '
+      'confirmed DistanceConstraint fighting it back to the old size', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(20, 20); // center
+    await controller.handleCanvasTap(30, 20); // first vertex - radius 10
+
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    final vertexId = radiusConstraint.pointBId;
+    // Confirming the radius dimension first (mirrors a user having already
+    // set it via the dimension-ghost flow) clears `provisional`, which is
+    // exactly the state where a plain point drag used to just fight the
+    // now-real DistanceConstraint back to the old radius.
+    controller.selectConstraint(radiusConstraint.id);
+    await controller.updateSelectedConstraintValue(10);
+    controller.exitToSelectMode();
+
+    // Origin cursor set to the vertex's own current position first, so
+    // updatePointDrag's (x, y) argument below lands the vertex at exactly
+    // that absolute sketch-space position (see [updatePointDrag]'s own doc
+    // comment: it moves the Point by the *delta* from this origin cursor,
+    // not directly to (x, y)).
+    final startVertex = controller.points[vertexId]!;
+    controller.cursorX = startVertex.x;
+    controller.cursorY = startVertex.y;
+    expect(controller.beginPointDrag(vertexId), isTrue);
+    controller.updatePointDrag(35, 20); // 15 units from the (20, 20) center
+    await controller.endPointDrag();
+
+    expect(controller.errorMessage, isNull);
+    final updatedRadiusConstraint =
+        controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    // The drag grew the circumradius from 10 to 15 - it didn't snap back.
+    expect(updatedRadiusConstraint.distance, closeTo(15, 1e-6));
+
+    final center = controller.points[controller.polygons.values.single.centerPointId]!;
+    for (final id in controller.polygons.values.single.vertexPointIds) {
+      final vertex = controller.points[id]!;
+      final radius = math.sqrt(math.pow(vertex.x - center.x, 2) + math.pow(vertex.y - center.y, 2));
+      expect(radius, closeTo(15, 1e-6));
+    }
+  });
+
+  test('task #94: undo after a Polygon vertex-drag-as-circumradius-edit restores the original radius',
+      () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(5);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // first vertex - radius 10
+
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    final vertexId = radiusConstraint.pointBId;
+    controller.exitToSelectMode();
+
+    final startVertex = controller.points[vertexId]!;
+    controller.cursorX = startVertex.x;
+    controller.cursorY = startVertex.y;
+    expect(controller.beginPointDrag(vertexId), isTrue);
+    controller.updatePointDrag(20, 0); // 20 units from the (0, 0) center
+    await controller.endPointDrag();
+    expect(
+      controller.constraints.values.whereType<DistanceConstraintDto>().single.distance,
+      closeTo(20, 1e-6),
+    );
+
+    await controller.undo();
+
+    expect(
+      controller.constraints.values.whereType<DistanceConstraintDto>().single.distance,
+      closeTo(10, 1e-6),
+    );
   });
 
   test('togglePolygonGuideCircles flips showPolygonGuideCircles, reflected in the next ghost preview',
