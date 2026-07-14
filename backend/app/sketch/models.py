@@ -23,6 +23,7 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
+from app.sketch.intersections import line_vs_arc, line_vs_circle, line_vs_segment
 
 
 class Plane(str, Enum):
@@ -556,6 +557,15 @@ class SketchEntityRef:
     sketch_id: str
     entity_type: SketchEntityType
     entity_id: str
+
+
+class NoIntersectionFoundError(ValueError):
+    """Sketcher-roadmap Phase 11: `Sketch.trim_or_extend_line` raises this
+    specifically (a `ValueError` subclass, so any existing bare `except
+    ValueError` elsewhere still catches it as a fallback) when no valid
+    trim/extend target exists - a real, expected outcome the router surfaces
+    as 422, distinct from every other `ValueError` this method raises
+    (invalid endpoint, Polygon-owned edge), which stay ordinary 400s."""
 
 
 @dataclass
@@ -1213,6 +1223,148 @@ class Sketch:
             raise KeyError(line_id)
         del self.entities[line_id]
 
+    # Sketcher-roadmap Phase 11: a sane bound on how far a trim/extend
+    # target can be from where the Line currently ends, in sketch units -
+    # guards against a genuinely-but-uselessly-distant result from a
+    # near-parallel target (the same "wildly distant, useless result"
+    # concern `sketch_canvas.dart`'s own `_maxAngleIntersectionDistance`
+    # constant already guards against for the angle-ghost arc, just in
+    # sketch space here rather than screen pixels).
+    _TRIM_MAX_DISTANCE = 10000.0
+
+    def trim_or_extend_line(self, line_id: str, moved_point_id: str) -> tuple[Line, Point, bool]:
+        """Trims `line_id` back to, or extends it out to reach, the nearest
+        Line/Circle/Arc it crosses - the same operation either way (see
+        `app.sketch.router`'s trim endpoint doc comment): only whether the
+        found intersection lies inside or outside the Line's current span
+        differs, and this method doesn't need to know which case it is
+        either.
+
+        `moved_point_id` identifies which of the Line's own two endpoints
+        is being adjusted - the *other* end stays fixed and anchors the
+        direction searched along, from the fixed end through and beyond
+        the moved end (never back past the fixed end - a trim/extend that
+        would need to flip the Line's own direction makes no sense). Every
+        other Line/Circle/Arc entity in the Sketch is checked for a
+        crossing against that direction, always against each target's own
+        actual, finite extent (a Line's real segment, an Arc's real sweep)
+        - never another entity's own infinite extension. Among valid
+        candidates within `_TRIM_MAX_DISTANCE` of the current position, the
+        one nearest it wins - the standard CAD "nearest to where you
+        already are" trim/extend convention, naturally covering both
+        directions (a nearer candidate trims the Line shorter; a farther
+        one, beyond the current end, extends it).
+
+        Splines/Ellipses are never intersection targets (see
+        `app.sketch.intersections`'s own module doc comment - no
+        closed-form solve without curve-specific root-finding, out of
+        scope for v1), and only a Line can be the entity trimmed/extended
+        at all - trimming an Arc/Circle's own sweep would need to redefine
+        that entity's own topology (its start/end Points, its
+        EqualRadiusConstraint chain), a materially bigger problem than
+        repointing one end of a Line, deliberately deferred rather than
+        half-built here.
+
+        Raises `KeyError` if `line_id` isn't a Line, `ValueError` if
+        `moved_point_id` isn't one of its own two endpoints or the Line
+        belongs to a Polygon (trimming one edge out from under a regular
+        Polygon's own rigid constraint chain needs real entity-demotion
+        support this doesn't have yet - a v1 scope decision, rejected
+        rather than silently corrupting the Polygon's own bookkeeping), or
+        `NoIntersectionFoundError` (itself a `ValueError` subclass) if no
+        valid intersection is found within range at all - a real, expected
+        outcome a caller should surface distinctly from every other case
+        here (see the router's own 400 vs
+        422 split).
+
+        Returns `(line, moved_point, created_new_point)` - `moved_point` is
+        always a real Point at the new position (`line.start_point_id`/
+        `line.end_point_id` already reflects it); `created_new_point` is
+        True when `moved_point_id`'s original Point was shared with other
+        geometry/constraints - moving it in place would have silently
+        dragged whatever else referenced it, exactly the class of bug
+        `add_polygon`'s own history already went through several rounds
+        fixing - so a fresh Point was created at the new position and only
+        this Line's own end repointed to it, leaving the original Point
+        exactly where it was (see `_point_deletion_blocker`'s own doc
+        comment on its `exclude_entity_id` parameter, reused here for the
+        same "is this Point shared" question).
+        """
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        if moved_point_id == line.start_point_id:
+            fixed_point_id = line.end_point_id
+        elif moved_point_id == line.end_point_id:
+            fixed_point_id = line.start_point_id
+        else:
+            raise ValueError(f"Point {moved_point_id} is not an endpoint of line {line_id}")
+        for entity in self.entities.values():
+            if isinstance(entity, Polygon) and line_id in entity.line_ids:
+                raise ValueError(f"Cannot trim/extend line {line_id} - it is an edge of polygon {entity.id}")
+
+        fixed_point = self.points[fixed_point_id]
+        moved_point = self.points[moved_point_id]
+        fixed_xy = (fixed_point.x, fixed_point.y)
+        moved_xy = (moved_point.x, moved_point.y)
+        line_length = math.hypot(moved_xy[0] - fixed_xy[0], moved_xy[1] - fixed_xy[1])
+        if line_length < 1e-9:
+            raise ValueError(f"Cannot trim/extend a zero-length line {line_id}")
+        current_t = 1.0  # by construction: fixed_xy + 1.0 * (moved_xy - fixed_xy) == moved_xy
+
+        candidates: list[tuple[float, tuple[float, float]]] = []
+        for entity in self.entities.values():
+            if entity.id == line_id:
+                continue
+            if isinstance(entity, Line):
+                other_start = self.points[entity.start_point_id]
+                other_end = self.points[entity.end_point_id]
+                hit = line_vs_segment(
+                    fixed_xy, moved_xy, (other_start.x, other_start.y), (other_end.x, other_end.y)
+                )
+                if hit is not None:
+                    candidates.append(hit)
+            elif isinstance(entity, Circle):
+                center = self.points[entity.center_point_id]
+                candidates.extend(
+                    line_vs_circle(fixed_xy, moved_xy, (center.x, center.y), entity.radius(self.points))
+                )
+            elif isinstance(entity, Arc):
+                center = self.points[entity.center_point_id]
+                start = self.points[entity.start_point_id]
+                end = self.points[entity.end_point_id]
+                candidates.extend(
+                    line_vs_arc(
+                        fixed_xy,
+                        moved_xy,
+                        (center.x, center.y),
+                        entity.radius(self.points),
+                        (start.x, start.y),
+                        (end.x, end.y),
+                    )
+                )
+
+        valid = []
+        for t, point in candidates:
+            if t <= 1e-6 or abs(t - current_t) <= 1e-9:
+                continue  # behind the fixed end, or exactly the current position - not a real target
+            if abs(t - current_t) * line_length > self._TRIM_MAX_DISTANCE:
+                continue
+            valid.append((t, point))
+        if not valid:
+            raise NoIntersectionFoundError(f"No intersection found to trim/extend line {line_id} to")
+        _, best_point = min(valid, key=lambda candidate: abs(candidate[0] - current_t))
+
+        if self._point_deletion_blocker(moved_point_id, exclude_entity_id=line_id) is not None:
+            new_point = self.add_point(*best_point)
+            if moved_point_id == line.start_point_id:
+                line.start_point_id = new_point.id
+            else:
+                line.end_point_id = new_point.id
+            return (line, new_point, True)
+        moved_point.x, moved_point.y = best_point
+        return (line, moved_point, False)
+
     def delete_circle(self, circle_id: str) -> None:
         """Remove a Circle and every constraint `add_circle` always creates
         alongside it - the radius DistanceConstraint plus the eight
@@ -1321,14 +1473,28 @@ class Sketch:
             raise KeyError(text_id)
         del self.entities[text_id]
 
-    def _point_deletion_blocker(self, point_id: str) -> str | None:
+    def _point_deletion_blocker(self, point_id: str, *, exclude_entity_id: str | None = None) -> str | None:
         """A human-readable reason this Point cannot be deleted, or None if
         deletion is safe. A Point is only ever deleted explicitly, never as
         an automatic side effect of deleting something that references it -
-        so deletion is blocked outright while anything still depends on it."""
+        so deletion is blocked outright while anything still depends on it.
+
+        [exclude_entity_id], when given, skips that one entity in the
+        traversal - not for deletion itself (nothing else calls this with
+        it set), but reused as-is by `trim_or_extend_line` to answer a
+        different question with the exact same logic: "is this Point
+        referenced by anything *other than* the Line I'm about to repoint"
+        (the Line obviously references its own endpoint - that's not
+        sharing, it's the entity being modified). Constraint references are
+        never excluded, even ones that happen to be about this same Line
+        (e.g. its own length dimension) - any constraint reference at all
+        means the Point is meaningfully constrained/shared, the same
+        conservative default `trim_or_extend_line` needs."""
         if point_id == self._origin_point_id:
             return "Cannot delete the sketch's origin point"
         for entity in self.entities.values():
+            if entity.id == exclude_entity_id:
+                continue
             if isinstance(entity, Line) and point_id in entity.endpoint_point_ids():
                 return f"Point is still referenced by line {entity.id}"
             if isinstance(entity, Circle) and point_id in (entity.center_point_id, entity.radius_point_id):

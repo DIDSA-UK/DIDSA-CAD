@@ -20,7 +20,18 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Arc, Circle, Ellipse, Line, Point, Polygon, Sketch, Spline, TextEntity
+from app.sketch.models import (
+    Arc,
+    Circle,
+    Ellipse,
+    Line,
+    NoIntersectionFoundError,
+    Point,
+    Polygon,
+    Sketch,
+    Spline,
+    TextEntity,
+)
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
@@ -56,6 +67,8 @@ from app.sketch.schemas import (
     LineDistanceConstraintCreate,
     LineDistanceConstraintResponse,
     LineResponse,
+    LineTrimRequest,
+    LineTrimResponse,
     LineUpdate,
     ParallelConstraintCreate,
     ParallelConstraintResponse,
@@ -508,6 +521,30 @@ def update_line(sketch_id: str, line_id: str, payload: LineUpdate) -> LineRespon
     if payload.construction is not None:
         line.construction = payload.construction
     return _line_response(sketch, line)
+
+
+@router.post("/sketches/{sketch_id}/lines/{line_id}/trim", response_model=LineTrimResponse)
+def trim_line(sketch_id: str, line_id: str, payload: LineTrimRequest) -> LineTrimResponse:
+    """Sketcher-roadmap Phase 11: trims/extends [line_id] - see
+    `Sketch.trim_or_extend_line`'s own doc comment for the full behaviour.
+    404 for a missing Point/Line (a real lookup failure); 422 specifically
+    for `NoIntersectionFoundError` (a real, expected "nothing to trim/
+    extend to" outcome, not a client error); every other `ValueError`
+    (invalid endpoint, Polygon-owned edge) stays the usual 400."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_line_or_404(sketch, line_id)
+    _get_point_or_404(sketch, payload.moved_point_id)
+    try:
+        line, moved_point, created_new_point = sketch.trim_or_extend_line(line_id, payload.moved_point_id)
+    except NoIntersectionFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LineTrimResponse(
+        line=_line_response(sketch, line),
+        moved_point=_point_response(moved_point),
+        created_new_point=created_new_point,
+    )
 
 
 @router.post("/sketches/{sketch_id}/circles", response_model=CircleResponse, status_code=201)

@@ -98,6 +98,34 @@ class LineResponse(BaseModel):
     construction: bool = False
 
 
+class LineTrimRequest(BaseModel):
+    """Sketcher-roadmap Phase 11: which of the Line's own two endpoints the
+    client is adjusting - see `Sketch.trim_or_extend_line`'s own doc
+    comment for what happens next. The *other* end (whichever
+    `moved_point_id` isn't) stays fixed and anchors the search direction;
+    the client resolves this from wherever the user tapped nearest, the
+    same "which end is closer to the tap" the scope doc's own client-tool
+    section describes."""
+
+    moved_point_id: str
+
+
+class LineTrimResponse(BaseModel):
+    """`line` already reflects the new endpoint (`start_point_id`/
+    `end_point_id` repointed if a fresh Point was created, unchanged ids
+    with a moved (x, y) otherwise - see `created_new_point`).
+    `moved_point` is always a real, current Point at the new position;
+    `created_new_point` tells the client whether that's a brand new Point
+    it needs to add to its own local cache (True) or an existing one it
+    already has and just needs to re-fetch/update in place (False) - see
+    `Sketch.trim_or_extend_line`'s own doc comment for why this distinction
+    exists (a shared endpoint is never moved in place)."""
+
+    line: LineResponse
+    moved_point: PointResponse
+    created_new_point: bool
+
+
 class CircleCreate(BaseModel):
     """Create a circle from an existing center Point, plus one of three
     ways to define the radius Point: an existing Point's id (explicit
