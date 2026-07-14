@@ -110,6 +110,24 @@ class ExternalEdgeReferenceDto {
       );
 }
 
+/// Sketcher-roadmap Phase 11: the wire counterpart to the backend's
+/// `LineTrimResponse` - the trimmed/extended Line alongside the Point that
+/// moved (or was freshly created, per [createdNewPoint]) to the chosen
+/// intersection. See [SketchApiClient.trimLine].
+class LineTrimResultDto {
+  final LineDto line;
+  final PointDto movedPoint;
+  final bool createdNewPoint;
+
+  LineTrimResultDto({required this.line, required this.movedPoint, required this.createdNewPoint});
+
+  factory LineTrimResultDto.fromJson(Map<String, dynamic> json) => LineTrimResultDto(
+        line: LineDto.fromJson(json['line'] as Map<String, dynamic>),
+        movedPoint: PointDto.fromJson(json['moved_point'] as Map<String, dynamic>),
+        createdNewPoint: json['created_new_point'] as bool,
+      );
+}
+
 class CircleDto {
   final String id;
   final String centerPointId;
@@ -1372,6 +1390,23 @@ class SketchApiClient {
               headers: _headers,
             ),
         (_) {},
+      );
+
+  /// Sketcher-roadmap Phase 11: trims or extends [lineId] by moving
+  /// [movedPointId] (one of its own two endpoints) to the nearest real
+  /// intersection with another Line/Circle/Arc - see the backend's
+  /// `Sketch.trim_or_extend_line` for the full selection rules (nearest
+  /// candidate wins, shared endpoints split off a fresh Point rather than
+  /// dragging unrelated geometry). A 422 means nothing was found to
+  /// trim/extend to; a 400 covers the other rejections (non-endpoint point,
+  /// Polygon-owned edge).
+  Future<LineTrimResultDto> trimLine(String sketchId, String lineId, String movedPointId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/lines/$lineId/trim'),
+              headers: _headers,
+              body: jsonEncode({'moved_point_id': movedPointId}),
+            ),
+        (body) => LineTrimResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<void> deleteCircle(String sketchId, String circleId) => _send(

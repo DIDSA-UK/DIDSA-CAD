@@ -55,6 +55,15 @@ class _FakeBackend {
   /// own request counter, mirroring [externalReferenceRequestCount].
   int externalEdgeReferenceRequestCount = 0;
 
+  /// Sketcher-roadmap Phase 11: the coordinate `/lines/{id}/trim` should
+  /// report as the chosen intersection - set by the test before calling
+  /// [SketchController.handleCanvasTap] in trim mode, mirroring the real
+  /// `Sketch.trim_or_extend_line`'s own "nearest intersection" result
+  /// without reimplementing its geometry here. Null means "nothing to
+  /// trim/extend to" (a 422, same as the real endpoint's
+  /// `NoIntersectionFoundError`).
+  (double, double)? trimTargetPoint;
+
   String _newId(String prefix) => '$prefix-${_nextId++}';
 
   /// A deterministic fake outline for [text]'s preview endpoint - a single
@@ -391,6 +400,43 @@ class _FakeBackend {
     }
     if (linesCollectionMatch && request.method == 'GET') {
       return _jsonList(lines.values.toList(), 200);
+    }
+
+    final trimMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/([^/]+)/trim$').firstMatch(path);
+    if (trimMatch != null && request.method == 'POST') {
+      final lineId = trimMatch.group(1)!;
+      final line = lines[lineId];
+      if (line == null) return http.Response('not found', 404);
+      final movedPointId = body['moved_point_id'] as String;
+      final startId = line['start_point_id'] as String;
+      final endId = line['end_point_id'] as String;
+      if (movedPointId != startId && movedPointId != endId) {
+        return _json({'detail': 'moved_point_id is not one of this Line\'s own endpoints'}, 400);
+      }
+      final target = trimTargetPoint;
+      if (target == null) {
+        return _json({'detail': 'Nothing found to trim/extend this Line to'}, 422);
+      }
+      // Mirrors the real backend's shared-Point rule: an endpoint
+      // referenced by another Line gets a fresh Point instead of being
+      // moved in place.
+      final sharedElsewhere = lines.values.any(
+        (other) => other != line && (other['start_point_id'] == movedPointId || other['end_point_id'] == movedPointId),
+      );
+      if (sharedElsewhere) {
+        final newPointId = _newId('point');
+        points[newPointId] = {'id': newPointId, 'x': target.$1, 'y': target.$2};
+        if (movedPointId == startId) {
+          line['start_point_id'] = newPointId;
+        } else {
+          line['end_point_id'] = newPointId;
+        }
+        return _json({'line': line, 'moved_point': points[newPointId], 'created_new_point': true}, 200);
+      }
+      final movedPoint = points[movedPointId]!;
+      movedPoint['x'] = target.$1;
+      movedPoint['y'] = target.$2;
+      return _json({'line': line, 'moved_point': movedPoint, 'created_new_point': false}, 200);
     }
 
     final circlesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/circles$').hasMatch(path);
@@ -5281,5 +5327,203 @@ void main() {
     // refusal above is per-Point, not an accidental whole-Sketch block.
     expect(controller.isPointFullyPinned(pointDId), isFalse);
     expect(controller.beginPointDrag(pointDId), isTrue);
+  });
+
+  group('trim/extend tool (Phase 11)', () {
+    test('enterTrimMode switches to SketchMode.trim with a "Trim/Extend" label', () {
+      controller.enterTrimMode();
+      expect(controller.mode, SketchMode.trim);
+      expect(controller.modeLabel, 'Trim/Extend');
+    });
+
+    test("tapping near a Line's nearer endpoint extends it to the configured target, in place",
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-trim-1', 'origin-trim-1');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.trimTargetPoint = (15.0, 0.0);
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-trim-1');
+      freshController.enterTrimMode();
+
+      // Closer to point-b (x=10) than point-a (x=0) - point-b is the one
+      // that moves.
+      await freshController.handleCanvasTap(9, 0);
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.points['point-b']!.x, closeTo(15.0, 1e-9));
+      expect(freshController.points['point-b']!.y, closeTo(0.0, 1e-9));
+      expect(freshController.lines['line-a']!.startPointId, 'point-a');
+      expect(freshController.lines['line-a']!.endPointId, 'point-b');
+      // Stays "hot" for another pick, unlike draw/dimension tools.
+      expect(freshController.mode, SketchMode.trim);
+    });
+
+    test('trimming an endpoint shared with another Line creates a fresh Point instead of '
+        'moving it', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-trim-2', 'origin-trim-2');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.points['point-c'] = {'id': 'point-c', 'x': 10.0, 'y': 10.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.lines['line-b'] = {
+        'id': 'line-b',
+        'start_point_id': 'point-b',
+        'end_point_id': 'point-c',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.trimTargetPoint = (15.0, 0.0);
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-trim-2');
+      freshController.enterTrimMode();
+
+      await freshController.handleCanvasTap(9, 0);
+
+      expect(freshController.errorMessage, isNull);
+      // point-b itself is untouched, and the *other* Line sharing it
+      // (line-b) still points at it.
+      expect(freshController.points['point-b']!.x, closeTo(10.0, 1e-9));
+      expect(freshController.lines['line-b']!.startPointId, 'point-b');
+      // line-a's own end was repointed to a brand-new Point at the target.
+      final newEndId = freshController.lines['line-a']!.endPointId;
+      expect(newEndId, isNot('point-b'));
+      expect(freshController.points[newEndId]!.x, closeTo(15.0, 1e-9));
+    });
+
+    test('no configured intersection surfaces the 422 as errorMessage and leaves the Line '
+        'untouched', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-trim-3', 'origin-trim-3');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      // trimTargetPoint left null - "nothing found", mirroring the real
+      // backend's NoIntersectionFoundError (422).
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-trim-3');
+      freshController.enterTrimMode();
+
+      await freshController.handleCanvasTap(9, 0);
+
+      expect(freshController.errorMessage, isNotNull);
+      expect(freshController.points['point-b']!.x, closeTo(10.0, 1e-9));
+      expect(freshController.mode, SketchMode.trim);
+    });
+
+    test('tapping empty canvas in trim mode is a silent no-op - no network request', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      final requestCountBeforeTrim = backend.requestLog.length;
+
+      controller.enterTrimMode();
+      await controller.handleCanvasTap(500, 500); // nowhere near the Line
+
+      expect(backend.requestLog.length, requestCountBeforeTrim);
+      expect(controller.errorMessage, isNull);
+    });
+
+    test("undo after an in-place trim/extend reverts the moved Point's position", () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-trim-4', 'origin-trim-4');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.trimTargetPoint = (15.0, 0.0);
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-trim-4');
+      freshController.enterTrimMode();
+
+      await freshController.handleCanvasTap(9, 0);
+      expect(freshController.points['point-b']!.x, closeTo(15.0, 1e-9));
+      expect(freshController.canUndo, isTrue);
+
+      await freshController.undo();
+
+      expect(freshController.points['point-b']!.x, closeTo(10.0, 1e-9));
+      expect(freshController.points['point-b']!.y, closeTo(0.0, 1e-9));
+    });
+
+    test('undo after a shared-endpoint trim/extend deletes the new Point and recreates the '
+        'original Line', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-trim-5', 'origin-trim-5');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.points['point-c'] = {'id': 'point-c', 'x': 10.0, 'y': 10.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.lines['line-b'] = {
+        'id': 'line-b',
+        'start_point_id': 'point-b',
+        'end_point_id': 'point-c',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.trimTargetPoint = (15.0, 0.0);
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-trim-5');
+      freshController.enterTrimMode();
+
+      await freshController.handleCanvasTap(9, 0);
+      final newPointId = freshController.lines['line-a']!.endPointId;
+      expect(newPointId, isNot('point-b'));
+
+      await freshController.undo();
+
+      expect(freshController.points.containsKey(newPointId), isFalse);
+      expect(freshController.points.containsKey('point-a'), isTrue);
+      expect(freshController.points.containsKey('point-b'), isTrue);
+      // The recreated Line gets a fresh id (same convention as every other
+      // undo-of-a-mutation in this class - see [_restoreDeletedEntities]),
+      // but a Line between the two original endpoints exists again
+      // (moved/kept order, not necessarily the original start/end order).
+      final recreated = freshController.lines.values.singleWhere(
+        (l) =>
+            (l.startPointId == 'point-a' && l.endPointId == 'point-b') ||
+            (l.startPointId == 'point-b' && l.endPointId == 'point-a'),
+      );
+      expect(recreated.id, isNot('line-a'));
+    });
   });
 }

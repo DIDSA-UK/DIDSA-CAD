@@ -505,7 +505,7 @@ const bool kTapToPlace = true;
 /// tool from the FAB's "Sketch Entities" category both sets [SketchTool]
 /// and enters [draw]; the FAB's "Dimensions" category enters [dimension]
 /// directly, with no further tool choice.
-enum SketchMode { select, draw, dimension }
+enum SketchMode { select, draw, dimension, trim }
 
 /// The kind of entity a [SketchSelection] refers to. [constraint] covers
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
@@ -893,6 +893,8 @@ class SketchController extends ChangeNotifier {
         }
       case SketchMode.dimension:
         return 'Dimension';
+      case SketchMode.trim:
+        return 'Trim/Extend';
     }
   }
 
@@ -951,6 +953,22 @@ class SketchController extends ChangeNotifier {
     // Same dangling-grab guard as [selectDrawTool] - see its comment.
     dropGrabbedEntity();
     _mode = SketchMode.dimension;
+    _fabMenu = FabMenuState.closed;
+    _resetTransientDrawState();
+    _selectionSet.clear();
+    _ribbonVisible = false;
+    _dimensionSelection.clear();
+    _ghosts = [];
+    _activeGhostKey = null;
+    notifyListeners();
+  }
+
+  /// FAB → Trim/Extend (Phase 11): enters [SketchMode.trim] directly, same
+  /// no-further-tool-choice shape as [enterDimensionMode] - every tap just
+  /// picks a Line to trim/extend, there's nothing to pre-select.
+  void enterTrimMode() {
+    dropGrabbedEntity();
+    _mode = SketchMode.trim;
     _fabMenu = FabMenuState.closed;
     _resetTransientDrawState();
     _selectionSet.clear();
@@ -3588,6 +3606,9 @@ class SketchController extends ChangeNotifier {
       case SketchMode.dimension:
         await _handleDimensionTap(radius);
         break;
+      case SketchMode.trim:
+        await _handleTrimTap(radius);
+        break;
     }
   }
 
@@ -4691,6 +4712,103 @@ class SketchController extends ChangeNotifier {
       hit = await _resolveSelectableAt(hitRadius);
     });
     _applyDimensionHit(hit);
+  }
+
+  /// [SketchMode.trim]'s tap handling (Phase 11) - hit-tests only Lines
+  /// (unlike [_entityAt], Points/Circles/Arcs are never a valid *pick* here,
+  /// only intersection targets the backend scans for on its own), then
+  /// reinterprets the tap as "which end is closer" the same way every
+  /// mainstream 2D CAD trim/extend gesture does - that closer endpoint is
+  /// the one [SketchApiClient.trimLine] moves, matching
+  /// `Sketch.trim_or_extend_line`'s "moved_point_id" contract (the far end
+  /// always stays put). Stays in trim mode after every tap, hit or miss -
+  /// a miss (no Line within [hitRadius]) is silently ignored, and a 400/422
+  /// from the backend (nothing to trim/extend to, or a rejected pick)
+  /// surfaces via [errorMessage] exactly like any other API failure - both
+  /// leave the tool "hot" for another attempt rather than exiting, mirroring
+  /// a real CAD trim tool.
+  Future<void> _handleTrimTap(double hitRadius) async {
+    if (_busy || _sketchId == null) return;
+    String? nearestLineId;
+    var nearestDistance = double.infinity;
+    for (final line in lines.values) {
+      final start = points[line.startPointId];
+      final end = points[line.endPointId];
+      if (start == null || end == null) continue;
+      final distance = _distanceToSegment(cursorX, cursorY, start.x, start.y, end.x, end.y);
+      if (distance <= hitRadius && distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestLineId = line.id;
+      }
+    }
+    if (nearestLineId == null) return;
+    final line = lines[nearestLineId]!;
+    final start = points[line.startPointId]!;
+    final end = points[line.endPointId]!;
+    final toStartSq = (cursorX - start.x) * (cursorX - start.x) + (cursorY - start.y) * (cursorY - start.y);
+    final toEndSq = (cursorX - end.x) * (cursorX - end.x) + (cursorY - end.y) * (cursorY - end.y);
+    final movedPointId = toStartSq <= toEndSq ? line.startPointId : line.endPointId;
+    final keptPointId = movedPointId == line.startPointId ? line.endPointId : line.startPointId;
+    final movedPointOldX = movedPointId == line.startPointId ? start.x : end.x;
+    final movedPointOldY = movedPointId == line.startPointId ? start.y : end.y;
+    final lineId = line.id;
+    final originalConstruction = line.construction;
+
+    await _runGuarded(() async {
+      final result = await _api.trimLine(_sketchId!, lineId, movedPointId);
+      lines[result.line.id] = SketchLineView(
+        id: result.line.id,
+        startPointId: result.line.startPointId,
+        endPointId: result.line.endPointId,
+        construction: result.line.construction,
+      );
+      points[result.movedPoint.id] = SketchPointView(
+        id: result.movedPoint.id,
+        x: result.movedPoint.x,
+        y: result.movedPoint.y,
+      );
+      if (result.createdNewPoint) {
+        // The shared-Point case: the trimmed Line (same id, per
+        // `trim_or_extend_line`) now points at a brand-new Point instead of
+        // `movedPointId`, which is left untouched (still possibly shared
+        // with other geometry) - there's no API to repoint a Line's
+        // endpoint id directly (`PATCH .../lines/{id}` only takes
+        // `length`/`construction`), so undo deletes this Line and its new
+        // Point, then recreates the Line fresh between the two *original*
+        // endpoints, same fresh-id-on-recreation convention as
+        // [_restoreDeletedEntities].
+        final newPointId = result.movedPoint.id;
+        _pushUndo(() async {
+          await _api.deleteLine(_sketchId!, lineId);
+          lines.remove(lineId);
+          await _api.deletePoint(_sketchId!, newPointId);
+          points.remove(newPointId);
+          final restored = await _api.createLine(
+            _sketchId!,
+            movedPointId,
+            keptPointId,
+            construction: originalConstruction,
+          );
+          lines[restored.id] = SketchLineView(
+            id: restored.id,
+            startPointId: restored.startPointId,
+            endPointId: restored.endPointId,
+            construction: restored.construction,
+          );
+        });
+      } else {
+        // The unshared-endpoint case: `movedPointId` itself moved in place,
+        // so undo is a plain position revert.
+        _pushUndo(() async {
+          await _api.updatePoint(_sketchId!, movedPointId, movedPointOldX, movedPointOldY);
+          points[movedPointId] = SketchPointView(id: movedPointId, x: movedPointOldX, y: movedPointOldY);
+        });
+      }
+
+      await _solveAndTrackDof();
+      await _refreshAllPoints();
+      await _refreshConstraints();
+    });
   }
 
   /// Tapping an already-picked entity again removes it from the pick (so a

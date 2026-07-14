@@ -99,6 +99,11 @@ class SketchSpeedDial extends StatelessWidget {
             label: 'Sketch Entities',
             onPressed: controller.showSketchEntitiesCategory,
           ),
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/actions/action_trim.svg',
+            label: 'Trim/Extend',
+            onPressed: controller.enterTrimMode,
+          ),
         ];
       case FabMenuState.sketchEntities:
         final showFinishChain = controller.activeTool == SketchTool.line && controller.chainInProgress;
