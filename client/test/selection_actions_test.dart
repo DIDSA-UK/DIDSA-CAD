@@ -37,10 +37,17 @@ void main() {
       },
     );
 
-    test('C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face)', () {
-      final actions = contextActionsFor({_face0});
-      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
-    });
+    test(
+      'C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face), plus '
+      'on-device feedback\'s New Sketch on Face shortcut',
+      () {
+        final actions = contextActionsFor({_face0});
+        expect(actions, [
+          const SelectionContextAction('Create Plane', enabled: true),
+          const SelectionContextAction('New Sketch on Face', enabled: true),
+        ]);
+      },
+    );
 
     test('C3: exactly two faces alone offers a real, enabled Create Plane (Midplane)', () {
       const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);

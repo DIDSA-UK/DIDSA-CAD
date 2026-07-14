@@ -138,6 +138,20 @@ List<SelectionContextAction> contextActionsFor(
   // before the generic buckets below so it takes precedence over the old
   // scaffolded "face(s) alone" placeholder those still cover for 2+ faces.
   if (planeLikeCount == 1 && selection.length == 1) {
+    // On-device feedback: a single Body face alone also offers "New Sketch
+    // on Face" alongside Create Plane - a one-step shortcut that creates a
+    // zero-offset plane flush against the face and immediately starts the
+    // same sketch-orientation flow a plane-based new sketch already goes
+    // through, rather than making the user create the plane first and then
+    // separately start a sketch on it. Reference planes/existing Planes
+    // already have their own direct "New Sketch"/"Create Sketch on Plane"
+    // entry via their own tap-to-sheet flow, so this is face-only.
+    if (faces.length == 1) {
+      return const [
+        SelectionContextAction('Create Plane', enabled: true),
+        SelectionContextAction('New Sketch on Face', enabled: true),
+      ];
+    }
     return const [SelectionContextAction('Create Plane', enabled: true)];
   }
 

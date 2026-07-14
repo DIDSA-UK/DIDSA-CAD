@@ -4030,6 +4030,43 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// On-device feedback: "New Sketch on Face" - unlike [_onCreatePlaneTapped],
+  /// this skips [CreatePlanePanel] entirely (the created Plane is a byproduct
+  /// here, not something the user needs to review/adjust) and goes straight
+  /// from "one face selected" to the same orientation-confirm step any
+  /// plane-based new sketch already gets, via [_addSketchFeature]'s own
+  /// [planeFeatureId] path. Always zero offset - "sketch flush against this
+  /// face" is the whole point, not an offset plane; `contextActionsFor`
+  /// only ever offers this button for exactly one selected Body face, so
+  /// the length check here is defensive, not a real gate.
+  ///
+  /// Deliberately NOT wrapped in a single [_runGuarded] call spanning both
+  /// steps: [_addSketchFeature] starts with `if (part == null || _busy)
+  /// return;` and calls [_runGuarded] itself - nesting it inside an
+  /// already-busy guard would make that check silently bail out.
+  Future<void> _onNewSketchOnFaceTapped() async {
+    final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+    if (faces.length != 1) return;
+    final part = _part;
+    if (part == null) return;
+    final faceEntity = faces.single;
+    setState(() => _selectedEntities = {});
+
+    FeatureDto? planeFeature;
+    await _runGuarded(() async {
+      planeFeature = await _api.createCreatePlaneFeature(
+        part.id,
+        planeType: 'offset_face',
+        faceRefs: [_planeRefDtoFor(faceEntity)],
+        offset: 0.0,
+      );
+      await _refreshFeatures();
+    });
+    final feature = planeFeature;
+    if (feature == null || !mounted) return;
+    await _addSketchFeature(planeFeatureId: feature.id);
+  }
+
   /// C4: converts a selected [SelectionEntityRef] into a [PointRefDto] for
   /// [CreatePlaneMode.threePoints] - a Body Vertex ([SelectionEntityKind.
   /// vertex], identified by [SelectionEntityRef.bodyId]/[SelectionEntityRef.id])
@@ -5221,6 +5258,7 @@ class _PartScreenState extends State<PartScreen> {
                         onCreatePlane: _onCreatePlaneTapped,
                         onFillet: _onFilletTapped,
                         onChamfer: _onChamferTapped,
+                        onNewSketchOnFace: _onNewSketchOnFaceTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),
