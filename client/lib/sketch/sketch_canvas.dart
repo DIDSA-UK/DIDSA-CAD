@@ -1040,6 +1040,121 @@ const double _maxAngleIntersectionDistance = 20000.0;
 /// site's own doc comment for the full reasoning.
 const double _maxAngleIntersectionRelativeDistance = 8.0;
 
+/// On-device feedback: how close two [referenceGhostSegments] endpoints
+/// (sketch-space units, not screen pixels) must land to count as the same
+/// projected mesh vertex for [closedGhostLoops]'s own snap-merge - a
+/// projection through floating point can leave what's conceptually the same
+/// vertex a hair off between two edges that share it.
+const double _ghostLoopSnapToleranceSquared = 1e-8; // (1e-4)^2
+
+/// On-device feedback: recovers every simple closed loop [segments] (an
+/// existing Body's real edges, projected onto this Sketch's plane - see
+/// `SketchScreen.referenceGhostSegments`'s own doc comment) actually forms,
+/// so [_SketchPainter._paintReferenceGhostFill] can shade them - "shade the
+/// area enclosed by the lines projected onto the canvas" was the original
+/// ask, never actually wired up for the projected ghost outline itself
+/// (only the Sketch's own drawn profile was, via `closedProfileFills`).
+/// Public (unlike this file's other geometry helpers) specifically so this
+/// one - genuinely new graph logic, not a one-line tweak to something
+/// already covered elsewhere - gets its own direct unit tests.
+///
+/// [segments] carries no id/topology of its own, just a flat, unordered bag
+/// of (start, end) coordinate pairs (every visible Body's mesh edges merged
+/// together) - unlike `SketchController.closedProfileFills`, which the
+/// backend's own `detect_profile` already resolved into real outer/inner
+/// loops from Points with real, comparable ids. Recovering loops from plain
+/// float coordinates needs a short graph pass instead:
+///  1. Snap-merge endpoints within [_ghostLoopSnapToleranceSquared] of each
+///     other into shared node ids (an O(n) linear scan per point is fine at
+///     the scale a Sketch's own visible Bodies produce - no spatial index
+///     needed).
+///  2. Only an edge between two nodes that *both* have degree exactly 2 in
+///     the whole graph can be part of a simple closed loop - a node with
+///     degree 1 is an open chain's own dangling end, degree 3+ is a
+///     T-junction where some other, unrelated edge (an internal feature, a
+///     different face's silhouette) meets this one. Filtering to
+///     degree-2-only edges excludes both without needing to know *which*
+///     edges belong to which loop up front - it falls out of the topology
+///     itself.
+///  3. Walk each remaining connected component from an arbitrary edge,
+///     always taking the *other* edge at each node (a degree-2 node has
+///     exactly one), until returning to the start - a real, traceable
+///     simple cycle - or running out of node budget (a filtered-degree-2
+///     open chain that never closes; discarded, not a loop).
+///
+/// v1 scope, deliberately not a full 2D boolean union: a loop with another
+/// closed loop nested inside it (a face with a hole, silhouette-wise) fills
+/// both independently rather than punching the inner one out - there's no
+/// backend-computed inner/outer ordering to lean on the way
+/// `closedProfileFills`'s own `ProfileLoopDto.innerLoops` gives it.
+List<List<(double, double)>> closedGhostLoops(List<((double, double), (double, double))> segments) {
+  final nodePositions = <(double, double)>[];
+  int nodeIdFor((double, double) point) {
+    for (var i = 0; i < nodePositions.length; i++) {
+      final dx = nodePositions[i].$1 - point.$1;
+      final dy = nodePositions[i].$2 - point.$2;
+      if (dx * dx + dy * dy <= _ghostLoopSnapToleranceSquared) return i;
+    }
+    nodePositions.add(point);
+    return nodePositions.length - 1;
+  }
+
+  final edges = <(int, int)>[];
+  for (final segment in segments) {
+    final a = nodeIdFor(segment.$1);
+    final b = nodeIdFor(segment.$2);
+    if (a != b) edges.add((a, b)); // excludes a zero-length segment after snapping
+  }
+
+  final degree = <int, int>{};
+  for (final (a, b) in edges) {
+    degree[a] = (degree[a] ?? 0) + 1;
+    degree[b] = (degree[b] ?? 0) + 1;
+  }
+
+  final loopEdges = [
+    for (final edge in edges)
+      if (degree[edge.$1] == 2 && degree[edge.$2] == 2) edge,
+  ];
+
+  final adjacency = <int, List<(int, int)>>{}; // node -> [(neighborNode, edgeIndex into loopEdges)]
+  for (var i = 0; i < loopEdges.length; i++) {
+    final (a, b) = loopEdges[i];
+    (adjacency[a] ??= []).add((b, i));
+    (adjacency[b] ??= []).add((a, i));
+  }
+
+  final visitedEdges = <int>{};
+  final loops = <List<(double, double)>>[];
+  for (var startEdgeIndex = 0; startEdgeIndex < loopEdges.length; startEdgeIndex++) {
+    if (visitedEdges.contains(startEdgeIndex)) continue;
+    final startNode = loopEdges[startEdgeIndex].$1;
+    final loopNodeIds = <int>[startNode];
+    var currentNode = startNode;
+    var currentEdgeIndex = startEdgeIndex;
+    var closed = false;
+    for (var step = 0; step <= loopEdges.length; step++) {
+      visitedEdges.add(currentEdgeIndex);
+      final neighbors = adjacency[currentNode]!;
+      final other = neighbors.firstWhere(
+        (n) => n.$2 != currentEdgeIndex,
+        orElse: () => neighbors.first,
+      );
+      if (other.$1 == startNode) {
+        closed = true;
+        break;
+      }
+      loopNodeIds.add(other.$1);
+      currentNode = other.$1;
+      currentEdgeIndex = other.$2;
+    }
+    if (closed && loopNodeIds.length >= 3) {
+      loops.add([for (final id in loopNodeIds) nodePositions[id]]);
+    }
+  }
+  return loops;
+}
+
 /// The midpoint between two Lines' own midpoints - the "between the two
 /// entities" anchor heuristic (Stage 23e) shared by every value-less
 /// two-Line constraint type (Parallel/Perpendicular/EqualLength/Collinear).
@@ -2766,6 +2881,40 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// On-device feedback: fills the closed loop(s) formed by
+  /// [referenceGhostSegments] (the existing Body's real edges, projected
+  /// onto this Sketch's plane) with a soft tint - "shade the area enclosed
+  /// by the lines projected onto the canvas" was the original ask when the
+  /// perspective 3D backdrop was removed, but only [_paintClosedProfileFill]
+  /// (the Sketch's own drawn geometry) ever got wired up; the projected
+  /// ghost outline itself stayed unfilled.
+  ///
+  /// [referenceGhostSegments] carries no id/topology of its own (unlike
+  /// [SketchController.closedProfileFills], which the backend's own
+  /// `detect_profile` already resolved into real outer/inner loops) - just
+  /// a flat, unordered bag of (start, end) coordinate pairs from every
+  /// visible Body's mesh edges merged together (see [PartScreen._openSketch]).
+  /// [closedGhostLoops] does its own light graph pass to recover which of
+  /// them form real closed loops - see its own doc comment for exactly how
+  /// and why this is deliberately a v1 (no nested-hole punch-out).
+  void _paintReferenceGhostFill(Canvas canvas) {
+    if (referenceBodyHidden || referenceGhostSegments.isEmpty) return;
+    final loops = closedGhostLoops(referenceGhostSegments);
+    if (loops.isEmpty) return;
+    final fillPaint = Paint()..color = _referenceGhostColor.withValues(alpha: 0.12);
+    for (final loop in loops) {
+      final path = Path();
+      final first = transform.sketchToScreen(loop.first.$1, loop.first.$2);
+      path.moveTo(first.dx, first.dy);
+      for (final point in loop.skip(1)) {
+        final screen = transform.sketchToScreen(point.$1, point.$2);
+        path.lineTo(screen.dx, screen.dy);
+      }
+      path.close();
+      canvas.drawPath(path, fillPaint);
+    }
+  }
+
   /// A soft green fill over every one of the Sketch's closed profile loops
   /// (if any), so a profile that's ready to Extrude reads as a "solid"
   /// before the user even opens the context menu.
@@ -2977,6 +3126,8 @@ class _SketchPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = canvasColor.withValues(alpha: canvasOpacity));
+
+    _paintReferenceGhostFill(canvas);
 
     if (!referenceBodyHidden && referenceGhostSegments.isNotEmpty) {
       final ghostPaint = Paint()
