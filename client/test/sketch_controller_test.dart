@@ -2215,6 +2215,14 @@ void main() {
 
     final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
     final vertexId = radiusConstraint.pointBId;
+    // Bug fix: only an *already-confirmed* circumradius dimension is
+    // reinterpreted as a drag target (see [updatePointDrag]'s own doc
+    // comment) - a still-provisional one already resizes correctly under
+    // an ordinary drag without needing to be confirmed first, so this test
+    // confirms it explicitly to exercise the actual drag-as-dimension-edit
+    // path being tested here.
+    controller.selectConstraint(radiusConstraint.id);
+    await controller.updateSelectedConstraintValue(10);
     controller.exitToSelectMode();
 
     final startVertex = controller.points[vertexId]!;
@@ -2233,6 +2241,41 @@ void main() {
     expect(
       controller.constraints.values.whereType<DistanceConstraintDto>().single.distance,
       closeTo(10, 1e-6),
+    );
+  });
+
+  test(
+      'bug fix: dragging a Polygon vertex while its circumradius is still provisional does not '
+      'silently confirm the dimension (a plain drag already resizes it correctly via the '
+      'equal-radius chain - confirming it on every drag used to over-constrain the sketch the '
+      'moment a second dimension, e.g. an across-flats one, was added on top)', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(20, 20); // center
+    await controller.handleCanvasTap(30, 20); // first vertex - radius 10
+    controller.exitToSelectMode();
+
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(radiusConstraint.provisional, isTrue);
+    final vertexId = radiusConstraint.pointBId;
+
+    final startVertex = controller.points[vertexId]!;
+    controller.cursorX = startVertex.x;
+    controller.cursorY = startVertex.y;
+    expect(controller.beginPointDrag(vertexId), isTrue);
+    controller.updatePointDrag(38, 20);
+    await controller.endPointDrag();
+
+    expect(controller.errorMessage, isNull);
+    expect(
+      controller.constraints.values.whereType<DistanceConstraintDto>().single.provisional,
+      isTrue,
+      reason: 'a provisional radius drag must not confirm the dimension',
+    );
+    expect(
+      backend.requestLog.any((r) => r.startsWith('PATCH') && r.contains('/constraints/')),
+      isFalse,
+      reason: 'a provisional radius drag must never PATCH the circumradius constraint at all',
     );
   });
 
@@ -3942,6 +3985,32 @@ void main() {
       distance: 5.0,
     );
     expect(controller.circleForDistanceConstraint(notACircleConstraint), isNull);
+  });
+
+  test(
+      'task #94 follow-up: polygonForDistanceConstraint identifies a confirmed Polygon circumradius '
+      'as a radial dimension, not a generic two-point one (bug fix: it used to fall through to an '
+      'internal center-to-vertex linear dimension, easy to miss as "the shape\'s size is now locked")',
+      () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.exitToSelectMode();
+
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    // Still provisional - not yet a radial dimension either, same as an
+    // unconfirmed Circle/Arc radius (isRadiusDistanceConstraint doesn't
+    // itself gate on provisional, but nothing renders a provisional
+    // DistanceConstraint at all - see _paintDimensionOverlays' own
+    // `if (c.provisional) break;`).
+    expect(controller.polygonForDistanceConstraint(radiusConstraint), isNotNull);
+    expect(controller.isRadiusDistanceConstraint(radiusConstraint), isTrue);
+
+    controller.selectConstraint(radiusConstraint.id);
+    await controller.updateSelectedConstraintValue(10);
+    final confirmed = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(controller.isRadiusDistanceConstraint(confirmed), isTrue);
   });
 
   test('on-device feedback: toggleRadiusDiameterDisplay flips the display mode and notifies listeners', () async {

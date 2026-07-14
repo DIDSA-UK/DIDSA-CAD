@@ -2486,6 +2486,22 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  /// The confirmed (no longer provisional) circumradius `DistanceConstraint`
+  /// for the Polygon [pointId] is a vertex of, or null if [pointId] isn't a
+  /// Polygon vertex at all, or its Polygon's radius is still provisional -
+  /// see [updatePointDrag]'s own doc comment for why only the *confirmed*
+  /// case is reinterpreted as a dimension edit; a still-provisional radius
+  /// already resizes correctly under an ordinary raw drag (it removes zero
+  /// DOF), so bypassing the ordinary drag gating/behaviour for it would be
+  /// both unnecessary and (per the bug this fixes) actively harmful.
+  DistanceConstraintDto? _confirmedPolygonRadiusConstraint(String pointId) {
+    final polygon = _polygonForVertex(pointId);
+    if (polygon == null) return null;
+    final radiusConstraint = _polygonRadiusConstraint(polygon);
+    if (radiusConstraint == null || radiusConstraint.provisional) return null;
+    return radiusConstraint;
+  }
+
   /// Starts a live drag of [pointId] (new work package item 8) - false (and
   /// no-op) if busy, there's no sketch yet, or a label drag is already in
   /// progress (mutually exclusive with [beginLabelDrag] - Stage 15 item 2),
@@ -2504,14 +2520,16 @@ class SketchController extends ChangeNotifier {
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
-    // A Polygon vertex drag is reinterpreted as editing its circumradius
-    // dimension (see [updatePointDrag]'s own doc comment), not a free
-    // geometric move - the over/fully-constrained gating below exists to
-    // refuse drags that have nowhere to go, which doesn't apply to
-    // changing a dimension's target value (same as any other confirmed
-    // dimension, e.g. [confirmGhostValue], never checks isFullyConstrained
-    // either).
-    if (_polygonForVertex(pointId) == null) {
+    // A Polygon vertex drag against an already-confirmed circumradius
+    // dimension is reinterpreted as editing that dimension (see
+    // [updatePointDrag]'s own doc comment), not a free geometric move - the
+    // over/fully-constrained gating below exists to refuse drags that have
+    // nowhere to go, which doesn't apply to changing a dimension's target
+    // value (same as any other confirmed dimension, e.g. [confirmGhostValue],
+    // never checks isFullyConstrained either). A still-provisional radius
+    // isn't a dimension yet, so it goes through the ordinary gating below
+    // like any other free Point.
+    if (_confirmedPolygonRadiusConstraint(pointId) == null) {
       // Phase 3 (3.2): a Point in an over-constrained cluster already has a
       // redundant/conflicting Constraint pinning it - dragging it wouldn't
       // move it anywhere the solver would actually let it stay, so refuse
@@ -2565,12 +2583,23 @@ class SketchController extends ChangeNotifier {
   ///
   /// Task #94 (deferred item): dragging a Polygon vertex is reinterpreted
   /// as editing its circumradius dimension rather than moving the vertex
-  /// freely. Once its own real circumradius `DistanceConstraint` is
-  /// confirmed (no longer provisional - see `DistanceConstraint.
-  /// provisional`'s own doc comment), it actively resists a raw point PATCH
-  /// exactly like any other confirmed dimension would, so a plain drag
-  /// would just fight the constraint back to the old size instead of
-  /// resizing the shape. See [_maybeUpdatePolygonRadiusDuringDrag].
+  /// freely, but ONLY once its own real circumradius `DistanceConstraint`
+  /// is already confirmed (no longer provisional - see `DistanceConstraint.
+  /// provisional`'s own doc comment) - a confirmed constraint actively
+  /// resists a raw point PATCH exactly like any other confirmed dimension
+  /// would, so a plain drag would just fight it back to the old size
+  /// instead of resizing the shape. Bug fix: while still provisional (the
+  /// common case - most Polygons are never explicitly dimensioned), the
+  /// constraint already removes zero DOF, so an ordinary raw drag already
+  /// resizes it correctly on its own; routing it through
+  /// [_maybeUpdatePolygonRadiusDuringDrag] regardless used to *confirm* the
+  /// constraint on every single drag (`update_constraint_value`'s own
+  /// documented side effect), silently turning a "let me nudge this to look
+  /// right" gesture into a real, DOF-removing size dimension the user never
+  /// asked to set - which then over-constrains the sketch the moment they
+  /// add a second, explicit dimension (e.g. an across-flats
+  /// `LineDistanceConstraint` between two opposite edges) on top of it.
+  /// See [_maybeUpdatePolygonRadiusDuringDrag].
   Future<void> updatePointDrag(double x, double y) async {
     final pointId = _draggingPointId;
     final originCursorX = _dragOriginCursorX;
@@ -2588,11 +2617,11 @@ class SketchController extends ChangeNotifier {
     final newX = originPointX + (x - originCursorX);
     final newY = originPointY + (y - originCursorY);
 
-    final polygon = _polygonForVertex(pointId);
-    if (polygon != null) {
+    final radiusConstraint = _confirmedPolygonRadiusConstraint(pointId);
+    if (radiusConstraint != null) {
+      final polygon = _polygonForVertex(pointId)!;
       final center = points[polygon.centerPointId];
-      final radiusConstraint = center == null ? null : _polygonRadiusConstraint(polygon);
-      if (center == null || radiusConstraint == null) return;
+      if (center == null) return;
       final newRadius = math.sqrt(math.pow(newX - center.x, 2) + math.pow(newY - center.y, 2));
       if (newRadius < 1e-9) return;
       // Speculative local move for immediate 1:1 cursor tracking, same as
@@ -2716,12 +2745,13 @@ class SketchController extends ChangeNotifier {
   /// remaining constraints (e.g. a Line this Point anchors staying the
   /// right length) settle here rather than during the drag itself.
   ///
-  /// Task #94 (deferred item): a Polygon-vertex drag (see [updatePointDrag]'s
-  /// own doc comment) ends by confirming its circumradius dimension at the
-  /// dropped radius, instead of pinning the dropped position directly -
-  /// undo restores the dimension's old value, not the vertex's old (x, y),
-  /// same pattern [confirmGhostValue] already uses for every other confirmed
-  /// dimension.
+  /// Task #94 (deferred item): a Polygon-vertex drag against an already-
+  /// confirmed circumradius dimension (see [updatePointDrag]'s own doc
+  /// comment for why only the confirmed case is reinterpreted) ends by
+  /// confirming that dimension at the dropped radius, instead of pinning
+  /// the dropped position directly - undo restores the dimension's old
+  /// value, not the vertex's old (x, y), same pattern [confirmGhostValue]
+  /// already uses for every other confirmed dimension.
   Future<void> endPointDrag() async {
     final pointId = _draggingPointId;
     if (pointId == null) return;
@@ -2734,12 +2764,12 @@ class SketchController extends ChangeNotifier {
     _dragOriginPointX = null;
     _dragOriginPointY = null;
 
-    final polygon = _polygonForVertex(pointId);
-    if (polygon != null) {
+    final radiusConstraint = _confirmedPolygonRadiusConstraint(pointId);
+    if (radiusConstraint != null) {
+      final polygon = _polygonForVertex(pointId)!;
       final center = points[polygon.centerPointId];
-      final radiusConstraint = center == null ? null : _polygonRadiusConstraint(polygon);
       await _runGuarded(() async {
-        if (center != null && radiusConstraint != null) {
+        if (center != null) {
           final newRadius = math.sqrt(math.pow(droppedPoint.x - center.x, 2) + math.pow(droppedPoint.y - center.y, 2));
           if (newRadius >= 1e-9) {
             final oldRadius = radiusConstraint.distance;
@@ -3080,6 +3110,31 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  /// The Polygon a [DistanceConstraintDto] measures the circumradius of -
+  /// mirrors [circleForDistanceConstraint]/[arcForDistanceConstraint] for
+  /// the Polygon case (center to vertex 0; every other vertex is tied via
+  /// EqualRadiusConstraint instead - see `Polygon`'s own backend docstring -
+  /// so it's never reachable through this path). Unlike an Ellipse's axes
+  /// (deliberately excluded - see [ellipseAxisForDistanceConstraint]'s own
+  /// doc comment), a regular Polygon *does* have one uniform radius by
+  /// construction, so it renders/hit-tests as a radial leader exactly like
+  /// a Circle/Arc, not an ordinary two-point dimension - see
+  /// [isRadiusDistanceConstraint]. Also the fix for "is something hiding" -
+  /// once confirmed, this constraint used to fall through to a generic
+  /// linear dimension between the center Point and vertex 0 (an internal
+  /// line with no drawn edge), easy to miss/misread as clutter rather than
+  /// "the whole shape's size is now locked".
+  SketchPolygonView? polygonForDistanceConstraint(DistanceConstraintDto c) {
+    for (final polygon in polygons.values) {
+      if (polygon.vertexPointIds.isNotEmpty &&
+          polygon.centerPointId == c.pointAId &&
+          polygon.vertexPointIds[0] == c.pointBId) {
+        return polygon;
+      }
+    }
+    return null;
+  }
+
   /// The Ellipse axis (major or minor) a [DistanceConstraintDto] measures
   /// the centre-to-tip semi-length of - `(negPointId, posPointId)`, the
   /// axis's two real tip Points - or null for a constraint unrelated to any
@@ -3107,14 +3162,17 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// Whether [c] measures the radius of a Circle or an Arc -
-  /// [circleForDistanceConstraint]/[arcForDistanceConstraint] recognize
-  /// either case. An Ellipse's axes are deliberately excluded (see
-  /// [ellipseAxisForDistanceConstraint]'s own doc comment) - used wherever
-  /// rendering/hit-testing/the ribbon needs to know "is this a radial
-  /// leader-style dimension" without caring which shape it belongs to.
+  /// Whether [c] measures the radius of a Circle, an Arc, or a Polygon's
+  /// circumradius - [circleForDistanceConstraint]/[arcForDistanceConstraint]/
+  /// [polygonForDistanceConstraint] recognize each case. An Ellipse's axes
+  /// are deliberately excluded (see [ellipseAxisForDistanceConstraint]'s
+  /// own doc comment) - used wherever rendering/hit-testing/the ribbon needs
+  /// to know "is this a radial leader-style dimension" without caring which
+  /// shape it belongs to.
   bool isRadiusDistanceConstraint(DistanceConstraintDto c) {
-    return circleForDistanceConstraint(c) != null || arcForDistanceConstraint(c) != null;
+    return circleForDistanceConstraint(c) != null ||
+        arcForDistanceConstraint(c) != null ||
+        polygonForDistanceConstraint(c) != null;
   }
 
   /// Whether [c] is one of a Circle's cardinal-point axis-alignment
