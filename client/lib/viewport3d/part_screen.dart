@@ -1955,19 +1955,31 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
-  /// C3: [feature]'s own Sketch-embedding basis - a custom plane's (via
-  /// [feature.planeFeatureId]) or one of the three fixed reference planes'
-  /// (via [ReferencePlaneKind], fetched from the standalone Sketch API the
-  /// same way this always worked before C3). Returns null when neither
-  /// resolves (a stale/broken reference, or a fetch failure) - callers treat
-  /// that the same way an unresolvable [ReferencePlaneKind] already was
-  /// (skip rendering/animation, never crash).
+  /// C3: [feature]'s own Sketch-embedding basis, fully oriented - a custom
+  /// plane's (via [feature.planeFeatureId]) or one of the three fixed
+  /// reference planes' (via [ReferencePlaneKind]) - either way with this
+  /// Sketch's own `flip`/`rotationQuarterTurns` applied (fetched from the
+  /// standalone Sketch API). Returns null when neither resolves (a stale/
+  /// broken reference, or a fetch failure) - callers treat that the same
+  /// way an unresolvable [ReferencePlaneKind] already was (skip rendering/
+  /// animation, never crash).
+  ///
+  /// Bug fix: the custom-plane branch used to return [_customPlaneBasis]'s
+  /// *raw* (unoriented) basis directly, silently dropping the Sketch's own
+  /// flip/rotation - the same "camera/backdrop faces the wrong way" class of
+  /// bug [orientationFacingPlane]'s own doc comment already warns about for
+  /// the fixed-plane case, just never fixed here for the custom one. Both
+  /// branches now fetch the Sketch's own orientation and apply it the same
+  /// way.
   Future<SketchPlaneBasis?> _sketchPlaneBasisFor(FeatureDto feature) async {
-    final planeFeatureId = feature.planeFeatureId;
-    if (planeFeatureId != null) return _customPlaneBasis(planeFeatureId);
     final sketchId = feature.sketchId;
     if (sketchId == null) return null;
     final sketch = await _sketchApi.getSketch(sketchId);
+    final planeFeatureId = feature.planeFeatureId;
+    if (planeFeatureId != null) {
+      final raw = _customPlaneBasis(planeFeatureId);
+      return raw?.withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
+    }
     final plane = referencePlaneKindFromApiValue(sketch.plane);
     return plane == null
         ? null
@@ -3246,34 +3258,25 @@ class _PartScreenState extends State<PartScreen> {
   /// its 2D canvas - skips straight to navigation if the plane can't be
   /// resolved (e.g. a fetch failure), rather than blocking the open.
   Future<void> _openSketchWithAnimation(FeatureDto feature) async {
-    final planeFeatureId = feature.planeFeatureId;
-    if (planeFeatureId != null) {
-      // C3: a custom-plane Sketch has no ReferencePlaneKind to animate the
-      // camera to (orientationFacingPlane only covers the three fixed
-      // planes) - skips the animation, the same graceful "can't resolve,
-      // just navigate" fallback this method already used for a fetch
-      // failure, and still passes along the real basis for the ghost
-      // overlay below.
-      await _openSketch(feature, basis: _customPlaneBasis(planeFeatureId));
-      return;
+    // Bug fix: used to only animate the camera for a fixed-plane Sketch
+    // (orientationFacingPlane's own ReferencePlaneKind-only signature) and
+    // skip it outright for a custom one - [_sketchPlaneBasisFor]/
+    // [PartViewportState.animateToBasis] now cover both the same way, so
+    // this single path replaces the old plane-vs-custom branch entirely.
+    // Same "can't resolve, just navigate" graceful fallback as before on a
+    // fetch failure.
+    SketchPlaneBasis? basis;
+    try {
+      basis = await _sketchPlaneBasisFor(feature);
+    } catch (_) {
+      basis = null;
     }
-    final orientation = await _planeOfFeature(feature);
     if (!mounted) return;
-    final plane = orientation?.plane;
-    if (plane != null) {
-      await _viewportKey.currentState?.animateToPlane(
-        plane,
-        flip: orientation!.flip,
-        rotationQuarterTurns: orientation.rotationQuarterTurns,
-      );
+    if (basis != null) {
+      await _viewportKey.currentState?.animateToBasis(basis);
       if (!mounted) return;
     }
-    await _openSketch(
-      feature,
-      basis: plane == null
-          ? null
-          : SketchPlaneBasis.oriented(plane, flip: orientation!.flip, rotationQuarterTurns: orientation.rotationQuarterTurns),
-    );
+    await _openSketch(feature, basis: basis);
   }
 
   Future<_SketchOrientation?> _planeOfFeature(FeatureDto feature) async {
@@ -4108,6 +4111,29 @@ class _PartScreenState extends State<PartScreen> {
     final feature = planeFeature;
     if (feature == null || !mounted) return;
     await _addSketchFeature(planeFeatureId: feature.id);
+  }
+
+  /// On-device feedback (bug fix): "New Sketch" for a lone reference plane
+  /// or existing Plane selected via [SelectionContextPanel] (Selection
+  /// mode) - the same operation [_onPlaneTap]/[_onCreatePlaneFeatureTap]'s
+  /// own tap-to-sheet flow already offers outside Selection mode
+  /// ([_showPlaneContextSheet]/[_showCreatePlaneContextSheet]), just
+  /// reachable from this panel too so both selection paths behave the
+  /// same regardless of mode - see `selection_actions.dart`'s own
+  /// `contextActionsFor` doc comment for why that panel used to silently
+  /// drop this option for a plane-like (non-face) selection.
+  Future<void> _onNewSketchTapped() async {
+    final referencePlanes =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.referencePlane).toList();
+    final createPlanes =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.createPlane).toList();
+    if (referencePlanes.length + createPlanes.length != 1 || _selectedEntities.length != 1) return;
+    setState(() => _selectedEntities = {});
+    if (referencePlanes.isNotEmpty) {
+      await _addSketchFeature(plane: referencePlanes.single.referencePlaneKind);
+    } else {
+      await _addSketchFeature(planeFeatureId: createPlanes.single.planeFeatureId);
+    }
   }
 
   /// C4: converts a selected [SelectionEntityRef] into a [PointRefDto] for
@@ -5076,6 +5102,7 @@ class _PartScreenState extends State<PartScreen> {
           bodies: _visibleBodies,
           documentPartId: _part?.id,
           sketchFeatureId: feature.id,
+          planeBasis: basis,
         ),
       ),
     );
@@ -5302,6 +5329,7 @@ class _PartScreenState extends State<PartScreen> {
                         onFillet: _onFilletTapped,
                         onChamfer: _onChamferTapped,
                         onNewSketchOnFace: _onNewSketchOnFaceTapped,
+                        onNewSketch: _onNewSketchTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),

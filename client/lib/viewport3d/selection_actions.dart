@@ -143,16 +143,25 @@ List<SelectionContextAction> contextActionsFor(
     // zero-offset plane flush against the face and immediately starts the
     // same sketch-orientation flow a plane-based new sketch already goes
     // through, rather than making the user create the plane first and then
-    // separately start a sketch on it. Reference planes/existing Planes
-    // already have their own direct "New Sketch"/"Create Sketch on Plane"
-    // entry via their own tap-to-sheet flow, so this is face-only.
+    // separately start a sketch on it.
     if (faces.length == 1) {
       return const [
         SelectionContextAction('Create Plane', enabled: true),
         SelectionContextAction('New Sketch on Face', enabled: true),
       ];
     }
-    return const [SelectionContextAction('Create Plane', enabled: true)];
+    // On-device feedback (bug fix): a lone reference plane or existing
+    // Plane already offered "New Sketch" via its own tap-to-sheet flow
+    // (only reachable outside Selection mode, via [PartScreen._onPlaneTap]/
+    // [_onCreatePlaneFeatureTap]) - but selecting the same plane *while in*
+    // Selection mode routed through this table instead, which only ever
+    // returned bare "Create Plane" for it, silently dropping "New Sketch"
+    // for that mode. Mirrors the face case immediately above so both
+    // selection paths behave the same regardless of mode.
+    return const [
+      SelectionContextAction('Create Plane', enabled: true),
+      SelectionContextAction('New Sketch', enabled: true),
+    ];
   }
 
   // C3/C5: exactly two plane-like entities (any mix of Body faces, fixed

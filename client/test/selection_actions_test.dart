@@ -258,14 +258,20 @@ void main() {
   });
 
   group('C5: contextActionsFor with referencePlane/createPlane entities', () {
-    test('a lone fixed reference plane offers a real, enabled Create Plane (offset)', () {
+    test('a lone fixed reference plane offers a real, enabled Create Plane (offset) and New Sketch', () {
       final actions = contextActionsFor({_planeXy});
-      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
+      expect(actions, [
+        const SelectionContextAction('Create Plane', enabled: true),
+        const SelectionContextAction('New Sketch', enabled: true),
+      ]);
     });
 
-    test('a lone existing Plane offers a real, enabled Create Plane (offset)', () {
+    test('a lone existing Plane offers a real, enabled Create Plane (offset) and New Sketch', () {
       final actions = contextActionsFor({_createPlane1});
-      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
+      expect(actions, [
+        const SelectionContextAction('Create Plane', enabled: true),
+        const SelectionContextAction('New Sketch', enabled: true),
+      ]);
     });
 
     test('two fixed reference planes offers a real, enabled Create Plane (Midplane)', () {

@@ -360,12 +360,21 @@ vm.Quaternion orientationFacingPlane(
   ReferencePlaneKind plane, {
   bool flip = false,
   int rotationQuarterTurns = 0,
-}) {
-  final basis = SketchPlaneBasis.oriented(
-    plane,
-    flip: flip,
-    rotationQuarterTurns: rotationQuarterTurns,
-  );
+}) =>
+    orientationFacingBasis(
+      SketchPlaneBasis.oriented(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns),
+    );
+
+/// [orientationFacingPlane]'s own math, generalized to any [SketchPlaneBasis]
+/// - not just one of the three fixed [ReferencePlaneKind]s - so a custom
+/// (Feature-anchored) plane Sketch's Orbit View can frame it exactly the same
+/// way a fixed-plane Sketch's already does (see [PartViewport.
+/// initialViewBasis]/[PartViewportState.animateToBasis]). [orientationFacingPlane]
+/// is now just this applied to [SketchPlaneBasis.oriented]'s result - every
+/// word of this function's own derivation above still applies verbatim,
+/// [basis] is just handed in directly instead of built from a
+/// [ReferencePlaneKind] first.
+vm.Quaternion orientationFacingBasis(SketchPlaneBasis basis) {
   final targetRight = -basis.xAxis;
   final targetUp = basis.yAxis;
   final targetBack = -basis.normal;

@@ -180,6 +180,21 @@ class SketchScreen extends StatefulWidget {
   final String? documentPartId;
   final String? sketchFeatureId;
 
+  /// On-device feedback (bug fix): this Sketch's own plane, fully oriented
+  /// (flip/rotationQuarterTurns already applied - see [SketchPlaneBasis.
+  /// oriented]/[SketchPlaneBasis.withOrientation]) - [PartScreen] already
+  /// resolves this for a brand-new or re-opened Sketch either way (a fixed
+  /// [ReferencePlaneKind] or a custom, Feature-anchored Plane), so it's
+  /// threaded straight through here rather than re-derived. Lets Orbit View
+  /// work for a custom-plane Sketch too, not just a fixed one - [_planeKind]
+  /// alone (this Sketch's own `plane` API value) is null for a custom
+  /// Plane, which used to silently make Orbit View (and, before it was
+  /// removed, the old shaded-body backdrop) unreachable there entirely.
+  /// Null outside [PartScreen] (e.g. isolated tests, or a fetch failure) -
+  /// [_effectiveOrbitBasis] falls back to reconstructing a fixed plane's own
+  /// basis from [_planeKind] in that case, same as before this existed.
+  final SketchPlaneBasis? planeBasis;
+
   const SketchScreen({
     super.key,
     this.controller,
@@ -190,6 +205,7 @@ class SketchScreen extends StatefulWidget {
     this.bodies = const [],
     this.documentPartId,
     this.sketchFeatureId,
+    this.planeBasis,
   });
 
   @override
@@ -454,16 +470,15 @@ class _SketchScreenState extends State<SketchScreen> {
                             ),
                           ],
                           // Phase 4.2: only offered once the Sketch's plane
-                          // has loaded and resolves to one of the three fixed
-                          // ReferencePlaneKinds - a custom-plane Sketch has no
-                          // orientationFacingPlane equivalent yet (matches
-                          // the same limitation _openSketchWithAnimation
-                          // already has for those Sketches), and there's
-                          // nothing to orbit toward before the plane loads.
+                          // has loaded and resolved to a real basis - see
+                          // [_effectiveOrbitBasis] (bug fix: this used to
+                          // gate on [_planeKind] alone, which is null for a
+                          // custom Plane and silently hid this button for
+                          // every "New Sketch on Face" Sketch).
                           AnimatedBuilder(
                             animation: _controller,
                             builder: (context, _) {
-                              if (_planeKind == null) {
+                              if (_effectiveOrbitBasis == null) {
                                 return const SizedBox.shrink();
                               }
                               final theme = Theme.of(context);
@@ -752,6 +767,25 @@ class _SketchScreenState extends State<SketchScreen> {
   /// equivalent yet for those).
   ReferencePlaneKind? get _planeKind => referencePlaneKindFromApiValue(_controller.plane);
 
+  /// On-device feedback (bug fix): the basis Orbit View actually renders/
+  /// animates against - prefers [SketchScreen.planeBasis] (correct for both
+  /// a fixed and a custom plane), falling back to reconstructing a fixed
+  /// plane's own oriented basis from [_planeKind] when it's null (isolated
+  /// tests, or [PartScreen] couldn't resolve one) - null only when neither
+  /// resolves, same "nothing to orbit toward" case [_planeKind] alone used
+  /// to be the sole gate for.
+  SketchPlaneBasis? get _effectiveOrbitBasis {
+    final basis = widget.planeBasis;
+    if (basis != null) return basis;
+    final planeKind = _planeKind;
+    if (planeKind == null) return null;
+    return SketchPlaneBasis.oriented(
+      planeKind,
+      flip: _controller.flip,
+      rotationQuarterTurns: _controller.rotationQuarterTurns,
+    );
+  }
+
   /// Phase 4.1/4.2, on-device feedback round: the Stack's base layer.
   ///
   /// While [_orbitViewActive]: a read-only, look-only 3D [PartViewport]
@@ -779,8 +813,8 @@ class _SketchScreenState extends State<SketchScreen> {
   /// View above, which was never affected by this mismatch (its own camera
   /// and the geometry it's comparing against are both genuinely 3D).
   Widget _buildBaseLayer() {
-    final planeKind = _planeKind;
-    if (_orbitViewActive && planeKind != null) {
+    final orbitBasis = _effectiveOrbitBasis;
+    if (_orbitViewActive && orbitBasis != null) {
       return PartViewport(
         key: _orbitViewportKey,
         bodies: widget.bodies,
@@ -788,16 +822,13 @@ class _SketchScreenState extends State<SketchScreen> {
         onPlaneTap: (_) {},
         onBackgroundTap: () {},
         sketchGeometries: {
-          // Bug fix: was SketchPlaneBasis.fixed(planeKind), silently
-          // discarding this Sketch's own orientation - drew the user's own
-          // geometry in the wrong 3D position relative to the real body
-          // backdrop whenever flip/rotationQuarterTurns wasn't the default.
+          // Bug fix: [orbitBasis] already carries this Sketch's own real
+          // orientation (fixed or custom - see [_effectiveOrbitBasis]),
+          // rather than silently discarding it (fixed-plane case) or being
+          // entirely unavailable (custom-plane case, which used to make
+          // Orbit View unreachable here at all).
           (_controller.sketchId ?? 'active-sketch'): sketchGeometry3DFrom(
-            basis: SketchPlaneBasis.oriented(
-              planeKind,
-              flip: _controller.flip,
-              rotationQuarterTurns: _controller.rotationQuarterTurns,
-            ),
+            basis: orbitBasis,
             points: _pointDtosFrom(_controller),
             lines: _lineDtosFrom(_controller),
             circles: _circleDtosFrom(_controller),
@@ -810,9 +841,7 @@ class _SketchScreenState extends State<SketchScreen> {
         renderMode: _orbitRenderMode,
         bodyColourHex: _orbitBodyColourHex,
         bodyOpacity: _orbitBodyOpacity,
-        initialViewPlane: planeKind,
-        initialViewFlip: _controller.flip,
-        initialViewRotationQuarterTurns: _controller.rotationQuarterTurns,
+        initialViewBasis: orbitBasis,
       );
     }
     return SketchCanvas(
@@ -828,17 +857,14 @@ class _SketchScreenState extends State<SketchScreen> {
 
   /// The "Return to Default View" FAB's action - re-orients the embedded
   /// [PartViewport]'s camera to look straight at the Sketch's own plane,
-  /// animated, reusing [PartViewportState.animateToPlane] exactly as the 3D
-  /// viewport already does for its camera-into-sketch transition. Stays in
-  /// Orbit View rather than exiting it - leaving is the toggle FAB's job.
+  /// animated, reusing [PartViewportState.animateToBasis] exactly as the 3D
+  /// viewport already does for its camera-into-sketch transition (fixed or
+  /// custom plane alike - see [_effectiveOrbitBasis]). Stays in Orbit View
+  /// rather than exiting it - leaving is the toggle FAB's job.
   void _returnOrbitToDefaultView() {
-    final planeKind = _planeKind;
-    if (planeKind == null) return;
-    _orbitViewportKey.currentState?.animateToPlane(
-      planeKind,
-      flip: _controller.flip,
-      rotationQuarterTurns: _controller.rotationQuarterTurns,
-    );
+    final orbitBasis = _effectiveOrbitBasis;
+    if (orbitBasis == null) return;
+    _orbitViewportKey.currentState?.animateToBasis(orbitBasis);
   }
 
   /// On-device feedback: entering Orbit View should always start at 4.1's

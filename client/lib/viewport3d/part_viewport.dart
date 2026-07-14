@@ -222,6 +222,17 @@ class PartViewport extends StatefulWidget {
   final bool initialViewFlip;
   final int initialViewRotationQuarterTurns;
 
+  /// On-device feedback (bug fix): the same starting-orientation role as
+  /// [initialViewPlane], generalized to a custom (Feature-anchored) plane -
+  /// [initialViewPlane] only ever covers the three fixed [ReferencePlaneKind]s,
+  /// which silently left Orbit View unreachable for any Sketch on a custom
+  /// Plane (e.g. via "New Sketch on Face"). Already carries
+  /// [initialViewFlip]/[initialViewRotationQuarterTurns] baked in (see
+  /// [SketchPlaneBasis.oriented]/[SketchPlaneBasis.withOrientation]) - those
+  /// two fields are ignored when this is set. Takes precedence over
+  /// [initialViewPlane] if somehow both are given, though no caller does.
+  final SketchPlaneBasis? initialViewBasis;
+
   /// New-sketch orientation confirm step (on-device feedback: the indicator
   /// must track the camera live as the user orbits, not just refresh on a
   /// flip/rotate tap) - non-null shows [SketchOrientationIndicator] for
@@ -264,6 +275,7 @@ class PartViewport extends StatefulWidget {
     this.initialViewPlane,
     this.initialViewFlip = false,
     this.initialViewRotationQuarterTurns = 0,
+    this.initialViewBasis,
     this.sketchOrientationBasis,
   });
 
@@ -402,8 +414,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _camera.nearClip = kDefaultNearClip;
     }
     // Orbit View entry fix: start facing the given plane exactly, rather
-    // than OrbitCamera's own angled default - see [PartViewport.initialViewPlane].
-    if (widget.initialViewPlane != null) {
+    // than OrbitCamera's own angled default - see [PartViewport.initialViewPlane]/
+    // [PartViewport.initialViewBasis].
+    final initialViewBasis = widget.initialViewBasis;
+    if (initialViewBasis != null) {
+      _camera.orientation = orientationFacingBasis(initialViewBasis);
+    } else if (widget.initialViewPlane != null) {
       _camera.orientation = orientationFacingPlane(
         widget.initialViewPlane!,
         flip: widget.initialViewFlip,
@@ -890,6 +906,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// there's no single "facing" view yet the way [animateToPlane] has.
   Future<void> animateToIsometric({Duration duration = const Duration(milliseconds: 400)}) {
     return _animateOrientationTo(OrbitCamera.isometricOrientation(), duration: duration);
+  }
+
+  /// On-device feedback (bug fix): [animateToPlane]'s own generalization to
+  /// a custom (Feature-anchored) Plane, mirroring [PartViewport.
+  /// initialViewBasis]'s relationship to [PartViewport.initialViewPlane] -
+  /// [basis] already carries whatever flip/rotation the Sketch itself is
+  /// oriented with (see [SketchPlaneBasis.oriented]/[SketchPlaneBasis.
+  /// withOrientation]), so there's no separate flip/rotationQuarterTurns
+  /// parameter here the way [animateToPlane] has.
+  Future<void> animateToBasis(
+    SketchPlaneBasis basis, {
+    Duration duration = const Duration(milliseconds: 400),
+  }) {
+    return _animateOrientationTo(orientationFacingBasis(basis), duration: duration);
   }
 
   /// Shared slerp-tween machinery [animateToPlane]/[animateToIsometric] both
