@@ -876,9 +876,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     Duration duration = const Duration(milliseconds: 400),
     bool flip = false,
     int rotationQuarterTurns = 0,
-  }) async {
+  }) {
+    return _animateOrientationTo(
+      orientationFacingPlane(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns),
+      duration: duration,
+    );
+  }
+
+  /// On-device feedback (new sketch-start camera sequence): animates to the
+  /// plane-independent isometric preset ([OrbitCamera.isometricOrientation])
+  /// - used for the sketch-orientation-definition step, before the user has
+  /// confirmed which plane/flip/rotation they're actually defining, so
+  /// there's no single "facing" view yet the way [animateToPlane] has.
+  Future<void> animateToIsometric({Duration duration = const Duration(milliseconds: 400)}) {
+    return _animateOrientationTo(OrbitCamera.isometricOrientation(), duration: duration);
+  }
+
+  /// Shared slerp-tween machinery [animateToPlane]/[animateToIsometric] both
+  /// drive - factored out so the "swings through the back of the target
+  /// mid-transition" double-cover fix (see the comment on the hemisphere
+  /// check below) and the edge-overlay resync only need to exist once.
+  Future<void> _animateOrientationTo(vm.Quaternion to, {required Duration duration}) async {
     final from = _camera.orientation;
-    var to = orientationFacingPlane(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns);
     // On-device feedback: the camera-into-sketch animation sometimes swung
     // through the *back* of the target plane mid-transition, even though the
     // final resting orientation (checked statically by

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +15,23 @@ void main() {
 
     expect(perspective.target, vm.Vector3.zero());
     expect((perspective.position - perspective.target).length, closeTo(camera.distance, 1e-4));
+  });
+
+  test(
+      'isometricOrientation elevation matches the true isometric angle (asin(1/sqrt(3)) ~ 35.264 '
+      'degrees), steeper than the default ~30 degree corner view, at the same 45 degree azimuth',
+      () {
+    final camera = OrbitCamera()..orientation = OrbitCamera.isometricOrientation();
+    final direction = camera.cameraFor(size).position - camera.cameraFor(size).target;
+
+    final elevation = math.asin(direction.y / direction.length);
+    expect(elevation, closeTo(math.asin(1 / math.sqrt(3)), 1e-9));
+    expect(elevation, greaterThan(0.5235987755982988)); // strictly steeper than the default's pi/6
+
+    // Same 45-degree azimuth as the default "corner" view - only the
+    // elevation differs - confirmed by equal-magnitude horizontal (x/z)
+    // components.
+    expect(direction.x.abs(), closeTo(direction.z.abs(), 1e-9));
   });
 
   test('orbitByScreenDelta moves the camera position when dragging right', () {

@@ -157,6 +157,21 @@ class OrbitCamera {
     return (pitch * yaw).normalized();
   }
 
+  /// The standard CAD isometric corner view - 45° azimuth (same as
+  /// [_defaultOrientation]'s own yaw), true isometric elevation
+  /// `asin(1/sqrt(3))` ≈ 35.264° (not [_defaultOrientation]'s ~30°
+  /// "pleasant corner default", a deliberately different, looser angle).
+  /// Plane-independent, unlike [orientationFacingPlane] - used for the
+  /// sketch-orientation-definition step, before the user has confirmed
+  /// which plane/flip/rotation they're actually defining, so there's no
+  /// single "facing" view yet to animate the camera toward.
+  static vm.Quaternion isometricOrientation() {
+    const isometricElevation = 0.6154797086703873; // asin(1 / sqrt(3))
+    final pitch = vm.Quaternion.axisAngle(_localRight, isometricElevation);
+    final yaw = vm.Quaternion.axisAngle(_localUp, -0.7853981633974483);
+    return (pitch * yaw).normalized();
+  }
+
   /// Unit vector from [target] towards the camera.
   vm.Vector3 get _direction => orientation.rotated(_localBack);
 

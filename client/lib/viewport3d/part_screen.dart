@@ -2526,22 +2526,31 @@ class _PartScreenState extends State<PartScreen> {
       await _openSketch(feature, basis: null);
       return;
     }
-    if (fixedPlane != null) {
-      // On-device feedback: orientation had no visual feedback and no
-      // creation-time entry point at all - only a hamburger-menu sheet
-      // reachable from inside the 2D editor, after already committing to
-      // a plane. This step lets the user see + adjust it, live, in the 3D
-      // viewport, before the sketch is ever opened - see
-      // _confirmPendingOrientation/_cancelPendingOrientation.
-      await _viewportKey.currentState?.animateToPlane(fixedPlane);
-      if (!mounted) return;
-    }
+    // On-device feedback: orientation had no visual feedback and no
+    // creation-time entry point at all - only a hamburger-menu sheet
+    // reachable from inside the 2D editor, after already committing to a
+    // plane. This step lets the user see + adjust it, live, in the 3D
+    // viewport, before the sketch is ever opened - see
+    // _confirmPendingOrientation/_cancelPendingOrientation.
+    //
+    // New camera sequence: animates to the plane-independent isometric
+    // preset first (rather than straight to the plane's own face-on view,
+    // the old behaviour), since defining orientation is easiest from an
+    // angle that shows all three axes at once - the face-on view the user
+    // is actually choosing only gets its own animation once they confirm
+    // (see _confirmPendingOrientation). Unlike the old plane-specific
+    // animation, this runs for a custom (Feature-anchored) plane too - it
+    // was never possible before since there was no orientationFacingPlane
+    // equivalent for an arbitrary basis, but isometric doesn't need one.
+    await _viewportKey.currentState?.animateToIsometric();
+    if (!mounted) return;
     setState(() {
       _pendingOrientationFeature = feature;
       _pendingOrientationRawBasis = rawBasis;
       _pendingOrientationFlip = false;
       _pendingOrientationRotation = 0;
       _pendingOrientationMode = _PendingOrientationMode.newSketch;
+      _pendingOrientationFixedPlaneKind = fixedPlane;
     });
   }
 
@@ -2592,6 +2601,10 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationOriginalFlip = currentFlip;
       _pendingOrientationOriginalRotation = currentRotation;
       _pendingOrientationMode = _PendingOrientationMode.redefine;
+      // Irrelevant to redefine (only _addSketchFeature's new-sketch camera
+      // sequence reads this) - cleared rather than left stale from a
+      // possibly-earlier new-sketch step.
+      _pendingOrientationFixedPlaneKind = null;
     });
   }
 
@@ -2602,6 +2615,15 @@ class _PartScreenState extends State<PartScreen> {
   _PendingOrientationMode _pendingOrientationMode = _PendingOrientationMode.newSketch;
   bool _pendingOrientationOriginalFlip = false;
   int _pendingOrientationOriginalRotation = 0;
+
+  /// New sketch-start camera sequence: the fixed plane [_addSketchFeature]
+  /// resolved (null for a custom, Feature-anchored plane - no
+  /// [orientationFacingPlane] equivalent exists for an arbitrary basis yet)
+  /// - stashed so [_confirmPendingOrientation] can animate the camera to
+  /// this plane's own face-on view (at whatever flip/rotation was just
+  /// confirmed) once the user commits to an orientation, rather than only
+  /// ever having shown the isometric preset this step started with.
+  ReferencePlaneKind? _pendingOrientationFixedPlaneKind;
 
   bool get _confirmingSketchOrientation => _pendingOrientationFeature != null;
 
@@ -2642,22 +2664,42 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// [_PendingOrientationMode.newSketch] opens the just-created Sketch (the
-  /// original behaviour); [_PendingOrientationMode.redefine] just closes
-  /// the step and refreshes this Feature's rendered geometry in the main 3D
-  /// viewport - the orientation was already PATCHed live by
+  /// [_PendingOrientationMode.newSketch]: new camera sequence - animates to
+  /// the just-confirmed orientation's own face-on view (the plane
+  /// [_addSketchFeature] resolved, at whatever flip/rotation was just
+  /// confirmed) before opening the just-created Sketch, so the isometric
+  /// preset this step started on ends by settling into the exact view the
+  /// sketcher itself opens into, rather than cutting straight there. Only
+  /// possible for a fixed plane - a custom (Feature-anchored) plane has no
+  /// [orientationFacingPlane] equivalent yet, so it opens directly, same as
+  /// before this sequence existed. [_PendingOrientationMode.redefine] just
+  /// closes the step and refreshes this Feature's rendered geometry in the
+  /// main 3D viewport - the orientation was already PATCHed live by
   /// [_adjustPendingOrientation], and there's an existing 2D canvas the
-  /// user didn't ask to be dropped into.
+  /// user didn't ask to be dropped into (and the camera is already facing
+  /// it - see [_redefineSketchOrientation]'s own animation).
   Future<void> _confirmPendingOrientation() async {
     final feature = _pendingOrientationFeature;
     if (feature == null) return;
     final basis = _pendingOrientationBasis;
     final mode = _pendingOrientationMode;
+    final fixedPlaneKind = _pendingOrientationFixedPlaneKind;
+    final flip = _pendingOrientationFlip;
+    final rotation = _pendingOrientationRotation;
     setState(() {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
+      _pendingOrientationFixedPlaneKind = null;
     });
     if (mode == _PendingOrientationMode.newSketch) {
+      if (fixedPlaneKind != null) {
+        await _viewportKey.currentState?.animateToPlane(
+          fixedPlaneKind,
+          flip: flip,
+          rotationQuarterTurns: rotation,
+        );
+        if (!mounted) return;
+      }
       await _openSketch(feature, basis: basis);
     } else {
       await _refreshSketchGeometries();
@@ -2684,6 +2726,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
+      _pendingOrientationFixedPlaneKind = null;
     });
     if (feature == null) return;
     if (mode == _PendingOrientationMode.newSketch) {
