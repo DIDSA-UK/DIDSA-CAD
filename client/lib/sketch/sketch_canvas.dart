@@ -1030,6 +1030,16 @@ Offset? _lineIntersectionScreen(Offset a1, Offset a2, Offset b1, Offset b2) {
 /// genuinely degenerate (near-parallel-enough-to-blow-up) case.
 const double _maxAngleIntersectionDistance = 20000.0;
 
+/// On-device feedback (bug fix): [_layoutGhost]'s own relative rejection for
+/// the angle ghost's arc layout - how many multiples of the two Lines' own
+/// midpoint-to-midpoint screen distance the virtual intersection is allowed
+/// to sit at before falling back to the plain straight-line layout instead.
+/// [_maxAngleIntersectionDistance] alone (an absolute constant) let a
+/// technically-valid-but-far-off-screen intersection through, making the
+/// whole arc invisible without ever triggering that guard - see the call
+/// site's own doc comment for the full reasoning.
+const double _maxAngleIntersectionRelativeDistance = 8.0;
+
 /// The midpoint between two Lines' own midpoints - the "between the two
 /// entities" anchor heuristic (Stage 23e) shared by every value-less
 /// two-Line constraint type (Parallel/Perpendicular/EqualLength/Collinear).
@@ -1087,7 +1097,30 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
     final intersection = endpointsA != null && endpointsB != null
         ? _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2)
         : null;
-    if (intersection == null) {
+    // On-device feedback (bug fix): "angle isn't offered" for two ordinary,
+    // clearly non-parallel Lines - traced to this, not to ghost-building
+    // (already covered by its own passing test). [_lineIntersectionScreen]'s
+    // own rejection only guards against genuine numeric blow-up near-
+    // parallel (a large *absolute* screen-pixel constant), not against how
+    // far apart the two Lines actually sit on screen right now - two Lines
+    // positioned far apart with only a shallow angle between their
+    // directions can produce a virtual intersection technically under that
+    // constant yet many times farther away than the Lines themselves,
+    // landing the whole arc well outside the visible canvas - "offered" in
+    // that a real DimensionGhost object exists, but invisible in practice
+    // (this is exactly what made confirming it feel like nothing happened).
+    // Falls back to the same straight-line-to-midpoint layout the null-
+    // intersection case already uses whenever the intersection lands
+    // unreasonably far from *either* Line's own midpoint, scaled to how far
+    // apart the two midpoints already are - so this degrades gracefully
+    // regardless of zoom level or how the two Lines happen to be
+    // positioned, rather than guessing at one fixed pixel constant.
+    final refDistance = (midB - midA).distance;
+    final intersectionTooFar = intersection != null &&
+        refDistance > 1e-6 &&
+        ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
+            (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance);
+    if (intersection == null || intersectionTooFar) {
       final labelCenter = (midA + midB) / 2;
       return _GhostLayout(labelCenter, [
         [midA, labelCenter],
@@ -2977,8 +3010,15 @@ class _SketchPainter extends CustomPainter {
 
     final hovered = controller.hoveredEntity(transform.pixelsPerUnit);
     final selectionSet = controller.selectionSet;
+    // On-device feedback (bug fix): this used to only check [selectionSet]
+    // (SketchMode.select's own multi-selection), so an entity picked into
+    // [SketchController.dimensionSelection] while in SketchMode.dimension
+    // rendered with no highlight at all - only the dimension bar's own chip
+    // list showed what was picked. The two lists are never populated at the
+    // same time (different modes), so checking both here is safe.
     bool isSelected(SelectionKind kind, String id) =>
-        selectionSet.any((s) => s.kind == kind && s.id == id);
+        selectionSet.any((s) => s.kind == kind && s.id == id) ||
+        controller.dimensionSelection.any((s) => s.kind == kind && s.id == id);
 
     for (final line in controller.lines.values) {
       final start = controller.points[line.startPointId];
