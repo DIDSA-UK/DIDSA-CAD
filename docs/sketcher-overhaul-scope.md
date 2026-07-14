@@ -1446,6 +1446,13 @@ profile to already enclose an area.
 
 ## Phase 11 — Trim/extend a Line
 
+**STATUS: DONE** (2026-07-14, `claude/sketcher-roadmap-tuning-7z3shf`,
+backend `4ac4ed9` + client `e6e9b00`) - see `docs/status.md`'s "Phase 11
+implemented" entry for the full writeup, including how the three open
+questions below were resolved. One deliberate v1 limitation carried
+forward as scoped: a Polygon's own edges are rejected as trim/extend
+targets rather than demoting the shape to loose geometry.
+
 ### 11.1 Trim a Line back to its next intersection, or extend it to reach one
 Requested on-device: a standard CAD trim/extend tool - pick near one end
 of a Line, and it either trims back to (or extends out to reach) the
