@@ -2851,6 +2851,23 @@ class SketchController extends ChangeNotifier {
     final start = points[line.startPointId];
     final end = points[line.endPointId];
     if (start == null || end == null) return false;
+    // On-device feedback (bug fix): a Polygon's own edge Line is two of its
+    // vertices, both anchored to the same fixed center by their own
+    // equal-radius Constraint. This gesture's ordinary rigid-body
+    // translation (both endpoints by the same delta) can't generally keep
+    // both on that circle - unlike a pure rotation about the center, a
+    // straight-line translation of a chord almost never does - so it fights
+    // the equal-radius/equal-length/angle chain and visibly breaks the
+    // shape. Redirected to a single-vertex [beginPointDrag] instead - the
+    // exact same circumradius-scaling gesture a vertex drag already is (see
+    // its own doc comment), matching the user's own "think of a Polygon
+    // edge/vertex drag as a scaling operation" framing. [updateGrabbedPosition]/
+    // [dropGrabbedEntity] already dispatch on whichever of
+    // [_draggingPointId]/[_draggingLineId] ends up set, so no other call
+    // site needs to know this happened.
+    if (_polygonForVertex(line.startPointId) != null) {
+      return beginPointDrag(line.startPointId);
+    }
     // Phase 3 (3.2): mirrors [beginPointDrag]'s over-constrained refusal,
     // checked against both endpoints since either one being implicated is
     // enough to make the drag pointless.

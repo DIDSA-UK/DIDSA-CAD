@@ -2209,6 +2209,71 @@ void main() {
   });
 
   test(
+      'a Polygon edge drag is redirected to a vertex drag on its own start Point, not a '
+      'rigid-body line drag (bug fix: independently PATCHing both endpoints used to fight the '
+      "equal-radius chain and break the shape - see beginLineDrag)", () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(20, 20);
+    await controller.handleCanvasTap(30, 20);
+    controller.exitToSelectMode();
+
+    final polygon = controller.polygons.values.single;
+    final edgeLineId = polygon.lineIds.first;
+    final edgeLine = controller.lines[edgeLineId]!;
+
+    expect(controller.beginLineDrag(edgeLineId), isTrue);
+
+    expect(controller.draggingPointId, edgeLine.startPointId);
+    expect(controller.draggingLineId, isNull);
+    controller.dropGrabbedEntity(); // clean up the started drag for this assertion-only test.
+  });
+
+  test(
+      'dragging a Polygon edge (via the beginLineDrag redirect) resizes its circumradius '
+      'dimension the same way dragging its vertex directly already does - task #94\'s own '
+      'shape-preserving behaviour, reached through the edge-drag entry point too', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(20, 20); // center
+    await controller.handleCanvasTap(30, 20); // first vertex - radius 10
+
+    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    // Confirming first, same as task #94's own test - see its doc comment
+    // for why only the confirmed case resizes deterministically against
+    // this fake backend (a still-provisional radius relies on a real
+    // constraint solve to reflow the *other* vertices, which this fake
+    // doesn't simulate - see updateConstraintValue's own polygon-scaling
+    // special case below instead).
+    controller.selectConstraint(radiusConstraint.id);
+    await controller.updateSelectedConstraintValue(10);
+    controller.exitToSelectMode();
+
+    final polygon = controller.polygons.values.single;
+    final edgeLineId = polygon.lineIds.first;
+    final edgeLine = controller.lines[edgeLineId]!;
+    final startVertex = controller.points[edgeLine.startPointId]!;
+    controller.cursorX = startVertex.x;
+    controller.cursorY = startVertex.y;
+
+    expect(controller.beginLineDrag(edgeLineId), isTrue);
+    controller.updatePointDrag(45, 20); // 25 units from the (20, 20) center
+    await controller.endPointDrag();
+
+    expect(controller.errorMessage, isNull);
+    final updatedRadiusConstraint =
+        controller.constraints.values.whereType<DistanceConstraintDto>().single;
+    expect(updatedRadiusConstraint.distance, closeTo(25, 1e-6));
+
+    final center = controller.points[polygon.centerPointId]!;
+    for (final id in polygon.vertexPointIds) {
+      final vertex = controller.points[id]!;
+      final radius = math.sqrt(math.pow(vertex.x - center.x, 2) + math.pow(vertex.y - center.y, 2));
+      expect(radius, closeTo(25, 1e-6));
+    }
+  });
+
+  test(
       'task #94: dragging a Polygon vertex resizes its circumradius dimension instead of the '
       'confirmed DistanceConstraint fighting it back to the old size', () async {
     controller.selectDrawTool(SketchTool.polygon);
