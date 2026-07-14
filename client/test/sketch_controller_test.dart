@@ -4398,6 +4398,69 @@ void main() {
     expect(controller.selectionSet, isEmpty);
   });
 
+  test(
+      'updateSelectedConstraintValue re-solves and refreshes isUnderConstrained (bug fix: this '
+      'used to leave dof stale until some later, unrelated mutation forced a fresh solve)',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 3);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 2.4);
+    await controller.confirmGhostValue('length', 25.0);
+    controller.exitToSelectMode();
+    final constraintId = controller.constraints.keys.single;
+    controller.selectConstraint(constraintId);
+
+    backend.dof = 3; // would surface in isUnderConstrained only if a fresh solve ran
+    await controller.updateSelectedConstraintValue(50.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.isUnderConstrained, isTrue);
+  });
+
+  test(
+      'setLineLength re-solves when patching an already-confirmed length, not just on first '
+      'confirm (bug fix: the existing-constraint branch used to skip the solve entirely)',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 3);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final line = controller.lines.values.single;
+
+    await controller.setLineLength(line.id, 25.0); // first confirm - creates the constraint
+    expect(controller.errorMessage, isNull);
+
+    backend.dof = 4; // would surface in isUnderConstrained only if a fresh solve ran
+    await controller.setLineLength(line.id, 30.0); // second confirm - existing-constraint branch
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.isUnderConstrained, isTrue);
+  });
+
+  test(
+      'confirmGhostValue re-solves when re-confirming an existing point-based dimension, not '
+      'just on first confirm (bug fix: the existing-constraint branch used to skip the solve, '
+      'unlike the angle/lineDistance branches which already solved unconditionally)', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 3);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 2.4);
+    await controller.confirmGhostValue('length', 25.0); // first confirm - creates it
+
+    await controller.handleCanvasTap(8, 2.4); // re-pick the same Line
+    backend.dof = 5; // would surface in isUnderConstrained only if a fresh solve ran
+    await controller.confirmGhostValue('length', 30.0); // re-confirm - existing-constraint branch
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.isUnderConstrained, isTrue);
+  });
+
   // --- New work package item 6: line-pair ghosts (lineDistance/angle) -------
 
   test('two parallel Lines selected in dimension mode show a lineDistance ghost', () async {

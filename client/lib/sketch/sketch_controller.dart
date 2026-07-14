@@ -4410,8 +4410,17 @@ class SketchController extends ChangeNotifier {
       } else {
         final constraint = await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, value);
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-        await _solveAndTrackDof();
       }
+      // On-device feedback (bug fix): this used to only solve in the
+      // new-constraint branch above - PATCHing an *existing* constraint's
+      // value still re-solves server-side (update_constraint_value's own
+      // response is a fresh SolveResultResponse), but this client's own
+      // cached _dof/_lastSolveConverged (everything isFullyConstrained/
+      // isUnderConstrained/the green-red coloring reads) never picked that
+      // up, so it kept showing whatever the *previous* solve reported until
+      // some later, unrelated mutation forced a fresh one - or the sketch
+      // was closed and reopened, which does a full re-adopt.
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
     });
@@ -4432,6 +4441,14 @@ class SketchController extends ChangeNotifier {
       if (oldValue != null) {
         _pushUndo(() async => _api.updateConstraintValue(_sketchId!, current.id, oldValue));
       }
+      // On-device feedback (bug fix): never called here at all, so editing
+      // an existing Constraint's value via the ribbon left _dof/
+      // _lastSolveConverged (and so isFullyConstrained/isUnderConstrained/
+      // the green-red coloring) stuck on whatever the last unrelated solve
+      // reported - see [setLineLength]'s own matching fix for the full
+      // reasoning (update_constraint_value already re-solves server-side;
+      // this client-side cache just never picked it up).
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
       _selectionSet.clear();
@@ -5418,11 +5435,17 @@ class SketchController extends ChangeNotifier {
         );
         constraintId = constraint.id;
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-        await _solveAndTrackDof();
       }
       if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
         _showsDiameter[constraintId] = target.kind == GhostKind.diameter;
       }
+      // On-device feedback (bug fix): used to only solve in the new-
+      // constraint branch above (the angle/lineDistance branches earlier in
+      // this method already solve unconditionally) - re-confirming an
+      // *existing* dimension left dof/isFullyConstrained stale exactly the
+      // way [setLineLength]/[updateSelectedConstraintValue]'s matching
+      // fixes describe.
+      await _solveAndTrackDof();
       await _refreshAllPoints();
       await _refreshConstraints();
       _ghosts = [];
