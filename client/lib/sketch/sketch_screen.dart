@@ -19,7 +19,6 @@ import 'sketch_controller.dart';
 import 'sketch_dimension_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
-import 'sketch_viewport.dart' show SketchViewport;
 
 /// Phase 4.1/4.2: converts [controller]'s live points into the
 /// [PointDto]/[LineDto]/[CircleDto] shapes [sketchGeometry3DFrom] expects -
@@ -215,7 +214,6 @@ class _SketchScreenState extends State<SketchScreen> {
   /// `viewport3d`'s analogous `ViewPreferences`).
   bool _constraintLabelsVisible = true;
   Color _canvasColor = SketchCanvas.defaultColor;
-  double _canvasOpacity = 1.0;
 
   /// Phase 4.2's Orbit View toggle: look-only, 2D editing stays disabled
   /// while active (see [_buildBaseLayer]'s doc comment). Session-only, same
@@ -228,24 +226,17 @@ class _SketchScreenState extends State<SketchScreen> {
   /// `viewport3d/orbit_camera.dart`: no camera is ever injectable).
   final GlobalKey<PartViewportState> _orbitViewportKey = GlobalKey<PartViewportState>();
 
-  /// Same idea as [_orbitViewportKey], for the *other* embedded
-  /// [PartViewport] - the shaded-body backdrop behind the flat 2D canvas
-  /// (see [_buildBaseLayer]) - so [_syncBackdropCamera] can drive its
-  /// camera via [PartViewportState.syncToSketchViewport] as the 2D canvas
-  /// pans/zooms.
-  final GlobalKey<PartViewportState> _backdropViewportKey = GlobalKey<PartViewportState>();
-
-  /// On-device feedback: both embedded [PartViewport]s (Orbit View and the
-  /// 2D canvas's own shaded-body backdrop) share these same View
-  /// preferences - render mode, body colour - so switching between the two
-  /// contexts looks consistent; see [_build3DViewMenu], now reachable
-  /// whether or not Orbit View is active (see [_buildMenuPanel]). All
-  /// session-only, same as the 2D canvas's own view preferences above.
-  /// [_orbitRenderMode] defaults to `shadedWithEdges` (on-device feedback:
-  /// edges should be visible by default) in both contexts.
-  /// [_orbitBodyOpacity] only applies to Orbit View's own body material
-  /// (the backdrop's body stays fully opaque - see [_buildBaseLayer]'s doc
-  /// comment for why) and defaults to 4.1's "~25% transparent" ask,
+  /// On-device feedback: bodies are no longer shown behind the flat 2D
+  /// canvas at all (see [_buildBaseLayer]'s own doc comment for why - a
+  /// perspective-camera backdrop synced to an orthographic 2D canvas is a
+  /// fundamentally unfixable mismatch, since `flutter_scene` has no
+  /// orthographic camera) - Orbit View is now the only place a Sketch's
+  /// real Body geometry is shown. [_orbitRenderMode]/[_orbitBodyColourHex]/
+  /// [_orbitBodyOpacity] are Orbit View's own View preferences (see
+  /// [_build3DViewMenu]), session-only like the 2D canvas's own view
+  /// preferences above. [_orbitRenderMode] defaults to `shadedWithEdges`
+  /// (on-device feedback: edges should be visible by default).
+  /// [_orbitBodyOpacity] defaults to 4.1's "~25% transparent" ask,
   /// overriding [ViewPreferences.defaultBodyOpacity]'s `1.0` rather than
   /// reusing the Part viewport's own persisted preference.
   ViewportRenderMode _orbitRenderMode = ViewportRenderMode.shadedWithEdges;
@@ -265,14 +256,6 @@ class _SketchScreenState extends State<SketchScreen> {
       );
     } else {
       _controller.ensureSketch();
-    }
-    // On-device feedback: when this Sketch's Part has real Body geometry to
-    // show behind the canvas (see _buildBaseLayer's body backdrop), default
-    // Canvas Transparency to ~25% so it's actually visible without the user
-    // needing to find the View menu first - a bodyless Sketch keeps the
-    // fully-opaque default, since there would be nothing to reveal anyway.
-    if (widget.bodies.isNotEmpty) {
-      _canvasOpacity = 0.75;
     }
   }
 
@@ -769,16 +752,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// equivalent yet for those).
   ReferencePlaneKind? get _planeKind => referencePlaneKindFromApiValue(_controller.plane);
 
-  /// Whether the shaded-body backdrop (see [_buildBaseLayer]) applies right
-  /// now - outside Orbit View (which already shows bodies its own way),
-  /// with a resolved plane and at least one Body to show, and not
-  /// explicitly hidden via the Hide/Show Reference Body toggle. Shared
-  /// between [_buildBaseLayer] (whether to render it) and [_buildMenuPanel]
-  /// (whether to offer its View controls).
-  bool get _hasBodyBackdrop =>
-      !_orbitViewActive && _planeKind != null && widget.bodies.isNotEmpty && !_referenceBodyHidden;
-
-  /// Phase 4.1/4.2: the Stack's base layer.
+  /// Phase 4.1/4.2, on-device feedback round: the Stack's base layer.
   ///
   /// While [_orbitViewActive]: a read-only, look-only 3D [PartViewport]
   /// embedding [widget.bodies] (shaded, at [_orbitBodyOpacity]) alongside
@@ -789,15 +763,21 @@ class _SketchScreenState extends State<SketchScreen> {
   /// `onPlaneTap`/`onBackgroundTap` are no-ops and `selectionMode` stays
   /// false, so orbiting is the only interaction available here.
   ///
-  /// Otherwise: the flat 2D [SketchCanvas], with (on-device feedback) a
-  /// second, static shaded-body backdrop behind it whenever [_hasBodyBackdrop] -
-  /// non-interactive (pointer events ignored - it never orbits itself) and
-  /// fully opaque itself, letting the *canvas*'s own [_canvasOpacity] do
-  /// the fading instead. On-device feedback: this backdrop's camera used
-  /// to be set once (via `initialViewPlane`) and never move again, so its
-  /// scale/framing had no relationship at all to the 2D canvas's own
-  /// pan/zoom - [_syncBackdropCamera] now keeps it tracking the 2D
-  /// canvas's `onViewportChanged` callback continuously.
+  /// Otherwise: just the flat 2D [SketchCanvas] - no 3D body backdrop.
+  /// On-device feedback: a body backdrop behind the flat canvas used to be
+  /// shown here too, synced to the 2D canvas's own pan/zoom, but its camera
+  /// was necessarily perspective (`flutter_scene` has no orthographic
+  /// camera - `OrbitCamera.cameraFor` always returns a `PerspectiveCamera`,
+  /// the `isPerspective` flag is a no-op) while the 2D canvas it sat behind
+  /// is an inherently flat/orthographic projection - anything off the one
+  /// depth plane the sync matched necessarily showed real perspective
+  /// foreshortening the canvas couldn't, an unfixable mismatch rather than
+  /// a bug to chase further. Removed outright rather than patched: the
+  /// Sketch's own drawn geometry already shades its enclosed area via
+  /// [SketchController.closedProfileFills] (unconditional, unrelated to
+  /// this backdrop), and the real Body geometry stays reachable via Orbit
+  /// View above, which was never affected by this mismatch (its own camera
+  /// and the geometry it's comparing against are both genuinely 3D).
   Widget _buildBaseLayer() {
     final planeKind = _planeKind;
     if (_orbitViewActive && planeKind != null) {
@@ -835,57 +815,14 @@ class _SketchScreenState extends State<SketchScreen> {
         initialViewRotationQuarterTurns: _controller.rotationQuarterTurns,
       );
     }
-    return Stack(
-      children: [
-        if (_hasBodyBackdrop)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: PartViewport(
-                key: _backdropViewportKey,
-                bodies: widget.bodies,
-                selectedPlane: null,
-                onPlaneTap: (_) {},
-                onBackgroundTap: () {},
-                referencePlanesHidden: true,
-                renderMode: _orbitRenderMode,
-                bodyColourHex: _orbitBodyColourHex,
-                initialViewPlane: planeKind,
-                initialViewFlip: _controller.flip,
-                initialViewRotationQuarterTurns: _controller.rotationQuarterTurns,
-              ),
-            ),
-          ),
-        SketchCanvas(
-          controller: _controller,
-          referenceGhostSegments: widget.referenceGhostSegments,
-          referenceGhostVertices: widget.referenceGhostVertices,
-          referenceGhostEdges: widget.referenceGhostEdges,
-          referenceBodyHidden: _referenceBodyHidden,
-          constraintLabelsVisible: _constraintLabelsVisible,
-          canvasColor: _canvasColor,
-          canvasOpacity: _canvasOpacity,
-          onViewportChanged: _hasBodyBackdrop ? _syncBackdropCamera : null,
-        ),
-      ],
-    );
-  }
-
-  /// Keeps the shaded-body backdrop's camera exactly matching what the 2D
-  /// canvas above it is currently showing - see
-  /// [PartViewportState.syncToSketchViewport]'s own doc comment for the
-  /// underlying maths. `zoom` -> `pixelsPerUnit` mirrors
-  /// `SketchViewport.transformFor`'s own `basePixelsPerUnit * zoom`
-  /// exactly, so the two stay pixel-for-pixel in step.
-  void _syncBackdropCamera(Offset panOffset, double zoom, Size canvasSize) {
-    final planeKind = _planeKind;
-    if (planeKind == null) return;
-    _backdropViewportKey.currentState?.syncToSketchViewport(
-      plane: planeKind,
-      pixelsPerUnit: SketchViewport.basePixelsPerUnit * zoom,
-      panOffsetPx: panOffset,
-      canvasSize: canvasSize,
-      flip: _controller.flip,
-      rotationQuarterTurns: _controller.rotationQuarterTurns,
+    return SketchCanvas(
+      controller: _controller,
+      referenceGhostSegments: widget.referenceGhostSegments,
+      referenceGhostVertices: widget.referenceGhostVertices,
+      referenceGhostEdges: widget.referenceGhostEdges,
+      referenceBodyHidden: _referenceBodyHidden,
+      constraintLabelsVisible: _constraintLabelsVisible,
+      canvasColor: _canvasColor,
     );
   }
 
@@ -960,18 +897,8 @@ class _SketchScreenState extends State<SketchScreen> {
       children: [
         if (_orbitViewActive)
           _build3DViewMenu(context, density, titleStyle, showBodyTransparency: true)
-        else ...[
+        else
           _build2DViewMenu(context, density, titleStyle),
-          // On-device feedback: "there aren't view options when I'm in
-          // sketch mode" - the shaded-body backdrop's own render
-          // mode/body colour need to be reachable without switching to
-          // Orbit View first. Body Transparency is deliberately left out
-          // here - the backdrop's own body material always stays fully
-          // opaque (see [_buildBaseLayer]'s doc comment); Canvas
-          // Transparency, in the section above, is the real transparency
-          // control for this context.
-          if (_hasBodyBackdrop) _build3DViewMenu(context, density, titleStyle, showBodyTransparency: false),
-        ],
       ],
     );
   }
@@ -1003,21 +930,6 @@ class _SketchScreenState extends State<SketchScreen> {
           leading: const Icon(Icons.palette_outlined, size: 20),
           title: Text('Canvas Colour', style: titleStyle),
           onTap: () => _pickCanvasColor(context),
-        ),
-        ListTile(
-          dense: true,
-          visualDensity: density,
-          leading: SvgPicture.asset(
-            'assets/icons/sketchbar/sketchbar_body_transparency.svg',
-            width: 26,
-            height: 26,
-            colorFilter: ColorFilter.mode(
-              Theme.of(context).colorScheme.onSurface,
-              BlendMode.srcIn,
-            ),
-          ),
-          title: Text('Canvas Transparency', style: titleStyle),
-          onTap: () => _pickCanvasOpacity(context),
         ),
       ],
     );
@@ -1133,15 +1045,6 @@ class _SketchScreenState extends State<SketchScreen> {
     );
     if (chosen != null) setState(() => _canvasColor = chosen);
   }
-
-  Future<void> _pickCanvasOpacity(BuildContext context) async {
-    final opacity = await showModalBottomSheet<double>(
-      context: context,
-      builder: (sheetContext) => _CanvasOpacitySheet(initialOpacity: _canvasOpacity),
-    );
-    if (opacity != null) setState(() => _canvasOpacity = opacity);
-  }
-
 }
 
 /// One tappable swatch in [_SketchScreenState._pickCanvasColor]'s sheet -
@@ -1171,68 +1074,6 @@ class _CanvasColorSwatch extends StatelessWidget {
           ),
         ),
         child: selected ? const Icon(Icons.check) : null,
-      ),
-    );
-  }
-}
-
-/// Stage 23f's canvas transparency slider - mirrors
-/// `viewport3d/view_prefs_sheets.dart`'s `_BodyOpacitySheet` (0% = fully
-/// opaque, 100% = fully transparent, 5% steps), but pops the chosen
-/// *opacity* directly rather than going through [ViewPreferences].
-class _CanvasOpacitySheet extends StatefulWidget {
-  final double initialOpacity;
-  const _CanvasOpacitySheet({required this.initialOpacity});
-
-  @override
-  State<_CanvasOpacitySheet> createState() => _CanvasOpacitySheetState();
-}
-
-class _CanvasOpacitySheetState extends State<_CanvasOpacitySheet> {
-  late double _opacity;
-
-  @override
-  void initState() {
-    super.initState();
-    _opacity = widget.initialOpacity;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final transparencyPercent = ((1 - _opacity) * 100).round();
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Canvas Transparency', style: Theme.of(context).textTheme.titleMedium),
-            Row(
-              children: [
-                Expanded(
-                  child: Slider(
-                    value: transparencyPercent.toDouble(),
-                    min: 0,
-                    max: 100,
-                    divisions: 20,
-                    label: '$transparencyPercent%',
-                    onChanged: (value) => setState(() => _opacity = 1 - (value / 100)),
-                  ),
-                ),
-                SizedBox(width: 48, child: Text('$transparencyPercent%', textAlign: TextAlign.end)),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(_opacity),
-                child: const Text('Apply'),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

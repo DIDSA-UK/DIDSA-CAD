@@ -1,12 +1,10 @@
 import 'dart:convert';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/plane_indicator.dart';
@@ -16,27 +14,6 @@ import 'package:didsa_cad_client/sketch/sketch_speed_dial.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
-import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart' show kCameraVerticalFovRadians;
-
-BodyMeshDto _fakeBody() => BodyMeshDto(
-      bodyId: 'body-1',
-      source: 'test',
-      mesh: MeshDto(
-        vertices: [
-          [0, 0, 0],
-          [1, 0, 0],
-          [0, 1, 0],
-        ],
-        normals: [
-          [0, 0, 1],
-          [0, 0, 1],
-          [0, 0, 1],
-        ],
-        triangleIndices: [
-          [0, 1, 2],
-        ],
-      ),
-    );
 
 /// Phase 4.2's Orbit View toggle. A minimal fake backend - [ensureSketch]
 /// only ever calls `POST /sketch/sketches` (see
@@ -292,91 +269,42 @@ void main() {
   });
 
   testWidgets(
-      'on-device feedback: outside Orbit View, a Part\'s Body renders as a static shaded backdrop '
-      'behind the 2D canvas (alongside it, not replacing it), and Canvas Transparency defaults to '
-      '~25% so the backdrop is actually visible without the user hunting for the View menu',
+      'on-device feedback: outside Orbit View, no PartViewport is ever mounted - the shaded-body '
+      'backdrop this used to check for was removed (a perspective camera synced to the flat, '
+      'orthographic 2D canvas was an unfixable mismatch - see SketchScreen._buildBaseLayer\'s own '
+      'doc comment); Orbit View is now the only place a Sketch\'s real Body geometry is shown',
       (tester) async {
-    final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, bodies: [_fakeBody()])));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    expect(find.byType(SketchCanvas), findsOneWidget);
-    expect(find.byType(PartViewport), findsOneWidget);
-    expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).canvasOpacity, 0.75);
-  });
-
-  testWidgets(
-      'on-device feedback: the shaded-body backdrop occupies the exact same screen rect as the '
-      '2D SketchCanvas above it, so the two stay pixel-aligned', (tester) async {
-    final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, bodies: [_fakeBody()])));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    final canvasRect = tester.getRect(find.byType(SketchCanvas));
-    final backdropRect = tester.getRect(find.byType(PartViewport));
-    expect(backdropRect, canvasRect);
-  });
-
-  testWidgets(
-      'on-device feedback: at the default (unpanned, unzoomed) 2D view, the backdrop camera '
-      'target/distance actually land where syncToSketchViewport is supposed to put them',
-      (tester) async {
-    final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, bodies: [_fakeBody()])));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    final backdropState = tester.state<PartViewportState>(find.byType(PartViewport));
-    final canvasSize = tester.getSize(find.byType(SketchCanvas));
-
-    // Fresh SketchViewport: zoom=1, panOffset=Offset.zero - pixelsPerUnit=20,
-    // sketchX=sketchY=0, so target should be exactly the XY plane's own
-    // origin (0,0,0), matching SketchPlaneBasis.fixed(xy).origin.
-    expect(backdropState.debugCameraTarget.x, closeTo(0, 1e-6));
-    expect(backdropState.debugCameraTarget.y, closeTo(0, 1e-6));
-    expect(backdropState.debugCameraTarget.z, closeTo(0, 1e-6));
-
-    final expectedDistance =
-        (canvasSize.height / 20.0) / (2 * math.tan(kCameraVerticalFovRadians / 2));
-    expect(backdropState.debugCameraDistance, closeTo(expectedDistance, 1e-6));
-  });
-
-  testWidgets('a bodyless Sketch keeps the fully-opaque canvas default and shows no backdrop', (tester) async {
     final controller = await _freshController();
 
     await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
     await tester.pump();
 
+    expect(find.byType(SketchCanvas), findsOneWidget);
     expect(find.byType(PartViewport), findsNothing);
-    expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).canvasOpacity, 1.0);
   });
 
-  testWidgets('the existing Hide Reference Body toggle also hides the shaded body backdrop', (tester) async {
+  testWidgets(
+      'the Hide Reference Body toggle flips SketchCanvas.referenceBodyHidden, which gates the '
+      'projected reference-body ghost overlay drawn on the canvas itself - its only remaining '
+      'purpose now that there is no more shaded body backdrop to hide alongside it', (tester) async {
     final controller = await _freshController();
 
     await tester.pumpWidget(
       MaterialApp(
         home: SketchScreen(
           controller: controller,
-          bodies: [_fakeBody()],
           referenceGhostSegments: const [((0.0, 0.0), (1.0, 1.0))],
         ),
       ),
     );
     await tester.pump();
-    await _settlePartViewport(tester);
 
-    expect(find.byType(PartViewport), findsOneWidget);
+    expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).referenceBodyHidden, isFalse);
 
     await tester.tap(find.byTooltip('Hide Reference Body'));
     await tester.pump();
 
-    expect(find.byType(PartViewport), findsNothing);
+    expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).referenceBodyHidden, isTrue);
   });
 
   group('Sketch Orientation (Sketcher-roadmap Phase 5)', () {
