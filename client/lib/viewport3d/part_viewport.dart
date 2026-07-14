@@ -893,10 +893,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     bool flip = false,
     int rotationQuarterTurns = 0,
   }) {
-    return _animateOrientationTo(
-      orientationFacingPlane(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns),
-      duration: duration,
-    );
+    final basis = SketchPlaneBasis.oriented(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns);
+    return _animateOrientationTo(orientationFacingBasis(basis), toTarget: basis.origin, duration: duration);
   }
 
   /// On-device feedback (new sketch-start camera sequence): animates to the
@@ -919,14 +917,36 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     SketchPlaneBasis basis, {
     Duration duration = const Duration(milliseconds: 400),
   }) {
-    return _animateOrientationTo(orientationFacingBasis(basis), duration: duration);
+    return _animateOrientationTo(orientationFacingBasis(basis), toTarget: basis.origin, duration: duration);
   }
 
   /// Shared slerp-tween machinery [animateToPlane]/[animateToIsometric] both
   /// drive - factored out so the "swings through the back of the target
   /// mid-transition" double-cover fix (see the comment on the hemisphere
   /// check below) and the edge-overlay resync only need to exist once.
-  Future<void> _animateOrientationTo(vm.Quaternion to, {required Duration duration}) async {
+  ///
+  /// On-device feedback (bug fix): [toTarget], when given, also animates
+  /// [OrbitCamera.target] back to the plane's own origin alongside the
+  /// orientation slerp - this used to only ever touch orientation, so
+  /// "face the plane" was only true about *which way* the camera looked,
+  /// not *where* it was actually centered. Nothing else in this class ever
+  /// resets [OrbitCamera.target] on its own (only an explicit pan/
+  /// [OrbitCamera.setTarget]/[OrbitCamera.reset] does), so if the user had
+  /// panned at all before calling [animateToPlane]/[animateToBasis] - e.g.
+  /// while exploring the part before confirming a new Sketch's orientation,
+  /// or while orbiting a Sketch's own Orbit View before "Return to Default
+  /// View" - the orientation alone would resolve to the mathematically
+  /// correct facing direction while still being centered on wherever the
+  /// user last panned to, which reads as "doesn't align to the sketch
+  /// plane" even though the underlying quaternion math was never wrong.
+  /// [animateToIsometric] passes no target - during orientation-definition
+  /// the user is still free-orbiting to get their bearings, with no single
+  /// "correct" center yet the way a resolved plane already has one.
+  Future<void> _animateOrientationTo(
+    vm.Quaternion to, {
+    vm.Vector3? toTarget,
+    required Duration duration,
+  }) async {
     final from = _camera.orientation;
     // On-device feedback: the camera-into-sketch animation sometimes swung
     // through the *back* of the target plane mid-transition, even though the
@@ -943,11 +963,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (from.x * to.x + from.y * to.y + from.z * to.z + from.w * to.w < 0) {
       to = vm.Quaternion(-to.x, -to.y, -to.z, -to.w);
     }
+    final fromTarget = _camera.target;
     final controller = AnimationController(vsync: this, duration: duration);
     final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOut);
     void tick() {
       if (!mounted) return;
-      setState(() => _camera.orientation = from.slerp(to, curved.value));
+      setState(() {
+        _camera.orientation = from.slerp(to, curved.value);
+        if (toTarget != null) {
+          _camera.target = fromTarget + (toTarget - fromTarget) * curved.value;
+        }
+      });
     }
 
     controller.addListener(tick);
