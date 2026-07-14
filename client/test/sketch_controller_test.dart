@@ -4013,6 +4013,44 @@ void main() {
     expect(controller.isRadiusDistanceConstraint(confirmed), isTrue);
   });
 
+  test(
+      'on-device feedback: a regular Polygon\'s own auto-created angle/equal-length ties between '
+      'consecutive edges are implicit structure, hidden while the shape is whole - only a genuinely '
+      'unrelated Angle/EqualLength constraint between two ordinary Lines counts as a real dimension',
+      () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(5);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.exitToSelectMode();
+
+    final polygonAngle = controller.constraints.values.whereType<AngleConstraintDto>().first;
+    final polygonEqualLength = controller.constraints.values.whereType<EqualLengthConstraintDto>().first;
+    expect(controller.isImplicitPolygonEdgeTie(polygonAngle.line1Id, polygonAngle.line2Id), isTrue);
+    expect(
+      controller.isImplicitPolygonEdgeTie(polygonEqualLength.line1Id, polygonEqualLength.line2Id),
+      isTrue,
+    );
+
+    // Two ordinary Lines, nothing to do with the Polygon - an Angle/
+    // EqualLength constraint between them is a real, user-facing dimension.
+    final linesBefore = controller.lines.keys.toSet();
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(50, 50);
+    await controller.handleCanvasTap(60, 55);
+    controller.finishChain();
+    await controller.handleCanvasTap(50, 60);
+    await controller.handleCanvasTap(60, 65);
+    controller.finishChain();
+    final unrelatedLineIds =
+        controller.lines.keys.where((id) => !linesBefore.contains(id)).toList();
+    expect(unrelatedLineIds, hasLength(2));
+    expect(
+      controller.isImplicitPolygonEdgeTie(unrelatedLineIds[0], unrelatedLineIds[1]),
+      isFalse,
+    );
+  });
+
   test('on-device feedback: toggleRadiusDiameterDisplay flips the display mode and notifies listeners', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0);

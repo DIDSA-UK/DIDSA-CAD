@@ -1432,6 +1432,10 @@ Offset? _constraintLabelCenter(
       final base = _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
       return base == null ? null : base + labelOffset;
     case AngleConstraintDto c:
+      // Mirrors _paintDimensionOverlays' own hide rule - never rendered, so
+      // never hit-testable either. See
+      // SketchController.isImplicitPolygonEdgeTie's own doc comment.
+      if (controller.isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) return null;
       final midpoint1 = _lineMidpointScreenFor(controller, transform, c.line1Id);
       final midpoint2 = _lineMidpointScreenFor(controller, transform, c.line2Id);
       if (midpoint1 == null || midpoint2 == null) return null;
@@ -1471,6 +1475,7 @@ Offset? _constraintLabelCenter(
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case EqualLengthConstraintDto c:
+      if (controller.isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) return null;
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case CollinearConstraintDto c:
@@ -1940,6 +1945,10 @@ class _SketchPainter extends CustomPainter {
         case HorizontalConstraintDto c:
           _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'H', badgeColor, labelOffset);
         case AngleConstraintDto c:
+          // Fix: a Polygon's own auto-created angle ties between consecutive
+          // edges are implicit structure, not a user dimension - see
+          // [SketchController.isImplicitPolygonEdgeTie]'s own doc comment.
+          if (controller.isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) break;
           _paintAngleDimension(canvas, c, dimensionColor, labelOffset);
         case LineDistanceConstraintDto c:
           _paintLineDistanceDimension(canvas, c, dimensionColor, labelOffset);
@@ -1952,6 +1961,9 @@ class _SketchPainter extends CustomPainter {
         case PerpendicularConstraintDto c:
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '⟂', badgeColor, labelOffset);
         case EqualLengthConstraintDto c:
+          // Same fix as AngleConstraintDto above - a Polygon's own edges are
+          // all implicitly equal-length by construction.
+          if (controller.isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) break;
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '=', badgeColor, labelOffset);
         case CollinearConstraintDto c:
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, 'Collin.', badgeColor, labelOffset);

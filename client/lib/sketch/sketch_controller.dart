@@ -3208,6 +3208,37 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
+  /// Whether [lineAId]/[lineBId] are both edges of the *same* still-existing
+  /// Polygon - the on-device feedback fix for the auto-created angle/equal-
+  /// length ties (`add_polygon`'s own `equal_length_constraint_ids`/
+  /// `angle_constraint_ids`) rendering a "45.0°"/"=" label at every vertex
+  /// the instant a Polygon is placed: they're implicit structure (the shape
+  /// wouldn't be a regular Polygon without them), not a user-facing
+  /// dimension, the same way [isCardinalAxisConstraint]'s zero-value ties
+  /// are already never shown. Identified by line membership (both edges
+  /// found in the same Polygon's own [SketchPolygonView.lineIds]) rather
+  /// than a stored id, matching how [circleForDistanceConstraint]/
+  /// [arcForDistanceConstraint] already identify "mine" by Point/Line
+  /// membership instead of the API exposing raw constraint ids.
+  ///
+  /// Deliberately forward-looking: a Polygon's own `delete_polygon`
+  /// currently cascades every one of its Lines/Constraints away together
+  /// (so this "hide" state and a "broken, no longer whole" state can't
+  /// actually diverge *yet*), but a future trim/extend tool that shortens
+  /// or removes just one edge Line without deleting the whole Polygon would
+  /// leave its remaining implicit ties referencing a Line no longer in
+  /// [SketchPolygonView.lineIds] - at that point this returns false again,
+  /// and the label reappears as real, no-longer-implicit information the
+  /// user needs to see (the shape isn't a regular Polygon anymore).
+  bool isImplicitPolygonEdgeTie(String lineAId, String lineBId) {
+    for (final polygon in polygons.values) {
+      if (polygon.lineIds.contains(lineAId) && polygon.lineIds.contains(lineBId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   double _distanceToSegment(
     double px,
     double py,
