@@ -40,14 +40,20 @@ Notes from an original scoping pass on sketcher UX (selection/drag
 interaction, constraint feedback, 3D context while sketching, drawing
 tools, overall feel) - engineering breakdown in
 `docs/sketcher-overhaul-scope.md` Phases 1-6, narrative history in
-`docs/status.md`. **All of it has shipped**, including the package's
-last deferred item (Polygon vertex-drag reinterpreted as a
-circumradius-dimension edit, plus the on-device-feedback fixes that
-followed it - see `docs/status.md`'s two 2026-07-14 entries).
+`docs/status.md`. Essentially all of it has shipped, including the
+package's last deferred item (Polygon vertex-drag reinterpreted as a
+circumradius-dimension edit, the on-device-feedback fixes that
+followed it, and a further round removing the broken 3D backdrop,
+adding New Sketch on Face, and reworking the sketch-start camera
+sequence - see `docs/status.md`'s 2026-07-14 entries) - with two real
+gaps confirmed by a direct code audit:
 
-One new item surfaced directly from that last round of on-device
-feedback, not yet implemented:
-
+- **Phase 5's reference-axis alignment was never built.** Picking a
+  line/edge as an aligning feature to set a new sketch's Y-axis (the
+  "when creating the sketch, a line or edge can optionally be selected
+  as an aligning feature" ask) has no implementation anywhere - only
+  the discrete flip/90°-rotate half of Phase 5 ever shipped. Not
+  scoped in detail yet.
 - **Trim/extend a Line** - pick near one end of a Line, trim it back to
   (or extend it out to reach) the next entity it geometrically crosses,
   matching standard CAD trim/extend. Scoped in detail as **Phase 11** of
