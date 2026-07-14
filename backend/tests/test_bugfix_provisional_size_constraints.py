@@ -19,7 +19,13 @@ test_bugfix_horizontal_vertical_distance_sign.py already covers.
 
 import math
 
-from app.sketch.constraints import AngleConstraint, DistanceConstraint, EqualLengthConstraint, EqualRadiusConstraint
+from app.sketch.constraints import (
+    AngleConstraint,
+    DistanceConstraint,
+    EqualLengthConstraint,
+    EqualRadiusConstraint,
+    TangentConstraint,
+)
 from app.sketch.models import Plane, Sketch
 from app.sketch.solver import solve_sketch
 
@@ -277,3 +283,97 @@ def test_polygon_stays_regular_under_incremental_drag():
     expected_gap = 2 * math.pi / sides
     for gap in gaps:
         assert abs(gap - expected_gap) < 1e-3
+
+
+def _build_slot(sketch: Sketch, c1: tuple[float, float], c2: tuple[float, float], radius: float):
+    """Mirrors the client's `SketchController._clickSlotTool` exactly: a
+    construction centerline, two Arcs (arc1's own radius DistanceConstraint
+    stays provisional per `add_arc`), arc2's own two auto radius
+    constraints deleted and replaced with EqualRadiusConstraint ties to
+    arc1, and 4 TangentConstraints (2 mathematically redundant given the
+    EqualRadius ties - see solver.py's own REDUNDANT_OKAY comment)."""
+    c1p = sketch.add_point(*c1)
+    c2p = sketch.add_point(*c2)
+    dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+    length = math.hypot(dx, dy)
+    dirx, diry = dx / length, dy / length
+    nx, ny = -diry, dirx
+    a = sketch.add_point(c1[0] + nx * radius, c1[1] + ny * radius)
+    b = sketch.add_point(c1[0] - nx * radius, c1[1] - ny * radius)
+    c = sketch.add_point(c2[0] - nx * radius, c2[1] - ny * radius)
+    d = sketch.add_point(c2[0] + nx * radius, c2[1] + ny * radius)
+
+    centerline = sketch.add_line(c1p.id, c2p.id, construction=True)
+    arc1 = sketch.add_arc(c1p.id, a.id, b.id)
+    line1 = sketch.add_line(b.id, c.id)
+    arc2 = sketch.add_arc(c2p.id, c.id, d.id)
+    line2 = sketch.add_line(d.id, a.id)
+
+    del sketch.constraints[arc2.radius_constraint_id]
+    del sketch.constraints[arc2.end_radius_constraint_id]
+    for radius_point_id in (c.id, d.id):
+        sketch.add_equal_radius_constraint(arc1.id, arc2.id, radius2_point_id=radius_point_id)
+    for arc, line in [(arc1, line1), (arc1, line2), (arc2, line1), (arc2, line2)]:
+        sketch.add_tangent_constraint(arc.id, line.id)
+
+    return c1p, c2p, a, b, c, d, arc1, arc2, centerline
+
+
+def test_slot_leaves_radius_unconstrained_until_confirmed():
+    """On-device feedback: a freshly-drawn Slot showed "fully constrained"
+    (padlock green) with only a Horizontal constraint on its centerline -
+    before its radius (or length) had ever been signed. Root cause was
+    *not* a missing `provisional` flag (arc1's own radius constraint is
+    already provisional, same as any other Arc's - see `add_arc`): it was
+    that `system.Dof` is unreliable for this deliberately-redundant
+    Tangent+EqualRadius system (the same REDUNDANT_OKAY path documented in
+    solver.py), reporting 0 even though a real, unconfirmed degree of
+    freedom (the shared radius) remains. See solver.py's own dof-floor
+    comment for the fix."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    c1p, c2p, a, b, c, d, arc1, arc2, centerline = _build_slot(sketch, (0.0, 0.0), (20.0, 0.0), 5.0)
+
+    radius_constraint = sketch.constraints[arc1.radius_constraint_id]
+    assert isinstance(radius_constraint, DistanceConstraint)
+    assert radius_constraint.provisional is True
+
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({c1p.id}))
+    assert result.converged
+    assert result.dof > 0
+
+    # Same on-device repro step: add a Horizontal constraint on the
+    # centerline (the one constraint the user had actually added) and
+    # re-solve - still not fully constrained, since the radius is still
+    # unconfirmed.
+    sketch.add_horizontal_constraint(centerline.id)
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({c1p.id}))
+    assert result.converged
+    assert result.dof > 0
+
+    # The geometry itself must stay intact throughout (this was the second
+    # on-device report - a wrong/collapsed extrude) - every rim Point stays
+    # exactly `radius` from its own arc centre, not collapsed toward it.
+    for center, points in ((c1p, (a, b)), (c2p, (c, d))):
+        for point in points:
+            assert math.isclose(
+                math.hypot(point.x - center.x, point.y - center.y), 5.0, abs_tol=1e-6
+            )
+
+
+def test_slot_becomes_fully_constrained_once_radius_is_confirmed():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    c1p, c2p, a, b, c, d, arc1, arc2, centerline = _build_slot(sketch, (0.0, 0.0), (20.0, 0.0), 5.0)
+    sketch.add_horizontal_constraint(centerline.id)
+
+    radius_constraint = sketch.constraints[arc1.radius_constraint_id]
+    radius_constraint.distance = 5.0
+    radius_constraint.provisional = False
+
+    # Mirrors update_selected_constraint_value's own "one more axis": once
+    # the centerline itself is fully pinned (length + one endpoint's
+    # position), nothing but the radius was ever left free.
+    length_constraint = sketch.add_distance_constraint(c1p.id, c2p.id, 20.0)
+
+    result = solve_sketch(sketch, anchor_point_ids=frozenset({c1p.id}))
+    assert result.converged
+    assert result.dof <= 0

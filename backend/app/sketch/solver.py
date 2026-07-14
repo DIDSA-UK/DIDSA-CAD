@@ -556,6 +556,35 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         # blanket override would have silently reintroduced.
         converged = True
 
+    # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via
+    # Tangent/EqualRadius, arc1's own radius DistanceConstraint still
+    # `provisional` - see that flag's own doc comment) showed as fully
+    # constrained (padlocked green) the instant it was drawn, before the
+    # user ever confirmed a radius value. Root cause: `system.Dof` above is
+    # py-slvs's own naive param-count-minus-equation-count for this
+    # *redundant* system (the whole reason the REDUNDANT_OKAY override two
+    # paragraphs up exists at all) - it does not distinguish "the one
+    # genuinely-implied-by-the-others equation" from "every equation is
+    # independent", so it reports 0 even while a real, still-unconfirmed
+    # degree of freedom (the shared radius) remains. Confirmed directly
+    # against this exact Slot construction (a fresh 2-Arc/2-Line/
+    # Tangent+EqualRadius sketch, radius left provisional): `system.Dof`
+    # reads 0 immediately after creation and stays 0 after adding a
+    # Horizontal constraint on the centerline, even though the geometry
+    # itself solves correctly (unlike the AtMidpoint false-positive the
+    # comment above already documents, this one leaves the actual Point
+    # positions untouched - only the reported count is wrong). A `dof` of 0
+    # is only trustworthy once every DistanceConstraint that measures this
+    # redundant sub-system has actually been confirmed - `provisional`
+    # existing at all on such a Constraint means the opposite by
+    # definition, so bump the floor to 1 rather than trust py-slvs's count.
+    if converged and any(
+        isinstance(c, DistanceConstraint) and c.provisional for c in sketch.constraints.values()
+    ):
+        dof = max(system.Dof, 1)
+    else:
+        dof = system.Dof
+
     for point_id in builder.solved_point_ids():
         handle = builder.handle_for_point(point_id)
         u_param = system.getEntityParam(handle, 0)
@@ -591,7 +620,7 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
 
     return SolveResult(
         converged=converged,
-        dof=system.Dof,
+        dof=dof,
         result_code=result_code,
         blamed_constraint_ids=blamed_constraint_ids,
         solver_reported_failed_constraint_ids=solver_reported_failed_constraint_ids,
