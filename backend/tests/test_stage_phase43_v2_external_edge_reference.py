@@ -103,6 +103,11 @@ def test_materializing_an_edge_creates_two_external_points_and_a_real_line_betwe
         body["end_point"]["x"],
         body["end_point"]["y"],
     )
+    # On-device feedback: a materialized Body edge is a reference to
+    # dimension against, not new solid geometry the user drew - it must be
+    # construction so it's excluded from profile/extrude detection the same
+    # way every other reference-only Line already is.
+    assert body["line"]["construction"] is True
 
 
 def test_the_materialized_line_is_pinned_and_survives_a_solve_unmoved():

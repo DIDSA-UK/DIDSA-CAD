@@ -833,7 +833,12 @@ def create_external_edge_reference(
     end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies)
     end_point = sketch.add_external_vertex_reference(end_x, end_y, end_vertex_ref)
 
-    line = sketch.add_line(start_point.id, end_point.id)
+    # On-device feedback: a materialized Body edge is a reference for
+    # dimensioning against, not new solid geometry the user drew - marking
+    # it construction keeps it out of profile/extrude detection (see
+    # detect_profile's own construction-skip) the same way every other
+    # reference-only Line already is.
+    line = sketch.add_line(start_point.id, end_point.id, construction=True)
     return ExternalEdgeReferenceResponse(
         line=LineResponse(
             id=line.id,

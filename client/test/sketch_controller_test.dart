@@ -351,7 +351,10 @@ class _FakeBackend {
         'start_point_id': startId,
         'end_point_id': endId,
         'length': 10.0,
-        'construction': false,
+        // On-device feedback (bug fix): a materialized Body edge is a
+        // reference to dimension against, not new solid geometry - mirrors
+        // create_external_edge_reference's own construction=True.
+        'construction': true,
       };
       lines[lineId] = line;
       return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
@@ -3574,6 +3577,11 @@ void main() {
       expect(freshController.points.containsKey(line.endPointId), isTrue);
       expect(freshController.ghosts.map((g) => g.key).toSet(), {'length'});
       expect(freshController.errorMessage, isNull);
+      // On-device feedback (bug fix): a materialized Body edge is a
+      // reference to dimension against, not new solid geometry the user
+      // drew - it must come back construction (see create_external_edge_
+      // reference's own construction=True).
+      expect(line.construction, isTrue);
     });
 
     test('re-picking the same body edge reuses the already-materialized Line', () async {
