@@ -36,76 +36,25 @@ project spec, see `docs/project-brief.md`.
 
 ## Sketcher tuning package
 
-Notes from a scoping pass on sketcher UX. Grouped by theme; each is a
-distinct, independently implementable item. See
-`docs/sketcher-overhaul-scope.md` for the engineering breakdown
-(current-state findings against the real code, proposed approach per
-item, affected files, complexity/risk, and a suggested delivery order).
+Notes from an original scoping pass on sketcher UX (selection/drag
+interaction, constraint feedback, 3D context while sketching, drawing
+tools, overall feel) - engineering breakdown in
+`docs/sketcher-overhaul-scope.md` Phases 1-6, narrative history in
+`docs/status.md`. **All of it has shipped**, including the package's
+last deferred item (Polygon vertex-drag reinterpreted as a
+circumradius-dimension edit, plus the on-device-feedback fixes that
+followed it - see `docs/status.md`'s two 2026-07-14 entries).
 
-**Selection and drag interaction**
-- **"Double-tap to drag" produces too many false positives** - e.g. user
-  taps to select, then taps again to start dragging and move the cursor,
-  and the sketcher misreads the second tap as part of a double-tap and
-  keeps the entity in a drag state. Proposed fix: replace the gesture
-  with an explicit FAB ("click and drag with cursor" mode), positioned
-  bottom-left.
-- **Dragging a point in a partially constrained sketch behaves
-  undesirably during solving.** The point the user just dragged should
-  stay where the user placed it if the solver can satisfy that; other,
-  unconstrained entities should be the ones that move to accommodate it,
-  not the dragged point itself.
-- **Hit radius for points feels too large when selecting with the
-  cursor**, causing too many false-positive point selections.
-- **Point-on-point hit radius doesn't scale with zoom level** when
-  placing a point during sketching. Hit radii should be made consistent
-  throughout the app, including how (and whether) they scale with zoom.
-- **Hover/highlight state disconnects from what actually gets selected**,
-  seemingly specific to points - causing unintended selection of
-  midpoints in particular.
-- **Placing a point on an existing point should create a coincident
-  constraint** between the two points automatically.
+One new item surfaced directly from that last round of on-device
+feedback, not yet implemented:
 
-**Constraint feedback**
-- **Need a visual system for over-constrained entities**: turn them red
-  and disallow click-and-drag on their defining points.
-- **Constrained lines/curves should turn dark green as they become fully
-  constrained**, so the user can see at a glance which entities still
-  need more constraining.
-
-**3D context while sketching**
-- **Existing bodies should be visible behind the sketch canvas** -
-  default canvas transparency should favour opacity (~25% transparent,
-  i.e. mostly opaque) rather than the current setting.
-- **Orbit-view button** so the user can rotate the view to see the
-  sketch plane in relation to existing bodies while sketching.
-- **Return-to-default-view button** that animates back to the sketch's
-  normal orientation.
-- **Dimensioning from body edges/points should be allowed.** If a
-  referenced edge/point is later lost (e.g. the feature it came from is
-  deleted or changed), the sketch's icon in the feature tree should turn
-  yellow to flag the dangling reference.
-- **Sketch orientation control**: when starting a sketch, two buttons to
-  flip (mirror) and rotate the sketch axes. A "sketch" label plus axis
-  arrows, positioned near the bottom-left of the displayed plane, should
-  indicate current orientation and move each time flip/rotate is
-  pressed. When creating the sketch, a line or edge can optionally be
-  selected as an aligning feature to set the sketch's Y-axis (a button
-  on the sketch-canvas-definition step to manually pick a reference
-  axis). A long-press on an existing sketch (in the tree or canvas)
-  should allow the user to redefine its orientation retrospectively.
-
-**Drawing tools**
-- **Line tool should snap to horizontal/vertical** while profiling, and
-  placing a snapped line should automatically add the corresponding
-  horizontal/vertical constraint.
-- **Additional shape/curve tools needed**: arc, ellipse, slot, polygon,
-  spline, and text (with outline output, for both cutting and
-  embossing).
-
-**Overall feel**
-- **Sketcher should feel like sketching on a canvas within the 3D
-  environment**, with the sketch positioned/rendered relative to
-  existing 3D geometry rather than as an isolated 2D view.
+- **Trim/extend a Line** - pick near one end of a Line, trim it back to
+  (or extend it out to reach) the next entity it geometrically crosses,
+  matching standard CAD trim/extend. Scoped in detail as **Phase 11** of
+  `docs/sketcher-overhaul-scope.md`: no line-line/line-circle/line-arc
+  intersection-point math exists anywhere in this codebase yet, and a
+  naive implementation would need to watch for silently dragging shared
+  Points (a chain corner, a Polygon vertex) - not decided/scheduled.
 
 ## Other open items
 
