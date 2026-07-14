@@ -1444,6 +1444,132 @@ profile to already enclose an area.
   reuses the existing boss/cut extrude path once that closed shell
   exists, and doesn't touch anything already shipped.
 
+## Phase 11 — Trim/extend a Line
+
+### 11.1 Trim a Line back to its next intersection, or extend it to reach one
+Requested on-device: a standard CAD trim/extend tool - pick near one end
+of a Line, and it either trims back to (or extends out to reach) the
+next entity it geometrically crosses, matching every mainstream 2D CAD
+tool's trim/extend gesture.
+
+- **Current state - nothing here exists yet**:
+  - **No intersection-point math anywhere.** The only intersection-
+    related code in the backend is `_segments_intersect` in
+    `app/sketch/profile.py:515-551` - a *boolean* orientation test used
+    by `_loop_fully_contains` for closed-loop overlap validation, not a
+    coordinate solve. There is no line-line, line-circle, or line-arc
+    intersection-point computation anywhere in `app/sketch/*.py` or
+    `app/document/*.py`. Client-side, `sketch_canvas.dart:1018-1026` has
+    a real infinite-line intersection (`_lineIntersectionScreen`,
+    standard 2x2 cross-product solve with a parallel guard) - but it's
+    private, screen-pixel-space only, line-line only, and exists solely
+    to lay out the angle-constraint ghost arc, not exposed as reusable
+    geometry.
+  - **Profile detection doesn't help.** `detect_profile`
+    (`app/sketch/profile.py:90`+) builds its connectivity graph purely
+    from shared/coincident Point ids (`SketchEntity.endpoint_point_ids()`,
+    `models.py:97-101`, canonicalized through `CoincidentConstraint`s via
+    union-find) - two Lines that visually cross mid-span without sharing
+    a Point id are invisible to it. Trim/extend needs its own geometric
+    scan over every other entity's segments, unrelated to that graph.
+  - **No safe "shorten a Line" mutation exists.** `PATCH .../lines/{id}`
+    (`router.py:499-510`, `LineUpdate` in `schemas.py:78-86`) only
+    accepts `length` (scales the end point along the *existing*
+    direction via `Line.set_length`) or `construction` - it cannot
+    repoint an endpoint to an arbitrary new coordinate. The closer
+    primitive, `PATCH .../points/{id}` (`update_point`,
+    `router.py:441-449`), just sets `x`/`y` directly with no check for
+    how many other entities/constraints reference that Point id.
+  - **Client tool-registration point**: `enum SketchTool`
+    (`sketch_controller.dart:237`) has no `trim` entry yet. The "click
+    near a Line" primitive it would plug into already exists -
+    `_distanceToSegment` (`sketch_controller.dart:3242-3258`, clamped
+    point-to-segment distance), used by `_entityAt`'s hit-testing to
+    resolve a tap to `SelectionKind.line` - trim just needs "which end
+    is closer to the tap" added on top, to know which side to keep.
+- **The load-bearing design question - shared Points**: a Line's
+  `start_point_id`/`end_point_id` (`models.py` `Line`) are often shared
+  with other geometry - a chain's corner, a Polygon vertex wired into
+  its own `EqualRadiusConstraint`/`EqualLengthConstraint`/
+  `AngleConstraint` web (`models.py` `Polygon`, ~line 347+), a Circle's
+  cardinal point. Naively PATCHing a trimmed/extended Line's endpoint to
+  the new intersection coordinate via `update_point` would silently drag
+  every *other* entity anchored to that same Point - exactly the kind of
+  spooky-action-at-a-distance bug this package has spent several rounds
+  fixing for Polygon already (see Phase 6.2.2's own history). The
+  correct primitive is a **new endpoint**, not a moved one: trimming/
+  extending a Line whose target end is shared must first create a fresh
+  Point at the intersection and repoint only *that* Line's own end to
+  it (mirroring how `add_polygon`/`add_ellipse` already create fresh
+  Points rather than repurposing shared ones - see those entities' own
+  docstrings) - only an end that's provably unshared (referenced by
+  nothing else) is safe to move in place.
+- **Proposed approach**:
+  1. Backend: a geometry module (new file, e.g. `app/sketch/
+     intersections.py`) computing line-line, line-circle, and line-arc
+     intersection points in sketch space - the client's private
+     `_lineIntersectionScreen` algebra is a direct porting reference for
+     the line-line case; circle/arc need the standard line-circle
+     quadratic, clipped to the arc's own sweep for the arc case. Splines
+     and Ellipses are explicitly **out of scope for v1** (no closed-form
+     line intersection without curve-specific root-finding) - trim/
+     extend only targets Line/Circle/Arc as both the picked entity and
+     the intersecting-with entity.
+  2. Backend: one new endpoint, e.g. `POST .../lines/{id}/trim` (or
+     `/extend` - likely one endpoint with a `keep_start: bool` telling
+     it which end survives, since "trim" and "extend" are the same
+     operation once the target intersection point is known - only
+     whether that point is *inside* or *outside* the current segment
+     differs, and the caller doesn't need to know which case it is).
+     Scans every other Line/Circle/Arc in the Sketch for an intersection
+     against the picked Line's infinite extension, picks the nearest
+     one on the "keep" side, creates a fresh Point there (per the shared-
+     Point rule above) unless the target end is already provably
+     unshared, repoints the Line, and re-solves. 404/422 (no
+     intersection found) is a real, expected outcome, not just an error
+     case - the client needs to surface "nothing to trim/extend to"
+     distinctly from a network failure.
+  3. Client: `SketchTool.trim` - a single-tap tool, no ghost preview
+     needed for v1 (unlike every other draw tool here, there's no
+     in-progress multi-tap state - trim is a one-shot pick-and-commit,
+     closer to how a delete gesture behaves than a draw gesture).
+     Highlighting which segment would be *kept* on hover (the tapped
+     side vs. the trimmed-away side) is worth a fast-follow but isn't
+     required for a first cut.
+- **Open questions worth resolving before implementation**: (a) what
+  happens when the picked Line has *multiple* candidate intersections on
+  the keep side - nearest-to-the-tap-point is the standard CAD
+  convention and should be the default; (b) whether extend should have
+  a sane maximum reach (an unbounded ray extension against near-parallel
+  geometry can produce a wildly distant, useless result - the client's
+  own `_maxAngleIntersectionDistance = 20000.0` sanity clamp at
+  `sketch_canvas.dart:1031` is a precedent for capping this); (c) how
+  this interacts with Phase 11's own prerequisite, the "hide implicit
+  Polygon ties" fix (`SketchController.isImplicitPolygonEdgeTie`) -
+  trimming one edge off a Polygon leaves its remaining auto-created
+  angle/equal-length ties referencing a Line no longer in that Polygon's
+  `lineIds`, which is exactly the "shape broken, ties become real again"
+  case that fix was deliberately built to handle, but the Polygon
+  *entity* itself (its `line_ids`/vertex bookkeeping) would need its own
+  decision: does trimming one edge silently demote the whole thing to
+  "no longer a real Polygon entity, just leftover Lines/Points/
+  Constraints", or does it get rejected/require explicitly deleting the
+  Polygon first? The former matches user intent better but needs a
+  `Sketch.demote_polygon`-style backend operation that doesn't exist
+  yet.
+- **Files**: new `app/sketch/intersections.py` (backend geometry), `app/
+  sketch/router.py` (new trim/extend endpoint), `app/sketch/schemas.py`
+  (request/response shapes), `sketch_api_client.dart` (new API method),
+  `sketch_controller.dart` (new `SketchTool.trim`, click handler,
+  `SelectionKind`-independent one-shot gesture), `sketch_canvas.dart`
+  (icon/ribbon entry, no new ghost-preview painter required for v1).
+- **Risk**: medium - the geometry itself (line-line/line-circle/line-arc
+  intersection) is standard, well-understood math with no OCCT/solver
+  involvement, but the shared-Point-splitting design is easy to get
+  subtly wrong (see the load-bearing design question above) and the
+  Polygon-demotion interaction needs a real decision before
+  implementation starts, not during it.
+
 ## Cross-cutting notes (architecture fit)
 
 Raised and resolved while scoping Phase 3, but relevant to the whole
