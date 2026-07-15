@@ -54,6 +54,16 @@ entries) - with one real gap confirmed by a direct code audit:
   as an aligning feature" ask) has no implementation anywhere - only
   the discrete flip/90°-rotate half of Phase 5 ever shipped. Not
   scoped in detail yet.
+- **A structural UX rethink is under consideration, not yet scoped or
+  decided.** On-device use still finds the drag/move experience too slow
+  and unpredictable for how central it is to sketching - see
+  `docs/sketcher-architecture-ux-scoping.md` (2026-07-15), a standalone
+  reference covering the full entity/constraint/solver architecture,
+  every tool's exact client/backend round-trip cost, the drag system in
+  full, and a menu of concrete options (client-side solving vs. backend-
+  authoritative, scoped/partial re-solves, giving Slot a real backend
+  entity, low-risk round-trip reductions) for a dedicated scoping
+  session. Nothing in it has been decided or started yet.
 
 ## Other open items
 
