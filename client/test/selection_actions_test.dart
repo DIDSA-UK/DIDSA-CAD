@@ -37,10 +37,17 @@ void main() {
       },
     );
 
-    test('C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face)', () {
-      final actions = contextActionsFor({_face0});
-      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
-    });
+    test(
+      'C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face), plus '
+      'on-device feedback\'s New Sketch on Face shortcut',
+      () {
+        final actions = contextActionsFor({_face0});
+        expect(actions, [
+          const SelectionContextAction('Create Plane', enabled: true),
+          const SelectionContextAction('New Sketch on Face', enabled: true),
+        ]);
+      },
+    );
 
     test('C3: exactly two faces alone offers a real, enabled Create Plane (Midplane)', () {
       const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
@@ -251,14 +258,20 @@ void main() {
   });
 
   group('C5: contextActionsFor with referencePlane/createPlane entities', () {
-    test('a lone fixed reference plane offers a real, enabled Create Plane (offset)', () {
+    test('a lone fixed reference plane offers a real, enabled Create Plane (offset) and New Sketch', () {
       final actions = contextActionsFor({_planeXy});
-      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
+      expect(actions, [
+        const SelectionContextAction('Create Plane', enabled: true),
+        const SelectionContextAction('New Sketch', enabled: true),
+      ]);
     });
 
-    test('a lone existing Plane offers a real, enabled Create Plane (offset)', () {
+    test('a lone existing Plane offers a real, enabled Create Plane (offset) and New Sketch', () {
       final actions = contextActionsFor({_createPlane1});
-      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
+      expect(actions, [
+        const SelectionContextAction('Create Plane', enabled: true),
+        const SelectionContextAction('New Sketch', enabled: true),
+      ]);
     });
 
     test('two fixed reference planes offers a real, enabled Create Plane (Midplane)', () {

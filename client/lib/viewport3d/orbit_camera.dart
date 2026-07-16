@@ -5,6 +5,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'reference_planes.dart';
+import 'sketch_geometry_3d.dart';
 
 // A3: near/far clip defaults adjacent to where clip distances are set.
 // kDefaultNearClip: 0.1 mm is the minimum without z-fighting on a 24-bit
@@ -125,9 +126,16 @@ class OrbitCamera {
   /// default vertical FOV and the fixed reference planes' real
   /// [referencePlaneSize] of 20 world units - left the planes filling
   /// nearly the full screen (~80% of its linear extent) on a cold launch.
-  /// default zoom: planes ~25% of screen (~50% of linear extent needs
-  /// distance ~48.28 at this FOV/plane size; rounded to a clean 48).
-  static const double _defaultDistance = 48;
+  /// Raised to `48` (planes ~25% of screen, ~50% of linear extent) to fix
+  /// that, then further out to `80` by explicit request to push the
+  /// default zoom level farther out still (planes now read at roughly
+  /// (48/80)^2 ≈ 36% of that screen coverage - correspondingly smaller/
+  /// farther-looking on open). Also what "Reset View" (see [reset])
+  /// returns to, whenever the loaded body's zoom-out bound allows it -
+  /// a small body's own `maxDistance` (see [setZoomBoundsForRadius])
+  /// still clamps below this exactly as it did before, unaffected by this
+  /// constant's value.
+  static const double _defaultDistance = 80;
 
   /// What [reset] returns [target] to - defaults to the origin, but
   /// [setTarget] moves this along with [target] so "Reset view" re-centers
@@ -145,6 +153,21 @@ class OrbitCamera {
   /// representation isn't.
   static vm.Quaternion _defaultOrientation() {
     final pitch = vm.Quaternion.axisAngle(_localRight, 0.5235987755982988);
+    final yaw = vm.Quaternion.axisAngle(_localUp, -0.7853981633974483);
+    return (pitch * yaw).normalized();
+  }
+
+  /// The standard CAD isometric corner view - 45° azimuth (same as
+  /// [_defaultOrientation]'s own yaw), true isometric elevation
+  /// `asin(1/sqrt(3))` ≈ 35.264° (not [_defaultOrientation]'s ~30°
+  /// "pleasant corner default", a deliberately different, looser angle).
+  /// Plane-independent, unlike [orientationFacingPlane] - used for the
+  /// sketch-orientation-definition step, before the user has confirmed
+  /// which plane/flip/rotation they're actually defining, so there's no
+  /// single "facing" view yet to animate the camera toward.
+  static vm.Quaternion isometricOrientation() {
+    const isometricElevation = 0.6154797086703873; // asin(1 / sqrt(3))
+    final pitch = vm.Quaternion.axisAngle(_localRight, isometricElevation);
     final yaw = vm.Quaternion.axisAngle(_localUp, -0.7853981633974483);
     return (pitch * yaw).normalized();
   }
@@ -260,21 +283,105 @@ class OrbitCamera {
   }
 }
 
-/// The camera orientation that looks straight down at [plane] from the side
-/// specified for the camera-animation-into-Sketch feature - XY from +Z (down
-/// -Z), XZ from +Y (down -Y), YZ from +X (down -X). Derived by hand from
-/// [OrbitCamera]'s own `_direction = orientation.rotated((0, 0, 1))` /
-/// `_up = orientation.rotated((0, 1, 0))` convention: identity orientation
-/// already gives direction=+Z (XY's case), and the other two are a single
-/// axis-angle rotation each that carries +Z to +Y or +X respectively.
+/// The camera orientation that looks straight at [plane] for the
+/// camera-animation-into-Sketch feature, Orbit View's entry pose, and the
+/// shaded-body-behind-canvas backdrop.
 ///
-/// XZ and YZ's resulting "up" (world (0, 0, -1) and world (0, 1, 0)
-/// respectively) is a deliberate but unforced convention choice - the brief
-/// only specifies the look-from direction, not which way is "up" for a
-/// top-down/side-on view - and would benefit from a real-device check that
-/// it doesn't feel upside-down.
-vm.Quaternion orientationFacingPlane(ReferencePlaneKind plane) => switch (plane) {
-      ReferencePlaneKind.xy => vm.Quaternion.identity(),
-      ReferencePlaneKind.xz => vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), -math.pi / 2),
-      ReferencePlaneKind.yz => vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), math.pi / 2),
-    };
+/// On-device feedback (2026-07-10): re-opening a Sketch on an existing Body
+/// showed the shaded backdrop's own rendering mirrored left/right against
+/// its *own* ghost outline (the same body's edges, projected onto the plane
+/// via [SketchPlaneBasis] - a plain CPU dot-product, no camera involved).
+/// The previous version of this function (and `test/orientation_facing_plane_test.dart`,
+/// which it passed) verified [OrbitCamera]'s own `right`/`up`/`direction`
+/// getters (`orientation.rotated(_localRight/_localUp/_localBack)`) against
+/// `SketchPlaneBasis.fixed(plane)` directly - but `OrbitCamera.right` is not
+/// actually what gets rendered on screen. `flutter_scene`'s `PerspectiveCamera`
+/// (see its `_matrix4LookAt`, `packages/flutter_scene/lib/src/camera.dart` in
+/// the `bdero/flutter_scene` repo) independently re-derives its own render-time
+/// right as `up.cross(forward)` (`forward = (target - position).normalized()`,
+/// i.e. `-direction`) - it never reads `OrbitCamera.right` at all. `triad.dart`'s
+/// world compass already knew this and computes its own `right` the same way
+/// (`camera.up.cross(forward)`), which is exactly why the compass has always
+/// rendered correctly while this function's plane-facing views did not.
+///
+/// Given any right-handed local camera frame (`right x up = back`, true for
+/// *any* orientation, regardless of [vm.Quaternion.rotated]'s own quirk - see
+/// below), that render-time formula reduces to an exact identity:
+/// `renderRight = -OrbitCamera.right` and `renderUp = OrbitCamera.up`, for
+/// every orientation. So the previous test's assertion (`OrbitCamera.right ==
+/// basis.xAxis`) was guaranteeing the *opposite* of what actually renders.
+///
+/// The fix targets the true render-time right/up directly. A camera with
+/// `renderRight = basis.xAxis` and `renderUp = basis.yAxis` necessarily views
+/// from the *opposite* side of the plane from before (`forward = renderRight
+/// x renderUp = basis.xAxis x basis.yAxis = +basis.normal`, i.e. the camera
+/// sits at `target - basis.normal * distance`, not `target + basis.normal *
+/// distance`) - provably, not just empirically: `SketchPlaneBasis` is always
+/// right-handed (`xAxis x yAxis = normal`, confirmed for all three planes by
+/// `test_stage_c3_plane_basis.py`'s `test_xz_basis_is_now_right_handed` and
+/// its neighbours in the backend, and true by construction on the client
+/// side too - see [SketchPlaneBasis.fixed]'s own values), while
+/// `flutter_scene`'s lookAt convention is left-handed (`right x up = forward`,
+/// not `-forward`) - the two conventions can only ever agree from one side.
+/// This flip is safe for the opaque shaded backdrop specifically: it isn't
+/// translucent, so it doesn't hit the `doubleSidedWinding`/back-face-culling
+/// quirk documented on `mesh_geometry.dart`'s `geometryFromMesh` (that quirk
+/// only fires for translucent materials), and ordinary per-triangle depth
+/// testing already handles being viewed from an arbitrary angle correctly
+/// for free-orbiting, so it handles this one too.
+///
+/// Solved directly via a rotation matrix rather than hand-composed axis-angle
+/// quaternions (the previous approach, which needed two separate CI-driven
+/// correction rounds - composing quaternions by hand and predicting
+/// [vm.Quaternion.rotated]'s effect is exactly the "genuinely error-prone to
+/// verify by hand" trap the old doc comment already warned about). Given
+/// [vm.Quaternion.rotated] is confirmed (from `vector_math`'s own source) to
+/// compute `q.rotated(v) = R(q^-1) * v` - the conjugate/inverse of the
+/// textbook `v' = q*v*q^-1` - solving `R(q^-1) * localRight = -basis.xAxis`,
+/// `R(q^-1) * localUp = basis.yAxis`, `R(q^-1) * localBack = -basis.normal`
+/// (the *negative* signs on right/back are what makes `OrbitCamera`'s own
+/// getters land on the "wrong", but now provably-necessary-for-correct-render,
+/// side) means `R(q) = R(q^-1)^-1 = R(q^-1)^T` is the matrix whose columns are
+/// `(-xAxis.x, yAxis.x, -normal.x)`, `(-xAxis.y, yAxis.y, -normal.y)`,
+/// `(-xAxis.z, yAxis.z, -normal.z)` - built directly below and handed to
+/// [vm.Quaternion.fromRotation], with no multiplication/composition-order risk
+/// at all.
+/// Bug fix (on-device feedback: "the animation to sketch has dropped
+/// working and should account for user selected sketch orientation"):
+/// [flip]/[rotationQuarterTurns] default to the identity (matching every
+/// pre-existing call site's behaviour unchanged), but a caller framing a
+/// Sketch that has its own non-default orientation (see
+/// `SketchDto.flip`/`SketchDto.rotationQuarterTurns`) should pass it
+/// through here - otherwise the camera frames the plane's *raw* basis
+/// while the Sketch's own geometry (and its Extrude) is actually embedded
+/// via the *oriented* one, a mismatch between "which way the camera is
+/// looking" and "which way the content is actually laid out".
+vm.Quaternion orientationFacingPlane(
+  ReferencePlaneKind plane, {
+  bool flip = false,
+  int rotationQuarterTurns = 0,
+}) =>
+    orientationFacingBasis(
+      SketchPlaneBasis.oriented(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns),
+    );
+
+/// [orientationFacingPlane]'s own math, generalized to any [SketchPlaneBasis]
+/// - not just one of the three fixed [ReferencePlaneKind]s - so a custom
+/// (Feature-anchored) plane Sketch's Orbit View can frame it exactly the same
+/// way a fixed-plane Sketch's already does (see [PartViewport.
+/// initialViewBasis]/[PartViewportState.animateToBasis]). [orientationFacingPlane]
+/// is now just this applied to [SketchPlaneBasis.oriented]'s result - every
+/// word of this function's own derivation above still applies verbatim,
+/// [basis] is just handed in directly instead of built from a
+/// [ReferencePlaneKind] first.
+vm.Quaternion orientationFacingBasis(SketchPlaneBasis basis) {
+  final targetRight = -basis.xAxis;
+  final targetUp = basis.yAxis;
+  final targetBack = -basis.normal;
+  final rotation = vm.Matrix3.columns(
+    vm.Vector3(targetRight.x, targetUp.x, targetBack.x),
+    vm.Vector3(targetRight.y, targetUp.y, targetBack.y),
+    vm.Vector3(targetRight.z, targetUp.z, targetBack.z),
+  );
+  return vm.Quaternion.fromRotation(rotation);
+}

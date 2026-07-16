@@ -1,13 +1,19 @@
 from typing import Literal, Union
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.sketch.models import Plane
 from app.sketch.profile import ProfileStatus
+from app.sketch.text_fonts import DEFAULT_FONT, FONT_ALLOWLIST
 
 
 class SketchCreate(BaseModel):
     plane: Plane
+    # Sketcher-roadmap Phase 5 - see app.sketch.models.Sketch's own
+    # docstring for what these mean; ignored (never applied) for a
+    # None-plane Sketch, but this endpoint always creates a fixed-plane one.
+    flip: bool = False
+    rotation_quarter_turns: int = 0
 
 
 class SketchResponse(BaseModel):
@@ -17,6 +23,18 @@ class SketchResponse(BaseModel):
     # populated for a Sketch created through the standalone /sketch API.
     plane: Plane | None
     origin_point_id: str
+    flip: bool = False
+    rotation_quarter_turns: int = 0
+
+
+class SketchOrientationUpdate(BaseModel):
+    """Sketcher-roadmap Phase 5: the request body for `PATCH .../orientation`
+    - both fields required (not optional-and-partial like most other PATCH
+    bodies in this file) since flip/rotation are only ever meaningful set
+    together as a single new orientation, not independently patched."""
+
+    flip: bool
+    rotation_quarter_turns: int
 
 
 class PointCreate(BaseModel):
@@ -80,11 +98,42 @@ class LineResponse(BaseModel):
     construction: bool = False
 
 
+class LineTrimRequest(BaseModel):
+    """Sketcher-roadmap Phase 11: which of the Line's own two endpoints the
+    client is adjusting - see `Sketch.trim_or_extend_line`'s own doc
+    comment for what happens next. The *other* end (whichever
+    `moved_point_id` isn't) stays fixed and anchors the search direction;
+    the client resolves this from wherever the user tapped nearest, the
+    same "which end is closer to the tap" the scope doc's own client-tool
+    section describes."""
+
+    moved_point_id: str
+
+
+class LineTrimResponse(BaseModel):
+    """`line` already reflects the new endpoint (`start_point_id`/
+    `end_point_id` repointed if a fresh Point was created, unchanged ids
+    with a moved (x, y) otherwise - see `created_new_point`).
+    `moved_point` is always a real, current Point at the new position;
+    `created_new_point` tells the client whether that's a brand new Point
+    it needs to add to its own local cache (True) or an existing one it
+    already has and just needs to re-fetch/update in place (False) - see
+    `Sketch.trim_or_extend_line`'s own doc comment for why this distinction
+    exists (a shared endpoint is never moved in place)."""
+
+    line: LineResponse
+    moved_point: PointResponse
+    created_new_point: bool
+
+
 class CircleCreate(BaseModel):
-    """Create a circle from an existing center Point, plus either an
-    existing radius Point's id (explicit sharing) or a radius and angle
-    (radians from the +x axis), which creates a new radius Point -
-    mirroring LineCreate's existing-vs-computed-point pattern."""
+    """Create a circle from an existing center Point, plus one of three
+    ways to define the radius Point: an existing Point's id (explicit
+    sharing), a radius and angle (radians from the +x axis) which creates a
+    new Point at that position, or - the centre-point circle tool's own
+    mode - a bare radius with no angle at all, which creates the new Point
+    as the circle's own north cardinal point (vertically above centre) -
+    see `Sketch.add_circle`'s own doc comment."""
 
     center_point_id: str
     radius_point_id: str | None = None
@@ -96,9 +145,9 @@ class CircleCreate(BaseModel):
     def check_creation_mode(self) -> "CircleCreate":
         if self.radius_point_id is not None:
             if self.radius is not None or self.angle is not None:
-                raise ValueError("Provide either 'radius_point_id', or 'radius' and 'angle', not both")
-        elif self.radius is None or self.angle is None:
-            raise ValueError("Provide either 'radius_point_id', or both 'radius' and 'angle'")
+                raise ValueError("Provide either 'radius_point_id', or 'radius' (optionally with 'angle'), not both")
+        elif self.radius is None:
+            raise ValueError("Provide either 'radius_point_id', or 'radius' (optionally with 'angle')")
         return self
 
 
@@ -109,6 +158,9 @@ class CircleResponse(BaseModel):
     radius_point_id: str
     radius: float
     construction: bool = False
+    # [north, east, south, west] - see the backend's Circle.cardinal_point_ids
+    # docstring for how each is solver-locked.
+    cardinal_point_ids: list[str]
 
 
 class CircleUpdate(BaseModel):
@@ -119,7 +171,268 @@ class CircleUpdate(BaseModel):
     construction: bool | None = None
 
 
-SketchEntityResponse = Union[LineResponse, CircleResponse]
+class ArcCreate(BaseModel):
+    """Create an arc from an existing center Point and an existing start
+    Point (together fixing the radius), plus either an existing end
+    Point's id (explicit sharing) or an end angle (radians from the +x
+    axis), which creates a new end Point on the same circle - mirroring
+    CircleCreate's existing-vs-computed-point pattern, one Point further
+    along."""
+
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str | None = None
+    end_angle: float | None = None
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_creation_mode(self) -> "ArcCreate":
+        if self.end_point_id is not None:
+            if self.end_angle is not None:
+                raise ValueError("Provide either 'end_point_id' or 'end_angle', not both")
+        elif self.end_angle is None:
+            raise ValueError("Provide either 'end_point_id' or 'end_angle'")
+        return self
+
+
+class ArcResponse(BaseModel):
+    type: Literal["arc"] = "arc"
+    id: str
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str
+    radius: float
+    construction: bool = False
+
+
+class ArcUpdate(BaseModel):
+    """Update an arc's construction flag - mirrors CircleUpdate. There is
+    no radius field here either: an arc's radius is driven by its two
+    DistanceConstraints (see Sketch.add_arc), not edited directly."""
+
+    construction: bool | None = None
+
+
+class EllipseCreate(BaseModel):
+    """Create an ellipse from an existing center Point, plus either an
+    existing major-axis Point's id (explicit sharing) or a major radius
+    and angle (radians from the +x axis), which creates a new major-axis
+    Point - mirrors CircleCreate's existing-vs-computed-point pattern.
+    `minor_radius` always places a brand-new minor-axis Point exactly
+    perpendicular to the major axis (see the backend's
+    `app.sketch.models.Ellipse` docstring - there is no existing-minor-
+    Point sharing option, since a minor-axis Point can only ever come from
+    an Ellipse's own creation) and must not exceed the major radius."""
+
+    center_point_id: str
+    major_point_id: str | None = None
+    major_radius: float | None = None
+    angle: float | None = None
+    minor_radius: float
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_creation_mode(self) -> "EllipseCreate":
+        if self.major_point_id is not None:
+            if self.major_radius is not None or self.angle is not None:
+                raise ValueError("Provide either 'major_point_id', or 'major_radius' and 'angle', not both")
+        elif self.major_radius is None or self.angle is None:
+            raise ValueError("Provide either 'major_point_id', or both 'major_radius' and 'angle'")
+        return self
+
+
+class EllipseResponse(BaseModel):
+    type: Literal["ellipse"] = "ellipse"
+    id: str
+    center_point_id: str
+    major_point_id: str
+    major_point_neg_id: str
+    minor_point_id: str
+    minor_point_neg_id: str
+    major_axis_line_id: str
+    minor_axis_line_id: str
+    major_radius: float
+    minor_radius: float
+    rotation: float
+    construction: bool = False
+
+
+class EllipseUpdate(BaseModel):
+    """Update an ellipse's construction flag. There is no radius field
+    here: like Circle/Arc, both of an Ellipse's radii are now driven by
+    real DistanceConstraints (see the Ellipse class docstring) - PATCH
+    `major_constraint_id`/`minor_constraint_id` via the ordinary
+    `/constraints/{id}` endpoint instead."""
+
+    construction: bool | None = None
+
+
+class PolygonCreate(BaseModel):
+    """Create a regular Polygon from an existing center Point and an
+    existing first-vertex Point (together fixing the circumradius and
+    rotation), plus a side count - see the backend's
+    `app.sketch.models.Sketch.add_polygon` docstring for what this creates.
+    Unlike Arc/Ellipse there is no "computed point" alternative for the
+    first vertex - the client always places/snaps it as a real Point
+    first, exactly as it always has for the Polygon tool's own first tap."""
+
+    center_point_id: str
+    first_vertex_point_id: str
+    sides: int = Field(ge=3)
+    construction: bool = False
+
+
+class PolygonResponse(BaseModel):
+    type: Literal["polygon"] = "polygon"
+    id: str
+    center_point_id: str
+    vertex_point_ids: list[str]
+    line_ids: list[str]
+    radius: float
+    sides: int
+    construction: bool = False
+
+
+class PolygonUpdate(BaseModel):
+    """Update a polygon's construction flag - mirrors ArcUpdate/EllipseUpdate.
+    There is no radius field here either: a polygon's radius is driven by
+    its own DistanceConstraint (see Sketch.add_polygon), not edited
+    directly."""
+
+    construction: bool | None = None
+
+
+class SplineCreate(BaseModel):
+    """Create a spline through 2+ existing Points, in order - see the
+    backend's `app.sketch.models.Spline` docstring for what this creates
+    alongside the Spline itself (2 control-handle Points per segment, plus
+    a `SplineTangentConstraint` per interior through-point). Unlike
+    Circle/Arc/Ellipse, there is no existing-vs-computed-point choice
+    here: every through-point must already exist (created via the
+    ordinary `/points` endpoint first), mirroring how a Line chain's own
+    Points are each placed individually before the Line connecting them is
+    created."""
+
+    through_point_ids: list[str]
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_point_count(self) -> "SplineCreate":
+        if len(self.through_point_ids) < 2:
+            raise ValueError("A spline needs at least 2 through-points")
+        return self
+
+
+class SplineResponse(BaseModel):
+    type: Literal["spline"] = "spline"
+    id: str
+    through_point_ids: list[str]
+    control_point_ids: list[str]
+    construction: bool = False
+
+
+class SplineUpdate(BaseModel):
+    """Update a spline's construction flag - mirrors ArcUpdate/CircleUpdate.
+    There is no shape field here: a spline's shape is driven entirely by
+    its through-points/control-handle Points' own positions and its
+    SplineTangentConstraints, not edited directly."""
+
+    construction: bool | None = None
+
+
+class TextCreate(BaseModel):
+    """Create a Text entity anchored to an existing Point - mirrors
+    `SplineCreate`: unlike Circle/Arc/Ellipse's existing-vs-computed-point
+    choice, the anchor Point must already exist (created via the ordinary
+    `/points` endpoint first), since a Text entity has exactly one Point
+    and no derived-from-radius placement to compute. `font` must be one
+    of `app.sketch.text_fonts.FONT_ALLOWLIST`'s small backend-bundled set
+    (see `app.sketch.models.TextEntity`'s own docstring for why) -
+    checked here rather than deferred to the (materially more expensive)
+    actual OCCT conversion, so an unknown font is rejected immediately
+    with a clear 422 rather than surfacing later as a confusing failure
+    from profile detection or extrude."""
+
+    content: str
+    anchor_point_id: str
+    font: str = DEFAULT_FONT
+    size: float = 10.0
+    rotation_degrees: float = 0.0
+    construction: bool = False
+
+    @model_validator(mode="after")
+    def check_content(self) -> "TextCreate":
+        if not self.content:
+            raise ValueError("Text content cannot be empty")
+        if self.size <= 0:
+            raise ValueError("Text size must be positive")
+        if self.font not in FONT_ALLOWLIST:
+            raise ValueError(f"Unknown font: {self.font!r}")
+        return self
+
+
+class TextResponse(BaseModel):
+    type: Literal["text"] = "text"
+    id: str
+    content: str
+    font: str
+    size: float
+    anchor_point_id: str
+    rotation_degrees: float = 0.0
+    construction: bool = False
+
+
+class TextUpdate(BaseModel):
+    """Update any of a Text entity's own directly-editable fields -
+    mirrors EllipseUpdate/SplineUpdate's "construction flag, plus
+    whatever fields have no backing solver constraint of their own"
+    shape. Every field here is a plain direct edit (see TextEntity's own
+    docstring: none of `content`/`font`/`size`/`rotation_degrees` is
+    solver-tracked) - omitted fields are left unchanged."""
+
+    content: str | None = None
+    font: str | None = None
+    size: float | None = None
+    rotation_degrees: float | None = None
+    construction: bool | None = None
+
+    @model_validator(mode="after")
+    def check_values(self) -> "TextUpdate":
+        if self.content is not None and not self.content:
+            raise ValueError("Text content cannot be empty")
+        if self.size is not None and self.size <= 0:
+            raise ValueError("Text size must be positive")
+        if self.font is not None and self.font not in FONT_ALLOWLIST:
+            raise ValueError(f"Unknown font: {self.font!r}")
+        return self
+
+
+class TextContourResponse(BaseModel):
+    """One glyph's own closed boundary (`outer`) plus its own inner holes
+    (`holes`, e.g. the counter in "o"/"e"/"a"/"g") - both as sketch-local
+    `(x, y)` polylines, already positioned/rotated per the owning Text
+    entity's own anchor Point and `rotation_degrees` (the client draws
+    these directly with its existing sketch-space rendering, no extra
+    transform needed). Each polyline is closed but does not repeat its
+    first point."""
+
+    outer: list[tuple[float, float]]
+    holes: list[list[tuple[float, float]]] = []
+
+
+class TextPreviewResponse(BaseModel):
+    """A Text entity's full tessellated outline - one `TextContourResponse`
+    per glyph (see `app.sketch.profile._text_profile`) - for client
+    rendering only (see the Text tool's own scoping notes: no font-outline
+    renderer belongs in Flutter, so the client fetches/caches/draws this
+    real server-tessellated outline instead of approximating one)."""
+
+    contours: list[TextContourResponse]
+
+
+SketchEntityResponse = Union[
+    LineResponse, CircleResponse, ArcResponse, EllipseResponse, SplineResponse, TextResponse
+]
 
 
 class ProfileResponse(BaseModel):
@@ -157,6 +470,11 @@ class DistanceConstraintCreate(BaseModel):
     # with a default so pre-Prompt-B clients/tests that never send this
     # field keep working unmodified.
     orientation: Literal["linear", "horizontal", "vertical"] = "linear"
+    # See DistanceConstraint.provisional (constraints.py) for the full
+    # rationale. Defaults False so ordinary user-created dimensions (the
+    # vast majority of calls to this endpoint) behave exactly as before;
+    # only the shape tools' own size-defining calls set this True.
+    provisional: bool = False
 
 
 class VerticalConstraintCreate(BaseModel):
@@ -226,6 +544,31 @@ class AtMidpointConstraintCreate(BaseModel):
     line_id: str
 
 
+class TangentConstraintCreate(BaseModel):
+    type: Literal["tangent"]
+    circle_or_arc_id: str
+    line_id: str
+
+
+class EqualRadiusConstraintCreate(BaseModel):
+    type: Literal["equal_radius"]
+    entity1_id: str
+    entity2_id: str
+    radius2_point_id: str | None = None
+
+
+class EqualRadiusPointsConstraintCreate(BaseModel):
+    """The raw-Point counterpart to EqualRadiusConstraintCreate, for callers
+    with no Circle/Arc entity id to pass - see
+    Sketch.add_equal_radius_constraint_from_points."""
+
+    type: Literal["equal_radius_points"]
+    center1_point_id: str
+    radius1_point_id: str
+    center2_point_id: str
+    radius2_point_id: str
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
@@ -239,6 +582,9 @@ ConstraintCreate = Union[
     LineDistanceConstraintCreate,
     PointLineDistanceConstraintCreate,
     AtMidpointConstraintCreate,
+    TangentConstraintCreate,
+    EqualRadiusConstraintCreate,
+    EqualRadiusPointsConstraintCreate,
 ]
 
 
@@ -249,6 +595,7 @@ class DistanceConstraintResponse(BaseModel):
     point_b_id: str
     distance: float
     orientation: Literal["linear", "horizontal", "vertical"] = "linear"
+    provisional: bool = False
 
 
 class VerticalConstraintResponse(BaseModel):
@@ -333,6 +680,37 @@ class AtMidpointConstraintResponse(BaseModel):
     line_id: str
 
 
+class SplineTangentConstraintResponse(BaseModel):
+    type: Literal["spline_tangent"] = "spline_tangent"
+    id: str
+    spline_id: str
+    segment_a_p0: str
+    segment_a_p1: str
+    segment_a_p2: str
+    segment_a_p3: str
+    segment_b_p0: str
+    segment_b_p1: str
+    segment_b_p2: str
+    segment_b_p3: str
+
+
+class TangentConstraintResponse(BaseModel):
+    type: Literal["tangent"] = "tangent"
+    id: str
+    center_point_id: str
+    radius_point_id: str
+    line_id: str
+
+
+class EqualRadiusConstraintResponse(BaseModel):
+    type: Literal["equal_radius"] = "equal_radius"
+    id: str
+    center1_point_id: str
+    radius1_point_id: str
+    center2_point_id: str
+    radius2_point_id: str
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -346,6 +724,9 @@ ConstraintResponse = Union[
     LineDistanceConstraintResponse,
     PointLineDistanceConstraintResponse,
     AtMidpointConstraintResponse,
+    SplineTangentConstraintResponse,
+    TangentConstraintResponse,
+    EqualRadiusConstraintResponse,
 ]
 
 
@@ -364,3 +745,17 @@ class SolveResultResponse(BaseModel):
     blamed_constraint_ids: list[str]
     solver_reported_failed_constraint_ids: list[str]
     detail: str
+
+
+class SolveRequest(BaseModel):
+    """Optional body for POST .../solve. `anchor_point_ids` are pinned for
+    this one solve exactly like the sketch's own origin already is (see
+    `solver.solve_sketch`'s doc comment) - drag-solve semantics: a Point the
+    client just dragged (or, for a dragged Line, both its endpoints) stays
+    at exactly the position it was dropped at, and the rest of the sketch
+    settles around it, instead of every Point (including the one the user
+    was just holding) being equally free to move. Never persisted - each
+    solve call is independent, and omitting the body entirely (as every
+    caller did before this field existed) is equivalent to an empty list."""
+
+    anchor_point_ids: list[str] = []

@@ -1,3 +1,5 @@
+import math
+
 from fastapi import APIRouter, HTTPException
 
 from app.sketch.constraints import (
@@ -8,18 +10,35 @@ from app.sketch.constraints import (
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
+    EqualRadiusConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    SplineTangentConstraint,
+    TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Circle, Line, Point, Sketch
+from app.sketch.models import (
+    Arc,
+    Circle,
+    Ellipse,
+    Line,
+    NoIntersectionFoundError,
+    Point,
+    Polygon,
+    Sketch,
+    Spline,
+    TextEntity,
+)
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
     AngleConstraintCreate,
     AngleConstraintResponse,
+    ArcCreate,
+    ArcResponse,
+    ArcUpdate,
     AtMidpointConstraintCreate,
     AtMidpointConstraintResponse,
     CircleCreate,
@@ -34,14 +53,22 @@ from app.sketch.schemas import (
     ConstraintValueUpdate,
     DistanceConstraintCreate,
     DistanceConstraintResponse,
+    EllipseCreate,
+    EllipseResponse,
+    EllipseUpdate,
     EqualLengthConstraintCreate,
     EqualLengthConstraintResponse,
+    EqualRadiusConstraintCreate,
+    EqualRadiusConstraintResponse,
+    EqualRadiusPointsConstraintCreate,
     HorizontalConstraintCreate,
     HorizontalConstraintResponse,
     LineCreate,
     LineDistanceConstraintCreate,
     LineDistanceConstraintResponse,
     LineResponse,
+    LineTrimRequest,
+    LineTrimResponse,
     LineUpdate,
     ParallelConstraintCreate,
     ParallelConstraintResponse,
@@ -52,17 +79,34 @@ from app.sketch.schemas import (
     PointLineDistanceConstraintResponse,
     PointResponse,
     PointUpdate,
+    PolygonCreate,
+    PolygonResponse,
+    PolygonUpdate,
     ProfileDetectionResponse,
     ProfileResponse,
     SketchCreate,
+    SketchOrientationUpdate,
     SketchResponse,
+    SolveRequest,
     SolveResultResponse,
+    SplineCreate,
+    SplineResponse,
+    SplineTangentConstraintResponse,
+    SplineUpdate,
+    TangentConstraintCreate,
+    TangentConstraintResponse,
+    TextContourResponse,
+    TextCreate,
+    TextPreviewResponse,
+    TextResponse,
+    TextUpdate,
     VerticalConstraintCreate,
     VerticalConstraintResponse,
 )
 from app.sketch.solver import SolveResult, solve_sketch
 from app.sketch.store import create_sketch as _create_sketch
 from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
+from app.sketch.text_geometry import place_local_point, text_to_polygons
 
 router = APIRouter(prefix="/sketch", tags=["sketch"])
 
@@ -85,6 +129,41 @@ def _get_circle_or_404(sketch: Sketch, circle_id: str) -> Circle:
     entity = sketch.entities.get(circle_id)
     if not isinstance(entity, Circle):
         raise HTTPException(status_code=404, detail="Circle not found")
+    return entity
+
+
+def _get_arc_or_404(sketch: Sketch, arc_id: str) -> Arc:
+    entity = sketch.entities.get(arc_id)
+    if not isinstance(entity, Arc):
+        raise HTTPException(status_code=404, detail="Arc not found")
+    return entity
+
+
+def _get_ellipse_or_404(sketch: Sketch, ellipse_id: str) -> Ellipse:
+    entity = sketch.entities.get(ellipse_id)
+    if not isinstance(entity, Ellipse):
+        raise HTTPException(status_code=404, detail="Ellipse not found")
+    return entity
+
+
+def _get_polygon_or_404(sketch: Sketch, polygon_id: str) -> Polygon:
+    entity = sketch.entities.get(polygon_id)
+    if not isinstance(entity, Polygon):
+        raise HTTPException(status_code=404, detail="Polygon not found")
+    return entity
+
+
+def _get_spline_or_404(sketch: Sketch, spline_id: str) -> Spline:
+    entity = sketch.entities.get(spline_id)
+    if not isinstance(entity, Spline):
+        raise HTTPException(status_code=404, detail="Spline not found")
+    return entity
+
+
+def _get_text_or_404(sketch: Sketch, text_id: str) -> TextEntity:
+    entity = sketch.entities.get(text_id)
+    if not isinstance(entity, TextEntity):
+        raise HTTPException(status_code=404, detail="Text not found")
     return entity
 
 
@@ -116,6 +195,68 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         radius_point_id=circle.radius_point_id,
         radius=circle.radius(sketch.points),
         construction=circle.construction,
+        cardinal_point_ids=circle.cardinal_point_ids,
+    )
+
+
+def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
+    return ArcResponse(
+        id=arc.id,
+        center_point_id=arc.center_point_id,
+        start_point_id=arc.start_point_id,
+        end_point_id=arc.end_point_id,
+        radius=arc.radius(sketch.points),
+        construction=arc.construction,
+    )
+
+
+def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
+    return EllipseResponse(
+        id=ellipse.id,
+        center_point_id=ellipse.center_point_id,
+        major_point_id=ellipse.major_point_id,
+        major_point_neg_id=ellipse.major_point_neg_id,
+        minor_point_id=ellipse.minor_point_id,
+        minor_point_neg_id=ellipse.minor_point_neg_id,
+        major_axis_line_id=ellipse.major_axis_line_id,
+        minor_axis_line_id=ellipse.minor_axis_line_id,
+        major_radius=ellipse.major_radius(sketch.points),
+        minor_radius=ellipse.minor_radius(sketch.points),
+        rotation=ellipse.rotation(sketch.points),
+        construction=ellipse.construction,
+    )
+
+
+def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
+    return PolygonResponse(
+        id=polygon.id,
+        center_point_id=polygon.center_point_id,
+        vertex_point_ids=polygon.vertex_point_ids,
+        line_ids=polygon.line_ids,
+        radius=polygon.radius(sketch.points),
+        sides=polygon.sides,
+        construction=polygon.construction,
+    )
+
+
+def _spline_response(spline: Spline) -> SplineResponse:
+    return SplineResponse(
+        id=spline.id,
+        through_point_ids=spline.through_point_ids,
+        control_point_ids=spline.control_point_ids,
+        construction=spline.construction,
+    )
+
+
+def _text_response(text: TextEntity) -> TextResponse:
+    return TextResponse(
+        id=text.id,
+        content=text.content,
+        font=text.font,
+        size=text.size,
+        anchor_point_id=text.anchor_point_id,
+        rotation_degrees=text.rotation_degrees,
+        construction=text.construction,
     )
 
 
@@ -135,6 +276,7 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             point_b_id=constraint.point_b_id,
             distance=constraint.distance,
             orientation=constraint.orientation,
+            provisional=constraint.provisional,
         )
     if isinstance(constraint, VerticalConstraint):
         return VerticalConstraintResponse(
@@ -207,6 +349,34 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             point_id=constraint.point_id,
             line_id=constraint.line_id,
         )
+    if isinstance(constraint, SplineTangentConstraint):
+        return SplineTangentConstraintResponse(
+            id=constraint.id,
+            spline_id=constraint.spline_id,
+            segment_a_p0=constraint.segment_a_p0,
+            segment_a_p1=constraint.segment_a_p1,
+            segment_a_p2=constraint.segment_a_p2,
+            segment_a_p3=constraint.segment_a_p3,
+            segment_b_p0=constraint.segment_b_p0,
+            segment_b_p1=constraint.segment_b_p1,
+            segment_b_p2=constraint.segment_b_p2,
+            segment_b_p3=constraint.segment_b_p3,
+        )
+    if isinstance(constraint, TangentConstraint):
+        return TangentConstraintResponse(
+            id=constraint.id,
+            center_point_id=constraint.center_point_id,
+            radius_point_id=constraint.radius_point_id,
+            line_id=constraint.line_id,
+        )
+    if isinstance(constraint, EqualRadiusConstraint):
+        return EqualRadiusConstraintResponse(
+            id=constraint.id,
+            center1_point_id=constraint.center1_point_id,
+            radius1_point_id=constraint.radius1_point_id,
+            center2_point_id=constraint.center2_point_id,
+            radius2_point_id=constraint.radius2_point_id,
+        )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
 
@@ -221,16 +391,42 @@ def _solve_result_response(result: SolveResult) -> SolveResultResponse:
     )
 
 
+def _sketch_response(sketch: Sketch) -> SketchResponse:
+    return SketchResponse(
+        id=sketch.id,
+        plane=sketch.plane,
+        origin_point_id=sketch.origin_point().id,
+        flip=sketch.flip,
+        rotation_quarter_turns=sketch.rotation_quarter_turns,
+    )
+
+
 @router.post("/sketches", response_model=SketchResponse, status_code=201)
 def create_sketch(payload: SketchCreate) -> SketchResponse:
-    sketch = _create_sketch(payload.plane)
-    return SketchResponse(id=sketch.id, plane=sketch.plane, origin_point_id=sketch.origin_point().id)
+    sketch = _create_sketch(payload.plane, flip=payload.flip, rotation_quarter_turns=payload.rotation_quarter_turns)
+    return _sketch_response(sketch)
 
 
 @router.get("/sketches/{sketch_id}", response_model=SketchResponse)
 def get_sketch(sketch_id: str) -> SketchResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return SketchResponse(id=sketch.id, plane=sketch.plane, origin_point_id=sketch.origin_point().id)
+    return _sketch_response(sketch)
+
+
+@router.patch("/sketches/{sketch_id}/orientation", response_model=SketchResponse)
+def update_sketch_orientation(sketch_id: str, payload: SketchOrientationUpdate) -> SketchResponse:
+    """Sketcher-roadmap Phase 5: the retrospective-redefine entry point -
+    just flips two fields (see `Sketch.set_orientation`'s own doc comment
+    for why this needs no re-projection of any existing Point). Works
+    identically for a `plane is None` Sketch (one anchored to a custom
+    `CreatePlaneFeature` rather than a fixed `Plane`) - `app.document.
+    create_plane._basis_for_sketch` applies these fields via
+    `apply_orientation` for that case too (bug fix: it used to silently
+    ignore them for a custom-plane Sketch), matching this project's
+    general "store what's given, resolve meaning at read time" pattern."""
+    sketch = _get_sketch_or_404(sketch_id)
+    sketch.set_orientation(flip=payload.flip, rotation_quarter_turns=payload.rotation_quarter_turns)
+    return _sketch_response(sketch)
 
 
 @router.post("/sketches/{sketch_id}/points", response_model=PointResponse, status_code=201)
@@ -327,6 +523,30 @@ def update_line(sketch_id: str, line_id: str, payload: LineUpdate) -> LineRespon
     return _line_response(sketch, line)
 
 
+@router.post("/sketches/{sketch_id}/lines/{line_id}/trim", response_model=LineTrimResponse)
+def trim_line(sketch_id: str, line_id: str, payload: LineTrimRequest) -> LineTrimResponse:
+    """Sketcher-roadmap Phase 11: trims/extends [line_id] - see
+    `Sketch.trim_or_extend_line`'s own doc comment for the full behaviour.
+    404 for a missing Point/Line (a real lookup failure); 422 specifically
+    for `NoIntersectionFoundError` (a real, expected "nothing to trim/
+    extend to" outcome, not a client error); every other `ValueError`
+    (invalid endpoint, Polygon-owned edge) stays the usual 400."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_line_or_404(sketch, line_id)
+    _get_point_or_404(sketch, payload.moved_point_id)
+    try:
+        line, moved_point, created_new_point = sketch.trim_or_extend_line(line_id, payload.moved_point_id)
+    except NoIntersectionFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LineTrimResponse(
+        line=_line_response(sketch, line),
+        moved_point=_point_response(moved_point),
+        created_new_point=created_new_point,
+    )
+
+
 @router.post("/sketches/{sketch_id}/circles", response_model=CircleResponse, status_code=201)
 def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -373,6 +593,271 @@ def delete_circle(sketch_id: str, circle_id: str) -> None:
     sketch.delete_circle(circle_id)
 
 
+@router.post("/sketches/{sketch_id}/arcs", response_model=ArcResponse, status_code=201)
+def create_arc(sketch_id: str, payload: ArcCreate) -> ArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        arc = sketch.add_arc(
+            payload.center_point_id,
+            payload.start_point_id,
+            payload.end_point_id,
+            end_angle=payload.end_angle,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _arc_response(sketch, arc)
+
+
+@router.get("/sketches/{sketch_id}/arcs", response_model=list[ArcResponse])
+def list_arcs(sketch_id: str) -> list[ArcResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_arc_response(sketch, arc) for arc in sketch.arcs()]
+
+
+@router.get("/sketches/{sketch_id}/arcs/{arc_id}", response_model=ArcResponse)
+def get_arc(sketch_id: str, arc_id: str) -> ArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _arc_response(sketch, _get_arc_or_404(sketch, arc_id))
+
+
+@router.patch("/sketches/{sketch_id}/arcs/{arc_id}", response_model=ArcResponse)
+def update_arc(sketch_id: str, arc_id: str, payload: ArcUpdate) -> ArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    arc = _get_arc_or_404(sketch, arc_id)
+    if payload.construction is not None:
+        arc.construction = payload.construction
+    return _arc_response(sketch, arc)
+
+
+@router.delete("/sketches/{sketch_id}/arcs/{arc_id}", status_code=204)
+def delete_arc(sketch_id: str, arc_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_arc_or_404(sketch, arc_id)
+    sketch.delete_arc(arc_id)
+
+
+@router.post("/sketches/{sketch_id}/ellipses", response_model=EllipseResponse, status_code=201)
+def create_ellipse(sketch_id: str, payload: EllipseCreate) -> EllipseResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        ellipse = sketch.add_ellipse(
+            payload.center_point_id,
+            payload.major_point_id,
+            major_radius=payload.major_radius,
+            angle=payload.angle,
+            minor_radius=payload.minor_radius,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _ellipse_response(sketch, ellipse)
+
+
+@router.get("/sketches/{sketch_id}/ellipses", response_model=list[EllipseResponse])
+def list_ellipses(sketch_id: str) -> list[EllipseResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_ellipse_response(sketch, ellipse) for ellipse in sketch.ellipses()]
+
+
+@router.get("/sketches/{sketch_id}/ellipses/{ellipse_id}", response_model=EllipseResponse)
+def get_ellipse(sketch_id: str, ellipse_id: str) -> EllipseResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _ellipse_response(sketch, _get_ellipse_or_404(sketch, ellipse_id))
+
+
+@router.patch("/sketches/{sketch_id}/ellipses/{ellipse_id}", response_model=EllipseResponse)
+def update_ellipse(sketch_id: str, ellipse_id: str, payload: EllipseUpdate) -> EllipseResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    ellipse = _get_ellipse_or_404(sketch, ellipse_id)
+    if payload.construction is not None:
+        ellipse.construction = payload.construction
+    return _ellipse_response(sketch, ellipse)
+
+
+@router.delete("/sketches/{sketch_id}/ellipses/{ellipse_id}", status_code=204)
+def delete_ellipse(sketch_id: str, ellipse_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_ellipse_or_404(sketch, ellipse_id)
+    sketch.delete_ellipse(ellipse_id)
+
+
+@router.post("/sketches/{sketch_id}/polygons", response_model=PolygonResponse, status_code=201)
+def create_polygon(sketch_id: str, payload: PolygonCreate) -> PolygonResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        polygon = sketch.add_polygon(
+            payload.center_point_id,
+            payload.first_vertex_point_id,
+            payload.sides,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _polygon_response(sketch, polygon)
+
+
+@router.get("/sketches/{sketch_id}/polygons", response_model=list[PolygonResponse])
+def list_polygons(sketch_id: str) -> list[PolygonResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_polygon_response(sketch, polygon) for polygon in sketch.polygons()]
+
+
+@router.get("/sketches/{sketch_id}/polygons/{polygon_id}", response_model=PolygonResponse)
+def get_polygon(sketch_id: str, polygon_id: str) -> PolygonResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _polygon_response(sketch, _get_polygon_or_404(sketch, polygon_id))
+
+
+@router.patch("/sketches/{sketch_id}/polygons/{polygon_id}", response_model=PolygonResponse)
+def update_polygon(sketch_id: str, polygon_id: str, payload: PolygonUpdate) -> PolygonResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    polygon = _get_polygon_or_404(sketch, polygon_id)
+    if payload.construction is not None:
+        polygon.construction = payload.construction
+    return _polygon_response(sketch, polygon)
+
+
+@router.delete("/sketches/{sketch_id}/polygons/{polygon_id}", status_code=204)
+def delete_polygon(sketch_id: str, polygon_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_polygon_or_404(sketch, polygon_id)
+    sketch.delete_polygon(polygon_id)
+
+
+@router.post("/sketches/{sketch_id}/splines", response_model=SplineResponse, status_code=201)
+def create_spline(sketch_id: str, payload: SplineCreate) -> SplineResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        spline = sketch.add_spline(payload.through_point_ids, construction=payload.construction)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _spline_response(spline)
+
+
+@router.get("/sketches/{sketch_id}/splines", response_model=list[SplineResponse])
+def list_splines(sketch_id: str) -> list[SplineResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_spline_response(spline) for spline in sketch.splines()]
+
+
+@router.get("/sketches/{sketch_id}/splines/{spline_id}", response_model=SplineResponse)
+def get_spline(sketch_id: str, spline_id: str) -> SplineResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _spline_response(_get_spline_or_404(sketch, spline_id))
+
+
+@router.patch("/sketches/{sketch_id}/splines/{spline_id}", response_model=SplineResponse)
+def update_spline(sketch_id: str, spline_id: str, payload: SplineUpdate) -> SplineResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    spline = _get_spline_or_404(sketch, spline_id)
+    if payload.construction is not None:
+        spline.construction = payload.construction
+    return _spline_response(spline)
+
+
+@router.delete("/sketches/{sketch_id}/splines/{spline_id}", status_code=204)
+def delete_spline(sketch_id: str, spline_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_spline_or_404(sketch, spline_id)
+    sketch.delete_spline(spline_id)
+
+
+@router.post("/sketches/{sketch_id}/texts", response_model=TextResponse, status_code=201)
+def create_text(sketch_id: str, payload: TextCreate) -> TextResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        text = sketch.add_text(
+            payload.content,
+            payload.font,
+            payload.size,
+            payload.anchor_point_id,
+            rotation_degrees=payload.rotation_degrees,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _text_response(text)
+
+
+@router.get("/sketches/{sketch_id}/texts", response_model=list[TextResponse])
+def list_texts(sketch_id: str) -> list[TextResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_text_response(text) for text in sketch.texts()]
+
+
+@router.get("/sketches/{sketch_id}/texts/{text_id}", response_model=TextResponse)
+def get_text(sketch_id: str, text_id: str) -> TextResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _text_response(_get_text_or_404(sketch, text_id))
+
+
+@router.patch("/sketches/{sketch_id}/texts/{text_id}", response_model=TextResponse)
+def update_text(sketch_id: str, text_id: str, payload: TextUpdate) -> TextResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    text = _get_text_or_404(sketch, text_id)
+    if payload.content is not None:
+        text.content = payload.content
+    if payload.font is not None:
+        text.font = payload.font
+    if payload.size is not None:
+        text.size = payload.size
+    if payload.rotation_degrees is not None:
+        text.rotation_degrees = payload.rotation_degrees
+    if payload.construction is not None:
+        text.construction = payload.construction
+    return _text_response(text)
+
+
+@router.delete("/sketches/{sketch_id}/texts/{text_id}", status_code=204)
+def delete_text(sketch_id: str, text_id: str) -> None:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_text_or_404(sketch, text_id)
+    sketch.delete_text(text_id)
+
+
+@router.get("/sketches/{sketch_id}/texts/{text_id}/preview", response_model=TextPreviewResponse)
+def get_text_preview(sketch_id: str, text_id: str) -> TextPreviewResponse:
+    """Every contour of `text_id`'s own current outline, already positioned
+    per its anchor Point/rotation, in sketch-local `(x, y)` - see the Text
+    tool's own scoping notes: no font-outline renderer belongs in the
+    client, so it fetches/caches/draws this real server-tessellated
+    outline instead of approximating one itself. Regenerated fresh on
+    every call (see `app.sketch.text_geometry`'s own docstring) - the
+    client is expected to call this once per content/font/size/rotation
+    change and cache the result locally, not poll it."""
+    sketch = _get_sketch_or_404(sketch_id)
+    text = _get_text_or_404(sketch, text_id)
+    anchor = sketch.points[text.anchor_point_id]
+
+    def placed(local: tuple[float, float]) -> tuple[float, float]:
+        return place_local_point(anchor.x, anchor.y, text.rotation_degrees, local[0], local[1])
+
+    try:
+        contours = text_to_polygons(text.content, text.font, text.size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TextPreviewResponse(
+        contours=[
+            TextContourResponse(
+                outer=[placed(p) for p in outer],
+                holes=[[placed(p) for p in hole] for hole in holes],
+            )
+            for outer, holes in contours
+        ]
+    )
+
+
 @router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)
 def get_profile(sketch_id: str) -> ProfileDetectionResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -392,7 +877,11 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
     try:
         if isinstance(payload, DistanceConstraintCreate):
             constraint = sketch.add_distance_constraint(
-                payload.point_a_id, payload.point_b_id, payload.distance, payload.orientation
+                payload.point_a_id,
+                payload.point_b_id,
+                payload.distance,
+                payload.orientation,
+                provisional=payload.provisional,
             )
         elif isinstance(payload, VerticalConstraintCreate):
             constraint = sketch.add_vertical_constraint(payload.line_id)
@@ -422,6 +911,19 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             )
         elif isinstance(payload, AtMidpointConstraintCreate):
             constraint = sketch.add_at_midpoint_constraint(payload.point_id, payload.line_id)
+        elif isinstance(payload, TangentConstraintCreate):
+            constraint = sketch.add_tangent_constraint(payload.circle_or_arc_id, payload.line_id)
+        elif isinstance(payload, EqualRadiusConstraintCreate):
+            constraint = sketch.add_equal_radius_constraint(
+                payload.entity1_id, payload.entity2_id, radius2_point_id=payload.radius2_point_id
+            )
+        elif isinstance(payload, EqualRadiusPointsConstraintCreate):
+            constraint = sketch.add_equal_radius_constraint_from_points(
+                payload.center1_point_id,
+                payload.radius1_point_id,
+                payload.center2_point_id,
+                payload.radius2_point_id,
+            )
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
@@ -444,6 +946,56 @@ def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     del sketch.constraints[constraint_id]
 
 
+def _reseed_distance_constraint_free_point(
+    sketch: Sketch, constraint: DistanceConstraint, new_distance: float
+) -> None:
+    """On-device feedback: py-slvs's `addPointsDistance` is a squared-distance
+    equation with two mirror-symmetric roots either side of `point_a` -
+    `update_constraint_value`'s solve seeds each Point from its *current*
+    stored x/y (see `_PySlvsBuilder.point2d`) with neither point anchored, so
+    it normally converges back to the same side the two Points already sit
+    on - but whenever their current separation (on the constrained axis, for
+    "horizontal"/"vertical"; on both, for "linear") is small enough that
+    floating-point noise dominates the direction, the solve can converge to
+    the *other* mirror root instead, flipping which side of `point_a`
+    `point_b` ends up on. Reported on-device as a dimension's value
+    "changing polarity" on confirm, "only some of the time" - exactly the
+    near-degenerate-seed signature.
+
+    Fixes this by re-seeding `point_b`'s stored position, before the solve
+    ever runs, to sit at exactly `new_distance` along the *current* direction
+    from `point_a` to `point_b` - the solve then starts already on the
+    correct side (a much better initial guess than the old, possibly
+    near-zero, separation), so Newton's method converges back there instead
+    of the arbitrary opposite one. A no-op when the current separation is
+    exactly zero - genuinely no "side" to preserve in that case, not a
+    regression, since no seed choice can resolve that either.
+    """
+    point_a = sketch.points.get(constraint.point_a_id)
+    point_b = sketch.points.get(constraint.point_b_id)
+    if point_a is None or point_b is None:
+        return
+    if constraint.orientation == "horizontal":
+        dx = point_b.x - point_a.x
+        if dx == 0:
+            return
+        point_b.x = point_a.x + math.copysign(new_distance, dx)
+    elif constraint.orientation == "vertical":
+        dy = point_b.y - point_a.y
+        if dy == 0:
+            return
+        point_b.y = point_a.y + math.copysign(new_distance, dy)
+    else:
+        dx = point_b.x - point_a.x
+        dy = point_b.y - point_a.y
+        current_distance = math.hypot(dx, dy)
+        if current_distance == 0:
+            return
+        scale = new_distance / current_distance
+        point_b.x = point_a.x + dx * scale
+        point_b.y = point_a.y + dy * scale
+
+
 @router.patch("/sketches/{sketch_id}/constraints/{constraint_id}", response_model=SolveResultResponse)
 def update_constraint_value(
     sketch_id: str, constraint_id: str, payload: ConstraintValueUpdate
@@ -451,7 +1003,12 @@ def update_constraint_value(
     sketch = _get_sketch_or_404(sketch_id)
     constraint = _get_constraint_or_404(sketch, constraint_id)
     if isinstance(constraint, DistanceConstraint):
+        _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
         constraint.distance = payload.value
+        # Any explicit value PATCH is the user confirming a size (this is
+        # the same endpoint the ghost-confirm flow already calls) - clears
+        # `provisional` without needing a separate confirm flag/endpoint.
+        constraint.provisional = False
     elif isinstance(constraint, LineDistanceConstraint):
         constraint.distance = payload.value
     elif isinstance(constraint, AngleConstraint):
@@ -466,7 +1023,11 @@ def update_constraint_value(
 
 
 @router.post("/sketches/{sketch_id}/solve", response_model=SolveResultResponse)
-def solve(sketch_id: str) -> SolveResultResponse:
+def solve(sketch_id: str, payload: SolveRequest | None = None) -> SolveResultResponse:
+    """`payload` is optional (defaults to no anchors) so every caller from
+    before drag-solve semantics existed - which POSTs no body at all -
+    keeps working unchanged; see SolveRequest's own doc comment."""
     sketch = _get_sketch_or_404(sketch_id)
-    result = solve_sketch(sketch)
+    anchor_point_ids = frozenset(payload.anchor_point_ids) if payload else frozenset()
+    result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
     return _solve_result_response(result)

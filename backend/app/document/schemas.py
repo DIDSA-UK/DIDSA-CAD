@@ -12,6 +12,7 @@ from app.document.models import (
     SweepMode,
 )
 from app.sketch.models import Plane, SketchEntityType
+from app.sketch.schemas import LineResponse, PointResponse
 
 
 class PartCreate(BaseModel):
@@ -53,6 +54,17 @@ class SketchFeatureResponse(BaseModel):
     # B1: what this Feature contributes, for the client tree's grouping
     # (B3) - see app.document.models.Feature.produces.
     produces: Produces
+    # Sketcher-roadmap Phase 4.3 v1: true whenever at least one of this
+    # Sketch's `external_references` (a Point tracking a Body vertex) no
+    # longer resolves against the Part's *current* Bodies - resolved live
+    # on every response the same soft-fail-without-raising way
+    # `_create_plane_feature_response`'s own `origin`/`normal` fields
+    # already are (see `app.document.router._feature_response`'s
+    # SketchFeature branch), so one Sketch with a since-broken reference
+    # never fails the whole `GET .../features` list. Always false for a
+    # Sketch with no external references at all - the common case, and the
+    # only case before this field existed.
+    has_lost_reference: bool = False
 
 
 class SketchEntityRefSchema(BaseModel):
@@ -140,6 +152,45 @@ class SubShapeRefSchema(BaseModel):
     body_id: str
     shape_type: SubShapeType
     index: int
+
+
+class ExternalVertexReferenceCreate(BaseModel):
+    """Sketcher-roadmap Phase 4.3 v1: the payload for the new materialize-
+    a-body-vertex-as-a-Point endpoint - the wire counterpart to
+    `app.sketch.models.ExternalVertexReference`. Deliberately its own small
+    schema rather than reusing `SubShapeRefSchema` directly (which carries
+    a `shape_type` that would always have to be `vertex` here anyway, per
+    v1's own explicit scope - see the roadmap doc's own "vertices only in
+    v1" reasoning) - `app.document.router` converts this into the domain
+    `ExternalVertexReference` at the same boundary every other schema/
+    dataclass pair here already converts at."""
+
+    body_id: str
+    vertex_index: int
+
+
+class ExternalEdgeReferenceCreate(BaseModel):
+    """Sketcher-roadmap Phase 4.3 v2: the payload for the materialize-a-
+    body-edge endpoint - same "deliberately its own small schema, not
+    `SubShapeRefSchema`" reasoning as `ExternalVertexReferenceCreate`
+    above (`shape_type` would always be `edge` here)."""
+
+    body_id: str
+    edge_index: int
+
+
+class ExternalEdgeReferenceResponse(BaseModel):
+    """Sketcher-roadmap Phase 4.3 v2: an edge external reference
+    materializes as two Points (each exactly like
+    `ExternalVertexReferenceCreate`'s own response would return) plus a
+    real Line between them - this bundles all three into one response so
+    the client can populate its local Point/Line state from a single
+    round trip, the same way `create_line`'s own response already
+    carries everything a freshly-created Line's endpoints need."""
+
+    line: LineResponse
+    start_point: PointResponse
+    end_point: PointResponse
 
 
 class PointRefSchema(BaseModel):

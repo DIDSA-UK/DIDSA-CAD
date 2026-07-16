@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart' show IconData, Icons;
 import 'package:vector_math/vector_math.dart' as vm;
 
 /// Stage 11's three viewport display modes, toggled from [PartToolbar]'s
@@ -17,10 +16,18 @@ extension ViewportRenderModeX on ViewportRenderMode {
         ViewportRenderMode.wireframe => 'Wireframe',
       };
 
-  IconData get icon => switch (this) {
-        ViewportRenderMode.shaded => Icons.layers_outlined,
-        ViewportRenderMode.shadedWithEdges => Icons.layers_outlined,
-        ViewportRenderMode.wireframe => Icons.grid_3x3_outlined,
+  /// The `assets/icons/feature/parttoolbar_*.svg` glyph for this mode - a
+  /// single delivered "shaded" icon covers both [shaded] and
+  /// [shadedWithEdges] (mirroring the Material `Icons.layers_outlined` this
+  /// replaces, which was already shared between the two), and a distinct
+  /// "wireframe" one for [wireframe]. Consumed via `SvgIcon(mode.svgAsset)`
+  /// - see `part_toolbar.dart`'s and `sketch_screen.dart`'s own render-mode
+  /// pickers, both of which list every [ViewportRenderMode.values] entry.
+  String get svgAsset => switch (this) {
+        ViewportRenderMode.wireframe => 'assets/icons/feature/parttoolbar_wireframe_mode.svg',
+        ViewportRenderMode.shaded ||
+        ViewportRenderMode.shadedWithEdges =>
+          'assets/icons/feature/parttoolbar_shaded_mode.svg',
       };
 
   bool get showsFilledFaces => this != ViewportRenderMode.wireframe;

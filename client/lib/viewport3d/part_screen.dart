@@ -39,7 +39,9 @@ import 'selection_filter.dart';
 import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
+import 'sketch_orientation_indicator.dart';
 import 'sweep_panel.dart';
+import 'svg_icon.dart';
 import 'scene_preferences.dart';
 import 'view_preferences.dart';
 
@@ -106,6 +108,26 @@ class PartScreen extends StatefulWidget {
   @override
   State<PartScreen> createState() => _PartScreenState();
 }
+
+/// A Sketch's plane plus its own stored orientation (flip/rotation) - bundled
+/// together so callers that resolve a Feature's Sketch can't accidentally
+/// drop the orientation and fall back to the raw, unoriented plane basis.
+class _SketchOrientation {
+  const _SketchOrientation({required this.plane, required this.flip, required this.rotationQuarterTurns});
+
+  final ReferencePlaneKind plane;
+  final bool flip;
+  final int rotationQuarterTurns;
+}
+
+/// Which flow the orientation confirm step's shared UI (see
+/// `_confirmingSketchOrientation` and friends) is currently running:
+/// [newSketch] (via [_PartScreenState._addSketchFeature] - Cancel discards
+/// the still-empty Feature) or [redefine] (via [_PartScreenState.
+/// _redefineSketchOrientation], reached from a Sketch's long-press context
+/// menu - Cancel reverts the already-live-PATCHed orientation instead,
+/// since the Feature has real content).
+enum _PendingOrientationMode { newSketch, redefine }
 
 class _PartScreenState extends State<PartScreen> {
   late final DocumentApiClient _api;
@@ -1933,21 +1955,35 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
-  /// C3: [feature]'s own Sketch-embedding basis - a custom plane's (via
-  /// [feature.planeFeatureId]) or one of the three fixed reference planes'
-  /// (via [ReferencePlaneKind], fetched from the standalone Sketch API the
-  /// same way this always worked before C3). Returns null when neither
-  /// resolves (a stale/broken reference, or a fetch failure) - callers treat
-  /// that the same way an unresolvable [ReferencePlaneKind] already was
-  /// (skip rendering/animation, never crash).
+  /// C3: [feature]'s own Sketch-embedding basis, fully oriented - a custom
+  /// plane's (via [feature.planeFeatureId]) or one of the three fixed
+  /// reference planes' (via [ReferencePlaneKind]) - either way with this
+  /// Sketch's own `flip`/`rotationQuarterTurns` applied (fetched from the
+  /// standalone Sketch API). Returns null when neither resolves (a stale/
+  /// broken reference, or a fetch failure) - callers treat that the same
+  /// way an unresolvable [ReferencePlaneKind] already was (skip rendering/
+  /// animation, never crash).
+  ///
+  /// Bug fix: the custom-plane branch used to return [_customPlaneBasis]'s
+  /// *raw* (unoriented) basis directly, silently dropping the Sketch's own
+  /// flip/rotation - the same "camera/backdrop faces the wrong way" class of
+  /// bug [orientationFacingPlane]'s own doc comment already warns about for
+  /// the fixed-plane case, just never fixed here for the custom one. Both
+  /// branches now fetch the Sketch's own orientation and apply it the same
+  /// way.
   Future<SketchPlaneBasis?> _sketchPlaneBasisFor(FeatureDto feature) async {
-    final planeFeatureId = feature.planeFeatureId;
-    if (planeFeatureId != null) return _customPlaneBasis(planeFeatureId);
     final sketchId = feature.sketchId;
     if (sketchId == null) return null;
     final sketch = await _sketchApi.getSketch(sketchId);
+    final planeFeatureId = feature.planeFeatureId;
+    if (planeFeatureId != null) {
+      final raw = _customPlaneBasis(planeFeatureId);
+      return raw?.withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
+    }
     final plane = referencePlaneKindFromApiValue(sketch.plane);
-    return plane == null ? null : SketchPlaneBasis.fixed(plane);
+    return plane == null
+        ? null
+        : SketchPlaneBasis.oriented(plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
   }
 
   /// C2: resolves a `SelectionEntityRef.sketchFeatureId` (a Feature id) back
@@ -2414,9 +2450,19 @@ class _PartScreenState extends State<PartScreen> {
         final points = await _sketchApi.listPoints(sketchId);
         final lines = await _sketchApi.listLines(sketchId);
         final circles = await _sketchApi.listCircles(sketchId);
+        final arcs = await _sketchApi.listArcs(sketchId);
+        final ellipses = await _sketchApi.listEllipses(sketchId);
+        final splines = await _sketchApi.listSplines(sketchId);
         updatedLines[feature.id] = lines;
-        final geometry =
-            sketchGeometry3DFrom(basis: basis, points: points, lines: lines, circles: circles);
+        final geometry = sketchGeometry3DFrom(
+          basis: basis,
+          points: points,
+          lines: lines,
+          circles: circles,
+          arcs: arcs,
+          ellipses: ellipses,
+          splines: splines,
+        );
         if (!geometry.isEmpty) updated[feature.id] = geometry;
       } catch (_) {
         // Swallow - see doc comment above.
@@ -2458,9 +2504,13 @@ class _PartScreenState extends State<PartScreen> {
   /// mode ([_onPlaneTap]), and (C3) a created Plane's own context sheet's
   /// "Create Sketch on Plane" action ([_onCreatePlaneContextAction]).
   ///
-  /// C3: a custom-plane Sketch has no [ReferencePlaneKind] to animate the
-  /// camera toward (see [_openSketchWithAnimation]'s own doc comment) - skips
-  /// the animation for that case, same graceful degradation.
+  /// Bug fix: a custom-plane Sketch used to skip the orientation confirm
+  /// step entirely and open immediately - [SketchPlaneBasis.withOrientation]
+  /// now applies flip/rotation to any resolved basis, not just a fixed
+  /// [ReferencePlaneKind]'s, so both cases go through the same step. The
+  /// camera-fly-to-plane animation still only runs for a fixed plane (no
+  /// [PartViewport] API animates toward an arbitrary custom basis) - a
+  /// separate, orthogonal nicety from the step actually appearing.
   Future<void> _addSketchFeature({ReferencePlaneKind? plane, String? planeFeatureId}) async {
     final part = _part;
     if (part == null || _busy) return;
@@ -2478,16 +2528,236 @@ class _PartScreenState extends State<PartScreen> {
     });
 
     final feature = created;
-    if (feature != null && mounted) {
-      SketchPlaneBasis? basis;
-      if (fixedPlane != null) {
-        await _viewportKey.currentState?.animateToPlane(fixedPlane);
+    if (feature == null || !mounted) return;
+    final rawBasis =
+        fixedPlane != null ? SketchPlaneBasis.fixed(fixedPlane) : _customPlaneBasis(planeFeatureId!);
+    if (rawBasis == null) {
+      // Defensive fallback (unresolved custom-plane geometry) - same
+      // graceful "can't resolve, just open" degradation every other
+      // basis-dependent call site in this file already uses.
+      await _openSketch(feature, basis: null);
+      return;
+    }
+    // On-device feedback: orientation had no visual feedback and no
+    // creation-time entry point at all - only a hamburger-menu sheet
+    // reachable from inside the 2D editor, after already committing to a
+    // plane. This step lets the user see + adjust it, live, in the 3D
+    // viewport, before the sketch is ever opened - see
+    // _confirmPendingOrientation/_cancelPendingOrientation.
+    //
+    // New camera sequence: animates to the plane-independent isometric
+    // preset first (rather than straight to the plane's own face-on view,
+    // the old behaviour), since defining orientation is easiest from an
+    // angle that shows all three axes at once - the face-on view the user
+    // is actually choosing only gets its own animation once they confirm
+    // (see _confirmPendingOrientation). Unlike the old plane-specific
+    // animation, this runs for a custom (Feature-anchored) plane too - it
+    // was never possible before since there was no orientationFacingPlane
+    // equivalent for an arbitrary basis, but isometric doesn't need one.
+    await _viewportKey.currentState?.animateToIsometric();
+    if (!mounted) return;
+    setState(() {
+      _pendingOrientationFeature = feature;
+      _pendingOrientationRawBasis = rawBasis;
+      _pendingOrientationFlip = false;
+      _pendingOrientationRotation = 0;
+      _pendingOrientationMode = _PendingOrientationMode.newSketch;
+      _pendingOrientationFixedPlaneKind = fixedPlane;
+    });
+  }
+
+  /// Sketcher-roadmap feedback round: reopens the orientation confirm step
+  /// for an *existing* Sketch Feature, from its long-press context menu
+  /// entry - the 2D-only hamburger-menu sheet this used to be the only way
+  /// to reach (no 3D reference for the user to judge flip/rotate against)
+  /// is gone; this is the sole remaining entry point, reusing the exact
+  /// same 3D-viewport step [_addSketchFeature] shows for a brand new
+  /// Sketch. Preloads the Sketch's own current flip/rotation (rather than
+  /// resetting to the default) and records them in
+  /// [_pendingOrientationOriginalFlip]/[_pendingOrientationOriginalRotation]
+  /// so Cancel can revert the live PATCHes [_adjustPendingOrientation]
+  /// already makes - unlike a brand new Sketch, this Feature already has
+  /// real content, so Cancel must never delete it (see
+  /// [_cancelPendingOrientation]'s own doc comment).
+  Future<void> _redefineSketchOrientation(FeatureDto feature) async {
+    if (_busy) return;
+    final planeFeatureId = feature.planeFeatureId;
+    SketchPlaneBasis? rawBasis;
+    bool currentFlip = false;
+    int currentRotation = 0;
+    _SketchOrientation? orientation;
+    if (planeFeatureId != null) {
+      rawBasis = _customPlaneBasis(planeFeatureId);
+    } else {
+      orientation = await _planeOfFeature(feature);
+      if (orientation != null) {
+        rawBasis = SketchPlaneBasis.fixed(orientation.plane);
+        currentFlip = orientation.flip;
+        currentRotation = orientation.rotationQuarterTurns;
+      }
+    }
+    if (rawBasis == null || !mounted) return;
+    if (orientation != null) {
+      await _viewportKey.currentState?.animateToPlane(
+        orientation.plane,
+        flip: currentFlip,
+        rotationQuarterTurns: currentRotation,
+      );
+      if (!mounted) return;
+    }
+    setState(() {
+      _pendingOrientationFeature = feature;
+      _pendingOrientationRawBasis = rawBasis;
+      _pendingOrientationFlip = currentFlip;
+      _pendingOrientationRotation = currentRotation;
+      _pendingOrientationOriginalFlip = currentFlip;
+      _pendingOrientationOriginalRotation = currentRotation;
+      _pendingOrientationMode = _PendingOrientationMode.redefine;
+      // Irrelevant to redefine (only _addSketchFeature's new-sketch camera
+      // sequence reads this) - cleared rather than left stale from a
+      // possibly-earlier new-sketch step.
+      _pendingOrientationFixedPlaneKind = null;
+    });
+  }
+
+  FeatureDto? _pendingOrientationFeature;
+  SketchPlaneBasis? _pendingOrientationRawBasis;
+  bool _pendingOrientationFlip = false;
+  int _pendingOrientationRotation = 0;
+  _PendingOrientationMode _pendingOrientationMode = _PendingOrientationMode.newSketch;
+  bool _pendingOrientationOriginalFlip = false;
+  int _pendingOrientationOriginalRotation = 0;
+
+  /// New sketch-start camera sequence: the fixed plane [_addSketchFeature]
+  /// resolved (null for a custom, Feature-anchored plane - no
+  /// [orientationFacingPlane] equivalent exists for an arbitrary basis yet)
+  /// - stashed so [_confirmPendingOrientation] can animate the camera to
+  /// this plane's own face-on view (at whatever flip/rotation was just
+  /// confirmed) once the user commits to an orientation, rather than only
+  /// ever having shown the isometric preset this step started with.
+  ReferencePlaneKind? _pendingOrientationFixedPlaneKind;
+
+  bool get _confirmingSketchOrientation => _pendingOrientationFeature != null;
+
+  /// [SketchOrientationIndicator]'s own live basis, reflecting whatever
+  /// flip/rotation the user has tapped so far this step - null outside
+  /// [_confirmingSketchOrientation].
+  SketchPlaneBasis? get _pendingOrientationBasis {
+    final raw = _pendingOrientationRawBasis;
+    if (raw == null) return null;
+    return raw.withOrientation(
+      flip: _pendingOrientationFlip,
+      rotationQuarterTurns: _pendingOrientationRotation,
+    );
+  }
+
+  /// Applies [flip]/[rotationDelta] and PATCHes the pending Sketch's real
+  /// orientation right away (not deferred to confirm) - so
+  /// [SketchOrientationIndicator] and the eventual [_openSketch] can never
+  /// disagree, and so the same backend endpoint [SketchController.
+  /// setOrientation] already uses stays the single source of truth rather
+  /// than this screen re-deriving/duplicating what "confirm" should send.
+  Future<void> _adjustPendingOrientation({bool? flip, int rotationDelta = 0}) async {
+    final feature = _pendingOrientationFeature;
+    if (feature?.sketchId == null || _busy) return;
+    final nextFlip = flip ?? _pendingOrientationFlip;
+    final nextRotation = (_pendingOrientationRotation + rotationDelta) % 4;
+    await _runGuarded(() async {
+      await _sketchApi.updateSketchOrientation(
+        feature!.sketchId!,
+        flip: nextFlip,
+        rotationQuarterTurns: nextRotation,
+      );
+    });
+    if (!mounted) return;
+    setState(() {
+      _pendingOrientationFlip = nextFlip;
+      _pendingOrientationRotation = nextRotation;
+    });
+  }
+
+  /// [_PendingOrientationMode.newSketch]: new camera sequence - animates to
+  /// the just-confirmed orientation's own face-on view (the plane
+  /// [_addSketchFeature] resolved, at whatever flip/rotation was just
+  /// confirmed) before opening the just-created Sketch, so the isometric
+  /// preset this step started on ends by settling into the exact view the
+  /// sketcher itself opens into, rather than cutting straight there. Only
+  /// possible for a fixed plane - a custom (Feature-anchored) plane has no
+  /// [orientationFacingPlane] equivalent yet, so it opens directly, same as
+  /// before this sequence existed. [_PendingOrientationMode.redefine] just
+  /// closes the step and refreshes this Feature's rendered geometry in the
+  /// main 3D viewport - the orientation was already PATCHed live by
+  /// [_adjustPendingOrientation], and there's an existing 2D canvas the
+  /// user didn't ask to be dropped into (and the camera is already facing
+  /// it - see [_redefineSketchOrientation]'s own animation).
+  Future<void> _confirmPendingOrientation() async {
+    final feature = _pendingOrientationFeature;
+    if (feature == null) return;
+    final basis = _pendingOrientationBasis;
+    final mode = _pendingOrientationMode;
+    final fixedPlaneKind = _pendingOrientationFixedPlaneKind;
+    final flip = _pendingOrientationFlip;
+    final rotation = _pendingOrientationRotation;
+    setState(() {
+      _pendingOrientationFeature = null;
+      _pendingOrientationRawBasis = null;
+      _pendingOrientationFixedPlaneKind = null;
+    });
+    if (mode == _PendingOrientationMode.newSketch) {
+      if (fixedPlaneKind != null) {
+        await _viewportKey.currentState?.animateToPlane(
+          fixedPlaneKind,
+          flip: flip,
+          rotationQuarterTurns: rotation,
+        );
         if (!mounted) return;
-        basis = SketchPlaneBasis.fixed(fixedPlane);
-      } else if (planeFeatureId != null) {
-        basis = _customPlaneBasis(planeFeatureId);
       }
       await _openSketch(feature, basis: basis);
+    } else {
+      await _refreshSketchGeometries();
+    }
+  }
+
+  /// [_PendingOrientationMode.newSketch]: discards the just-created
+  /// (still-empty) SketchFeature outright, same as the preview-cleanup
+  /// pattern used elsewhere in this file (e.g. the Extrude-preview Cancel
+  /// path) - safe because nothing was ever drawn into it, unlike deleting
+  /// an existing Sketch a user has actually worked in.
+  ///
+  /// [_PendingOrientationMode.redefine]: the Feature already has real
+  /// content, so Cancel must never delete it - instead reverts the live
+  /// PATCHes [_adjustPendingOrientation] already made back to whatever the
+  /// orientation was before this step started
+  /// ([_pendingOrientationOriginalFlip]/[_pendingOrientationOriginalRotation]).
+  Future<void> _cancelPendingOrientation() async {
+    final feature = _pendingOrientationFeature;
+    final part = _part;
+    final mode = _pendingOrientationMode;
+    final originalFlip = _pendingOrientationOriginalFlip;
+    final originalRotation = _pendingOrientationOriginalRotation;
+    setState(() {
+      _pendingOrientationFeature = null;
+      _pendingOrientationRawBasis = null;
+      _pendingOrientationFixedPlaneKind = null;
+    });
+    if (feature == null) return;
+    if (mode == _PendingOrientationMode.newSketch) {
+      if (part == null) return;
+      await _runGuarded(() async {
+        await _api.deleteFeature(part.id, feature.id);
+        await _refreshFeatures();
+        await _refreshSketchGeometries();
+      });
+    } else {
+      if (feature.sketchId == null) return;
+      await _runGuarded(() async {
+        await _sketchApi.updateSketchOrientation(
+          feature.sketchId!,
+          flip: originalFlip,
+          rotationQuarterTurns: originalRotation,
+        );
+        await _refreshSketchGeometries();
+      });
     }
   }
 
@@ -2516,6 +2786,11 @@ class _PartScreenState extends State<PartScreen> {
       _addSketchFeature(plane: plane);
       return;
     }
+    // Confirm/Cancel are the only way out of the orientation confirm step
+    // (see _confirmingSketchOrientation's own doc comment) - a stray plane
+    // tap underneath its banner shouldn't pop open an unrelated context
+    // sheet mid-flow.
+    if (_confirmingSketchOrientation) return;
     setState(() {
       _selectedPlane = plane;
       _featureTreeVisible = false;
@@ -2983,32 +3258,35 @@ class _PartScreenState extends State<PartScreen> {
   /// its 2D canvas - skips straight to navigation if the plane can't be
   /// resolved (e.g. a fetch failure), rather than blocking the open.
   Future<void> _openSketchWithAnimation(FeatureDto feature) async {
-    final planeFeatureId = feature.planeFeatureId;
-    if (planeFeatureId != null) {
-      // C3: a custom-plane Sketch has no ReferencePlaneKind to animate the
-      // camera to (orientationFacingPlane only covers the three fixed
-      // planes) - skips the animation, the same graceful "can't resolve,
-      // just navigate" fallback this method already used for a fetch
-      // failure, and still passes along the real basis for the ghost
-      // overlay below.
-      await _openSketch(feature, basis: _customPlaneBasis(planeFeatureId));
-      return;
+    // Bug fix: used to only animate the camera for a fixed-plane Sketch
+    // (orientationFacingPlane's own ReferencePlaneKind-only signature) and
+    // skip it outright for a custom one - [_sketchPlaneBasisFor]/
+    // [PartViewportState.animateToBasis] now cover both the same way, so
+    // this single path replaces the old plane-vs-custom branch entirely.
+    // Same "can't resolve, just navigate" graceful fallback as before on a
+    // fetch failure.
+    SketchPlaneBasis? basis;
+    try {
+      basis = await _sketchPlaneBasisFor(feature);
+    } catch (_) {
+      basis = null;
     }
-    final plane = await _planeOfFeature(feature);
     if (!mounted) return;
-    if (plane != null) {
-      await _viewportKey.currentState?.animateToPlane(plane);
+    if (basis != null) {
+      await _viewportKey.currentState?.animateToBasis(basis);
       if (!mounted) return;
     }
-    await _openSketch(feature, basis: plane == null ? null : SketchPlaneBasis.fixed(plane));
+    await _openSketch(feature, basis: basis);
   }
 
-  Future<ReferencePlaneKind?> _planeOfFeature(FeatureDto feature) async {
+  Future<_SketchOrientation?> _planeOfFeature(FeatureDto feature) async {
     final sketchId = feature.sketchId;
     if (sketchId == null) return null;
     try {
       final sketch = await _sketchApi.getSketch(sketchId);
-      return referencePlaneKindFromApiValue(sketch.plane);
+      final plane = referencePlaneKindFromApiValue(sketch.plane);
+      if (plane == null) return null;
+      return _SketchOrientation(plane: plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
     } catch (_) {
       return null;
     }
@@ -3047,6 +3325,7 @@ class _PartScreenState extends State<PartScreen> {
       showSweep: isSketchFeature,
       canSweep: canSweep,
       sweepDisabledReason: extrudeDisabledReason,
+      showRedefineOrientation: isSketchFeature,
     );
     if (!mounted || action == null) return;
 
@@ -3057,6 +3336,8 @@ class _PartScreenState extends State<PartScreen> {
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
       case FeatureContextMenuAction.sweep:
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
+      case FeatureContextMenuAction.redefineOrientation:
+        await _redefineSketchOrientation(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -3072,7 +3353,12 @@ class _PartScreenState extends State<PartScreen> {
   Future<String?> _checkExtrudeEligibility(FeatureDto feature) async {
     try {
       final profile = await _sketchApi.getProfile(feature.sketchId!);
-      return profile.isExtrudable ? null : 'Sketch does not contain a closed profile';
+      // Bug fix: used to always show the same generic reason regardless of
+      // *why* - the backend's own `detail` (e.g. "N point(s) are used by
+      // more than two entities" for a branch/T-junction) is what actually
+      // tells the user what to go fix, so surface it instead of discarding
+      // it - see ProfileDetectionDto.detail's own doc comment.
+      return profile.isExtrudable ? null : 'Sketch does not contain a closed profile: ${profile.detail}';
     } catch (_) {
       return 'Sketch does not contain a closed profile';
     }
@@ -3787,6 +4073,66 @@ class _PartScreenState extends State<PartScreen> {
         lineEntity: lines.single,
         pointEntity: points.single,
       );
+    }
+  }
+
+  /// On-device feedback: "New Sketch on Face" - unlike [_onCreatePlaneTapped],
+  /// this skips [CreatePlanePanel] entirely (the created Plane is a byproduct
+  /// here, not something the user needs to review/adjust) and goes straight
+  /// from "one face selected" to the same orientation-confirm step any
+  /// plane-based new sketch already gets, via [_addSketchFeature]'s own
+  /// [planeFeatureId] path. Always zero offset - "sketch flush against this
+  /// face" is the whole point, not an offset plane; `contextActionsFor`
+  /// only ever offers this button for exactly one selected Body face, so
+  /// the length check here is defensive, not a real gate.
+  ///
+  /// Deliberately NOT wrapped in a single [_runGuarded] call spanning both
+  /// steps: [_addSketchFeature] starts with `if (part == null || _busy)
+  /// return;` and calls [_runGuarded] itself - nesting it inside an
+  /// already-busy guard would make that check silently bail out.
+  Future<void> _onNewSketchOnFaceTapped() async {
+    final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+    if (faces.length != 1) return;
+    final part = _part;
+    if (part == null) return;
+    final faceEntity = faces.single;
+    setState(() => _selectedEntities = {});
+
+    FeatureDto? planeFeature;
+    await _runGuarded(() async {
+      planeFeature = await _api.createCreatePlaneFeature(
+        part.id,
+        planeType: 'offset_face',
+        faceRefs: [_planeRefDtoFor(faceEntity)],
+        offset: 0.0,
+      );
+      await _refreshFeatures();
+    });
+    final feature = planeFeature;
+    if (feature == null || !mounted) return;
+    await _addSketchFeature(planeFeatureId: feature.id);
+  }
+
+  /// On-device feedback (bug fix): "New Sketch" for a lone reference plane
+  /// or existing Plane selected via [SelectionContextPanel] (Selection
+  /// mode) - the same operation [_onPlaneTap]/[_onCreatePlaneFeatureTap]'s
+  /// own tap-to-sheet flow already offers outside Selection mode
+  /// ([_showPlaneContextSheet]/[_showCreatePlaneContextSheet]), just
+  /// reachable from this panel too so both selection paths behave the
+  /// same regardless of mode - see `selection_actions.dart`'s own
+  /// `contextActionsFor` doc comment for why that panel used to silently
+  /// drop this option for a plane-like (non-face) selection.
+  Future<void> _onNewSketchTapped() async {
+    final referencePlanes =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.referencePlane).toList();
+    final createPlanes =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.createPlane).toList();
+    if (referencePlanes.length + createPlanes.length != 1 || _selectedEntities.length != 1) return;
+    setState(() => _selectedEntities = {});
+    if (referencePlanes.isNotEmpty) {
+      await _addSketchFeature(plane: referencePlanes.single.referencePlaneKind);
+    } else {
+      await _addSketchFeature(planeFeatureId: createPlanes.single.planeFeatureId);
     }
   }
 
@@ -4723,6 +5069,27 @@ class _PartScreenState extends State<PartScreen> {
     final ghostSegments = basis != null
         ? projectMeshEdgesOntoPlane(basis, allEdgeSegments)
         : const <((double, double), (double, double))>[];
+    // Sketcher-roadmap Phase 4.3 v1: the ghost outline's own pick targets
+    // for body-vertex dimensioning - see SketchController.
+    // pickReferenceGhostVertex's own doc comment.
+    final ghostVertices = basis != null
+        ? [
+            for (final body in _visibleBodies)
+              ...projectMeshVerticesOntoPlane(basis, body.bodyId, body.mesh),
+          ]
+        : const <(String, int, double, double)>[];
+    // Sketcher-roadmap Phase 4.3 v2: the same ghost outline's own pick
+    // targets for whole-body-edge dimensioning - see SketchController.
+    // pickReferenceGhostEdge's own doc comment. Deliberately its own list
+    // rather than reusing [ghostSegments] (Phase 4.1's plain, id-less
+    // wireframe still drives the actual dashed-line rendering unchanged) -
+    // this one only exists to carry (bodyId, edgeId) through to a tap.
+    final ghostEdges = basis != null
+        ? [
+            for (final body in _visibleBodies)
+              ...projectMeshEdgesOntoPlaneWithIds(basis, body.bodyId, body.mesh),
+          ]
+        : const <(String, int, (double, double), (double, double))>[];
 
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -4730,6 +5097,12 @@ class _PartScreenState extends State<PartScreen> {
           controller: SketchController(api: widget.sketchApiFactory?.call()),
           adoptSketchId: feature.sketchId,
           referenceGhostSegments: ghostSegments,
+          referenceGhostVertices: ghostVertices,
+          referenceGhostEdges: ghostEdges,
+          bodies: _visibleBodies,
+          documentPartId: _part?.id,
+          sketchFeatureId: feature.id,
+          planeBasis: basis,
         ),
       ),
     );
@@ -4766,6 +5139,7 @@ class _PartScreenState extends State<PartScreen> {
       // own "Confirm/Cancel are the only way out" panels once open - see
       // [_openFilletPanel].
       canPop: !_planeSelectionMode &&
+          !_confirmingSketchOrientation &&
           !_sketchPickerActive &&
           !_revolveSketchPickerActive &&
           !_sweepSketchPickerActive &&
@@ -4773,7 +5147,9 @@ class _PartScreenState extends State<PartScreen> {
           !_pathPickerActive,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_sketchPickerActive) {
+        if (_confirmingSketchOrientation) {
+          _cancelPendingOrientation();
+        } else if (_sketchPickerActive) {
           _cancelSketchPicker();
         } else if (_revolveSketchPickerActive) {
           _cancelRevolveSketchPicker();
@@ -4880,6 +5256,13 @@ class _PartScreenState extends State<PartScreen> {
                   farClip: _farClip,
                   onFarClipChanged: _onFarClipChanged,
                   sketchLineLoopGroup: _sketchLineLoopGroup,
+                  // On-device feedback: must track the camera live as the
+                  // user orbits, not just refresh on a flip/rotate tap -
+                  // see [PartViewport.sketchOrientationBasis]'s own doc
+                  // comment for why this is a widget parameter into
+                  // PartViewport's own build rather than an external
+                  // overlay here.
+                  sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
                 ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
@@ -4945,6 +5328,8 @@ class _PartScreenState extends State<PartScreen> {
                         onCreatePlane: _onCreatePlaneTapped,
                         onFillet: _onFilletTapped,
                         onChamfer: _onChamferTapped,
+                        onNewSketchOnFace: _onNewSketchOnFaceTapped,
+                        onNewSketch: _onNewSketchTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),
@@ -5359,6 +5744,7 @@ class _PartScreenState extends State<PartScreen> {
                 // underneath/overlapping A4's banner.
                 if (!_featureTreeVisible &&
                     !_planeSelectionMode &&
+                    !_confirmingSketchOrientation &&
                     !_extrudeActive &&
                     !_createPlaneActive &&
                     !_filletActive &&
@@ -5407,7 +5793,7 @@ class _PartScreenState extends State<PartScreen> {
                               heroTag: 'feature-tree-fab',
                               tooltip: 'Feature tree',
                               onPressed: _toggleFeatureTree,
-                              child: const Icon(Icons.account_tree_outlined),
+                              child: const SvgIcon('assets/icons/feature/feature_tree.svg'),
                             ),
                         ],
                       ),
@@ -5438,6 +5824,93 @@ class _PartScreenState extends State<PartScreen> {
                                 TextButton(
                                   onPressed: _cancelPlaneSelectionMode,
                                   child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // On-device feedback: the orientation confirm step's
+                // controls - bottom-centered so it doesn't collide with the
+                // plane-selection banner's own top-centered spot (the two
+                // are never shown at once: this only appears once
+                // [_planeSelectionMode] has already exited via
+                // [_onPlaneTap]). Shared between a brand new Sketch
+                // ([_addSketchFeature]) and redefining an existing one's
+                // orientation ([_redefineSketchOrientation], from its
+                // long-press context menu - the sole entry point for that
+                // now, replacing the old 2D-only hamburger-menu sheet).
+                // Flip/rotate PATCH the pending Sketch's real orientation
+                // immediately (see [_adjustPendingOrientation]'s own doc
+                // comment); Confirm/Cancel behave differently per
+                // [_pendingOrientationMode] - see their own doc comments.
+                if (_confirmingSketchOrientation)
+                  Positioned(
+                    bottom: 8,
+                    left: 8,
+                    right: 8,
+                    child: SafeArea(
+                      top: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          // Bug fix: this row of controls used to overflow
+                          // on a narrow screen (no scroll fallback) - it
+                          // also used to sit right underneath the
+                          // bottom-right mode-toggle/Add FAB column, which
+                          // painted on top and made Continue untappable
+                          // (see the floatingActionButton hiding rule
+                          // above for that half of the fix). Wrapped in a
+                          // horizontal scroll view as a hard guarantee
+                          // against overflow on any screen width.
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  // Bug fix: swapped - on-device feedback
+                                  // reported these two felt reversed
+                                  // (rotate_left visually rotated the
+                                  // plate clockwise, and vice versa).
+                                  tooltip: 'Rotate 90° counter-clockwise',
+                                  icon: const Icon(Icons.rotate_left),
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _adjustPendingOrientation(rotationDelta: 1),
+                                ),
+                                IconButton(
+                                  tooltip: 'Rotate 90° clockwise',
+                                  icon: const Icon(Icons.rotate_right),
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _adjustPendingOrientation(rotationDelta: -1),
+                                ),
+                                IconButton(
+                                  tooltip: _pendingOrientationFlip ? 'Un-flip' : 'Flip',
+                                  icon: const Icon(Icons.flip),
+                                  isSelected: _pendingOrientationFlip,
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _adjustPendingOrientation(flip: !_pendingOrientationFlip),
+                                ),
+                                const SizedBox(width: 4),
+                                TextButton(
+                                  onPressed: _busy ? null : _cancelPendingOrientation,
+                                  child: const Text('Cancel'),
+                                ),
+                                const SizedBox(width: 4),
+                                FilledButton(
+                                  onPressed: _busy ? null : _confirmPendingOrientation,
+                                  child: Text(
+                                    _pendingOrientationMode == _PendingOrientationMode.newSketch
+                                        ? 'Continue'
+                                        : 'Done',
+                                  ),
                                 ),
                               ],
                             ),
@@ -5539,7 +6012,13 @@ class _PartScreenState extends State<PartScreen> {
       // own bottom-sheet content, which sits in the body Stack rather than
       // a real `Scaffold.bottomSheet` Scaffold could otherwise push this
       // FAB above automatically.
-      floatingActionButton: _toolbarOpen
+      // Bug fix: the mode-toggle/Add FAB column sits bottom-right
+      // (Scaffold's default floatingActionButtonLocation) and paints after
+      // the whole body Stack, so it was covering the orientation confirm
+      // step's own bottom banner - specifically its Continue button,
+      // making the step impossible to accept. Hidden outright during that
+      // step, same as it already is while [_toolbarOpen].
+      floatingActionButton: _toolbarOpen || _confirmingSketchOrientation
           ? null
           : Padding(
               padding: EdgeInsets.only(
@@ -5564,7 +6043,11 @@ class _PartScreenState extends State<PartScreen> {
                     // The icon shows the mode a tap will switch *into*: a
                     // cursor/pointer while in (default) Orbit mode, an
                     // orbit/rotate glyph while in Selection mode.
-                    child: Icon(_selectionMode ? Icons.threed_rotation : Icons.touch_app),
+                    child: SvgIcon(
+                      _selectionMode
+                          ? 'assets/icons/viewport/viewport_orbit_mode.svg'
+                          : 'assets/icons/viewport/viewport_selection_mode.svg',
+                    ),
                   ),
                   if (!_extrudeActive &&
                       !_createPlaneActive &&
@@ -5579,7 +6062,7 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
-                      child: const Icon(Icons.add),
+                      child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
                     ),
                   ],
                   // Prompt G: the profile picker's own "confirm" FAB, in the

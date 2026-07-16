@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'reference_planes.dart';
+import 'svg_icon.dart';
 
 /// Actions available from a tap-selected reference plane's fly-up bottom
 /// sheet. Stage 19b Item 2 moved this out of the hamburger drawer (where it
@@ -34,7 +35,7 @@ Future<PlaneContextSheetAction?> showPlaneContextSheet(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: Row(
               children: [
-                Icon(Icons.crop_square, color: _colorOf(plane)),
+                SvgIcon('assets/icons/feature/feature_plane.svg', color: _colorOf(plane)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -46,7 +47,7 @@ Future<PlaneContextSheetAction?> showPlaneContextSheet(
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.add_box_outlined),
+            leading: const SvgIcon('assets/icons/feature/feature_new_sketch.svg'),
             title: Text('New Sketch on ${plane.apiValue}'),
             onTap: () => Navigator.of(context).pop(PlaneContextSheetAction.newSketch),
           ),

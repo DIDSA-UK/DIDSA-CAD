@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// The "boss" or "cut" choice for an Extrude - mirrors the backend's
 /// `extrude_type` string values exactly, so call sites can pass
 /// [ExtrudeType.apiValue] straight into [DocumentApiClient] without a
@@ -143,11 +145,15 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
                 const SizedBox(height: 12),
                 SegmentedButton<ExtrudeType>(
                   segments: const [
-                    ButtonSegment(value: ExtrudeType.boss, label: Text('Boss'), icon: Icon(Icons.add_box)),
+                    ButtonSegment(
+                      value: ExtrudeType.boss,
+                      label: Text('Boss'),
+                      icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
+                    ),
                     ButtonSegment(
                       value: ExtrudeType.cut,
                       label: Text('Cut'),
-                      icon: Icon(Icons.content_cut),
+                      icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
                     ),
                   ],
                   selected: {_type},

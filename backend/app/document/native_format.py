@@ -50,22 +50,31 @@ from app.sketch.constraints import (
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
+    EqualRadiusConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    SplineTangentConstraint,
+    TangentConstraint,
     VerticalConstraint,
 )
 from app.sketch.models import (
+    Arc,
     Circle,
+    Ellipse,
+    ExternalVertexReference,
     Line,
     Plane,
     Point,
+    Polygon,
     Sketch,
     SketchEntity,
     SketchEntityRef,
     SketchEntityType,
+    Spline,
+    TextEntity,
 )
 
 # Bumped whenever the on-disk shape changes in a way that breaks reading an
@@ -86,6 +95,9 @@ _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "line_distance": LineDistanceConstraint,
     "point_line_distance": PointLineDistanceConstraint,
     "at_midpoint": AtMidpointConstraint,
+    "spline_tangent": SplineTangentConstraint,
+    "tangent": TangentConstraint,
+    "equal_radius": EqualRadiusConstraint,
 }
 
 
@@ -132,6 +144,71 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "center_point_id": entity.center_point_id,
             "radius_point_id": entity.radius_point_id,
             "radius_constraint_id": entity.radius_constraint_id,
+            "cardinal_point_ids": entity.cardinal_point_ids,
+            "cardinal_constraint_ids": entity.cardinal_constraint_ids,
+        }
+    if isinstance(entity, Arc):
+        return {
+            "type": "arc",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center_point_id": entity.center_point_id,
+            "start_point_id": entity.start_point_id,
+            "end_point_id": entity.end_point_id,
+            "radius_constraint_id": entity.radius_constraint_id,
+            "end_radius_constraint_id": entity.end_radius_constraint_id,
+        }
+    if isinstance(entity, Ellipse):
+        return {
+            "type": "ellipse",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center_point_id": entity.center_point_id,
+            "major_point_id": entity.major_point_id,
+            "major_point_neg_id": entity.major_point_neg_id,
+            "major_constraint_id": entity.major_constraint_id,
+            "major_midpoint_constraint_id": entity.major_midpoint_constraint_id,
+            "minor_point_id": entity.minor_point_id,
+            "minor_point_neg_id": entity.minor_point_neg_id,
+            "minor_constraint_id": entity.minor_constraint_id,
+            "minor_midpoint_constraint_id": entity.minor_midpoint_constraint_id,
+            "major_axis_line_id": entity.major_axis_line_id,
+            "minor_axis_line_id": entity.minor_axis_line_id,
+            "perpendicular_constraint_id": entity.perpendicular_constraint_id,
+        }
+    if isinstance(entity, Polygon):
+        return {
+            "type": "polygon",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center_point_id": entity.center_point_id,
+            "vertex_point_ids": entity.vertex_point_ids,
+            "line_ids": entity.line_ids,
+            "radius_constraint_id": entity.radius_constraint_id,
+            "equal_radius_constraint_ids": entity.equal_radius_constraint_ids,
+            "equal_length_constraint_ids": entity.equal_length_constraint_ids,
+            "angle_constraint_ids": entity.angle_constraint_ids,
+            "sides": entity.sides,
+        }
+    if isinstance(entity, Spline):
+        return {
+            "type": "spline",
+            "id": entity.id,
+            "construction": entity.construction,
+            "through_point_ids": entity.through_point_ids,
+            "control_point_ids": entity.control_point_ids,
+            "tangent_constraint_ids": entity.tangent_constraint_ids,
+        }
+    if isinstance(entity, TextEntity):
+        return {
+            "type": "text",
+            "id": entity.id,
+            "construction": entity.construction,
+            "content": entity.content,
+            "font": entity.font,
+            "size": entity.size,
+            "anchor_point_id": entity.anchor_point_id,
+            "rotation_degrees": entity.rotation_degrees,
         }
     raise NativeFormatError(f"No native export mapping for sketch entity type: {entity.type!r}")
 
@@ -152,6 +229,66 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             center_point_id=_require(data, "center_point_id"),
             radius_point_id=_require(data, "radius_point_id"),
             radius_constraint_id=_require(data, "radius_constraint_id"),
+            cardinal_point_ids=_require(data, "cardinal_point_ids"),
+            cardinal_constraint_ids=_require(data, "cardinal_constraint_ids"),
+        )
+    if entity_type == "arc":
+        return Arc(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center_point_id=_require(data, "center_point_id"),
+            start_point_id=_require(data, "start_point_id"),
+            end_point_id=_require(data, "end_point_id"),
+            radius_constraint_id=_require(data, "radius_constraint_id"),
+            end_radius_constraint_id=_require(data, "end_radius_constraint_id"),
+        )
+    if entity_type == "ellipse":
+        return Ellipse(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center_point_id=_require(data, "center_point_id"),
+            major_point_id=_require(data, "major_point_id"),
+            major_point_neg_id=_require(data, "major_point_neg_id"),
+            major_constraint_id=_require(data, "major_constraint_id"),
+            major_midpoint_constraint_id=_require(data, "major_midpoint_constraint_id"),
+            minor_point_id=_require(data, "minor_point_id"),
+            minor_point_neg_id=_require(data, "minor_point_neg_id"),
+            minor_constraint_id=_require(data, "minor_constraint_id"),
+            minor_midpoint_constraint_id=_require(data, "minor_midpoint_constraint_id"),
+            major_axis_line_id=_require(data, "major_axis_line_id"),
+            minor_axis_line_id=_require(data, "minor_axis_line_id"),
+            perpendicular_constraint_id=_require(data, "perpendicular_constraint_id"),
+        )
+    if entity_type == "polygon":
+        return Polygon(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center_point_id=_require(data, "center_point_id"),
+            vertex_point_ids=list(_require(data, "vertex_point_ids")),
+            line_ids=list(_require(data, "line_ids")),
+            radius_constraint_id=_require(data, "radius_constraint_id"),
+            equal_radius_constraint_ids=list(_require(data, "equal_radius_constraint_ids")),
+            equal_length_constraint_ids=list(_require(data, "equal_length_constraint_ids")),
+            angle_constraint_ids=list(_require(data, "angle_constraint_ids")),
+            sides=_require(data, "sides"),
+        )
+    if entity_type == "spline":
+        return Spline(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            through_point_ids=list(_require(data, "through_point_ids")),
+            control_point_ids=list(_require(data, "control_point_ids")),
+            tangent_constraint_ids=list(_require(data, "tangent_constraint_ids")),
+        )
+    if entity_type == "text":
+        return TextEntity(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            content=_require(data, "content"),
+            font=_require(data, "font"),
+            size=_require(data, "size"),
+            anchor_point_id=_require(data, "anchor_point_id"),
+            rotation_degrees=data.get("rotation_degrees", 0.0),
         )
     raise NativeFormatError(f"Unknown native sketch entity type: {entity_type!r}")
 
@@ -182,9 +319,17 @@ def _sketch_to_dict(sketch: Sketch) -> dict:
         "id": sketch.id,
         "plane": sketch.plane.value if sketch.plane is not None else None,
         "origin_point_id": sketch.origin_point_id,
+        # Sketcher-roadmap Phase 5.
+        "flip": sketch.flip,
+        "rotation_quarter_turns": sketch.rotation_quarter_turns,
         "points": [_point_to_dict(p) for p in sketch.points.values()],
         "entities": [_entity_to_dict(e) for e in sketch.entities.values()],
         "constraints": [_constraint_to_dict(c) for c in sketch.constraints.values()],
+        # Sketcher-roadmap Phase 4.3 v1.
+        "external_references": [
+            {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
+            for point_id, ref in sketch.external_references.items()
+        ],
     }
 
 
@@ -192,6 +337,13 @@ def _sketch_from_dict(data: dict) -> Sketch:
     plane_value = data.get("plane")
     sketch = Sketch(id=_require(data, "id"), plane=Plane(plane_value) if plane_value is not None else None)
     sketch._origin_point_id = data.get("origin_point_id")
+    # Sketcher-roadmap Phase 5 - defaulted (not _require'd), unlike most
+    # other fields in this function: a native file saved before this
+    # feature existed has no opinion on orientation, and the identity
+    # orientation is the correct, harmless default for it.
+    sketch.set_orientation(
+        flip=data.get("flip", False), rotation_quarter_turns=data.get("rotation_quarter_turns", 0)
+    )
     for point_data in data.get("points", []):
         point = _point_from_dict(point_data)
         sketch.points[point.id] = point
@@ -201,6 +353,13 @@ def _sketch_from_dict(data: dict) -> Sketch:
     for constraint_data in data.get("constraints", []):
         constraint = _constraint_from_dict(constraint_data)
         sketch.constraints[constraint.id] = constraint
+    # Sketcher-roadmap Phase 4.3 v1 - defaulted to `[]`, same "a file saved
+    # before this feature existed has no opinion on it" reasoning as
+    # flip/rotation_quarter_turns above.
+    for ref_data in data.get("external_references", []):
+        sketch.external_references[ref_data["point_id"]] = ExternalVertexReference(
+            body_id=ref_data["body_id"], vertex_index=ref_data["vertex_index"]
+        )
     return sketch
 
 

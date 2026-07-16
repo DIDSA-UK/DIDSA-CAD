@@ -21,6 +21,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> points = {};
   final Map<String, Map<String, dynamic>> lines = {};
   final Map<String, Map<String, dynamic>> sketches = {};
+  final Map<String, Map<String, dynamic>> constraints = {};
   int dof = 0;
 
   String _newId(String prefix) => '$prefix-${_nextId++}';
@@ -71,8 +72,25 @@ class _FakeBackend {
     }
 
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
+    if (constraintsCollectionMatch && request.method == 'POST') {
+      // Phase 3 bug-fix round: only Vertical is implemented - enough to
+      // ground a Line's two endpoints into one cluster (see
+      // _controllerWithALineAfterASolve), which is all this file's
+      // padlock tests need.
+      final id = _newId('constraint');
+      final line = lines[body['line_id']];
+      final constraint = {
+        'id': id,
+        'type': 'vertical',
+        'line_id': body['line_id'],
+        'point_a_id': line?['start_point_id'],
+        'point_b_id': line?['end_point_id'],
+      };
+      constraints[id] = constraint;
+      return _json(constraint, 201);
+    }
     if (constraintsCollectionMatch && request.method == 'GET') {
-      return _jsonList(const [], 200);
+      return _jsonList(constraints.values.toList(), 200);
     }
 
     final solveMatch = RegExp(r'^/sketch/sketches/[^/]+/solve$').hasMatch(path);
@@ -108,16 +126,27 @@ class _FakeBackend {
       http.Response(jsonEncode(body), statusCode);
 }
 
-Future<SketchController> _controllerWithALineAfterASolve(int dof) async {
+/// [grounded]: Phase 3 bug-fix round - backend.dof == 0 alone isn't "fully
+/// constrained" any more (see SketchController.isFullyConstrained's own
+/// doc comment); pass true to also add a Vertical Constraint on the Line,
+/// unioning its two endpoints - one of which is the origin itself - into
+/// one grounded cluster, so a dof == 0 case actually reads as fully
+/// constrained.
+Future<SketchController> _controllerWithALineAfterASolve(int dof, {bool grounded = false}) async {
   final backend = _FakeBackend()..dof = dof;
   final mockClient = MockClient((request) async => backend.handle(request));
   final controller = SketchController(api: SketchApiClient(httpClient: mockClient));
   await controller.ensureSketch();
 
   controller.selectDrawTool(SketchTool.line);
-  await controller.handleCanvasTap(0, 0);
+  await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
   await controller.handleCanvasTap(10, 0);
   controller.finishChain();
+  if (grounded) {
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (5, 0)
+    await controller.addVerticalConstraint();
+  }
   return controller;
 }
 
@@ -127,14 +156,14 @@ Future<void> _pumpSketchScreen(WidgetTester tester, SketchController controller)
 }
 
 void main() {
-  testWidgets('the closed padlock icon renders in the title bar when the sketch has geometry '
-      'and the last solve reports dof == 0', (tester) async {
-    final controller = await _controllerWithALineAfterASolve(0);
+  testWidgets('the closed padlock icon renders in the title bar when the sketch has geometry, '
+      'the last solve reports dof == 0, and everything is grounded to the origin', (tester) async {
+    final controller = await _controllerWithALineAfterASolve(0, grounded: true);
 
     await _pumpSketchScreen(tester, controller);
 
-    expect(find.byIcon(Icons.lock), findsOneWidget);
-    expect(find.byIcon(Icons.lock_open), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-full')), findsOneWidget);
+    expect(find.byKey(const ValueKey('lock-indicator-partial')), findsNothing);
   });
 
   testWidgets(
@@ -144,8 +173,8 @@ void main() {
 
     await _pumpSketchScreen(tester, controller);
 
-    expect(find.byIcon(Icons.lock_open), findsOneWidget);
-    expect(find.byIcon(Icons.lock), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-partial')), findsOneWidget);
+    expect(find.byKey(const ValueKey('lock-indicator-full')), findsNothing);
   });
 
   testWidgets(
@@ -159,7 +188,7 @@ void main() {
     await _pumpSketchScreen(tester, controller);
 
     expect(controller.hasGeometry, isFalse);
-    expect(find.byIcon(Icons.lock), findsNothing);
-    expect(find.byIcon(Icons.lock_open), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-full')), findsNothing);
+    expect(find.byKey(const ValueKey('lock-indicator-partial')), findsNothing);
   });
 }

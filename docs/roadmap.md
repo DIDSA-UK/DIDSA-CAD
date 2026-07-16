@@ -6,6 +6,65 @@ project spec, see `docs/project-brief.md`.
 
 ---
 
+## Analysis tools
+
+- **Measure tool.** Not yet scoped in detail - needs its own design pass
+  (what can be measured: distance, angle, radius, between which entity
+  types, etc.).
+- **Sectioning tool.** Not yet scoped in detail - needs its own design
+  pass (single vs. multiple section planes, planar vs. offset/stepped
+  sections, a live/interactive cutaway vs. a static section view, and
+  whether it also supports measuring/dimensioning the cut face).
+- **Centre of gravity (CofG)** calculation for parts/assemblies.
+- **Basic static stress analysis.**
+
+## MBD part-data compliance
+
+- **Part data to support MBD (model-based definition) and comply with the
+  project's STEP MBD policy.** Fields needed on a part: material, part
+  number, description, supplier, supplier part number, mass (with a
+  checkbox to override the calculated-from-volume value when the user
+  wants to enter a known mass instead), volume (calculated), surface area
+  (calculated), and pattern features/bodies (so patterned instances carry
+  the same part data as their source).
+- **Hole tool** covering common standards and sizes: screw clearance
+  holes, tap drills, and common drill sizes - selectable from a standard
+  table rather than typed in as a raw diameter.
+- **Material database** so a part's material can be populated easily from
+  a picklist, with dependent metrics cascading automatically from the
+  chosen material: density, stress data, colour, texture, etc.
+
+## Sketcher tuning package
+
+Notes from an original scoping pass on sketcher UX (selection/drag
+interaction, constraint feedback, 3D context while sketching, drawing
+tools, overall feel) - engineering breakdown in
+`docs/sketcher-overhaul-scope.md` Phases 1-6, narrative history in
+`docs/status.md`. Essentially all of it has shipped, including the
+package's last deferred item (Polygon vertex-drag reinterpreted as a
+circumradius-dimension edit, the on-device-feedback fixes that
+followed it, a further round removing the broken 3D backdrop, adding
+New Sketch on Face, and reworking the sketch-start camera sequence,
+and Phase 11's trim/extend tool - see `docs/status.md`'s 2026-07-14
+entries) - with one real gap confirmed by a direct code audit:
+
+- **Phase 5's reference-axis alignment was never built.** Picking a
+  line/edge as an aligning feature to set a new sketch's Y-axis (the
+  "when creating the sketch, a line or edge can optionally be selected
+  as an aligning feature" ask) has no implementation anywhere - only
+  the discrete flip/90°-rotate half of Phase 5 ever shipped. Not
+  scoped in detail yet.
+- **A structural UX rethink is under consideration, not yet scoped or
+  decided.** On-device use still finds the drag/move experience too slow
+  and unpredictable for how central it is to sketching - see
+  `docs/sketcher-architecture-ux-scoping.md` (2026-07-15), a standalone
+  reference covering the full entity/constraint/solver architecture,
+  every tool's exact client/backend round-trip cost, the drag system in
+  full, and a menu of concrete options (client-side solving vs. backend-
+  authoritative, scoped/partial re-solves, giving Slot a real backend
+  entity, low-risk round-trip reductions) for a dedicated scoping
+  session. Nothing in it has been decided or started yet.
+
 ## Other open items
 
 - **"Hidden lines" view mode.** Mentioned by the user as a wanted future

@@ -177,6 +177,77 @@ def test_get_sketch_not_found():
     assert response.status_code == 404
 
 
+# --- Sketcher-roadmap Phase 5: orientation -----------------------------------
+
+
+def test_create_sketch_defaults_to_identity_orientation():
+    sketch = _create_sketch("XY")
+    assert sketch["flip"] is False
+    assert sketch["rotation_quarter_turns"] == 0
+
+
+def test_create_sketch_accepts_an_explicit_orientation():
+    response = client.post("/sketch/sketches", json={"plane": "XY", "flip": True, "rotation_quarter_turns": 1})
+    assert response.status_code == 201
+    sketch = response.json()
+    assert sketch["flip"] is True
+    assert sketch["rotation_quarter_turns"] == 1
+
+
+def test_update_sketch_orientation_persists_and_returns_the_new_value():
+    sketch = _create_sketch("XY")
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/orientation",
+        json={"flip": True, "rotation_quarter_turns": 2},
+    )
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["flip"] is True
+    assert updated["rotation_quarter_turns"] == 2
+
+    refetched = client.get(f"/sketch/sketches/{sketch['id']}").json()
+    assert refetched["flip"] is True
+    assert refetched["rotation_quarter_turns"] == 2
+
+
+def test_update_sketch_orientation_normalizes_rotation_quarter_turns():
+    sketch = _create_sketch("XY")
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/orientation",
+        json={"flip": False, "rotation_quarter_turns": -1},
+    )
+    assert response.status_code == 200
+    assert response.json()["rotation_quarter_turns"] == 3
+
+
+def test_update_sketch_orientation_not_found():
+    response = client.patch(
+        "/sketch/sketches/does-not-exist/orientation",
+        json={"flip": False, "rotation_quarter_turns": 0},
+    )
+    assert response.status_code == 404
+
+
+def test_redefining_orientation_does_not_move_any_existing_point():
+    """The whole point of storing flip/rotation as separate Sketch fields
+    (see Sketch's own doc comment) rather than baking them into Point
+    coordinates - retrospectively changing orientation must never touch
+    the sketch's own local (x, y) values, only how they're later embedded
+    into 3D."""
+    sketch = _create_sketch("XY")
+    point_response = client.post(f"/sketch/sketches/{sketch['id']}/points", json={"x": 3.0, "y": 4.0})
+    assert point_response.status_code == 201
+    point_id = point_response.json()["id"]
+
+    client.patch(
+        f"/sketch/sketches/{sketch['id']}/orientation",
+        json={"flip": True, "rotation_quarter_turns": 3},
+    )
+
+    refetched_point = client.get(f"/sketch/sketches/{sketch['id']}/points/{point_id}").json()
+    assert refetched_point == {"id": point_id, "x": 3.0, "y": 4.0}
+
+
 def test_create_and_get_point():
     sketch = _create_sketch()
     point = _create_point(sketch["id"], 3.0, 4.0)

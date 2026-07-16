@@ -7,8 +7,12 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.chamfer import resolve_chamfer
-from app.document.create_plane import resolve_create_plane
-from app.document.extrude import compute_part_bodies, select_profiles
+from app.document.create_plane import (
+    refresh_external_references,
+    resolve_create_plane,
+    resolve_external_vertex_position,
+)
+from app.document.extrude import compute_part_bodies, edge_endpoint_vertex_refs, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.import_geometry import resolve_import
@@ -49,6 +53,9 @@ from app.document.schemas import (
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
     CreatePlaneFeatureUpdate,
+    ExternalEdgeReferenceCreate,
+    ExternalEdgeReferenceResponse,
+    ExternalVertexReferenceCreate,
     ExtrudeFeatureCreate,
     ExtrudeFeatureResponse,
     ExtrudeFeatureUpdate,
@@ -77,8 +84,9 @@ from app.document.schemas import (
 )
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
-from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
+from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.schemas import LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
 logger = logging.getLogger(__name__)
@@ -199,12 +207,36 @@ def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> C
     )
 
 
+def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
+    """Sketcher-roadmap Phase 4.3 v1: whether `feature`'s own Sketch has at
+    least one `external_references` entry that no longer resolves against
+    the Part's *current* Bodies - same soft-fail-without-raising story as
+    `_create_plane_feature_response`'s own `origin`/`normal` resolution:
+    any failure (an unresolvable reference, or the Part's Bodies failing to
+    compute at all for an unrelated reason) is treated as "lost" rather
+    than propagating and failing the whole `GET .../features` list.
+    Short-circuits to `False` without touching OCCT at all for the common
+    case (a Sketch with no external references), so this costs nothing for
+    every Sketch that doesn't use the feature."""
+    sketch = all_sketches().get(feature.sketch_id)
+    if sketch is None or not sketch.external_references:
+        return False
+    try:
+        bodies = compute_part_bodies(part)
+        lost_point_ids = refresh_external_references(part, sketch, bodies)
+    except HTTPException:
+        logger.warning("SketchFeature %s could not refresh its external references", feature.id)
+        return True
+    return bool(lost_point_ids)
+
+
 def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, SketchFeature):
         return SketchFeatureResponse(
             id=feature.id,
             sketch_id=feature.sketch_id,
             plane_feature_id=feature.plane_feature_id,
+            has_lost_reference=_sketch_has_lost_reference(part, feature),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -712,6 +744,112 @@ def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchF
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
+
+
+def _get_sketch_feature_or_404(part: Part, feature_id: str) -> SketchFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SketchFeature):
+        raise HTTPException(
+            status_code=400,
+            detail="feature_id does not refer to a SketchFeature in this Part",
+        )
+    return feature
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references",
+    response_model=PointResponse,
+    status_code=201,
+)
+def create_external_vertex_reference(
+    part_id: str, feature_id: str, payload: ExternalVertexReferenceCreate
+) -> PointResponse:
+    """Sketcher-roadmap Phase 4.3 v1: the centre-point circle tool's sibling
+    for body geometry - materializes `payload` (a Body vertex) as a real
+    Point in this SketchFeature's own Sketch, so every existing dimension/
+    ghost/undo/persistence code path (all of it Sketch-Point-id-shaped,
+    see the roadmap doc's own reasoning) works against it unmodified from
+    here on. Fails closed with the same structured `missing_reference` 422
+    every other `SubShapeRef` resolution already uses (via
+    `resolve_external_vertex_position` -> `resolve_subshape_from_bodies`)
+    if `payload` doesn't resolve against this Part's current Bodies.
+
+    Only ever reachable for a Part-backed Sketch (unlike the standalone
+    `/sketch` API's own point-creation endpoints) - a bare Sketch created
+    directly via that API has no Bodies to reference at all, which is
+    exactly why this lives in the document router rather than
+    `app.sketch.router`."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    ref = ExternalVertexReference(body_id=payload.body_id, vertex_index=payload.vertex_index)
+    bodies = compute_part_bodies(part)
+    x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
+    point = sketch.add_external_vertex_reference(x, y, ref)
+    return PointResponse(id=point.id, x=point.x, y=point.y)
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references/edge",
+    response_model=ExternalEdgeReferenceResponse,
+    status_code=201,
+)
+def create_external_edge_reference(
+    part_id: str, feature_id: str, payload: ExternalEdgeReferenceCreate
+) -> ExternalEdgeReferenceResponse:
+    """Sketcher-roadmap Phase 4.3 v2: `create_external_vertex_reference`'s
+    edge-shaped sibling. Reuses that same vertex-materialize machinery
+    *twice* - once per endpoint of `payload` (a Body edge) - rather than
+    inventing an edge-specific solver constraint or projection path (per
+    the roadmap doc's own v2 scoping): a real, pinned Line between two
+    pinned external-reference Points is already rigid with zero new
+    machinery, since the Line's own geometry is fully determined by its
+    endpoints and `solve_sketch` already re-resolves/re-pins every
+    `external_references` entry (v1) on every solve regardless of which
+    Sketch entity references it.
+
+    Fails closed with `missing_reference` (edge doesn't resolve) or
+    `degenerate_edge` (an edge whose two endpoints are the same Body
+    vertex - e.g. a cone apex seam - which would ask for a zero-length
+    Line) - both structured 422s, matching every other `SubShapeRef`
+    failure mode in this router."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    bodies = compute_part_bodies(part)
+    edge_ref = SubShapeRef(body_id=payload.body_id, shape_type=SubShapeType.EDGE, index=payload.edge_index)
+    start_ref, end_ref = edge_endpoint_vertex_refs(bodies, edge_ref)
+    if start_ref.index == end_ref.index:
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
+        )
+
+    start_vertex_ref = ExternalVertexReference(body_id=start_ref.body_id, vertex_index=start_ref.index)
+    start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies)
+    start_point = sketch.add_external_vertex_reference(start_x, start_y, start_vertex_ref)
+
+    end_vertex_ref = ExternalVertexReference(body_id=end_ref.body_id, vertex_index=end_ref.index)
+    end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies)
+    end_point = sketch.add_external_vertex_reference(end_x, end_y, end_vertex_ref)
+
+    # On-device feedback: a materialized Body edge is a reference for
+    # dimensioning against, not new solid geometry the user drew - marking
+    # it construction keeps it out of profile/extrude detection (see
+    # detect_profile's own construction-skip) the same way every other
+    # reference-only Line already is.
+    line = sketch.add_line(start_point.id, end_point.id, construction=True)
+    return ExternalEdgeReferenceResponse(
+        line=LineResponse(
+            id=line.id,
+            start_point_id=line.start_point_id,
+            end_point_id=line.end_point_id,
+            length=line.length(sketch.points),
+            construction=line.construction,
+        ),
+        start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y),
+        end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y),
+    )
 
 
 @router.post(

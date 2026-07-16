@@ -23,15 +23,17 @@ class SolverBuilder(Protocol):
         returning the resulting py-slvs constraint handle."""
         ...
 
-    def horizontal_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
-        """Pin only the X (workplane U) separation between two point
-        handles to `value`, leaving their Y separation free. py-slvs 1.0.6
-        has no dedicated horizontal-distance primitive - see solver.py for
-        how this is built from addPointsProjectDistance against a fixed
-        horizontal reference line."""
+    def horizontal_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
+        """Pin only the X (workplane U) separation between two Points to
+        `value` (a non-negative magnitude), leaving their Y separation
+        free. Takes Point ids rather than already-resolved handles (unlike
+        `distance` above) because the underlying py-slvs primitive is
+        sign-sensitive - see solver.py's `_PySlvsBuilder.horizontal_
+        distance` for why the sign is chosen from each Point's *current*
+        position rather than being a fixed convention."""
         ...
 
-    def vertical_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+    def vertical_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
         """Same as `horizontal_distance`, but pins the Y (workplane V)
         separation instead, leaving X free."""
         ...
@@ -53,10 +55,29 @@ class SolverBuilder(Protocol):
         than points directly."""
         ...
 
-    def angle(self, line_a_handle: int, line_b_handle: int, degrees: float) -> int:
+    def angle(
+        self,
+        line_a_handle: int,
+        line_b_handle: int,
+        degrees: float,
+        line_a_start_id: str,
+        line_a_end_id: str,
+        line_b_start_id: str,
+        line_b_end_id: str,
+    ) -> int:
         """Add a py-slvs angle constraint between two line-segment entity
         handles (target angle in degrees), returning the resulting py-slvs
-        constraint handle."""
+        constraint handle. Also takes each Line's endpoint Point ids (unlike
+        every other handle-only method here) because py-slvs's addAngle has
+        a `supplement` flag choosing between an angle and its supplement
+        (180 - degrees) - a genuine, confirmed-by-experiment ambiguity
+        distinct from the ordinary +/- mirror-root case (which Newton's
+        method already resolves correctly from any seed on its own, see
+        solver.py's `_PySlvsBuilder.angle`). The Point ids let the
+        implementation pick whichever of the two matches the Lines'
+        *current* live angle, the same "preserve what's already true rather
+        than snap to an arbitrary convention" principle `_project_distance`
+        already uses for horizontal_distance/vertical_distance."""
         ...
 
     def coincident(self, point_a_handle: int, point_b_handle: int) -> int:
@@ -79,6 +100,24 @@ class SolverBuilder(Protocol):
         """Add a py-slvs constraint forcing two line-segment entity handles
         to share the same length, returning the resulting py-slvs constraint
         handle."""
+        ...
+
+    def equal_length_point_line_distance(
+        self, point_handle: int, radius_line_handle: int, tangent_line_handle: int
+    ) -> int:
+        """Add a py-slvs constraint (addEqualLengthPointLineDistance,
+        SLVS_C_EQ_LEN_PT_LINE_D) forcing `radius_line_handle`'s own length to
+        equal the perpendicular distance from `point_handle` to
+        `tangent_line_handle`, returning the resulting py-slvs constraint
+        handle. Verified empirically against the installed py-slvs (no
+        usable documentation exists for this primitive in the upstream
+        SolveSpace header either): a virtual centre-to-rim line segment
+        (length = radius) and a free line, constrained this way with
+        `point_handle` = that same centre point, converged to the free line
+        sitting exactly at perpendicular distance = radius from centre -
+        i.e. genuine circle/arc-to-line tangency, expressed with zero new
+        py-slvs entity types (no arc-of-circle entity needed - see
+        TangentConstraint's own doc comment for why that path was avoided)."""
         ...
 
     def point_on_line(self, point_handle: int, line_handle: int) -> int:
@@ -109,6 +148,45 @@ class SolverBuilder(Protocol):
         constraint handle. AtMidpointConstraint uses this in place of the
         Stage 21 PointLineDistanceConstraint+DistanceConstraint pair, since
         py-slvs has a native primitive for this exact relationship."""
+        ...
+
+    def cubic(
+        self, p0_handle: int, p1_handle: int, p2_handle: int, p3_handle: int
+    ) -> int:
+        """Return a py-slvs cubic Bezier curve entity handle (py-slvs's
+        addCubic, SLVS_E_CUBIC) spanning 4 point handles - `p0`/`p3` are the
+        curve's own on-curve endpoints, `p1`/`p2` the two control handles
+        (standard cubic Bezier convention, confirmed against the installed
+        py-slvs by direct empirical test - see SplineTangentConstraint's
+        own doc comment). Creating it (rather than skipping straight to
+        plain Point/DistanceConstraint decomposition, as every other curved
+        entity in this codebase does) is a deliberate choice for Spline
+        specifically: py-slvs has no equivalent of "these 4 points trace a
+        smooth curve" expressible any other way, and Spline's whole point
+        is the tangent-continuity SplineTangentConstraint below builds on
+        top of this."""
+        ...
+
+    def curves_tangent(
+        self, at_end1: bool, at_end2: bool, curve1_handle: int, curve2_handle: int
+    ) -> int:
+        """Add a py-slvs constraint (addCurvesTangent, SLVS_C_CURVE_CURVE_
+        TANGENT) forcing curve1's tangent direction at one of its own ends
+        to match curve2's tangent direction at one of its own ends,
+        returning the resulting py-slvs constraint handle. `at_end1`/
+        `at_end2` select *which* end of each curve - True for a curve's own
+        end (its 4th/`p3` point), False for its own start (`p0`) - verified
+        empirically against the installed py-slvs (no usable documentation
+        exists for these two booleans in the wrapped C library's docs): a
+        two-segment test cubic chain sharing an endpoint, with mismatched
+        initial control-handle directions, converged to a perfectly
+        tangent-continuous join (measured tangent-direction dot product of
+        1.0000) only with `at_end1=True, at_end2=False` - i.e. "curve1's
+        end meets curve2's start" - every other boolean combination left a
+        visible kink (dot product well under 1). SplineTangentConstraint
+        always calls this with the earlier segment as curve1 (at its own
+        end) and the later segment as curve2 (at its own start), matching
+        that verified combination."""
         ...
 
 
@@ -158,6 +236,17 @@ class DistanceConstraint(Constraint):
     point_b_id: str
     distance: float
     orientation: Literal["linear", "horizontal", "vertical"] = field(default="linear")
+    # True for a size-defining DistanceConstraint auto-created by a shape
+    # tool (Circle/Arc/Ellipse/Slot/Polygon radius etc.) purely to pin the
+    # geometry rigid at placement time, before the user has actually chosen
+    # a size - not because the user asked for a dimension. A provisional
+    # constraint is skipped entirely by the solver (see solver.py's main
+    # constraint loop) so it removes zero DOF and the shape correctly
+    # reports as under-constrained until either a real value is confirmed
+    # (see update_constraint_value, which clears this flag) or the user
+    # adds their own dimension. Always False for constraints the user
+    # created or confirmed themselves.
+    provisional: bool = field(default=False)
 
     @property
     def type(self) -> str:
@@ -167,12 +256,12 @@ class DistanceConstraint(Constraint):
         return (self.point_a_id, self.point_b_id)
 
     def add_to_solver(self, builder: SolverBuilder) -> int:
+        if self.orientation == "horizontal":
+            return builder.horizontal_distance(self.point_a_id, self.point_b_id, self.distance)
+        if self.orientation == "vertical":
+            return builder.vertical_distance(self.point_a_id, self.point_b_id, self.distance)
         point_a = builder.point2d(self.point_a_id)
         point_b = builder.point2d(self.point_b_id)
-        if self.orientation == "horizontal":
-            return builder.horizontal_distance(point_a, point_b, self.distance)
-        if self.orientation == "vertical":
-            return builder.vertical_distance(point_a, point_b, self.distance)
         return builder.distance(point_a, point_b, self.distance)
 
 
@@ -263,7 +352,15 @@ class AngleConstraint(Constraint):
         line2 = builder.line_segment(
             builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
         )
-        return builder.angle(line1, line2, self.angle_degrees)
+        return builder.angle(
+            line1,
+            line2,
+            self.angle_degrees,
+            self.line1_start_id,
+            self.line1_end_id,
+            self.line2_start_id,
+            self.line2_end_id,
+        )
 
 
 @dataclass
@@ -376,6 +473,86 @@ class EqualLengthConstraint(Constraint):
         )
         line2 = builder.line_segment(
             builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
+        )
+        return builder.equal_length(line1, line2)
+
+
+@dataclass
+class TangentConstraint(Constraint):
+    """Forces a Circle or Arc to be tangent to a Line - the perpendicular
+    distance from the Circle/Arc's own centre to the Line equals its
+    radius.
+
+    Expressed via SolverBuilder.equal_length_point_line_distance rather
+    than py-slvs's native arc-of-circle entity/addArcLineTangent (the more
+    "obvious"-looking primitive): this codebase's own Arc model already
+    avoids the native arc entity entirely (see Arc's own docstring - "zero
+    new solver primitives"), and empirically (see
+    equal_length_point_line_distance's own doc comment) the native arc
+    entity is unreliable in the installed py-slvs build in this
+    environment, while this point-line-distance approach converges
+    cleanly. `center_point_id`/`radius_point_id` define a virtual
+    centre-to-rim line segment whose length *is* the Circle/Arc's own
+    radius (the same real, solver-tracked radius its own
+    DistanceConstraint(s) already maintain) - this constraint introduces no
+    new numeric value, it only ties an existing radius to an existing
+    Line's distance from that same centre.
+    """
+
+    id: str
+    center_point_id: str
+    radius_point_id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "tangent"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.center_point_id, self.radius_point_id, self.line_start_id, self.line_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        center = builder.point2d(self.center_point_id)
+        radius_line = builder.line_segment(center, builder.point2d(self.radius_point_id))
+        tangent_line = builder.line_segment(
+            builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
+        )
+        return builder.equal_length_point_line_distance(center, radius_line, tangent_line)
+
+
+@dataclass
+class EqualRadiusConstraint(Constraint):
+    """Forces two Circles/Arcs to share the same radius - e.g. a Slot's two
+    end-cap Arcs.
+
+    Expressed via SolverBuilder.equal_length on each one's own virtual
+    centre-to-rim line segment (the same real, solver-tracked radius each
+    Circle's/Arc's own DistanceConstraint(s) already maintain) - no native
+    py-slvs "equal radius" entity-level primitive needed, mirroring
+    TangentConstraint's own reasoning for avoiding the native arc entity.
+    """
+
+    id: str
+    center1_point_id: str
+    radius1_point_id: str
+    center2_point_id: str
+    radius2_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "equal_radius"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.center1_point_id, self.radius1_point_id, self.center2_point_id, self.radius2_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        line1 = builder.line_segment(
+            builder.point2d(self.center1_point_id), builder.point2d(self.radius1_point_id)
+        )
+        line2 = builder.line_segment(
+            builder.point2d(self.center2_point_id), builder.point2d(self.radius2_point_id)
         )
         return builder.equal_length(line1, line2)
 
@@ -530,3 +707,66 @@ class AtMidpointConstraint(Constraint):
             builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
         )
         return builder.at_midpoint(point, line)
+
+
+@dataclass
+class SplineTangentConstraint(Constraint):
+    """Pins two adjacent cubic Bezier segments of a Spline to meet
+    tangent-continuously (no visible kink) at their shared through-point -
+    `add_spline`'s own internal implementation detail, one of these per
+    interior through-point of a Spline with 3+ through-points, auto-created
+    alongside it and auto-cascaded by `delete_spline`, exactly like Arc's
+    own pair of radius DistanceConstraints.
+
+    Each segment is defined by 4 Points (start, control 1, control 2, end -
+    see SolverBuilder.cubic's own doc comment); `segment_a_*` is the
+    earlier segment (its own end, `segment_a_p3`, is the shared
+    through-point) and `segment_b_*` is the later one (its own start,
+    `segment_b_p0`, is that same shared through-point - always equal to
+    `segment_a_p3`, captured separately only so this dataclass doesn't need
+    special-case field access). Cubic entities are rebuilt fresh from their
+    4 Points on every solve (see SolverBuilder.cubic), the same "no
+    persistent solver-side entity, rebuilt every call" convention every
+    other curved entity here already follows for Line segments.
+    """
+
+    id: str
+    spline_id: str
+    segment_a_p0: str
+    segment_a_p1: str
+    segment_a_p2: str
+    segment_a_p3: str
+    segment_b_p0: str
+    segment_b_p1: str
+    segment_b_p2: str
+    segment_b_p3: str
+
+    @property
+    def type(self) -> str:
+        return "spline_tangent"
+
+    def point_ids(self) -> tuple[str, ...]:
+        return (
+            self.segment_a_p0,
+            self.segment_a_p1,
+            self.segment_a_p2,
+            self.segment_a_p3,
+            self.segment_b_p1,
+            self.segment_b_p2,
+            self.segment_b_p3,
+        )
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        segment_a = builder.cubic(
+            builder.point2d(self.segment_a_p0),
+            builder.point2d(self.segment_a_p1),
+            builder.point2d(self.segment_a_p2),
+            builder.point2d(self.segment_a_p3),
+        )
+        segment_b = builder.cubic(
+            builder.point2d(self.segment_b_p0),
+            builder.point2d(self.segment_b_p1),
+            builder.point2d(self.segment_b_p2),
+            builder.point2d(self.segment_b_p3),
+        )
+        return builder.curves_tangent(True, False, segment_a, segment_b)

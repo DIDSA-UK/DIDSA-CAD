@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// The "boss" or "cut" choice for a Revolve - Boss/Cut parity with Extrude
 /// (Prompt F's own resolved decision) - mirrors `extrude_panel.dart`'s
 /// [ExtrudeType] exactly, as its own separate enum rather than a shared one,
@@ -141,11 +143,15 @@ class _RevolvePanelState extends State<RevolvePanel> {
                 const SizedBox(height: 12),
                 SegmentedButton<RevolveMode>(
                   segments: const [
-                    ButtonSegment(value: RevolveMode.boss, label: Text('Boss'), icon: Icon(Icons.add_box)),
+                    ButtonSegment(
+                      value: RevolveMode.boss,
+                      label: Text('Boss'),
+                      icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
+                    ),
                     ButtonSegment(
                       value: RevolveMode.cut,
                       label: Text('Cut'),
-                      icon: Icon(Icons.content_cut),
+                      icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
                     ),
                   ],
                   selected: {_mode},

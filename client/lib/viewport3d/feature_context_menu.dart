@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// Actions available from a Feature's long-press context menu. Stage 8 adds
 /// [toggleVisibility] above the existing [delete]; Stage 9 adds [extrude]
 /// above both; Prompt F adds [revolve] alongside [extrude]; Sweep adds
-/// [sweep] alongside both - later stages can add further entries here
+/// [sweep] alongside both; the sketcher-roadmap feedback round adds
+/// [redefineOrientation] - later stages can add further entries here
 /// without changing how the menu itself is shown or wired up.
-enum FeatureContextMenuAction { extrude, revolve, sweep, toggleVisibility, delete }
+enum FeatureContextMenuAction { extrude, revolve, sweep, redefineOrientation, toggleVisibility, delete }
 
 /// Shows a bottom sheet of actions for a single Feature, opened by a
 /// long-press on its row in the tree. A bottom sheet - rather than wiring
@@ -28,6 +31,15 @@ enum FeatureContextMenuAction { extrude, revolve, sweep, toggleVisibility, delet
 /// closed-profile eligibility, same "only a SketchFeature gets this entry"
 /// gate. [showSweep]/[canSweep]/[sweepDisabledReason] mirror both the same
 /// way.
+///
+/// [showRedefineOrientation] gates the "Sketch Orientation" entry - only a
+/// SketchFeature offers it (same "only a SketchFeature" gate as Extrude/
+/// Revolve/Sweep), always enabled when shown (no eligibility check, unlike
+/// those three). Sketcher-roadmap feedback round: this is now the sole way
+/// to redefine an existing Sketch's orientation - the old 2D-only
+/// hamburger-menu sheet gave the user no 3D reference to judge flip/rotate
+/// against, so it's gone; this reuses the same 3D-viewport orientation
+/// confirm step a brand new Sketch already shows.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -40,6 +52,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool showSweep = false,
   bool canSweep = false,
   String? sweepDisabledReason,
+  bool showRedefineOrientation = false,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -54,7 +67,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
             if (showExtrude)
               ListTile(
                 enabled: canExtrude,
-                leading: const Icon(Icons.view_in_ar),
+                leading: const SvgIcon('assets/icons/feature/feature_extrude.svg'),
                 title: const Text('Extrude'),
                 subtitle: canExtrude ? null : Text(extrudeDisabledReason ?? 'Not available'),
                 onTap: canExtrude
@@ -64,7 +77,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
             if (showRevolve)
               ListTile(
                 enabled: canRevolve,
-                leading: const Icon(Icons.rotate_right),
+                leading: const SvgIcon('assets/icons/feature/feature_revolve.svg'),
                 title: const Text('Revolve'),
                 subtitle: canRevolve ? null : Text(revolveDisabledReason ?? 'Not available'),
                 onTap: canRevolve
@@ -74,12 +87,18 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
             if (showSweep)
               ListTile(
                 enabled: canSweep,
-                leading: const Icon(Icons.line_axis),
+                leading: const SvgIcon('assets/icons/feature/feature_sweep.svg'),
                 title: const Text('Sweep'),
                 subtitle: canSweep ? null : Text(sweepDisabledReason ?? 'Not available'),
                 onTap: canSweep
                     ? () => Navigator.of(context).pop(FeatureContextMenuAction.sweep)
                     : null,
+              ),
+            if (showRedefineOrientation)
+              ListTile(
+                leading: const Icon(Icons.rotate_90_degrees_ccw),
+                title: const Text('Sketch Orientation'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.redefineOrientation),
               ),
             ListTile(
               leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),

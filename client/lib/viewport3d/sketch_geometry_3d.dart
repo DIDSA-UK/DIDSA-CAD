@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../api/document_api_client.dart' show MeshDto;
 import '../api/sketch_api_client.dart';
 import 'mesh_geometry.dart' show kVertexMarkerWidth, vertexMarkerSegments;
 import 'reference_planes.dart';
@@ -68,6 +69,41 @@ class SketchPlaneBasis {
             normal: vm.Vector3(1, 0, 0),
           ),
       };
+
+  /// Sketcher-roadmap Phase 5: [fixed]'s own xAxis/yAxis, with a Sketch's
+  /// own `flip`/`rotationQuarterTurns` (see [SketchDto.flip]/
+  /// [SketchDto.rotationQuarterTurns]) applied on top - mirrors the
+  /// backend's `app.document.plane_geometry.oriented_basis_for_plane`
+  /// exactly (same flip-then-rotate order, same "a 90-degree CCW turn maps
+  /// xAxis -> yAxis, yAxis -> -xAxis" formula), so a Sketch's rendered
+  /// geometry always lines up with where its Extrude actually builds
+  /// material once the orientation is anything other than the default.
+  factory SketchPlaneBasis.oriented(
+    ReferencePlaneKind plane, {
+    required bool flip,
+    required int rotationQuarterTurns,
+  }) =>
+      SketchPlaneBasis.fixed(plane).withOrientation(flip: flip, rotationQuarterTurns: rotationQuarterTurns);
+
+  /// [oriented]'s own flip-then-rotate transform, generalized to start from
+  /// any orthonormal basis rather than only [fixed]'s three fixed planes -
+  /// a custom (`create_plane`) plane's own resolved basis is exactly as
+  /// valid a starting point (still just `origin`/`xAxis`/`yAxis`/`normal`),
+  /// so a Sketch anchored to one can support the same flip/rotate
+  /// orientation controls a fixed-plane Sketch already does. Bug fix: the
+  /// orientation confirm step never triggered for a custom-plane Sketch at
+  /// all - see `part_screen.dart`'s `_addSketchFeature`.
+  SketchPlaneBasis withOrientation({required bool flip, required int rotationQuarterTurns}) {
+    var xAxis = flip ? -this.xAxis : this.xAxis;
+    var yAxis = this.yAxis;
+    for (var i = 0; i < rotationQuarterTurns % 4; i++) {
+      final nextX = yAxis;
+      final nextY = -xAxis;
+      xAxis = nextX;
+      yAxis = nextY;
+    }
+    return SketchPlaneBasis(origin: origin, xAxis: xAxis, yAxis: yAxis, normal: normal);
+  }
 }
 
 /// Maps a Sketch-local 2D point onto its [basis] in 3D world space, for
@@ -106,13 +142,78 @@ List<((double, double), (double, double))> projectMeshEdgesOntoPlane(
         (worldPointToSketch(basis, segment.$1), worldPointToSketch(basis, segment.$2)),
     ];
 
-/// Segments approximating a rendered Circle outline - high enough to read as
-/// round at [referencePlaneSize]-ish scales without costing much per circle.
+/// Sketcher-roadmap Phase 4.3 v1: the per-point analogue of
+/// [projectMeshEdgesOntoPlane] - projects a Body's real B-rep vertices
+/// (`MeshDto.topologyVertices`/`topologyVertexIds`, already computed
+/// server-side independently of the triangle mesh - see
+/// `backend/app/document/mesh.py`'s `_extract_topology_vertices`) onto
+/// [basis], ready for [SketchCanvas]'s ghost-overlay pick targets. [bodyId]
+/// is threaded through unchanged (not itself projected) so a picked ghost
+/// vertex round-trips into a real `SubShapeRef`/materialize-a-Point call -
+/// see [SketchController.pickReferenceGhostVertex].
+List<(String, int, double, double)> projectMeshVerticesOntoPlane(
+  SketchPlaneBasis basis,
+  String bodyId,
+  MeshDto mesh,
+) {
+  final result = <(String, int, double, double)>[];
+  for (var i = 0; i < mesh.topologyVertices.length; i++) {
+    final v = mesh.topologyVertices[i];
+    final (x, y) = worldPointToSketch(basis, vm.Vector3(v[0], v[1], v[2]));
+    result.add((bodyId, mesh.topologyVertexIds[i], x, y));
+  }
+  return result;
+}
+
+/// Sketcher-roadmap Phase 4.3 v2: the per-edge analogue of
+/// [projectMeshVerticesOntoPlane] - projects a Body's real edge polylines
+/// (`MeshDto.edges`/`edgeIds`, the same dense per-segment id
+/// `SelectionEntityRef`'s own edge picking in the 3D viewport already
+/// trusts as a `SubShapeRef.index` for Fillet/Chamfer - see
+/// `selection_hit_test.dart`) onto [basis], ready for [SketchCanvas]'s
+/// ghost-overlay pick targets. [bodyId]/edge id are threaded through
+/// unchanged (not projected) so a picked ghost edge round-trips into a
+/// real `SubShapeRef`/materialize-an-edge call - see
+/// [SketchController.pickReferenceGhostEdge]. A curved edge's several
+/// consecutive mesh segments all carry that edge's *same* id, exactly
+/// like [edgeSegmentsFromMesh] (mesh_geometry.dart) already assumes for
+/// rendering - deliberately a separate list from that one rather than
+/// adding ids onto it, since [edgeSegmentsFromMesh]'s own id-less
+/// segments still drive the unrelated Phase 4.1 ghost wireframe render
+/// unchanged.
+List<(String, int, (double, double), (double, double))> projectMeshEdgesOntoPlaneWithIds(
+  SketchPlaneBasis basis,
+  String bodyId,
+  MeshDto mesh,
+) {
+  final result = <(String, int, (double, double), (double, double))>[];
+  var segmentIndex = 0;
+  for (var i = 0; i + 5 < mesh.edges.length; i += 6) {
+    final start = worldPointToSketch(basis, vm.Vector3(mesh.edges[i], mesh.edges[i + 1], mesh.edges[i + 2]));
+    final end =
+        worldPointToSketch(basis, vm.Vector3(mesh.edges[i + 3], mesh.edges[i + 4], mesh.edges[i + 5]));
+    result.add((bodyId, mesh.edgeIds[segmentIndex], start, end));
+    segmentIndex++;
+  }
+  return result;
+}
+
+/// Segments approximating a rendered Circle/Ellipse outline - high enough to
+/// read as round at [referencePlaneSize]-ish scales without costing much per
+/// circle.
 const int circleSegments3D = 32;
 
-/// Pure, GPU-independent description of one Sketch's Points/Lines/Circles
-/// already projected into 3D world space via [sketchPointToWorld] - the
-/// testable counterpart to [buildSketchGeometryNode] below.
+/// Segments approximating a rendered Arc outline - fewer than a full circle
+/// since an Arc is only ever a partial sweep, not a full turn.
+const int arcSegments3D = 24;
+
+/// Segments approximating one cubic-Bezier Spline segment's curve.
+const int splineSegmentSteps3D = 16;
+
+/// Pure, GPU-independent description of one Sketch's Points/Lines/Circles/
+/// Arcs/Ellipses/Splines already projected into 3D world space via
+/// [sketchPointToWorld] - the testable counterpart to
+/// [buildSketchGeometryNode] below.
 ///
 /// Prompt C1: [points]/[pointIds] and [lineIds] (parallel to [lineSegments])
 /// were added so the 3D viewport's hit-testing can resolve a ray hit back to
@@ -125,6 +226,18 @@ const int circleSegments3D = 32;
 /// Line-chain loop can, and Prompt G's profile picker needs to let a user
 /// tap one to pick it - [circleIds] (parallel to [circlePolygons]) closes
 /// that gap, mirroring [lineIds] exactly.
+///
+/// Bug fix (on-device feedback): Arc/Ellipse/Spline never had any 3D
+/// representation at all - [sketchGeometry3DFrom] only ever converted
+/// Points/Lines/Circles, so a Sketch containing any of the three (or a
+/// Slot/Text, both built from them - see that function's own doc comment)
+/// silently drew nothing for those entities in the main 3D Part viewport,
+/// even though the same Sketch rendered correctly on its own 2D canvas.
+/// [arcPolylines]/[ellipsePolygons]/[splinePolylines] (each with a parallel
+/// id array, mirroring [circlePolygons]/[circleIds]) close that gap -
+/// hit-testing/selection for these three isn't wired up here (out of scope
+/// for this fix, matching how Circle's own [circleIds] long predates any
+/// Arc/Ellipse/Spline selection support), only rendering.
 class SketchGeometry3D {
   final List<(vm.Vector3, vm.Vector3)> lineSegments;
   final List<String> lineIds;
@@ -132,6 +245,12 @@ class SketchGeometry3D {
   final List<String> pointIds;
   final List<List<vm.Vector3>> circlePolygons;
   final List<String> circleIds;
+  final List<List<vm.Vector3>> arcPolylines;
+  final List<String> arcIds;
+  final List<List<vm.Vector3>> ellipsePolygons;
+  final List<String> ellipseIds;
+  final List<List<vm.Vector3>> splinePolylines;
+  final List<String> splineIds;
 
   const SketchGeometry3D({
     required this.lineSegments,
@@ -140,6 +259,12 @@ class SketchGeometry3D {
     required this.pointIds,
     required this.circlePolygons,
     required this.circleIds,
+    this.arcPolylines = const [],
+    this.arcIds = const [],
+    this.ellipsePolygons = const [],
+    this.ellipseIds = const [],
+    this.splinePolylines = const [],
+    this.splineIds = const [],
   });
 
   static const empty = SketchGeometry3D(
@@ -151,19 +276,39 @@ class SketchGeometry3D {
     circleIds: [],
   );
 
-  bool get isEmpty => lineSegments.isEmpty && points.isEmpty && circlePolygons.isEmpty;
+  bool get isEmpty =>
+      lineSegments.isEmpty &&
+      points.isEmpty &&
+      circlePolygons.isEmpty &&
+      arcPolylines.isEmpty &&
+      ellipsePolygons.isEmpty &&
+      splinePolylines.isEmpty;
 }
 
 /// Builds [SketchGeometry3D] from a Sketch's raw DTOs - resolving each
-/// Line's/Circle's point references against [points] and silently skipping
-/// any that reference a missing point id (rather than throwing), since a
-/// transient inconsistency here should degrade to "one segment missing", not
-/// break the whole 3D viewport.
+/// Line's/Circle's/Arc's/Ellipse's/Spline's point references against
+/// [points] and silently skipping any that reference a missing point id
+/// (rather than throwing), since a transient inconsistency here should
+/// degrade to "one entity missing", not break the whole 3D viewport.
+///
+/// [arcs]/[ellipses]/[splines] default to empty so every existing call site
+/// (and every existing test constructing this) keeps compiling unchanged -
+/// callers that actually want these rendered (currently only
+/// `part_screen.dart`'s `_refreshSketchGeometries`) opt in explicitly. Slot
+/// (two Arcs + two tangent Lines) and Polygon (only Lines) need no entry of
+/// their own here - they're already covered once their component
+/// Arc/Line entities are. Text is *not* covered (its own glyph outlines
+/// come from a dedicated preview endpoint, not a Point/Line/Circle/Arc/
+/// Ellipse/Spline entity) - a separate, larger piece of work, out of scope
+/// for this fix.
 SketchGeometry3D sketchGeometry3DFrom({
   required SketchPlaneBasis basis,
   required List<PointDto> points,
   required List<LineDto> lines,
   required List<CircleDto> circles,
+  List<ArcDto> arcs = const [],
+  List<EllipseDto> ellipses = const [],
+  List<SplineDto> splines = const [],
 }) {
   final pointsById = {for (final p in points) p.id: p};
 
@@ -199,6 +344,89 @@ SketchGeometry3D sketchGeometry3DFrom({
     circleIds.add(circle.id);
   }
 
+  // Bug fix: Arc/Ellipse/Spline previously had no 3D representation at all
+  // - see this function's own doc comment.
+  final arcPolylines = <List<vm.Vector3>>[];
+  final arcIds = <String>[];
+  for (final arc in arcs) {
+    final center = pointsById[arc.centerPointId];
+    final start = pointsById[arc.startPointId];
+    final end = pointsById[arc.endPointId];
+    if (center == null || start == null || end == null) continue;
+    // Same CCW-from-start-to-end convention as `sketch_canvas.dart`'s own
+    // `_arcScreenAngles`/`angleWithinArcSweep` (see the latter's own doc
+    // comment) - the only difference is this operates in local sketch (x,
+    // y) coordinates directly, with no screen-space Y-flip to undo.
+    final startAngle = math.atan2(start.y - center.y, start.x - center.x);
+    final endAngle = math.atan2(end.y - center.y, end.x - center.x);
+    final sweep = _normalizeAngle(endAngle - startAngle);
+    final polyline = <vm.Vector3>[];
+    for (var i = 0; i <= arcSegments3D; i++) {
+      final angle = startAngle + sweep * i / arcSegments3D;
+      final x = center.x + arc.radius * math.cos(angle);
+      final y = center.y + arc.radius * math.sin(angle);
+      polyline.add(sketchPointToWorld(basis, x, y));
+    }
+    arcPolylines.add(polyline);
+    arcIds.add(arc.id);
+  }
+
+  final ellipsePolygons = <List<vm.Vector3>>[];
+  final ellipseIds = <String>[];
+  for (final ellipse in ellipses) {
+    final center = pointsById[ellipse.centerPointId];
+    if (center == null) continue;
+    final majorRadius = ellipse.majorRadius;
+    final minorRadius = ellipse.minorRadius;
+    final cosR = math.cos(ellipse.rotation);
+    final sinR = math.sin(ellipse.rotation);
+    final polygon = <vm.Vector3>[];
+    for (var i = 0; i <= circleSegments3D; i++) {
+      final t = 2 * math.pi * i / circleSegments3D;
+      final localX = majorRadius * math.cos(t);
+      final localY = minorRadius * math.sin(t);
+      final x = center.x + localX * cosR - localY * sinR;
+      final y = center.y + localX * sinR + localY * cosR;
+      polygon.add(sketchPointToWorld(basis, x, y));
+    }
+    ellipsePolygons.add(polygon);
+    ellipseIds.add(ellipse.id);
+  }
+
+  final splinePolylines = <List<vm.Vector3>>[];
+  final splineIds = <String>[];
+  for (final spline in splines) {
+    final polyline = <vm.Vector3>[];
+    var complete = true;
+    for (var i = 0; i < spline.throughPointIds.length - 1; i++) {
+      final p0 = pointsById[spline.throughPointIds[i]];
+      final p1 = pointsById[spline.controlPointIds[2 * i]];
+      final p2 = pointsById[spline.controlPointIds[2 * i + 1]];
+      final p3 = pointsById[spline.throughPointIds[i + 1]];
+      if (p0 == null || p1 == null || p2 == null || p3 == null) {
+        complete = false;
+        break;
+      }
+      final startStep = i == 0 ? 0 : 1; // Shares its start point with the previous segment's end.
+      for (var step = startStep; step <= splineSegmentSteps3D; step++) {
+        final t = step / splineSegmentSteps3D;
+        final mt = 1 - t;
+        final x = mt * mt * mt * p0.x +
+            3 * mt * mt * t * p1.x +
+            3 * mt * t * t * p2.x +
+            t * t * t * p3.x;
+        final y = mt * mt * mt * p0.y +
+            3 * mt * mt * t * p1.y +
+            3 * mt * t * t * p2.y +
+            t * t * t * p3.y;
+        polyline.add(sketchPointToWorld(basis, x, y));
+      }
+    }
+    if (!complete || polyline.isEmpty) continue;
+    splinePolylines.add(polyline);
+    splineIds.add(spline.id);
+  }
+
   return SketchGeometry3D(
     lineSegments: lineSegments,
     lineIds: lineIds,
@@ -206,7 +434,23 @@ SketchGeometry3D sketchGeometry3DFrom({
     pointIds: pointIds,
     circlePolygons: circlePolygons,
     circleIds: circleIds,
+    arcPolylines: arcPolylines,
+    arcIds: arcIds,
+    ellipsePolygons: ellipsePolygons,
+    ellipseIds: ellipseIds,
+    splinePolylines: splinePolylines,
+    splineIds: splineIds,
   );
+}
+
+/// Normalizes [angle] (radians) into `[0, 2*pi)` - a local copy of
+/// `sketch_controller.dart`'s `normalizeSketchAngle` (that file isn't
+/// importable here without pulling the whole 2D sketch controller into the
+/// 3D viewport's dependency graph, and this is a two-line pure function).
+double _normalizeAngle(double angle) {
+  const twoPi = 2 * math.pi;
+  final wrapped = angle % twoPi;
+  return wrapped < 0 ? wrapped + twoPi : wrapped;
 }
 
 /// Neutral (non-axis-tinted) color for rendered Sketch geometry, fully
@@ -216,8 +460,9 @@ final vm.Vector4 sketchLineColor = vm.Vector4(0.85, 0.85, 0.85, 1.0);
 const double sketchLineWidth = 2.0;
 
 /// Builds the [Node] rendering one Feature's [geometry] - one
-/// [MeshPrimitive] per Line segment, Circle outline, and Point marker,
-/// combined into a single [Mesh] so they share one [Node]/transform and so a
+/// [MeshPrimitive] per Line segment, Circle/Arc/Ellipse/Spline outline, and
+/// Point marker, combined into a single [Mesh] so they share one
+/// [Node]/transform and so a
 /// single per-frame primitive scan (see `PartViewport`'s `_ScenePainter`)
 /// reaches every `PolylineGeometry` needing `updateForCamera`.
 ///
@@ -243,6 +488,12 @@ Node buildSketchGeometryNode(String featureId, SketchGeometry3D geometry) {
       ),
     for (final polygon in geometry.circlePolygons)
       MeshPrimitive(PolylineGeometry(polygon, width: sketchLineWidth), material),
+    for (final polyline in geometry.arcPolylines)
+      MeshPrimitive(PolylineGeometry(polyline, width: sketchLineWidth), material),
+    for (final polygon in geometry.ellipsePolygons)
+      MeshPrimitive(PolylineGeometry(polygon, width: sketchLineWidth), material),
+    for (final polyline in geometry.splinePolylines)
+      MeshPrimitive(PolylineGeometry(polyline, width: sketchLineWidth), material),
     for (final segment in vertexMarkerSegments(geometry.points))
       MeshPrimitive(
         PolylineGeometry(

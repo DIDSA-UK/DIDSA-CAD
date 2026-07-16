@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'selection_hit_test.dart';
+import 'svg_icon.dart';
 
 /// Stage 23 Item 5 (Fix 5): the persistent (non-modal) drawer listing every
 /// currently-selected mesh entity - [PartScreen] decides when/where to show
@@ -108,7 +109,7 @@ class SelectionListDrawer extends StatelessWidget {
                       final entity = entries[index];
                       return ListTile(
                         dense: true,
-                        leading: Icon(_iconFor(entity.kind)),
+                        leading: _iconFor(entity.kind),
                         title: Text(_titleFor(entity)),
                         trailing: IconButton(
                           tooltip: 'Remove from selection',
@@ -127,25 +128,27 @@ class SelectionListDrawer extends StatelessWidget {
     );
   }
 
-  IconData _iconFor(SelectionEntityKind kind) {
+  // No delivered icon covers `sketchLine`, so it alone stays a Material
+  // glyph - every other case has a matching `assets/icons/viewport/` SVG.
+  Widget _iconFor(SelectionEntityKind kind) {
     switch (kind) {
       case SelectionEntityKind.face:
-        return Icons.square_outlined;
+        return const SvgIcon('assets/icons/viewport/selection_face.svg');
       case SelectionEntityKind.edge:
-        return Icons.show_chart;
+        return const SvgIcon('assets/icons/viewport/selection_edge.svg');
       case SelectionEntityKind.vertex:
-        return Icons.circle;
+        return const SvgIcon('assets/icons/viewport/selection_vertex.svg');
       case SelectionEntityKind.body:
-        return Icons.view_in_ar_outlined;
+        return const SvgIcon('assets/icons/viewport/selection_body.svg');
       case SelectionEntityKind.sketchPoint:
-        return Icons.control_point;
+        return const SvgIcon('assets/icons/viewport/selection_sketch_point.svg');
       case SelectionEntityKind.sketchLine:
-        return Icons.timeline;
+        return const Icon(Icons.timeline);
       case SelectionEntityKind.sketchCircle:
-        return Icons.circle_outlined;
+        return const SvgIcon('assets/icons/viewport/selection_sketch_circle.svg');
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
-        return Icons.crop_square;
+        return const SvgIcon('assets/icons/viewport/selection_plane.svg');
     }
   }
 

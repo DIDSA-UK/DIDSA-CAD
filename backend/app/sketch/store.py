@@ -2,7 +2,30 @@ import uuid
 
 from fastapi import HTTPException
 
-from app.sketch.models import Circle, Line, Point, Plane, Sketch, SketchEntityRef, SketchEntityType
+from app.sketch.models import (
+    Arc,
+    Circle,
+    Ellipse,
+    Line,
+    Point,
+    Plane,
+    Polygon,
+    Sketch,
+    SketchEntityRef,
+    SketchEntityType,
+    Spline,
+    TextEntity,
+)
+
+_ENTITY_TYPE_BY_REF: dict[SketchEntityType, type] = {
+    SketchEntityType.LINE: Line,
+    SketchEntityType.CIRCLE: Circle,
+    SketchEntityType.ARC: Arc,
+    SketchEntityType.ELLIPSE: Ellipse,
+    SketchEntityType.POLYGON: Polygon,
+    SketchEntityType.SPLINE: Spline,
+    SketchEntityType.TEXT: TextEntity,
+}
 
 # Temporary in-memory store, Stage 2 only - see the note in router.py. Pulled
 # out of router.py in Stage 7 so other modules (the Document/Part/Feature
@@ -33,13 +56,20 @@ def replace_all_sketches(sketches: dict[str, Sketch]) -> None:
     _sketches = sketches
 
 
-def create_sketch(plane: Plane | None) -> Sketch:
+def create_sketch(plane: Plane | None, *, flip: bool = False, rotation_quarter_turns: int = 0) -> Sketch:
     """C3: `plane` is `None` only for a Sketch created via the Document
     layer's custom-plane-anchor path (see `app.document.router.
     create_sketch_feature`/`Sketch`'s own docstring) - the standalone
     `/sketch` API's `SketchCreate.plane` stays a required `Plane`, so every
-    caller reachable from there still always passes a real one."""
+    caller reachable from there still always passes a real one.
+
+    Sketcher-roadmap Phase 5: `flip`/`rotation_quarter_turns` default to
+    the identity orientation, so the Document layer's own call site (which
+    never passes them - a custom-plane-anchored Sketch's orientation is
+    the `CreatePlaneFeature` basis itself, not this Sketch's own fields,
+    see `Sketch`'s own docstring) is unaffected."""
     sketch = Sketch(id=str(uuid.uuid4()), plane=plane)
+    sketch.set_orientation(flip=flip, rotation_quarter_turns=rotation_quarter_turns)
     _sketches[sketch.id] = sketch
     return sketch
 
@@ -67,14 +97,15 @@ def _missing_sketch_entity_reference(ref: SketchEntityRef) -> HTTPException:
     )
 
 
-def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle:
+def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle | Arc | Ellipse | Spline | TextEntity:
     """C1: resolves `ref` against the current store - a direct dict lookup
-    (`Sketch.points` for POINT, `Sketch.entities` for LINE/CIRCLE, with an
-    `isinstance` check so asking for a LINE at a Point/Circle's own id fails
-    closed rather than returning the wrong type), unlike `resolve_subshape`'s
-    OCCT re-derivation. Fails closed with the structured `missing_reference`
-    error above for an unknown `sketch_id`, an unknown `entity_id`, or an
-    `entity_id` that exists but is the wrong `entity_type`."""
+    (`Sketch.points` for POINT, `Sketch.entities` for LINE/CIRCLE/ARC, with
+    an `isinstance` check so asking for a LINE at a Point/Circle/Arc's own
+    id fails closed rather than returning the wrong type), unlike
+    `resolve_subshape`'s OCCT re-derivation. Fails closed with the
+    structured `missing_reference` error above for an unknown `sketch_id`,
+    an unknown `entity_id`, or an `entity_id` that exists but is the wrong
+    `entity_type`."""
     sketch = _sketches.get(ref.sketch_id)
     if sketch is None:
         raise _missing_sketch_entity_reference(ref)
@@ -85,7 +116,7 @@ def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle:
             return point
     else:
         entity = sketch.entities.get(ref.entity_id)
-        expected_type = Line if ref.entity_type == SketchEntityType.LINE else Circle
+        expected_type = _ENTITY_TYPE_BY_REF[ref.entity_type]
         if isinstance(entity, expected_type):
             return entity
 

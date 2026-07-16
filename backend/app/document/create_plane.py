@@ -57,15 +57,19 @@ from app.document.models import (
     ResolvedPlane,
     SketchFeature,
     SubShapeRef,
+    SubShapeType,
 )
 from app.document.plane_geometry import (
+    apply_orientation,
     arbitrary_perpendicular_basis,
     basis_point,
+    oriented_basis_for_plane,
     resolve_normal_to_line_at_point,
     resolve_three_points,
     sketch_basis_for_plane,
+    world_point_to_basis,
 )
-from app.sketch.models import Point, Sketch
+from app.sketch.models import ExternalVertexReference, Point, Sketch
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
 
@@ -410,15 +414,25 @@ def _basis_for_sketch(
     bypassing the Document/Part/Feature layer entirely, or a hand-built
     `Part` in a unit test) - such a Sketch is never anchored to a custom
     plane (there is no `SketchFeature.plane_feature_id` to read), so it must
-    already carry a fixed `plane`."""
+    already carry a fixed `plane`.
+
+    Bug fix: the custom-plane branch used to return the anchor plane's
+    resolved basis unmodified, silently ignoring `sketch.flip`/`sketch.
+    rotation_quarter_turns` - a custom-plane Sketch's orientation controls
+    had no effect on the real Extrude solid, only on its own rendering
+    (which already applied orientation correctly client-side). Both
+    branches now go through `apply_orientation` the same way."""
     sketch_feature_id = sketch_feature_id_for_sketch(part, sketch.id)
     sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id else None
     if isinstance(sketch_feature, SketchFeature) and sketch_feature.plane_feature_id is not None:
         plane_feature = part.get_feature(sketch_feature.plane_feature_id)
         assert isinstance(plane_feature, CreatePlaneFeature)
-        return resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
+        anchor_basis = resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
+        return apply_orientation(
+            anchor_basis, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns
+        )
     assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
-    return sketch_basis_for_plane(sketch.plane)
+    return oriented_basis_for_plane(sketch.plane, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
 
 
 def resolve_sketch_basis(
@@ -434,6 +448,59 @@ def resolve_sketch_basis(
     a fixed plane or a custom one."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     return _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
+
+
+def resolve_external_vertex_position(
+    part: Part,
+    sketch: Sketch,
+    ref: ExternalVertexReference,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str] = frozenset(),
+) -> tuple[float, float]:
+    """Sketcher-roadmap Phase 4.3 v1: `ref`'s current position projected
+    into `sketch`'s own local (x, y) - the one piece of OCCT/Part-aware
+    work `Sketch.add_external_vertex_reference`/`solve_sketch` can't do
+    themselves (see those doc comments). Converts the sketch layer's own
+    `ExternalVertexReference` into the document layer's `SubShapeRef`
+    (`shape_type=VERTEX`) at this exact boundary, then reuses
+    `_resolve_vertex_position` (fails closed with `missing_reference`,
+    same as every other `SubShapeRef` resolution) and `_basis_for_sketch`
+    (the same basis every other embedding of this Sketch's geometry into
+    world space already goes through) verbatim - no new resolution or
+    projection logic, just composing two already-existing pieces."""
+    vertex_ref = SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=ref.vertex_index)
+    world_point = _resolve_vertex_position(bodies, vertex_ref)
+    basis = _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
+    return world_point_to_basis(basis, (world_point.X(), world_point.Y(), world_point.Z()))
+
+
+def refresh_external_references(
+    part: Part,
+    sketch: Sketch,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Sketcher-roadmap Phase 4.3 v1: re-resolves every one of `sketch`'s
+    `external_references` against `bodies`' *current* topology, writing
+    each success straight onto `sketch.points` (so the next `solve_sketch`
+    - which only ever pins whatever `(x, y)` is already stored there, see
+    its own doc comment - pins the fresh position). A reference that no
+    longer resolves is left at its last-known position (so the rest of the
+    Sketch doesn't visually collapse) and its Point id is returned instead
+    of raising - the "lost reference" list every caller of this function
+    (the materialize-on-pick endpoint's own re-validation, and
+    `has_lost_reference` on a Sketch's owning Feature) surfaces rather than
+    hard-failing on."""
+    lost_point_ids: list[str] = []
+    for point_id, ref in sketch.external_references.items():
+        try:
+            x, y = resolve_external_vertex_position(part, sketch, ref, bodies, excluded_feature_ids)
+        except HTTPException:
+            lost_point_ids.append(point_id)
+            continue
+        sketch.points[point_id].x = x
+        sketch.points[point_id].y = y
+    return lost_point_ids
 
 
 def _resolve_point_ref_position(

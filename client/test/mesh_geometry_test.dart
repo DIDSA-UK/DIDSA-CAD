@@ -64,6 +64,80 @@ void main() {
     expect(indices, [0, 1, 2, 2, 1, 3]);
   });
 
+  test(
+      'meshBuffersFromMesh doubleSidedWinding: false (the default) is byte-for-byte unchanged - '
+      'a regression guard for the face-culling fix below', () {
+    final mesh = MeshDto(
+      vertices: [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      normals: [
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 1],
+      ],
+      triangleIndices: [
+        [0, 1, 2],
+      ],
+    );
+
+    final defaulted = meshBuffersFromMesh(mesh);
+    final explicit = meshBuffersFromMesh(mesh, doubleSidedWinding: false);
+
+    expect(defaulted.vertexCount, explicit.vertexCount);
+    expect(defaulted.vertexData, explicit.vertexData);
+    expect(
+      Uint16List.sublistView(defaulted.indexData),
+      Uint16List.sublistView(explicit.indexData),
+    );
+  });
+
+  test(
+      'meshBuffersFromMesh doubleSidedWinding: true emits a second, reverse-wound, '
+      'normal-flipped copy of every triangle - the face-culling bug fix (see '
+      'geometryFromMesh\'s doc comment: flutter_scene back-face-culls any translucent '
+      'material regardless of Material.doubleSided, so the geometry itself must supply '
+      'a back-facing copy)', () {
+    final mesh = MeshDto(
+      vertices: [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      normals: [
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 1],
+      ],
+      triangleIndices: [
+        [0, 1, 2],
+      ],
+    );
+
+    final buffers = meshBuffersFromMesh(mesh, doubleSidedWinding: true);
+
+    expect(buffers.vertexCount, 6);
+
+    // First 3 vertices: original positions/normals, unchanged.
+    final firstCopyNormalZ = buffers.vertexData[5];
+    expect(firstCopyNormalZ, 1);
+
+    // Second 3 vertices: same positions, negated normals.
+    final secondCopyPosition = buffers.vertexData.sublist(36, 39);
+    expect(secondCopyPosition, [0, 0, 0]); // same position as vertex 0
+    final secondCopyNormalZ = buffers.vertexData[41];
+    expect(secondCopyNormalZ, -1);
+
+    final indices = Uint16List.sublistView(buffers.indexData);
+    expect(indices.length, 6);
+    // Front-facing triangle, unchanged.
+    expect(indices.sublist(0, 3), [0, 1, 2]);
+    // Back-facing triangle: reversed winding, offset into the second vertex copy.
+    expect(indices.sublist(3, 6), [3, 5, 4]);
+  });
+
   test('boundsOfMesh returns the bounding box centre, not the vertex average', () {
     // Mirrors the real placeholder mesh's actual bounds - a
     // BRepPrimAPI_MakeBox(10, 10, 10) spans (0,0,0) to (10,10,10), so its

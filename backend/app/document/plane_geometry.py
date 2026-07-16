@@ -66,6 +66,49 @@ def sketch_basis_for_plane(plane: Plane) -> ResolvedPlane:
     return _PLANE_BASIS[plane]
 
 
+def oriented_basis_for_plane(plane: Plane, *, flip: bool, rotation_quarter_turns: int) -> ResolvedPlane:
+    """Sketcher-roadmap Phase 5: `sketch_basis_for_plane(plane)`'s own
+    x_axis/y_axis, with a Sketch's own `flip`/`rotation_quarter_turns`
+    (see `Sketch`'s own doc comment) applied on top - `origin`/`normal`
+    are unaffected (a flip/rotation happens *within* the plane, not out of
+    it). `flip` mirrors the local +X axis (negates `x_axis`) first;
+    `rotation_quarter_turns` (already normalized into `0..3` by
+    `Sketch.set_orientation` - an out-of-range value here would silently
+    rotate the wrong number of times) then rotates the resulting
+    (x_axis, y_axis) pair 90 degrees CCW around `normal`, that many times.
+    A single 90-degree CCW turn maps `x_axis -> y_axis`, `y_axis ->
+    -x_axis` (the standard axis-rotation formula: for a right-handed
+    (x_axis, y_axis, normal) triple, rotating the *frame* by +90 degrees
+    around `normal` sends old +Y where new +X now points).
+
+    `basis_point`/`_basis_vector` below are unaffected - they only ever
+    read `origin`/`x_axis`/`y_axis` off whatever `ResolvedPlane` they're
+    given, so a Sketch's oriented basis flows through identically to the
+    unoriented one everywhere those already do."""
+    return apply_orientation(_PLANE_BASIS[plane], flip=flip, rotation_quarter_turns=rotation_quarter_turns)
+
+
+def apply_orientation(basis: ResolvedPlane, *, flip: bool, rotation_quarter_turns: int) -> ResolvedPlane:
+    """`oriented_basis_for_plane`'s own flip-then-rotate transform,
+    generalized to start from any `ResolvedPlane` rather than only a fixed
+    `Plane`'s - a custom (`CreatePlaneFeature`) plane's own resolved basis
+    is exactly as valid a starting point. Bug fix: `_basis_for_sketch`
+    (app.document.create_plane) used to resolve a custom-plane Sketch's
+    embedding straight from `resolve_create_plane_from_bodies`, silently
+    ignoring that Sketch's own `flip`/`rotation_quarter_turns` entirely -
+    the orientation confirm step's flip/rotate controls had no effect on
+    the real Extrude solid for a custom-plane Sketch, only on its 2D/3D
+    sketch-environment rendering (which built its own basis correctly via
+    `SketchPlaneBasis.oriented`/`.withOrientation` client-side)."""
+    x_axis = basis.x_axis
+    y_axis = basis.y_axis
+    if flip:
+        x_axis = tuple(-c for c in x_axis)
+    for _ in range(rotation_quarter_turns):
+        x_axis, y_axis = y_axis, tuple(-c for c in x_axis)
+    return ResolvedPlane(origin=basis.origin, normal=basis.normal, x_axis=x_axis, y_axis=y_axis)
+
+
 def _cross(a: Vector3, b: Vector3) -> Vector3:
     ax, ay, az = a
     bx, by, bz = b
@@ -116,6 +159,25 @@ def basis_point(basis: ResolvedPlane, x: float, y: float) -> Vector3:
     xx, xy, xz = basis.x_axis
     yx, yy, yz = basis.y_axis
     return (ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
+
+
+def world_point_to_basis(basis: ResolvedPlane, point: Vector3) -> tuple[float, float]:
+    """The inverse of `basis_point`: a world-space `point`'s local (x, y)
+    within `basis`. `x_axis`/`y_axis` are always unit vectors (every
+    `ResolvedPlane` this codebase ever produces is right-handed and
+    orthonormal - see e.g. `_PLANE_BASIS`'s own doc comment), so projecting
+    `point - origin` onto each via a plain dot product recovers exactly the
+    coefficients `basis_point` would have needed to reproduce it - no
+    matrix inversion needed.
+
+    Sketcher-roadmap Phase 4.3 v1: the one piece `app.document.create_plane.
+    resolve_external_vertex_position` needs to turn a Body vertex's
+    resolved world position into the Sketch-local (x, y) an
+    `ExternalVertexReference` Point is materialized at."""
+    dx, dy, dz = _sub(point, basis.origin)
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    return (dx * xx + dy * xy + dz * xz, dx * yx + dy * yy + dz * yz)
 
 
 def _basis_vector(basis: ResolvedPlane, dx: float, dy: float) -> Vector3:

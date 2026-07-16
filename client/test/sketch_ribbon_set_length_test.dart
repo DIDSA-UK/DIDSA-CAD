@@ -125,14 +125,18 @@ void main() {
 
       controller.selectDrawTool(SketchTool.line);
       await controller.handleCanvasTap(0, 0);
-      await controller.handleCanvasTap(10, 0);
+      // Phase 6.1: off-axis (not (10, 0)) so placement doesn't try to
+      // auto-add a HorizontalConstraint - this trimmed fake backend's
+      // generic constraints POST handler assumes a `distance` field, which
+      // a Horizontal/Vertical constraint payload doesn't have.
+      await controller.handleCanvasTap(10, 3);
       controller.finishChain();
       controller.exitToSelectMode();
 
-      // Away from the line's midpoint (5, 0) and both endpoints - selects
+      // On the line, away from its midpoint and both endpoints - selects
       // just the Line, matching `sketch_controller_test.dart`'s convention
       // for isolating a single-Line selection.
-      await controller.handleCanvasTap(8, 0.1);
+      await controller.handleCanvasTap(8, 2.4);
       expect(controller.selectionSet.length, 1);
       expect(controller.selectionSet.first.kind, SelectionKind.line);
 
@@ -149,7 +153,7 @@ void main() {
       );
       await tester.pump();
 
-      await tester.tap(find.widgetWithIcon(IconButton, Icons.straighten));
+      await tester.tap(find.byTooltip('Length'));
       await tester.pumpAndSettle();
 
       // The dialog's autofocused TextField is now showing - tapping "Set"

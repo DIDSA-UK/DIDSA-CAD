@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +15,23 @@ void main() {
 
     expect(perspective.target, vm.Vector3.zero());
     expect((perspective.position - perspective.target).length, closeTo(camera.distance, 1e-4));
+  });
+
+  test(
+      'isometricOrientation elevation matches the true isometric angle (asin(1/sqrt(3)) ~ 35.264 '
+      'degrees), steeper than the default ~30 degree corner view, at the same 45 degree azimuth',
+      () {
+    final camera = OrbitCamera()..orientation = OrbitCamera.isometricOrientation();
+    final direction = camera.cameraFor(size).position - camera.cameraFor(size).target;
+
+    final elevation = math.asin(direction.y / direction.length);
+    expect(elevation, closeTo(math.asin(1 / math.sqrt(3)), 1e-9));
+    expect(elevation, greaterThan(0.5235987755982988)); // strictly steeper than the default's pi/6
+
+    // Same 45-degree azimuth as the default "corner" view - only the
+    // elevation differs - confirmed by equal-magnitude horizontal (x/z)
+    // components.
+    expect(direction.x.abs(), closeTo(direction.z.abs(), 1e-9));
   });
 
   test('orbitByScreenDelta moves the camera position when dragging right', () {
@@ -154,7 +172,7 @@ void main() {
     final camera = OrbitCamera();
 
     camera.zoomByFactor(2.0);
-    expect(camera.distance, 96);
+    expect(camera.distance, 160);
 
     camera.zoomByFactor(1000);
     expect(camera.distance, camera.maxDistance);
@@ -173,9 +191,9 @@ void main() {
     expect(camera.minDistance, closeTo(0.6, 1e-9)); // nearClip * 2
     expect(camera.maxDistance, 200); // radius * _maxDistanceRadiusFactor (20)
 
-    // Shrinking the bounds below the camera's current distance (48) must
+    // Shrinking the bounds below the camera's current distance (80) must
     // pull it back in immediately, not leave it violating the new max.
-    expect(camera.distance, 48);
+    expect(camera.distance, 80);
     camera.setZoomBoundsForRadius(1);
     expect(camera.maxDistance, 20);
     expect(camera.distance, 20);
@@ -213,7 +231,7 @@ void main() {
     camera.reset();
 
     expect(camera.cameraFor(size).position, defaultPosition);
-    expect(camera.distance, 48);
+    expect(camera.distance, 80);
     expect(camera.target, vm.Vector3.zero());
   });
 
@@ -237,10 +255,10 @@ void main() {
 
   test('reset clamps the default distance into a body-scaled zoom range smaller than it', () {
     // A small body's setZoomBoundsForRadius-derived maxDistance can sit
-    // below the fixed default distance (48) reset would otherwise assign -
+    // below the fixed default distance (80) reset would otherwise assign -
     // reset must respect the current bounds rather than escape them.
     final camera = OrbitCamera();
-    camera.setZoomBoundsForRadius(1); // maxDistance = 20, below the default distance of 30.
+    camera.setZoomBoundsForRadius(1); // maxDistance = 20, below the default distance of 80.
     camera.zoomByFactor(0.5);
 
     camera.reset();

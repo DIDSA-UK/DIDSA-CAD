@@ -495,6 +495,74 @@ def test_sketch_feature_rejects_a_plane_feature_id_that_does_not_resolve():
 # --- Extrude built on a Sketch anchored to a custom plane (C3) ----------------
 
 
+def test_orientation_rotation_is_applied_to_a_custom_plane_sketchs_extrude():
+    """Bug fix: `app.document.create_plane._basis_for_sketch`'s custom-plane
+    branch used to return the anchor plane's resolved basis unmodified,
+    silently ignoring the Sketch's own `flip`/`rotation_quarter_turns` -
+    the orientation confirm step's flip/rotate controls had a visible
+    effect on the 2D/3D sketch environment (which builds its own basis
+    correctly client-side) but none at all on the real Extrude solid. A
+    non-square (6x2) rectangle's world-space footprint should swap from
+    6-wide/2-tall to 2-wide/6-tall once a 90-degree rotation is applied to
+    its custom-plane Sketch, exactly as it already does for a fixed-plane
+    one."""
+    part = _create_part()
+    base_sketch = _create_square_sketch_feature(part["id"])
+    _create_extrude_feature(part["id"], base_sketch["id"])
+    body_id = _first_body_id(part["id"])
+    plane = _create_offset_face_plane_feature(part["id"], body_id, offset=5.0)
+    known_body_ids = {body_id}
+    # The offset face's own normal isn't necessarily world +Z (this box's
+    # face index 0 happens to face -Y) - the extrude direction (thickness)
+    # is whichever world axis that normal is closest to; the sketch's own
+    # (rotatable) footprint lives in the other two, in a fixed order so a
+    # genuine swap between the two calls below is distinguishable from a
+    # same-magnitude coincidence.
+    normal = plane["normal"]
+    thickness_axis = max(range(3), key=lambda i: abs(normal[i]))
+    footprint_axes = [i for i in range(3) if i != thickness_axis]
+
+    def footprint_extents(rotation_quarter_turns: int) -> tuple[float, float]:
+        sketch_feature = _create_sketch_feature_on_plane(part["id"], plane["id"])
+        sketch_id = sketch_feature["sketch_id"]
+        corners = [
+            client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": x, "y": y}).json()
+            for x, y in [(0.0, 0.0), (6.0, 0.0), (6.0, 2.0), (0.0, 2.0)]
+        ]
+        for a, b in zip(corners, corners[1:] + corners[:1]):
+            assert (
+                client.post(
+                    f"/sketch/sketches/{sketch_id}/lines",
+                    json={"start_point_id": a["id"], "end_point_id": b["id"]},
+                ).status_code
+                == 201
+            )
+        assert (
+            client.patch(
+                f"/sketch/sketches/{sketch_id}/orientation",
+                json={"flip": False, "rotation_quarter_turns": rotation_quarter_turns},
+            ).status_code
+            == 200
+        )
+        extrude = _create_extrude_feature(
+            part["id"], sketch_feature["id"], start_distance=0.0, end_distance=1.0
+        )
+        assert extrude["id"]
+        mesh = client.get(f"/document/parts/{part['id']}/mesh").json()
+        new_body = next(b for b in mesh if b["body_id"] not in known_body_ids)
+        known_body_ids.add(new_body["body_id"])
+        vertices = new_body["mesh"]["vertices"]
+        a_axis, b_axis = footprint_axes
+        a_vals = [v[a_axis] for v in vertices]
+        b_vals = [v[b_axis] for v in vertices]
+        return (max(a_vals) - min(a_vals), max(b_vals) - min(b_vals))
+
+    unrotated = footprint_extents(0)
+    rotated = footprint_extents(1)
+    assert unrotated == pytest.approx((6.0, 2.0))
+    assert rotated == pytest.approx((2.0, 6.0))
+
+
 def test_extrude_on_a_sketch_anchored_to_a_custom_plane_produces_a_second_body():
     """The end-to-end "full support" path: a Boss whose Sketch lives on a
     CreatePlaneFeature (not one of the three fixed planes) builds real

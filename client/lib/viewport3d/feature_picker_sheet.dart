@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'svg_icon.dart';
+
 /// Actions available from the "Add" FAB's second-level Feature picker.
 /// [extrude], (C3) [plane], (on-device feedback) [fillet], (Prompt E)
 /// [chamfer], (Prompt F) [revolve], and [sweep] are all wired to a real
@@ -32,37 +34,37 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                 child: _DragHandle(),
               ),
               ListTile(
-                leading: const Icon(Icons.move_to_inbox_outlined),
+                leading: const SvgIcon('assets/icons/feature/feature_extrude.svg'),
                 title: const Text('Extrude'),
                 onTap: () =>
                     Navigator.of(context).pop(FeaturePickerAction.extrude),
               ),
               ListTile(
-                leading: const Icon(Icons.crop_square),
+                leading: const SvgIcon('assets/icons/feature/feature_plane.svg'),
                 title: const Text('Plane'),
                 onTap: () =>
                     Navigator.of(context).pop(FeaturePickerAction.plane),
               ),
               ListTile(
-                leading: const Icon(Icons.rotate_right),
+                leading: const SvgIcon('assets/icons/feature/feature_revolve.svg'),
                 title: const Text('Revolve'),
                 onTap: () =>
                     Navigator.of(context).pop(FeaturePickerAction.revolve),
               ),
               ListTile(
-                leading: const Icon(Icons.gesture),
+                leading: const SvgIcon('assets/icons/feature/feature_sweep.svg'),
                 title: const Text('Sweep'),
                 onTap: () =>
                     Navigator.of(context).pop(FeaturePickerAction.sweep),
               ),
               ListTile(
-                leading: const Icon(Icons.rounded_corner),
+                leading: const SvgIcon('assets/icons/feature/feature_fillet.svg'),
                 title: const Text('Fillet'),
                 onTap: () =>
                     Navigator.of(context).pop(FeaturePickerAction.fillet),
               ),
               ListTile(
-                leading: const Icon(Icons.change_history),
+                leading: const SvgIcon('assets/icons/feature/feature_chamfer.svg'),
                 title: const Text('Chamfer'),
                 onTap: () =>
                     Navigator.of(context).pop(FeaturePickerAction.chamfer),

@@ -9,11 +9,49 @@ Over-constrained/unsatisfiable systems are solved anyway, never rejected.
 See SolveResult for how non-convergence is reported.
 """
 
+import math
 from dataclasses import dataclass, field
 
 from py_slvs import slvs
 
+from app.sketch.constraints import (
+    AngleConstraint,
+    CoincidentConstraint,
+    CollinearConstraint,
+    DistanceConstraint,
+    EqualLengthConstraint,
+    EqualRadiusConstraint,
+    HorizontalConstraint,
+    LineDistanceConstraint,
+    ParallelConstraint,
+    PerpendicularConstraint,
+    PointLineDistanceConstraint,
+    SplineTangentConstraint,
+    TangentConstraint,
+    VerticalConstraint,
+)
 from app.sketch.models import Point, Sketch
+
+# Constraint types empirically confirmed to never need py-slvs's own
+# redundancy detection to distrust a converged solve - see `converged`'s
+# own comment in solve_sketch below for why this allowlist exists and, just
+# as importantly, why AtMidpointConstraint is deliberately excluded from it.
+_REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
+    DistanceConstraint,
+    VerticalConstraint,
+    HorizontalConstraint,
+    AngleConstraint,
+    CoincidentConstraint,
+    ParallelConstraint,
+    PerpendicularConstraint,
+    EqualLengthConstraint,
+    CollinearConstraint,
+    LineDistanceConstraint,
+    PointLineDistanceConstraint,
+    SplineTangentConstraint,
+    TangentConstraint,
+    EqualRadiusConstraint,
+)
 
 # Group 1 holds the fixed workplane (origin + normal); group 2 holds every
 # Point/Constraint being solved. There is no need for finer-grained groups
@@ -68,12 +106,14 @@ class _PySlvsBuilder:
         workplane: int,
         points: dict[str, Point],
         origin_point_id: str | None = None,
+        anchor_point_ids: frozenset[str] = frozenset(),
     ):
         self._system = system
         self._workplane = workplane
         self._points = points
         self._point_handles: dict[str, int] = {}
         self._line_handles: dict[tuple[int, int], int] = {}
+        self._cubic_handles: dict[tuple[int, int, int, int], int] = {}
         self._horizontal_ref_line: int | None = None
         self._vertical_ref_line: int | None = None
         # The Sketch's origin Point (see Sketch.origin_point) is real,
@@ -84,11 +124,25 @@ class _PySlvsBuilder:
         # added to a group never passed to system.solve(group=...) keeps
         # whatever initial value it was given, here always (0, 0).
         self._origin_point_id = origin_point_id
+        # Stage: drag-solve semantics ("dragged Point stays put, others move
+        # to accommodate"). A Point the client just dragged (or, for a
+        # dragged Line, both its endpoints) is pinned into the fixed group
+        # for this one solve call the same way the origin always is - not
+        # persisted anywhere, just a per-call hint. A Constraint tying an
+        # anchored Point to a *free* Point (e.g. a fixed-length dimension)
+        # still converges normally - the free Point simply moves to satisfy
+        # it. It's a Constraint tying an anchored Point to *another already-
+        # fixed* position (the origin, or a second anchored Point) that
+        # can't converge, since neither side is free to move to match the
+        # other - see `solve_sketch`'s retry-without-anchors fallback for
+        # how that case is resolved rather than left stuck.
+        self._anchor_point_ids = anchor_point_ids
 
     def point2d(self, point_id: str) -> int:
         if point_id not in self._point_handles:
             point = self._points[point_id]
-            group = _FIXED_GROUP if point_id == self._origin_point_id else _SOLVE_GROUP
+            is_pinned = point_id == self._origin_point_id or point_id in self._anchor_point_ids
+            group = _FIXED_GROUP if is_pinned else _SOLVE_GROUP
             pu = self._system.addParamV(point.x, group=group)
             pv = self._system.addParamV(point.y, group=group)
             self._point_handles[point_id] = self._system.addPoint2d(
@@ -131,14 +185,51 @@ class _PySlvsBuilder:
             self._vertical_ref_line = self._system.addLineSegment(p0, p1, group=_FIXED_GROUP)
         return self._vertical_ref_line
 
-    def horizontal_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
-        return self._system.addPointsProjectDistance(
-            value, point_a_handle, point_b_handle, self._horizontal_ref_line_handle(), group=_SOLVE_GROUP
-        )
+    def horizontal_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
+        return self._project_distance(point_a_id, point_b_id, value, "x", self._horizontal_ref_line_handle())
 
-    def vertical_distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
+    def vertical_distance(self, point_a_id: str, point_b_id: str, value: float) -> int:
+        return self._project_distance(point_a_id, point_b_id, value, "y", self._vertical_ref_line_handle())
+
+    def _project_distance(
+        self, point_a_id: str, point_b_id: str, value: float, axis: str, ref_line_handle: int
+    ) -> int:
+        # Bug-fix round (on-device feedback, Phase 4.3): confirmed
+        # empirically against the installed py-slvs build -
+        # `addPointsProjectDistance` is a genuinely *signed* constraint,
+        # not the unsigned magnitude `horizontal_distance`/`vertical_
+        # distance`'s own doc comments used to assume (that assumption was
+        # copied from `_fix_circle_cardinal_point_signs`'s finding, which
+        # only holds there because it always uses a *zero* value - sign is
+        # meaningless for `-0.0 == 0.0`). Confirmed via direct experiment:
+        # for a positive `value`, `addPointsProjectDistance(value, a, b,
+        # ref_line)` deterministically solves `proj(b - a) == -value`,
+        # regardless of either Point's initial position (this is not a
+        # Newton-branch-selection ambiguity - re-seeding the free Point's
+        # initial guess, including seeding it exactly at the "expected"
+        # answer, made no difference at all).
+        #
+        # Rather than hardcode a fixed sign convention (which would just
+        # move the "which side does it land on" surprise from "always
+        # wrong" to "deterministic but arbitrary, and still wrong half the
+        # time depending on tap order" - confirmed by testing both), this
+        # chooses the sign that preserves whichever side point_b *already*
+        # sits on relative to point_a along this axis, before the solve -
+        # the same "nudge the value, don't teleport the geometry" behaviour
+        # a CAD user expects when refining a dimension, and the same
+        # left-alone-if-already-satisfied default a Newton solver would
+        # give if this primitive weren't seed-independent. Defaults to the
+        # positive side only when the two Points start out exactly level
+        # (or plumb) with each other, i.e. there is no existing side to
+        # preserve.
+        point_a = self._points[point_a_id]
+        point_b = self._points[point_b_id]
+        current_separation = getattr(point_b, axis) - getattr(point_a, axis)
+        signed_value = -abs(value) if current_separation < 0 else abs(value)
+        point_a_handle = self.point2d(point_a_id)
+        point_b_handle = self.point2d(point_b_id)
         return self._system.addPointsProjectDistance(
-            value, point_a_handle, point_b_handle, self._vertical_ref_line_handle(), group=_SOLVE_GROUP
+            -signed_value, point_a_handle, point_b_handle, ref_line_handle, group=_SOLVE_GROUP
         )
 
     def vertical(self, point_a_handle: int, point_b_handle: int) -> int:
@@ -159,10 +250,74 @@ class _PySlvsBuilder:
             )
         return self._line_handles[key]
 
-    def angle(self, line_a_handle: int, line_b_handle: int, degrees: float) -> int:
-        return self._system.addAngle(
-            degrees, False, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+    def cubic(
+        self, p0_handle: int, p1_handle: int, p2_handle: int, p3_handle: int
+    ) -> int:
+        key = (p0_handle, p1_handle, p2_handle, p3_handle)
+        if key not in self._cubic_handles:
+            self._cubic_handles[key] = self._system.addCubic(
+                self._workplane, p0_handle, p1_handle, p2_handle, p3_handle, group=_SOLVE_GROUP
+            )
+        return self._cubic_handles[key]
+
+    def curves_tangent(
+        self, at_end1: bool, at_end2: bool, curve1_handle: int, curve2_handle: int
+    ) -> int:
+        return self._system.addCurvesTangent(
+            at_end1, at_end2, curve1_handle, curve2_handle, self._workplane, group=_SOLVE_GROUP
         )
+
+    def angle(
+        self,
+        line_a_handle: int,
+        line_b_handle: int,
+        degrees: float,
+        line_a_start_id: str,
+        line_a_end_id: str,
+        line_b_start_id: str,
+        line_b_end_id: str,
+    ) -> int:
+        supplement = self._angle_needs_supplement(
+            degrees, line_a_start_id, line_a_end_id, line_b_start_id, line_b_end_id
+        )
+        return self._system.addAngle(
+            degrees, supplement, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def _angle_needs_supplement(
+        self, degrees: float, line_a_start_id: str, line_a_end_id: str, line_b_start_id: str, line_b_end_id: str
+    ) -> bool:
+        """py-slvs's addAngle takes a `supplement` flag choosing between
+        constraining the angle to `degrees` or to its supplement
+        (180 - degrees) - confirmed by direct experiment against the
+        installed py-slvs build that this is a genuine, un-auto-resolved
+        ambiguity (unlike the ordinary +/- sign of an angle/distance, which
+        Newton's method already picks correctly to match whichever side the
+        seed geometry is already on, from any seed, however far off).
+        Always passing `False` here meant a Sketch already sitting near the
+        *supplementary* configuration (e.g. one interior angle of a Polygon,
+        mid-drag, while its neighbours hold the primary angle) would be
+        forced to snap the ~135 degrees it already had to 45 - reported
+        on-device as a dimension "flipping polarity" and, for a Polygon
+        specifically, breaking its regular shape.
+
+        Chooses whichever of `degrees`/`180 - degrees` is closer to the
+        Lines' currently *measured* angle (the same "preserve what's
+        already true" principle `_project_distance` below already uses for
+        horizontal_distance/vertical_distance's sign) - a no-op returning
+        False when either Line has zero current length, since there is no
+        current angle to preserve in that case."""
+        a_start, a_end = self._points[line_a_start_id], self._points[line_a_end_id]
+        b_start, b_end = self._points[line_b_start_id], self._points[line_b_end_id]
+        a_dx, a_dy = a_end.x - a_start.x, a_end.y - a_start.y
+        b_dx, b_dy = b_end.x - b_start.x, b_end.y - b_start.y
+        a_len = math.hypot(a_dx, a_dy)
+        b_len = math.hypot(b_dx, b_dy)
+        if a_len == 0 or b_len == 0:
+            return False
+        cos_theta = max(-1.0, min(1.0, (a_dx * b_dx + a_dy * b_dy) / (a_len * b_len)))
+        current_angle = math.degrees(math.acos(cos_theta))
+        return abs((180.0 - degrees) - current_angle) < abs(degrees - current_angle)
 
     def coincident(self, point_a_handle: int, point_b_handle: int) -> int:
         return self._system.addPointsCoincident(
@@ -182,6 +337,13 @@ class _PySlvsBuilder:
     def equal_length(self, line_a_handle: int, line_b_handle: int) -> int:
         return self._system.addEqualLength(
             line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def equal_length_point_line_distance(
+        self, point_handle: int, radius_line_handle: int, tangent_line_handle: int
+    ) -> int:
+        return self._system.addEqualLengthPointLineDistance(
+            point_handle, radius_line_handle, tangent_line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
     def point_on_line(self, point_handle: int, line_handle: int) -> int:
@@ -206,11 +368,108 @@ class _PySlvsBuilder:
         return self._point_handles[point_id]
 
 
-def solve_sketch(sketch: Sketch) -> SolveResult:
+def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset()) -> SolveResult:
     """Build the py-slvs problem for `sketch`'s Points + Constraints, solve
     it, and write the resulting positions back onto `sketch.points` (best
     effort even when it doesn't fully converge). Does not mutate
     `sketch.constraints`.
+
+    `anchor_point_ids` - drag-solve semantics: any Point id in this set
+    holds exactly the x/y it already had (its position going into this
+    solve, e.g. wherever the client just PATCHed it to mid-drag) rather
+    than being free for the solver to move - see `_PySlvsBuilder`'s own
+    doc comment for the fixed-group mechanism. Empty (the default)
+    reproduces the previous behaviour exactly: nothing pinned beyond the
+    sketch's own origin.
+
+    If pinning those anchors leaves the system unable to converge (e.g. the
+    dragged Point is Coincident with the fixed origin, or with another
+    anchored Point - two fixed positions that a Constraint demands be
+    equal, but aren't), the explicit Constraint wins: this retries once
+    with no anchors at all and returns *that* result instead. Without this,
+    the anchored attempt's non-convergence still writes back the anchored
+    (dropped) position unchanged - since a Point pinned into the fixed
+    group is never touched by the solve regardless of whether it
+    converges - which looks like the drag "worked" until some unrelated
+    later solve (with no anchor) finally pulls the Point back to satisfy
+    the Constraint. Retrying immediately here gives the same end state
+    without the confusing delay.
+
+    Sketcher-roadmap Phase 4.3 v1: every id in `sketch.external_references`
+    (a Point tracking a Body vertex from outside this Sketch) is pinned
+    exactly like the origin already is, on *both* attempts - unlike
+    `anchor_point_ids`, an external reference is never dropped on retry,
+    since it represents fixed real-world geometry this Sketch has no
+    business moving under any circumstance. This Sketch has no OCCT/Part
+    access to *refresh* those positions from the Body's current topology
+    (see `app.document.create_plane.refresh_external_references` for that
+    half) - this only ever pins whatever `(x, y)` the Point already holds.
+    """
+
+    external_point_ids = frozenset(sketch.external_references)
+    result = _solve_sketch_once(sketch, anchor_point_ids | external_point_ids)
+    if anchor_point_ids and not result.converged:
+        result = _solve_sketch_once(sketch, external_point_ids)
+    if result.converged:
+        _fix_circle_cardinal_point_signs(sketch)
+    return result
+
+
+def _fix_circle_cardinal_point_signs(sketch: Sketch) -> None:
+    """Corrects a Circle's four cardinal Points (see `Circle.
+    cardinal_point_ids`'s own doc comment) back onto their own designated
+    side of centre, if this solve flipped one to its mirror position.
+
+    Each cardinal Point is solver-pinned by an `EqualRadiusConstraint`
+    (radius) plus a zero-value `DistanceConstraint` (same X or Y as
+    centre) - together those admit *two* valid positions (e.g. "same X,
+    radius away" is satisfied by both North and South). At this *zero*
+    value, `addPointsProjectDistance` gives no way to rule the wrong one
+    out at the constraint level - confirmed empirically: neither a
+    negative `value` nor swapping the two Point arguments changes which
+    side it converges to, since `-0.0 == 0.0` either way. (This is
+    specific to the zero-value case here - for a *nonzero* value the same
+    primitive is fully signed and deterministic, see `_PySlvsBuilder.
+    _project_distance`'s own doc comment for the unrelated bug that
+    surfaced there.) In practice this means a large jump in
+    centre's position (typing new coordinates, or a big/fast drag) can
+    converge to the mirrored solution instead of the nearer, correct one -
+    Newton's method just finds *a* valid position close to the previous
+    one, and "close" stops meaning "on the right side" once centre has
+    moved far enough. Since both solutions are exact mirror images of each
+    other through centre (this is a discrete 2-fold ambiguity, not a
+    partial/approximate error), the fix is a cheap direct reflection
+    rather than a re-solve: whichever coordinate the flipped Point's own
+    constraint left unconstrained (X for North/South, Y for East/West) is
+    checked against its expected sign relative to centre, and mirrored
+    through centre if it's backwards.
+    """
+    for circle in sketch.circles():
+        if len(circle.cardinal_point_ids) != 4:
+            continue
+        center = sketch.points.get(circle.center_point_id)
+        if center is None:
+            continue
+        north_id, east_id, south_id, west_id = circle.cardinal_point_ids
+        for point_id, expect_positive, axis in (
+            (north_id, True, "y"),
+            (east_id, True, "x"),
+            (south_id, False, "y"),
+            (west_id, False, "x"),
+        ):
+            point = sketch.points.get(point_id)
+            if point is None:
+                continue
+            actual = point.y - center.y if axis == "y" else point.x - center.x
+            is_positive = actual > 0
+            if is_positive != expect_positive and actual != 0:
+                point.x = 2 * center.x - point.x
+                point.y = 2 * center.y - point.y
+
+
+def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> SolveResult:
+    """One py-slvs solve attempt - see `solve_sketch` for the retry-without-
+    anchors fallback built on top of this.
 
     Always builds and solves the system - including every Point, even ones
     no Constraint references - rather than skipping straight to a canned
@@ -235,10 +494,21 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
     normal = system.addNormal3dV(1, 0, 0, 0, group=_FIXED_GROUP)
     workplane = system.addWorkplane(origin, normal, group=_FIXED_GROUP)
 
-    builder = _PySlvsBuilder(system, workplane, sketch.points, origin_point_id=sketch.origin_point_id)
+    builder = _PySlvsBuilder(
+        system,
+        workplane,
+        sketch.points,
+        origin_point_id=sketch.origin_point_id,
+        anchor_point_ids=anchor_point_ids,
+    )
 
     constraint_id_by_handle: dict[int, str] = {}
     for constraint in sketch.constraints.values():
+        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
+            # Not yet confirmed by the user - contributes zero DOF-removal,
+            # exactly as if it didn't exist, until confirmed (see
+            # DistanceConstraint.provisional's own doc comment).
+            continue
         handle = constraint.add_to_solver(builder)
         constraint_id_by_handle[handle] = constraint.id
 
@@ -252,6 +522,68 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
 
     result_code = system.solve(group=_SOLVE_GROUP, reportFailed=True)
     converged = result_code == 0
+    if (
+        not converged
+        and result_code in (4, 5)
+        and any(isinstance(c, (TangentConstraint, EqualRadiusConstraint)) for c in sketch.constraints.values())
+        and all(isinstance(c, _REDUNDANCY_SAFE_CONSTRAINT_TYPES) for c in sketch.constraints.values())
+    ):
+        # A Slot's closed loop of 2 Arcs + 2 Lines, tied together with
+        # Tangent/EqualRadius constraints, is *mathematically* over-
+        # determined by exactly one redundant equation (radius + centre
+        # positions alone fully determine every rim Point once tangency and
+        # equal-radius are enforced). Upstream SolveSpace documents this
+        # exact situation as SLVS_RESULT_REDUNDANT_OKAY=4 ("solved
+        # correctly despite a redundant constraint"); the installed py-slvs
+        # fork here (realthunder/solvespace) empirically reports 5 for it
+        # instead - confirmed by comparing a genuinely inconsistent system
+        # (contradictory DistanceConstraints on the same two points,
+        # result_code=1, never 4/5) against a Slot's own constraint set,
+        # which converges to numerically exact tangency (perpendicular
+        # distance from each Arc's centre to each Line equals its radius,
+        # to 4 decimal places) across varied starting positions, a live
+        # point drag, and a live radius edit - every time.
+        #
+        # This override is intentionally narrow rather than a blanket
+        # `result_code in (0, 4, 5)`: `_REDUNDANCY_SAFE_CONSTRAINT_TYPES`
+        # excludes AtMidpointConstraint on purpose, because
+        # test_two_at_midpoint_constraints_on_the_same_point_is_singular_
+        # once_hv_ties_diagonals_together (test_stage15_constraints.py)
+        # proves the *same* result_code can also mean a genuinely under-
+        # constrained shape (an HV-constrained rectangle whose width/
+        # height/position are never actually pinned) that py-slvs
+        # nonetheless reports as dof == 0 - a real false positive a
+        # blanket override would have silently reintroduced.
+        converged = True
+
+    # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via
+    # Tangent/EqualRadius, arc1's own radius DistanceConstraint still
+    # `provisional` - see that flag's own doc comment) showed as fully
+    # constrained (padlocked green) the instant it was drawn, before the
+    # user ever confirmed a radius value. Root cause: `system.Dof` above is
+    # py-slvs's own naive param-count-minus-equation-count for this
+    # *redundant* system (the whole reason the REDUNDANT_OKAY override two
+    # paragraphs up exists at all) - it does not distinguish "the one
+    # genuinely-implied-by-the-others equation" from "every equation is
+    # independent", so it reports 0 even while a real, still-unconfirmed
+    # degree of freedom (the shared radius) remains. Confirmed directly
+    # against this exact Slot construction (a fresh 2-Arc/2-Line/
+    # Tangent+EqualRadius sketch, radius left provisional): `system.Dof`
+    # reads 0 immediately after creation and stays 0 after adding a
+    # Horizontal constraint on the centerline, even though the geometry
+    # itself solves correctly (unlike the AtMidpoint false-positive the
+    # comment above already documents, this one leaves the actual Point
+    # positions untouched - only the reported count is wrong). A `dof` of 0
+    # is only trustworthy once every DistanceConstraint that measures this
+    # redundant sub-system has actually been confirmed - `provisional`
+    # existing at all on such a Constraint means the opposite by
+    # definition, so bump the floor to 1 rather than trust py-slvs's count.
+    if converged and any(
+        isinstance(c, DistanceConstraint) and c.provisional for c in sketch.constraints.values()
+    ):
+        dof = max(system.Dof, 1)
+    else:
+        dof = system.Dof
 
     for point_id in builder.solved_point_ids():
         handle = builder.handle_for_point(point_id)
@@ -288,7 +620,7 @@ def solve_sketch(sketch: Sketch) -> SolveResult:
 
     return SolveResult(
         converged=converged,
-        dof=system.Dof,
+        dof=dof,
         result_code=result_code,
         blamed_constraint_ids=blamed_constraint_ids,
         solver_reported_failed_constraint_ids=solver_reported_failed_constraint_ids,

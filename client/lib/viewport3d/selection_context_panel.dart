@@ -38,6 +38,19 @@ class SelectionContextPanel extends StatelessWidget {
   /// "never called for a disabled one" contract as [onFillet].
   final VoidCallback? onChamfer;
 
+  /// On-device feedback: fired when the user taps an *enabled* "New Sketch
+  /// on Face" button (a single Body face selected) - same "never called for
+  /// a disabled one" contract as [onFillet]/[onChamfer].
+  final VoidCallback? onNewSketchOnFace;
+
+  /// On-device feedback (bug fix): fired when the user taps an *enabled*
+  /// "New Sketch" button (a single reference plane or existing Plane
+  /// selected) - mirrors [onNewSketchOnFace]'s own contract, split into its
+  /// own callback since [PartScreen] resolves it differently (a
+  /// [SelectionEntityKind.referencePlane]/[SelectionEntityKind.createPlane]
+  /// needs no new Plane Feature created first, unlike a Body face).
+  final VoidCallback? onNewSketch;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -45,6 +58,8 @@ class SelectionContextPanel extends StatelessWidget {
     this.onCreatePlane,
     this.onFillet,
     this.onChamfer,
+    this.onNewSketchOnFace,
+    this.onNewSketch,
   });
 
   @override
@@ -106,6 +121,10 @@ class SelectionContextPanel extends StatelessWidget {
       case 'Create Plane (Parallel to Face Through Vertex)':
       case 'Create Plane (Three Points)':
         return action.enabled ? onCreatePlane : null;
+      case 'New Sketch on Face':
+        return action.enabled ? onNewSketchOnFace : null;
+      case 'New Sketch':
+        return action.enabled ? onNewSketch : null;
       default:
         return null;
     }

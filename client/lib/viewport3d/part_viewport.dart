@@ -16,6 +16,8 @@ import 'scene_preferences.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_geometry_3d.dart';
+import 'sketch_orientation_indicator.dart';
+import 'svg_icon.dart';
 import 'triad.dart';
 import 'view_preferences.dart';
 
@@ -203,6 +205,43 @@ class PartViewport extends StatefulWidget {
   /// [PartScreen._toggleProfileLoop]), needing no expansion here.
   final Set<String>? Function(String sketchFeatureId, String sketchEntityId)? sketchLineLoopGroup;
 
+  /// If set, the [OrbitCamera]'s starting orientation faces this plane
+  /// exactly (via [orientationFacingPlane]) instead of [OrbitCamera]'s own
+  /// angled default - read once, in [PartViewportState.initState]. Used by
+  /// [SketchScreen]'s Orbit View toggle so entering it from the flat 2D
+  /// sketch canvas never visibly jumps the camera on entry; the view only
+  /// changes once the user actually orbits it themselves.
+  final ReferencePlaneKind? initialViewPlane;
+
+  /// Bug fix: the Sketch's own [initialViewPlane]-relative orientation (see
+  /// `SketchDto.flip`/`SketchDto.rotationQuarterTurns`) - defaults to the
+  /// identity, but a caller entering an oriented Sketch's Orbit View should
+  /// pass the real values, or the initial camera facing (and everything
+  /// [syncToSketchViewport] frames against) disagrees with how that
+  /// Sketch's own geometry is actually embedded.
+  final bool initialViewFlip;
+  final int initialViewRotationQuarterTurns;
+
+  /// On-device feedback (bug fix): the same starting-orientation role as
+  /// [initialViewPlane], generalized to a custom (Feature-anchored) plane -
+  /// [initialViewPlane] only ever covers the three fixed [ReferencePlaneKind]s,
+  /// which silently left Orbit View unreachable for any Sketch on a custom
+  /// Plane (e.g. via "New Sketch on Face"). Already carries
+  /// [initialViewFlip]/[initialViewRotationQuarterTurns] baked in (see
+  /// [SketchPlaneBasis.oriented]/[SketchPlaneBasis.withOrientation]) - those
+  /// two fields are ignored when this is set. Takes precedence over
+  /// [initialViewPlane] if somehow both are given, though no caller does.
+  final SketchPlaneBasis? initialViewBasis;
+
+  /// New-sketch orientation confirm step (on-device feedback: the indicator
+  /// must track the camera live as the user orbits, not just refresh on a
+  /// flip/rotate tap) - non-null shows [SketchOrientationIndicator] for
+  /// this basis, rendered inside this widget's own [build] (not as an
+  /// external overlay in [PartScreen]) specifically so it repaints on every
+  /// orbit/pan/zoom-triggered rebuild this State already does for itself,
+  /// with no separate camera-change plumbing needed.
+  final SketchPlaneBasis? sketchOrientationBasis;
+
   const PartViewport({
     super.key,
     this.bodies = const [],
@@ -233,6 +272,11 @@ class PartViewport extends StatefulWidget {
     this.farClip,
     this.onFarClipChanged,
     this.sketchLineLoopGroup,
+    this.initialViewPlane,
+    this.initialViewFlip = false,
+    this.initialViewRotationQuarterTurns = 0,
+    this.initialViewBasis,
+    this.sketchOrientationBasis,
   });
 
   @override
@@ -241,6 +285,32 @@ class PartViewport extends StatefulWidget {
 
 class PartViewportState extends State<PartViewport> with TickerProviderStateMixin {
   final OrbitCamera _camera = OrbitCamera();
+
+  /// On-device feedback: test-only window into the camera's real
+  /// target/distance, for verifying [syncToSketchViewport]'s actual effect
+  /// directly (the ghost-outline/backdrop mismatch investigation needs to
+  /// see what the camera really ends up at, not just what the math is
+  /// supposed to produce by hand).
+  @visibleForTesting
+  vm.Vector3 get debugCameraTarget => _camera.target;
+  @visibleForTesting
+  double get debugCameraDistance => _camera.distance;
+
+  /// On-device feedback: "after selecting axis for revolve, 3d viewport
+  /// moves and shouldn't" - [_syncMeshNode] used to re-center the camera
+  /// target on every single mesh update, not just the first, so any live
+  /// feature-preview refresh (Revolve's axis picker debounces a preview
+  /// mesh fetch the moment an axis is picked; Extrude/Chamfer/Fillet do the
+  /// same on their own inputs) silently snapped the view back to the
+  /// updated body's new centre - disorienting mid-edit, and not how any
+  /// real CAD tool behaves (auto-framing happens once per part/session;
+  /// after that, the camera only moves because the user moved it, or via
+  /// an explicit "Reset View" - see [OrbitCamera.reset]). Tracks whether
+  /// that one-time auto-frame has already happened for this State's own
+  /// lifetime - a genuinely new [PartViewport] (e.g. navigating to a
+  /// different Part) gets a fresh [PartViewportState] and so a fresh,
+  /// unframed camera, exactly as before this fix.
+  bool _hasFramedCamera = false;
 
   /// Null until `flutter_scene`'s static resources (shaders, default
   /// textures) finish loading - [Scene.render] silently skips frames before
@@ -342,6 +412,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.farClip != null) {
       _camera.farClip = widget.farClip!;
       _camera.nearClip = kDefaultNearClip;
+    }
+    // Orbit View entry fix: start facing the given plane exactly, rather
+    // than OrbitCamera's own angled default - see [PartViewport.initialViewPlane]/
+    // [PartViewport.initialViewBasis].
+    final initialViewBasis = widget.initialViewBasis;
+    if (initialViewBasis != null) {
+      _camera.orientation = orientationFacingBasis(initialViewBasis);
+    } else if (widget.initialViewPlane != null) {
+      _camera.orientation = orientationFacingPlane(
+        widget.initialViewPlane!,
+        flip: widget.initialViewFlip,
+        rotationQuarterTurns: widget.initialViewRotationQuarterTurns,
+      );
     }
     debugPrint('[PartViewport] Scene.initializeStaticResources()...');
     Scene.initializeStaticResources().then((_) {
@@ -540,8 +623,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
-      _camera.setTarget(vm.Vector3.zero());
-      _camera.setZoomBoundsForRadius(0);
+      if (!_hasFramedCamera) {
+        _camera.setTarget(vm.Vector3.zero());
+        _camera.setZoomBoundsForRadius(0);
+      }
       return;
     }
     // Stage 11: in wireframe mode, the filled-faces Nodes are skipped
@@ -576,7 +661,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           '[PartViewport] _syncMeshNode: geometryFromMesh(${body.bodyId}, '
           '${mesh.vertices.length} verts)...',
         );
-        final geometry = geometryFromMesh(mesh);
+        // Face-culling bug fix: any translucent material below (preview
+        // overlays are always translucent; a confirmed Body is translucent
+        // whenever bodyOpacity < 1.0) needs double-sided-winding geometry,
+        // or flutter_scene back-face-culls it regardless of the material's
+        // own doubleSided flag - see geometryFromMesh's doc comment.
+        final isTranslucent = widget.isPreviewMesh || isPreviewOverlay || widget.bodyOpacity < 1.0;
+        final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
         // Live-operation preview overlays stay a flat, translucent tint -
         // they're meant to read as a distinct "in-progress" indicator, not
         // real lit geometry, so they're deliberately left on UnlitMaterial.
@@ -617,7 +708,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       );
     }
     final bounds = boundsOfBodies(bodies);
-    _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
+    if (!_hasFramedCamera) {
+      _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
+      _hasFramedCamera = true;
+    }
+    // Near/far clip and min/max zoom bounds still track the current
+    // geometry on every update (a body that's grown significantly must not
+    // get far-clipped) - only the target (see above) and, via that, the
+    // camera's overall framing stay put after the first sync.
     _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
     debugPrint(
       '[PartViewport][RenderDebug] bounds: center=${bounds?.center} '
@@ -783,17 +881,99 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// `AnimationController` is disposed) - every call past the first would
   /// throw on `AnimationController(vsync: this, ...)` below, silently
   /// rejecting this method's Future before `_openSketch` ever runs.
+  /// Bug fix: [flip]/[rotationQuarterTurns] default to the identity - a
+  /// caller entering a Sketch that has its own non-default orientation
+  /// (see `SketchDto.flip`/`SketchDto.rotationQuarterTurns`) should pass it
+  /// through, or the camera frames the plane's raw/unoriented basis while
+  /// the Sketch's own geometry - and its Extrude - is actually embedded via
+  /// the oriented one, a real mismatch, not just a cosmetic one.
   Future<void> animateToPlane(
     ReferencePlaneKind plane, {
     Duration duration = const Duration(milliseconds: 400),
+    bool flip = false,
+    int rotationQuarterTurns = 0,
+  }) {
+    final basis = SketchPlaneBasis.oriented(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns);
+    return _animateOrientationTo(orientationFacingBasis(basis), toTarget: basis.origin, duration: duration);
+  }
+
+  /// On-device feedback (new sketch-start camera sequence): animates to the
+  /// plane-independent isometric preset ([OrbitCamera.isometricOrientation])
+  /// - used for the sketch-orientation-definition step, before the user has
+  /// confirmed which plane/flip/rotation they're actually defining, so
+  /// there's no single "facing" view yet the way [animateToPlane] has.
+  Future<void> animateToIsometric({Duration duration = const Duration(milliseconds: 400)}) {
+    return _animateOrientationTo(OrbitCamera.isometricOrientation(), duration: duration);
+  }
+
+  /// On-device feedback (bug fix): [animateToPlane]'s own generalization to
+  /// a custom (Feature-anchored) Plane, mirroring [PartViewport.
+  /// initialViewBasis]'s relationship to [PartViewport.initialViewPlane] -
+  /// [basis] already carries whatever flip/rotation the Sketch itself is
+  /// oriented with (see [SketchPlaneBasis.oriented]/[SketchPlaneBasis.
+  /// withOrientation]), so there's no separate flip/rotationQuarterTurns
+  /// parameter here the way [animateToPlane] has.
+  Future<void> animateToBasis(
+    SketchPlaneBasis basis, {
+    Duration duration = const Duration(milliseconds: 400),
+  }) {
+    return _animateOrientationTo(orientationFacingBasis(basis), toTarget: basis.origin, duration: duration);
+  }
+
+  /// Shared slerp-tween machinery [animateToPlane]/[animateToIsometric] both
+  /// drive - factored out so the "swings through the back of the target
+  /// mid-transition" double-cover fix (see the comment on the hemisphere
+  /// check below) and the edge-overlay resync only need to exist once.
+  ///
+  /// On-device feedback (bug fix): [toTarget], when given, also animates
+  /// [OrbitCamera.target] back to the plane's own origin alongside the
+  /// orientation slerp - this used to only ever touch orientation, so
+  /// "face the plane" was only true about *which way* the camera looked,
+  /// not *where* it was actually centered. Nothing else in this class ever
+  /// resets [OrbitCamera.target] on its own (only an explicit pan/
+  /// [OrbitCamera.setTarget]/[OrbitCamera.reset] does), so if the user had
+  /// panned at all before calling [animateToPlane]/[animateToBasis] - e.g.
+  /// while exploring the part before confirming a new Sketch's orientation,
+  /// or while orbiting a Sketch's own Orbit View before "Return to Default
+  /// View" - the orientation alone would resolve to the mathematically
+  /// correct facing direction while still being centered on wherever the
+  /// user last panned to, which reads as "doesn't align to the sketch
+  /// plane" even though the underlying quaternion math was never wrong.
+  /// [animateToIsometric] passes no target - during orientation-definition
+  /// the user is still free-orbiting to get their bearings, with no single
+  /// "correct" center yet the way a resolved plane already has one.
+  Future<void> _animateOrientationTo(
+    vm.Quaternion to, {
+    vm.Vector3? toTarget,
+    required Duration duration,
   }) async {
     final from = _camera.orientation;
-    final to = orientationFacingPlane(plane);
+    // On-device feedback: the camera-into-sketch animation sometimes swung
+    // through the *back* of the target plane mid-transition, even though the
+    // final resting orientation (checked statically by
+    // test/orientation_facing_plane_test.dart) was correct - a quaternion
+    // and its negation represent the exact same static rotation (mathematically
+    // indistinguishable, which is exactly why that test couldn't catch this),
+    // but slerp-ing *towards* the "wrong-signed" copy of an otherwise-correct
+    // target takes the long way around instead of the short one. Forcing
+    // `to` onto the same hemisphere as `from` (equivalent to negating - a
+    // quaternion and its negation are the same rotation, so this changes
+    // nothing about where the animation ends, only the path it takes) is the
+    // standard fix for this "double cover" quaternion interpolation pitfall.
+    if (from.x * to.x + from.y * to.y + from.z * to.z + from.w * to.w < 0) {
+      to = vm.Quaternion(-to.x, -to.y, -to.z, -to.w);
+    }
+    final fromTarget = _camera.target;
     final controller = AnimationController(vsync: this, duration: duration);
     final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOut);
     void tick() {
       if (!mounted) return;
-      setState(() => _camera.orientation = from.slerp(to, curved.value));
+      setState(() {
+        _camera.orientation = from.slerp(to, curved.value);
+        if (toTarget != null) {
+          _camera.target = fromTarget + (toTarget - fromTarget) * curved.value;
+        }
+      });
     }
 
     controller.addListener(tick);
@@ -806,6 +986,77 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // towards-camera bias (see [_syncEdgesNode]) for the new view.
       if (mounted) setState(_syncEdgesNode);
     }
+  }
+
+  /// On-device feedback: matches this camera's target/distance to exactly
+  /// what a 2D `SketchViewport` is currently showing, so a locked,
+  /// non-interactive backdrop (`SketchScreen`'s shaded-body backdrop) stays
+  /// visually in sync with the flat 2D canvas above it as it's panned/
+  /// zoomed - unlike [animateToPlane], this only ever makes sense for a
+  /// [PartViewport] built with a fixed [PartViewport.initialViewPlane], and
+  /// jumps immediately rather than animating (called continuously as the
+  /// 2D canvas moves, so an animated tween here would always be chasing a
+  /// moving target).
+  ///
+  /// [pixelsPerUnit]/[panOffsetPx] mirror `SketchViewport`'s own
+  /// `basePixelsPerUnit * zoom`/`panOffset` fields exactly; [canvasSize] is
+  /// that same canvas's current render size. The math: the sketch-space
+  /// point currently at the *centre* of the 2D canvas is derived by
+  /// inverting `ViewTransform.sketchToScreen` at the canvas's own centre,
+  /// then mapped into world space via [plane]'s basis (`sketchPointToWorld`,
+  /// the same projection every other 3D-sketch-geometry consumer already
+  /// uses) to become the new camera target; the distance is solved so the
+  /// camera's vertical field of view exactly spans `canvasSize.height /
+  /// pixelsPerUnit` world units at that target, matching flutter_scene's
+  /// fixed `kCameraVerticalFovRadians` perspective FOV ([OrbitCamera] has
+  /// no orthographic option - see its own doc comment on `isPerspective`).
+  /// Bug fix: [flip]/[rotationQuarterTurns] default to the identity - a
+  /// caller syncing an oriented Sketch's own backdrop should pass the real
+  /// values (see `SketchDto.flip`/`SketchDto.rotationQuarterTurns`), or the
+  /// backdrop's camera target is derived from the plane's raw/unoriented
+  /// basis while the ghost-outline overlay drawn on top of it (and the
+  /// Sketch's own eventual Extrude) both use the oriented one - the two
+  /// visibly drift out of registration with each other whenever orientation
+  /// isn't the default.
+  void syncToSketchViewport({
+    required ReferencePlaneKind plane,
+    required double pixelsPerUnit,
+    required Offset panOffsetPx,
+    required Size canvasSize,
+    bool flip = false,
+    int rotationQuarterTurns = 0,
+  }) {
+    if (pixelsPerUnit <= 0 || canvasSize.isEmpty) return;
+    final basis = SketchPlaneBasis.oriented(plane, flip: flip, rotationQuarterTurns: rotationQuarterTurns);
+    // Inverse of ViewTransform.sketchToScreen at screen-centre (originScreen
+    // = screenCentre + panOffsetPx): the sketch-space point currently
+    // rendered at the canvas's own centre.
+    //
+    // On-device feedback (round 3): reverted round 2's un-negated sketchX -
+    // that was an unverified compensating guess made before
+    // `test/orientation_facing_plane_test.dart` existed. That test now
+    // proves `orientationFacingPlane`'s right/up/direction already matched
+    // `SketchPlaneBasis` exactly for XZ at the time of round 2 (YZ was the
+    // one genuinely wrong - see that function's own doc comment), so
+    // negating sketchX here (the direct, provable inverse of
+    // ViewTransform.sketchToScreen) was correct all along; the round-2 flip
+    // introduced a real static mismatch between this backdrop and its own
+    // (unrelated, always-correct) ghost-outline projection instead of
+    // fixing anything.
+    final sketchX = -panOffsetPx.dx / pixelsPerUnit;
+    final sketchY = panOffsetPx.dy / pixelsPerUnit;
+    final target = sketchPointToWorld(basis, sketchX, sketchY);
+    final visibleWorldHeight = canvasSize.height / pixelsPerUnit;
+    final distance = visibleWorldHeight / (2 * math.tan(kCameraVerticalFovRadians / 2));
+    // No "did this actually change" guard here (vector_math's Vector3
+    // doesn't override ==, so a same-value check would just always be
+    // false) - the caller (SketchCanvas's onViewportChanged) already only
+    // fires when its own pan/zoom/size genuinely changed, so this is
+    // already called no more often than necessary.
+    setState(() {
+      _camera.target = target;
+      _camera.distance = distance;
+    });
   }
 
   void _handlePointerDown(PointerDownEvent event) {
@@ -1458,7 +1709,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               right: 8,
               child: IconButton.filled(
                 tooltip: 'Reset view',
-                icon: const Icon(Icons.center_focus_strong),
+                icon: const SvgIcon('assets/icons/viewport/viewport_reset_view.svg'),
                 // A3: also auto-fits farClip to the current mesh's AABB.
                 onPressed: () => setState(_doRecentre),
               ),
@@ -1468,6 +1719,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 child: CustomPaint(
                   size: size,
                   painter: _CursorCrosshairPainter(position: _cursorPosition!, hasHover: _hoverHit != null),
+                ),
+              ),
+            // On-device feedback: rendered as part of this State's own
+            // build (not an external overlay driven by a stale snapshot -
+            // see [PartViewport.sketchOrientationBasis]'s own doc comment)
+            // so it repaints with a fresh [_camera]/[size] on every
+            // orbit/pan/zoom this State already triggers a rebuild for.
+            if (widget.sketchOrientationBasis != null)
+              Positioned.fill(
+                child: SketchOrientationIndicator(
+                  camera: _camera.cameraFor(size),
+                  viewportSize: size,
+                  basis: widget.sketchOrientationBasis!,
                 ),
               ),
           ],

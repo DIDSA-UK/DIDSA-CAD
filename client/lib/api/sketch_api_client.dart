@@ -28,12 +28,27 @@ class SketchDto {
   final String? plane;
   final String originPointId;
 
-  SketchDto({required this.id, required this.plane, required this.originPointId});
+  /// Sketcher-roadmap Phase 5: this Sketch's own discrete orientation
+  /// within [plane] - see the backend's `app.sketch.models.Sketch` own
+  /// docstring. Meaningless (and always the identity default) for a
+  /// `plane == null` Sketch, same as [plane]'s own null case.
+  final bool flip;
+  final int rotationQuarterTurns;
+
+  SketchDto({
+    required this.id,
+    required this.plane,
+    required this.originPointId,
+    this.flip = false,
+    this.rotationQuarterTurns = 0,
+  });
 
   factory SketchDto.fromJson(Map<String, dynamic> json) => SketchDto(
         id: json['id'] as String,
         plane: json['plane'] as String?,
         originPointId: json['origin_point_id'] as String,
+        flip: json['flip'] as bool? ?? false,
+        rotationQuarterTurns: (json['rotation_quarter_turns'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -75,6 +90,44 @@ class LineDto {
       );
 }
 
+/// Sketcher-roadmap Phase 4.3 v2: the wire counterpart to the backend's
+/// `ExternalEdgeReferenceResponse` - bundles the materialized Line
+/// alongside both of its freshly-materialized endpoint Points, so
+/// [SketchApiClient.createExternalEdgeReference]'s single round trip
+/// carries everything [SketchController.pickReferenceGhostEdge] needs to
+/// update local state without a follow-up fetch.
+class ExternalEdgeReferenceDto {
+  final LineDto line;
+  final PointDto startPoint;
+  final PointDto endPoint;
+
+  ExternalEdgeReferenceDto({required this.line, required this.startPoint, required this.endPoint});
+
+  factory ExternalEdgeReferenceDto.fromJson(Map<String, dynamic> json) => ExternalEdgeReferenceDto(
+        line: LineDto.fromJson(json['line'] as Map<String, dynamic>),
+        startPoint: PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
+        endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
+      );
+}
+
+/// Sketcher-roadmap Phase 11: the wire counterpart to the backend's
+/// `LineTrimResponse` - the trimmed/extended Line alongside the Point that
+/// moved (or was freshly created, per [createdNewPoint]) to the chosen
+/// intersection. See [SketchApiClient.trimLine].
+class LineTrimResultDto {
+  final LineDto line;
+  final PointDto movedPoint;
+  final bool createdNewPoint;
+
+  LineTrimResultDto({required this.line, required this.movedPoint, required this.createdNewPoint});
+
+  factory LineTrimResultDto.fromJson(Map<String, dynamic> json) => LineTrimResultDto(
+        line: LineDto.fromJson(json['line'] as Map<String, dynamic>),
+        movedPoint: PointDto.fromJson(json['moved_point'] as Map<String, dynamic>),
+        createdNewPoint: json['created_new_point'] as bool,
+      );
+}
+
 class CircleDto {
   final String id;
   final String centerPointId;
@@ -82,12 +135,17 @@ class CircleDto {
   final double radius;
   final bool construction;
 
+  /// `[north, east, south, west]` - see the backend's
+  /// `Circle.cardinal_point_ids` docstring for how each is solver-locked.
+  final List<String> cardinalPointIds;
+
   CircleDto({
     required this.id,
     required this.centerPointId,
     required this.radiusPointId,
     required this.radius,
     this.construction = false,
+    this.cardinalPointIds = const [],
   });
 
   factory CircleDto.fromJson(Map<String, dynamic> json) => CircleDto(
@@ -96,6 +154,192 @@ class CircleDto {
         radiusPointId: json['radius_point_id'] as String,
         radius: (json['radius'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        cardinalPointIds: (json['cardinal_point_ids'] as List<dynamic>? ?? const [])
+            .map((e) => e as String)
+            .toList(),
+      );
+}
+
+class ArcDto {
+  final String id;
+  final String centerPointId;
+  final String startPointId;
+  final String endPointId;
+  final double radius;
+  final bool construction;
+
+  ArcDto({
+    required this.id,
+    required this.centerPointId,
+    required this.startPointId,
+    required this.endPointId,
+    required this.radius,
+    this.construction = false,
+  });
+
+  factory ArcDto.fromJson(Map<String, dynamic> json) => ArcDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        startPointId: json['start_point_id'] as String,
+        endPointId: json['end_point_id'] as String,
+        radius: (json['radius'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+class EllipseDto {
+  final String id;
+  final String centerPointId;
+  final String majorPointId;
+  final String majorPointNegId;
+  final String minorPointId;
+  final String minorPointNegId;
+  final String majorAxisLineId;
+  final String minorAxisLineId;
+  final double majorRadius;
+  final double minorRadius;
+  final double rotation;
+  final bool construction;
+
+  EllipseDto({
+    required this.id,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.majorPointNegId,
+    required this.minorPointId,
+    required this.minorPointNegId,
+    required this.majorAxisLineId,
+    required this.minorAxisLineId,
+    required this.majorRadius,
+    required this.minorRadius,
+    required this.rotation,
+    this.construction = false,
+  });
+
+  factory EllipseDto.fromJson(Map<String, dynamic> json) => EllipseDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        majorPointId: json['major_point_id'] as String,
+        majorPointNegId: json['major_point_neg_id'] as String,
+        minorPointId: json['minor_point_id'] as String,
+        minorPointNegId: json['minor_point_neg_id'] as String,
+        majorAxisLineId: json['major_axis_line_id'] as String,
+        minorAxisLineId: json['minor_axis_line_id'] as String,
+        majorRadius: (json['major_radius'] as num).toDouble(),
+        minorRadius: (json['minor_radius'] as num).toDouble(),
+        rotation: (json['rotation'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+/// A regular N-gon - see the backend's `app.sketch.models.Polygon`
+/// docstring for how [vertexPointIds]/[lineIds] are ordered and what the
+/// solver constraint chain underneath them does. Bug fix (sketcher-roadmap
+/// feedback round): Polygon used to have no persisted entity at all, just
+/// plain Points/Lines/Constraints the client orchestrated across several
+/// calls - this DTO is new alongside the backend entity.
+class PolygonDto {
+  final String id;
+  final String centerPointId;
+  final List<String> vertexPointIds;
+  final List<String> lineIds;
+  final double radius;
+  final int sides;
+  final bool construction;
+
+  PolygonDto({
+    required this.id,
+    required this.centerPointId,
+    required this.vertexPointIds,
+    required this.lineIds,
+    required this.radius,
+    required this.sides,
+    this.construction = false,
+  });
+
+  factory PolygonDto.fromJson(Map<String, dynamic> json) => PolygonDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        vertexPointIds: (json['vertex_point_ids'] as List).cast<String>(),
+        lineIds: (json['line_ids'] as List).cast<String>(),
+        radius: (json['radius'] as num).toDouble(),
+        sides: json['sides'] as int,
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+class SplineDto {
+  final String id;
+  final List<String> throughPointIds;
+  final List<String> controlPointIds;
+  final bool construction;
+
+  SplineDto({
+    required this.id,
+    required this.throughPointIds,
+    required this.controlPointIds,
+    this.construction = false,
+  });
+
+  factory SplineDto.fromJson(Map<String, dynamic> json) => SplineDto(
+        id: json['id'] as String,
+        throughPointIds: (json['through_point_ids'] as List).cast<String>(),
+        controlPointIds: (json['control_point_ids'] as List).cast<String>(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+class TextDto {
+  final String id;
+  final String content;
+  final String font;
+  final double size;
+  final String anchorPointId;
+  final double rotationDegrees;
+  final bool construction;
+
+  TextDto({
+    required this.id,
+    required this.content,
+    required this.font,
+    required this.size,
+    required this.anchorPointId,
+    this.rotationDegrees = 0,
+    this.construction = false,
+  });
+
+  factory TextDto.fromJson(Map<String, dynamic> json) => TextDto(
+        id: json['id'] as String,
+        content: json['content'] as String,
+        font: json['font'] as String,
+        size: (json['size'] as num).toDouble(),
+        anchorPointId: json['anchor_point_id'] as String,
+        rotationDegrees: (json['rotation_degrees'] as num?)?.toDouble() ?? 0,
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+/// One glyph contour from `GET .../texts/{id}/preview` - `outer`/each of
+/// `holes` a closed `(x, y)` polyline, already positioned/rotated by the
+/// server per the owning Text's own anchor Point/`rotationDegrees` (see
+/// the backend's `TextContourResponse` docstring - no extra client-side
+/// transform is needed to draw these directly).
+class TextContourDto {
+  final List<(double, double)> outer;
+  final List<List<(double, double)>> holes;
+
+  const TextContourDto({required this.outer, this.holes = const []});
+
+  static (double, double) _point(dynamic json) {
+    final list = json as List;
+    return ((list[0] as num).toDouble(), (list[1] as num).toDouble());
+  }
+
+  factory TextContourDto.fromJson(Map<String, dynamic> json) => TextContourDto(
+        outer: (json['outer'] as List).map(_point).toList(),
+        holes: (json['holes'] as List)
+            .map((hole) => (hole as List).map(_point).toList())
+            .toList(),
       );
 }
 
@@ -136,6 +380,12 @@ abstract class ConstraintDto {
         return PointLineDistanceConstraintDto.fromJson(json);
       case 'at_midpoint':
         return AtMidpointConstraintDto.fromJson(json);
+      case 'spline_tangent':
+        return SplineTangentConstraintDto.fromJson(json);
+      case 'tangent':
+        return TangentConstraintDto.fromJson(json);
+      case 'equal_radius':
+        return EqualRadiusConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -152,12 +402,20 @@ class DistanceConstraintDto extends ConstraintDto {
   /// item B3).
   final String orientation;
 
+  /// True for a size-defining DistanceConstraint a shape tool auto-created
+  /// purely to pin geometry rigid at placement time, before the user has
+  /// confirmed a real size - see backend `DistanceConstraint.provisional`'s
+  /// own doc comment. The solver skips it entirely, so it removes zero DOF
+  /// until confirmed; the client must not render it as a dimension either.
+  final bool provisional;
+
   const DistanceConstraintDto({
     required super.id,
     required this.pointAId,
     required this.pointBId,
     required this.distance,
     this.orientation = 'linear',
+    this.provisional = false,
   });
 
   factory DistanceConstraintDto.fromJson(Map<String, dynamic> json) => DistanceConstraintDto(
@@ -166,6 +424,7 @@ class DistanceConstraintDto extends ConstraintDto {
         pointBId: json['point_b_id'] as String,
         distance: (json['distance'] as num).toDouble(),
         orientation: json['orientation'] as String? ?? 'linear',
+        provisional: json['provisional'] as bool? ?? false,
       );
 }
 
@@ -389,17 +648,132 @@ class AtMidpointConstraintDto extends ConstraintDto {
       );
 }
 
+/// `Sketch.add_spline`'s own internal, non-user-editable constraint (see
+/// the backend `SplineTangentConstraint`'s docstring) - the client never
+/// creates one of these directly, only ever receives it back from
+/// [SketchApiClient.listConstraints] as part of a Spline's auto-created
+/// state, so there's no matching `createXConstraint` call for it (unlike
+/// every other [ConstraintDto] subtype here).
+class SplineTangentConstraintDto extends ConstraintDto {
+  final String splineId;
+  final String segmentAP0;
+  final String segmentAP1;
+  final String segmentAP2;
+  final String segmentAP3;
+  final String segmentBP0;
+  final String segmentBP1;
+  final String segmentBP2;
+  final String segmentBP3;
+
+  const SplineTangentConstraintDto({
+    required super.id,
+    required this.splineId,
+    required this.segmentAP0,
+    required this.segmentAP1,
+    required this.segmentAP2,
+    required this.segmentAP3,
+    required this.segmentBP0,
+    required this.segmentBP1,
+    required this.segmentBP2,
+    required this.segmentBP3,
+  });
+
+  factory SplineTangentConstraintDto.fromJson(Map<String, dynamic> json) => SplineTangentConstraintDto(
+        id: json['id'] as String,
+        splineId: json['spline_id'] as String,
+        segmentAP0: json['segment_a_p0'] as String,
+        segmentAP1: json['segment_a_p1'] as String,
+        segmentAP2: json['segment_a_p2'] as String,
+        segmentAP3: json['segment_a_p3'] as String,
+        segmentBP0: json['segment_b_p0'] as String,
+        segmentBP1: json['segment_b_p1'] as String,
+        segmentBP2: json['segment_b_p2'] as String,
+        segmentBP3: json['segment_b_p3'] as String,
+      );
+}
+
+/// A Slot's/`SketchController.createTangentConstraint`'s own Circle-or-Arc
+/// to Line tangency constraint - see backend `TangentConstraint`'s doc
+/// comment for why it's expressed as a centre-to-rim distance rather than
+/// py-slvs's native arc-of-circle entity.
+class TangentConstraintDto extends ConstraintDto {
+  final String centerPointId;
+  final String radiusPointId;
+  final String lineId;
+
+  const TangentConstraintDto({
+    required super.id,
+    required this.centerPointId,
+    required this.radiusPointId,
+    required this.lineId,
+  });
+
+  factory TangentConstraintDto.fromJson(Map<String, dynamic> json) => TangentConstraintDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
+        lineId: json['line_id'] as String,
+      );
+}
+
+/// Ties two Circles'/Arcs' radii together (e.g. a Slot's two end-cap Arcs)
+/// without a second independently-editable radius dimension - see backend
+/// `EqualRadiusConstraint`'s doc comment.
+class EqualRadiusConstraintDto extends ConstraintDto {
+  final String center1PointId;
+  final String radius1PointId;
+  final String center2PointId;
+  final String radius2PointId;
+
+  const EqualRadiusConstraintDto({
+    required super.id,
+    required this.center1PointId,
+    required this.radius1PointId,
+    required this.center2PointId,
+    required this.radius2PointId,
+  });
+
+  factory EqualRadiusConstraintDto.fromJson(Map<String, dynamic> json) => EqualRadiusConstraintDto(
+        id: json['id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        radius1PointId: json['radius1_point_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
+        radius2PointId: json['radius2_point_id'] as String,
+      );
+}
+
 class SolveResultDto {
   final bool converged;
   final int dof;
   final String detail;
 
-  SolveResultDto({required this.converged, required this.dof, required this.detail});
+  /// Phase 3 bug-fix round: py-slvs's own `Failed` constraint-handle list
+  /// (see backend solver.py's `SolveResult.solver_reported_failed_
+  /// constraint_ids` doc comment) - "tends to list every constraint in an
+  /// inconsistent system rather than a single culprit", which is exactly
+  /// why it's useful here: when [converged] is false, this is the closest
+  /// thing to "which entities are actually responsible" the backend can
+  /// offer, used to colour those entities red even though the client's own
+  /// purely-structural dof_analysis.dart has no way to know a solve
+  /// numerically failed (see [SketchController.rigidity]'s own doc
+  /// comment on why it can't - a *topology*-only check can never catch a
+  /// numeric conflict like "these dimensions are geometrically
+  /// impossible").
+  final List<String> solverReportedFailedConstraintIds;
+
+  SolveResultDto({
+    required this.converged,
+    required this.dof,
+    required this.detail,
+    this.solverReportedFailedConstraintIds = const [],
+  });
 
   factory SolveResultDto.fromJson(Map<String, dynamic> json) => SolveResultDto(
         converged: json['converged'] as bool,
         dof: json['dof'] as int,
         detail: json['detail'] as String,
+        solverReportedFailedConstraintIds:
+            (json['solver_reported_failed_constraint_ids'] as List<dynamic>? ?? []).cast<String>(),
       );
 }
 
@@ -435,11 +809,17 @@ class ProfileLoopDto {
 
 /// Result of a Sketch's closed-Profile check. [status]/[detail] drive the
 /// Extrude context-menu gate; [fillableLoops] drives the sketch canvas's
-/// profile-area fill. The backend's `branch_point_ids` (multi-loop detail)
-/// isn't needed by either consumer, so it's left unparsed.
+/// profile-area fill. [branchPointIds] (previously left unparsed - "isn't
+/// needed by either consumer") now backs a diagnostic marker for the
+/// `BRANCH` status: a Point used by 3+ non-construction entities, which is
+/// exactly what silently defeats closed-loop detection at a spot that can
+/// otherwise look closed on screen (see the bug report this was added for -
+/// a spiral/nautilus-shaped sketch where an accidental Coincident tie
+/// landed on an existing joint instead of the chain's one true open end).
 class ProfileDetectionDto {
   static const String closedLoop = 'closed_loop';
   static const String multipleLoops = 'multiple_loops';
+  static const String branch = 'branch';
 
   final String status;
   final String detail;
@@ -450,7 +830,18 @@ class ProfileDetectionDto {
   /// `multiple_loops` (C2's MultiProfile), empty for every other status.
   final List<ProfileLoopDto> fillableLoops;
 
-  ProfileDetectionDto({required this.status, required this.detail, this.fillableLoops = const []});
+  /// Every Point id the backend's closed-loop detection found connected to
+  /// 3+ non-construction Lines/Arcs/Splines - only populated for the
+  /// `branch` status (see `app.sketch.profile.detect_profile`'s own
+  /// `ProfileResult.branch_point_ids`).
+  final List<String> branchPointIds;
+
+  ProfileDetectionDto({
+    required this.status,
+    required this.detail,
+    this.fillableLoops = const [],
+    this.branchPointIds = const [],
+  });
 
   bool get isClosedLoop => status == closedLoop;
 
@@ -470,6 +861,7 @@ class ProfileDetectionDto {
       fillableLoops: profile != null
           ? [ProfileLoopDto.fromJson(profile)]
           : (loops ?? []).map((loop) => ProfileLoopDto.fromJson(loop as Map<String, dynamic>)).toList(),
+      branchPointIds: (json['branch_point_ids'] as List<dynamic>? ?? []).cast<String>(),
     );
   }
 }
@@ -521,17 +913,36 @@ class SketchApiClient {
     return response.body;
   }
 
-  Future<SketchDto> createSketch({String plane = 'XY'}) => _send(
+  Future<SketchDto> createSketch({String plane = 'XY', bool flip = false, int rotationQuarterTurns = 0}) =>
+      _send(
         () => _httpClient.post(
               _uri('/sketch/sketches'),
               headers: _headers,
-              body: jsonEncode({'plane': plane}),
+              body: jsonEncode({
+                'plane': plane,
+                'flip': flip,
+                'rotation_quarter_turns': rotationQuarterTurns,
+              }),
             ),
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<SketchDto> getSketch(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId'), headers: _headers),
+        (body) => SketchDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Sketcher-roadmap Phase 5's retrospective-redefine entry point - both
+  /// fields required together, mirroring the backend's own
+  /// `SketchOrientationUpdate` (see that class's own doc comment for why
+  /// this isn't independently-optional like most other PATCH bodies here).
+  Future<SketchDto> updateSketchOrientation(String sketchId, {required bool flip, required int rotationQuarterTurns}) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/orientation'),
+              headers: _headers,
+              body: jsonEncode({'flip': flip, 'rotation_quarter_turns': rotationQuarterTurns}),
+            ),
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 
@@ -552,6 +963,50 @@ class SketchApiClient {
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Sketcher-roadmap Phase 4.3 v1: materializes a Body vertex (from the
+  /// same Part this Sketch's own SketchFeature - [sketchFeatureId] - lives
+  /// in) as a real Point in this Sketch, so it can be dimensioned against
+  /// exactly like any other Point from here on - see the backend's
+  /// `app.document.router.create_external_vertex_reference` doc comment.
+  /// Lives on this client (not `DocumentApiClient`) purely so
+  /// [SketchController] doesn't need a second API client threaded through
+  /// it just for this one call - `_uri` takes a full path regardless of
+  /// which router it happens to hit.
+  Future<PointDto> createExternalVertexReference(
+    String partId,
+    String sketchFeatureId,
+    String bodyId,
+    int vertexIndex,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'vertex_index': vertexIndex}),
+            ),
+        (body) => PointDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Sketcher-roadmap Phase 4.3 v2: [createExternalVertexReference]'s
+  /// edge-shaped sibling - materializes a whole Body edge as a real,
+  /// pinned Line (via two external-reference Points, see the backend's
+  /// `create_external_edge_reference` doc comment) rather than a single
+  /// Point.
+  Future<ExternalEdgeReferenceDto> createExternalEdgeReference(
+    String partId,
+    String sketchFeatureId,
+    String bodyId,
+    int edgeIndex,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references/edge'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex}),
+            ),
+        (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<List<PointDto>> listPoints(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/points'), headers: _headers),
         (body) => (body as List)
@@ -570,6 +1025,53 @@ class SketchApiClient {
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/circles'), headers: _headers),
         (body) => (body as List)
             .map((e) => CircleDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<ArcDto>> listArcs(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/arcs'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => ArcDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<EllipseDto>> listEllipses(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/ellipses'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => EllipseDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<PolygonDto>> listPolygons(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/polygons'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => PolygonDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<SplineDto>> listSplines(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/splines'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => SplineDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<TextDto>> listTexts(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/texts'), headers: _headers),
+        (body) => (body as List).map((e) => TextDto.fromJson(e as Map<String, dynamic>)).toList(),
+      );
+
+  /// Every one of a Text entity's own glyph contours, already positioned/
+  /// rotated per its anchor Point/`rotationDegrees` (see [TextContourDto]'s
+  /// own doc comment) - fetched once per content/font/size/rotation change
+  /// and cached client-side (see `SketchTextView`), never polled.
+  Future<List<TextContourDto>> getTextPreview(String sketchId, String textId) => _send(
+        () => _httpClient.get(
+              _uri('/sketch/sketches/$sketchId/texts/$textId/preview'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['contours'] as List)
+            .map((e) => TextContourDto.fromJson(e as Map<String, dynamic>))
             .toList(),
       );
 
@@ -611,6 +1113,151 @@ class SketchApiClient {
         (body) => CircleDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// The centre-point circle tool's own mode (see the backend's
+  /// `Sketch.add_circle` doc comment): no radius Point id at all, just a
+  /// bare [radius] - the backend creates the radius-defining Point as the
+  /// circle's own north cardinal point directly (vertically above centre,
+  /// real Distance constraint), not a fifth, separately-floating Point, so
+  /// with the centre grounded a single dimension is enough to fully
+  /// constrain the circle.
+  Future<CircleDto> createCircleWithVerticalRadius(
+    String sketchId,
+    String centerPointId,
+    double radius, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/circles'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'radius': radius,
+                'construction': construction,
+              }),
+            ),
+        (body) => CircleDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<ArcDto> createArc(
+    String sketchId,
+    String centerPointId,
+    String startPointId,
+    String endPointId, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/arcs'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'start_point_id': startPointId,
+                'end_point_id': endPointId,
+                'construction': construction,
+              }),
+            ),
+        (body) => ArcDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from an existing major-axis Point (mirrors how the
+  /// client creates Circle/Arc: the major-axis Point is placed as a real
+  /// Point first, never via the backend's alternate major_radius+angle
+  /// creation path).
+  Future<EllipseDto> createEllipse(
+    String sketchId,
+    String centerPointId,
+    String majorPointId,
+    double minorRadius, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/ellipses'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'major_point_id': majorPointId,
+                'minor_radius': minorRadius,
+                'construction': construction,
+              }),
+            ),
+        (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from an existing center Point and an existing first-
+  /// vertex Point (mirrors how the client creates Circle/Arc/Ellipse) -
+  /// server-side, `Sketch.add_polygon` creates every other vertex, the
+  /// edge Lines, and the whole radius/equal-radius/equal-length/angle
+  /// constraint chain atomically, returning it all in the response. Bug
+  /// fix: replaces the old client-orchestrated multi-call sequence (create
+  /// each vertex Point, each Line, each constraint one at a time).
+  Future<PolygonDto> createPolygon(
+    String sketchId,
+    String centerPointId,
+    String firstVertexPointId,
+    int sides, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/polygons'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'first_vertex_point_id': firstVertexPointId,
+                'sides': sides,
+                'construction': construction,
+              }),
+            ),
+        (body) => PolygonDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from through-points that already exist (mirrors how
+  /// the client creates Circle/Arc/Ellipse) - server-side, `Sketch.
+  /// add_spline` creates the control-handle Points and tangent
+  /// constraints, returning them all in the response.
+  Future<SplineDto> createSpline(String sketchId, List<String> throughPointIds, {bool construction = false}) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/splines'),
+              headers: _headers,
+              body: jsonEncode({
+                'through_point_ids': throughPointIds,
+                'construction': construction,
+              }),
+            ),
+        (body) => SplineDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from an existing anchor Point (mirrors how the client
+  /// creates every other entity here). `font` is left to the backend's own
+  /// default (currently the only allow-listed font, "Open Sans" - see the
+  /// backend's `TextEntity`/`text_fonts` docstrings) since v1 has nothing
+  /// for the client to offer a choice between yet.
+  Future<TextDto> createText(
+    String sketchId,
+    String content,
+    String anchorPointId, {
+    double size = 10.0,
+    double rotationDegrees = 0,
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/texts'),
+              headers: _headers,
+              body: jsonEncode({
+                'content': content,
+                'anchor_point_id': anchorPointId,
+                'size': size,
+                'rotation_degrees': rotationDegrees,
+                'construction': construction,
+              }),
+            ),
+        (body) => TextDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Toggles a Line's construction flag (Make-Construction/Make-Solid) -
   /// `length` is left null since this call never needs to also resize the
   /// line (see backend LineUpdate, where both fields are independently
@@ -640,6 +1287,95 @@ class SketchApiClient {
         (body) => CircleDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Toggles an Arc's construction flag - mirrors [updateCircle].
+  Future<ArcDto> updateArc(String sketchId, String arcId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/arcs/$arcId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => ArcDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Toggles an Ellipse's construction flag - mirrors [updateArc]. There is
+  /// no radius field here: like Circle/Arc, both of an Ellipse's radii are
+  /// now driven by real DistanceConstraints (see the Ellipse class's own
+  /// docstring) - resize either one via [updateConstraintValue] against
+  /// its `major_constraint_id`/`minor_constraint_id` instead.
+  Future<EllipseDto> updateEllipse(String sketchId, String ellipseId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Toggles a Polygon's construction flag - mirrors [updateArc]. There is
+  /// no radius field here either: a Polygon's radius is driven by its own
+  /// DistanceConstraint (see the backend's `Sketch.add_polygon`), resized
+  /// via [updateConstraintValue] instead.
+  Future<PolygonDto> updatePolygon(String sketchId, String polygonId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/polygons/$polygonId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => PolygonDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Toggles a Spline's construction flag - mirrors [updateArc]. There is
+  /// no shape field here: a Spline's shape is driven entirely by its
+  /// through-point/control-handle Points' own positions and its
+  /// SplineTangentConstraints, not edited directly.
+  Future<SplineDto> updateSpline(String sketchId, String splineId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/splines/$splineId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => SplineDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Updates any of a Text entity's own directly-editable fields - mirrors
+  /// [updateEllipse]'s "several independently-optional fields" shape.
+  /// Every field here is a plain direct edit (see the backend's
+  /// `TextEntity`/`TextUpdate` docstrings) - omitted fields are left
+  /// unchanged. `font` must be one of [textFontOptions] (mirrors the
+  /// backend's own FONT_ALLOWLIST validation - an unrecognized value
+  /// still reaches the server, which rejects it with a 422).
+  Future<TextDto> updateText(
+    String sketchId,
+    String textId, {
+    String? content,
+    String? font,
+    double? size,
+    double? rotationDegrees,
+    bool? construction,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/texts/$textId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (content != null) 'content': content,
+                if (font != null) 'font': font,
+                if (size != null) 'size': size,
+                if (rotationDegrees != null) 'rotation_degrees': rotationDegrees,
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => TextDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<void> deletePoint(String sketchId, String pointId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/points/$pointId'),
@@ -656,9 +1392,66 @@ class SketchApiClient {
         (_) {},
       );
 
+  /// Sketcher-roadmap Phase 11: trims or extends [lineId] by moving
+  /// [movedPointId] (one of its own two endpoints) to the nearest real
+  /// intersection with another Line/Circle/Arc - see the backend's
+  /// `Sketch.trim_or_extend_line` for the full selection rules (nearest
+  /// candidate wins, shared endpoints split off a fresh Point rather than
+  /// dragging unrelated geometry). A 422 means nothing was found to
+  /// trim/extend to; a 400 covers the other rejections (non-endpoint point,
+  /// Polygon-owned edge).
+  Future<LineTrimResultDto> trimLine(String sketchId, String lineId, String movedPointId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/lines/$lineId/trim'),
+              headers: _headers,
+              body: jsonEncode({'moved_point_id': movedPointId}),
+            ),
+        (body) => LineTrimResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<void> deleteCircle(String sketchId, String circleId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/circles/$circleId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteArc(String sketchId, String arcId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/arcs/$arcId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteEllipse(String sketchId, String ellipseId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deletePolygon(String sketchId, String polygonId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/polygons/$polygonId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteSpline(String sketchId, String splineId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/splines/$splineId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> deleteText(String sketchId, String textId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/texts/$textId'),
               headers: _headers,
             ),
         (_) {},
@@ -724,12 +1517,18 @@ class SketchApiClient {
   /// only the X or Y separation, leaving the other axis free, so a
   /// horizontal/vertical dimension keeps its axis-locked nature after a
   /// solve instead of degrading into a plain linear distance.
+  /// [provisional] marks a size-defining constraint a shape tool is
+  /// auto-creating purely to pin geometry rigid at placement time, before
+  /// the user has chosen a real size - see backend
+  /// `DistanceConstraint.provisional`'s own doc comment. Leave it false
+  /// (default) for any dimension the user actually asked for.
   Future<ConstraintDto> createDistanceConstraint(
     String sketchId,
     String pointAId,
     String pointBId,
     double distance, {
     String orientation = 'linear',
+    bool provisional = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -740,6 +1539,7 @@ class SketchApiClient {
                 'point_b_id': pointBId,
                 'distance': distance,
                 'orientation': orientation,
+                'provisional': provisional,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
@@ -923,6 +1723,76 @@ class SketchApiClient {
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Slot tool's own tangency wiring - see TangentConstraintDto's doc comment.
+  Future<ConstraintDto> createTangentConstraint(
+    String sketchId,
+    String circleOrArcId,
+    String lineId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'tangent',
+                'circle_or_arc_id': circleOrArcId,
+                'line_id': lineId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Slot tool's own equal-radius wiring - see EqualRadiusConstraintDto's doc
+  /// comment. [radius2PointId] optionally picks which of entity2's two rim
+  /// Points (for an Arc) this tie is for - a Slot's second end-cap Arc needs
+  /// this called twice, once per rim Point, since it has no single radius
+  /// Point of its own once both its native radius constraints are removed.
+  Future<ConstraintDto> createEqualRadiusConstraint(
+    String sketchId,
+    String entity1Id,
+    String entity2Id, {
+    String? radius2PointId,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'equal_radius',
+                'entity1_id': entity1Id,
+                'entity2_id': entity2Id,
+                if (radius2PointId != null) 'radius2_point_id': radius2PointId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// The raw-Point counterpart to [createEqualRadiusConstraint], for a
+  /// caller with no Circle/Arc entity id to tie to - e.g. the Polygon
+  /// tool's own center/vertex pairs (see the backend's
+  /// Sketch.add_equal_radius_constraint_from_points doc comment).
+  Future<ConstraintDto> createEqualRadiusConstraintFromPoints(
+    String sketchId,
+    String center1PointId,
+    String radius1PointId,
+    String center2PointId,
+    String radius2PointId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'equal_radius_points',
+                'center1_point_id': center1PointId,
+                'radius1_point_id': radius1PointId,
+                'center2_point_id': center2PointId,
+                'radius2_point_id': radius2PointId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Stage 13's dimension-edit PATCH: updates an existing `DistanceConstraint`
   /// or `AngleConstraint`'s numeric value and re-solves server-side - see
   /// app/sketch/router.py's `update_constraint_value`. The backend rejects
@@ -937,10 +1807,19 @@ class SketchApiClient {
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<SolveResultDto> solve(String sketchId) => _send(
+  /// [anchorPointIds] pins those Points for this one solve only (drag-solve
+  /// semantics - see the backend's `SolveRequest` doc comment): the Point(s)
+  /// the user just dragged stay exactly where dropped while the rest of the
+  /// Sketch settles around them. Omitted (the common case, every call site
+  /// that isn't a drag-drop) sends no body at all, same request the backend
+  /// already handled before this parameter existed.
+  Future<SolveResultDto> solve(String sketchId, {List<String> anchorPointIds = const []}) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/solve'),
               headers: _headers,
+              body: anchorPointIds.isEmpty
+                  ? null
+                  : jsonEncode({'anchor_point_ids': anchorPointIds}),
             ),
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
       );

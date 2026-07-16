@@ -6,6 +6,7 @@ import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
 import 'viewport3d/part_screen.dart';
+import 'viewport3d/svg_icon.dart';
 
 /// Stage 18's splash/connection screen - shown on cold launch before
 /// [PartScreen], and again later from [PartScreen]'s File menu's "Connection
@@ -158,8 +159,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                             labelStyle: const TextStyle(color: Colors.white70),
                             border: const OutlineInputBorder(),
                             suffixIcon: IconButton(
-                              icon: Icon(
-                                _obscureApiKey ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                              icon: SvgIcon(
+                                _obscureApiKey
+                                    ? 'assets/icons/mesh/mesh_show_api_key.svg'
+                                    : 'assets/icons/mesh/mesh_hide_api_key.svg',
                                 color: Colors.white70,
                               ),
                               onPressed: () => setState(() => _obscureApiKey = !_obscureApiKey),
@@ -222,7 +225,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                                 child: const Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Icon(Icons.view_in_ar_outlined, color: Colors.white70, size: 20),
+                                    SvgIcon('assets/icons/mesh/mesh_view_file.svg', color: Colors.white70, size: 26),
                                     SizedBox(width: 8),
                                     Flexible(
                                       child: Text(
@@ -244,7 +247,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                                   MaterialPageRoute(builder: (_) => const MeshViewerSettingsScreen()),
                                 ),
                                 child: const Center(
-                                  child: Icon(Icons.settings_outlined, color: Colors.white70, size: 20),
+                                  child: SvgIcon('assets/icons/mesh/mesh_settings.svg', color: Colors.white70, size: 26),
                                 ),
                               ),
                             ),

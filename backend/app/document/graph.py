@@ -43,6 +43,7 @@ from app.document.models import (
     SketchFeature,
     SweepFeature,
 )
+from app.sketch.store import all_sketches
 
 
 class CycleError(ValueError):
@@ -153,6 +154,29 @@ def sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
     return None
 
 
+def _sketch_external_reference_dependencies(feature: SketchFeature) -> tuple[str, ...]:
+    """Sketcher-roadmap Phase 4.3 v1: a `SketchFeature` also depends on the
+    owning ExtrudeFeature(s) of every Body its Sketch's own
+    `external_references` names (see `app.sketch.models.Sketch.
+    external_references`'s own doc comment) - without this, cascade-
+    deleting the Feature that created a Body a Sketch dimensions off of
+    would leave the Sketch's external reference dangling instead of
+    flagging/handling it via `has_lost_reference`, the same "everything
+    that references something must depend on it" rule every other branch
+    here already follows.
+
+    Looked up via `all_sketches()` (not `get_sketch_or_404`, which raises)
+    since a `SketchFeature.sketch_id` that doesn't resolve to a real Sketch
+    is tolerated everywhere else in this module too - `topological_order`/
+    `transitive_dependents` already ignore any dependency id that doesn't
+    correspond to a real node, so simply contributing no extra edges here
+    is consistent with that, not a special case."""
+    sketch = all_sketches().get(feature.sketch_id)
+    if sketch is None:
+        return ()
+    return tuple({base_feature_id(ref.body_id) for ref in sketch.external_references.values()})
+
+
 def build_feature_graph(part: Part) -> list[GraphNode]:
     """The dependency edges recompute is driven by (A1) - every
     ExtrudeFeature depends on the SketchFeature it extrudes plus every Body
@@ -217,7 +241,9 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     for feature in part.features:
         depends_on: tuple[str, ...] = ()
         if isinstance(feature, SketchFeature):
-            depends_on = (feature.plane_feature_id,) if feature.plane_feature_id else ()
+            depends_on = (
+                (feature.plane_feature_id,) if feature.plane_feature_id else ()
+            ) + _sketch_external_reference_dependencies(feature)
         elif isinstance(feature, ExtrudeFeature):
             depends_on = (
                 feature.sketch_feature_id,

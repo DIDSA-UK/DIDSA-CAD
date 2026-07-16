@@ -2,7 +2,9 @@ import math
 from dataclasses import dataclass, field
 from enum import Enum
 
-from app.sketch.models import Circle, Sketch
+from app.sketch.constraints import CoincidentConstraint
+from app.sketch.models import Circle, Ellipse, Sketch, TextEntity
+from app.sketch.text_geometry import place_local_point, text_to_polygons
 
 
 class ProfileStatus(str, Enum):
@@ -47,12 +49,28 @@ class Profile:
     nested inside this one (e.g. a circular hole in a rectangular plate).
     Empty for a simple profile with no holes. Only ever one level deep -
     an inner loop never itself carries inner_loops (see INVALID_NESTING).
+
+    `text_vertices`/`text_contour_index`/`text_hole_index` are only ever
+    set for a Text contour (see `_text_profile`) - a Text entity has no
+    real Points to read polygon vertices from via `point_ids` the way
+    every other entity here does (see `app.sketch.models.TextEntity`'s
+    own docstring: glyph geometry is never decomposed into Points), so
+    `text_vertices` carries this loop's own tessellated `(x, y)` polygon
+    directly instead, and `text_contour_index`/`text_hole_index`
+    identify exactly which glyph/wire `app.document.extrude.
+    wire_for_profile` should re-derive the *exact* (non-tessellated)
+    curve for. `text_hole_index` is None for a contour's own outer loop,
+    or the index into that contour's own holes for one of its
+    `inner_loops`.
     """
 
     sketch_id: str
     point_ids: list[str]
     line_ids: list[str]
     inner_loops: list["Profile"] = field(default_factory=list)
+    text_vertices: list[tuple[float, float]] | None = None
+    text_contour_index: int | None = None
+    text_hole_index: int | None = None
 
 
 @dataclass
@@ -103,11 +121,27 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     """
     real_entities = [entity for entity in sketch.entities.values() if not entity.construction]
 
-    connections: list[tuple[str, tuple[str, str]]] = [
-        (entity.id, endpoints)
-        for entity in real_entities
-        if (endpoints := entity.endpoint_point_ids()) is not None
-    ]
+    # Two Points linked by a CoincidentConstraint (e.g. a corner "closed" by
+    # dragging one Point onto another, per _autoCoincideIfNear on the
+    # client) are still two distinct Point ids in the model - only pinned
+    # to the same position by the solver, never merged into one shared
+    # reference. Left alone, that means the adjacency graph below sees two
+    # unconnected nodes at that corner and reports the loop as open, even
+    # though it visibly looks closed. Canonicalizing each Point id through
+    # this union-find before building adjacency treats Coincident Points as
+    # the same graph node for connectivity purposes - closing the loop
+    # exactly like a real shared Point would, with no change to the
+    # Point/Line/Circle data model itself (still fully reversible by
+    # deleting the CoincidentConstraint).
+    canonical_point_id = _coincident_canonical_ids(sketch)
+
+    connections: list[tuple[str, tuple[str, str]]] = []
+    for entity in real_entities:
+        endpoints = entity.endpoint_point_ids()
+        if endpoints is None:
+            continue
+        a, b = endpoints
+        connections.append((entity.id, (canonical_point_id.get(a, a), canonical_point_id.get(b, b))))
 
     line_loops: list[Profile] = []
     any_branch_point = False
@@ -138,7 +172,23 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     # Line-chain outer boundary with a Circle hole inside it (the
     # plate-with-a-round-hole case) is detected correctly below.
     circle_loops = [_circle_profile(sketch, circle) for circle in real_entities if isinstance(circle, Circle)]
-    loops = line_loops + circle_loops
+    # C1: Ellipses are folded in the same way as Circles - a standalone
+    # closed loop with no endpoints to walk (see Ellipse.endpoint_point_ids,
+    # inherited unset from SketchEntity, same as Circle's).
+    ellipse_loops = [
+        _ellipse_profile(sketch, ellipse) for ellipse in real_entities if isinstance(ellipse, Ellipse)
+    ]
+    # Text is folded in the same way as Circle/Ellipse, except a single
+    # Text entity can contribute several standalone loops at once (one
+    # per glyph contour, each already carrying its own holes - see
+    # _text_profile) rather than exactly one.
+    text_loops = [
+        loop
+        for text in real_entities
+        if isinstance(text, TextEntity)
+        for loop in _text_profile(sketch, text)
+    ]
+    loops = line_loops + circle_loops + ellipse_loops + text_loops
 
     if not loops:
         if any_branch_point:
@@ -163,6 +213,33 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
         )
 
     return _classify_nesting(sketch, loops)
+
+
+def _coincident_canonical_ids(sketch: Sketch) -> dict[str, str]:
+    """Maps every Point id that's a party to a CoincidentConstraint to a
+    single canonical id shared with every other Point it's (transitively)
+    Coincident with - standard union-find, path-compressed on lookup. A
+    Point with no CoincidentConstraint at all is simply absent from the
+    returned mapping (callers fall back to the Point's own id via `.get`).
+    """
+    parent: dict[str, str] = {}
+
+    def find(point_id: str) -> str:
+        parent.setdefault(point_id, point_id)
+        root = point_id
+        while parent[root] != root:
+            root = parent[root]
+        while parent[point_id] != root:
+            parent[point_id], point_id = root, parent[point_id]
+        return root
+
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, CoincidentConstraint):
+            a, b = find(constraint.point_a_id), find(constraint.point_b_id)
+            if a != b:
+                parent[a] = b
+
+    return {point_id: find(point_id) for point_id in parent}
 
 
 def _connected_component(start_point_id: str, adjacency: dict[str, list[tuple[str, str]]]) -> set[str]:
@@ -269,12 +346,33 @@ def _classify_nesting(sketch: Sketch, loops: list[Profile]) -> ProfileDetectionR
     )
 
 
+def _is_text_profile(profile: Profile) -> bool:
+    return profile.text_vertices is not None
+
+
+def _profile_vertices(sketch: Sketch, profile: Profile) -> list[tuple[float, float]]:
+    """`profile`'s own polygon vertices, from `text_vertices` for a Text
+    contour (see `Profile`'s own docstring - it has no real Points to read
+    from) or from `sketch.points[point_id]` for every other polygon-
+    shaped profile. Only ever called for a profile that isn't itself a
+    standalone Circle/Ellipse (those are handled by their own dedicated
+    branches wherever this would otherwise be called) - a Text contour is
+    never a Circle/Ellipse, so it always resolves here."""
+    if _is_text_profile(profile):
+        return profile.text_vertices
+    return [(sketch.points[point_id].x, sketch.points[point_id].y) for point_id in profile.point_ids]
+
+
 def _loop_centroid(sketch: Sketch, profile: Profile) -> tuple[float, float]:
     if _is_circle_profile(sketch, profile):
         center = sketch.points[sketch.entities[profile.line_ids[0]].center_point_id]
         return (center.x, center.y)
-    xs = [sketch.points[point_id].x for point_id in profile.point_ids]
-    ys = [sketch.points[point_id].y for point_id in profile.point_ids]
+    if _is_ellipse_profile(sketch, profile):
+        center = sketch.points[sketch.entities[profile.line_ids[0]].center_point_id]
+        return (center.x, center.y)
+    vertices = _profile_vertices(sketch, profile)
+    xs = [x for x, _y in vertices]
+    ys = [y for _x, y in vertices]
     return (sum(xs) / len(xs), sum(ys) / len(ys))
 
 
@@ -285,8 +383,11 @@ def _loop_area(sketch: Sketch, profile: Profile) -> float:
     if _is_circle_profile(sketch, profile):
         radius = sketch.entities[profile.line_ids[0]].radius(sketch.points)
         return math.pi * radius * radius
+    if _is_ellipse_profile(sketch, profile):
+        ellipse = sketch.entities[profile.line_ids[0]]
+        return math.pi * ellipse.major_radius(sketch.points) * ellipse.minor_radius(sketch.points)
 
-    vertices = [(sketch.points[point_id].x, sketch.points[point_id].y) for point_id in profile.point_ids]
+    vertices = _profile_vertices(sketch, profile)
     signed_area = 0.0
     for (x1, y1), (x2, y2) in zip(vertices, vertices[1:] + vertices[:1]):
         signed_area += x1 * y2 - x2 * y1
@@ -304,9 +405,20 @@ def _loop_contains_point(sketch: Sketch, profile: Profile, point: tuple[float, f
         center = sketch.points[circle.center_point_id]
         radius = circle.radius(sketch.points)
         return math.hypot(point[0] - center.x, point[1] - center.y) < radius
+    if _is_ellipse_profile(sketch, profile):
+        ellipse = sketch.entities[profile.line_ids[0]]
+        center = sketch.points[ellipse.center_point_id]
+        major_radius = ellipse.major_radius(sketch.points)
+        rotation = ellipse.rotation(sketch.points)
+        dx, dy = point[0] - center.x, point[1] - center.y
+        cos_r, sin_r = math.cos(-rotation), math.sin(-rotation)
+        local_x = dx * cos_r - dy * sin_r
+        local_y = dx * sin_r + dy * cos_r
+        minor_radius = ellipse.minor_radius(sketch.points)
+        return (local_x / major_radius) ** 2 + (local_y / minor_radius) ** 2 < 1
 
     x, y = point
-    vertices = [(sketch.points[point_id].x, sketch.points[point_id].y) for point_id in profile.point_ids]
+    vertices = _profile_vertices(sketch, profile)
     inside = False
     for (x1, y1), (x2, y2) in zip(vertices, vertices[1:] + vertices[:1]):
         if (y1 > y) != (y2 > y):
@@ -336,6 +448,16 @@ def _loop_fully_contains(sketch: Sketch, container: Profile, candidate: Profile)
     hole. The segment-intersection check below catches exactly this,
     independently of the vertex check.
     """
+    if _is_ellipse_profile(sketch, candidate):
+        # No closed-form ellipse/ellipse or ellipse/polygon containment test
+        # is implemented here (see `_ellipse_boundary_points`) - sampling
+        # the candidate's boundary and reusing `_loop_contains_point`
+        # (which already has circle/ellipse/polygon container branches)
+        # covers every container kind with one check.
+        ellipse = sketch.entities[candidate.line_ids[0]]
+        boundary = _ellipse_boundary_points(sketch, ellipse)
+        return all(_loop_contains_point(sketch, container, p) for p in boundary)
+
     if _is_circle_profile(sketch, candidate):
         circle = sketch.entities[candidate.line_ids[0]]
         center_point = sketch.points[circle.center_point_id]
@@ -347,22 +469,29 @@ def _loop_fully_contains(sketch: Sketch, container: Profile, candidate: Profile)
             container_radius = container_circle.radius(sketch.points)
             distance = math.hypot(center[0] - container_center.x, center[1] - container_center.y)
             return distance + radius < container_radius
-        vertices = [(sketch.points[point_id].x, sketch.points[point_id].y) for point_id in container.point_ids]
+        if _is_ellipse_profile(sketch, container):
+            circle_boundary = [
+                (center[0] + radius * math.cos(t), center[1] + radius * math.sin(t))
+                for t in (2 * math.pi * i / 64 for i in range(64))
+            ]
+            return all(_loop_contains_point(sketch, container, p) for p in circle_boundary)
+        vertices = _profile_vertices(sketch, container)
         return all(
             _point_to_segment_distance(center, a, b) > radius
             for a, b in zip(vertices, vertices[1:] + vertices[:1])
         )
 
-    candidate_vertices = [
-        (sketch.points[point_id].x, sketch.points[point_id].y) for point_id in candidate.point_ids
-    ]
+    candidate_vertices = _profile_vertices(sketch, candidate)
     if not all(_loop_contains_point(sketch, container, vertex) for vertex in candidate_vertices):
         return False
 
     if _is_circle_profile(sketch, container):
         return True  # A polygon fully inside a circular container has no polygon edges to cross.
 
-    container_vertices = [(sketch.points[point_id].x, sketch.points[point_id].y) for point_id in container.point_ids]
+    if _is_ellipse_profile(sketch, container):
+        return True  # Same convexity argument as the circle-container case above.
+
+    container_vertices = _profile_vertices(sketch, container)
     candidate_edges = list(zip(candidate_vertices, candidate_vertices[1:] + candidate_vertices[:1]))
     container_edges = list(zip(container_vertices, container_vertices[1:] + container_vertices[:1]))
     return not any(
@@ -438,6 +567,89 @@ def _circle_profile(sketch: Sketch, circle: Circle) -> Profile:
         point_ids=[circle.center_point_id, circle.radius_point_id],
         line_ids=[circle.id],
     )
+
+
+def _is_ellipse_profile(sketch: Sketch, profile: Profile) -> bool:
+    return len(profile.line_ids) == 1 and isinstance(sketch.entities.get(profile.line_ids[0]), Ellipse)
+
+
+def _ellipse_profile(sketch: Sketch, ellipse: Ellipse) -> Profile:
+    # Same "line_ids reused to hold the entity's own id" convention as
+    # _circle_profile above.
+    return Profile(
+        sketch_id=sketch.id,
+        point_ids=[ellipse.center_point_id, ellipse.major_point_id],
+        line_ids=[ellipse.id],
+    )
+
+
+def _text_profile(sketch: Sketch, text: TextEntity) -> list[Profile]:
+    """Every one of `text`'s own glyph contours, each already a fully-
+    formed outer-loop-with-its-own-holes `Profile` - OCCT's own font-to-
+    BRep conversion resolves each glyph's own nesting itself (confirmed
+    by direct on-device testing: e.g. "o" -> one Face with 2 wires, an
+    outer ring and its own inner counter - see `text_geometry`'s own
+    docstring), so nothing here needs to reimplement point-in-polygon
+    hole detection for a single Text entity's own glyphs the way
+    `_classify_nesting` does for *unrelated* loops. Folded into
+    `detect_profile`'s top-level loop list exactly like
+    `_circle_profile`/`_ellipse_profile`'s single loop each, just
+    potentially many per Text entity instead of exactly one - nesting a
+    Text entity's own loops against *other* sketch geometry (e.g. text
+    sitting inside a plate) is still handled generically by
+    `_classify_nesting` afterward, via every polygon-math function in
+    this module's own `_is_text_profile`/`_profile_vertices` branches.
+    """
+    anchor = sketch.points[text.anchor_point_id]
+
+    def placed(local: tuple[float, float]) -> tuple[float, float]:
+        return place_local_point(anchor.x, anchor.y, text.rotation_degrees, local[0], local[1])
+
+    profiles = []
+    for contour_index, (outer, holes) in enumerate(text_to_polygons(text.content, text.font, text.size)):
+        profile = Profile(
+            sketch_id=sketch.id,
+            point_ids=[],
+            line_ids=[text.id],
+            text_vertices=[placed(p) for p in outer],
+            text_contour_index=contour_index,
+        )
+        profile.inner_loops = [
+            Profile(
+                sketch_id=sketch.id,
+                point_ids=[],
+                line_ids=[text.id],
+                text_vertices=[placed(p) for p in hole],
+                text_contour_index=contour_index,
+                text_hole_index=hole_index,
+            )
+            for hole_index, hole in enumerate(holes)
+        ]
+        profiles.append(profile)
+    return profiles
+
+
+def _ellipse_boundary_points(sketch: Sketch, ellipse: Ellipse, steps: int = 64) -> list[tuple[float, float]]:
+    """Samples `steps` points evenly around `ellipse`'s boundary in sketch
+    space. Used as a practical stand-in for exact curve math wherever an
+    Ellipse needs to be tested against another loop's boundary (nesting/
+    containment classification in `_loop_fully_contains`) - a closed-form
+    ellipse/segment or ellipse/ellipse containment test is materially more
+    involved than the polygon and circle cases this module already
+    handles, and sampling at this density is accurate enough for that
+    purpose (an accepted v1 approximation, not exact)."""
+    center = sketch.points[ellipse.center_point_id]
+    major_radius = ellipse.major_radius(sketch.points)
+    minor_radius = ellipse.minor_radius(sketch.points)
+    rotation = ellipse.rotation(sketch.points)
+    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+    points = []
+    for i in range(steps):
+        t = 2 * math.pi * i / steps
+        local_x = major_radius * math.cos(t)
+        local_y = minor_radius * math.sin(t)
+        points.append((center.x + local_x * cos_r - local_y * sin_r, center.y + local_x * sin_r + local_y * cos_r))
+    return points
 
 
 def _trace_loop(

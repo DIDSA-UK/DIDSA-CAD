@@ -132,3 +132,75 @@ def test_an_open_chain_and_a_branch_with_nothing_usable_reports_branch():
 
     assert result.status == ProfileStatus.BRANCH
     assert result.branch_point_ids == [branch_point_id]
+
+
+def test_closing_an_open_chain_with_a_coincident_constraint_detects_a_closed_loop():
+    """Bug-fix round: reported from an on-device sketch that looked visibly
+    closed (a corner "closed" by dragging one open end onto the other,
+    which - per _autoCoincideIfNear on the client - creates a
+    CoincidentConstraint between two still-distinct Point ids, not one
+    merged Point) but detect_profile still reported NO_LOOP, since the
+    adjacency graph only ever looked at Line/Circle endpoint ids and knew
+    nothing about CoincidentConstraints. A three-Line open chain (four
+    distinct Points) whose two open ends are made Coincident must now be
+    detected as a three-cornered closed loop, exactly as if the two ends
+    had always been the same shared Point."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 10.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(-10.0, -10.0)
+    d = sketch.add_point(0.0, 10.0)
+    sketch.add_line(a.id, b.id)
+    sketch.add_line(b.id, c.id)
+    sketch.add_line(c.id, d.id)
+
+    assert detect_profile(sketch).status == ProfileStatus.NO_LOOP
+
+    sketch.add_coincident_constraint(d.id, a.id)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.CLOSED_LOOP
+    assert result.profile is not None
+    assert len(result.profile.point_ids) == 3
+    assert len(result.profile.line_ids) == 3
+
+
+def test_coincidence_is_transitive_across_more_than_two_points():
+    """A -- B are Coincident, and B -- C are Coincident (never A -- C
+    directly) - the union-find must still treat all three as one node, the
+    same way transitively-equal Points would behave if they'd always been
+    a single shared Point."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(0.0, 0.0)
+    c = sketch.add_point(0.0, 0.0)
+    x = sketch.add_point(10.0, 0.0)
+    y = sketch.add_point(-10.0, -10.0)
+    sketch.add_line(a.id, x.id)
+    sketch.add_line(x.id, y.id)
+    sketch.add_line(y.id, c.id)
+    sketch.add_coincident_constraint(a.id, b.id)
+    sketch.add_coincident_constraint(b.id, c.id)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.CLOSED_LOOP
+    assert result.profile is not None
+    assert len(result.profile.point_ids) == 3
+
+
+def test_a_coincident_constraint_alone_does_not_fabricate_a_loop_out_of_an_open_chain():
+    """Coincidence closes a loop only when it actually joins the two open
+    ends of a chain into a cycle - a CoincidentConstraint between two
+    Points that aren't a chain's open ends (e.g. tacked onto an unrelated
+    branch point) must not be misread as closing anything."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    _add_open_chain(sketch, 0.0, 0.0)
+    stray = sketch.add_point(50.0, 50.0)
+    other_stray = sketch.add_point(60.0, 60.0)
+    sketch.add_coincident_constraint(stray.id, other_stray.id)
+
+    result = detect_profile(sketch)
+
+    assert result.status == ProfileStatus.NO_LOOP

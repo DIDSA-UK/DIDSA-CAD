@@ -8,6 +8,7 @@ brief's "Knows nothing about Sketch internals" requirement for Extrude.
 """
 
 import logging
+import math
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
@@ -21,10 +22,12 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_Transform,
 )
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.Geom import Geom_BezierCurve
+from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
-from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
@@ -44,9 +47,20 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
 )
-from app.sketch.models import Circle, Line, Sketch, SketchEntityRef, SketchEntityType
+from app.sketch.models import (
+    Arc,
+    Circle,
+    Ellipse,
+    Line,
+    Sketch,
+    SketchEntityRef,
+    SketchEntityType,
+    Spline,
+    TextEntity,
+)
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
+from app.sketch.text_geometry import text_contour_wire
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +82,41 @@ def basis_normal(basis: ResolvedPlane) -> gp_Dir:
     return gp_Dir(x, y, z)
 
 
+def _arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
+    """The `gp_Ax2` an Arc's `gp_Circ` is built against - unlike Circle's
+    own `axis` (built with the 2-argument `gp_Ax2(point, normal)`, whose X
+    reference direction OCCT picks arbitrarily, harmless there since a full
+    circle's edge construction never reads it), an Arc's edge is trimmed
+    between two points via `BRepBuilderAPI_MakeEdge(gp_Circ, P1, P2)`,
+    which *does* pick one of the circle's two possible arcs based on that
+    reference direction (the trim always runs from P1 to P2 in the
+    direction of increasing parameter/angle). Passing the sketch plane's
+    own local +X axis as the explicit 3rd argument pins that parametrization
+    to exactly "standard CCW in the sketch's own local (x, y) coordinates"
+    - the same convention the Arc class docstring documents and the
+    client's 2D rendering must also use - rather than leaving it to
+    whatever direction OCCT happens to auto-select."""
+    x, y, z = basis.x_axis
+    return gp_Ax2(basis_point_to_world(basis, center_x, center_y), basis_normal(basis), gp_Dir(x, y, z))
+
+
+def _ellipse_axis(basis: ResolvedPlane, center_x: float, center_y: float, rotation: float) -> gp_Ax2:
+    """The `gp_Ax2` an Ellipse's `gp_Elips` is built against - `gp_Elips`
+    always places its major axis along the `gp_Ax2`'s own X reference
+    direction, so (mirroring `_arc_axis`'s identical reasoning for Arc)
+    that reference direction must be pinned explicitly rather than left to
+    OCCT's arbitrary default: the sketch plane's local +X axis, rotated
+    in-plane by the Ellipse's own `rotation()` (the angle from local +X to
+    its major-axis Point), giving a deterministic major-axis direction
+    that matches the Ellipse class's own convention and the client's 2D
+    rendering."""
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+    dx, dy, dz = xx * cos_r + yx * sin_r, xy * cos_r + yy * sin_r, xz * cos_r + yz * sin_r
+    return gp_Ax2(basis_point_to_world(basis, center_x, center_y), basis_normal(basis), gp_Dir(dx, dy, dz))
+
+
 def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
     """C3: `basis`'s local (x, y) -> world-space embedding - generalizes the
     fixed-plane-only `sketch_point_to_world` this replaces (see
@@ -84,11 +133,51 @@ def basis_point_to_world(basis: ResolvedPlane, x: float, y: float) -> gp_Pnt:
     return gp_Pnt(ox + x * xx + y * yx, oy + x * xy + y * yy, oz + x * xz + y * yz)
 
 
+def _text_world_transform(text: TextEntity, sketch: Sketch, basis: ResolvedPlane) -> gp_Trsf:
+    """The local(text_to_brep's own baseline-origin space) -> world
+    transform for `text`'s own geometry: first rotated in-plane by
+    `text.rotation_degrees` and translated to its anchor Point (both in
+    the sketch's own local (x, y) space, mirroring `_ellipse_axis`'s
+    identical "rotate the basis's own in-plane axes" composition), then
+    embedded in world space via `basis` - composed directly into one 3x4
+    affine matrix (`gp_Trsf.SetValues`) rather than two chained
+    `BRepBuilderAPI_Transform` calls, avoiding a second full-shape copy.
+    `text_to_brep`'s own shapes always lie flat at local Z=0 (confirmed
+    by direct on-device testing), so this transform's Z-column
+    coefficients (`basis.normal`) never actually get exercised by any
+    coordinate this is applied to - included anyway to keep the matrix a
+    genuine orthonormal 3D transform, not a degenerate 2D-only one.
+    """
+    anchor = sketch.points[text.anchor_point_id]
+    rotation = math.radians(text.rotation_degrees)
+    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    nx, ny, nz = basis.normal
+    # The world-space direction local +x/+y each map along, after the
+    # in-plane rotation - same composition _ellipse_axis uses for its own
+    # rotated major-axis direction.
+    x_prime = (cos_r * xx + sin_r * yx, cos_r * xy + sin_r * yy, cos_r * xz + sin_r * yz)
+    y_prime = (-sin_r * xx + cos_r * yx, -sin_r * xy + cos_r * yy, -sin_r * xz + cos_r * yz)
+    translation = basis_point_to_world(basis, anchor.x, anchor.y)
+
+    trsf = gp_Trsf()
+    trsf.SetValues(
+        x_prime[0], y_prime[0], nx, translation.X(),
+        x_prime[1], y_prime[1], ny, translation.Y(),
+        x_prime[2], y_prime[2], nz, translation.Z(),
+    )
+    return trsf
+
+
 def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
-    """A Profile is either a Line-chain polygon (the common case) or a
-    standalone Circle (see app.sketch.profile._circle_profile, which packs
-    the Circle's own entity id into `line_ids` rather than a Line chain) -
-    each needs a different OCCT wire construction.
+    """A Profile is a standalone Circle/Ellipse/Text contour (see
+    app.sketch.profile._circle_profile/_ellipse_profile/_text_profile,
+    which all pack the owning entity's own id into `line_ids` rather than
+    a Line chain), a pure Line-chain polygon (the common case), or a
+    Line/Arc/Spline-chain mixing straight and curved segments (e.g. a
+    rounded-corner rectangle) - each needs a different OCCT wire
+    construction.
 
     On-device feedback: public (no leading underscore) since
     `app.document.sweep` also needs a bare outer wire (not the full
@@ -103,12 +192,99 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         edge = BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
 
-    polygon = BRepBuilderAPI_MakePolygon()
-    for point_id in profile.point_ids:
-        point = sketch.points[point_id]
-        polygon.Add(basis_point_to_world(basis, point.x, point.y))
-    polygon.Close()
-    return polygon.Wire()
+    if len(profile.line_ids) == 1 and isinstance(sketch.entities.get(profile.line_ids[0]), Ellipse):
+        ellipse = sketch.entities[profile.line_ids[0]]
+        center = sketch.points[ellipse.center_point_id]
+        major_radius = ellipse.major_radius(sketch.points)
+        rotation = ellipse.rotation(sketch.points)
+        axis = _ellipse_axis(basis, center.x, center.y, rotation)
+        # gp_Elips requires MajorRadius >= MinorRadius - already enforced at
+        # creation time (see Sketch.add_ellipse); either radius can drift
+        # past that once its own DistanceConstraint is edited post-creation,
+        # same as any other solver-tracked dimension.
+        edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, ellipse.minor_radius(sketch.points))).Edge()
+        return BRepBuilderAPI_MakeWire(edge).Wire()
+
+    if len(profile.line_ids) == 1 and isinstance(sketch.entities.get(profile.line_ids[0]), TextEntity):
+        # A Text contour's own boundary (`profile.text_vertices`) is only
+        # a coarse tessellation, used for profile.py's nesting/containment
+        # classification, never for the actual solid - the real wire is
+        # the EXACT curve `app.sketch.text_geometry.text_contour_wire`
+        # re-derives directly from a fresh OCCT font-to-BRep conversion
+        # (see that function's own docstring for why it can't just be
+        # reconstructed from the tessellation), placed in world space via
+        # `_text_world_transform` (see that function's own doc comment).
+        text = sketch.entities[profile.line_ids[0]]
+        local_wire = text_contour_wire(
+            text.content, text.font, text.size, profile.text_contour_index, profile.text_hole_index
+        )
+        transform = _text_world_transform(text, sketch, basis)
+        return topods.Wire(BRepBuilderAPI_Transform(local_wire, transform, True).Shape())
+
+    if not any(
+        isinstance(sketch.entities.get(entity_id), (Arc, Spline)) for entity_id in profile.line_ids
+    ):
+        polygon = BRepBuilderAPI_MakePolygon()
+        for point_id in profile.point_ids:
+            point = sketch.points[point_id]
+            polygon.Add(basis_point_to_world(basis, point.x, point.y))
+        polygon.Close()
+        return polygon.Wire()
+
+    # A Line/Arc/Spline-mixed chain: BRepBuilderAPI_MakePolygon has no
+    # notion of a curved segment at all, so each hop is built as its own
+    # edge(s) (straight for a Line, a trimmed circular arc for an Arc, one
+    # cubic Bezier edge per internal segment for a Spline) and stitched
+    # together via BRepBuilderAPI_MakeWire, which matches shared vertices
+    # regardless of each edge's own parametric direction - so an Arc edge
+    # is always built from its own canonical start->end Points (see the
+    # Arc class docstring's CCW convention), never from
+    # `point_ids[i]`/`point_ids[i+1]` order, which depends on which
+    # direction profile.py's graph walk happened to trace this loop in and
+    # would otherwise risk picking the circle's *other* (wrong) arc
+    # between the same two points. A Spline's own internal through-points
+    # (everything between its first and last) never appear in
+    # `profile.point_ids` at all - only the two ends profile.py's walk
+    # treats as this hop's connection points do - so its own `segments()`
+    # (in the Spline's own through_point_ids order) is walked directly,
+    # reversed when the walk traced it back-to-front (mirroring Arc's own
+    # "never infer direction from point_ids order" reasoning).
+    wire_maker = BRepBuilderAPI_MakeWire()
+    point_count = len(profile.point_ids)
+    for i in range(point_count):
+        entity = sketch.entities[profile.line_ids[i]]
+        if isinstance(entity, Arc):
+            center = sketch.points[entity.center_point_id]
+            radius = entity.radius(sketch.points)
+            axis = _arc_axis(basis, center.x, center.y)
+            start = sketch.points[entity.start_point_id]
+            end = sketch.points[entity.end_point_id]
+            edge = BRepBuilderAPI_MakeEdge(
+                gp_Circ(axis, radius),
+                basis_point_to_world(basis, start.x, start.y),
+                basis_point_to_world(basis, end.x, end.y),
+            ).Edge()
+            wire_maker.Add(edge)
+        elif isinstance(entity, Spline):
+            segments = entity.segments()
+            if profile.point_ids[i] == entity.through_point_ids[-1]:
+                segments = [(p3, p2, p1, p0) for (p0, p1, p2, p3) in reversed(segments)]
+            for p0_id, p1_id, p2_id, p3_id in segments:
+                poles = TColgp_Array1OfPnt(1, 4)
+                for index, point_id in enumerate((p0_id, p1_id, p2_id, p3_id), start=1):
+                    point = sketch.points[point_id]
+                    poles.SetValue(index, basis_point_to_world(basis, point.x, point.y))
+                curve = Geom_BezierCurve(poles)
+                wire_maker.Add(BRepBuilderAPI_MakeEdge(curve).Edge())
+        else:
+            a = sketch.points[profile.point_ids[i]]
+            b = sketch.points[profile.point_ids[(i + 1) % point_count]]
+            edge = BRepBuilderAPI_MakeEdge(
+                basis_point_to_world(basis, a.x, a.y),
+                basis_point_to_world(basis, b.x, b.y),
+            ).Edge()
+            wire_maker.Add(edge)
+    return wire_maker.Wire()
 
 
 def _wire_normal(wire: TopoDS_Wire) -> gp_Dir:
@@ -186,8 +362,8 @@ def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature
 def invalid_profile_ref(ref: SketchEntityRef) -> HTTPException:
     """Prompt G: the structured `invalid_profile_ref` error for a
     `profile_refs` anchor that cannot select a real outer profile - covers
-    every way this can fail: the entity doesn't exist, isn't a Line/Circle
-    (only those two can anchor a profile - a Point can't), or exists but
+    every way this can fail: the entity doesn't exist, isn't a Line/Circle/
+    Arc (only those can anchor a profile - a Point can't), or exists but
     isn't part of any of `detect_profile`'s current outer profiles (it
     belongs to a hole, or to an unusable open-chain/branch component
     `detect_profile` already excluded). Public (no leading underscore) since
@@ -221,15 +397,20 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
     update, and picking a subset of 2+ closed loops is now possible instead
     of always using all of them).
 
-    Each `profile_refs` entry names one anchor entity (a Line or Circle)
-    expected to belong to one of `candidates`' own `line_ids` - resolved via
-    `app.sketch.store.resolve_sketch_entity`, then matched by scanning each
-    candidate's `line_ids` (a Circle profile's `line_ids` holds its own
-    single entity id - see `app.sketch.profile._circle_profile` - so the
-    same membership check works uniformly for both profile shapes). Fails
-    closed with `invalid_profile_ref` (never a generic `missing_reference`
-    or an uncaught lookup error) for every way an anchor can fail to select
-    a real outer profile - see `invalid_profile_ref`'s own doc comment.
+    Each `profile_refs` entry names one anchor entity (a Line, Circle, Arc,
+    Ellipse, Spline, or Text) expected to belong to one or more of
+    `candidates`' own `line_ids` - resolved via `app.sketch.store.
+    resolve_sketch_entity`, then matched by scanning each candidate's
+    `line_ids` (a Circle/Ellipse/Spline/Text profile's `line_ids` holds its
+    own single owning entity id - see `app.sketch.profile._circle_profile`/
+    `_ellipse_profile`/`_text_profile` - so the same membership check works
+    uniformly across every profile shape). A Text entity is the only one
+    that can own more than one top-level candidate at once (one per glyph
+    contour), so referencing it selects every one of its own loops, not
+    just the first. Fails closed with `invalid_profile_ref` (never a
+    generic `missing_reference` or an uncaught lookup error) for every way
+    an anchor can fail to select a real outer profile - see
+    `invalid_profile_ref`'s own doc comment.
 
     Selected profiles are deduplicated (two refs naming the same loop select
     it once) and returned in `candidates`' own order, not `profile_refs`'
@@ -240,21 +421,31 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
 
     selected_indices: set[int] = set()
     for ref in profile_refs:
-        if ref.entity_type not in (SketchEntityType.LINE, SketchEntityType.CIRCLE):
+        if ref.entity_type not in (
+            SketchEntityType.LINE,
+            SketchEntityType.CIRCLE,
+            SketchEntityType.ARC,
+            SketchEntityType.ELLIPSE,
+            SketchEntityType.SPLINE,
+            SketchEntityType.TEXT,
+        ):
             raise invalid_profile_ref(ref)
         try:
             entity = resolve_sketch_entity(ref)
         except HTTPException:
             raise invalid_profile_ref(ref) from None
-        if not isinstance(entity, (Line, Circle)):
+        if not isinstance(entity, (Line, Circle, Arc, Ellipse, Spline, TextEntity)):
             raise invalid_profile_ref(ref)
 
-        match_index = next(
-            (i for i, candidate in enumerate(candidates) if entity.id in candidate.line_ids), None
-        )
-        if match_index is None:
+        # A Text entity can own several top-level candidates at once (one
+        # per glyph contour - see app.sketch.profile._text_profile), so
+        # every matching candidate is selected here, not just the first -
+        # every other entity type only ever owns exactly one, so this is
+        # a no-op generalization for them (a set of one match either way).
+        matched_indices = [i for i, candidate in enumerate(candidates) if entity.id in candidate.line_ids]
+        if not matched_indices:
             raise invalid_profile_ref(ref)
-        selected_indices.add(match_index)
+        selected_indices.update(matched_indices)
 
     return [candidates[i] for i in sorted(selected_indices)]
 
@@ -752,6 +943,33 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
         raise _missing_reference(ref)
 
     return shape_map.FindKey(ref.index + 1)
+
+
+def edge_endpoint_vertex_refs(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> tuple[SubShapeRef, SubShapeRef]:
+    """Sketcher-roadmap Phase 4.3 v2: the two Body vertices at `ref`'s (an
+    EDGE) endpoints, as their own VERTEX `SubShapeRef`s against the same
+    body. Lets an edge external reference reuse v1's vertex-materialize
+    machinery (`create_plane.resolve_external_vertex_position` +
+    `Sketch.add_external_vertex_reference`) twice rather than inventing
+    any edge-specific solver/projection path - see the roadmap doc's own
+    v2 scoping (item 6): an edge materializes as two Points plus a real
+    Line between them, not a new constraint type.
+
+    Indices are 0-based, into the same per-body `TopAbs_VERTEX` map
+    `_TOPABS_FOR_SUBSHAPE_TYPE`/`app.document.mesh._extract_topology_
+    vertices` already use, so they line up with a client's own
+    `topology_vertex_ids` directly."""
+    edge_shape = resolve_subshape_from_bodies(bodies, ref)
+    edge = topods.Edge(edge_shape)
+    start_vertex, end_vertex = TopoDS_Vertex(), TopoDS_Vertex()
+    topexp.Vertices(edge, start_vertex, end_vertex)
+
+    vertex_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(bodies[ref.body_id], TopAbs_VERTEX, vertex_map)
+    return (
+        SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=vertex_map.FindIndex(start_vertex) - 1),
+        SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=vertex_map.FindIndex(end_vertex) - 1),
+    )
 
 
 def resolve_subshape(
