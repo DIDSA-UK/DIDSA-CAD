@@ -12,6 +12,7 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 
 /// A tiny in-memory fake of the backend's `/document` API - just enough of
 /// Part/Feature/mesh to drive [PartScreen] without a real network call.
@@ -254,6 +255,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     tester.widget<PartViewport>(find.byType(PartViewport)).onPlaneTap(ReferencePlaneKind.xy);
+    // A plane tap creates the SketchFeature and animates to the isometric
+    // preset for the orientation-confirm step (_addSketchFeature) - the
+    // sketch itself only opens once that step's "Continue" is tapped (see
+    // PartScreen's own _confirmingSketchOrientation doc comment).
+    await _pumpUntil(tester, () => find.text('Continue').evaluate().isNotEmpty);
+    await tester.tap(find.text('Continue'));
     await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
 
     expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
@@ -281,15 +288,27 @@ void main() {
 
       // Defaults to Orbit mode: the FAB's tooltip names the mode a tap will
       // switch *into* (Selection), and the viewport carries no tinted
-      // border yet.
+      // border yet. The FAB's glyph is an SVG asset, not a named IconData
+      // (see the 'exit-sketch-fab' heroTag predicate comment below) - byIcon
+      // no longer matches it, so this checks the SvgIcon's own asset path.
       expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
-      expect(find.byIcon(Icons.touch_app), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is SvgIcon && w.asset == 'assets/icons/viewport/viewport_selection_mode.svg',
+        ),
+        findsOneWidget,
+      );
 
       await tester.tap(find.byTooltip('Switch to selection mode'));
       await tester.pump();
 
       expect(find.byTooltip('Switch to orbit mode'), findsOneWidget);
-      expect(find.byIcon(Icons.threed_rotation), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is SvgIcon && w.asset == 'assets/icons/viewport/viewport_orbit_mode.svg',
+        ),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
 
       // Switching back to Orbit mode removes the FAB's active styling and
@@ -772,6 +791,12 @@ void main() {
 
       await tester.tap(find.text('New Sketch on YZ'));
       await tester.pump();
+      // The plane tap creates the SketchFeature and animates to the
+      // isometric preset for the orientation-confirm step
+      // (_addSketchFeature) - the sketch itself only opens once that step's
+      // "Continue" is tapped.
+      await _pumpUntil(tester, () => find.text('Continue').evaluate().isNotEmpty);
+      await tester.tap(find.text('Continue'));
       await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
 
       expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
@@ -1001,8 +1026,11 @@ void main() {
       expect(tester.widget<ListTile>(extrudeTile).enabled, isFalse);
       // Revolve/Sweep share Extrude's own eligibility check (see
       // _onFeatureLongPress) and so show the identical disabled-reason
-      // subtitle alongside it - three, not one.
-      expect(find.text('Sketch does not contain a closed profile'), findsNWidgets(3));
+      // subtitle alongside it - three, not one. textContaining, not an
+      // exact match: _checkExtrudeEligibility appends the backend's own
+      // `profile.detail` after a colon, which this fake's exact wording
+      // isn't asserted against here.
+      expect(find.textContaining('Sketch does not contain a closed profile'), findsNWidgets(3));
       expect(tester.takeException(), isNull);
     },
   );
@@ -1057,8 +1085,13 @@ void main() {
       // in this file (see the identical "Exit Sketch" fix above) that the
       // "one pre-selected Sketch" test in this group, which reaches this
       // helper after a full push/pop through the Sketch screen, kept
-      // missing. find.widgetWithIcon targets the real rendered button.
-      await tester.tap(find.widgetWithIcon(FloatingActionButton, Icons.add));
+      // missing. A heroTag predicate targets the real rendered button
+      // directly (find.widgetWithIcon no longer works now that the FAB's
+      // glyph is an SVG asset, not a named IconData - same fix as the
+      // 'exit-sketch-fab' case below).
+      await tester.tap(
+        find.byWidgetPredicate((w) => w is FloatingActionButton && w.heroTag == 'add-fab'),
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Feature'));
@@ -1268,11 +1301,17 @@ void main() {
       // flight is still in progress, a temporary in-flight copy coexists
       // with the destination route's own static FAB, so a plain fixed pump
       // isn't reliable (this ambiguity showed up intermittently at 300ms).
-      // Wait for the flight to actually finish - exactly one Icons.add FAB
-      // left - rather than guessing a duration.
+      // Wait for the flight to actually finish - exactly one 'add-fab' left
+      // - rather than guessing a duration. find.widgetWithIcon no longer
+      // works now that the FAB's glyph is an SVG asset, not a named
+      // IconData.
       await _pumpUntil(
         tester,
-        () => find.widgetWithIcon(FloatingActionButton, Icons.add).evaluate().length == 1,
+        () => find
+                .byWidgetPredicate((w) => w is FloatingActionButton && w.heroTag == 'add-fab')
+                .evaluate()
+                .length ==
+            1,
       );
       expect(find.text('Part 1'), findsOneWidget);
 

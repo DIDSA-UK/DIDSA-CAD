@@ -4,15 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
-import 'package:didsa_cad_client/sketch/plane_indicator.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart';
 import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 import 'package:didsa_cad_client/sketch/sketch_speed_dial.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
-import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 
 /// Phase 4.2's Orbit View toggle. A minimal fake backend - [ensureSketch]
@@ -216,7 +215,17 @@ void main() {
     await _settlePartViewport(tester);
 
     final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
-    expect(viewport.initialViewPlane, ReferencePlaneKind.xy);
+    // initialViewPlane was generalized to initialViewBasis (a SketchPlaneBasis,
+    // covering custom Feature-anchored planes too, not just the three fixed
+    // ReferencePlaneKinds) - see PartViewport's own doc comment on the two
+    // fields' relationship. A fixed XY sketch's basis is exactly
+    // SketchPlaneBasis.fixed(ReferencePlaneKind.xy).
+    final basis = viewport.initialViewBasis;
+    expect(basis, isNotNull);
+    expect(basis!.origin, vm.Vector3.zero());
+    expect(basis.xAxis, vm.Vector3(1, 0, 0));
+    expect(basis.yAxis, vm.Vector3(0, 1, 0));
+    expect(basis.normal, vm.Vector3(0, 0, 1));
     expect(viewport.renderMode, ViewportRenderMode.shadedWithEdges);
   });
 
@@ -307,103 +316,22 @@ void main() {
     expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).referenceBodyHidden, isTrue);
   });
 
-  group('Sketch Orientation (Sketcher-roadmap Phase 5)', () {
-    testWidgets('the hamburger menu offers a Sketch Orientation entry that opens a sheet showing 0°',
-        (tester) async {
-      final controller = await _freshController();
-
-      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-      await tester.pump();
-      await tester.tap(find.byTooltip('Menu'));
-      await tester.pump();
-
-      await tester.tap(find.text('Sketch Orientation'));
-      await tester.pump();
-
-      expect(find.text('0°'), findsOneWidget);
-      expect(find.byTooltip('Rotate 90° clockwise'), findsOneWidget);
-      expect(find.byTooltip('Rotate 90° counter-clockwise'), findsOneWidget);
-    });
-
-    testWidgets(
-        'tapping Rotate 90° clockwise PATCHes the backend and the sheet updates to reflect the '
-        'confirmed value', (tester) async {
-      final controller = await _freshController();
-
-      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-      await tester.pump();
-      await tester.tap(find.byTooltip('Menu'));
-      await tester.pump();
-      await tester.tap(find.text('Sketch Orientation'));
-      await tester.pump();
-
-      await tester.tap(find.byTooltip('Rotate 90° clockwise'));
-      await tester.pump();
-
-      expect(controller.rotationQuarterTurns, 1);
-      expect(find.text('90°'), findsOneWidget);
-    });
-
-    testWidgets(
-        'tapping Rotate 90° counter-clockwise from the identity orientation wraps around to 270° '
-        '(the backend normalizes -1 mod 4)', (tester) async {
-      final controller = await _freshController();
-
-      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-      await tester.pump();
-      await tester.tap(find.byTooltip('Menu'));
-      await tester.pump();
-      await tester.tap(find.text('Sketch Orientation'));
-      await tester.pump();
-
-      await tester.tap(find.byTooltip('Rotate 90° counter-clockwise'));
-      await tester.pump();
-
-      expect(controller.rotationQuarterTurns, 3);
-      expect(find.text('270°'), findsOneWidget);
-    });
-
-    testWidgets('toggling Flip PATCHes the backend with the new flip value, leaving rotation unchanged',
-        (tester) async {
-      final controller = await _freshController();
-
-      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-      await tester.pump();
-      await tester.tap(find.byTooltip('Menu'));
-      await tester.pump();
-      await tester.tap(find.text('Sketch Orientation'));
-      await tester.pump();
-
-      expect(controller.flip, isFalse);
-      // Drives the switch's own callback directly, mirroring this file's
-      // existing Slider-driving pattern (see the Body Transparency test
-      // above) rather than a synthetic tap - a modal bottom sheet's exact
-      // on-screen geometry has proven environment-fragile in this headless
-      // CI runner.
-      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).onChanged!(true);
-      await tester.pump();
-
-      expect(controller.flip, isTrue);
-      expect(controller.rotationQuarterTurns, 0);
-    });
-
-    testWidgets(
-        "PlaneIndicator (the bottom-left axis-arrows widget) receives the confirmed orientation "
-        'live, with no further action needed beyond the rotate tap itself', (tester) async {
-      final controller = await _freshController();
-
-      await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-      await tester.pump();
-      expect(tester.widget<PlaneIndicator>(find.byType(PlaneIndicator)).rotationQuarterTurns, 0);
-
-      await tester.tap(find.byTooltip('Menu'));
-      await tester.pump();
-      await tester.tap(find.text('Sketch Orientation'));
-      await tester.pump();
-      await tester.tap(find.byTooltip('Rotate 90° clockwise'));
-      await tester.pump();
-
-      expect(tester.widget<PlaneIndicator>(find.byType(PlaneIndicator)).rotationQuarterTurns, 1);
-    });
-  });
+  // The 'Sketch Orientation (Sketcher-roadmap Phase 5)' group that used to
+  // live here tested a hamburger-menu 'Sketch Orientation' entry inside
+  // *this* widget (SketchScreen). Task #95 ("Move sketch orientation UI:
+  // hamburger -> tree long-press, use 3D viewport control") relocated it
+  // entirely: the entry now lives in PartScreen's own Feature-tree
+  // long-press context menu (feature_context_menu.dart's
+  // showRedefineOrientation), opening the same 3D-viewport orientation-
+  // confirm bottom sheet _addSketchFeature shows for a brand new Sketch
+  // (rotate/flip/Continue-or-Done - see PartScreen's own
+  // _confirmingSketchOrientation) - nothing under this widget offers it any
+  // more. These 5 tests silently went stale (never caught until this
+  // branch's first real CI run) rather than failing loudly, since
+  // `find.text('Sketch Orientation')` just never matched here and every
+  // assertion after it read as "not found" instead of surfacing the actual
+  // relocation. Removed rather than patched; no replacement coverage exists
+  // yet for the relocated flow - _FakeSketchBackend in part_screen_test.dart
+  // doesn't stub the orientation PATCH endpoint at all, so writing one needs
+  // that extended first. Flagged as a real gap, not silently dropped.
 }
