@@ -1,0 +1,100 @@
+# DIDSA-CAD Sketcher — Two Pre-Restructure Spikes
+
+**Status:** scoped, research-only pass complete (2026-07-16); on-device/build steps still outstanding. Both are de-risking spikes, not implementation — the goal of each is a written go/no-go verdict, not shipped functionality. Neither commits the sketcher restructure to anything by itself.
+
+**Relationship to `docs/sketcher-restructure-plan.md`:** Phase 0 (round-trip reduction) of that plan has no dependency on either spike below and should ship regardless. Phases 1–4 of that plan are **provisionally paused** pending these verdicts — Phase 1 (decouple drag tracking from the server echo) would be largely moot if Spike A lands solving in-process with no server round trip at all, and Phase 2 (Slot's constraint composition) may need rethinking under plane-embedded 3D coordinates if Spike B lands. Once both spikes report, the restructure plan gets revised once, deliberately, rather than built out incrementally on assumptions that might not hold.
+
+**These two spikes are independent axes**, not sequential steps — solver *location* (client vs. server) and sketch *dimensionality* (flat 2D canvas vs. plane-embedded 3D) are separate questions. Either can land without the other: an in-process FFI solver still works under a flat 2D canvas; a plane-embedded 3D sketch can still solve over HTTP. Run them in parallel, on separate branches.
+
+---
+
+## Spike A — FFI-embedded solver feasibility
+
+**Question this answers:** can the actual SolveSpace C++ solver core (the library `py-slvs` wraps) run in-process on the client via Dart FFI, instead of over HTTP — reusing the proven solver rather than reimplementing it?
+
+### Steps
+
+1. **Source the library.** Check both `realthunder/slvs_py` (the fork this project's backend already depends on, SolveSpace v2.3-based, Linux-memory-optimized) and upstream SolveSpace's own `libslvs` — the fork's Linux-specific optimizations may not matter for a mobile target, and upstream's build may have broader existing cross-platform support already. Confirm which one is the better starting point before building anything.
+2. **Build for `arm64-v8a` via the Android NDK**, targeting the actual test device architecture (Adreno 740 / Snapdragon 8 Gen 2, per the existing on-device test setup) — independent of Python and SWIG entirely. Output: a `libslvs.so`/`.a` with no Python in the loop.
+3. **Establish an FFI-callable surface** for the primitive set this project actually uses today (from `constraints.py`'s own table): `addPointsDistance`, `addPointsProjectDistance`, `addPointsVertical`/`Horizontal`, `addAngle`, `addPointsCoincident`, `addParallel`/`addPerpendicular`, `addEqualLength`, `addPointLineDistance`, `addPointOnLine`, `addMidPoint`, `addCurvesTangent`, plus group/point creation, solve, param readback, `Dof`, and the failed-constraint list. If the library's C++ API isn't already flat/C-ABI-compatible, scope how large a thin C shim would need to be — don't assume one is trivial, but don't assume it's large either until it's actually looked at.
+4. **Correctness parity check.** Pick one simple case (two points + one distance constraint) and one hard case (a Slot — chosen deliberately because it's the most structurally fragile shape in the current system, per `docs/sketcher-architecture-ux-scoping.md` §4.5). Solve both through the new FFI path and through the existing backend's `/solve` endpoint with identical inputs; confirm matching `dof`/`converged`/point-position results.
+5. **Dart integration check.** Confirm `dart:ffi` loads and calls the compiled library from a real Flutter Android build (not a bare script) — including the actual packaging step (bundling the `.so` into the APK).
+6. **Licensing.** The solver is GPL-3. Get a real, specific answer on what obligations attach to compiling it into a distributed client app (even a free/friends-and-colleagues distribution) — static vs. dynamic linking may matter here. This needs an actual informed read, not an assumption in either direction; flag for a proper legal check if a confident answer isn't reachable from the license text alone.
+
+### Explicitly out of scope
+iOS and Windows builds (Android-only for this spike — it's the real target device and the cheapest toolchain to stand up first); porting the full constraint vocabulary (the primitive list above is the target, not "everything"); any UI or interaction work; touching the existing backend.
+
+### Go / no-go
+- **Go** (proceed to restructure the sketcher around an in-process solver) if: the library builds clean for `arm64-v8a`, the FFI surface is clean or the shim is small, the Slot case matches the backend's result, Dart/Flutter integration works end to end, and licensing is clear and acceptable.
+- **No-go / park** if any of build, FFI surface, or licensing turns out to be a hard blocker. Falls back to the original incremental plan (`docs/sketcher-restructure-plan.md` Phases 0–2: round-trip reduction, decoupled drag rendering, Slot as a real backend entity).
+
+---
+
+## Spike B — Plane-embedded 3D sketch: camera and interaction feasibility
+
+**Question this answers:** can sketch entities live directly on a plane embedded in the existing 3D scene — camera and interaction shared with Orbit View, no separate 2D canvas — and is the orthographic-projection gap a real blocker or a workaround-able one?
+
+This splits into two genuinely independent sub-questions; **do 2 before 1**, since it doesn't need to wait on the camera question at all.
+
+### B1 — Interaction prototype (do this first)
+
+Implement the minimal case: a screen tap → a ray from the current `OrbitCamera` through the tap point → intersect a fixed reference plane → resolve to a 2D point on that plane → place one point. Reuse whatever ray/plane-intersection math the existing "New Sketch on Face" and Orbit View face/edge hit-testing already has rather than writing new geometry from scratch. Confirm on-device that the placed point lands where expected and the interaction feels workable — under the *existing* perspective camera, distortion and all.
+
+This deliberately tests only the interaction mechanic, not visual correctness. It's the more foundational question: if ray-plane picking doesn't feel right even before worrying about orthographic accuracy, the rest is moot.
+
+### B2 — Orthographic camera feasibility
+
+1. Re-check `flutter_scene`'s current pub.dev release and changelog first — confirm whether anything past 0.18.1 has landed since it was last checked, before assuming the situation is unchanged.
+2. Read the actual `Camera`/`PerspectiveCamera` source and the render pipeline (`scene_pass.dart`, already partially read during the C3 investigation) to determine: is only a named `PerspectiveCamera` exposed, or can a raw/custom view-projection matrix be injected at a lower level, bypassing the camera class entirely?
+3. If neither exists: scope how large a local patch to add a minimal orthographic camera class would actually be, given `flutter_scene` is open source — this is a "how big is the patch" question, not an automatic no.
+
+### Explicitly out of scope
+Full sketch tool parity (one point placement is enough to validate B1); replacing the existing 2D sketcher outright; anything related to the C3 depth/rendering bug (separate issue, already resolved via the backface-culling fix, not orthographic-related).
+
+### Go / no-go
+- **Go** (proceed to replace the flat 2D canvas with a plane-embedded 3D sketch) if: B1 feels acceptable on-device **and** B2 comes back either already-supported, hookable, or realistically patchable.
+- **Go with a caveat, surfaced back for a product decision, not decided here** if: B1 feels fine but B2 is a hard blocker — technically possible to proceed with visible perspective distortion and fix visual correctness later, but that's a UX tradeoff worth your explicit call, not something to default into.
+- **No-go** if B1 itself feels unreliable or unpleasant on-device — the 2D canvas stays, and this idea returns to `docs/didsa-longterm-vision-and-model.md` §13 as aspirational, not started.
+
+---
+
+## After both spikes report
+
+Revise `docs/sketcher-restructure-plan.md` once, based on actual verdicts rather than the current provisional phasing. Four real outcomes are possible (solver location × sketch dimensionality, each independently go/no-go) — worth writing the revised plan against whichever combination actually lands rather than guessing now.
+
+---
+
+## Research-pass findings (2026-07-16)
+
+Everything below was done from a cloud sandbox with **no Flutter SDK, no Android NDK, no `adb`, and no physical or emulated device** — so it covers only the research-shaped sub-steps of each spike (library sourcing, license text, header/API inspection, package-source reading). The build- and on-device-shaped steps (A2, A4, A5, B1) are untouched and need an environment with those tools. GitHub access in this session is also scoped to `didsa-uk/didsa-cad` only, so external repos below were read via raw file fetches and pub.dev's own API rather than GitHub's API/UI.
+
+### Spike A
+
+**Step 1 — source comparison.** The backend's actual pinned dependency is `py-slvs==1.0.6` (`backend/environment.yml`), which is [realthunder/slvs_py](https://github.com/realthunder/slvs_py) — a SWIG-generated Python binding over a fork of SolveSpace v2.3 with Linux-specific memory optimizations, GPL-3, also used as FreeCAD Assembly3's solver. Upstream `solvespace/solvespace` carries its own `libslvs/` subdirectory with an independent `CMakeLists.txt`, and the root build already supports disabling the GUI/CLI (`ENABLE_GUI`, `ENABLE_CLI` CMake options) and cross-compiling (a documented MinGW toolchain-file path from Linux) — no Android/NDK toolchain file exists today, but the build is plain CMake/C++ with no Python or SWIG step, so adding an NDK toolchain file is the standard CMake cross-compile pattern, not a new build system. Not yet confirmed: whether realthunder's fork carries the same clean `libslvs/` split or any Linux-specific code that would need adjusting for Android — that needs the fork's own tree checked out, not just its README.
+
+**Step 3 — FFI surface.** Fetched upstream's actual `include/slvs.h` directly (raw.githubusercontent.com). It is **already a flat, `extern "C"`-wrapped C-ABI header** — `Slvs_hParam`/`Slvs_hEntity`/`Slvs_hConstraint` handles are typed `uint32_t`, and it exposes convenience constraint functions matching most of the project's `SolverBuilder` protocol directly by name: `Slvs_Coincident`, `Slvs_Distance`, `Slvs_Equal` (equal length), `Slvs_Parallel`, `Slvs_Perpendicular`, `Slvs_Midpoint`, `Slvs_Angle`, `Slvs_Tangent`, `Slvs_EqualPointToLine` (the `SLVS_C_EQ_LEN_PT_LINE_D` primitive `equal_length_point_line_distance` needs), `Slvs_Horizontal`/`Slvs_Vertical`, plus entity constructors (`Slvs_AddPoint2D`, `Slvs_AddLine2D`, `Slvs_AddCubic`, …) and `Slvs_Solve`/`Slvs_SolveSketch`/`Slvs_GetParamValue`. Two primitives this project needs (`point_on_line` → `SLVS_C_PT_ON_LINE`, `curves_tangent` → `SLVS_C_CURVE_CURVE_TANGENT`) have no dedicated convenience wrapper in this header but are reachable through the generic `Slvs_AddConstraint(grouph, type, …)` entry point using those constraint-type enums directly. Net: **a dedicated C shim looks unnecessary, or at most a few lines** — `dart:ffi` can plausibly bind straight to this header's functions. Caveat carried forward: this is *upstream's* header; it hasn't been confirmed identical to the header realthunder's fork actually ships (the fork predates some upstream additions), so this is a strong signal, not proof, until the fork's own `slvs.h` is diffed against it.
+
+**Step 6 — licensing.** Quoting the GNU Project's own GPL FAQ directly: linking a GPL-covered work "statically or dynamically with other modules is making a combined work based on the [GPL-covered work], and the terms and conditions of the GNU General Public License cover the whole combination" — GPL-3 draws **no distinction between static and dynamic linking**; both trigger the same copyleft obligation on the combined work. (This is unlike LGPL, where static vs. dynamic does matter.) Practical read for this spike: shipping a client app that links this solver, by either method, would put the combined app under GPL-3's terms — meaning source availability obligations to whoever the app is distributed to, "friends and colleagues" included. This is a real, non-trivial constraint on the "Go" path, not a formality — flagged here as confirmed from the license text itself, but still worth the "proper legal check" the spike doc already calls for before treating it as fully settled for this project's specific distribution plans.
+
+**Not executable in this environment:** A2 (NDK build for `arm64-v8a`), A4 (on-device Slot parity vs. the backend `/solve` endpoint), A5 (Dart FFI + real Flutter Android APK packaging). These need a machine with the Android NDK, a Flutter SDK, and either the physical Adreno 740 test device or an equivalent emulator.
+
+### Spike B
+
+**B1.** Not executable here — needs on-device tap-to-place testing. However, confirmed the reusable ray/plane-intersection math the spike doc points at already exists and is in active use: `client/lib/viewport3d/reference_planes.dart`'s `hitTestReferencePlanes(vm.Ray ray, {double halfSize})`, which is exactly the "New Sketch on Face"-style ray-vs-reference-plane test. `client/lib/viewport3d/selection_hit_test.dart` additionally has working ray-vs-triangle and ray-vs-segment routines for the Orbit View's own face/edge picking. So B1's actual implementation work is wiring, not new geometry — a real prototype build is still needed to judge feel, but there's no missing math to write first.
+
+**B2 — fully answered by this pass; this is the headline finding.**
+- Re-checked `flutter_scene`'s pub.dev listing via its own API (`https://pub.dev/api/packages/flutter_scene`): the current published latest is **0.18.1**, exactly what `client/pubspec.yaml` already pins. Nothing has changed since it was last checked.
+- Pulled the actual published package source (via pub.dev's archive API, since this session's GitHub access doesn't extend to `bdero/flutter_scene`) and read `lib/src/camera.dart` and `lib/src/render/scene_pass.dart` directly. Finding: **`Camera` is already an abstract base class that separates *view* (`getViewMatrix()`, `position`/`forward`/`up`) from *lens* (a `projection` getter returning a separate abstract `CameraProjection`)**. `CameraProjection`'s only built-in concrete implementation is `PerspectiveProjection`, but its own doc comment says outright: *"applications can implement `CameraProjection` for orthographic or other projections."* Grepped the whole package source for hardcoded `PerspectiveCamera` type-checks anywhere in the render pipeline (`scene_pass.dart`, `ssao_pass.dart`, the encoder/culling code) — found none; everything downstream consumes the generic `Camera`/`CameraProjection` interface (`getViewTransform`, `Frustum.matrix`, etc.), which is projection-agnostic.
+- **This directly answers `docs/didsa-longterm-vision-and-model.md` §13's stated gate** ("checking whether `flutter_scene`'s `MakeOrthographic` factory is already surfaced at the Dart level"): there is no factory literally named `MakeOrthographic`, but the more general mechanism that would make one unnecessary — a pluggable `CameraProjection` interface, explicitly documented as extension-ready for orthographic — already exists in the exact version this project has pinned.
+- **This also updates `docs/sketcher-architecture-ux-scoping.md` §12.7's premise.** That section's account of the pulled "3D-backdrop hybrid sketching" experiment states `flutter_scene` "has no true orthographic camera, only perspective with a fixed FOV." As of 0.18.1, that's no longer the accurate framing (if it ever fully was — it wasn't possible to confirm from this pass which historical version was in place during that earlier attempt, since the `CameraProjection` split isn't called out in any single `CHANGELOG.md` entry by name): there is still no *built-in* orthographic option, but the camera class is not closed against one either. A revival of that idea would need to actually implement an `OrthographicProjection extends CameraProjection` (a standard orthographic matrix) and a small custom `Camera` (mirroring `PerspectiveCamera`'s eye/target/up bookkeeping) — not patch or fork `flutter_scene` itself.
+- One minor caveat surfaced, not a blocker: the changelog notes the SSAO pass's optional specular-occlusion term "Requires a `PerspectiveCamera`" — but grepping `ssao_pass.dart` found no actual `Camera` reference or type-check in that file at all, so this reads as a soft usage note (likely about the effect's radius heuristic assuming a perspective depth distribution) rather than a hard-coded dependency. Whether Orbit View even has SSAO's specular-occlusion option enabled wasn't checked here.
+- **Net verdict for B2, pending only B1's on-device feel check:** already-supported. No `flutter_scene` patch, fork, or version bump needed — better than the spike doc's own "hookable" fallback outcome.
+
+### Open items for whoever picks up the on-device/build follow-up
+1. Check out `realthunder/slvs_py`'s actual vendored SolveSpace source tree and diff its `slvs.h` against upstream's, to confirm the FFI surface finding above holds for the exact fork this project depends on (not just upstream).
+2. Stand up an Android NDK + CMake cross-compile of upstream `libslvs` (or the fork, per #1) for `arm64-v8a`; add an NDK toolchain file alongside the existing MinGW one if targeting upstream.
+3. Run the two-point/distance and Slot parity check (A4) against the backend's `/solve` endpoint once a `.so` exists.
+4. Confirm `dart:ffi` binding + APK packaging (A5) on the real Flutter/Android toolchain.
+5. Get the GPL-3 licensing read in this doc's Step 6 section in front of an actual legal check before treating "Go" as final for Spike A.
+6. Build B1's tap-to-place prototype using `hitTestReferencePlanes` and judge feel on the real Adreno 740 device.
+7. If B1 passes, implement `OrthographicProjection`/a custom `Camera` per the B2 finding above and confirm it renders and picks correctly on-device.
