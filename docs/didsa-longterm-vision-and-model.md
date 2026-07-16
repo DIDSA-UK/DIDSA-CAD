@@ -97,14 +97,14 @@ OCCT stays the implementation for the foreseeable future — this is explicitly 
 
 No plugin or scripting surface is being built. The AI-CAD Protocol (already scoped) is the extensibility surface for the foreseeable future, not a separate macro/plugin system. Revisit only if a concrete need for third-party extension appears that the AI protocol genuinely can't serve.
 
-## 13. 3D-native sketching (John's floated idea)
+## 13. 3D-native sketching (John's floated idea) — prerequisite cleared 2026-07-16, promoted into the near-term plan
 
-Worth stating explicitly rather than losing it: sketching entities directly on a plane embedded in the shared 3D scene — potentially evolving toward a true 3D sketch format — is a genuine long-term direction, not a rejected one. But it has a hard technical prerequisite and a documented false start:
+Originally stated here as a genuine long-term direction gated behind a hard technical prerequisite and a documented false start:
 
-- **Prerequisite:** true orthographic projection. This is already an identified requirement for Phase 2 MBD drawing views (see `DIDSA-Vision-and-Roadmap.md` Phase 2), and the same camera work — checking whether `flutter_scene`'s `MakeOrthographic` factory is already surfaced at the Dart level — gates this idea too. One piece of camera work unlocks both.
-- **Prior art:** a "3D-backdrop hybrid sketching" experiment was already tried and pulled, specifically because `flutter_scene`'s perspective-only camera broke the "one flat, continuous scene" premise the idea depends on (see `docs/sketcher-architecture-ux-scoping.md` §12.7). Any revival inherits that lesson directly — it should not be re-attempted before the orthographic camera work lands, or it will very likely fail the same way for the same reason.
+- **Prerequisite:** true orthographic projection. Confirmed cleared — a spike (`docs/sketcher-spikes-ffi-and-plane-sketch.md`, Spike B) implemented `OrthographicProjection`/`OrthographicCamera` against `flutter_scene` 0.18.1's own documented extension point (no `MakeOrthographic` factory exists by that name, but the more general mechanism that makes one unnecessary already does) and confirmed on the real test device that it renders and picks correctly, with zero patch or fork needed.
+- **Prior art:** the earlier "3D-backdrop hybrid sketching" experiment was pulled specifically because `flutter_scene`'s camera was believed perspective-only (see `docs/sketcher-architecture-ux-scoping.md` §12.7). That premise no longer holds as of the version this project already pins — the same spike's B1 test (tap → ray → `hitTestReferencePlanes` → place a point, under `OrbitCamera`) also confirmed the interaction mechanic itself feels right on-device, after fixing one real bug (a pinch-zoom-direction inversion) found during that test.
 
-This is explicitly **not** part of `docs/sketcher-restructure-plan.md` — that plan fixes today's flat-2D sketcher's drag/latency and entity-correctness problems, and none of its phases foreclose this direction later.
+**This is now part of `docs/sketcher-restructure-plan.md` (Phase 2, sequenced after the plan's solver-migration work)**, not separate from it — the prerequisite that kept it out is cleared, so the reason to treat it as a distinct, deferred track no longer applies. See that plan's §3 for the reasoning on why it's sequenced after rather than bundled with the solver migration, and §4 Phase 2 for what actually still needs building (full sketch-tool parity, the flat-2D-vs-plane-embedded coexistence question, and the downstream implications for profile detection/OCCT wire construction are all explicitly not yet resolved).
 
 ## 14. Migration stance
 
