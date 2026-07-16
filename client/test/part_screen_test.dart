@@ -1319,30 +1319,19 @@ void main() {
       await tester.tap(find.byWidgetPredicate(
         (w) => w is FloatingActionButton && w.heroTag == 'exit-sketch-fab',
       ));
-      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      // The "Add" FAB carries heroTag: 'add-fab' - while the pop's Hero
-      // flight is still in progress, a temporary in-flight copy coexists
-      // with the destination route's own static FAB, so a plain fixed pump
-      // isn't reliable (this ambiguity showed up intermittently at 300ms).
-      // Wait for the flight to actually finish - exactly one 'add-fab' left
-      // - rather than guessing a duration. find.widgetWithIcon no longer
-      // works now that the FAB's glyph is an SVG asset, not a named
-      // IconData.
-      await _pumpUntil(
-        tester,
-        () => find
-                .byWidgetPredicate((w) => w is FloatingActionButton && w.heroTag == 'add-fab')
-                .evaluate()
-                .length ==
-            1,
-      );
-      // The Hero flight's *count* settling to 1 doesn't guarantee its final
-      // frame (opacity/position) has actually rendered yet - a still-mid-
-      // flight FAB can already be the sole match but not yet hit-testable
-      // at its resting offset (confirmed on CI: the predicate found exactly
-      // one, but tapping it hit whatever sat underneath instead). One more
-      // settle frame past the flight's own duration closes that gap.
-      await tester.pump(const Duration(milliseconds: 300));
+      // Both the pop's page-route transition and the FAB's Hero flight need
+      // to fully finish before the destination route's FAB is actually
+      // hit-testable at its resting offset - guessing at a fixed extra
+      // duration on top of a widget-count check proved unreliable on CI
+      // (the count settled to 1 while the route transition's own overlay
+      // was still layered on top and intercepting the tap; see the removed
+      // "settle frame" comment this replaced). pumpAndSettle is avoided
+      // elsewhere in this file only because of PartScreen's *initial*
+      // mesh-loading spinner (an indefinite CircularProgressIndicator) - by
+      // this point in the test that load already completed and isn't
+      // re-triggered by the pop, so it's safe to just pump until nothing
+      // is scheduling further frames rather than guess a duration.
+      await tester.pumpAndSettle();
       expect(find.text('Part 1'), findsOneWidget);
 
       await tapAddFeatureExtrude(tester);
