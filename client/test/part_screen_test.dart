@@ -1319,19 +1319,25 @@ void main() {
       await tester.tap(find.byWidgetPredicate(
         (w) => w is FloatingActionButton && w.heroTag == 'exit-sketch-fab',
       ));
-      // Both the pop's page-route transition and the FAB's Hero flight need
-      // to fully finish before the destination route's FAB is actually
-      // hit-testable at its resting offset - guessing at a fixed extra
-      // duration on top of a widget-count check proved unreliable on CI
-      // (the count settled to 1 while the route transition's own overlay
-      // was still layered on top and intercepting the tap; see the removed
-      // "settle frame" comment this replaced). pumpAndSettle is avoided
-      // elsewhere in this file only because of PartScreen's *initial*
-      // mesh-loading spinner (an indefinite CircularProgressIndicator) - by
-      // this point in the test that load already completed and isn't
-      // re-triggered by the pop, so it's safe to just pump until nothing
-      // is scheduling further frames rather than guess a duration.
-      await tester.pumpAndSettle();
+      // The pop's page-route transition (a fade wrapping both the outgoing
+      // and incoming route, per the default transitions builder) needs to
+      // fully finish - and its cleanup (removing the outgoing route's
+      // RenderObjects from the Overlay) needs a frame *after* that - before
+      // the FAB underneath is actually hit-testable at its resting offset.
+      // The 'add-fab' FloatingActionButton itself is a poor completion
+      // signal here: it's the same persistent widget the whole time (never
+      // rebuilt - PartScreen's own State outlives the push/pop), so a
+      // widget-count/find check on it is satisfied instantly, before the
+      // transition even starts. pumpAndSettle can't be used either -
+      // confirmed on CI to time out here (PartViewport's Scene render loop
+      // keeps scheduling frames indefinitely, same reason it's avoided
+      // elsewhere in this file for the *initial* mesh-loading spinner).
+      // Pumping many small steps (rather than one large jump) gives each
+      // intermediate frame's post-frame callbacks - where the Overlay
+      // actually drops the finished route's RenderObjects - a chance to run.
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
       expect(find.text('Part 1'), findsOneWidget);
 
       await tapAddFeatureExtrude(tester);
