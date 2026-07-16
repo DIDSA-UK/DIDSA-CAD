@@ -716,12 +716,35 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     // Before deleting: Sketch 1 locked (grey lock icon), Sketch 2 unlocked
-    // (primary-colour edit icon).
-    Icon iconFor(String label) =>
-        tester.widget<Icon>(find.descendant(of: find.ancestor(of: find.text(label), matching: find.byType(ListTile)), matching: find.byType(Icon)));
-    expect(iconFor('Sketch 1').color, Colors.grey);
-    expect(iconFor('Sketch 1').icon, Icons.lock);
-    expect(iconFor('Sketch 2').color, isNot(Colors.grey));
+    // (primary-colour edit icon). The leading glyph is a plain Icon(Icons.
+    // lock) for a locked Feature but an SvgIcon (feature-type asset, not a
+    // named IconData) for an unlocked one - find.byType(Icon) alone only
+    // ever matches the locked case; a warning/visibility_off Icon can also
+    // sit in the same ListTile (lost-reference badge, hidden trailing), so
+    // the predicate excludes those explicitly rather than assuming the
+    // leading glyph is always first in the found set.
+    Finder leadingGlyphFor(String label) => find.descendant(
+          of: find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
+          matching: find.byWidgetPredicate(
+            (w) => (w is Icon && w.icon == Icons.lock) || w is SvgIcon,
+          ),
+        );
+    Color? glyphColorFor(String label) {
+      final widget = tester.widget(leadingGlyphFor(label));
+      return widget is Icon ? widget.color : (widget as SvgIcon).color;
+    }
+
+    bool isLockedFor(String label) => find
+        .descendant(
+          of: find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
+          matching: find.byIcon(Icons.lock),
+        )
+        .evaluate()
+        .isNotEmpty;
+
+    expect(glyphColorFor('Sketch 1'), Colors.grey);
+    expect(isLockedFor('Sketch 1'), isTrue);
+    expect(glyphColorFor('Sketch 2'), isNot(Colors.grey));
 
     // Long-press the last (unlocked) Feature and delete just it - nothing
     // depends on the last Feature, so this cascades to exactly one Feature
@@ -748,8 +771,8 @@ void main() {
     // primary-colour edit icon), not still show the grey lock icon it had
     // while Sketch 2 existed.
     expect(find.text('Sketch 1'), findsOneWidget);
-    expect(iconFor('Sketch 1').color, isNot(Colors.grey));
-    expect(iconFor('Sketch 1').icon, isNot(Icons.lock));
+    expect(glyphColorFor('Sketch 1'), isNot(Colors.grey));
+    expect(isLockedFor('Sketch 1'), isFalse);
     expect(tester.takeException(), isNull);
   });
 
@@ -1313,6 +1336,13 @@ void main() {
                 .length ==
             1,
       );
+      // The Hero flight's *count* settling to 1 doesn't guarantee its final
+      // frame (opacity/position) has actually rendered yet - a still-mid-
+      // flight FAB can already be the sole match but not yet hit-testable
+      // at its resting offset (confirmed on CI: the predicate found exactly
+      // one, but tapping it hit whatever sat underneath instead). One more
+      // settle frame past the flight's own duration closes that gap.
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('Part 1'), findsOneWidget);
 
       await tapAddFeatureExtrude(tester);
