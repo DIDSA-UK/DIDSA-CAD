@@ -6,6 +6,8 @@ import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
 import '../api/sketch_api_client.dart';
 import 'dof_analysis.dart';
+import 'local_solver/local_sketch_solver.dart';
+import 'local_solver/slvs_bindings.dart';
 import 'view_transform.dart';
 
 /// Returns [candidate] unchanged if it is within [canvasSize] bounds.
@@ -601,11 +603,19 @@ class DimensionGhost {
 /// Owns the sketch's client-side state (cursor, points, lines, the
 /// in-progress chain) and talks to the backend via [SketchApiClient].
 /// The backend's solved point positions are always treated as the source
-/// of truth - see [_refreshAllPoints], called after every solve.
+/// of truth - see [_solveAndTrackDof], called after every mutation.
 class SketchController extends ChangeNotifier {
   final SketchApiClient _api;
 
-  SketchController({SketchApiClient? api}) : _api = api ?? SketchApiClient();
+  /// [localSolverBindings] lets a test inject an already-loaded native
+  /// library (e.g. the host desktop build under client/native/slvs/
+  /// build-host/) so the in-process solve path itself - not just its
+  /// server-round-trip fallback - can be exercised deterministically off
+  /// Android. Production code never passes this; [_trySolveDuringDragLocally]
+  /// lazily loads the real bundled library on first use instead.
+  SketchController({SketchApiClient? api, SlvsNativeBindings? localSolverBindings})
+      : _api = api ?? SketchApiClient(),
+        _localSolverBindings = localSolverBindings;
 
   /// Touch drag moves the cursor relatively, scaled by this factor - not
   /// 1:1 with finger position, per the project brief's interaction model.
@@ -1440,14 +1450,32 @@ class SketchController extends ChangeNotifier {
   bool isPointFullyPinned(String pointId) =>
       isFullyConstrained || rigidity.isPointFullyConstrained(pointId);
 
-  /// [anchorPointIds] passes through to [SketchApiClient.solve] - see that
-  /// method's doc comment. Defaults to none, which every call site except
-  /// the drag-drop endings below wants (equal freedom for every Point).
+  /// [anchorPointIds] passes through to [SketchApiClient.solveAndRefresh] -
+  /// see that method's doc comment. Defaults to none, which every call site
+  /// except the drag-drop endings below wants (equal freedom for every
+  /// Point).
+  ///
+  /// Phase 0 round-trip reduction: this is the finish-tail's single call -
+  /// every prior `_solveAndTrackDof` + [_refreshAllPoints] +
+  /// [_refreshConstraints] triple collapses into this one request, since
+  /// [SketchApiClient.solveAndRefresh] already returns the post-solve
+  /// Points/Constraints/profile alongside the solve result itself.
   Future<void> _solveAndTrackDof({List<String> anchorPointIds = const []}) async {
-    final result = await _api.solve(_sketchId!, anchorPointIds: anchorPointIds);
-    _dof = result.dof;
-    _lastSolveConverged = result.converged;
-    _solverReportedFailedConstraintIds = result.solverReportedFailedConstraintIds;
+    final result = await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds);
+    _dof = result.solve.dof;
+    _lastSolveConverged = result.solve.converged;
+    _solverReportedFailedConstraintIds = result.solve.solverReportedFailedConstraintIds;
+    final freshIds = result.points.map((p) => p.id).toSet();
+    points
+      ..removeWhere((id, _) => !freshIds.contains(id))
+      ..addEntries(result.points.map((p) => MapEntry(p.id, SketchPointView(id: p.id, x: p.x, y: p.y))));
+    constraints
+      ..clear()
+      ..addEntries(result.constraints.map((c) => MapEntry(c.id, c)));
+    // Same >= 2 filter as [_refreshProfile] (a standalone Circle profile is
+    // exactly 2 points: center, radius point).
+    _closedProfileFills = result.profile.fillableLoops.where((loop) => loop.pointIds.length >= 2).toList();
+    _profileBranchPointIds = result.profile.branchPointIds;
   }
 
   /// True when the cursor is close enough to the chain's start Point that
@@ -2663,10 +2691,69 @@ class SketchController extends ChangeNotifier {
       if (_draggingPointId != pointId) return;
       points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
-      _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
+      // Sketcher restructure Phase 1 (Milestone E): the mid-drag reflow of
+      // every *other* Point tries the in-process solver first - no network
+      // round trip, so no throttle needed. Falls back to the existing
+      // throttled server solve whenever the native library isn't
+      // available (only bundled on Android today) or the local solve
+      // throws for any reason, so this narrow landing can never produce
+      // worse behaviour than before it existed, only better when it works.
+      if (!_trySolveDuringDragLocally([pointId])) {
+        _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
+      }
     } on ApiException catch (e) {
       errorMessage = e.message;
       notifyListeners();
+    }
+  }
+
+  SlvsNativeBindings? _localSolverBindings;
+  bool _localSolverUnavailable = false;
+
+  /// Attempts the in-process local solve for [updatePointDrag]'s mid-drag
+  /// reflow - returns false (never partially applied) if the native
+  /// library isn't loadable or the solve itself throws, so the caller can
+  /// fall back to the server round trip unconditionally. Deliberately
+  /// scoped to the single-Point-drag path only (sketcher restructure plan
+  /// Phase 1 item 4's "land behind one narrow, real interaction path
+  /// first") - [updateLineDrag]'s own mid-drag solve is untouched.
+  bool _trySolveDuringDragLocally(List<String> anchorPointIds) {
+    var bindings = _localSolverBindings;
+    if (bindings == null && !_localSolverUnavailable) {
+      try {
+        bindings = loadSlvsBindings();
+        _localSolverBindings = bindings;
+      } catch (_) {
+        _localSolverUnavailable = true;
+      }
+    }
+    if (bindings == null) return false;
+
+    try {
+      final pointXY = <String, (double, double)>{
+        for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y),
+      };
+      final lineEndpoints = <String, (String, String)>{
+        for (final entry in lines.entries) entry.key: (entry.value.startPointId, entry.value.endPointId),
+      };
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: pointXY,
+        constraints: constraints.values.toList(),
+        lineEndpoints: (id) => lineEndpoints[id]!,
+        originPointId: _originPointId,
+        anchorPointIds: anchorPointIds.toSet(),
+      );
+      final anchorSet = anchorPointIds.toSet();
+      for (final entry in result.solvedPoints.entries) {
+        if (anchorSet.contains(entry.key)) continue;
+        final (x, y) = entry.value;
+        points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
+      }
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -2796,8 +2883,6 @@ class SketchController extends ChangeNotifier {
           }
         }
         await _solveAndTrackDof();
-        await _refreshAllPoints();
-        await _refreshConstraints();
       });
       return;
     }
@@ -2822,8 +2907,6 @@ class SketchController extends ChangeNotifier {
       // its intuitive result: the *other*, pre-existing Point moves to meet
       // this one, not the other way around.
       await _solveAndTrackDof(anchorPointIds: [pointId]);
-      await _refreshAllPoints();
-      await _refreshConstraints();
     });
   }
 
@@ -2979,8 +3062,6 @@ class SketchController extends ChangeNotifier {
       // Both endpoints anchored - mirrors [endPointDrag]'s reasoning, applied
       // to the whole dropped Line rather than a single Point.
       await _solveAndTrackDof(anchorPointIds: [line.startPointId, line.endPointId]);
-      await _refreshAllPoints();
-      await _refreshConstraints();
     });
   }
 
@@ -4065,8 +4146,6 @@ class SketchController extends ChangeNotifier {
       // constrained" indicator) stale until some *other* mutation happened
       // to trigger a fresh solve.
       await _solveAndTrackDof();
-      await _refreshConstraints();
-      await _refreshAllPoints();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -4238,8 +4317,10 @@ class SketchController extends ChangeNotifier {
       );
       idMap[spline.id] = created.id;
       // Same fetch-and-cache as [finishSpline] - these fresh control-handle
-      // Points are new to the client and [_refreshAllPoints] (called after
-      // this by [undo]) only re-fetches ids already known, not these.
+      // Points are new to the client; fetched eagerly here so they're
+      // available for immediate local use before [_refreshAllPoints] (called
+      // after this by [undo]) resolves, even though that call would also
+      // pick them up itself now.
       for (final id in created.controlPointIds) {
         final point = await _api.getPoint(_sketchId!, id);
         points[id] = SketchPointView(id: point.id, x: point.x, y: point.y);
@@ -4421,8 +4502,6 @@ class SketchController extends ChangeNotifier {
       // some later, unrelated mutation forced a fresh one - or the sketch
       // was closed and reopened, which does a full re-adopt.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
     });
   }
 
@@ -4449,8 +4528,6 @@ class SketchController extends ChangeNotifier {
       // reasoning (update_constraint_value already re-solves server-side;
       // this client-side cache just never picked it up).
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -4689,8 +4766,6 @@ class SketchController extends ChangeNotifier {
       final constraint = await _api.createVerticalConstraint(_sketchId!, current.id);
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -4705,8 +4780,6 @@ class SketchController extends ChangeNotifier {
       final constraint = await _api.createHorizontalConstraint(_sketchId!, current.id);
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -4840,8 +4913,6 @@ class SketchController extends ChangeNotifier {
       }
 
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
     });
   }
 
@@ -5345,8 +5416,6 @@ class SketchController extends ChangeNotifier {
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
         await _solveAndTrackDof();
-        await _refreshAllPoints();
-        await _refreshConstraints();
         _ghosts = [];
         _dimensionSelection.clear();
         _activeGhostKey = null;
@@ -5376,8 +5445,6 @@ class SketchController extends ChangeNotifier {
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
         await _solveAndTrackDof();
-        await _refreshAllPoints();
-        await _refreshConstraints();
         _ghosts = [];
         _dimensionSelection.clear();
         _activeGhostKey = null;
@@ -5446,8 +5513,6 @@ class SketchController extends ChangeNotifier {
       // way [setLineLength]/[updateSelectedConstraintValue]'s matching
       // fixes describe.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
       _ghosts = [];
       _dimensionSelection.clear();
       _activeGhostKey = null;
@@ -5482,8 +5547,6 @@ class SketchController extends ChangeNotifier {
       final constraint = await create(_sketchId!, idA, idB);
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -5902,8 +5965,6 @@ class SketchController extends ChangeNotifier {
       // refresh unconditionally, same as every other entity-placement
       // tool, so it's reflected immediately.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
     });
   }
 
@@ -5952,8 +6013,6 @@ class SketchController extends ChangeNotifier {
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
 
       if (closingLoop) {
         _chainStartPointId = null;
@@ -6007,8 +6066,6 @@ class SketchController extends ChangeNotifier {
       await _applyLineSnapConstraint(line.id, snapAxis);
 
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
       _midpointAnchorX = null;
       _midpointAnchorY = null;
     });
@@ -6076,8 +6133,6 @@ class SketchController extends ChangeNotifier {
 
       // Same rule as a completed Line: one finished entity = one solve call.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
 
       _circleCenterPointId = null;
     });
@@ -6167,8 +6222,6 @@ class SketchController extends ChangeNotifier {
 
       // Same rule as a completed Circle: one finished entity = one solve call.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
 
       _arcCenterPointId = null;
       _arcStartPointId = null;
@@ -6232,8 +6285,9 @@ class SketchController extends ChangeNotifier {
       // Vertex 0 is the (already-known) firstVertexId placed/snapped above -
       // vertices 1..sides-1 are freshly created server-side by add_polygon
       // and aren't locally known yet, same as Ellipse's own minor/negative-
-      // tip Points (_refreshAllPoints only refreshes ids already in `points`,
-      // it never discovers new ones).
+      // tip Points. Fetched eagerly so `lines[...]` below (which references
+      // these ids immediately, synchronously) has them; the later
+      // [_refreshAllPoints] call would also pick them up itself now.
       for (final id in polygon.vertexPointIds.skip(1)) {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
@@ -6249,8 +6303,6 @@ class SketchController extends ChangeNotifier {
       // Same rule as a completed Circle/Arc: one finished entity = one solve
       // call.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
 
       _polygonCenterPointId = null;
     });
@@ -6436,8 +6488,6 @@ class SketchController extends ChangeNotifier {
 
       // Same rule as a completed Circle/Arc/Polygon: one finished entity = one solve call.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
 
       _slotCenter1PointId = null;
       _slotCenter2PointId = null;
@@ -6532,8 +6582,6 @@ class SketchController extends ChangeNotifier {
 
       // Same rule as a completed Circle/Arc/Polygon/Slot: one finished entity = one solve call.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
 
       _ellipseCenterPointId = null;
       _ellipseMajorPointId = null;
@@ -6610,8 +6658,6 @@ class SketchController extends ChangeNotifier {
 
       // Same rule as any other completed entity: one finished entity = one solve call.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
 
       _splineThroughPointIds.clear();
     });
@@ -6656,8 +6702,6 @@ class SketchController extends ChangeNotifier {
 
       // Same rule as any other completed entity: one finished entity = one solve call.
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
       await _refreshTextPreview(text.id);
     });
   }
@@ -6797,8 +6841,6 @@ class SketchController extends ChangeNotifier {
       });
 
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
     });
   }
 
@@ -7010,8 +7052,6 @@ class SketchController extends ChangeNotifier {
     }
 
     await _solveAndTrackDof();
-    await _refreshAllPoints();
-    await _refreshConstraints();
   }
 
   /// [RectangleConstructionMethod.twoCorner]: the first tap places one real
@@ -7169,14 +7209,6 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _refreshAllPoints() async {
-    for (final id in points.keys.toList()) {
-      final fresh = await _api.getPoint(_sketchId!, id);
-      points[id] = SketchPointView(id: fresh.id, x: fresh.x, y: fresh.y);
-    }
-    await _refreshProfile();
-  }
-
   List<ProfileLoopDto> _closedProfileFills = const [];
 
   /// Every outer profile loop the sketch's closed-profile detection found,
@@ -7185,8 +7217,9 @@ class SketchController extends ChangeNotifier {
   /// outer loops (C2, each with its own holes), or empty if there's no
   /// usable profile at all (no loop, an open chain, a branch, overlapping/
   /// invalid nesting). Refreshed alongside points/constraints on every
-  /// [_refreshAllPoints] call via the existing
-  /// `GET /sketch/sketches/{id}/profile` endpoint.
+  /// [_solveAndTrackDof] call - its response already bundles the profile
+  /// (Phase 0 round-trip reduction; this used to be a separate
+  /// `GET /sketch/sketches/{id}/profile` call).
   ///
   /// Bug fix: previously this only ever held a single loop's Point ids and
   /// was null whenever `status != closed_loop`, so a sketch with a
@@ -7207,19 +7240,6 @@ class SketchController extends ChangeNotifier {
   /// distinct marker at each id so the offending point is visible without
   /// leaving the sketcher.
   List<String> get profileBranchPointIds => _profileBranchPointIds;
-
-  Future<void> _refreshProfile() async {
-    final profile = await _api.getProfile(_sketchId!);
-    // >= 2, not >= 3: a Line-chain polygon loop needs at least 3 points,
-    // but a standalone Circle profile (see app.sketch.profile._circle_profile)
-    // is reported as exactly 2 points (center, radius point) - the same
-    // 2-vs-3+ distinction SketchCanvas._profileLoopPath uses to tell a
-    // circle loop apart from a polygon one. A >= 3 filter here silently
-    // dropped every Circle profile - bug fix, previously untested since
-    // earlier on-device rounds only exercised Line-chain rectangles.
-    _closedProfileFills = profile.fillableLoops.where((loop) => loop.pointIds.length >= 2).toList();
-    _profileBranchPointIds = profile.branchPointIds;
-  }
 
   // --- Stage 19b item 4: undo --------------------------------------------
 
@@ -7255,8 +7275,6 @@ class SketchController extends ChangeNotifier {
     await _runGuarded(() async {
       await inverse();
       await _solveAndTrackDof();
-      await _refreshAllPoints();
-      await _refreshConstraints();
     });
   }
 

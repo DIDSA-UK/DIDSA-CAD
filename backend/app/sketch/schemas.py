@@ -759,3 +759,18 @@ class SolveRequest(BaseModel):
     caller did before this field existed) is equivalent to an empty list."""
 
     anchor_point_ids: list[str] = []
+
+
+class SketchStateResponse(BaseModel):
+    """Bundles the solve result with every Point/Constraint and the current
+    profile detection - the common "just finished a mutation" case (Phase 0
+    round-trip reduction) that would otherwise be a `solve` + `listPoints` +
+    `listConstraints` + `getProfile` sequence of separate round trips.
+    Returned by POST .../solve-and-refresh; each field's shape is identical
+    to that separate endpoint's own response - this is response bundling
+    only, no new solver behaviour."""
+
+    solve: SolveResultResponse
+    points: list[PointResponse]
+    constraints: list[ConstraintResponse]
+    profile: ProfileDetectionResponse

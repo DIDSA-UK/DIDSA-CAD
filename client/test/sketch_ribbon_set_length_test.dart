@@ -97,6 +97,26 @@ class _FakeBackend {
       return _json(_solveResultBody(), 200);
     }
 
+    // Phase 0 round-trip reduction: bundles the same solve result with the
+    // current Points/Constraints/profile, mirroring the real backend's
+    // POST .../solve-and-refresh (SketchStateResponse). No test in this file
+    // exercises profile detection, so a fixed "nothing closed" stub is fine.
+    final solveAndRefreshMatch = RegExp(r'^/sketch/sketches/[^/]+/solve-and-refresh$').hasMatch(path);
+    if (solveAndRefreshMatch && request.method == 'POST') {
+      return _json({
+        'solve': _solveResultBody(),
+        'points': points.values.toList(),
+        'constraints': constraints.values.toList(),
+        'profile': {
+          'status': 'no_loop',
+          'detail': 'not a closed loop',
+          'profile': null,
+          'branch_point_ids': <String>[],
+          'loops': <Map<String, dynamic>>[],
+        },
+      }, 200);
+    }
+
     return http.Response('not found: ${request.method} $path', 404);
   }
 

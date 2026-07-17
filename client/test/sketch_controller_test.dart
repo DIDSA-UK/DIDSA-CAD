@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:ffi' as ffi;
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart' show Offset, Rect, Size;
@@ -7,9 +9,27 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/sketch/local_solver/slvs_bindings.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
+
+/// Milestone B/E's host-built didsa_slvs_ffi library, if it's been built
+/// (see client/native/slvs/CMakeLists.txt's own header comment for the
+/// two-step recipe) - lets the tests below exercise the actual in-process
+/// solve path engaging during a drag, not just its server-round-trip
+/// fallback (which every other drag test in this file already covers).
+String? _findHostSlvsLibrary() {
+  for (final relative in [
+    'native/slvs/build-host/libdidsa_slvs_ffi.dll',
+    'native/slvs/build-host/libdidsa_slvs_ffi.so',
+    'native/slvs/build-host/libdidsa_slvs_ffi.dylib',
+  ]) {
+    final file = File(relative);
+    if (file.existsSync()) return file.absolute.path;
+  }
+  return null;
+}
 
 /// A tiny in-memory fake of the backend's `/sketch` API (point/line/circle
 /// creation, constraints, get, solve) good enough to exercise the
@@ -957,6 +977,19 @@ class _FakeBackend {
     final solveMatch = RegExp(r'^/sketch/sketches/[^/]+/solve$').hasMatch(path);
     if (solveMatch && request.method == 'POST') {
       return _json(_solveResultBody(), 200);
+    }
+
+    // Phase 0 round-trip reduction: bundles the same solve result with the
+    // current Points/Constraints/profile, mirroring the real backend's
+    // POST .../solve-and-refresh (SketchStateResponse).
+    final solveAndRefreshMatch = RegExp(r'^/sketch/sketches/[^/]+/solve-and-refresh$').hasMatch(path);
+    if (solveAndRefreshMatch && request.method == 'POST') {
+      return _json({
+        'solve': _solveResultBody(),
+        'points': points.values.toList(),
+        'constraints': constraints.values.toList(),
+        'profile': _profileBody(),
+      }, 200);
     }
 
     final profileMatch = RegExp(r'^/sketch/sketches/[^/]+/profile$').hasMatch(path);
@@ -4829,6 +4862,66 @@ void main() {
     expect(controller.points[pointId]!.y, 34); // 0 + (34 - 0)
     expect(controller.isUnderConstrained, isTrue); // unchanged: still the dof=1 from the line's solve
     expect(controller.errorMessage, isNull);
+  });
+
+  test(
+      'updatePointDrag solves locally (no /solve round trip) when a native library is injected, '
+      'reflowing the other Point to satisfy a live DistanceConstraint', () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    localController.selectDrawTool(SketchTool.line);
+    // Away from (0, 0) on purpose - a tap there snaps onto the Sketch's
+    // own origin Point (_pointIdAtCursor's documented behaviour), which
+    // would make this test drag the origin instead of a free Point.
+    await localController.handleCanvasTap(5, 5);
+    // Nonzero dof - same reason as the "PATCHes the dragged Point" test
+    // above: beginPointDrag refuses to grab a Point isFullyConstrained
+    // already thinks is fully pinned, and the fake backend's dof defaults
+    // to 0 (would otherwise look fully constrained the instant the line
+    // finishes below).
+    localBackend.dof = 1;
+    await localController.handleCanvasTap(15, 5);
+    localController.finishChain();
+    localController.exitToSelectMode();
+    final line = localController.lines.values.last;
+    final draggedId = line.startPointId;
+    final otherId = line.endPointId;
+    // Injected directly into the controller's live state, not via the fake
+    // backend - the in-process solver reads Points/Constraints/lines from
+    // the controller itself, so this is enough to exercise it without
+    // teaching the fake backend to model constraint solving too.
+    localController.constraints['dc1'] =
+        DistanceConstraintDto(id: 'dc1', pointAId: draggedId, pointBId: otherId, distance: 50.0);
+
+    final grabbed = localController.beginPointDrag(draggedId);
+    expect(grabbed, isTrue);
+    localBackend.requestLog.clear();
+    // The exact destination doesn't matter - only that dragging moves
+    // draggedId somewhere new and the *other* Point reflows to keep the
+    // 50.0 DistanceConstraint satisfied, without any server round trip.
+    await localController.updatePointDrag(30, 40);
+
+    // The dragged Point's own PATCH still happens (that part is unchanged -
+    // only the *other* Points' reflow is local now), but no /solve or
+    // /solve-and-refresh round trip should have fired.
+    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+
+    final draggedPoint = localController.points[draggedId]!;
+    final otherPoint = localController.points[otherId]!;
+    final distance = math.sqrt(
+      math.pow(otherPoint.x - draggedPoint.x, 2) + math.pow(otherPoint.y - draggedPoint.y, 2),
+    );
+    expect(distance, closeTo(50.0, 1e-6));
   });
 
   test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {

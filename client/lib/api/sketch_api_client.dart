@@ -866,6 +866,36 @@ class ProfileDetectionDto {
   }
 }
 
+/// Bundled result of `solveAndRefresh` (Phase 0 round-trip reduction) - the
+/// same [SolveResultDto] plus every current [PointDto]/[ConstraintDto] and
+/// the current [ProfileDetectionDto], in one response instead of the
+/// separate `solve` + `listPoints` + `listConstraints` + `getProfile` calls
+/// the common "just finished a mutation" case used to need.
+class SketchStateDto {
+  final SolveResultDto solve;
+  final List<PointDto> points;
+  final List<ConstraintDto> constraints;
+  final ProfileDetectionDto profile;
+
+  SketchStateDto({
+    required this.solve,
+    required this.points,
+    required this.constraints,
+    required this.profile,
+  });
+
+  factory SketchStateDto.fromJson(Map<String, dynamic> json) => SketchStateDto(
+        solve: SolveResultDto.fromJson(json['solve'] as Map<String, dynamic>),
+        points: (json['points'] as List<dynamic>)
+            .map((p) => PointDto.fromJson(p as Map<String, dynamic>))
+            .toList(),
+        constraints: (json['constraints'] as List<dynamic>)
+            .map((c) => ConstraintDto.fromJson(c as Map<String, dynamic>))
+            .toList(),
+        profile: ProfileDetectionDto.fromJson(json['profile'] as Map<String, dynamic>),
+      );
+}
+
 /// Thin wrapper over the backend's `/sketch` REST API. Knows nothing about
 /// UI/cursor state - it only translates Dart calls into the HTTP contract
 /// defined by backend/app/sketch/router.py and schemas.py.
@@ -1822,6 +1852,22 @@ class SketchApiClient {
                   : jsonEncode({'anchor_point_ids': anchorPointIds}),
             ),
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Phase 0 round-trip reduction: same solve semantics as [solve]
+  /// (including [anchorPointIds]'s drag-solve pinning), but returns the
+  /// post-solve Points/Constraints/profile in the same response instead of
+  /// requiring separate [listPoints]/[listConstraints]/[getProfile] calls
+  /// afterward - the common "just finished a mutation" case.
+  Future<SketchStateDto> solveAndRefresh(String sketchId, {List<String> anchorPointIds = const []}) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/solve-and-refresh'),
+              headers: _headers,
+              body: anchorPointIds.isEmpty
+                  ? null
+                  : jsonEncode({'anchor_point_ids': anchorPointIds}),
+            ),
+        (body) => SketchStateDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<ProfileDetectionDto> getProfile(String sketchId) => _send(

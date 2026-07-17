@@ -87,6 +87,7 @@ from app.sketch.schemas import (
     SketchCreate,
     SketchOrientationUpdate,
     SketchResponse,
+    SketchStateResponse,
     SolveRequest,
     SolveResultResponse,
     SplineCreate,
@@ -858,9 +859,7 @@ def get_text_preview(sketch_id: str, text_id: str) -> TextPreviewResponse:
     )
 
 
-@router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)
-def get_profile(sketch_id: str) -> ProfileDetectionResponse:
-    sketch = _get_sketch_or_404(sketch_id)
+def _profile_detection_response(sketch: Sketch) -> ProfileDetectionResponse:
     result = detect_profile(sketch)
     return ProfileDetectionResponse(
         status=result.status,
@@ -869,6 +868,12 @@ def get_profile(sketch_id: str) -> ProfileDetectionResponse:
         branch_point_ids=result.branch_point_ids,
         loops=[_profile_response(loop) for loop in result.loops],
     )
+
+
+@router.get("/sketches/{sketch_id}/profile", response_model=ProfileDetectionResponse)
+def get_profile(sketch_id: str) -> ProfileDetectionResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _profile_detection_response(sketch)
 
 
 @router.post("/sketches/{sketch_id}/constraints", response_model=ConstraintResponse, status_code=201)
@@ -1031,3 +1036,21 @@ def solve(sketch_id: str, payload: SolveRequest | None = None) -> SolveResultRes
     anchor_point_ids = frozenset(payload.anchor_point_ids) if payload else frozenset()
     result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
     return _solve_result_response(result)
+
+
+@router.post("/sketches/{sketch_id}/solve-and-refresh", response_model=SketchStateResponse)
+def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> SketchStateResponse:
+    """Phase 0 round-trip reduction: bundles [solve]'s own result with what
+    every caller of it immediately fetches afterward anyway (`listPoints`,
+    `listConstraints`, `getProfile`) into one response, for the common
+    "just finished a mutation" case - same solve semantics as [solve]
+    (including `anchor_point_ids`), no new solver behaviour."""
+    sketch = _get_sketch_or_404(sketch_id)
+    anchor_point_ids = frozenset(payload.anchor_point_ids) if payload else frozenset()
+    result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
+    return SketchStateResponse(
+        solve=_solve_result_response(result),
+        points=[_point_response(point) for point in sketch.points.values()],
+        constraints=[_constraint_response(constraint) for constraint in sketch.constraints.values()],
+        profile=_profile_detection_response(sketch),
+    )

@@ -1,0 +1,3 @@
+[submodule "client/native/slvs/vendor"]
+	path = client/native/slvs/vendor
+	url = https://github.com/realthunder/solvespace.git

@@ -460,3 +460,92 @@ def test_solve_over_the_api_with_no_body_still_works():
 
     assert response.status_code == 200
     assert response.json()["converged"] is True
+
+
+# --- solve-and-refresh (Phase 0 round-trip reduction) -----------------------
+
+
+def test_solve_and_refresh_bundles_solve_points_constraints_and_profile_in_one_response():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 1.0, 0.0)
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 50.0},
+    ).json()
+
+    response = client.post(f"/sketch/sketches/{sketch['id']}/solve-and-refresh")
+
+    assert response.status_code == 200
+    body = response.json()
+
+    # Same solve outcome as the plain /solve endpoint would report.
+    assert body["solve"]["converged"] is True
+    assert body["solve"]["result_code"] == 0
+
+    # Points reflect the same post-solve positions a separate listPoints
+    # call would - the whole point of bundling this response.
+    points_by_id = {p["id"]: p for p in body["points"]}
+    distance = math.hypot(
+        points_by_id[b["id"]]["x"] - points_by_id[a["id"]]["x"],
+        points_by_id[b["id"]]["y"] - points_by_id[a["id"]]["y"],
+    )
+    assert distance == pytest.approx(50.0)
+    # The Sketch's own lazily-created origin Point is included too, same as
+    # a plain listPoints call would return.
+    assert sketch["origin_point_id"] in points_by_id
+
+    constraint_ids = {c["id"] for c in body["constraints"]}
+    assert constraint["id"] in constraint_ids
+
+    # Two Points and no Line between them - nothing closed to detect.
+    assert body["profile"]["status"] == "no_loop"
+
+
+def test_solve_and_refresh_with_anchor_keeps_the_anchored_point_fixed():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 50.0},
+    )
+    client.patch(f"/sketch/sketches/{sketch['id']}/points/{a['id']}", json={"x": 3.0, "y": 4.0})
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/solve-and-refresh",
+        json={"anchor_point_ids": [a["id"]]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["solve"]["converged"] is True
+    points_by_id = {p["id"]: p for p in body["points"]}
+    assert points_by_id[a["id"]]["x"] == pytest.approx(3.0)
+    assert points_by_id[a["id"]]["y"] == pytest.approx(4.0)
+
+
+def test_solve_and_refresh_reports_non_convergence_same_as_plain_solve():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    c = _create_point(sketch["id"], 5.0, 8.0)
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 10.0},
+    )
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": b["id"], "point_b_id": c["id"], "distance": 10.0},
+    )
+    newest = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": c["id"], "distance": 100.0},
+    ).json()
+
+    response = client.post(f"/sketch/sketches/{sketch['id']}/solve-and-refresh")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["solve"]["converged"] is False
+    assert body["solve"]["blamed_constraint_ids"] == [newest["id"]]

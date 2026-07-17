@@ -98,19 +98,34 @@ class _FakeBackend {
       return _json(_solveResultBody(), 200);
     }
 
+    // Phase 0 round-trip reduction: bundles the same solve result with the
+    // current Points/Constraints/profile, mirroring the real backend's
+    // POST .../solve-and-refresh (SketchStateResponse).
+    final solveAndRefreshMatch = RegExp(r'^/sketch/sketches/[^/]+/solve-and-refresh$').hasMatch(path);
+    if (solveAndRefreshMatch && request.method == 'POST') {
+      return _json({
+        'solve': _solveResultBody(),
+        'points': points.values.toList(),
+        'constraints': constraints.values.toList(),
+        'profile': _profileBody(),
+      }, 200);
+    }
+
     final profileMatch = RegExp(r'^/sketch/sketches/[^/]+/profile$').hasMatch(path);
     if (profileMatch && request.method == 'GET') {
-      return _json({
+      return _json(_profileBody(), 200);
+    }
+
+    return http.Response('not found: ${request.method} $path', 404);
+  }
+
+  Map<String, dynamic> _profileBody() => {
         'status': 'no_loop',
         'detail': 'no entities',
         'profile': null,
         'branch_point_ids': <String>[],
         'loops': <Map<String, dynamic>>[],
-      }, 200);
-    }
-
-    return http.Response('not found: ${request.method} $path', 404);
-  }
+      };
 
   Map<String, dynamic> _solveResultBody() => {
         'converged': true,
