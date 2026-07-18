@@ -88,6 +88,58 @@ Offset _rotateOffset(Offset v, double degrees) {
   return Offset(v.dx * cosT - v.dy * sinT, v.dx * sinT + v.dy * cosT);
 }
 
+/// Bug fix (on-device feedback: "when I orbit, the radius and diameter
+/// dimension lines look disconnected from the circle"): a circle's own
+/// perspective/affine screen projection is an ellipse, not a scaled circle -
+/// placing the leader's touch point by scaling [desiredDirection] by a
+/// single "pixels per sketch unit" scalar only ever lands exactly on the
+/// true rendered outline at whichever one sketch-local angle that scalar
+/// was measured from (historically `rim`'s own angle), drifting further off
+/// the actual rendered ellipse the more the current view foreshortens the
+/// sketch plane as the camera orbits.
+///
+/// Fixed by treating [rimScreen]/[perpScreen] (the screen projections of
+/// two points 90 degrees apart on the sketch-local circle, both already
+/// resolved by the caller) as the ellipse's own pair of conjugate radius
+/// vectors from [centerScreen] - together they exactly describe *any*
+/// affine (and, very closely, perspective) projection of a circle. Solving
+/// the 2x2 system `cosT*axisU + sinT*axisV = k*desiredDirection` for the
+/// sketch-local unit parameter `(cosT, sinT)` (via the [axisU]/[axisV]
+/// matrix inverse), then re-applying it as `centerScreen + cosT*axisU +
+/// sinT*axisV`, places the touch point exactly on the true projected
+/// ellipse in the desired direction - not merely close to it.
+///
+/// Falls back to the old scalar-circle approximation (`centerScreen +
+/// desiredDirection * fallbackRadiusPixels`) only when [perpScreen] failed
+/// to project or the view is genuinely edge-on/degenerate (the two
+/// conjugate radius vectors collapse onto the same line, so there is no
+/// well-defined ellipse to solve against). Returns `(touchScreen,
+/// direction)` - `direction` is the outward unit vector from [centerScreen]
+/// to the resolved touch point, screen-space, for arrowhead orientation.
+(Offset, Offset) radialDimensionTouchPoint({
+  required Offset centerScreen,
+  required Offset rimScreen,
+  required Offset? perpScreen,
+  required Offset desiredDirection,
+  required double fallbackRadiusPixels,
+}) {
+  final axisU = rimScreen - centerScreen;
+  final axisV = perpScreen == null ? null : perpScreen - centerScreen;
+  final det = axisV == null ? 0.0 : axisU.dx * axisV.dy - axisU.dy * axisV.dx;
+  if (axisV == null || det.abs() < 1e-9) {
+    return (centerScreen + desiredDirection * fallbackRadiusPixels, desiredDirection);
+  }
+  final cosTUnnorm = (axisV.dy * desiredDirection.dx - axisV.dx * desiredDirection.dy) / det;
+  final sinTUnnorm = (axisU.dx * desiredDirection.dy - axisU.dy * desiredDirection.dx) / det;
+  final paramLength = math.sqrt(cosTUnnorm * cosTUnnorm + sinTUnnorm * sinTUnnorm);
+  final cosT = paramLength < 1e-9 ? 1.0 : cosTUnnorm / paramLength;
+  final sinT = paramLength < 1e-9 ? 0.0 : sinTUnnorm / paramLength;
+  final touchScreen = centerScreen + axisU * cosT + axisV * sinT;
+  final rawDirection = touchScreen - centerScreen;
+  final direction = rawDirection.distance < 1e-6 ? desiredDirection : rawDirection / rawDirection.distance;
+  return (touchScreen, direction);
+}
+
 class _ConstraintOverlayPainter extends CustomPainter {
   final Camera camera;
   final Size viewportSize;
@@ -219,11 +271,29 @@ class _ConstraintOverlayPainter extends CustomPainter {
 
     final labelCenter = centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + item.labelOffset;
     final desiredDelta = labelCenter - centerScreen;
-    final touchAngle = desiredDelta.distance < 1e-6
-        ? math.atan2(defaultDirection.dy, defaultDirection.dx)
-        : math.atan2(desiredDelta.dy, desiredDelta.dx);
-    final direction = Offset(math.cos(touchAngle), math.sin(touchAngle));
-    final touchScreen = centerScreen + direction * radiusPixels;
+    final desiredDirection =
+        desiredDelta.distance < 1e-6 ? defaultDirection : desiredDelta / desiredDelta.distance;
+
+    // Bug fix (on-device feedback: "when I orbit, the radius and diameter
+    // dimension lines look disconnected from the circle"): a circle's own
+    // perspective/affine screen projection is an ellipse, not a scaled
+    // circle - the touch point used to be placed by scaling
+    // `desiredDirection` by the scalar `radiusPixels` above, which only
+    // ever lands exactly on the true rendered outline at the `rim` angle
+    // itself, drifting further off it the more the current view
+    // foreshortens the sketch plane. Fixed by also projecting a second
+    // sketch-local point 90 degrees around the circle from `rim`
+    // (`perpSketch`/`perpScreen` below) - see [radialDimensionTouchPoint]'s
+    // own doc comment for the actual ellipse solve.
+    final perpSketch = (item.center.$1 - rimSketchDy, item.center.$2 + rimSketchDx);
+    final perpScreen = _project(perpSketch);
+    final (touchScreen, direction) = radialDimensionTouchPoint(
+      centerScreen: centerScreen,
+      rimScreen: rimScreen,
+      perpScreen: perpScreen,
+      desiredDirection: desiredDirection,
+      fallbackRadiusPixels: radiusPixels,
+    );
     final oppositeTouchScreen = centerScreen * 2 - touchScreen;
 
     final dimPaint = Paint()

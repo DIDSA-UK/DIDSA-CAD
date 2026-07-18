@@ -2042,7 +2042,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// as a toggle, or clears the whole selection set if the cursor is over
   /// empty space - [PartScreen] (which owns the actual selection set)
   /// decides add-vs-remove via [PartViewport.onSelectionToggle].
+  ///
+  /// P44e bug fix (on-device feedback: "I can't select a dimension,
+  /// clicking the dimension does nothing" / "I can't select a constraint
+  /// by clicking its glyph"): a plain Select-mode tap never checked
+  /// [widget.constraintOverlayItems] at all - only [_commitDrawCursor]
+  /// (Dimension mode / drag mode) did, gated on [widget.
+  /// preferConstraintOverlayHitOnCommit], which is false in plain Select
+  /// mode. Mirrors `sketch_canvas.dart`'s own `_dispatchTap`, which always
+  /// checks `_constraintIdAt` first while `mode == SketchMode.select`,
+  /// ahead of its ordinary entity hit-test - reuses [_cursorPosition] (now
+  /// valid in this mode too, since [PartViewport.selectionMode] and
+  /// [PartViewport.drawCursorMode] share the one field - see that field's
+  /// own doc comment) the exact same way [_commitDrawCursor] already does.
   void _commitSelection() {
+    if (widget.onConstraintOverlayItemTap != null) {
+      final basis = widget.sketchPlaneBasis;
+      final cursor = _cursorPosition;
+      final hitId = (basis != null && cursor != null)
+          ? constraintOverlayItemAt(_camera.cameraFor(_viewportSize), _viewportSize, basis, widget.constraintOverlayItems, cursor)
+          : null;
+      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId)) return;
+    }
     final hit = _hoverHit;
     if (hit == null) {
       widget.onClearSelection?.call();

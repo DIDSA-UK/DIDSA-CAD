@@ -1268,6 +1268,22 @@ class _SketchScreenState extends State<SketchScreen> {
       if (hitId != null && _controller.constraints.containsKey(hitId)) {
         return _controller.beginLabelDrag(hitId);
       }
+      return false;
+    }
+    // P44e bug fix (on-device feedback: "I can't select a dimension,
+    // clicking the dimension does nothing" / "I can't select a constraint
+    // by clicking its glyph"): a plain Select-mode tap (not drag mode, not
+    // Dimension mode - both already handled above) never checked for a
+    // constraint hit at all, so a real, confirmed dimension/glyph could
+    // never be selected in Orbit View - only Points/Lines/Circles/etc via
+    // the ordinary mesh hit-test. Mirrors `sketch_canvas.dart`'s own
+    // `_dispatchTap`, which always checks `_constraintIdAt` first while
+    // `mode == SketchMode.select`, ahead of its own ordinary entity pick.
+    if (_controller.mode == SketchMode.select &&
+        hitId != null &&
+        _controller.constraints.containsKey(hitId)) {
+      _controller.selectConstraint(hitId);
+      return true;
     }
     return false;
   }
