@@ -316,33 +316,51 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
 
 /// A radius/diameter dimension - mirrors `sketch_canvas.dart`'s own
 /// `_paintRadiusDiameterDimension`/`_radialDimensionGeometry`. [rim] is only
-/// ever used to derive the *default* leader angle before [labelOffset] has
-/// ever been dragged - see `_radialDimensionGeometry`'s own doc comment for
-/// why the leader otherwise sweeps freely around [center] as the label
-/// moves, rather than staying pinned to a fixed Point. V1 scope: unlike the
-/// 2D canvas's own `_paintArcExtensionIfNeeded`, an Arc's leader touching
-/// outside its own drawn sweep does not (yet) draw a dashed extension arc -
-/// a deliberate, documented gap, not a missed case.
+/// ever used to derive the *default* leader angle (see
+/// [defaultAngleOffsetDegrees]'s own doc comment) - "the leader otherwise
+/// sweeps freely around [center] as the label moves, rather than staying
+/// pinned to a fixed Point" is still exactly the intended UX, just no longer
+/// driven by [labelOffset] (see that field's own doc comment for why). V1
+/// scope: unlike the 2D canvas's own `_paintArcExtensionIfNeeded`, an Arc's
+/// leader touching outside its own drawn sweep does not (yet) draw a dashed
+/// extension arc - a deliberate, documented gap, not a missed case.
 class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
   final (double, double) center;
   final (double, double) rim;
   final double radius;
   final bool isDiameter;
   final String text;
+
+  /// P44f bug fix (on-device feedback: "the arrow should remain at the
+  /// same angular position when orbiting" - a dragged radial dimension's
+  /// leader visibly drifted to a *different* point on the circle purely
+  /// from orbiting the camera, never dragging again): this field used to
+  /// carry the leader's own drag-chosen direction too (added to the
+  /// default direction's screen-space endpoint before solving the touch
+  /// point) - but a screen-pixel offset is camera-frame dependent, so
+  /// re-interpreting the *same* stored pixels through a *different* camera
+  /// orientation resolves to a different point on the circle. The leader's
+  /// own angle now comes entirely from [defaultAngleOffsetDegrees] (a
+  /// camera-independent, sketch-local quantity) instead - always
+  /// [Offset.zero] for a radial item from every current caller (kept as a
+  /// field, not removed, only so this subtype's shape still matches its
+  /// sibling [ConstraintOverlayItem] types' own `labelOffset` convention).
   final Offset labelOffset;
 
-  /// P47 follow-up (on-device feedback: "the two ghost dimensions need
-  /// separation" - a fixed-pixel [labelOffset] nudge on its own barely
-  /// registered against a large-radius circle's own already-huge
-  /// [radius]-scaled leader length): rotates the *default* leader angle
-  /// (derived from [rim], before any drag - see this class's own doc
-  /// comment) by this many degrees before [labelOffset] is added on top.
-  /// Unlike a fixed pixel nudge, an angular offset scales with the circle's
-  /// own screen-space size, so it stays a meaningfully visible separation
-  /// no matter how large or small the circle is. Zero (the default) for
-  /// every ordinary *confirmed* dimension - only [SketchController.
-  /// dimensionGhostOverlayItems]' diameter ghost ever sets this, so its
-  /// default position doesn't collide with its sibling radius ghost's.
+  /// The leader's own angle around the circle, in degrees relative to
+  /// [rim]'s own angle - see [_rotateSketchPointAroundCenter] (sketch_
+  /// constraint_overlay.dart) for the sketch-local rotation this drives.
+  /// Two distinct sources, by caller:
+  /// - [SketchController.dimensionGhostOverlayItems]' diameter ghost sets
+  ///   a fixed 50° *default* separation from its sibling radius ghost
+  ///   (P47: "the two ghost dimensions need separation" - a fixed pixel
+  ///   nudge barely registered against a large circle's own already-huge
+  ///   radius-scaled leader; an angle scales with the circle automatically)
+  ///   - only until the user actually drags either ghost.
+  /// - Once dragged (either a ghost or a confirmed dimension),
+  ///   [SketchController.radialAngleOffsetFor] wins instead - the
+  ///   camera-independent value [labelOffset]'s own doc comment explains
+  ///   the need for.
   final double defaultAngleOffsetDegrees;
 
   const ConstraintRadialDimensionItem({
@@ -3462,6 +3480,40 @@ class SketchController extends ChangeNotifier {
   /// by [dimensionLabelAt] (sketch_canvas.dart) to hit-test against where
   /// the label actually is, not just its un-offset default anchor.
   Offset labelOffsetFor(String constraintId) => _labelOffsets[constraintId] ?? Offset.zero;
+
+  /// P44f bug fix (on-device feedback: "the arrow should remain at the
+  /// same angular position when orbiting" - still slid after the earlier
+  /// ellipse-projection fix, reported specifically against a radial
+  /// dimension whose label had been dragged before): a radial (Radius/
+  /// Diameter) dimension's own leader angle around the circle, in degrees
+  /// relative to its own `rim` Point's angle - a camera-independent
+  /// quantity, unlike [_labelOffsets]' screen pixels. [_labelOffsets]
+  /// itself stays exactly as-is (still the right representation for every
+  /// *other* dimension kind, and for the flat 2D canvas, which has no
+  /// camera-orbit concept at all to go stale against) - this is a wholly
+  /// separate map, only ever read/written for [GhostKind.radius]/
+  /// [GhostKind.diameter] ghosts and [isRadiusDistanceConstraint]-
+  /// classified confirmed dimensions.
+  final Map<String, double> _radialAngleOffsets = {};
+
+  /// [constraintId]'s user-chosen leader angle (see [_radialAngleOffsets]'
+  /// own doc comment), or null if never dragged - callers fall back to
+  /// whatever default angle makes sense for their own context (e.g.
+  /// [dimensionGhostOverlayItems]' own radius/diameter separation).
+  double? radialAngleOffsetFor(String constraintId) => _radialAngleOffsets[constraintId];
+
+  /// Sets [constraintId]'s own leader angle. Unlike [updateLabelDrag]
+  /// (which accumulates a screen-pixel *delta* onto whatever offset
+  /// already exists, called every drag-move frame), this always sets an
+  /// *absolute* angle - only [PartViewport]'s own radial label-drag
+  /// handling calls this (resolved fresh from the live cursor position
+  /// each frame via [radialDimensionAngleDegrees], not accumulated), since
+  /// only it has the camera/projection context needed to resolve a screen
+  /// position into a sketch-local angle in the first place.
+  void setRadialAngleOffset(String constraintId, double degrees) {
+    _radialAngleOffsets[constraintId] = degrees;
+    notifyListeners();
+  }
 
   String? _draggingLabelId;
 
@@ -8179,7 +8231,16 @@ class SketchController extends ChangeNotifier {
               radius: c.distance,
               isDiameter: showsDiameter,
               text: showsDiameter ? '⌀${(c.distance * 2).toStringAsFixed(2)}' : 'R${c.distance.toStringAsFixed(2)}',
-              labelOffset: labelOffset,
+              // P44f bug fix ("the arrow should remain at the same angular
+              // position when orbiting" - reported against a dragged
+              // dimension): the leader's own angle now comes from
+              // radialAngleOffsetFor (camera-independent, sketch-local),
+              // not labelOffset's screen pixels - labelOffset stays zero
+              // here (see ConstraintRadialDimensionItem.labelOffset's own
+              // updated doc comment for why it's unused by radial items
+              // now).
+              labelOffset: Offset.zero,
+              defaultAngleOffsetDegrees: radialAngleOffsetFor(entry.key) ?? 0.0,
             ));
             break;
           }
@@ -8343,16 +8404,21 @@ class SketchController extends ChangeNotifier {
           // reversed hit-test order always resolves that shared spot to
           // whichever was appended last (diameter), so radius was never
           // reachable. Rotates diameter's own *default* leader angle (only
-          // before the user has ever dragged it - a real drag always wins
-          // via `labelOffsetFor`) away from radius's via
-          // [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees] - a
-          // proper angular offset rather than a fixed pixel nudge (P47's
-          // first attempt), since a fixed pixel amount barely registered
-          // against a large circle's own already-huge radius-scaled leader
-          // ("the two ghost dimensions need separation" follow-up): an
-          // angle scales with the circle's own screen size automatically.
-          final defaultAngleOffsetDegrees =
-              isDiameter && !_labelOffsets.containsKey(ghost.key) ? 50.0 : 0.0;
+          // before the user has ever dragged it) away from radius's via
+          // [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees] - an
+          // angular offset (scales with the circle's own screen size)
+          // rather than a fixed pixel nudge (P47's first attempt, which
+          // barely registered against a large circle's own already-huge
+          // radius-scaled leader).
+          //
+          // P44f bug fix ("the arrow should remain at the same angular
+          // position when orbiting"): once dragged, [radialAngleOffsetFor]
+          // (camera-independent, sketch-local - see its own doc comment)
+          // wins over this default, same as [_labelOffsets] used to gate
+          // "has this been dragged yet" for every other dimension kind -
+          // `labelOffset` itself stays zero here now; it no longer carries
+          // any of the leader's own direction for a radial item.
+          final defaultAngleOffsetDegrees = radialAngleOffsetFor(ghost.key) ?? (isDiameter ? 50.0 : 0.0);
           items.add(ConstraintRadialDimensionItem(
             constraintId: ghost.key,
             selected: isActive,
@@ -8364,7 +8430,7 @@ class SketchController extends ChangeNotifier {
             // a confirmed radius dimension's own text exactly - see
             // constraintOverlayItems()'s `'R${c.distance...}'` case.
             text: isDiameter ? '⌀?' : 'R?',
-            labelOffset: labelOffset,
+            labelOffset: Offset.zero,
             defaultAngleOffsetDegrees: defaultAngleOffsetDegrees,
           ));
         case GhostKind.lineDistance:

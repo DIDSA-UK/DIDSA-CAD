@@ -81,6 +81,28 @@ void main() {
     expect(radiusItem.defaultAngleOffsetDegrees, isNot(diameterItem.defaultAngleOffsetDegrees));
   });
 
+  test(
+      'P44f bug fix: once a ghost\'s leader angle has been set via setRadialAngleOffset (the '
+      'embedded 3D view\'s own camera-independent drag persistence), it wins over the P47 default '
+      'separation, and labelOffset stays zero (no screen-pixel component left to drift under orbit)',
+      () async {
+    controller.points['center'] = const SketchPointView(id: 'center', x: 10, y: 10);
+    controller.points['rim'] = const SketchPointView(id: 'rim', x: 14, y: 10);
+    controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(10 + 4 * 0.70710678, 10 + 4 * 0.70710678);
+
+    controller.setRadialAngleOffset('diameter', 137.0);
+
+    final items = controller.dimensionGhostOverlayItems();
+    final diameterItem = items.cast<ConstraintRadialDimensionItem>().singleWhere((i) => i.isDiameter);
+
+    expect(diameterItem.defaultAngleOffsetDegrees, 137.0);
+    expect(diameterItem.labelOffset, Offset.zero);
+    expect(controller.radialAngleOffsetFor('diameter'), 137.0);
+    expect(controller.radialAngleOffsetFor('radius'), isNull, reason: 'radius was never dragged');
+  });
+
   test('the active ghost (tapGhost) is flagged selected; its siblings are not', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 0, y: 0);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 3, y: 0);

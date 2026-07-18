@@ -115,6 +115,97 @@ void main() {
   });
 
   test(
+      'radialDimensionAngleDegrees resolves the sketch-local angle whose projection matches the '
+      'desired screen direction - 0deg for rim\'s own direction, 90deg for perp\'s', () {
+    const centerScreen = Offset(100, 100);
+    const rimScreen = Offset(140, 100); // axisU: (40, 0) -> "rim" is angle 0.
+    const perpScreen = Offset(100, 60); // axisV: (0, -40) -> "perp" is angle 90.
+
+    final rimAngle = radialDimensionAngleDegrees(
+      centerScreen: centerScreen,
+      rimScreen: rimScreen,
+      perpScreen: perpScreen,
+      desiredDirection: const Offset(1, 0), // same direction as axisU itself.
+    );
+    final perpAngle = radialDimensionAngleDegrees(
+      centerScreen: centerScreen,
+      rimScreen: rimScreen,
+      perpScreen: perpScreen,
+      desiredDirection: const Offset(0, -1), // same direction as axisV itself.
+    );
+
+    expect(rimAngle, closeTo(0.0, 1e-6));
+    expect(perpAngle, closeTo(90.0, 1e-6));
+  });
+
+  test(
+      'radialDimensionAngleDegrees round-trips with radialDimensionTouchPoint: the angle it resolves, '
+      'fed back through _rotateSketchPointAroundCenter equivalent math, reproduces the same touch point',
+      () {
+    const center = (2.0, 1.0);
+    const radius = 4.0;
+    final basis = SketchPlaneBasis(
+      origin: vm.Vector3.zero(),
+      xAxis: vm.Vector3(1, 0, 0),
+      yAxis: vm.Vector3(0, 1, 0),
+      normal: vm.Vector3(0, 0, 1),
+    );
+    const viewportSize = Size(800, 600);
+    final camera = OrthographicCamera(
+      position: vm.Vector3(6, 4, 10),
+      target: vm.Vector3.zero(),
+      up: vm.Vector3(0, 1, 0),
+      halfHeight: 8,
+    );
+    Offset projectPoint((double, double) sketchXY) =>
+        worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2))!;
+
+    final centerScreen = projectPoint(center);
+    final rimScreen = projectPoint((center.$1 + radius, center.$2));
+    final perpScreen = projectPoint((center.$1, center.$2 + radius));
+
+    const testAngleDegrees = 163.0;
+    final testAngleRadians = testAngleDegrees * math.pi / 180.0;
+    final trueScreenPoint = projectPoint((
+      center.$1 + radius * math.cos(testAngleRadians),
+      center.$2 + radius * math.sin(testAngleRadians),
+    ));
+    final desiredDelta = trueScreenPoint - centerScreen;
+    final desiredDirection = desiredDelta / desiredDelta.distance;
+
+    final resolvedAngle = radialDimensionAngleDegrees(
+      centerScreen: centerScreen,
+      rimScreen: rimScreen,
+      perpScreen: perpScreen,
+      desiredDirection: desiredDirection,
+    );
+
+    expect(resolvedAngle, isNotNull);
+    expect(resolvedAngle, closeTo(testAngleDegrees, 1e-2));
+  });
+
+  test('radialDimensionAngleDegrees returns null when perpScreen is missing or the vectors are degenerate', () {
+    expect(
+      radialDimensionAngleDegrees(
+        centerScreen: const Offset(100, 100),
+        rimScreen: const Offset(140, 100),
+        perpScreen: null,
+        desiredDirection: const Offset(0, 1),
+      ),
+      isNull,
+    );
+    expect(
+      radialDimensionAngleDegrees(
+        centerScreen: const Offset(100, 100),
+        rimScreen: const Offset(140, 100),
+        perpScreen: const Offset(160, 100), // collinear - degenerate.
+        desiredDirection: const Offset(0, 1),
+      ),
+      isNull,
+    );
+  });
+
+  test(
       'bug fix follow-up (on-device feedback: dimension lines "should remain connected to the same '
       'part of the circle while orbiting - currently they slide round"): a ghost\'s default (never '
       'dragged) direction stays anchored to the same fixed point on the circle across two different '

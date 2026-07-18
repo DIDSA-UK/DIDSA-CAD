@@ -145,19 +145,96 @@ const double _diameterSymbolScale = 1.35;
 }) {
   final axisU = rimScreen - centerScreen;
   final axisV = perpScreen == null ? null : perpScreen - centerScreen;
-  final det = axisV == null ? 0.0 : axisU.dx * axisV.dy - axisU.dy * axisV.dx;
-  if (axisV == null || det.abs() < 1e-9) {
+  final param = _solveRadialParam(axisU: axisU, axisV: axisV, desiredDirection: desiredDirection);
+  if (param == null) {
     return (centerScreen + desiredDirection * fallbackRadiusPixels, desiredDirection);
   }
-  final cosTUnnorm = (axisV.dy * desiredDirection.dx - axisV.dx * desiredDirection.dy) / det;
-  final sinTUnnorm = (axisU.dx * desiredDirection.dy - axisU.dy * desiredDirection.dx) / det;
-  final paramLength = math.sqrt(cosTUnnorm * cosTUnnorm + sinTUnnorm * sinTUnnorm);
-  final cosT = paramLength < 1e-9 ? 1.0 : cosTUnnorm / paramLength;
-  final sinT = paramLength < 1e-9 ? 0.0 : sinTUnnorm / paramLength;
-  final touchScreen = centerScreen + axisU * cosT + axisV * sinT;
+  final (cosT, sinT) = param;
+  final touchScreen = centerScreen + axisU * cosT + axisV! * sinT;
   final rawDirection = touchScreen - centerScreen;
   final direction = rawDirection.distance < 1e-6 ? desiredDirection : rawDirection / rawDirection.distance;
   return (touchScreen, direction);
+}
+
+/// Bug fix follow-up (on-device feedback: "the arrow should remain at the
+/// same angular position when orbiting" - reported against a radial
+/// dimension whose label had previously been dragged): [radialDimension
+/// TouchPoint] resolves a *screen-space* desired direction into a touch
+/// point for rendering, but a Constraint's own persisted drag offset
+/// ([SketchController.labelOffsetFor]) is raw screen pixels - camera-frame
+/// dependent, so a *stored* screen-pixel offset re-interpreted through a
+/// *different* camera orientation (after orbiting) resolves to a different
+/// point on the circle than the one the user actually dragged to.
+///
+/// This is the same ellipse solve as [radialDimensionTouchPoint], but
+/// returns the resolved *sketch-local angle* itself (degrees, relative to
+/// `rim`'s own angle around `center` - i.e. what [_rotateSketchPointAround
+/// Center] expects back) instead of a screen point - a camera-independent
+/// quantity safe to persist (see [SketchController.setRadialAngleOffset]).
+/// The caller (only [PartViewport]'s own label-drag handling, which alone
+/// has the live camera/projection context) is expected to call this once
+/// per drag-move frame and persist the result in place of accumulating a
+/// screen-pixel delta. Returns null exactly when [radialDimensionTouchPoint]
+/// would have fallen back to its scalar approximation (no well-defined
+/// ellipse to solve against) - the caller should simply skip that frame's
+/// update rather than persist a meaningless angle.
+double? radialDimensionAngleDegrees({
+  required Offset centerScreen,
+  required Offset rimScreen,
+  required Offset? perpScreen,
+  required Offset desiredDirection,
+}) {
+  final axisU = rimScreen - centerScreen;
+  final axisV = perpScreen == null ? null : perpScreen - centerScreen;
+  final param = _solveRadialParam(axisU: axisU, axisV: axisV, desiredDirection: desiredDirection);
+  if (param == null) return null;
+  final (cosT, sinT) = param;
+  return math.atan2(sinT, cosT) * 180.0 / math.pi;
+}
+
+/// The shared 2x2 solve behind [radialDimensionTouchPoint]/
+/// [radialDimensionAngleDegrees]: the sketch-local unit parameter `(cosT,
+/// sinT)` such that `cosT*axisU + sinT*axisV` points the same way as
+/// [desiredDirection] - or null if [axisV] is missing or the two vectors
+/// are degenerate/collinear (no well-defined ellipse).
+(double, double)? _solveRadialParam({
+  required Offset axisU,
+  required Offset? axisV,
+  required Offset desiredDirection,
+}) {
+  if (axisV == null) return null;
+  final det = axisU.dx * axisV.dy - axisU.dy * axisV.dx;
+  if (det.abs() < 1e-9) return null;
+  final cosTUnnorm = (axisV.dy * desiredDirection.dx - axisV.dx * desiredDirection.dy) / det;
+  final sinTUnnorm = (axisU.dx * desiredDirection.dy - axisU.dy * desiredDirection.dx) / det;
+  final paramLength = math.sqrt(cosTUnnorm * cosTUnnorm + sinTUnnorm * sinTUnnorm);
+  if (paramLength < 1e-9) return (1.0, 0.0);
+  return (cosTUnnorm / paramLength, sinTUnnorm / paramLength);
+}
+
+/// Projects [item]'s own `center`/`rim`, plus the sketch-local point 90
+/// degrees around the circle from `rim` (the same "conjugate radius
+/// vector" pair [radialDimensionTouchPoint]/[radialDimensionAngleDegrees]
+/// need) - exposed so [PartViewport]'s own radial label-drag handling can
+/// resolve [radialDimensionAngleDegrees] without duplicating this
+/// projection step, which otherwise lives entirely inside the private
+/// painter/[constraintOverlayItemLabelCenter].
+(Offset center, Offset rim, Offset? perp)? projectRadialDimensionBasis(
+  Camera camera,
+  Size viewportSize,
+  SketchPlaneBasis basis,
+  ConstraintRadialDimensionItem item,
+) {
+  Offset? project((double, double) sketchXY) =>
+      worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+  final centerScreen = project(item.center);
+  final rimScreen = project(item.rim);
+  if (centerScreen == null || rimScreen == null) return null;
+  final rimSketchDx = item.rim.$1 - item.center.$1;
+  final rimSketchDy = item.rim.$2 - item.center.$2;
+  final perpSketch = (item.center.$1 - rimSketchDy, item.center.$2 + rimSketchDx);
+  final perpScreen = project(perpSketch);
+  return (centerScreen, rimScreen, perpScreen);
 }
 
 class _ConstraintOverlayPainter extends CustomPainter {

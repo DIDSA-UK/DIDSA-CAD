@@ -982,6 +982,8 @@ class _SketchScreenState extends State<SketchScreen> {
         onConstraintOverlayItemTap: _handleEmbeddedConstraintOverlayTap,
         isDraggingConstraintLabel: _controller.draggingLabelId != null,
         onConstraintLabelDragDelta: _controller.updateLabelDrag,
+        draggingConstraintLabelId: _controller.draggingLabelId,
+        onRadialLabelAngleDragged: _handleEmbeddedRadialLabelAngleDragged,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
@@ -1310,6 +1312,21 @@ class _SketchScreenState extends State<SketchScreen> {
     }
     if (ghost == null) return const SizedBox.shrink();
     return GhostValueEditor(key: ValueKey(key), controller: _controller, ghost: ghost, anchor: anchor);
+  }
+
+  /// P44f bug fix (on-device feedback: "the arrow should remain at the
+  /// same angular position when orbiting"): [PartViewport.
+  /// onRadialLabelAngleDragged]'s handler - just forwards the resolved
+  /// angle straight to [SketchController.setRadialAngleOffset] against
+  /// whichever label is currently grabbed. A no-op if nothing is grabbed
+  /// (shouldn't happen in practice - PartViewport only ever calls this
+  /// while [SketchController.draggingLabelId] is non-null, since that's
+  /// what [PartViewport.draggingConstraintLabelId] is fed from - but
+  /// avoids trusting that invariant blindly).
+  void _handleEmbeddedRadialLabelAngleDragged(double angleDegrees) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setRadialAngleOffset(id, angleDegrees);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates

@@ -8,7 +8,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../sketch/sketch_controller.dart' show ConstraintOverlayItem;
+import '../sketch/sketch_controller.dart' show ConstraintOverlayItem, ConstraintRadialDimensionItem;
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
@@ -246,6 +246,33 @@ class PartViewport extends StatefulWidget {
   /// delta while [isDraggingConstraintLabel] is true, in place of
   /// [onDrawCursorMoved].
   final void Function(Offset delta)? onConstraintLabelDragDelta;
+
+  /// P44f bug fix (on-device feedback: "the arrow should remain at the
+  /// same angular position when orbiting" - a radial dimension's leader
+  /// visibly drifted to a different point on the circle purely from
+  /// orbiting the camera, without ever dragging again): [constraintOverlayItems]'
+  /// own `constraintId` of whichever label is currently being dragged (the
+  /// caller's own [SketchController.draggingLabelId]) - only needed so
+  /// [_handleDrawCursorMove] can look the item back up (to check whether
+  /// it's a radial dimension, which needs angle-based rather than
+  /// pixel-delta-based drag handling - see [onRadialLabelAngleDragged]'s
+  /// own doc comment for why). Null whenever [isDraggingConstraintLabel]
+  /// is false.
+  final String? draggingConstraintLabelId;
+
+  /// P44f: fired in place of [onConstraintLabelDragDelta] whenever the
+  /// entry [draggingConstraintLabelId] resolves to (in [constraintOverlayItems])
+  /// is a [ConstraintRadialDimensionItem] - a screen-pixel delta
+  /// ([onConstraintLabelDragDelta]'s own convention) is camera-frame
+  /// dependent, so persisting *that* for a radial dimension's leader angle
+  /// means the very next orbit re-interprets the same stored pixels
+  /// through a different camera orientation and resolves to a different
+  /// point on the circle (see [SketchController.setRadialAngleOffset]'s
+  /// own doc comment). This fires with the resolved absolute angle
+  /// instead (via [radialDimensionAngleDegrees], using this State's own
+  /// live camera/projection - the one piece of context only [PartViewport]
+  /// itself has), for the caller to persist directly, camera-independent.
+  final void Function(double angleDegrees)? onRadialLabelAngleDragged;
 
   /// P44b bug fix (on-device feedback: "when I click a ghost dimension to
   /// set its value, nothing happens"): the [constraintOverlayItems] entry
@@ -526,6 +553,8 @@ class PartViewport extends StatefulWidget {
     this.onConstraintOverlayItemTap,
     this.isDraggingConstraintLabel = false,
     this.onConstraintLabelDragDelta,
+    this.draggingConstraintLabelId,
+    this.onRadialLabelAngleDragged,
     this.activeConstraintOverlayItemId,
     this.activeConstraintOverlayItemBuilder,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
@@ -2189,6 +2218,43 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // not an absolute world/sketch position - see
     // [PartViewport.isDraggingConstraintLabel]'s own doc comment.
     if (widget.isDraggingConstraintLabel) {
+      // P44f bug fix (on-device feedback: "the arrow should remain at the
+      // same angular position when orbiting"): a radial dimension's own
+      // leader angle can't safely be persisted as a screen-pixel delta
+      // (see [PartViewport.onRadialLabelAngleDragged]'s own doc comment) -
+      // resolved here instead, since this State alone has the live camera
+      // needed to convert the cursor's current screen position into a
+      // camera-independent sketch-local angle.
+      ConstraintRadialDimensionItem? radialItem;
+      for (final candidate in widget.constraintOverlayItems) {
+        if (candidate.constraintId == widget.draggingConstraintLabelId &&
+            candidate is ConstraintRadialDimensionItem) {
+          radialItem = candidate;
+          break;
+        }
+      }
+      final basis = widget.sketchPlaneBasis;
+      final cursor = _cursorPosition;
+      if (radialItem != null && basis != null && cursor != null) {
+        final projected =
+            projectRadialDimensionBasis(_camera.cameraFor(_viewportSize), _viewportSize, basis, radialItem);
+        if (projected != null) {
+          final (centerScreen, rimScreen, perpScreen) = projected;
+          final desiredDelta = cursor - centerScreen;
+          if (desiredDelta.distance > 1e-6) {
+            final angle = radialDimensionAngleDegrees(
+              centerScreen: centerScreen,
+              rimScreen: rimScreen,
+              perpScreen: perpScreen,
+              desiredDirection: desiredDelta / desiredDelta.distance,
+            );
+            if (angle != null) {
+              widget.onRadialLabelAngleDragged?.call(angle);
+              return;
+            }
+          }
+        }
+      }
       widget.onConstraintLabelDragDelta?.call(scaledDelta);
       return;
     }
