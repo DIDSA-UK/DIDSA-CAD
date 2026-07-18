@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show BodyMeshDto;
 import '../api/sketch_api_client.dart' show ArcDto, CircleDto, EllipseDto, LineDto, PointDto, SplineDto;
@@ -9,6 +12,8 @@ import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/reference_planes.dart';
 import '../viewport3d/render_mode.dart';
+import '../viewport3d/selection_filter.dart' show SelectionFilterState;
+import '../viewport3d/selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import '../viewport3d/sketch_geometry_3d.dart';
 import '../viewport3d/svg_icon.dart';
 import '../viewport3d/view_prefs_sheets.dart';
@@ -19,6 +24,7 @@ import 'sketch_controller.dart';
 import 'sketch_dimension_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
+import 'sketcher_preferences.dart';
 
 /// Phase 4.1/4.2: converts [controller]'s live points into the
 /// [PointDto]/[LineDto]/[CircleDto] shapes [sketchGeometry3DFrom] expects -
@@ -236,6 +242,24 @@ class _SketchScreenState extends State<SketchScreen> {
   /// as the other view-preference fields above.
   bool _orbitViewActive = false;
 
+  /// P19 on-device feedback: "the orbit button is supposed to swap between
+  /// cursor control and orbit mode" - the FAB that used to enter/exit Orbit
+  /// View outright (see the removed `_exitOrbitView`/`_enterOrbitView`'s own
+  /// old doc comments in git history) is repurposed to toggle *this* once
+  /// already inside Orbit View, rather than leaving it. True (the default
+  /// on every fresh [_enterOrbitView]) drives [PartViewport]'s P16-P18
+  /// cursor+ghost+commit interaction model (single-finger drag moves the
+  /// draw/select cursor); false reverts [PartViewport] to plain camera
+  /// orbiting with immediate tap-to-place/tap-to-select - exactly its
+  /// pre-cursor-retrofit behaviour (single-finger drag orbits, a tap hits
+  /// [_handleEmbeddedSketchTap]/[_handleEmbeddedSketchEntityTap] straight
+  /// away) - so switching to Orbit sub-mode is a real "look around freely"
+  /// mode, not merely a relabelled cursor mode. [SketcherPreferences.
+  /// use3DSketcher] (device-wide, in Settings) is now the only way back to
+  /// the flat 2D canvas - accepted deliberately in place of a live
+  /// mid-session exit, since this FAB no longer offers one.
+  bool _orbitCursorActive = true;
+
   /// Lets [_returnOrbitToDefaultView] drive the embedded [PartViewport]'s
   /// own [PartViewportState.animateToPlane] - the only way to control its
   /// internally-owned [OrbitCamera] from outside (see
@@ -259,6 +283,18 @@ class _SketchScreenState extends State<SketchScreen> {
   String _orbitBodyColourHex = ViewPreferences.defaultBodyColourHex;
   double _orbitBodyOpacity = 0.75;
 
+  /// Sketcher restructure Phase 2 follow-up (P8/P9): on-device feedback -
+  /// now that real Bodies are visible behind the embedded sketch plane
+  /// (previously an unfixable mismatch, see the doc comment above), the
+  /// sketch plane's own translucent surface finally has something worth
+  /// seeing through it, and grid lines give the plane visual structure now
+  /// there's no flat canvas underneath it. Session-only, same convention as
+  /// [_orbitRenderMode]/[_orbitBodyColourHex]/[_orbitBodyOpacity] just above.
+  /// [_orbitGridVisible] defaults **on**, per the explicit ask.
+  String _orbitCanvasColourHex = '#F2F2F2';
+  double _orbitCanvasOpacity = 0.18;
+  bool _orbitGridVisible = true;
+
   @override
   void initState() {
     super.initState();
@@ -273,10 +309,43 @@ class _SketchScreenState extends State<SketchScreen> {
     } else {
       _controller.ensureSketch();
     }
+    _loadInitialOrbitViewPreference();
+  }
+
+  /// Sketcher restructure Phase 2's rollout default: [SketcherPreferences]
+  /// decides whether a newly opened Sketch starts in Orbit View (the
+  /// 3D-embedded sketcher) or the flat 2D canvas - the live toggle FAB
+  /// still works regardless once loaded. Starts `false` (2D) until this
+  /// resolves, same one-frame-behind tradeoff `MeshViewerSettingsScreen`
+  /// accepts for the same `shared_preferences` load.
+  Future<void> _loadInitialOrbitViewPreference() async {
+    // On-device feedback: the embedded Orbit View's background used to
+    // always fall back to [ViewPreferences.defaultBgColourHex] regardless
+    // of what the user already set for the main 3D viewport - loaded here
+    // (defensively, alongside [SketcherPreferences] - a bare, Part-less
+    // Sketch may never go through [PartScreen]'s own load) so
+    // [ViewPreferences.bgColourHex] reflects the real persisted value by
+    // the time [_buildBaseLayer] first reads it.
+    await Future.wait([SketcherPreferences.load(), ViewPreferences.load()]);
+    if (!mounted || _orbitViewActive) return;
+    if (SketcherPreferences.use3DSketcher && _effectiveOrbitBasis != null) {
+      _enterOrbitView();
+    } else if (SketcherPreferences.use3DSketcher) {
+      // Plane basis hasn't resolved yet (adoptSketch/ensureSketch is still
+      // in flight) - retry once the controller notifies.
+      _controller.addListener(_enterOrbitViewOncePlaneReadyIfPreferred);
+    }
+  }
+
+  void _enterOrbitViewOncePlaneReadyIfPreferred() {
+    if (!mounted || _orbitViewActive || _effectiveOrbitBasis == null) return;
+    _controller.removeListener(_enterOrbitViewOncePlaneReadyIfPreferred);
+    _enterOrbitView();
   }
 
   @override
   void dispose() {
+    _controller.removeListener(_enterOrbitViewOncePlaneReadyIfPreferred);
     // Only dispose a controller this widget created itself - an injected
     // (e.g. test-owned, or PartScreen-owned) controller's lifecycle belongs
     // to its caller.
@@ -469,42 +538,63 @@ class _SketchScreenState extends State<SketchScreen> {
                               ),
                             ),
                           ],
-                          // Phase 4.2: only offered once the Sketch's plane
-                          // has loaded and resolved to a real basis - see
-                          // [_effectiveOrbitBasis] (bug fix: this used to
-                          // gate on [_planeKind] alone, which is null for a
-                          // custom Plane and silently hid this button for
-                          // every "New Sketch on Face" Sketch).
-                          AnimatedBuilder(
-                            animation: _controller,
-                            builder: (context, _) {
-                              if (_effectiveOrbitBasis == null) {
-                                return const SizedBox.shrink();
-                              }
-                              final theme = Theme.of(context);
-                              return Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: FloatingActionButton.small(
-                                  heroTag: 'orbit-view-toggle-fab',
-                                  tooltip: _orbitViewActive ? 'Exit Orbit View' : 'Orbit View',
-                                  backgroundColor: _orbitViewActive ? theme.colorScheme.primary : null,
-                                  foregroundColor: _orbitViewActive ? theme.colorScheme.onPrimary : null,
-                                  onPressed: _orbitViewActive ? _exitOrbitView : _enterOrbitView,
-                                  child: SvgPicture.asset(
-                                    'assets/icons/sketchbar/sketchbar_orbit_view.svg',
-                                    width: 30,
-                                    height: 30,
-                                    colorFilter: ColorFilter.mode(
-                                      _orbitViewActive
-                                          ? theme.colorScheme.onPrimary
-                                          : theme.colorScheme.onPrimaryContainer,
-                                      BlendMode.srcIn,
-                                    ),
+                          // P19 on-device feedback: only offered once Orbit
+                          // View is actually active - with the FAB's old
+                          // enter/exit role gone (see [_orbitCursorActive]'s
+                          // own doc comment), there's nothing here to toggle
+                          // while still on the flat 2D canvas.
+                          if (_orbitViewActive)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: FloatingActionButton.small(
+                                heroTag: 'orbit-view-toggle-fab',
+                                tooltip: _orbitCursorActive ? 'Switch to Orbit' : 'Switch to Cursor',
+                                // P19 on-device feedback: "colours are
+                                // reversed, when on looks off" - highlighted
+                                // (primary) now means the orbit *icon*
+                                // itself is genuinely active (orbit
+                                // sub-mode), not cursor sub-mode (the
+                                // default, unhighlighted state).
+                                backgroundColor: _orbitCursorActive ? null : Theme.of(context).colorScheme.primary,
+                                foregroundColor:
+                                    _orbitCursorActive ? null : Theme.of(context).colorScheme.onPrimary,
+                                onPressed: () => setState(() => _orbitCursorActive = !_orbitCursorActive),
+                                child: SvgPicture.asset(
+                                  'assets/icons/sketchbar/sketchbar_orbit_view.svg',
+                                  width: 30,
+                                  height: 30,
+                                  colorFilter: ColorFilter.mode(
+                                    _orbitCursorActive
+                                        ? Theme.of(context).colorScheme.onPrimaryContainer
+                                        : Theme.of(context).colorScheme.onPrimary,
+                                    BlendMode.srcIn,
                                   ),
                                 ),
-                              );
-                            },
-                          ),
+                              ),
+                            ),
+                          // Sketcher restructure Phase 2: moved here from the
+                          // bottom-right FAB slot, which now shows the
+                          // (restricted) tool speed dial instead of this
+                          // button while Orbit View is interactive - see
+                          // [_buildBaseLayer]'s own doc comment.
+                          if (_orbitViewActive)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: FloatingActionButton.small(
+                                heroTag: 'orbit-return-to-default-fab',
+                                tooltip: 'Return to Default View',
+                                onPressed: _returnOrbitToDefaultView,
+                                child: SvgPicture.asset(
+                                  'assets/icons/sketchbar/sketchbar_reset_view.svg',
+                                  width: 30,
+                                  height: 30,
+                                  colorFilter: ColorFilter.mode(
+                                    Theme.of(context).colorScheme.onPrimaryContainer,
+                                    BlendMode.srcIn,
+                                  ),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -542,9 +632,13 @@ class _SketchScreenState extends State<SketchScreen> {
                   // room to do so without forcing a particular size. Placed
                   // after (in front of) the menu FAB above so the ribbon is
                   // the topmost thing in that corner whenever it's visible.
-                  // Hidden during Orbit View (Phase 4.2 is look-only -
-                  // editing always happens back on the 2D canvas).
-                  if (!_orbitViewActive) Positioned.fill(child: SketchRibbon(controller: _controller)),
+                  // Sketcher restructure Phase 2 follow-up (P14): no longer
+                  // hidden during Orbit View - now that the embedded 3D view
+                  // has its own cursor/select mode (P12/P13), the ribbon (a
+                  // plain screen-space overlay with no 2D-canvas coordinate
+                  // dependency of its own) already works against a
+                  // 3D-selected entity unmodified.
+                  Positioned.fill(child: SketchRibbon(controller: _controller)),
                   // Tap-outside barrier: while the FAB menu is open, any tap
                   // outside the FAB itself (which sits above this in the
                   // Stack, so remains tappable) closes the menu instead of
@@ -572,7 +666,12 @@ class _SketchScreenState extends State<SketchScreen> {
                       child: AnimatedBuilder(
                         animation: _controller,
                         builder: (context, _) {
-                          if (_controller.mode == SketchMode.select || _orbitViewActive) {
+                          // Sketcher restructure Phase 2 follow-up (P12):
+                          // this used to be hidden outright during Orbit
+                          // View - now the same pill/tap-to-exitToSelectMode
+                          // mechanism doubles as the embedded 3D view's own
+                          // "enter cursor mode" toggle.
+                          if (_controller.mode == SketchMode.select) {
                             return const SizedBox.shrink();
                           }
                           final pill = Material(
@@ -594,34 +693,18 @@ class _SketchScreenState extends State<SketchScreen> {
                       ),
                     ),
                   ),
-                  // Bottom-right: the draw/dimension tool speed dial, or -
-                  // while Orbit View is active - the "Return to Default
-                  // View" button instead, since there's nothing to draw
-                  // while look-only. Unlike the toggle FAB above, this one
-                  // *animates*: it calls the same animateToPlane the 3D
-                  // viewport already uses for its own camera-into-sketch
-                  // transition, re-orienting the embedded PartViewport back
-                  // to looking straight at the Sketch's plane without
-                  // leaving Orbit View.
+                  // Bottom-right: the draw/dimension tool speed dial -
+                  // sketcher restructure Phase 2: shown in Orbit View too
+                  // now that it's genuinely interactive; P20: every tool
+                  // except Text now works there (see [SketchSpeedDial.
+                  // restrictToEmbeddedTools]). The "Return to Default View"
+                  // button that used to occupy this slot while look-only
+                  // moved to the top-right FAB column, next to the
+                  // orbit/cursor toggle.
                   Positioned(
                     right: 16,
                     bottom: 16,
-                    child: _orbitViewActive
-                        ? FloatingActionButton.small(
-                            heroTag: 'orbit-return-to-default-fab',
-                            tooltip: 'Return to Default View',
-                            onPressed: _returnOrbitToDefaultView,
-                            child: SvgPicture.asset(
-                              'assets/icons/sketchbar/sketchbar_reset_view.svg',
-                              width: 30,
-                              height: 30,
-                              colorFilter: ColorFilter.mode(
-                                Theme.of(context).colorScheme.onPrimaryContainer,
-                                BlendMode.srcIn,
-                              ),
-                            ),
-                          )
-                        : SketchSpeedDial(controller: _controller),
+                    child: SketchSpeedDial(controller: _controller, restrictToEmbeddedTools: _orbitViewActive),
                   ),
                   // Drag-mode toggle FAB, bottom-left: replaces the old
                   // timing-based "double-tap/double-click to drag" gesture
@@ -645,7 +728,12 @@ class _SketchScreenState extends State<SketchScreen> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        if (_controller.mode != SketchMode.select || _orbitViewActive) {
+                        // P24 (2D-sketcher feature parity): reachable in
+                        // Orbit View too now, but only in cursor sub-mode -
+                        // orbit sub-mode has no cursor to grab with (see
+                        // [_orbitCursorActive]'s own doc comment).
+                        if (_controller.mode != SketchMode.select ||
+                            (_orbitViewActive && !_orbitCursorActive)) {
                           return const SizedBox.shrink();
                         }
                         final active = _controller.dragModeEnabled;
@@ -687,8 +775,20 @@ class _SketchScreenState extends State<SketchScreen> {
                         // SketchConstructionMethodBar shows a plain
                         // "Tap to place a point" message instead of chips,
                         // but the bar (and its Exit button) still appears.
+                        //
+                        // P26 (on-device feedback: "missing option to change
+                        // number of sides of polygon", "missing finish
+                        // button on tools"): now shown in Orbit View too -
+                        // Polygon's side-count stepper/guide-circle toggle
+                        // and every tool's own Exit button live only in this
+                        // bar, and P20 already opened every one of these
+                        // tools up to Orbit View without bringing this along.
+                        // Dimension mode's own bar stays 2D-only (unrelated,
+                        // still out of scope - relies on 2D-only ghost-
+                        // picking).
                         final showConstructionBar = mode == SketchMode.draw;
-                        final visible = (showConstructionBar || mode == SketchMode.dimension) && !_orbitViewActive;
+                        final showDimensionBar = mode == SketchMode.dimension && !_orbitViewActive;
+                        final visible = showConstructionBar || showDimensionBar;
                         final bar = mode == SketchMode.dimension
                             ? SketchDimensionBar(controller: _controller)
                             : SketchConstructionMethodBar(controller: _controller);
@@ -788,14 +888,19 @@ class _SketchScreenState extends State<SketchScreen> {
 
   /// Phase 4.1/4.2, on-device feedback round: the Stack's base layer.
   ///
-  /// While [_orbitViewActive]: a read-only, look-only 3D [PartViewport]
-  /// embedding [widget.bodies] (shaded, at [_orbitBodyOpacity]) alongside
-  /// this Sketch's own geometry, reusing `viewport3d/sketch_geometry_3d.dart`'s
-  /// existing projection - "so the user can see where they are sketching"
-  /// relative to the real part, per the brief. Editing always stays on the
-  /// 2D canvas (see the scope doc's "Decided: look-only toggle" note) -
-  /// `onPlaneTap`/`onBackgroundTap` are no-ops and `selectionMode` stays
-  /// false, so orbiting is the only interaction available here.
+  /// While [_orbitViewActive]: a 3D [PartViewport] embedding [widget.bodies]
+  /// (shaded, at [_orbitBodyOpacity]) alongside this Sketch's own geometry,
+  /// reusing `viewport3d/sketch_geometry_3d.dart`'s existing projection -
+  /// "so the user can see where they are sketching" relative to the real
+  /// part, per the brief. Sketcher restructure Phase 2: genuinely
+  /// interactive as of this phase (was read-only/look-only before - see
+  /// git history for that era's doc comment); P16-P18 retrofitted drawing
+  /// itself onto a cursor+ghost+commit model ([_orbitCursorActive]'s own
+  /// doc comment), and P20 opened that model up to every draw tool except
+  /// Text (see [SketchSpeedDial.restrictToEmbeddedTools]) - a genuine tap
+  /// (not a cursor drag) commits via [_handleEmbeddedSketchTap]/
+  /// [_handleDrawCursorMoved] either way. Select mode ([selectionMode]) is
+  /// also supported here, gated the same way.
   ///
   /// Otherwise: just the flat 2D [SketchCanvas] - no 3D body backdrop.
   /// On-device feedback: a body backdrop behind the flat canvas used to be
@@ -821,26 +926,75 @@ class _SketchScreenState extends State<SketchScreen> {
         selectedPlane: null,
         onPlaneTap: (_) {},
         onBackgroundTap: () {},
-        sketchGeometries: {
-          // Bug fix: [orbitBasis] already carries this Sketch's own real
-          // orientation (fixed or custom - see [_effectiveOrbitBasis]),
-          // rather than silently discarding it (fixed-plane case) or being
-          // entirely unavailable (custom-plane case, which used to make
-          // Orbit View unreachable here at all).
-          (_controller.sketchId ?? 'active-sketch'): sketchGeometry3DFrom(
-            basis: orbitBasis,
-            points: _pointDtosFrom(_controller),
-            lines: _lineDtosFrom(_controller),
-            circles: _circleDtosFrom(_controller),
-            arcs: _arcDtosFrom(_controller),
-            ellipses: _ellipseDtosFrom(_controller),
-            splines: _splineDtosFrom(_controller),
-          ),
-        },
+        sketchPlaneBasis: orbitBasis,
+        onSketchPlaneTap: _handleEmbeddedSketchTap,
+        // P18/P20: "sketching should always be done with the cursor, not
+        // with taps" - covers every draw tool reachable while this
+        // landing's SketchMode.draw is active (see [SketchSpeedDial.
+        // restrictToEmbeddedTools] - everything except Text). Dimension/
+        // Select stay on the plain-tap onSketchPlaneTap/onSketchEntityTap
+        // path above, unaffected (Trim/Extend moved onto this cursor path
+        // too as of P30 - see below). Also gated on
+        // _orbitCursorActive (P19 on-device feedback: the orbit-view-toggle
+        // FAB now swaps between this cursor
+        // model and plain camera orbiting with immediate tap-to-place - see
+        // that field's own doc comment) - false reverts a tap straight to
+        // onSketchPlaneTap below, exactly the pre-P16 behaviour.
+        // P24: also covers drag mode ([_dragModeActiveInOrbitView]) -
+        // dragging needs this same plane-raycast cursor, not Selection
+        // mode's mesh-hover one (see that field's own doc comment). P30:
+        // also covers Trim/Extend - [_handleEmbeddedDrawOrDragCommit]
+        // already falls through to [_handleEmbeddedSketchTap] (->
+        // handleCanvasTap -> the controller's own mode dispatch,
+        // including _handleTrimTap) for any mode that isn't drag, so
+        // widening this gate is the only plumbing Trim/Extend needs to get
+        // the same "aim precisely, then tap to commit" cursor model every
+        // other mode already has.
+        drawCursorMode: _orbitCursorActive &&
+            (_controller.mode == SketchMode.draw ||
+                _controller.mode == SketchMode.trim ||
+                _dragModeActiveInOrbitView),
+        onDrawCursorMoved: _handleDrawCursorMoved,
+        onDrawCursorCommit: _handleEmbeddedDrawOrDragCommit,
+        // P30: mirrors sketch_canvas.dart's own cursor colour convention
+        // (green only for SketchMode.draw, red for everything else it
+        // ever tints - select and, now, trim) - drawCursorMode's own gate
+        // just above no longer implies "actively drawing" by itself.
+        drawCursorHoverColor:
+            _controller.mode == SketchMode.draw || _dragModeActiveInOrbitView ? const Color(0xFF4CAF50) : Colors.red,
+        drawGhostPolylines: _embeddedDrawGhostPolylines,
+        drawGhostColor: _embeddedDrawGhostColor,
+        drawGhostGuidePolylines: _embeddedDrawGhostGuidePolylines,
+        drawIndicatorMarkers: _embeddedDrawIndicatorMarkers,
+        profileFillOutlines: _embeddedProfileFillOutlines,
+        profileBranchMarkers: _embeddedProfileBranchMarkers,
+        sketchGeometries: _embeddedSketchGeometries,
+        sketchEntityColors: _embeddedSketchEntityColors,
         referencePlanesHidden: true,
         renderMode: _orbitRenderMode,
         bodyColourHex: _orbitBodyColourHex,
         bodyOpacity: _orbitBodyOpacity,
+        bgColourHex: ViewPreferences.bgColourHex,
+        sketchPlaneSurfaceColourHex: _orbitCanvasColourHex,
+        sketchPlaneSurfaceOpacity: _orbitCanvasOpacity,
+        sketchPlaneGridVisible: _orbitGridVisible,
+        preferEntityPick: _preferEntityPickOnTap,
+        onSketchEntityTap: _handleEmbeddedSketchEntityTap,
+        hasEntityNearSketchTap: (x, y) => _controller.hasEntityNear(x, y, SketchController.snapRadius),
+        // P19 on-device feedback: same _orbitCursorActive gating as
+        // drawCursorMode above - orbit sub-mode reverts selection to plain
+        // camera orbiting with no live hover/cursor either. P24: excludes
+        // drag mode too - see [_dragModeActiveInOrbitView]'s own doc
+        // comment for why that needs drawCursorMode's plane cursor instead.
+        selectionMode: _orbitCursorActive && _controller.mode == SketchMode.select && !_dragModeActiveInOrbitView,
+        selectionFilter: _embeddedCursorModeFilter,
+        selectedEntities: _embeddedSelectedEntities,
+        onSelectionToggle: _handleEmbeddedSelectionToggle,
+        onClearSelection: _controller.closeRibbon,
+        // P25 (2D-sketcher feature parity): feeds straight into
+        // SketchController.selectInRect - the exact same method
+        // sketch_canvas.dart's own marquee already uses.
+        onMarqueeSelect: _controller.selectInRect,
         initialViewBasis: orbitBasis,
       );
     }
@@ -853,6 +1007,605 @@ class _SketchScreenState extends State<SketchScreen> {
       constraintLabelsVisible: _constraintLabelsVisible,
       canvasColor: _canvasColor,
     );
+  }
+
+  /// P10: whether a tap in the embedded 3D view should prefer picking a
+  /// real Body vertex/edge over placing new geometry on the plane - starts
+  /// with Dimension mode, which already supports referencing real Body
+  /// geometry on the flat 2D canvas (via ghost-pick - see
+  /// [SketchController.pickReferenceGhostVertex]/[pickReferenceGhostEdge]'s
+  /// own doc comments). A single boolean expression rather than a dedicated
+  /// field, so a later mode (Convert Entity/Offset Entity, once those tools
+  /// exist) is a one-line addition here, not a redesign of
+  /// [PartViewport.preferEntityPick]'s own plumbing.
+  bool get _preferEntityPickOnTap => _controller.mode == SketchMode.dimension;
+
+  /// P10: [PartViewport.onSketchEntityTap]'s handler - materializes a real
+  /// Body vertex/edge as a dimensionable Point/Line via the exact same
+  /// [SketchController] methods the flat 2D canvas's own ghost-pick already
+  /// uses. Once materialized, a picked Body entity is indistinguishable
+  /// from any other Point/Line, so every existing ghost-building/confirm/
+  /// undo path already works against it unmodified - see those methods' own
+  /// doc comments for the full picture.
+  void _handleEmbeddedSketchEntityTap(SelectionEntityRef entity) {
+    switch (entity.kind) {
+      case SelectionEntityKind.vertex:
+        unawaited(_controller.pickReferenceGhostVertex(entity.bodyId, entity.id));
+      case SelectionEntityKind.edge:
+        unawaited(_controller.pickReferenceGhostEdge(entity.bodyId, entity.id));
+      default:
+        break;
+    }
+  }
+
+  /// P12: only Point/Line are real 3D-drawable/selectable kinds right now
+  /// (Circle/etc. don't exist there yet) - Body vertex/edge/face picking is
+  /// a separate concern P10's own `preferEntityPick` already owns for
+  /// Dimension mode specifically, not this cursor mode's job.
+  static const SelectionFilterState _embeddedCursorModeFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: true,
+    sketchLine: true,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// P13: [PartViewport.onSelectionToggle]'s handler - converts the
+  /// resolved [SelectionEntityRef] (3D ray-hit vocabulary) into the matching
+  /// [SketchSelection] (2D/[SketchController] vocabulary) and applies it via
+  /// [SketchController.selectEntity] - the exact same add-to-selection-vs-
+  /// replace rule [selectConstraint] already uses, so every existing ribbon
+  /// action (Delete, constraints, Length, ...) already works against a
+  /// 3D-selected entity unmodified.
+  void _handleEmbeddedSelectionToggle(SelectionEntityRef entity) {
+    final kind = switch (entity.kind) {
+      SelectionEntityKind.sketchPoint => SelectionKind.point,
+      SelectionEntityKind.sketchLine => SelectionKind.line,
+      _ => null,
+    };
+    if (kind == null) return;
+    _controller.selectEntity(SketchSelection(kind: kind, id: entity.sketchEntityId));
+  }
+
+  /// P13: the reverse of [_handleEmbeddedSelectionToggle] - lets the
+  /// embedded 3D view's own persistent-selection highlight reflect
+  /// [SketchController.selectionSet], the same way `sketchGeometries` above
+  /// is already rebuilt from controller state on every build.
+  Set<SelectionEntityRef> get _embeddedSelectedEntities {
+    final featureId = _controller.sketchId ?? 'active-sketch';
+    return {
+      for (final selection in _controller.selectionSet)
+        if (selection.kind == SelectionKind.point || selection.kind == SelectionKind.line)
+          SelectionEntityRef(
+            kind: selection.kind == SelectionKind.point
+                ? SelectionEntityKind.sketchPoint
+                : SelectionEntityKind.sketchLine,
+            sketchFeatureId: featureId,
+            sketchEntityId: selection.id,
+          ),
+    };
+  }
+
+  /// Sketcher restructure Phase 2: [PartViewport.onSketchPlaneTap]'s
+  /// handler - converts the resolved world-space hit point back to this
+  /// Sketch's own local (x, y) via the same [worldPointToSketch] every
+  /// other 3D-sketch-geometry consumer already uses, then feeds it straight
+  /// into [SketchController.handleCanvasTap] - the exact same entry point
+  /// every 2D-canvas tap already funnels through (`sketch_canvas.dart`'s
+  /// own `_dispatchTap`), so every tool's own tap-handling logic (chain
+  /// state, construction-method dispatch, ...) is reused completely
+  /// unchanged. Not awaited here (matches `_dispatchTap`'s own
+  /// fire-and-forget convention) - [SketchController] is a [ChangeNotifier]
+  /// and drives its own UI updates once the call resolves.
+  void _handleEmbeddedSketchTap(vm.Vector3 worldPoint) {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return;
+    final (x, y) = worldPointToSketch(basis, worldPoint);
+    unawaited(_controller.handleCanvasTap(x, y));
+  }
+
+  /// P24 (2D-sketcher feature parity): true while Select mode's drag-mode
+  /// toggle is on. [_handleDrawCursorMoved]/[_handleEmbeddedDrawOrDragCommit]
+  /// branch on this to repurpose the plane-raycast cursor P16-P18 built for
+  /// drawing as the 3D-embedded counterpart of `sketch_canvas.dart`'s own
+  /// tap-to-grab/tap-to-drop drag gesture, instead of placing new geometry -
+  /// dragging fundamentally needs "where on the sketch plane is the
+  /// cursor", exactly what that mechanism already resolves, so this reuses
+  /// it rather than building a second parallel cursor system. Also flips
+  /// [_buildBaseLayer]'s own `selectionMode`/`drawCursorMode` gating so the
+  /// two never both apply at once - drag mode needs the plane cursor, not
+  /// Selection mode's mesh-hover one.
+  bool get _dragModeActiveInOrbitView => _controller.mode == SketchMode.select && _controller.dragModeEnabled;
+
+  /// P18: [PartViewport.onDrawCursorMoved]'s handler - the "always sketching
+  /// should be done with the cursor" retrofit's move-side counterpart to
+  /// [_handleEmbeddedSketchTap]'s commit-side one. Converts the resolved
+  /// world-space hit point back to sketch-local (x, y) the same way, but
+  /// feeds [SketchController.moveCursorToSketchPoint] (no tap dispatch)
+  /// instead of [SketchController.handleCanvasTap] - this fires on every
+  /// cursor move, not just on a genuine tap, so [_controller.activeDrawGhost]
+  /// (read by [_embeddedDrawGhostPolylines] below) stays live while aiming.
+  ///
+  /// P24: while [_dragModeActiveInOrbitView], feeds
+  /// [SketchController.updateGrabbedPosition] instead - a no-op unless
+  /// something is actually grabbed (mirrors that method's own doc comment).
+  void _handleDrawCursorMoved(vm.Vector3 worldPoint) {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return;
+    final (x, y) = worldPointToSketch(basis, worldPoint);
+    if (_dragModeActiveInOrbitView) {
+      if (_controller.isEntityGrabbed) {
+        unawaited(_controller.updateGrabbedPosition(x, y));
+      }
+      return;
+    }
+    _controller.moveCursorToSketchPoint(x, y);
+  }
+
+  /// P24: [PartViewport.onDrawCursorCommit]'s handler while
+  /// [_dragModeActiveInOrbitView] - mirrors `sketch_canvas.dart`'s own
+  /// `_handleDragModeTap` exactly (drop if already grabbed, otherwise try to
+  /// grab whatever [SketchController.dragGrabTargetAt] resolves to at the
+  /// tap), falling through to the ordinary [_handleEmbeddedSketchTap] commit
+  /// (place-geometry/select-toggle) whenever drag mode isn't active - the
+  /// same "drag-mode branch checked first, ordinary tap handling otherwise"
+  /// priority `_handleDragModeTap`'s own doc comment describes.
+  void _handleEmbeddedDrawOrDragCommit(vm.Vector3 worldPoint) {
+    if (!_dragModeActiveInOrbitView) {
+      _handleEmbeddedSketchTap(worldPoint);
+      return;
+    }
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return;
+    if (_controller.isEntityGrabbed) {
+      unawaited(_controller.dropGrabbedEntity());
+      return;
+    }
+    final (x, y) = worldPointToSketch(basis, worldPoint);
+    final target = _controller.dragGrabTargetAt(x, y, SketchController.snapRadius);
+    if (target == null) return;
+    switch (target.kind) {
+      case SelectionKind.point:
+        _controller.beginPointDrag(target.id);
+      case SelectionKind.line:
+        _controller.beginLineDrag(target.id);
+      default:
+        break;
+    }
+  }
+
+  /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates
+  /// [SketchController.activeDrawGhost] (already live from
+  /// [_handleDrawCursorMoved] above) via [ghostPolylines] into sketch-local
+  /// polylines, then maps each point into world space via
+  /// [sketchPointToWorld], mirroring exactly how [_buildBaseLayer]'s own
+  /// `sketchGeometries` map already embeds this Sketch's *committed*
+  /// geometry onto the same [_effectiveOrbitBasis]. Empty (not just null)
+  /// when there's no active ghost, matching [PartViewport.drawGhostPolylines]'s
+  /// own default.
+  List<List<vm.Vector3>> get _embeddedDrawGhostPolylines {
+    final basis = _effectiveOrbitBasis;
+    final ghost = _controller.activeDrawGhost;
+    if (basis == null || ghost == null) return const [];
+    return [
+      for (final polyline in ghostPolylines(ghost))
+        [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
+    ];
+  }
+
+  /// P20 follow-up: [PartViewport.drawGhostColor]'s data source - green
+  /// while [SketchController.activeLineSnapAxis] is set, mirroring
+  /// `sketch_canvas.dart`'s own Line horizontal/vertical auto-snap recolor.
+  /// Null (the default colour) for every other tool/state.
+  vm.Vector4? get _embeddedDrawGhostColor =>
+      _controller.activeDrawGhost is LineGhost && _controller.activeLineSnapAxis != null
+          ? sketchGhostSnapColor
+          : null;
+
+  /// P20 follow-up: [PartViewport.drawGhostGuidePolylines]' data source -
+  /// mirrors [_embeddedDrawGhostPolylines] exactly, just through
+  /// [ghostGuidePolylines] instead of [ghostPolylines] (currently only ever
+  /// non-empty for Polygon's own guide circles).
+  List<List<vm.Vector3>> get _embeddedDrawGhostGuidePolylines {
+    final basis = _effectiveOrbitBasis;
+    final ghost = _controller.activeDrawGhost;
+    if (basis == null || ghost == null) return const [];
+    return [
+      for (final polyline in ghostGuidePolylines(ghost))
+        [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
+    ];
+  }
+
+  /// P20 follow-up: [PartViewport.drawIndicatorMarkers]' data source - the
+  /// 3D-embedded counterpart to `sketch_canvas.dart`'s in-progress-anchor/
+  /// snap-candidate/midpoint point emphasis (see [DrawIndicatorMarker]'s own
+  /// doc comment). Draw-mode only - outside it, [SketchController.
+  /// isHoveringOrigin]/[hoveredLineMidpoint] would still resolve non-null
+  /// from a stale cursor position, but Select mode already has its own,
+  /// unrelated hover-highlight system ([PartViewport.selectedEntities]/
+  /// `_hoverHit`) - showing this too would be redundant/conflicting.
+  List<DrawIndicatorMarker> get _embeddedDrawIndicatorMarkers {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null || _controller.mode != SketchMode.draw) return const [];
+
+    vm.Vector3? worldOfPoint(String? pointId) {
+      if (pointId == null) return null;
+      final point = _controller.points[pointId];
+      if (point == null) return null;
+      return sketchPointToWorld(basis, point.x, point.y);
+    }
+
+    final markers = <DrawIndicatorMarker>[];
+
+    void addAnchor(String? pointId) {
+      final world = worldOfPoint(pointId);
+      if (world != null) {
+        markers.add(DrawIndicatorMarker(
+          point: world,
+          color: sketchIndicatorAnchorColor,
+          width: sketchIndicatorAnchorWidth,
+        ));
+      }
+    }
+
+    // In-progress anchor Points driving whichever multi-tap shape is
+    // currently being placed - mirrors sketch_canvas.dart's own deepOrange
+    // emphasis markers exactly.
+    if (_controller.circleInProgress) addAnchor(_controller.circleCenterPointId);
+    if (_controller.arcInProgress) {
+      addAnchor(_controller.arcCenterPointId);
+      addAnchor(_controller.arcStartPointId);
+    }
+    if (_controller.polygonInProgress) addAnchor(_controller.polygonCenterPointId);
+    if (_controller.slotInProgress) {
+      addAnchor(_controller.slotCenter1PointId);
+      addAnchor(_controller.slotCenter2PointId);
+    }
+    if (_controller.ellipseInProgress) {
+      addAnchor(_controller.ellipseCenterPointId);
+      addAnchor(_controller.ellipseMajorPointId);
+    }
+    if (_controller.splineInProgress) {
+      for (final pointId in _controller.splineThroughPointIds) {
+        addAnchor(pointId);
+      }
+    }
+
+    // Line's chain-start Point - green (about to close the loop) or plain
+    // anchor emphasis otherwise, mirroring sketch_canvas.dart's own
+    // isChainStart branch exactly.
+    if (_controller.chainInProgress) {
+      final chainStartWorld = worldOfPoint(_controller.currentChainStartPointId);
+      if (chainStartWorld != null) {
+        final snapping = _controller.isHoveringChainStart;
+        markers.add(DrawIndicatorMarker(
+          point: chainStartWorld,
+          color: snapping ? sketchIndicatorSnapColor : sketchIndicatorAnchorColor,
+          width: snapping ? sketchIndicatorSnapWidth : sketchIndicatorAnchorWidth,
+        ));
+      }
+    }
+
+    // The origin, about to be snapped onto.
+    if (_controller.isHoveringOrigin) {
+      final originWorld = worldOfPoint(_controller.originPointId);
+      if (originWorld != null) {
+        markers.add(DrawIndicatorMarker(
+          point: originWorld,
+          color: sketchIndicatorSnapColor,
+          width: sketchIndicatorSnapWidth,
+        ));
+      }
+    }
+
+    // An existing Point the cursor is hovering near (pre-tap candidate) or
+    // that the most recent tap just auto-linked onto (post-tap
+    // confirmation) - same cyan visual for both, mirroring
+    // sketch_canvas.dart's own single _snapCandidateColor for both triggers.
+    final candidateWorld = worldOfPoint(_controller.snapCandidatePointId) ??
+        worldOfPoint(_controller.autoCoincidentIndicatorPointId);
+    if (candidateWorld != null) {
+      markers.add(DrawIndicatorMarker(
+        point: candidateWorld,
+        color: sketchIndicatorCandidateColor,
+        width: sketchIndicatorCandidateWidth,
+      ));
+    }
+
+    // A Line's own (otherwise invisible) midpoint, while the cursor hovers
+    // near enough that a tap would snap onto it.
+    final midpoint = _controller.hoveredLineMidpoint;
+    if (midpoint != null) {
+      markers.add(DrawIndicatorMarker(
+        point: sketchPointToWorld(basis, midpoint.$1, midpoint.$2),
+        color: sketchIndicatorMidpointColor,
+        width: sketchIndicatorMidpointWidth,
+      ));
+    }
+
+    return markers;
+  }
+
+  /// P31 (2D-sketcher feature parity): [PartViewport.profileFillOutlines]'
+  /// data source - every one of [SketchController.closedProfileFills]'s
+  /// outer loops, tessellated via [SketchController.profileLoopOutline].
+  /// Mode-independent (unlike [_embeddedDrawIndicatorMarkers], not gated on
+  /// [SketchController.mode]), same as `sketch_canvas.dart`'s own
+  /// `_paintClosedProfileFill`.
+  ///
+  /// Cached and content-compared up front (see [_embeddedSketchGeometries]'s
+  /// own doc comment for why this discipline is applied to every
+  /// [PartViewport] prop from the start now, not retrofitted after an
+  /// on-device freeze) - a fresh `List` on every [SketchController]
+  /// notification would otherwise force [PartViewport] to rebuild the fill
+  /// mesh (a real, if smaller, GPU cost) every tick even when the profile
+  /// hasn't changed.
+  List<List<(double, double)>> _cachedProfileFillOutlines = const [];
+
+  List<List<(double, double)>> get _embeddedProfileFillOutlines {
+    final fresh = <List<(double, double)>>[
+      for (final loop in _controller.closedProfileFills)
+        if (_controller.profileLoopOutline(loop) case final outline?)
+          if (outline.length >= 3) outline,
+    ];
+    final cached = _cachedProfileFillOutlines;
+    if (_profileOutlinesEqual(fresh, cached)) return cached;
+    _cachedProfileFillOutlines = fresh;
+    return fresh;
+  }
+
+  bool _profileOutlinesEqual(List<List<(double, double)>> a, List<List<(double, double)>> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!listEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
+  /// P31: [PartViewport.profileBranchMarkers]' data source - one red marker
+  /// per [SketchController.profileBranchPointIds] entry, mirroring
+  /// `sketch_canvas.dart`'s own `_paintProfileBranchPoints`. Mode-independent,
+  /// same reasoning as [_embeddedProfileFillOutlines] above. Cached the same
+  /// way for the same reason.
+  List<DrawIndicatorMarker> _cachedProfileBranchMarkers = const [];
+
+  List<DrawIndicatorMarker> get _embeddedProfileBranchMarkers {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return const [];
+    final fresh = <DrawIndicatorMarker>[
+      for (final pointId in _controller.profileBranchPointIds)
+        if (_controller.points[pointId] case final point?)
+          DrawIndicatorMarker(
+            point: sketchPointToWorld(basis, point.x, point.y),
+            color: sketchProfileBranchMarkerColor,
+            width: sketchProfileBranchMarkerWidth,
+          ),
+    ];
+    final cached = _cachedProfileBranchMarkers;
+    if (_indicatorMarkersEqual(fresh, cached)) return cached;
+    _cachedProfileBranchMarkers = fresh;
+    return fresh;
+  }
+
+  bool _indicatorMarkersEqual(List<DrawIndicatorMarker> a, List<DrawIndicatorMarker> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].point != b[i].point || a[i].color != b[i].color || a[i].width != b[i].width) return false;
+    }
+    return true;
+  }
+
+  /// P27 bug fix (on-device feedback: Rectangle placement still froze/ANR'd
+  /// after the P23 colour-map caching fix below): [PartViewport.
+  /// sketchGeometries]' data source used to be built inline, fresh, on
+  /// every single call - the *other* half of the exact same "unstable Map
+  /// reference forces a full GPU rebuild every frame" bug class the colour
+  /// cache below fixes for `sketchEntityColors`, still present here and
+  /// apparently still enough on its own to explain the continued freeze
+  /// (`PartViewport._syncSketchNodes()`'s own trigger condition ORs
+  /// *both* fields together - fixing only one left the other still firing
+  /// every rebuild). See [sketchGeometry3DEquals]'s own doc comment for why
+  /// a deep content comparison (not `!=`) is required here.
+  Map<String, SketchGeometry3D> _cachedEmbeddedSketchGeometries = const {};
+
+  Map<String, SketchGeometry3D> get _embeddedSketchGeometries {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return const {};
+    final geometry = sketchGeometry3DFrom(
+      basis: basis,
+      points: _pointDtosFrom(_controller),
+      lines: _lineDtosFrom(_controller),
+      circles: _circleDtosFrom(_controller),
+      arcs: _arcDtosFrom(_controller),
+      ellipses: _ellipseDtosFrom(_controller),
+      splines: _splineDtosFrom(_controller),
+    );
+    final key = _controller.sketchId ?? 'active-sketch';
+    final cached = _cachedEmbeddedSketchGeometries;
+    final cachedGeometry = cached[key];
+    if (cached.length == 1 && cachedGeometry != null && sketchGeometry3DEquals(geometry, cachedGeometry)) {
+      return cached;
+    }
+    final fresh = {key: geometry};
+    _cachedEmbeddedSketchGeometries = fresh;
+    return fresh;
+  }
+
+  /// P26 bug fix (on-device feedback: "placing the second point in a
+  /// rectangle caused a freeze, then app crash"): [_embeddedSketchEntityColors]
+  /// used to build and return a brand-new `Map` instance on every single
+  /// call, and `PartViewport`'s own `didUpdateWidget` compares
+  /// `sketchEntityColors` by plain `!=` (reference equality - the same
+  /// documented contract `sketchGeometries` itself already relies on: "only
+  /// build a new Map instance when the content actually changes"). A fresh
+  /// instance every rebuild meant *every* `SketchController` notification -
+  /// including a plain cursor move that changes no entity's constraint
+  /// status at all - looked like a genuine content change, forcing
+  /// `_syncSketchNodes()` (a full GPU teardown-and-rebuild of every Line/
+  /// Circle/Arc/Ellipse/Spline/Point primitive in the whole Sketch, not
+  /// just the entities whose colour actually changed) on every single
+  /// frame. Rectangle's own `_buildRectangle` creates ~12 entities
+  /// (6 Lines, 4 constraints, a diagonal midpoint constraint, a centre
+  /// Point) across a burst of sequential awaited network calls, each
+  /// notifying listeners - compounding a full-scene GPU rebuild, on a
+  /// rapidly growing entity count, many times in a tight window, which is
+  /// almost certainly what actually froze then crashed the app (not a bug
+  /// in `_buildRectangle` itself, which is unmodified, shared 2D/3D logic).
+  /// Fixed by caching the last-returned `Map` and reusing that exact
+  /// reference whenever the freshly-computed content is equal to it -
+  /// `PartViewport` then correctly sees "no change" on the (very common)
+  /// case where a notification didn't affect anyone's constraint status.
+  Map<String, vm.Vector4> _cachedEmbeddedSketchEntityColors = const {};
+
+  /// [PartViewport.sketchEntityColors]' data source - the constraint-status
+  /// colour coding `sketch_canvas.dart` has always had, computed the exact
+  /// same way (same priority chain, same `SketchController.rigidity`/
+  /// `isFullyConstrained`/`isPointForcedOverConstrained` reads) but without
+  /// that painter's own selected/hovered/grabbed overrides - Orbit View's
+  /// selection highlight is a completely separate overlay system
+  /// ([PartViewport.selectedEntities]/its own hover node), layered on top
+  /// of this base colour by [PartViewport] itself, so duplicating those
+  /// three states here would be redundant. Keyed by entity id (Point/Line/
+  /// Circle/Arc/Ellipse/Spline all share one id space), matching
+  /// [PartViewport.sketchEntityColors]'s own contract. See
+  /// [_cachedEmbeddedSketchEntityColors]'s own doc comment for why this
+  /// wraps [_computeEmbeddedSketchEntityColors] in a reference-stabilising
+  /// cache rather than returning its result directly.
+  Map<String, vm.Vector4> get _embeddedSketchEntityColors {
+    final colors = _computeEmbeddedSketchEntityColors();
+    if (_sketchEntityColorsEqual(colors, _cachedEmbeddedSketchEntityColors)) {
+      return _cachedEmbeddedSketchEntityColors;
+    }
+    _cachedEmbeddedSketchEntityColors = colors;
+    return colors;
+  }
+
+  bool _sketchEntityColorsEqual(Map<String, vm.Vector4> a, Map<String, vm.Vector4> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      if (b[entry.key] != entry.value) return false;
+    }
+    return true;
+  }
+
+  Map<String, vm.Vector4> _computeEmbeddedSketchEntityColors() {
+    final colors = <String, vm.Vector4>{};
+    // Bug fix: `SketchController.rigidity` is a fresh graph analysis on
+    // every access, not a cached property - the old version of this method
+    // called it (directly, or indirectly via `isPointForcedOverConstrained`,
+    // which reads it too) dozens of times per call, once or twice per
+    // entity. Read once here and reused throughout instead.
+    final rigidity = _controller.rigidity;
+    final isFullyConstrained = _controller.isFullyConstrained;
+    // A Point shared by several entities (e.g. every corner of a
+    // Rectangle) would otherwise re-run `isPointForcedOverConstrained`
+    // (itself non-trivial - see its own doc comment) once per entity
+    // touching it.
+    final overConstrainedCache = <String, bool>{};
+    bool pointOverConstrained(String pointId) =>
+        overConstrainedCache.putIfAbsent(pointId, () => _controller.isPointForcedOverConstrained(pointId));
+
+    vm.Vector4 statusColor({required bool overConstrained, required bool construction, required bool fullyConstrained}) {
+      if (overConstrained) return sketchOverConstrainedColor;
+      if (construction) return sketchConstructionColor;
+      if (fullyConstrained) return sketchFullyConstrainedColor;
+      return sketchLineColor;
+    }
+
+    for (final line in _controller.lines.values) {
+      final overConstrained = rigidity.isSegmentOverConstrained(line.startPointId, line.endPointId) ||
+          pointOverConstrained(line.startPointId) ||
+          pointOverConstrained(line.endPointId);
+      final fullyConstrained =
+          isFullyConstrained || rigidity.isSegmentFullyConstrained(line.startPointId, line.endPointId);
+      colors[line.id] =
+          statusColor(overConstrained: overConstrained, construction: line.construction, fullyConstrained: fullyConstrained);
+    }
+
+    for (final circle in _controller.circles.values) {
+      final overConstrained = rigidity.isSegmentOverConstrained(circle.centerPointId, circle.radiusPointId) ||
+          pointOverConstrained(circle.centerPointId) ||
+          pointOverConstrained(circle.radiusPointId);
+      final fullyConstrained =
+          isFullyConstrained || rigidity.isSegmentFullyConstrained(circle.centerPointId, circle.radiusPointId);
+      colors[circle.id] = statusColor(
+          overConstrained: overConstrained, construction: circle.construction, fullyConstrained: fullyConstrained);
+    }
+
+    for (final arc in _controller.arcs.values) {
+      final overConstrained = rigidity.isSegmentOverConstrained(arc.centerPointId, arc.startPointId) ||
+          rigidity.isSegmentOverConstrained(arc.centerPointId, arc.endPointId) ||
+          pointOverConstrained(arc.centerPointId) ||
+          pointOverConstrained(arc.startPointId) ||
+          pointOverConstrained(arc.endPointId);
+      final fullyConstrained = isFullyConstrained ||
+          (rigidity.isSegmentFullyConstrained(arc.centerPointId, arc.startPointId) &&
+              rigidity.isSegmentFullyConstrained(arc.centerPointId, arc.endPointId));
+      colors[arc.id] =
+          statusColor(overConstrained: overConstrained, construction: arc.construction, fullyConstrained: fullyConstrained);
+    }
+
+    for (final ellipse in _controller.ellipses.values) {
+      final overConstrained = rigidity.isSegmentOverConstrained(ellipse.centerPointId, ellipse.majorPointId) ||
+          rigidity.isSegmentOverConstrained(ellipse.centerPointId, ellipse.minorPointId) ||
+          pointOverConstrained(ellipse.centerPointId) ||
+          pointOverConstrained(ellipse.majorPointId) ||
+          pointOverConstrained(ellipse.minorPointId);
+      final fullyConstrained = isFullyConstrained ||
+          (rigidity.isSegmentFullyConstrained(ellipse.centerPointId, ellipse.majorPointId) &&
+              rigidity.isSegmentFullyConstrained(ellipse.centerPointId, ellipse.minorPointId));
+      colors[ellipse.id] = statusColor(
+          overConstrained: overConstrained, construction: ellipse.construction, fullyConstrained: fullyConstrained);
+    }
+
+    for (final spline in _controller.splines.values) {
+      var overConstrained = false;
+      var fullyConstrainedSpline = true;
+      for (final pointId in spline.throughPointIds) {
+        if (pointOverConstrained(pointId)) overConstrained = true;
+      }
+      for (var i = 0; i < spline.throughPointIds.length - 1; i++) {
+        final a = spline.throughPointIds[i];
+        final b = spline.throughPointIds[i + 1];
+        if (rigidity.isSegmentOverConstrained(a, b)) overConstrained = true;
+        if (!rigidity.isSegmentFullyConstrained(a, b)) fullyConstrainedSpline = false;
+      }
+      fullyConstrainedSpline = isFullyConstrained || fullyConstrainedSpline;
+      colors[spline.id] = statusColor(
+          overConstrained: overConstrained, construction: spline.construction, fullyConstrained: fullyConstrainedSpline);
+    }
+
+    // Points don't carry their own construction/over-constrained state
+    // beyond what SketchController.isPointForcedOverConstrained/rigidity
+    // already report per-id - mirrors sketch_canvas.dart's own point loop,
+    // minus the origin (kept at the default colour here, same as 2D's own
+    // dedicated indigo origin marker never participating in this scheme).
+    for (final point in _controller.points.values) {
+      if (point.id == _controller.originPointId) continue;
+      final fullyConstrained = isFullyConstrained || rigidity.isPointFullyConstrained(point.id);
+      colors[point.id] = statusColor(
+        overConstrained: pointOverConstrained(point.id),
+        construction: false,
+        fullyConstrained: fullyConstrained,
+      );
+    }
+
+    // P24: the currently-grabbed Point/Line (see [_dragModeActiveInOrbitView])
+    // wins over every status colour above - applied last, mirrors 2D's own
+    // grabbed > selected > hovered > over-constrained > ... priority chain
+    // (Orbit View's selected/hover highlight is a separate overlay layered
+    // on top by PartViewport itself, so only "grabbed" needs replicating
+    // here).
+    final draggingPointId = _controller.draggingPointId;
+    if (draggingPointId != null) colors[draggingPointId] = sketchGrabbedColor;
+    final draggingLineId = _controller.draggingLineId;
+    if (draggingLineId != null) colors[draggingLineId] = sketchGrabbedColor;
+
+    return colors;
   }
 
   /// The "Return to Default View" FAB's action - re-orients the embedded
@@ -872,36 +1625,29 @@ class _SketchScreenState extends State<SketchScreen> {
   /// from a previous Orbit View session on this same Sketch - each entry is
   /// a fresh, predictable "temporary inspection mode" (see
   /// [_buildBaseLayer]'s doc comment), not one that carries state forward.
+  ///
+  /// On-device feedback ("point tool shouldn't start when opening a
+  /// sketch"): resets to Select mode, not a specific draw tool - every
+  /// draw tool `SketchSpeedDial.restrictToEmbeddedTools` allows now (P20)
+  /// works fine in Orbit View, so there's no longer a "guarantee some tool
+  /// that actually works here" reason to force one; Select mode is itself
+  /// fully supported (P16) and is the more natural "just opened, haven't
+  /// chosen anything yet" starting point. Still guards against a stale
+  /// Dimension/Trim mode carried over on a reused, externally-injected
+  /// controller (see this class's own `dispose` doc comment for when that
+  /// applies) - both are still 2D-only, so Orbit View must never start in
+  /// either.
   void _enterOrbitView() {
+    if (_controller.mode != SketchMode.select) {
+      _controller.exitToSelectMode();
+    }
     setState(() {
       _orbitViewActive = true;
       _orbitBodyOpacity = 0.75;
+      // P19 on-device feedback: "Cursor-first" - every fresh entry starts
+      // ready to draw/select precisely, not in plain-orbit sub-mode.
+      _orbitCursorActive = true;
     });
-  }
-
-  /// Guards [_exitOrbitView] against overlapping camera animations if the
-  /// toggle FAB is tapped again mid-exit.
-  bool _orbitViewExiting = false;
-
-  /// On-device feedback: leaving Orbit View should animate the camera back
-  /// to facing the Sketch's plane *before* swapping back to the flat 2D
-  /// canvas - reusing the same [PartViewportState.animateToPlane] call
-  /// [_returnOrbitToDefaultView] uses - rather than cutting away instantly
-  /// from whatever angle the user had orbited to.
-  Future<void> _exitOrbitView() async {
-    if (_orbitViewExiting) return;
-    _orbitViewExiting = true;
-    final planeKind = _planeKind;
-    if (planeKind != null) {
-      await _orbitViewportKey.currentState?.animateToPlane(
-        planeKind,
-        flip: _controller.flip,
-        rotationQuarterTurns: _controller.rotationQuarterTurns,
-      );
-    }
-    _orbitViewExiting = false;
-    if (!mounted) return;
-    setState(() => _orbitViewActive = false);
   }
 
   /// Stage 23f: the hamburger menu's content - a View submenu for the
@@ -1036,6 +1782,38 @@ class _SketchScreenState extends State<SketchScreen> {
               if (opacity != null) setState(() => _orbitBodyOpacity = opacity);
             },
           ),
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.palette_outlined, size: 20),
+          title: Text('Canvas Colour', style: titleStyle),
+          onTap: () async {
+            final hex = await showColourSwatchSheet(
+              context,
+              title: 'Canvas Colour',
+              swatches: backgroundColourSwatches,
+              selectedHex: _orbitCanvasColourHex,
+            );
+            if (hex != null) setState(() => _orbitCanvasColourHex = hex);
+          },
+        ),
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.opacity, size: 20),
+          title: Text('Canvas Transparency', style: titleStyle),
+          onTap: () async {
+            final opacity = await showBodyOpacitySheet(context, initialOpacity: _orbitCanvasOpacity);
+            if (opacity != null) setState(() => _orbitCanvasOpacity = opacity);
+          },
+        ),
+        SwitchListTile(
+          dense: true,
+          visualDensity: density,
+          title: Text('Grid', style: titleStyle),
+          value: _orbitGridVisible,
+          onChanged: (value) => setState(() => _orbitGridVisible = value),
+        ),
       ],
     );
   }

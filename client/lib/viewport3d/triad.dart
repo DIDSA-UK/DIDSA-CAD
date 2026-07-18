@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_scene/scene.dart' show PerspectiveCamera;
+import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;
 
 /// One axis of the on-screen orientation triad: its label, color, and the
@@ -33,8 +33,11 @@ const Color triadColorZ = Color(0xFF3A7BD5);
 /// clarity".
 ///
 /// Pure vector math - no [Canvas]/GPU dependency - so this is unit-testable
-/// with a plain [PerspectiveCamera], unlike the actual paint step.
-List<TriadAxis> triadAxes(PerspectiveCamera camera) {
+/// with a plain camera, unlike the actual paint step. Typed to the base
+/// [Camera] (not [PerspectiveCamera] specifically) since it only ever reads
+/// [Camera.forward]/[Camera.up], both implemented identically by
+/// [OrthographicCamera].
+List<TriadAxis> triadAxes(Camera camera) {
   final forward = camera.forward;
   final right = camera.up.cross(forward).normalized();
   final up = forward.cross(right).normalized();
@@ -46,6 +49,79 @@ List<TriadAxis> triadAxes(PerspectiveCamera camera) {
     TriadAxis(label: 'Y', color: triadColorY, direction: project(vm.Vector3(0, 1, 0))),
     TriadAxis(label: 'Z', color: triadColorZ, direction: project(vm.Vector3(0, 0, 1))),
   ];
+}
+
+/// TEMPORARY (camera-calibration debug aid, on-device feedback): for each
+/// world axis, how much of it currently reads as screen-right, screen-up,
+/// and pointing *out of* the screen toward the camera (vs. into it) - the
+/// exact three numbers a sentence like "Z out of the screen"/"Z right"/"Y
+/// up" describes directly. Shares [triadAxes]' own right/up derivation
+/// (`camera.up.cross(camera.forward)`, then `forward.cross(right)`) rather
+/// than reading `OrbitCamera.right`/`.up` directly - those are the camera's
+/// own local-frame vectors, and (confirmed by deriving this formula
+/// algebraically, not assumed) read the *opposite* sign for "right" from
+/// what actually renders on screen. Shared by [PartViewport] and the mesh
+/// viewer's own viewport so both read identically to the trusted on-screen
+/// triad.
+String debugCameraOrientationText(Camera camera) {
+  final forward = camera.forward;
+  final right = camera.up.cross(forward).normalized();
+  final up = forward.cross(right).normalized();
+  final towardCamera = -forward;
+
+  String axisLine(String label, vm.Vector3 axis) {
+    final r = axis.dot(right).toStringAsFixed(2);
+    final u = axis.dot(up).toStringAsFixed(2);
+    final o = axis.dot(towardCamera).toStringAsFixed(2);
+    return '$label: right=$r up=$u out=$o';
+  }
+
+  return [
+    axisLine('X', vm.Vector3(1, 0, 0)),
+    axisLine('Y', vm.Vector3(0, 1, 0)),
+    axisLine('Z', vm.Vector3(0, 0, 1)),
+  ].join('\n');
+}
+
+/// TEMPORARY (camera-calibration debug aid): [debugCameraOrientationText]
+/// wrapped as a small top-centered overlay - shared so [PartViewport] and
+/// the mesh viewer's own viewport show it identically.
+class DebugCameraOrientationOverlay extends StatelessWidget {
+  final Camera camera;
+
+  const DebugCameraOrientationOverlay({super.key, required this.camera});
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: 8,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: IgnorePointer(
+          // Container/BoxDecoration, not the Material widget - callers of
+          // this widget already import flutter_scene's own (unrelated)
+          // Material class for 3D materials, and the two names collide.
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Text(
+              debugCameraOrientationText(camera),
+              style: const TextStyle(
+                color: Colors.white,
+                fontFamily: 'monospace',
+                fontSize: 12,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Paints [axes] (see [triadAxes]) as a fixed-size compass centered at

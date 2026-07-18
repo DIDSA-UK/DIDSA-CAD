@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
+import 'sketch/sketcher_settings_screen.dart';
 import 'viewport3d/part_screen.dart';
 import 'viewport3d/svg_icon.dart';
 
@@ -173,17 +174,52 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
+                  // On-device feedback: restyled to match the mesh-viewer
+                  // bar's own stadium-split shape/size exactly (see below) -
+                  // Connect as the 80% action, a new settings entry for the
+                  // CAD/Part side of the app (as opposed to the mesh
+                  // viewer's own, separate settings) as the 20%.
                   SizedBox(
                     width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _canConnect ? _handleConnect : null,
-                      child: _busy
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('Connect'),
+                    height: 48,
+                    child: Material(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      shape: const StadiumBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            flex: 4,
+                            child: InkWell(
+                              onTap: _canConnect ? _handleConnect : null,
+                              child: Center(
+                                child: _busy
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+                                      )
+                                    : Text(
+                                        'Connect',
+                                        style: TextStyle(color: _canConnect ? Colors.white : Colors.white38),
+                                      ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 24, child: VerticalDivider(color: Colors.white24, width: 1)),
+                          Expanded(
+                            flex: 1,
+                            child: InkWell(
+                              onTap: () => Navigator.of(context).push(
+                                MaterialPageRoute(builder: (_) => const SketcherSettingsScreen()),
+                              ),
+                              child: const Center(
+                                child: SvgIcon('assets/icons/mesh/mesh_settings.svg', color: Colors.white70, size: 26),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                   if (_error != null) ...[

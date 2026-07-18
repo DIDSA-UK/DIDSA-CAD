@@ -276,9 +276,9 @@ class PartToolbar extends StatelessWidget {
       leading: const Icon(Icons.visibility_outlined),
       title: const Text('View'),
       children: [
-        // A4: Perspective toggle (first View entry, off = orthographic default).
-        // Bug 7: flutter_scene 0.18.x has no OrthographicCamera, so both
-        // settings currently render identically; a subtitle notes this.
+        // A4/Phase 2: Perspective toggle (first View entry, off = orthographic
+        // default) - real as of the sketcher restructure's Phase 2
+        // (OrbitCamera.cameraFor now actually switches camera type).
         ListTile(
           leading: SvgIcon(
             isPerspective
@@ -286,13 +286,6 @@ class PartToolbar extends StatelessWidget {
                 : 'assets/icons/feature/parttoolbar_checkbox_unchecked.svg',
           ),
           title: const Text('Perspective'),
-          subtitle: isPerspective
-              ? null
-              : const Text(
-                  'Renders as perspective\n(orthographic not yet available)',
-                  style: TextStyle(fontSize: 11),
-                ),
-          isThreeLine: !isPerspective,
           onTap: onPerspectiveChanged == null
               ? null
               : () => onPerspectiveChanged!(!isPerspective),

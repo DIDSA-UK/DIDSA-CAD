@@ -16,6 +16,11 @@ class MeshViewerPreferences {
   static const String maxTrianglesPrefKey = 'mesh_viewer_max_triangles';
   static const String upAxisPrefKey = 'mesh_viewer_up_axis';
   static const String mirrorPrefKey = 'mesh_viewer_mirror';
+  // Camera-calibration debug aid (see triad.dart's own doc comment) -
+  // temporary, this viewer's own copy of `ViewPreferences`'s identical key,
+  // since the mesh viewer has its own separate camera/viewport unrelated to
+  // `PartViewport`.
+  static const String debugShowCameraOrientationPrefKey = 'mesh_viewer_debug_camera_orientation';
 
   /// Matches `mesh_viewer_render.dart`'s own former hardcoded constant -
   /// tuned for a high-end 2023-class Android flagship (Snapdragon 8 Gen 2 /
@@ -38,13 +43,19 @@ class MeshViewerPreferences {
   /// [defaultUpAxis] is `y`: most files need no correction at all.
   static const bool defaultMirror = false;
 
+  // On while the camera-calibration round is still active - see this key's
+  // own doc comment.
+  static const bool defaultDebugShowCameraOrientation = true;
+
   static int _maxTriangles = defaultMaxTriangles;
   static MeshUpAxis _upAxis = defaultUpAxis;
   static bool _mirror = defaultMirror;
+  static bool _debugShowCameraOrientation = defaultDebugShowCameraOrientation;
 
   static int get maxTriangles => _maxTriangles;
   static MeshUpAxis get upAxis => _upAxis;
   static bool get mirror => _mirror;
+  static bool get debugShowCameraOrientation => _debugShowCameraOrientation;
 
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -55,6 +66,8 @@ class MeshViewerPreferences {
       orElse: () => defaultUpAxis,
     );
     _mirror = prefs.getBool(mirrorPrefKey) ?? defaultMirror;
+    _debugShowCameraOrientation =
+        prefs.getBool(debugShowCameraOrientationPrefKey) ?? defaultDebugShowCameraOrientation;
   }
 
   static Future<void> setMaxTriangles(int value) async {
@@ -73,5 +86,11 @@ class MeshViewerPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(mirrorPrefKey, value);
     _mirror = value;
+  }
+
+  static Future<void> setDebugShowCameraOrientation(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(debugShowCameraOrientationPrefKey, value);
+    _debugShowCameraOrientation = value;
   }
 }

@@ -436,6 +436,142 @@ class SplineGhost extends DrawGhost {
   const SplineGhost({required this.throughPoints, required this.cursor});
 }
 
+/// P17: [ghost]'s own preview outline, tessellated into sketch-local (x, y)
+/// polylines - one polyline per open/closed curve making up the ghost (most
+/// ghosts are a single polyline; [SlotGhost] is the one exception, at 4).
+/// Deliberately returns plain local coordinates rather than 3D world points,
+/// so this stays a pure sketch-package function with no dependency on
+/// `viewport3d` - the 3D-embedded viewport (`sketch_screen.dart`, which
+/// already imports both packages to bridge [SketchController] and
+/// `PartViewport`) maps each point through its own `sketchPointToWorld`
+/// separately. Segment counts/CCW-arc-sweep convention mirror
+/// `viewport3d/sketch_geometry_3d.dart`'s `sketchGeometry3DFrom` (the
+/// equivalent tessellation for already-*committed* Circle/Arc/Ellipse
+/// entities), so a ghost never reads as a coarser/differently-shaped preview
+/// of what a confirming tap would actually create. Rect/Polygon/Slot use a
+/// straight-segment "rough outline" (mirroring `sketch_canvas.dart`'s own
+/// 2D ghost painter, which does the same); Spline uses [catmullRomPolyline]
+/// for the same reason that painter does (see [SplineGhost]'s own doc
+/// comment).
+List<List<(double, double)>> ghostPolylines(DrawGhost ghost) {
+  const circleSegments = 32;
+  const arcSegments = 24;
+
+  List<(double, double)> arcPoints(
+    double centerX,
+    double centerY,
+    double radius,
+    double startAngle,
+    double sweep,
+    int segments,
+  ) =>
+      [
+        for (var i = 0; i <= segments; i++)
+          (
+            centerX + radius * math.cos(startAngle + sweep * i / segments),
+            centerY + radius * math.sin(startAngle + sweep * i / segments),
+          ),
+      ];
+
+  double distance(double x0, double y0, double x1, double y1) => math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
+
+  switch (ghost) {
+    case LineGhost g:
+      return [
+        [(g.startX, g.startY), (g.endX, g.endY)],
+      ];
+    case CircleGhost g:
+      final radius = distance(g.centerX, g.centerY, g.edgeX, g.edgeY);
+      return [arcPoints(g.centerX, g.centerY, radius, 0, 2 * math.pi, circleSegments)];
+    case ArcGhost g:
+      final radius = distance(g.centerX, g.centerY, g.startX, g.startY);
+      final startAngle = math.atan2(g.startY - g.centerY, g.startX - g.centerX);
+      final endAngle = math.atan2(g.endY - g.centerY, g.endX - g.centerX);
+      final sweep = normalizeSketchAngle(endAngle - startAngle);
+      return [arcPoints(g.centerX, g.centerY, radius, startAngle, sweep, arcSegments)];
+    case PolygonGhost g:
+      if (g.vertices.isEmpty) return [];
+      return [
+        [...g.vertices, g.vertices.first],
+      ];
+    case SlotGhost g:
+      final radius1 = distance(g.center1X, g.center1Y, g.a.$1, g.a.$2);
+      final radius2 = distance(g.center2X, g.center2Y, g.c.$1, g.c.$2);
+      final startAngle1 = math.atan2(g.a.$2 - g.center1Y, g.a.$1 - g.center1X);
+      final endAngle1 = math.atan2(g.b.$2 - g.center1Y, g.b.$1 - g.center1X);
+      final sweep1 = normalizeSketchAngle(endAngle1 - startAngle1);
+      final startAngle2 = math.atan2(g.c.$2 - g.center2Y, g.c.$1 - g.center2X);
+      final endAngle2 = math.atan2(g.d.$2 - g.center2Y, g.d.$1 - g.center2X);
+      final sweep2 = normalizeSketchAngle(endAngle2 - startAngle2);
+      return [
+        arcPoints(g.center1X, g.center1Y, radius1, startAngle1, sweep1, arcSegments),
+        [g.b, g.c],
+        arcPoints(g.center2X, g.center2Y, radius2, startAngle2, sweep2, arcSegments),
+        [g.d, g.a],
+      ];
+    case EllipseGhost g:
+      final majorRadius = distance(g.centerX, g.centerY, g.majorX, g.majorY);
+      final rotation = math.atan2(g.majorY - g.centerY, g.majorX - g.centerX);
+      final cosR = math.cos(rotation);
+      final sinR = math.sin(rotation);
+      return [
+        [
+          for (var i = 0; i <= circleSegments; i++)
+            () {
+              final t = 2 * math.pi * i / circleSegments;
+              final localX = majorRadius * math.cos(t);
+              final localY = g.minorRadius * math.sin(t);
+              return (
+                g.centerX + localX * cosR - localY * sinR,
+                g.centerY + localX * sinR + localY * cosR,
+              );
+            }(),
+        ],
+      ];
+    case RectGhost g:
+      return [
+        [g.corner0, g.corner1, g.corner2, g.corner3, g.corner0],
+      ];
+    case SplineGhost g:
+      return [catmullRomPolyline([...g.throughPoints, g.cursor])];
+  }
+}
+
+/// P20 follow-up (2D-sketcher feature parity): [ghost]'s own secondary
+/// "guide" geometry, tessellated the same way [ghostPolylines] tessellates
+/// the shape's primary outline - empty for every ghost except
+/// [PolygonGhost] with [PolygonGhost.showGuideCircles] set, which returns
+/// the circumscribed circle (through the first vertex) and inscribed circle
+/// (through the first edge's midpoint) every regular polygon's own geometry
+/// always touches - mirrors `sketch_canvas.dart`'s own `_paintActiveDrawGhost`
+/// `PolygonGhost` case exactly (same two distances), just computed in
+/// sketch-local space instead of screen space. Kept as its own function
+/// (not folded into [ghostPolylines]) since guide geometry is meant to
+/// render with a visually distinct (fainter) style from the shape's own
+/// outline - the caller renders the two return values through separate
+/// GPU nodes/materials for exactly that reason.
+List<List<(double, double)>> ghostGuidePolylines(DrawGhost ghost) {
+  const circleSegments = 32;
+  if (ghost is! PolygonGhost || !ghost.showGuideCircles || ghost.vertices.length < 3) return [];
+
+  double distance(double x0, double y0, double x1, double y1) => math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
+  List<(double, double)> circleAt(double radius) => [
+        for (var i = 0; i <= circleSegments; i++)
+          () {
+            final angle = 2 * math.pi * i / circleSegments;
+            return (ghost.centerX + radius * math.cos(angle), ghost.centerY + radius * math.sin(angle));
+          }(),
+      ];
+
+  final v0 = ghost.vertices[0];
+  final v1 = ghost.vertices[1];
+  final circumradius = distance(ghost.centerX, ghost.centerY, v0.$1, v0.$2);
+  final midX = (v0.$1 + v1.$1) / 2;
+  final midY = (v0.$2 + v1.$2) / 2;
+  final inradius = distance(ghost.centerX, ghost.centerY, midX, midY);
+  return [circleAt(circumradius), circleAt(inradius)];
+}
+
 /// Normalizes [angle] (radians) into `[0, 2*pi)`.
 double normalizeSketchAngle(double angle) {
   const twoPi = 2 * math.pi;
@@ -3754,9 +3890,19 @@ class SketchController extends ChangeNotifier {
   /// those labels lives in [SketchCanvas], in screen space, since the
   /// controller only knows sketch-space coordinates - mirrors how ghost-label
   /// taps already short-circuit before reaching [handleCanvasTap]). Follows
-  /// the same add-to-selection-vs-replace rule as [_handleSelectTap].
-  void selectConstraint(String constraintId) {
-    final hit = SketchSelection(kind: SelectionKind.constraint, id: constraintId);
+  /// the same add-to-selection-vs-replace rule as [_handleSelectTap] (see
+  /// [selectEntity], which this and the embedded 3D cursor mode's own
+  /// selection-toggle path both now share).
+  void selectConstraint(String constraintId) => selectEntity(SketchSelection(kind: SelectionKind.constraint, id: constraintId));
+
+  /// P13: [selectConstraint]'s own add-to-selection-vs-replace body,
+  /// generalized to any already-known [hit] rather than only a Constraint -
+  /// the embedded 3D cursor mode's own tap-to-select (a [SelectionEntityRef]
+  /// resolved via `PartViewport`'s ray-hit-testing, converted to a
+  /// [SketchSelection] by the caller) needs the exact same rule with no
+  /// hit-testing of its own to do, the same way [selectConstraint] never
+  /// re-hit-tests either.
+  void selectEntity(SketchSelection hit) {
     if (_ribbonVisible && _selectionSet.isNotEmpty) {
       if (!_selectionSet.any((s) => s.sameAs(hit))) {
         _selectionSet.add(hit);
@@ -4083,8 +4229,28 @@ class SketchController extends ChangeNotifier {
         await _api.deletePolygon(_sketchId!, id);
         polygons.remove(id);
       }
+      // Bug fix (on-device feedback: "select all > delete doesn't work on
+      // polygons, says constraint not found"): delete_polygon cascades its
+      // own radius/equal-radius/equal-length/angle constraints server-side
+      // (see the comment above) - if computeDeleteCascade also
+      // independently identified one of those same constraint ids (e.g.
+      // because the Polygon's own vertex Points/edge Lines were directly
+      // in the selection too, which "select all" always includes), the
+      // explicit deleteConstraint call below 404'd on an id the polygon's
+      // own server-side cascade had already removed. Re-fetching here
+      // (only when a polygon was actually involved, to avoid an
+      // unnecessary round-trip otherwise) keeps the containsKey check just
+      // below honest about what's actually still there to delete.
+      if (cascade.polygons.isNotEmpty) {
+        await _refreshConstraints();
+      }
       for (final current in [...constraintsToDelete, ...shapesToDelete, ...pointsToDelete]) {
         switch (current.kind) {
+          case SelectionKind.constraint:
+            if (!constraints.containsKey(current.id)) break;
+            await _api.deleteConstraint(_sketchId!, current.id);
+            constraints.remove(current.id);
+            break;
           case SelectionKind.line:
             await _api.deleteLine(_sketchId!, current.id);
             lines.remove(current.id);
@@ -4117,10 +4283,6 @@ class SketchController extends ChangeNotifier {
           case SelectionKind.point:
             await _api.deletePoint(_sketchId!, current.id);
             points.remove(current.id);
-            break;
-          case SelectionKind.constraint:
-            await _api.deleteConstraint(_sketchId!, current.id);
-            constraints.remove(current.id);
             break;
         }
       }
@@ -5799,6 +5961,20 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// P17: the 3D-embedded sketcher's own cursor-movement entry point -
+  /// unlike [moveCursorAbsoluteScreen]/[moveCursorRelative], the caller
+  /// (`PartViewport`'s draw-cursor raycast, converted via
+  /// [worldPointToSketch] in `sketch_screen.dart`) has already resolved a
+  /// real sketch-space point, so there's no screen-to-sketch conversion left
+  /// to do here - just the same [_trackArcSweep]/[notifyListeners] tail
+  /// every other cursor-movement entry point already shares.
+  void moveCursorToSketchPoint(double sketchX, double sketchY) {
+    cursorX = sketchX;
+    cursorY = sketchY;
+    _trackArcSweep();
+    notifyListeners();
+  }
+
   /// Whether the cursor's current on-screen position - under [transform] -
   /// falls within [canvasSize], per [clampCursorToCanvas]. The cursor's own
   /// sketch-space position is never itself touched by panning or zooming
@@ -7240,6 +7416,156 @@ class SketchController extends ChangeNotifier {
   /// distinct marker at each id so the offending point is visible without
   /// leaving the sketcher.
   List<String> get profileBranchPointIds => _profileBranchPointIds;
+
+  /// Segment counts for [profileLoopOutline]'s own tessellation - kept local
+  /// to this file (rather than reusing a `viewport3d`-side constant) per
+  /// this package's own data-flow direction: `sketch` must never depend on
+  /// `viewport3d`.
+  static const int _profileLoopCircleSegments = 48;
+  static const int _profileLoopArcSegments = 24;
+  static const int _profileLoopSplineSegments = 16;
+
+  /// P31 (2D-sketcher feature parity): [loop]'s own boundary, tessellated
+  /// into a flat sketch-local (x, y) polygon - the pure, sketch-space
+  /// counterpart of `sketch_canvas.dart`'s own `_addLoopBoundary` (same
+  /// per-hop straight-vs-curved distinction, same Arc/Ellipse trace-
+  /// direction resolution against [loop.pointIds]/[loop.lineIds]'s own
+  /// convention - see that method's own doc comment), just producing plain
+  /// points instead of a screen-space `Path`. V1 scope: [loop]'s own
+  /// boundary only - a caller wanting holes calls this again per entry in
+  /// [ProfileLoopDto.innerLoops] separately; this method never looks at
+  /// that field itself. Returns null if any referenced Point/entity is
+  /// missing (same "degrade gracefully, not throw" contract
+  /// `_addLoopBoundary` already has) or the loop is degenerate (fewer than
+  /// 2 Points).
+  List<(double, double)>? profileLoopOutline(ProfileLoopDto loop) {
+    final anchors = <SketchPointView>[];
+    for (final id in loop.pointIds) {
+      final point = points[id];
+      if (point == null) return null;
+      anchors.add(point);
+    }
+    if (anchors.length < 2) return null;
+
+    // Ellipse-loop special case: a whole-Ellipse profile is packed as
+    // exactly 2 Points (centre, major-axis) referencing the Ellipse's own
+    // single id - mirrors _addLoopBoundary's identical special case.
+    final soleEntityId = loop.lineIds.length == 1 ? loop.lineIds[0] : null;
+    final ellipse = soleEntityId == null ? null : ellipses[soleEntityId];
+    if (ellipse != null && anchors.length == 2) {
+      final center = anchors[0];
+      final major = anchors[1];
+      final majorRadius = _sketchPointDistanceXY(center, major);
+      final minorPoint = points[ellipse.minorPointId];
+      if (minorPoint == null) return null;
+      final minorRadius = _sketchPointDistanceXY(center, minorPoint);
+      final rotation = math.atan2(major.y - center.y, major.x - center.x);
+      final cosR = math.cos(rotation);
+      final sinR = math.sin(rotation);
+      return [
+        // Exclusive of `_profileLoopCircleSegments` itself so the ring
+        // isn't explicitly closed - same "implicit closure, no duplicate
+        // final point" convention every other case below uses.
+        for (var i = 0; i < _profileLoopCircleSegments; i++)
+          () {
+            final t = 2 * math.pi * i / _profileLoopCircleSegments;
+            final localX = majorRadius * math.cos(t);
+            final localY = minorRadius * math.sin(t);
+            return (center.x + localX * cosR - localY * sinR, center.y + localX * sinR + localY * cosR);
+          }(),
+      ];
+    }
+
+    final hasArc = loop.lineIds.any((id) => arcs.containsKey(id));
+    final hasSpline = loop.lineIds.any((id) => splines.containsKey(id));
+    if (!hasArc && !hasSpline) {
+      // A whole-Circle profile is packed as exactly 2 Points (centre,
+      // radius) referencing the Circle's own single id, same convention as
+      // the Ellipse case above.
+      if (anchors.length == 2) {
+        final center = anchors[0];
+        final radius = _sketchPointDistanceXY(center, anchors[1]);
+        return [
+          for (var i = 0; i < _profileLoopCircleSegments; i++)
+            () {
+              final angle = 2 * math.pi * i / _profileLoopCircleSegments;
+              return (center.x + radius * math.cos(angle), center.y + radius * math.sin(angle));
+            }(),
+        ];
+      }
+      // A plain Line-only polygon - the Points themselves are the outline.
+      return [for (final p in anchors) (p.x, p.y)];
+    }
+
+    // A Line/Arc/Spline-mixed loop (e.g. a rounded-corner rectangle) - each
+    // hop tessellated as its own straight or curved run, mirroring
+    // _addLoopBoundary's identical per-hop distinction exactly (including
+    // its Arc/Spline trace-direction resolution against loop.pointIds).
+    final outline = <(double, double)>[(anchors[0].x, anchors[0].y)];
+    final n = anchors.length;
+    for (var i = 0; i < n; i++) {
+      final entityId = i < loop.lineIds.length ? loop.lineIds[i] : null;
+      final spline = entityId == null ? null : splines[entityId];
+      if (spline != null) {
+        var segments = spline.segments();
+        if (loop.pointIds[i] == spline.throughPointIds.last) {
+          segments = [for (final s in segments.reversed) (s.$4, s.$3, s.$2, s.$1)];
+        }
+        for (final segment in segments) {
+          final p0 = outline.last;
+          final c1 = points[segment.$2];
+          final c2 = points[segment.$3];
+          final end = points[segment.$4];
+          if (c1 == null || c2 == null || end == null) return null;
+          for (var step = 1; step <= _profileLoopSplineSegments; step++) {
+            final t = step / _profileLoopSplineSegments;
+            final mt = 1 - t;
+            final x = mt * mt * mt * p0.$1 +
+                3 * mt * mt * t * c1.x +
+                3 * mt * t * t * c2.x +
+                t * t * t * end.x;
+            final y = mt * mt * mt * p0.$2 +
+                3 * mt * mt * t * c1.y +
+                3 * mt * t * t * c2.y +
+                t * t * t * end.y;
+            outline.add((x, y));
+          }
+        }
+        continue;
+      }
+      final arc = entityId == null ? null : arcs[entityId];
+      final arcCenter = arc == null ? null : points[arc.centerPointId];
+      final arcStart = arc == null ? null : points[arc.startPointId];
+      final arcEnd = arc == null ? null : points[arc.endPointId];
+      final next = anchors[(i + 1) % n];
+      if (arc == null || arcCenter == null || arcStart == null || arcEnd == null) {
+        outline.add((next.x, next.y));
+        continue;
+      }
+      final radius = _sketchPointDistanceXY(arcCenter, arcStart);
+      final startAngle = math.atan2(arcStart.y - arcCenter.y, arcStart.x - arcCenter.x);
+      final endAngle = math.atan2(arcEnd.y - arcCenter.y, arcEnd.x - arcCenter.x);
+      final sweep = normalizeSketchAngle(endAngle - startAngle);
+      final forward = loop.pointIds[i] == arc.startPointId;
+      final fromAngle = forward ? startAngle : endAngle;
+      final actualSweep = forward ? sweep : -sweep;
+      for (var step = 1; step <= _profileLoopArcSegments; step++) {
+        final angle = fromAngle + actualSweep * step / _profileLoopArcSegments;
+        outline.add((arcCenter.x + radius * math.cos(angle), arcCenter.y + radius * math.sin(angle)));
+      }
+    }
+    // The walk above always lands back on anchors[0] (loop.pointIds wraps),
+    // duplicating outline's own first point - drop it so every case shares
+    // the same "implicit closure, no duplicate final point" convention.
+    outline.removeLast();
+    return outline;
+  }
+
+  double _sketchPointDistanceXY(SketchPointView a, SketchPointView b) {
+    final dx = b.x - a.x;
+    final dy = b.y - a.y;
+    return math.sqrt(dx * dx + dy * dy);
+  }
 
   // --- Stage 19b item 4: undo --------------------------------------------
 

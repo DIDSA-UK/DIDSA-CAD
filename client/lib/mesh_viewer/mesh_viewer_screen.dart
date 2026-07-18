@@ -745,7 +745,13 @@ class _MeshViewerViewport extends StatefulWidget {
 }
 
 class _MeshViewerViewportState extends State<_MeshViewerViewport> {
-  final OrbitCamera _camera = OrbitCamera();
+  // Explicit `true`: this viewer has no perspective/orthographic control of
+  // its own (unlike PartScreen/SketchScreen's View menu), so it keeps its
+  // actual real-world behaviour (perspective, unaffected by
+  // OrbitCamera.isPerspective's own default) rather than silently
+  // inheriting the sketcher/Part-viewing default once that default started
+  // actually taking effect (Phase 2 of the sketcher restructure).
+  final OrbitCamera _camera = OrbitCamera()..isPerspective = true;
   Scene? _scene;
   String? _error;
   final Map<int, Offset> _activeTouches = {};
@@ -926,16 +932,22 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        return Listener(
-          onPointerDown: _handlePointerDown,
-          onPointerMove: _handlePointerMove,
-          onPointerUp: _handlePointerEnd,
-          onPointerCancel: _handlePointerEnd,
-          onPointerSignal: _handlePointerSignal,
-          child: CustomPaint(
-            size: size,
-            painter: _ViewerScenePainter(scene: scene, camera: _camera, size: size),
-          ),
+        return Stack(
+          children: [
+            Listener(
+              onPointerDown: _handlePointerDown,
+              onPointerMove: _handlePointerMove,
+              onPointerUp: _handlePointerEnd,
+              onPointerCancel: _handlePointerEnd,
+              onPointerSignal: _handlePointerSignal,
+              child: CustomPaint(
+                size: size,
+                painter: _ViewerScenePainter(scene: scene, camera: _camera, size: size),
+              ),
+            ),
+            if (MeshViewerPreferences.debugShowCameraOrientation)
+              DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
+          ],
         );
       },
     );

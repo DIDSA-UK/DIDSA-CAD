@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -17,6 +18,7 @@ import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
+import 'sketch_plane_hit_test.dart';
 import 'svg_icon.dart';
 import 'triad.dart';
 import 'view_preferences.dart';
@@ -55,6 +57,16 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
+  /// P23 (2D-sketcher feature parity): per-entity constraint-status colour
+  /// override, keyed by entity id (Point/Line/Circle/Arc/Ellipse/Spline id -
+  /// see [buildSketchGeometryNode]'s own `entityColors` parameter, which
+  /// this is passed straight through to for every entry in
+  /// [sketchGeometries]). Empty (the default) renders every entity at
+  /// [sketchLineColor], the pre-P23 behaviour - `part_screen.dart` leaves
+  /// this unset deliberately (see [buildSketchGeometryNode]'s own doc
+  /// comment for why); only `sketch_screen.dart`'s Orbit View opts in.
+  final Map<String, vm.Vector4> sketchEntityColors;
+
   /// C2: per-Feature resolved Create Plane geometry (null values omitted by
   /// callers - a Plane whose reference is currently unresolvable has
   /// nothing to render, same convention [sketchGeometries] uses for a
@@ -75,6 +87,145 @@ class PartViewport extends StatefulWidget {
   /// brighter "selected" tint - mirrors [selectedPlane]'s own
   /// controlled-widget pattern for the three fixed planes.
   final String? selectedCreatePlaneFeatureId;
+
+  /// Sketcher restructure Phase 2: when non-null, a tap that misses every
+  /// reference/created plane above is tested against this arbitrary plane
+  /// (the current Sketch's own basis - fixed or custom alike) via
+  /// [hitTestSketchPlane], firing [onSketchPlaneTap] with the resolved
+  /// world-space hit point instead of falling through to [onBackgroundTap].
+  /// Checked last (after the fixed/created-plane checks), but in practice
+  /// mutually exclusive with them - a Sketch's own embedded viewport passes
+  /// `referencePlanesHidden: true` and no [createPlanes].
+  final SketchPlaneBasis? sketchPlaneBasis;
+  final void Function(vm.Vector3 worldPoint)? onSketchPlaneTap;
+
+  /// P16: mirrors [selectionMode]'s own cursor/hover/commit shape (see the
+  /// "Stage 23 Items 2/3" section below), retargeted from entity-hover to a
+  /// continuous [sketchPlaneBasis] raycast - a single-finger drag moves
+  /// [_drawCursorPosition] instead of orbiting, exactly like [selectionMode]
+  /// already trades off. Mutually exclusive with [selectionMode] in
+  /// practice (never both true at once); kept as its own bool rather than
+  /// overloading [selectionMode] itself since that field's
+  /// [SelectionFilterState]/[SelectedEntities] semantics don't apply here -
+  /// same "one SketchMode, one exclusive PartViewport interaction mode"
+  /// pattern P10/P12 already established. Requires [sketchPlaneBasis] to be
+  /// non-null to resolve to anything (see [_recomputeDrawCursor]).
+  final bool drawCursorMode;
+
+  /// P16/P17: fired with the resolved sketch-plane world point every time
+  /// the draw cursor moves while [drawCursorMode] is true (not just on
+  /// commit) - drives the live ghost-preview [SketchScreen] builds on top of
+  /// this in P17. Null result (cursor off the plane, or [sketchPlaneBasis]
+  /// unset) simply isn't fired; the caller keeps showing its last ghost.
+  final void Function(vm.Vector3 worldPoint)? onDrawCursorMoved;
+
+  /// P16: fired instead of [onSketchPlaneTap] when a genuine tap (not a
+  /// cursor drag - same travel-threshold disambiguation [_commitSelection]
+  /// already uses) commits while [drawCursorMode] is true and the cursor is
+  /// currently resolving to a point on [sketchPlaneBasis].
+  final void Function(vm.Vector3 worldPoint)? onDrawCursorCommit;
+
+  /// P30: overrides the [drawCursorMode] crosshair's own hover colour
+  /// (green by default) - [SketchScreen] passes red instead while
+  /// [drawCursorMode] is active for a mode other than genuinely drawing
+  /// (currently just Trim/Extend, since [drawCursorMode]'s own gate
+  /// widened to cover it too), mirroring `sketch_canvas.dart`'s own
+  /// mode-tinted cursor convention (green only for `SketchMode.draw`, red
+  /// for everything else it ever tints). Null (the default) keeps the
+  /// pre-P30 plain green.
+  final Color? drawCursorHoverColor;
+
+  /// P17: the active draw tool's live ghost preview (see
+  /// `SketchController.activeDrawGhost`/`ghostPolylines`), already
+  /// tessellated and mapped into world space by the caller
+  /// (`sketch_screen.dart`, via `sketchPointToWorld` - see
+  /// [buildSketchGhostNode]'s own doc comment for why this widget never
+  /// takes a `DrawGhost` directly). Separate from [sketchGeometries] (which
+  /// only ever holds *committed* geometry) since the ghost is transient,
+  /// rebuilt on every cursor move rather than only when a Sketch's real
+  /// entities change. Empty (the default) renders no ghost node at all.
+  final List<List<vm.Vector3>> drawGhostPolylines;
+
+  /// P20 follow-up: overrides [drawGhostPolylines]' own rendered colour -
+  /// null (the default) means "use `buildSketchGhostNode`'s own default".
+  /// [SketchScreen] sets this to green while
+  /// `SketchController.activeLineSnapAxis` is non-null (Line's own
+  /// horizontal/vertical auto-snap recolor - a 2D-sketcher feature this
+  /// brings to the 3D-embedded one), null otherwise.
+  final vm.Vector4? drawGhostColor;
+
+  /// P20 follow-up: a second, independent ghost-polyline list rendered with
+  /// its own fainter style (see `sketchGhostGuideColor`) - currently only
+  /// ever Polygon's circumscribed/inscribed guide circles (see
+  /// `ghostGuidePolylines` in `sketch_controller.dart`), but generalized the
+  /// same way [drawGhostPolylines] itself is (plain world-space polylines,
+  /// no `DrawGhost` dependency) in case a later tool wants its own guide
+  /// geometry too. Empty (the default) renders nothing.
+  final List<List<vm.Vector3>> drawGhostGuidePolylines;
+
+  /// P20 follow-up: the 3D-embedded counterpart to `sketch_canvas.dart`'s
+  /// in-progress-anchor/snap-candidate/midpoint point emphasis - see
+  /// [DrawIndicatorMarker]'s own doc comment for the full rationale.
+  /// [SketchScreen] recomputes this every `SketchController` notification,
+  /// same "rebuilt on every relevant change, not just committed-geometry
+  /// changes" convention [drawGhostPolylines] itself already uses. Empty
+  /// (the default) renders no indicator node at all.
+  final List<DrawIndicatorMarker> drawIndicatorMarkers;
+
+  /// P31 (2D-sketcher feature parity): every closed-profile loop's own
+  /// sketch-local outline (see [SketchController.profileLoopOutline]) -
+  /// mode-independent (unlike [drawIndicatorMarkers], visible in every mode
+  /// the same way `sketch_canvas.dart`'s own `_paintClosedProfileFill` is,
+  /// not just while a draw tool is active), so a profile ready to Extrude
+  /// reads as "closed" no matter what's currently selected/being edited.
+  /// Empty (the default) renders no fill node at all.
+  final List<List<(double, double)>> profileFillOutlines;
+
+  /// P31: every Point [SketchController.profileBranchPointIds] found -
+  /// rendered via the same [DrawIndicatorMarker]/[buildDrawIndicatorsNode]
+  /// machinery as [drawIndicatorMarkers], but kept as a separate prop/node
+  /// since its visibility isn't draw-mode-gated the way that list is.
+  /// Empty (the default) renders no marker node at all.
+  final List<DrawIndicatorMarker> profileBranchMarkers;
+
+  /// P8: colour/opacity of [sketchPlaneBasis]'s own rendered surface (see
+  /// [buildSketchPlaneSurfaceNode]) - only rendered while [sketchPlaneBasis]
+  /// is non-null. Unlike [bodyColourHex]/[bodyOpacity], there's no separate
+  /// visibility flag - dialing [sketchPlaneSurfaceOpacity] to 0 already
+  /// hides it, the same convention [bodyOpacity] itself uses.
+  final String sketchPlaneSurfaceColourHex;
+  final double sketchPlaneSurfaceOpacity;
+
+  /// P9: grid lines across [sketchPlaneBasis] (see [buildSketchGridNode]) -
+  /// only rendered while [sketchPlaneBasis] is non-null.
+  final bool sketchPlaneGridVisible;
+
+  /// P10: gates a new priority tier ahead of [sketchPlaneBasis]'s own plane
+  /// hit, inside [_handleTap] - a tap that would otherwise place new
+  /// geometry on the plane instead first checks for a real Body
+  /// vertex/edge, for tools (starting with Dimension) that want to
+  /// reference existing geometry rather than draw new geometry. Only
+  /// meaningful while [sketchPlaneBasis] is also set; [SketchScreen]
+  /// computes this from the active [SketchController.mode].
+  final bool preferEntityPick;
+
+  /// P10: fired instead of [onSketchPlaneTap] when [preferEntityPick] is
+  /// true and the tap resolves to a real Body vertex/edge (via
+  /// [hitTestBodies]) rather than landing near an existing Sketch entity
+  /// (checked first via [hasEntityNearSketchTap] - a direct tap on the
+  /// Sketch's own geometry always wins, mirroring the flat 2D canvas's own
+  /// existing Dimension-mode priority order in `sketch_canvas.dart`'s
+  /// `_dispatchTap`). The caller is expected to materialize the picked
+  /// entity (see `SketchController.pickReferenceGhostVertex`/
+  /// `pickReferenceGhostEdge`).
+  final void Function(SelectionEntityRef entity)? onSketchEntityTap;
+
+  /// P10: mirrors `SketchController.hasEntityNear` via callback, since this
+  /// widget has no dependency on `sketch_controller.dart` - the same
+  /// "backend-shaped predicate injected as a callback" pattern
+  /// [sketchLineLoopGroup] already uses. Only consulted when
+  /// [preferEntityPick] is true.
+  final bool Function(double x, double y)? hasEntityNearSketchTap;
 
   /// True while [bodies] is an Extrude live preview (see [PartScreen]'s
   /// debounced create/update-then-refetch flow) rather than confirmed
@@ -164,6 +315,22 @@ class PartViewport extends StatefulWidget {
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
 
+  /// P25 (2D-sketcher feature parity): the 3D-embedded counterpart of
+  /// `sketch_canvas.dart`'s own long-press-then-drag marquee-select. Fired
+  /// once the marquee gesture ends with a sketch-space bounding [Rect] -
+  /// both corners are resolved via [hitTestSketchPlane] against
+  /// [sketchPlaneBasis] (this widget's only concept of "the sketch's own 2D
+  /// coordinate space" - see [_endMarquee]'s own doc comment for why an
+  /// axis-aligned sketch-space bounding box, not a screen-space one, is
+  /// what's produced), then converted with [worldPointToSketch] - the
+  /// caller (`sketch_screen.dart`) is expected to feed this straight into
+  /// [SketchController.selectInRect], the exact method
+  /// `sketch_canvas.dart`'s own marquee already uses. Requires
+  /// [sketchPlaneBasis] to resolve to anything (a marquee whose corners
+  /// both miss the plane fires nothing). Only engages while [selectionMode]
+  /// is true.
+  final void Function(Rect sketchRect)? onMarqueeSelect;
+
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -249,9 +416,28 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
+    this.sketchEntityColors = const {},
     this.createPlanes = const {},
     this.onCreatePlaneTap,
     this.selectedCreatePlaneFeatureId,
+    this.sketchPlaneBasis,
+    this.onSketchPlaneTap,
+    this.drawCursorMode = false,
+    this.onDrawCursorMoved,
+    this.onDrawCursorCommit,
+    this.drawCursorHoverColor,
+    this.drawGhostPolylines = const [],
+    this.drawGhostColor,
+    this.drawGhostGuidePolylines = const [],
+    this.drawIndicatorMarkers = const [],
+    this.profileFillOutlines = const [],
+    this.profileBranchMarkers = const [],
+    this.sketchPlaneSurfaceColourHex = '#F2F2F2',
+    this.sketchPlaneSurfaceOpacity = 0.18,
+    this.sketchPlaneGridVisible = false,
+    this.preferEntityPick = false,
+    this.onSketchEntityTap,
+    this.hasEntityNearSketchTap,
     this.isPreviewMesh = false,
     this.previewOverlayBodyId,
     this.previewOverlayMesh,
@@ -267,6 +453,7 @@ class PartViewport extends StatefulWidget {
     this.selectedEntities = const {},
     this.onSelectionToggle,
     this.onClearSelection,
+    this.onMarqueeSelect,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
@@ -334,6 +521,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Map<String, Node> _sketchNodes = {};
   Map<String, Node> _createPlaneNodes = {};
 
+  /// P8/P9: unlike [_planeNodes]/[_sketchNodes]/[_createPlaneNodes], never
+  /// more than one of each at a time - there's only ever one active Sketch
+  /// plane in the embedded view.
+  Node? _sketchPlaneSurfaceNode;
+  Node? _sketchPlaneGridNode;
+
+  /// P17: the live draw-cursor ghost preview - mirrors
+  /// [_sketchPlaneGridNode]'s "single optional Node" shape, but rebuilt on
+  /// every [PartViewport.drawGhostPolylines] change (i.e. every cursor
+  /// move while draw-cursor mode is active), not just when the plane basis
+  /// itself changes.
+  Node? _drawGhostNode;
+
+  /// P20 follow-up: mirrors [_drawGhostNode] for
+  /// [PartViewport.drawGhostGuidePolylines].
+  Node? _drawGhostGuideNode;
+
+  /// P20 follow-up: mirrors [_drawGhostNode] for
+  /// [PartViewport.drawIndicatorMarkers].
+  Node? _drawIndicatorsNode;
+
+  /// P31: mirrors [_drawIndicatorsNode]'s "single optional Node" shape for
+  /// [PartViewport.profileFillOutlines]/[PartViewport.profileBranchMarkers].
+  Node? _profileFillNode;
+  Node? _profileBranchMarkersNode;
+
   /// Set if GPU/scene setup throws - without this, that failure would only
   /// ever reach the console (it happens inside an unawaited Future), leaving
   /// [build] stuck showing its loading spinner forever with no way for
@@ -371,12 +584,57 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// cursor drag, not a tap.
   double _selectionGestureTravel = 0;
 
+  /// P16: the draw cursor's own tap/drag travel tracker - the
+  /// [PartViewport.drawCursorMode] equivalent of [_selectionGestureTravel],
+  /// kept separate for the same reason that field is kept separate from
+  /// [_gestureTravel].
+  double _drawCursorGestureTravel = 0;
+
+  /// P25 (2D-sketcher feature parity): mirrors `sketch_canvas.dart`'s own
+  /// `_longPressDuration` - how long a stationary press on empty space (see
+  /// [_maybeStartMarqueeLongPress]) must hold before growing into a marquee
+  /// drag, distinguishing it from an ordinary cursor-drag.
+  static const Duration _marqueeLongPressDuration = Duration(milliseconds: 500);
+
+  /// P25: the pending long-press timer, non-null only between a qualifying
+  /// pointer-down and either it firing (-> [_marqueeActive]) or being
+  /// cancelled (too much travel, or the pointer lifting first).
+  Timer? _marqueeLongPressTimer;
+
+  /// P25: the screen position the pending long-press (or, once it fires,
+  /// the active marquee) started at - one corner of the eventual marquee
+  /// rect, mirroring `sketch_canvas.dart`'s own `_longPressDownScreen`.
+  Offset? _marqueeDownScreen;
+
+  /// P25: true once the long-press has fired and the gesture has committed
+  /// to being a marquee drag - [_onPointerMove]/[_onPointerEnd]'s own
+  /// selectionMode branches divert entirely to marquee handling while this
+  /// is true, mirroring `sketch_canvas.dart`'s own `_marqueeActive`.
+  bool _marqueeActive = false;
+
+  /// P25: the live other corner of the marquee rect while [_marqueeActive] -
+  /// null only in the instant between the long-press firing and the first
+  /// subsequent pointer-move.
+  Offset? _marqueeCurrentScreen;
+
   /// Stage 23 Item 2: the cursor's current screen position while
   /// [PartViewport.selectionMode] is true - null whenever selection mode is
   /// off (so the crosshair overlay in [build] hides entirely) or before the
   /// first `didUpdateWidget` entry into selection mode has had a chance to
   /// set it to the viewport centre.
   Offset? _cursorPosition;
+
+  /// P16: the [PartViewport.drawCursorMode] equivalent of [_cursorPosition] -
+  /// null whenever draw-cursor mode is off or before `didUpdateWidget`'s
+  /// entry has set it to the viewport centre.
+  Offset? _drawCursorPosition;
+
+  /// P16: the draw cursor's current resolved hit on
+  /// [PartViewport.sketchPlaneBasis] (via [hitTestSketchPlane]) - null if the
+  /// cursor isn't over the plane, or [PartViewport.sketchPlaneBasis] itself
+  /// is unset. The [HoverHit]-equivalent ground truth [_commitDrawCursor]
+  /// commits and [PartViewport.onDrawCursorMoved] streams to the caller.
+  vm.Vector3? _drawCursorWorldHit;
 
   /// Stage 23 Item 3: the nearest face/edge/vertex to [_cursorPosition],
   /// recomputed every time the cursor moves - null if nothing in
@@ -489,12 +747,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncReferencePlaneNodes();
         _syncSketchNodes();
         _syncCreatePlaneNodes();
+        _syncSketchPlaneSurfaceNode();
+        _syncSketchPlaneGridNode();
+        _syncDrawGhostNode();
+        _syncDrawGhostGuideNode();
+        _syncDrawIndicatorsNode();
+        _syncProfileFillNode();
+        _syncProfileBranchMarkersNode();
       });
     }).catchError((Object error) {
       debugPrint('[PartViewport] GPU/scene setup failed: $error');
       if (!mounted) return;
       setState(() => _error = error.toString());
     });
+  }
+
+  @override
+  void dispose() {
+    // P25: an already-scheduled (but not yet fired) long-press timer must
+    // not fire after this State is torn down - it would call setState on a
+    // disposed Element.
+    _marqueeLongPressTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -525,13 +799,40 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.selectedEntities != oldWidget.selectedEntities) {
       setState(_syncReferencePlaneNodes);
     }
-    if (widget.sketchGeometries != oldWidget.sketchGeometries) {
+    if (widget.sketchGeometries != oldWidget.sketchGeometries ||
+        widget.sketchEntityColors != oldWidget.sketchEntityColors) {
       setState(_syncSketchNodes);
     }
     if (widget.createPlanes != oldWidget.createPlanes ||
         widget.selectedCreatePlaneFeatureId != oldWidget.selectedCreatePlaneFeatureId ||
         widget.selectedEntities != oldWidget.selectedEntities) {
       setState(_syncCreatePlaneNodes);
+    }
+    if (widget.sketchPlaneBasis != oldWidget.sketchPlaneBasis ||
+        widget.sketchPlaneSurfaceColourHex != oldWidget.sketchPlaneSurfaceColourHex ||
+        widget.sketchPlaneSurfaceOpacity != oldWidget.sketchPlaneSurfaceOpacity) {
+      setState(_syncSketchPlaneSurfaceNode);
+    }
+    if (widget.sketchPlaneBasis != oldWidget.sketchPlaneBasis ||
+        widget.sketchPlaneGridVisible != oldWidget.sketchPlaneGridVisible) {
+      setState(_syncSketchPlaneGridNode);
+    }
+    if (widget.drawGhostPolylines != oldWidget.drawGhostPolylines ||
+        widget.drawGhostColor != oldWidget.drawGhostColor) {
+      setState(_syncDrawGhostNode);
+    }
+    if (widget.drawGhostGuidePolylines != oldWidget.drawGhostGuidePolylines) {
+      setState(_syncDrawGhostGuideNode);
+    }
+    if (widget.drawIndicatorMarkers != oldWidget.drawIndicatorMarkers) {
+      setState(_syncDrawIndicatorsNode);
+    }
+    if (widget.profileFillOutlines != oldWidget.profileFillOutlines ||
+        widget.sketchPlaneBasis != oldWidget.sketchPlaneBasis) {
+      setState(_syncProfileFillNode);
+    }
+    if (widget.profileBranchMarkers != oldWidget.profileBranchMarkers) {
+      setState(_syncProfileBranchMarkersNode);
     }
     if (widget.selectionMode != oldWidget.selectionMode) {
       setState(() {
@@ -543,8 +844,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // Item 1/2: leaving selection mode "removes cursor".
           _cursorPosition = null;
           _hoverHit = null;
+          // P25: a marquee gesture (or pending long-press) mid-flight when
+          // selectionMode turns off would otherwise leave its overlay
+          // stuck on-screen forever, since _onPointerMove/_onPointerEnd's
+          // own marquee handling only runs from the selectionMode branch.
+          _cancelMarqueeLongPress();
+          _marqueeActive = false;
+          _marqueeCurrentScreen = null;
         }
         _syncHoverNode();
+      });
+    }
+    if (widget.drawCursorMode != oldWidget.drawCursorMode) {
+      setState(() {
+        if (widget.drawCursorMode) {
+          // Mirrors the selectionMode block above: re-entering resets to
+          // viewport centre.
+          _drawCursorPosition = _viewportCenter();
+          _recomputeDrawCursor();
+        } else {
+          _drawCursorPosition = null;
+          _drawCursorWorldHit = null;
+        }
       });
     }
     if (widget.selectedEntities != oldWidget.selectedEntities) {
@@ -831,7 +1152,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _sketchNodes = {
       for (final entry in widget.sketchGeometries.entries)
-        if (!entry.value.isEmpty) entry.key: buildSketchGeometryNode(entry.key, entry.value),
+        if (!entry.value.isEmpty)
+          entry.key: buildSketchGeometryNode(entry.key, entry.value, entityColors: widget.sketchEntityColors),
     };
     for (final node in _sketchNodes.values) {
       scene.add(node);
@@ -861,6 +1183,118 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _createPlaneNodes.values) {
       scene.add(node);
     }
+  }
+
+  /// P8: mirrors [_syncReferencePlaneNodes]'s remove-then-rebuild shape for
+  /// the single active-Sketch-plane surface - null [PartViewport.sketchPlaneBasis]
+  /// (not embedded-sketching) means no node at all, same "null is hidden"
+  /// convention [sketchPlaneBasis] itself already uses.
+  void _syncSketchPlaneSurfaceNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _sketchPlaneSurfaceNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) {
+      _sketchPlaneSurfaceNode = null;
+      return;
+    }
+    final node = buildSketchPlaneSurfaceNode(
+      basis,
+      color: vector4FromHex(widget.sketchPlaneSurfaceColourHex, opacity: widget.sketchPlaneSurfaceOpacity),
+    );
+    _sketchPlaneSurfaceNode = node;
+    scene.add(node);
+  }
+
+  /// P9: mirrors [_syncSketchPlaneSurfaceNode] for the grid - additionally
+  /// gated on [PartViewport.sketchPlaneGridVisible].
+  void _syncSketchPlaneGridNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _sketchPlaneGridNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null || !widget.sketchPlaneGridVisible) {
+      _sketchPlaneGridNode = null;
+      return;
+    }
+    final node = buildSketchGridNode(basis);
+    _sketchPlaneGridNode = node;
+    scene.add(node);
+  }
+
+  /// P17: mirrors [_syncSketchPlaneGridNode]'s remove-then-rebuild shape,
+  /// but keyed on [PartViewport.drawGhostPolylines] directly rather than
+  /// the plane basis - [buildSketchGhostNode] already returns null for an
+  /// empty list, so an inactive/absent ghost renders no node, same "null is
+  /// hidden" convention every other optional node here uses.
+  void _syncDrawGhostNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _drawGhostNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final node = buildSketchGhostNode(widget.drawGhostPolylines, color: widget.drawGhostColor);
+    _drawGhostNode = node;
+    if (node != null) scene.add(node);
+  }
+
+  /// P20 follow-up: mirrors [_syncDrawGhostNode] for
+  /// [PartViewport.drawGhostGuidePolylines] - styled with
+  /// `sketchGhostGuideColor` (fainter than the primary ghost) rather than
+  /// [PartViewport.drawGhostColor], which is Line-snap-specific and doesn't
+  /// apply to guide geometry.
+  void _syncDrawGhostGuideNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _drawGhostGuideNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final node = buildSketchGhostNode(widget.drawGhostGuidePolylines, color: sketchGhostGuideColor);
+    _drawGhostGuideNode = node;
+    if (node != null) scene.add(node);
+  }
+
+  /// P20 follow-up: mirrors [_syncDrawGhostNode] for
+  /// [PartViewport.drawIndicatorMarkers].
+  void _syncDrawIndicatorsNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _drawIndicatorsNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final node = buildDrawIndicatorsNode(widget.drawIndicatorMarkers);
+    _drawIndicatorsNode = node;
+    if (node != null) scene.add(node);
+  }
+
+  /// P31: mirrors [_syncDrawGhostNode]'s shape for
+  /// [PartViewport.profileFillOutlines] - null [PartViewport.sketchPlaneBasis]
+  /// (needed to resolve sketch-local outlines to world space) means no node,
+  /// same "null is hidden" convention every other basis-gated node here uses.
+  void _syncProfileFillNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _profileFillNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) {
+      _profileFillNode = null;
+      return;
+    }
+    final node = buildProfileFillNode(basis, widget.profileFillOutlines);
+    _profileFillNode = node;
+    if (node != null) scene.add(node);
+  }
+
+  /// P31: mirrors [_syncDrawIndicatorsNode] for
+  /// [PartViewport.profileBranchMarkers].
+  void _syncProfileBranchMarkersNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _profileBranchMarkersNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final node = buildDrawIndicatorsNode(widget.profileBranchMarkers);
+    _profileBranchMarkersNode = node;
+    if (node != null) scene.add(node);
   }
 
   /// Animates the camera to look straight down at [plane], per the brief's
@@ -1008,8 +1442,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// uses) to become the new camera target; the distance is solved so the
   /// camera's vertical field of view exactly spans `canvasSize.height /
   /// pixelsPerUnit` world units at that target, matching flutter_scene's
-  /// fixed `kCameraVerticalFovRadians` perspective FOV ([OrbitCamera] has
-  /// no orthographic option - see its own doc comment on `isPerspective`).
+  /// fixed `kCameraVerticalFovRadians` perspective FOV. This specific
+  /// backdrop-sync computation assumes a perspective FOV match and hasn't
+  /// been revisited for [OrbitCamera.isPerspective]'s now-real orthographic
+  /// case (Phase 2 of the sketcher restructure) - flagged, not fixed, since
+  /// this method is a locked-camera-sync special case, not the general
+  /// [OrbitCamera.cameraFor] path every other caller goes through.
   /// Bug fix: [flip]/[rotationQuarterTurns] default to the identity - a
   /// caller syncing an oriented Sketch's own backdrop should pass the real
   /// values (see `SketchDto.flip`/`SketchDto.rotationQuarterTurns`), or the
@@ -1118,6 +1556,40 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       widget.onCreatePlaneTap?.call(createPlaneHit.featureId);
       return;
     }
+    // Sketcher restructure Phase 2: the embedded 3D sketcher's own plane -
+    // see [PartViewport.sketchPlaneBasis]'s own doc comment for why this is
+    // checked last but is, in practice, mutually exclusive with the checks
+    // above.
+    final sketchPlaneBasis = widget.sketchPlaneBasis;
+    if (sketchPlaneBasis != null) {
+      final sketchHit = hitTestSketchPlane(ray, sketchPlaneBasis);
+      if (sketchHit != null) {
+        if (widget.preferEntityPick) {
+          final (localX, localY) = worldPointToSketch(sketchPlaneBasis, sketchHit.$1);
+          final nearExisting = widget.hasEntityNearSketchTap?.call(localX, localY) ?? false;
+          if (!nearExisting) {
+            // vertex/edge only - a face isn't a valid dimension target (no
+            // `pickReferenceGhostFace`-equivalent exists), and leaving
+            // `filter.face` at its default `true` would otherwise swallow
+            // the tap silently (onSketchEntityTap fired with a `.face` kind
+            // widget.onSketchEntityTap has no case for) instead of correctly
+            // falling through to the ordinary plane-tap miss behavior below.
+            final bodyHit = hitTestBodies(
+              ray: ray,
+              viewportSize: _viewportSize,
+              bodies: widget.bodies,
+              filter: const SelectionFilterState(vertex: true, edge: true, face: false, body: false),
+            );
+            if (bodyHit != null) {
+              widget.onSketchEntityTap?.call(bodyHit.entity);
+              return;
+            }
+          }
+        }
+        widget.onSketchPlaneTap?.call(sketchHit.$1);
+        return;
+      }
+    }
     widget.onBackgroundTap();
   }
 
@@ -1177,6 +1649,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _onPointerDown(PointerDownEvent event) {
     if (widget.selectionMode) {
+      // P25: mirrors sketch_canvas.dart's own "the marquee gesture only
+      // ever tracks one pointer - a second finger touching down mid-drag
+      // is ignored outright" - never reaches _handlePointerDown at all
+      // while a marquee is already active.
+      if (_marqueeActive) return;
       // Fix 4: starts the tap/drag disambiguation for this gesture, mirroring
       // the orbit handler's own _gestureTravel reset in _handlePointerDown.
       _selectionGestureTravel = 0;
@@ -1187,37 +1664,94 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // selecting is recognised for pinch-zoom/two-finger-pan below,
       // exactly like orbit mode already gets for free.
       _handlePointerDown(event);
+      // P25: a second finger joining cancels any pending long-press -
+      // becomes a pinch/pan gesture instead, never a marquee.
+      if (_activeTouches.length > 1) {
+        _cancelMarqueeLongPress();
+      } else {
+        _maybeStartMarqueeLongPress(event.localPosition);
+      }
+      return;
+    }
+    if (widget.drawCursorMode) {
+      // P16: same tap/drag disambiguation reset as the selectionMode branch
+      // above, for the draw cursor's own gesture.
+      _drawCursorGestureTravel = 0;
+      _handlePointerDown(event);
       return;
     }
     _handlePointerDown(event);
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    if (!widget.selectionMode) {
-      _handlePointerMove(event);
+    if (widget.selectionMode) {
+      if (_marqueeActive) {
+        setState(() => _marqueeCurrentScreen = event.localPosition);
+        return;
+      }
+      if (_marqueeLongPressTimer != null) {
+        final down = _marqueeDownScreen;
+        if (down != null && (event.localPosition - down).distance > _tapTravelThreshold) {
+          _cancelMarqueeLongPress();
+        }
+      }
+      _selectionGestureTravel += event.delta.distance;
+      if (event.kind == PointerDeviceKind.mouse) {
+        _handleSelectionPointerHover(event.localPosition);
+        return;
+      }
+      if (_activeTouches.length < 2) {
+        _handleSelectionPointerMove(event.delta);
+        return;
+      }
+      // Bug-fix round: pinch-zoom/two-finger-pan must still work while
+      // selecting - reuses _applyPinchPan (the same method orbit mode's own
+      // _handlePointerMove calls) directly, without editing that method or
+      // _handlePointerMove's body at all.
+      _hadMultiTouch = true;
+      final before = Map<int, Offset>.from(_activeTouches);
+      _activeTouches[event.pointer] = event.localPosition;
+      _applyPinchPan(before, _activeTouches);
       return;
     }
-    _selectionGestureTravel += event.delta.distance;
-    if (event.kind == PointerDeviceKind.mouse) {
-      _handleSelectionPointerHover(event.localPosition);
+    if (widget.drawCursorMode) {
+      // P16: mirrors the selectionMode branch above exactly, retargeted to
+      // the draw cursor's own move/hover handlers.
+      _drawCursorGestureTravel += event.delta.distance;
+      if (event.kind == PointerDeviceKind.mouse) {
+        _handleDrawCursorHover(event.localPosition);
+        return;
+      }
+      if (_activeTouches.length < 2) {
+        _handleDrawCursorMove(event.delta);
+        return;
+      }
+      _hadMultiTouch = true;
+      final before = Map<int, Offset>.from(_activeTouches);
+      _activeTouches[event.pointer] = event.localPosition;
+      _applyPinchPan(before, _activeTouches);
       return;
     }
-    if (_activeTouches.length < 2) {
-      _handleSelectionPointerMove(event.delta);
-      return;
-    }
-    // Bug-fix round: pinch-zoom/two-finger-pan must still work while
-    // selecting - reuses _applyPinchPan (the same method orbit mode's own
-    // _handlePointerMove calls) directly, without editing that method or
-    // _handlePointerMove's body at all.
-    _hadMultiTouch = true;
-    final before = Map<int, Offset>.from(_activeTouches);
-    _activeTouches[event.pointer] = event.localPosition;
-    _applyPinchPan(before, _activeTouches);
+    _handlePointerMove(event);
   }
 
   void _onPointerEnd(PointerEvent event) {
     if (widget.selectionMode) {
+      if (_marqueeActive) {
+        if (event.kind != PointerDeviceKind.mouse) {
+          _activeTouches.remove(event.pointer);
+          if (_activeTouches.isEmpty) _hadMultiTouch = false;
+        }
+        setState(() {
+          _endMarquee();
+          _syncEdgesNode();
+        });
+        return;
+      }
+      // A pending (not yet fired) long-press timer never gets the chance to
+      // fire if its pointer lifts first - mirrors sketch_canvas.dart's own
+      // _cancelLongPress call at the same point.
+      _cancelMarqueeLongPress();
       // Fix 4: tap-to-select - a pointer-up that stayed within the tap
       // travel threshold commits the current hover, the same logic the
       // removed "Select" button used to call. A drag that moved the cursor
@@ -1239,6 +1773,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       setState(_syncEdgesNode);
       return;
     }
+    if (widget.drawCursorMode) {
+      // P16: same tap-vs-drag commit logic as the selectionMode branch
+      // above, firing onDrawCursorCommit instead of onSelectionToggle.
+      final wasTap = event is PointerUpEvent &&
+          !_hadMultiTouch &&
+          _drawCursorGestureTravel < _tapTravelThreshold;
+      if (event.kind != PointerDeviceKind.mouse) {
+        _activeTouches.remove(event.pointer);
+        if (_activeTouches.isEmpty) _hadMultiTouch = false;
+      }
+      if (wasTap) _commitDrawCursor();
+      setState(_syncEdgesNode);
+      return;
+    }
     _handlePointerEnd(event);
     // C3: the orbit/pan/zoom gesture that just ended may have moved the
     // camera - resync the edge overlay's towards-camera bias (see
@@ -1248,8 +1796,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerHover(PointerHoverEvent event) {
-    if (!widget.selectionMode) return; // No orbit-mode hover handling exists.
-    _handleSelectionPointerHover(event.localPosition);
+    if (widget.selectionMode) {
+      _handleSelectionPointerHover(event.localPosition);
+      return;
+    }
+    if (widget.drawCursorMode) {
+      _handleDrawCursorHover(event.localPosition);
+      return;
+    }
+    // No orbit-mode hover handling exists.
   }
 
   /// Item 2: "Drag moves cursor relatively (sensitivity-scaled, not 1:1);
@@ -1365,6 +1920,162 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       widget.onClearSelection?.call();
     } else {
       widget.onSelectionToggle?.call(hit.entity);
+    }
+  }
+
+  // ---- P25: marquee-select (long-press-then-drag, selection mode only) ---
+
+  /// A one-off probe mirroring [_recomputeHover]'s own hit-test, but at an
+  /// arbitrary [screenPosition] rather than [_cursorPosition], and without
+  /// mutating [_hoverHit] - used by [_maybeStartMarqueeLongPress] to decide
+  /// whether a press landed on existing geometry (which should behave like
+  /// an ordinary press-and-hold, never growing into a marquee) or genuinely
+  /// empty space, mirroring `sketch_canvas.dart`'s own `hasEntityNear`
+  /// check in `_maybeStartLongPress`.
+  bool _hasEntityNearScreenPoint(Offset screenPosition) {
+    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(screenPosition, _viewportSize);
+    final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
+        ? null
+        : hitTestBodies(
+            ray: ray,
+            viewportSize: _viewportSize,
+            bodies: widget.bodies,
+            sketchGeometries: widget.sketchGeometries,
+            filter: widget.selectionFilter,
+          );
+    return meshHit != null || _hoverHitTestPlanes(ray) != null;
+  }
+
+  /// Starts the long-press timer when [downScreen] lands on genuinely empty
+  /// space while in selection mode - mirrors `sketch_canvas.dart`'s own
+  /// `_maybeStartLongPress` exactly (same duration, same "only from blank
+  /// canvas" rule via [_hasEntityNearScreenPoint]).
+  void _maybeStartMarqueeLongPress(Offset downScreen) {
+    if (_hasEntityNearScreenPoint(downScreen)) return;
+    _marqueeDownScreen = downScreen;
+    _marqueeLongPressTimer?.cancel();
+    _marqueeLongPressTimer = Timer(_marqueeLongPressDuration, () => _startMarquee(downScreen));
+  }
+
+  /// Fires once [_marqueeLongPressDuration] elapses without the pointer
+  /// travelling far enough to cancel (see [_onPointerMove]'s own
+  /// selectionMode branch) - switches the gesture state machine over to
+  /// marquee-drag mode.
+  void _startMarquee(Offset downScreen) {
+    _marqueeLongPressTimer = null;
+    setState(() {
+      _marqueeActive = true;
+      _marqueeDownScreen = downScreen;
+      _marqueeCurrentScreen = downScreen;
+    });
+  }
+
+  /// Cancels a pending (not yet fired) long-press timer - does not affect
+  /// an already-active marquee, which only ends via [_endMarquee].
+  void _cancelMarqueeLongPress() {
+    _marqueeLongPressTimer?.cancel();
+    _marqueeLongPressTimer = null;
+    _marqueeDownScreen = null;
+  }
+
+  /// Ends the active marquee on pointer-up/-cancel - resolves both
+  /// screen-space corners onto [PartViewport.sketchPlaneBasis] via
+  /// [hitTestSketchPlane], builds their sketch-space axis-aligned bounding
+  /// [Rect] (not a literal projection of the screen rectangle, which -
+  /// unless the camera happens to be looking straight at the plane -
+  /// wouldn't be a rectangle in sketch space at all; a bounding box around
+  /// both resolved corners is a reasonable, honest approximation for an
+  /// oblique view, consistent with this whole feature's "close enough, not
+  /// pixel-perfect" spirit), then fires [PartViewport.onMarqueeSelect]. A
+  /// long-press that never actually dragged (both corners resolve to the
+  /// same point) still fires, with a zero-area Rect - matching
+  /// `sketch_canvas.dart`'s own "selects nothing" outcome for that case
+  /// (`SketchController.selectInRect`'s own "fully inside" rule excludes
+  /// everything from a zero-area rect).
+  void _endMarquee() {
+    final anchor = _marqueeDownScreen;
+    final current = _marqueeCurrentScreen;
+    _marqueeActive = false;
+    _marqueeDownScreen = null;
+    _marqueeCurrentScreen = null;
+    final basis = widget.sketchPlaneBasis;
+    if (anchor == null || current == null || basis == null) return;
+    final camera = _camera.cameraFor(_viewportSize);
+    final anchorHit = hitTestSketchPlane(camera.screenPointToRay(anchor, _viewportSize), basis);
+    final currentHit = hitTestSketchPlane(camera.screenPointToRay(current, _viewportSize), basis);
+    if (anchorHit == null || currentHit == null) return;
+    final (anchorX, anchorY) = worldPointToSketch(basis, anchorHit.$1);
+    final (currentX, currentY) = worldPointToSketch(basis, currentHit.$1);
+    widget.onMarqueeSelect?.call(Rect.fromPoints(Offset(anchorX, anchorY), Offset(currentX, currentY)));
+  }
+
+  // ---- P16: draw-cursor mode's own cursor/raycast/commit dispatch --------
+  //
+  // Mirrors the selection-mode block above exactly, retargeted from
+  // entity-hover to a continuous [PartViewport.sketchPlaneBasis] raycast via
+  // [hitTestSketchPlane] instead of [hitTestBodies].
+
+  /// Mirrors [_handleSelectionPointerMove]. Notifies
+  /// [PartViewport.onDrawCursorMoved] *after* [setState] (not from inside
+  /// [_recomputeDrawCursor] itself - see that method's own doc comment for
+  /// why), same as every other genuinely pointer-event-driven entry point
+  /// into this State.
+  void _handleDrawCursorMove(Offset delta) {
+    final current = _drawCursorPosition ?? _viewportCenter();
+    setState(() {
+      _drawCursorPosition = _clampToViewport(current + delta * _cursorDragSensitivity);
+      _recomputeDrawCursor();
+    });
+    final resolved = _drawCursorWorldHit;
+    if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
+  }
+
+  /// Mirrors [_handleSelectionPointerHover] - see [_handleDrawCursorMove]'s
+  /// own doc comment for why the callback fires here, not inside
+  /// [_recomputeDrawCursor].
+  void _handleDrawCursorHover(Offset localPosition) {
+    setState(() {
+      _drawCursorPosition = _clampToViewport(localPosition);
+      _recomputeDrawCursor();
+    });
+    final resolved = _drawCursorWorldHit;
+    if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
+  }
+
+  /// Mirrors [_recomputeHover], raycasting against
+  /// [PartViewport.sketchPlaneBasis] via [hitTestSketchPlane] instead of
+  /// [hitTestBodies]. Purely an internal state update (unlike an earlier
+  /// version of this method) - it must never itself invoke
+  /// [PartViewport.onDrawCursorMoved], because [didUpdateWidget]'s own
+  /// `drawCursorMode` transition block (below) calls this synchronously
+  /// during the framework's build/update phase; that callback ends up
+  /// calling `SketchController.notifyListeners()` (via `sketch_screen.dart`'s
+  /// `_handleDrawCursorMoved` -> `moveCursorToSketchPoint`), which the
+  /// `AnimatedBuilder` wrapping this whole viewport listens to - triggering
+  /// "setState() or markNeedsBuild() called during build" the moment
+  /// drawCursorMode first turns on. Confirmed via a real on-device/test
+  /// crash, not hypothetical - fixed by only ever firing the callback from
+  /// the genuinely pointer-event-driven callers above, which run outside
+  /// any build phase.
+  void _recomputeDrawCursor() {
+    final cursor = _drawCursorPosition;
+    final basis = widget.sketchPlaneBasis;
+    if (cursor == null || basis == null) {
+      _drawCursorWorldHit = null;
+      return;
+    }
+    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+    final hit = hitTestSketchPlane(ray, basis);
+    _drawCursorWorldHit = hit?.$1;
+  }
+
+  /// Mirrors [_commitSelection] - fired by a genuine tap (see
+  /// [_onPointerEnd]), commits the current [_drawCursorWorldHit] if the
+  /// cursor is actually resolving to a point on the plane.
+  void _commitDrawCursor() {
+    final hit = _drawCursorWorldHit;
+    if (hit != null) {
+      widget.onDrawCursorCommit?.call(hit);
     }
   }
 
@@ -1691,6 +2402,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   backgroundColor: colorFromHex(widget.bgColourHex),
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
+                    if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
+                    if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
+                    if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
+                    if (_drawGhostNode != null) _drawGhostNode!,
+                    if (_drawIndicatorsNode != null) _drawIndicatorsNode!,
+                    if (_profileFillNode != null) _profileFillNode!,
+                    if (_profileBranchMarkersNode != null) _profileBranchMarkersNode!,
                     ..._sketchNodes.values,
                     ..._createPlaneNodes.values,
                     ..._edgesNodes.values,
@@ -1721,6 +2439,43 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   painter: _CursorCrosshairPainter(position: _cursorPosition!, hasHover: _hoverHit != null),
                 ),
               ),
+            // P25: the marquee's own screen-space rectangle outline, live
+            // while dragging - mirrors `sketch_canvas.dart`'s own marquee
+            // rendering (minus its decorative swell-and-pop long-press
+            // circle, which is cosmetic, not functional).
+            if (_marqueeActive && _marqueeDownScreen != null && _marqueeCurrentScreen != null)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: size,
+                  painter: _MarqueeRectPainter(
+                    corner1: _marqueeDownScreen!,
+                    corner2: _marqueeCurrentScreen!,
+                  ),
+                ),
+              ),
+            // P16: mirrors the selectionMode crosshair above - hasHover
+            // (via _drawCursorWorldHit) previews whether a tap right now
+            // would actually resolve to a point on the sketch plane. P20
+            // follow-up: green instead of selection's blue while hovering -
+            // mirrors `sketch_canvas.dart`'s own mode-tinted crosshair
+            // (green for SketchMode.draw, red for select - only the
+            // "hovering something valid" shade differs between the two
+            // modes here, not the neutral/no-hover white). P30: the caller
+            // can override this green default (see
+            // [PartViewport.drawCursorHoverColor]'s own doc comment - Trim/
+            // Extend now shares this same crosshair but with 2D's own
+            // red-for-non-draw tint instead).
+            if (widget.drawCursorMode && _drawCursorPosition != null)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: size,
+                  painter: _CursorCrosshairPainter(
+                    position: _drawCursorPosition!,
+                    hasHover: _drawCursorWorldHit != null,
+                    hoverColor: widget.drawCursorHoverColor ?? const Color(0xFF4CAF50),
+                  ),
+                ),
+              ),
             // On-device feedback: rendered as part of this State's own
             // build (not an external overlay driven by a stale snapshot -
             // see [PartViewport.sketchOrientationBasis]'s own doc comment)
@@ -1734,6 +2489,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   basis: widget.sketchOrientationBasis!,
                 ),
               ),
+            if (ViewPreferences.debugShowCameraOrientation)
+              DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
           ],
         );
       },
@@ -1741,11 +2498,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   // A4: wrapper for the scroll-wheel signal event. The orbit handler body
-  // (_handlePointerSignal) is unchanged; the wrapper exists so future
-  // orthographic-specific behaviour (e.g. adjusting ortho scale without
-  // moving the camera) can be added here without touching the orbit body.
-  // flutter_scene 0.18.x provides only PerspectiveCamera, so the two modes
-  // are currently identical — see OrbitCamera.isPerspective.
+  // (_handlePointerSignal) is unchanged; the wrapper exists so orthographic-
+  // specific behaviour (e.g. adjusting ortho scale without moving the
+  // camera) could be added here without touching the orbit body - not yet
+  // needed, since scroll-wheel zoom still just changes OrbitCamera.distance
+  // either way, and orthographicCameraFor derives its half-height from that
+  // same distance every rebuild.
   void _onPointerSignal(PointerSignalEvent event) {
     _handlePointerSignal(event);
     // C3: a scroll-wheel zoom moves the camera - resync the edge overlay's
@@ -1763,7 +2521,17 @@ class _CursorCrosshairPainter extends CustomPainter {
   final Offset position;
   final bool hasHover;
 
-  const _CursorCrosshairPainter({required this.position, required this.hasHover});
+  /// P20 follow-up: the colour while [hasHover] is true - defaults to
+  /// selection's own blue; [PartViewportState.build]'s draw-cursor crosshair
+  /// passes green instead, mirroring `sketch_canvas.dart`'s own mode-tinted
+  /// cursor (see that call site's own doc comment).
+  final Color hoverColor;
+
+  const _CursorCrosshairPainter({
+    required this.position,
+    required this.hasHover,
+    this.hoverColor = const Color(0xFF2196F3),
+  });
 
   static const double _armLength = 12;
 
@@ -1774,21 +2542,53 @@ class _CursorCrosshairPainter extends CustomPainter {
     // Dark outline drawn first for visibility on light backgrounds.
     final outlinePaint = Paint()
       ..color = const Color(0xCC000000)
-      ..strokeWidth = 4
+      ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.square;
     canvas.drawLine(position - h, position + h, outlinePaint);
     canvas.drawLine(position - v, position + v, outlinePaint);
     // Coloured inner stroke on top.
     final innerPaint = Paint()
-      ..color = hasHover ? const Color(0xFF2196F3) : const Color(0xFFFFFFFF)
-      ..strokeWidth = 2;
+      ..color = hasHover ? hoverColor : const Color(0xFFFFFFFF)
+      ..strokeWidth = 1.25;
     canvas.drawLine(position - h, position + h, innerPaint);
     canvas.drawLine(position - v, position + v, innerPaint);
   }
 
   @override
   bool shouldRepaint(covariant _CursorCrosshairPainter oldDelegate) =>
-      oldDelegate.position != position || oldDelegate.hasHover != hasHover;
+      oldDelegate.position != position ||
+      oldDelegate.hasHover != hasHover ||
+      oldDelegate.hoverColor != hoverColor;
+}
+
+/// P25 (2D-sketcher feature parity): the marquee gesture's own live
+/// screen-space rectangle outline - a plain translucent-fill, solid-border
+/// rect between [corner1]/[corner2] (whichever order), mirroring
+/// `sketch_canvas.dart`'s own marquee look closely enough to read as "the
+/// same feature", without replicating its decorative swell-and-pop
+/// long-press circle (cosmetic, not functional).
+class _MarqueeRectPainter extends CustomPainter {
+  final Offset corner1;
+  final Offset corner2;
+
+  const _MarqueeRectPainter({required this.corner1, required this.corner2});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromPoints(corner1, corner2);
+    canvas.drawRect(rect, Paint()..color = const Color(0x332196F3));
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..color = const Color(0xFF2196F3)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _MarqueeRectPainter oldDelegate) =>
+      oldDelegate.corner1 != corner1 || oldDelegate.corner2 != corner2;
 }
 
 class _ScenePainter extends CustomPainter {

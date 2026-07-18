@@ -23,6 +23,7 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
   int _maxTriangles = MeshViewerPreferences.defaultMaxTriangles;
   MeshUpAxis _upAxis = MeshViewerPreferences.defaultUpAxis;
   bool _mirror = MeshViewerPreferences.defaultMirror;
+  bool _debugShowCameraOrientation = MeshViewerPreferences.defaultDebugShowCameraOrientation;
   bool _loaded = false;
 
   @override
@@ -38,6 +39,7 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
       _maxTriangles = MeshViewerPreferences.maxTriangles;
       _upAxis = MeshViewerPreferences.upAxis;
       _mirror = MeshViewerPreferences.mirror;
+      _debugShowCameraOrientation = MeshViewerPreferences.debugShowCameraOrientation;
       _loaded = true;
     });
   }
@@ -56,6 +58,11 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
   Future<void> _onMirrorChanged(bool mirror) async {
     setState(() => _mirror = mirror);
     await MeshViewerPreferences.setMirror(mirror);
+  }
+
+  Future<void> _onDebugShowCameraOrientationChanged(bool value) async {
+    setState(() => _debugShowCameraOrientation = value);
+    await MeshViewerPreferences.setDebugShowCameraOrientation(value);
   }
 
   static String _formatTriangleCount(int n) {
@@ -134,6 +141,22 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
                   ],
                   selected: {_mirror},
                   onSelectionChanged: (selection) => _onMirrorChanged(selection.first),
+                ),
+                const SizedBox(height: 24),
+                Text('Debug: camera orientation readout', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  "Shows a live readout of which world axis currently reads as "
+                  "screen-right/up/toward-camera - a temporary aid for confirming "
+                  "camera-orientation math against the on-screen triad.",
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Show camera orientation readout'),
+                  value: _debugShowCameraOrientation,
+                  onChanged: _onDebugShowCameraOrientationChanged,
                 ),
               ],
             ),

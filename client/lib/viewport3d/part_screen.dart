@@ -221,6 +221,16 @@ class _PartScreenState extends State<PartScreen> {
   /// in-memory only (no persistence across app restarts, per the brief).
   bool _referencePlanesHidden = false;
 
+  /// On-device feedback: the reference planes are a placement aid for an
+  /// empty Part - once the first real Body exists, they're clutter, so
+  /// [_refreshMesh] auto-hides them the first time [_bodies] goes from
+  /// empty to non-empty. Guards against firing more than once per screen
+  /// lifetime (mirrors [PartViewportState._hasFramedCamera]'s own "one-time
+  /// auto-behaviour" pattern) - deleting every Body later and creating a new
+  /// one shouldn't fight a user who explicitly re-showed the planes in the
+  /// meantime.
+  bool _hasAutoHiddenReferencePlanes = false;
+
   /// Stage 11: the viewport's current display mode, toggled from
   /// [PartToolbar]'s three render-mode entries. Stage 19a Item 5: now
   /// persisted via [ViewPreferences] (`view_render_mode`), the same
@@ -2426,7 +2436,15 @@ class _PartScreenState extends State<PartScreen> {
     );
     if (!mounted) return;
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
-    setState(() => _bodies = isPlaceholder ? [] : response);
+    final newBodies = isPlaceholder ? <BodyMeshDto>[] : response;
+    final justGotFirstBody = _bodies.isEmpty && newBodies.isNotEmpty && !_hasAutoHiddenReferencePlanes;
+    setState(() {
+      _bodies = newBodies;
+      if (justGotFirstBody) {
+        _referencePlanesHidden = true;
+        _hasAutoHiddenReferencePlanes = true;
+      }
+    });
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -2497,6 +2515,26 @@ class _PartScreenState extends State<PartScreen> {
     };
   }
 
+  /// On-device feedback: the default (flip, rotationQuarterTurns) offered
+  /// for a brand new fixed-plane Sketch's own orientation-confirm step - a
+  /// custom (Feature-anchored) plane has no "which fixed plane" concept to
+  /// key off, so it always gets the identity `(false, 0)`. Computed via a
+  /// full calibration round (every flip x rotation combination, checked
+  /// programmatically against three independently on-device-captured
+  /// targets, one per fixed plane, *after* fixing `orientationFacingBasis`'s
+  /// own left-handed-basis bug - see that function's own doc comment for the
+  /// full story) rather than guessed: YZ needed no change at all
+  /// (`false, 0` was already an exact match); XY and XZ both needed a
+  /// genuinely different orientation than any single `flip` toggle alone
+  /// could reach, which is exactly why guessing only `flip` kept moving the
+  /// target on every previous round.
+  (bool, int) _defaultPendingOrientationFor(ReferencePlaneKind? fixedPlane) => switch (fixedPlane) {
+        ReferencePlaneKind.xy => (true, 1),
+        ReferencePlaneKind.xz => (true, 0),
+        ReferencePlaneKind.yz => (false, 0),
+        null => (false, 0),
+      };
+
   /// Creates a SketchFeature on [plane] (default) or, since C3, anchored to
   /// an existing created Plane ([planeFeatureId] - never both) and navigates
   /// straight to its SketchScreen - called from the free-tap fly-up sheet
@@ -2556,13 +2594,27 @@ class _PartScreenState extends State<PartScreen> {
     // equivalent for an arbitrary basis, but isometric doesn't need one.
     await _viewportKey.currentState?.animateToIsometric();
     if (!mounted) return;
+    // On-device feedback + a full numeric calibration round: see
+    // _defaultPendingOrientationFor's own doc comment - this used to only
+    // vary [flip] (never rotation) and, before orientationFacingBasis's own
+    // left-handed-basis bug was found and fixed, couldn't have landed on a
+    // stable answer no matter which flip was guessed.
+    final (defaultFlip, defaultRotation) = _defaultPendingOrientationFor(fixedPlane);
     setState(() {
       _pendingOrientationFeature = feature;
       _pendingOrientationRawBasis = rawBasis;
-      _pendingOrientationFlip = false;
-      _pendingOrientationRotation = 0;
+      _pendingOrientationFlip = defaultFlip;
+      _pendingOrientationRotation = defaultRotation;
       _pendingOrientationMode = _PendingOrientationMode.newSketch;
       _pendingOrientationFixedPlaneKind = fixedPlane;
+      // On-device feedback: judging a pending orientation needs free orbit
+      // gestures (PartViewport routes every tap/drag to its selection
+      // pipeline instead while selectionMode is true, per _onPlaneTap's own
+      // doc comment below) - force orbit mode for the duration of this
+      // step, remembering cursor mode so it comes back once the step ends
+      // (see _confirmPendingOrientation/_cancelPendingOrientation).
+      _pendingOrientationPreviousSelectionMode = _selectionMode;
+      _selectionMode = false;
     });
   }
 
@@ -2617,6 +2669,11 @@ class _PartScreenState extends State<PartScreen> {
       // sequence reads this) - cleared rather than left stale from a
       // possibly-earlier new-sketch step.
       _pendingOrientationFixedPlaneKind = null;
+      // On-device feedback: same as _addSketchFeature's own - force orbit
+      // mode for the duration of the step, remembering cursor mode so it
+      // comes back once the step ends.
+      _pendingOrientationPreviousSelectionMode = _selectionMode;
+      _selectionMode = false;
     });
   }
 
@@ -2627,6 +2684,14 @@ class _PartScreenState extends State<PartScreen> {
   _PendingOrientationMode _pendingOrientationMode = _PendingOrientationMode.newSketch;
   bool _pendingOrientationOriginalFlip = false;
   int _pendingOrientationOriginalRotation = 0;
+
+  /// On-device feedback: whether cursor/select mode was active right before
+  /// entering the sketch-orientation-confirm step - both entry points
+  /// (`_addSketchFeature`/`_redefineSketchOrientation`) force `_selectionMode`
+  /// off for the step's own duration (it needs free orbit gestures) and save
+  /// it here; both exit points (`_confirmPendingOrientation`/
+  /// `_cancelPendingOrientation`) restore it.
+  bool _pendingOrientationPreviousSelectionMode = false;
 
   /// New sketch-start camera sequence: the fixed plane [_addSketchFeature]
   /// resolved (null for a custom, Feature-anchored plane - no
@@ -2702,6 +2767,7 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
       _pendingOrientationFixedPlaneKind = null;
+      _selectionMode = _pendingOrientationPreviousSelectionMode;
     });
     if (mode == _PendingOrientationMode.newSketch) {
       if (fixedPlaneKind != null) {
@@ -2710,6 +2776,19 @@ class _PartScreenState extends State<PartScreen> {
           flip: flip,
           rotationQuarterTurns: rotation,
         );
+        if (!mounted) return;
+      }
+      // Bug fix: createSketchFeature always creates flip=false/rotation=0
+      // server-side (it takes no orientation params) - if the user confirms
+      // without ever touching the flip/rotate controls, the backend's own
+      // stored orientation never learned about a non-default starting flip
+      // (now a real case - see _addSketchFeature's own XY/XZ default). Only
+      // sends the PATCH when it would actually change anything, since a
+      // plain false/0 confirm already matches creation's own default.
+      if (feature.sketchId != null && (flip || rotation != 0)) {
+        await _runGuarded(() async {
+          await _sketchApi.updateSketchOrientation(feature.sketchId!, flip: flip, rotationQuarterTurns: rotation);
+        });
         if (!mounted) return;
       }
       await _openSketch(feature, basis: basis);
@@ -2739,6 +2818,7 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
       _pendingOrientationFixedPlaneKind = null;
+      _selectionMode = _pendingOrientationPreviousSelectionMode;
     });
     if (feature == null) return;
     if (mode == _PendingOrientationMode.newSketch) {

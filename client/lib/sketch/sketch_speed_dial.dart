@@ -14,7 +14,27 @@ import 'sketch_controller.dart';
 class SketchSpeedDial extends StatelessWidget {
   final SketchController controller;
 
-  const SketchSpeedDial({super.key, required this.controller});
+  /// Sketcher restructure Phase 2 follow-up (P20): the 3D-embedded sketcher
+  /// now supports every draw tool except Text (see `sketch_screen.dart`'s
+  /// own doc comment on `_orbitViewActive`) - `handleCanvasTap`/
+  /// `activeDrawGhost`/`sketchGeometry3DFrom` were already tool-agnostic
+  /// (the P16-P18 cursor+ghost+commit retrofit and P8/P9's committed-
+  /// geometry rendering never assumed Point/Line specifically), so the only
+  /// real restriction left is Text - it creates a real Text entity fine
+  /// (`_clickTextTool` is a plain, already-generic tap handler), but has no
+  /// 3D glyph rendering at all (`sketchGeometry3DFrom`'s own doc comment:
+  /// "a separate, larger piece of work") - selecting it here would silently
+  /// place invisible geometry. Dimensions stays excluded too (unrelated to
+  /// the tool-list restriction, still gated by this same flag) - it relies
+  /// on the 2D-only reference-body ghost-picking system, plus constraint-
+  /// label/value rendering that doesn't exist in 3D yet. P30: Trim/Extend
+  /// no longer stays excluded here - its own tap-commit logic never
+  /// depended on ghost-picking in the first place, so it was only ever
+  /// blocked by this flag hiding its menu entry, not by any real
+  /// 2D-specific dependency.
+  final bool restrictToEmbeddedTools;
+
+  const SketchSpeedDial({super.key, required this.controller, this.restrictToEmbeddedTools = false});
 
   @override
   Widget build(BuildContext context) {
@@ -89,16 +109,22 @@ class SketchSpeedDial extends StatelessWidget {
         return const [];
       case FabMenuState.categories:
         return [
-          _SpeedDialAction(
-            svgAsset: 'assets/icons/actions/action_dimensions.svg',
-            label: 'Dimensions',
-            onPressed: controller.enterDimensionMode,
-          ),
+          if (!restrictToEmbeddedTools)
+            _SpeedDialAction(
+              svgAsset: 'assets/icons/actions/action_dimensions.svg',
+              label: 'Dimensions',
+              onPressed: controller.enterDimensionMode,
+            ),
           _SpeedDialAction(
             svgAsset: 'assets/icons/actions/action_sketch_entities.svg',
             label: 'Sketch Entities',
             onPressed: controller.showSketchEntitiesCategory,
           ),
+          // P30: Trim/Extend works in Orbit View now - unlike Dimensions
+          // (still gated above), its tap-commit logic never depended on the
+          // 2D-only reference-body ghost-picking system in the first place
+          // (see SketchController._handleTrimTap's own doc comment), so it
+          // was only ever blocked by this menu hiding it.
           _SpeedDialAction(
             svgAsset: 'assets/icons/actions/action_trim.svg',
             label: 'Trim/Extend',
@@ -113,68 +139,93 @@ class SketchSpeedDial extends StatelessWidget {
         // even with the scroll fallback above - two rows of 5 keeps the
         // whole menu roughly square instead of a long ladder, so it fits
         // above the main FAB on more viewports without scrolling.
-        final tools = [
+        //
+        // On-device feedback ("opening the sketch tools FAB, all tools
+        // should be 'off' - currently the last used tool is coloured
+        // 'on'"): each chip's own `selected` check below now also requires
+        // `controller.mode == SketchMode.draw` - `controller.activeTool` is
+        // a plain field that survives a mode switch away from draw
+        // (it's what `selectDrawTool`/re-entering draw mode resumes), so a
+        // bare `activeTool == SketchTool.x` check kept showing the
+        // last-used tool as "on" even while idle in Select mode with
+        // nothing actually being placed.
+        final allTools = [
           _SpeedDialAction(
+            tool: SketchTool.circle,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_circle.svg',
             label: 'Circle',
-            selected: controller.activeTool == SketchTool.circle,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.circle,
             onPressed: () => controller.selectDrawTool(SketchTool.circle),
           ),
           _SpeedDialAction(
+            tool: SketchTool.arc,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_arc.svg',
             label: 'Arc',
-            selected: controller.activeTool == SketchTool.arc,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.arc,
             onPressed: () => controller.selectDrawTool(SketchTool.arc),
           ),
           _SpeedDialAction(
+            tool: SketchTool.line,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_line.svg',
             label: 'Line',
-            selected: controller.activeTool == SketchTool.line,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.line,
             onPressed: () => controller.selectDrawTool(SketchTool.line),
           ),
           _SpeedDialAction(
+            tool: SketchTool.point,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_point.svg',
             label: 'Point',
-            selected: controller.activeTool == SketchTool.point,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.point,
             onPressed: () => controller.selectDrawTool(SketchTool.point),
           ),
           _SpeedDialAction(
+            tool: SketchTool.rectangle,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_rectangle.svg',
             label: 'Rectangle',
-            selected: controller.activeTool == SketchTool.rectangle,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.rectangle,
             onPressed: () => controller.selectDrawTool(SketchTool.rectangle),
           ),
           _SpeedDialAction(
+            tool: SketchTool.polygon,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_polygon.svg',
             label: 'Polygon',
-            selected: controller.activeTool == SketchTool.polygon,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.polygon,
             onPressed: () => controller.selectDrawTool(SketchTool.polygon),
           ),
           _SpeedDialAction(
+            tool: SketchTool.slot,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_slot.svg',
             label: 'Slot',
-            selected: controller.activeTool == SketchTool.slot,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.slot,
             onPressed: () => controller.selectDrawTool(SketchTool.slot),
           ),
           _SpeedDialAction(
+            tool: SketchTool.ellipse,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_ellipse.svg',
             label: 'Ellipse',
-            selected: controller.activeTool == SketchTool.ellipse,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.ellipse,
             onPressed: () => controller.selectDrawTool(SketchTool.ellipse),
           ),
           _SpeedDialAction(
+            tool: SketchTool.spline,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_spline.svg',
             label: 'Spline',
-            selected: controller.activeTool == SketchTool.spline,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.spline,
             onPressed: () => controller.selectDrawTool(SketchTool.spline),
           ),
           _SpeedDialAction(
+            tool: SketchTool.text,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_text.svg',
             label: 'Text',
-            selected: controller.activeTool == SketchTool.text,
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.text,
             onPressed: () => controller.selectDrawTool(SketchTool.text),
           ),
         ];
+        // P20: every tool except Text works in the 3D-embedded view now -
+        // see [restrictToEmbeddedTools]'s own doc comment.
+        final tools = restrictToEmbeddedTools
+            ? allTools.where((action) => action.tool != SketchTool.text).toList()
+            : allTools;
         final splitAt = (tools.length / 2).ceil();
         Widget rowOf(List<_SpeedDialAction> rowTools) => Row(
               mainAxisSize: MainAxisSize.min,
@@ -217,11 +268,18 @@ class _SpeedDialAction extends StatelessWidget {
   final VoidCallback? onPressed;
   final bool selected;
 
+  /// Which [SketchTool] this action selects, if any - null for the
+  /// category/Finish/Back actions, which aren't tool selections.  Used only
+  /// to filter [SketchSpeedDial.restrictToEmbeddedTools]; doesn't affect
+  /// rendering.
+  final SketchTool? tool;
+
   const _SpeedDialAction({
     required this.svgAsset,
     required this.label,
     required this.onPressed,
     this.selected = false,
+    this.tool,
   });
 
   @override

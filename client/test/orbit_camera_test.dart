@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -13,25 +12,51 @@ void main() {
     final camera = OrbitCamera();
     final perspective = camera.cameraFor(size);
 
-    expect(perspective.target, vm.Vector3.zero());
-    expect((perspective.position - perspective.target).length, closeTo(camera.distance, 1e-4));
+    expect(camera.target, vm.Vector3.zero());
+    expect((perspective.position - camera.target).length, closeTo(camera.distance, 1e-4));
   });
 
-  test(
-      'isometricOrientation elevation matches the true isometric angle (asin(1/sqrt(3)) ~ 35.264 '
-      'degrees), steeper than the default ~30 degree corner view, at the same 45 degree azimuth',
-      () {
-    final camera = OrbitCamera()..orientation = OrbitCamera.isometricOrientation();
-    final direction = camera.cameraFor(size).position - camera.cameraFor(size).target;
+  test('isometricOrientation is now the same view as the default cold-start orientation', () {
+    final defaultCamera = OrbitCamera();
+    final isometricCamera = OrbitCamera()..orientation = OrbitCamera.isometricOrientation();
+    expect(
+      (defaultCamera.orientation.rotated(vm.Vector3(1, 2, 3)) -
+              isometricCamera.orientation.rotated(vm.Vector3(1, 2, 3)))
+          .length,
+      closeTo(0, 1e-6),
+    );
+  });
 
-    final elevation = math.asin(direction.y / direction.length);
-    expect(elevation, closeTo(math.asin(1 / math.sqrt(3)), 1e-9));
-    expect(elevation, greaterThan(0.5235987755982988)); // strictly steeper than the default's pi/6
+  /// On-device feedback + a numeric calibration round: the default/isometric
+  /// orientation must match what actually renders as screen-right/up (the
+  /// on-screen triad, `triad.dart`'s `triadAxes`) - not just be internally
+  /// self-consistent with [OrbitCamera.right]/[OrbitCamera.up] themselves,
+  /// which are the camera's own *local-frame* vectors and (confirmed by
+  /// deriving `triadAxes`' formula algebraically) read the *opposite* sign
+  /// for "right" from what the triad actually displays. A previous round's
+  /// camera rewrite passed its own self-consistency tests but still looked
+  /// mirrored on-device for exactly this reason - this test reproduces
+  /// `triadAxes`' own formula directly instead, so a regression here would
+  /// have been caught the same way the on-device confidence test caught it.
+  test('the default/isometric orientation matches the on-screen triad exactly', () {
+    final camera = OrbitCamera();
+    final towardCamera = (camera.position - camera.target).normalized();
+    final forward = -towardCamera;
+    final triadRight = camera.up.cross(forward).normalized();
+    final triadUp = forward.cross(triadRight).normalized();
 
-    // Same 45-degree azimuth as the default "corner" view - only the
-    // elevation differs - confirmed by equal-magnitude horizontal (x/z)
-    // components.
-    expect(direction.x.abs(), closeTo(direction.z.abs(), 1e-9));
+    void expectAxis(vm.Vector3 axis, double expectedRight, double expectedUp) {
+      expect(axis.dot(triadRight), closeTo(expectedRight, 0.01));
+      expect(axis.dot(triadUp), closeTo(expectedUp, 0.01));
+    }
+
+    // Values confirmed against the user's own on-device readout during the
+    // calibration round (X/Y both read screen-right, Z reads pure screen-up)
+    // - a second round corrected the azimuth from an earlier round's own
+    // (self-consistent but on-device-wrong) screen-left version.
+    expectAxis(vm.Vector3(1, 0, 0), 0.71, 0.41);
+    expectAxis(vm.Vector3(0, 1, 0), 0.71, -0.41);
+    expectAxis(vm.Vector3(0, 0, 1), 0.0, 0.82);
   });
 
   test('orbitByScreenDelta moves the camera position when dragging right', () {
@@ -130,7 +155,7 @@ void main() {
       // up must stay a unit vector orthogonal to the view direction at
       // every step - this is exactly what breaks down at a pole for a
       // fixed-world-up, look-at-style camera.
-      final direction = (camera2.position - camera2.target).normalized();
+      final direction = (camera2.position - camera.target).normalized();
       expect(camera2.up.length, closeTo(1, 1e-3));
       expect(camera2.up.dot(direction), closeTo(0, 1e-3));
 

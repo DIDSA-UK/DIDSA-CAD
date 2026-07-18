@@ -143,45 +143,56 @@ class _PolygonSidesControl extends StatelessWidget {
   Widget build(BuildContext context) {
     final sides = controller.polygonSides;
     final onSurface = Theme.of(context).colorScheme.onSurface;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text('$sides sides'),
-        IconButton(
-          icon: SvgPicture.asset(
-            'assets/icons/dimbar/dimbar_polygon_sides_decrease.svg',
-            width: 30,
-            height: 30,
-            colorFilter: ColorFilter.mode(
-              sides > 3 ? onSurface : Theme.of(context).disabledColor,
-              BlendMode.srcIn,
+    // On-device feedback: "the toggle in the polygon tool has no
+    // description" - a bare IconButton's tooltip only ever showed on
+    // long-press, so its meaning wasn't visible at a glance. Wrapped in a
+    // horizontally-scrollable Row (mirroring _methodChips' own Line/Circle/
+    // Rectangle chip row) since a permanent text label alongside the sides
+    // stepper and Exit button no longer reliably fits narrower screens.
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('$sides sides'),
+          IconButton(
+            icon: SvgPicture.asset(
+              'assets/icons/dimbar/dimbar_polygon_sides_decrease.svg',
+              width: 30,
+              height: 30,
+              colorFilter: ColorFilter.mode(
+                sides > 3 ? onSurface : Theme.of(context).disabledColor,
+                BlendMode.srcIn,
+              ),
             ),
+            onPressed: sides > 3 ? () => controller.setPolygonSides(sides - 1) : null,
           ),
-          onPressed: sides > 3 ? () => controller.setPolygonSides(sides - 1) : null,
-        ),
-        IconButton(
-          icon: SvgPicture.asset(
-            'assets/icons/dimbar/dimbar_polygon_sides_increase.svg',
-            width: 30,
-            height: 30,
-            colorFilter: ColorFilter.mode(
-              sides < 20 ? onSurface : Theme.of(context).disabledColor,
-              BlendMode.srcIn,
+          IconButton(
+            icon: SvgPicture.asset(
+              'assets/icons/dimbar/dimbar_polygon_sides_increase.svg',
+              width: 30,
+              height: 30,
+              colorFilter: ColorFilter.mode(
+                sides < 20 ? onSurface : Theme.of(context).disabledColor,
+                BlendMode.srcIn,
+              ),
             ),
+            onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
           ),
-          onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
-        ),
-        const SizedBox(width: 8),
-        // Feedback round: toggles the circumscribed/inscribed guide-circle
-        // preview every real regular polygon's vertices/edge-midpoints
-        // land on - see SketchController.showPolygonGuideCircles's own doc
-        // comment.
-        IconButton(
-          icon: Icon(controller.showPolygonGuideCircles ? Icons.circle_outlined : Icons.circle),
-          tooltip: controller.showPolygonGuideCircles ? 'Hide guide circles' : 'Show guide circles',
-          onPressed: controller.togglePolygonGuideCircles,
-        ),
-      ],
+          const SizedBox(width: 8),
+          // Feedback round: toggles the circumscribed/inscribed guide-circle
+          // preview every real regular polygon's vertices/edge-midpoints
+          // land on - see SketchController.showPolygonGuideCircles's own doc
+          // comment. Same TextButton.icon(icon + visible label) shape this
+          // bar's own Exit button already uses, so the label is always
+          // visible, not just on long-press.
+          TextButton.icon(
+            onPressed: controller.togglePolygonGuideCircles,
+            icon: Icon(controller.showPolygonGuideCircles ? Icons.circle_outlined : Icons.circle),
+            label: Text(controller.showPolygonGuideCircles ? 'Hide guides' : 'Show guides'),
+          ),
+        ],
+      ),
     );
   }
 }

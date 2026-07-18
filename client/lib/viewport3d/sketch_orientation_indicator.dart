@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data' show Float64List;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_scene/scene.dart' show PerspectiveCamera;
+import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'screen_projection.dart';
@@ -32,7 +32,7 @@ import 'sketch_geometry_3d.dart' show SketchPlaneBasis;
 /// own doc comment for why this is rendered inside [PartViewport]'s own
 /// build rather than as an externally-driven overlay.
 class SketchOrientationIndicator extends StatelessWidget {
-  final PerspectiveCamera camera;
+  final Camera camera;
   final Size viewportSize;
   final SketchPlaneBasis basis;
 
@@ -82,9 +82,13 @@ const Color _verticalArrowColor =
 /// performs that division itself when rasterizing whatever gets drawn
 /// through it, which is what makes the perspective-correct foreshortening
 /// happen "for free" on every subsequent draw call.
+///
+/// Typed to the base [Camera] (not [PerspectiveCamera] specifically) - only
+/// uses [Camera.getViewTransform], implemented identically for
+/// [OrthographicCamera].
 @visibleForTesting
 vm.Matrix4 planeTransform(
-    PerspectiveCamera camera, Size viewSize, SketchPlaneBasis basis) {
+    Camera camera, Size viewSize, SketchPlaneBasis basis) {
   final worldFromLocal = vm.Matrix4.zero()
     ..setColumn(0, vm.Vector4(basis.xAxis.x, basis.xAxis.y, basis.xAxis.z, 0))
     ..setColumn(1, vm.Vector4(basis.yAxis.x, basis.yAxis.y, basis.yAxis.z, 0))
@@ -105,7 +109,7 @@ vm.Matrix4 planeTransform(
 }
 
 class _SketchOrientationPainter extends CustomPainter {
-  final PerspectiveCamera camera;
+  final Camera camera;
   final Size viewportSize;
   final SketchPlaneBasis basis;
 

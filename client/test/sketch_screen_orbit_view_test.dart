@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
@@ -11,6 +12,7 @@ import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart';
 import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 import 'package:didsa_cad_client/sketch/sketch_speed_dial.dart';
+import 'package:didsa_cad_client/sketch/sketcher_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 
@@ -70,149 +72,84 @@ Future<void> _settlePartViewport(WidgetTester tester, {int maxPumps = 100}) asyn
   }
 }
 
-/// Flushes `_exitOrbitView`'s `await animateToPlane(...)` to completion,
-/// plus the `setState` that follows it - bounded, condition-driven pumping
-/// (mirrors `_settlePartViewport`/`part_viewport_test.dart`'s own
-/// `_pumpUntil`), not `pumpAndSettle`. `pumpAndSettle` actually timed out
-/// here on CI: once the GPU/scene setup has failed, something keeps
-/// scheduling further frames indefinitely (the same underlying class of
-/// issue as `part_viewport_test.dart`'s own documented "Fix 4" flake,
-/// presumably in flutter_scene/gpu's own error-path machinery) - "wait
-/// until literally nothing is scheduled" never resolves, so this instead
-/// waits only for the specific condition that matters: the widget tree
-/// actually swapping back to [SketchCanvas].
-Future<void> _pumpExitAnimation(WidgetTester tester, {int maxPumps = 50}) async {
-  for (var i = 0; i < maxPumps; i++) {
-    if (find.byType(SketchCanvas).evaluate().isNotEmpty) return;
-    await tester.pump(const Duration(milliseconds: 100));
+/// P19 on-device feedback: entering Orbit View is no longer a live,
+/// in-session FAB tap (see [SketchScreen._orbitCursorActive]'s own doc
+/// comment) - it now happens purely from [SketcherPreferences.use3DSketcher]
+/// during [SketchScreen.initState]'s own async
+/// `_loadInitialOrbitViewPreference`. Pumps a mounted [SketchScreen] until
+/// [PartViewport] actually appears (bounded, condition-driven, mirroring
+/// [_settlePartViewport] itself rather than `pumpAndSettle` - see that
+/// helper's own doc comment for why `pumpAndSettle` isn't safe here), then
+/// settles its GPU spinner the same way every other test in this file
+/// already does.
+Future<void> _openInOrbitView(WidgetTester tester, SketchController controller) async {
+  SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: true});
+  await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+  for (var i = 0; i < 50; i++) {
+    if (find.byType(PartViewport).evaluate().isNotEmpty) break;
+    await tester.pump(const Duration(milliseconds: 20));
   }
+  await _settlePartViewport(tester);
 }
 
 void main() {
-  testWidgets('the Orbit View toggle FAB appears once the sketch plane has loaded', (tester) async {
-    final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-    await tester.pump();
-
-    expect(find.byTooltip('Orbit View'), findsOneWidget);
-  });
-
   testWidgets(
-      'tapping Orbit View swaps the flat 2D SketchCanvas for a read-only 3D PartViewport, '
-      'and tapping it again (now "Exit Orbit View") swaps back', (tester) async {
+      'the orbit/cursor toggle FAB appears once Orbit View is active (driven by the '
+      'use3DSketcher preference, not a live enter/exit tap), starting in cursor sub-mode and '
+      'flipping PartViewport.selectionMode off when swapped to orbit sub-mode', (tester) async {
     final controller = await _freshController();
+    await _openInOrbitView(tester, controller);
 
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-    await tester.pump();
-
-    expect(find.byType(SketchCanvas), findsOneWidget);
-    expect(find.byType(PartViewport), findsNothing);
-
-    await tester.tap(find.byTooltip('Orbit View'));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    expect(find.byType(SketchCanvas), findsNothing);
     expect(find.byType(PartViewport), findsOneWidget);
-    expect(find.byTooltip('Exit Orbit View'), findsOneWidget);
+    // "Cursor-first": P16-P18's cursor+ghost+commit model is active on
+    // entry. On-device feedback ("point tool shouldn't start when opening
+    // a sketch"): _enterOrbitView no longer force-selects the Point tool,
+    // so entry stays in SketchMode.select (selectionMode), not
+    // SketchMode.draw (drawCursorMode) - see _enterOrbitView's own doc
+    // comment.
+    expect(find.byTooltip('Switch to Orbit'), findsOneWidget);
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).drawCursorMode, isFalse);
 
-    // Exiting now animates the camera back to the plane before swapping
-    // (see _exitOrbitView) - a single no-duration pump only advances one
-    // frame, not enough for the 400ms default animateToPlane duration.
-    await tester.tap(find.byTooltip('Exit Orbit View'));
-    await _pumpExitAnimation(tester);
+    await tester.tap(find.byTooltip('Switch to Orbit'));
+    await tester.pump();
+    // Lets the FAB's own tap-ripple (InkSparkle) animation finish inside
+    // this test, rather than leaving a live Ticker for the next test in
+    // this file to trip over (both share one SchedulerBinding for the
+    // whole isolate) - a bounded settle, not `pumpAndSettle` (see
+    // `_settlePartViewport`'s own doc comment for why that's unsafe here).
+    await tester.pump(const Duration(milliseconds: 400));
 
-    expect(find.byType(SketchCanvas), findsOneWidget);
-    expect(find.byType(PartViewport), findsNothing);
+    expect(find.byTooltip('Switch to Cursor'), findsOneWidget);
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isFalse);
+
+    await tester.tap(find.byTooltip('Switch to Cursor'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.byTooltip('Switch to Orbit'), findsOneWidget);
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
   });
 
-  testWidgets(
-      'on-device feedback: leaving Orbit View keeps the PartViewport mounted (animating back to '
-      'the plane) rather than cutting away instantly, only swapping to the 2D canvas once the '
-      'return animation completes', (tester) async {
-    final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Orbit View'));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    await tester.tap(find.byTooltip('Exit Orbit View'));
-    await tester.pump(const Duration(milliseconds: 50)); // mid-animation
-
-    expect(find.byType(PartViewport), findsOneWidget, reason: 'still animating back to the plane');
-    expect(find.byType(SketchCanvas), findsNothing);
-
-    await _pumpExitAnimation(tester); // animation completes
-
-    expect(find.byType(SketchCanvas), findsOneWidget);
-    expect(find.byType(PartViewport), findsNothing);
-  });
-
-  testWidgets(
-      'on-device feedback: entering Orbit View always resets body transparency to ~25%, even if '
-      'a previous Orbit View session on this Sketch left it at a different value', (tester) async {
-    final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Orbit View'));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodyOpacity, 0.75);
-
-    // Change transparency away from the default via the 3D View menu.
-    // Drives the Slider/Apply button's own callbacks directly rather than
-    // a synthetic drag/tap gesture at a computed screen position - the
-    // Body Transparency bottom sheet's on-screen geometry proved
-    // environment-fragile in this headless CI runner (consistently
-    // positioned outside the hit-testable render tree regardless of the
-    // test surface's size), and this is what's actually under test here
-    // (does picking a new value and applying it change bodyOpacity, and
-    // does re-entering Orbit View reset it) rather than pixel-perfect
-    // gesture targeting.
-    await tester.tap(find.byTooltip('Menu'));
-    await tester.pump();
-    await tester.tap(find.text('Body Transparency'));
-    await tester.pump();
-    tester.widget<Slider>(find.byType(Slider)).onChanged!(80); // 80% transparency -> opacity 0.2
-    await tester.pump();
-    tester.widget<ElevatedButton>(find.byType(ElevatedButton)).onPressed!();
-    await tester.pump();
-
-    expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodyOpacity, isNot(0.75));
-
-    // The hamburger menu panel/scrim stays open underneath the modal
-    // bottom sheet - Apply only dismisses the sheet, not the menu itself
-    // - so it needs closing explicitly before the "Exit Orbit View" FAB
-    // underneath its scrim becomes tappable again.
-    await tester.tap(find.byTooltip('Menu'));
-    await tester.pump();
-
-    // Leave (through the return animation) and re-enter.
-    await tester.tap(find.byTooltip('Exit Orbit View'));
-    await _pumpExitAnimation(tester);
-    await tester.tap(find.byTooltip('Orbit View'));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodyOpacity, 0.75);
-  });
+  // P19 on-device feedback: "the orbit button is supposed to swap between
+  // cursor control and orbit mode" - the FAB that used to enter/exit Orbit
+  // View outright (tested by two removed tests that lived here: one
+  // exercising the return-to-plane exit animation, one exercising a
+  // leave-then-re-enter body-opacity reset) was repurposed to toggle
+  // SketchScreen._orbitCursorActive instead (see that field's own doc
+  // comment for the full rationale, including why SketcherPreferences.
+  // use3DSketcher is now the only way back to the flat 2D canvas). Neither
+  // an exit animation nor a leave-then-re-enter cycle exist to test any
+  // more within one mounted SketchScreen - removed rather than patched, no
+  // replacement needed since the underlying behaviour is gone, not
+  // relocated.
 
   testWidgets(
       'the embedded PartViewport starts facing the sketch\'s own plane (so entering Orbit View '
       'never visibly jumps the camera) and defaults to Shaded + Edges, matching on-device '
       'feedback that edges should be visible', (tester) async {
     final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Orbit View'));
-    await tester.pump();
-    await _settlePartViewport(tester);
+    await _openInOrbitView(tester, controller);
 
     final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
     // initialViewPlane was generalized to initialViewBasis (a SketchPlaneBasis,
@@ -230,23 +167,24 @@ void main() {
   });
 
   testWidgets(
-      'while Orbit View is active, editing controls are hidden and the "Return to Default View" '
-      'button replaces the draw/dimension speed dial', (tester) async {
+      'sketcher restructure Phase 2 / P20: while Orbit View is active, the tool speed dial stays '
+      'available (restricted to every tool except Text) rather than being replaced, and "Return '
+      'to Default View" appears alongside the orbit/cursor toggle instead of occupying the speed '
+      'dial\'s slot', (tester) async {
     final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-    await tester.pump();
+    await _openInOrbitView(tester, controller);
 
     expect(find.byType(SketchSpeedDial), findsOneWidget);
-    expect(find.byTooltip('Return to Default View'), findsNothing);
-
-    await tester.tap(find.byTooltip('Orbit View'));
-    await tester.pump();
-    await _settlePartViewport(tester);
-
-    expect(find.byType(SketchSpeedDial), findsNothing);
+    final speedDial = tester.widget<SketchSpeedDial>(find.byType(SketchSpeedDial));
+    expect(speedDial.restrictToEmbeddedTools, isTrue);
     expect(find.byTooltip('Return to Default View'), findsOneWidget);
-    expect(find.byTooltip('Drag mode off - tap to drag entities'), findsNothing);
+    // On-device feedback ("point tool shouldn't start when opening a
+    // sketch"): Orbit View now starts in SketchMode.select, not
+    // SketchMode.draw - the drag-mode FAB (Select-mode-only, and P24
+    // on-device feedback made it reachable in Orbit View's own cursor
+    // sub-mode too) is now visible on entry instead of hidden, the inverse
+    // of what a Draw-mode default used to leave true here.
+    expect(find.byTooltip('Drag mode off - tap to drag entities'), findsOneWidget);
   });
 
   testWidgets(
@@ -254,12 +192,7 @@ void main() {
       'View controls as the 3D viewport (render mode, body colour, transparency), and '
       'picking a render mode is reflected on the embedded PartViewport', (tester) async {
     final controller = await _freshController();
-
-    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Orbit View'));
-    await tester.pump();
-    await _settlePartViewport(tester);
+    await _openInOrbitView(tester, controller);
 
     await tester.tap(find.byTooltip('Menu'));
     await tester.pump();
@@ -283,9 +216,11 @@ void main() {
       'orthographic 2D canvas was an unfixable mismatch - see SketchScreen._buildBaseLayer\'s own '
       'doc comment); Orbit View is now the only place a Sketch\'s real Body geometry is shown',
       (tester) async {
+    SharedPreferences.setMockInitialValues({});
     final controller = await _freshController();
 
     await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+    await tester.pump();
     await tester.pump();
 
     expect(find.byType(SketchCanvas), findsOneWidget);
@@ -296,6 +231,7 @@ void main() {
       'the Hide Reference Body toggle flips SketchCanvas.referenceBodyHidden, which gates the '
       'projected reference-body ghost overlay drawn on the canvas itself - its only remaining '
       'purpose now that there is no more shaded body backdrop to hide alongside it', (tester) async {
+    SharedPreferences.setMockInitialValues({});
     final controller = await _freshController();
 
     await tester.pumpWidget(
@@ -306,6 +242,7 @@ void main() {
         ),
       ),
     );
+    await tester.pump();
     await tester.pump();
 
     expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).referenceBodyHidden, isFalse);

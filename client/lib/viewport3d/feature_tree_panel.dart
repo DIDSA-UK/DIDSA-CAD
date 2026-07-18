@@ -413,18 +413,32 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       title: const Text('Planes', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [
         for (final feature in planeFeatures)
-          ListTile(
-            dense: true,
-            visualDensity: VisualDensity.compact,
-            leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 24),
-            title: Text(
-              featureDisplayName(widget.features, widget.features.indexOf(feature)),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: _rowTitleStyle,
-            ),
-            onTap: () => widget.onFeatureTap(feature),
-          ),
+          Builder(builder: (context) {
+            final hidden = widget.hiddenFeatureIds.contains(feature.id);
+            return Opacity(
+              opacity: hidden ? 0.5 : 1.0,
+              child: ListTile(
+                dense: true,
+                visualDensity: VisualDensity.compact,
+                leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 24),
+                title: Text(
+                  featureDisplayName(widget.features, widget.features.indexOf(feature)),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _rowTitleStyle,
+                ),
+                trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+                onTap: () => widget.onFeatureTap(feature),
+                // Bug fix: this row (a shortcut into the same Feature the
+                // "Features" section below already lists) never wired
+                // long-press at all - Hide/Show (and every other
+                // FeatureContextMenuAction) was only reachable via that
+                // other row, not from here, despite this looking like an
+                // equally normal place to long-press for it.
+                onLongPress: () => widget.onFeatureLongPress(feature),
+              ),
+            );
+          }),
       ],
     );
   }

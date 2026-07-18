@@ -1,4 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required at runtime, not just for development - this app talks to a
+         backend server over HTTP(S) for every real operation. Previously only
+         declared in the debug/profile manifest overlays (added there for the
+         Flutter tool's own hot-reload/DevTools connection), which is why
+         `flutter run` (debug mode) always worked but a genuine release build
+         never had network access at all - a real, pre-existing gap surfaced
+         by the first real release-build on-device test. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="didsa_cad_client"
         android:name="${applicationName}"

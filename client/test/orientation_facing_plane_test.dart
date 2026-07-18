@@ -66,4 +66,111 @@ void main() {
       });
     }
   });
+
+  /// Bug fix (on-device feedback - camera calibration, "8 possible
+  /// orientations for each plane"): [SketchPlaneBasis.withOrientation]'s
+  /// `flip` makes `xAxis`/`yAxis` a *left-handed* pair relative to
+  /// `basis.normal` (confirmed: `xAxis.cross(yAxis) == -basis.normal`
+  /// whenever flip is applied, for every plane, every rotation) -
+  /// `Quaternion.fromRotation` can't represent that (it can only represent a
+  /// proper rotation, determinant +1), so `orientationFacingBasis` used to
+  /// silently produce an incorrect camera whenever `flip` was true. Fixed to
+  /// derive its own viewing direction from the basis's own actual
+  /// handedness (`xAxis.cross(yAxis)`) instead of trusting `basis.normal`
+  /// blindly - this covers every `flip`/`rotationQuarterTurns` combination,
+  /// not just the three combinations independently confirmed on-device
+  /// (`orbit_camera_test.dart`'s own default-orientation tests), by
+  /// checking the same "does flutter_scene's actual lookAt render
+  /// right=xAxis, up=yAxis, forward=the basis's own *actual* handedness"
+  /// property this file's own group above already established as ground
+  /// truth - generalized here to hold for every oriented basis, not just
+  /// the three unflipped/unrotated ones.
+  group('orientationFacingPlane renders correctly for every flip/rotation combination', () {
+    final localUp = vm.Vector3(0, 1, 0);
+    final localBack = vm.Vector3(0, 0, 1);
+
+    for (final plane in ReferencePlaneKind.values) {
+      for (final flip in [false, true]) {
+        for (var rotation = 0; rotation < 4; rotation++) {
+          test('${plane.name} flip=$flip rotation=$rotation', () {
+            final basis = SketchPlaneBasis.oriented(plane, flip: flip, rotationQuarterTurns: rotation);
+            final orientation = orientationFacingPlane(plane, flip: flip, rotationQuarterTurns: rotation);
+
+            final direction = orientation.rotated(localBack);
+            final up = orientation.rotated(localUp);
+            final forward = -direction;
+            final renderRight = up.cross(forward).normalized();
+            final renderUp = forward.cross(renderRight).normalized();
+
+            expect((renderRight - basis.xAxis).length, closeTo(0, 1e-6));
+            expect((renderUp - basis.yAxis).length, closeTo(0, 1e-6));
+
+            // The camera's own actual viewing direction must match the
+            // basis's *real* handedness, not its raw (always-fixed,
+            // flip-independent) normal - that's exactly the bug this test
+            // group exists to catch a regression of.
+            final effectiveNormal = basis.xAxis.cross(basis.yAxis);
+            expect((forward - effectiveNormal).length, closeTo(0, 1e-6));
+          });
+        }
+      }
+    }
+  });
+
+  /// The three per-plane defaults `PartScreen._defaultPendingOrientationFor`
+  /// actually uses, checked against the exact on-screen-triad-convention
+  /// readouts independently captured on-device for each - a direct
+  /// regression guard for `part_screen.dart`'s own defaults, not just for
+  /// `orientationFacingBasis` in the abstract.
+  group('the three per-plane defaults match their own independently-captured on-device targets', () {
+    void expectTriadReadout(
+      vm.Quaternion orientation, {
+      required vm.Vector3 expectedXReading,
+      required vm.Vector3 expectedYReading,
+      required vm.Vector3 expectedZReading,
+    }) {
+      final camera = OrbitCamera()..orientation = orientation;
+      final towardCamera = (camera.position - camera.target).normalized();
+      final forward = -towardCamera;
+      final right = camera.up.cross(forward).normalized();
+      final up = forward.cross(right).normalized();
+
+      void expectAxis(vm.Vector3 axis, vm.Vector3 expected) {
+        expect(axis.dot(right), closeTo(expected.x, 0.01));
+        expect(axis.dot(up), closeTo(expected.y, 0.01));
+        expect(axis.dot(towardCamera), closeTo(expected.z, 0.01));
+      }
+
+      expectAxis(vm.Vector3(1, 0, 0), expectedXReading);
+      expectAxis(vm.Vector3(0, 1, 0), expectedYReading);
+      expectAxis(vm.Vector3(0, 0, 1), expectedZReading);
+    }
+
+    test('XY: flip=true, rotation=1', () {
+      expectTriadReadout(
+        orientationFacingPlane(ReferencePlaneKind.xy, flip: true, rotationQuarterTurns: 1),
+        expectedXReading: vm.Vector3(0, 1, 0),
+        expectedYReading: vm.Vector3(1, 0, 0),
+        expectedZReading: vm.Vector3(0, 0, 1),
+      );
+    });
+
+    test('XZ: flip=true, rotation=0', () {
+      expectTriadReadout(
+        orientationFacingPlane(ReferencePlaneKind.xz, flip: true, rotationQuarterTurns: 0),
+        expectedXReading: vm.Vector3(1, 0, 0),
+        expectedYReading: vm.Vector3(0, 0, 1),
+        expectedZReading: vm.Vector3(0, 1, 0),
+      );
+    });
+
+    test('YZ: flip=false, rotation=0 (unchanged - already an exact match)', () {
+      expectTriadReadout(
+        orientationFacingPlane(ReferencePlaneKind.yz, flip: false, rotationQuarterTurns: 0),
+        expectedXReading: vm.Vector3(0, 0, -1),
+        expectedYReading: vm.Vector3(1, 0, 0),
+        expectedZReading: vm.Vector3(0, 1, 0),
+      );
+    });
+  });
 }

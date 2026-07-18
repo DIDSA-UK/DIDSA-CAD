@@ -20,6 +20,10 @@ class ViewPreferences {
   static const String perspectivePrefKey = 'view_perspective';
   // A3: manually-overridden far clip distance (mm)
   static const String farClipPrefKey = 'view_far_clip';
+  // Camera-calibration debug aid (see triad.dart's own doc comment) -
+  // temporary, reachable from the CAD settings screen off the connection
+  // screen.
+  static const String debugShowCameraOrientationPrefKey = 'view_debug_camera_orientation';
 
   /// Stage 19a Item 4: was `#1E1E2E` (Studio Dark) through Stage 18 - anyone
   /// who already has that stored keeps it (see [load]); this only changes
@@ -44,6 +48,9 @@ class ViewPreferences {
   static const bool defaultIsPerspective = false;
   // A3: default far clip imported from orbit_camera.dart's constant.
   static double get defaultFarClip => kDefaultFarClip;
+  // On while the camera-calibration round is still active - see this key's
+  // own doc comment.
+  static const bool defaultDebugShowCameraOrientation = true;
 
   static String _bgColourHex = defaultBgColourHex;
   static String _bodyColourHex = defaultBodyColourHex;
@@ -51,6 +58,7 @@ class ViewPreferences {
   static ViewportRenderMode _renderMode = defaultRenderMode;
   static bool _isPerspective = defaultIsPerspective;
   static double _farClip = kDefaultFarClip;
+  static bool _debugShowCameraOrientation = defaultDebugShowCameraOrientation;
 
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
@@ -58,6 +66,7 @@ class ViewPreferences {
   static ViewportRenderMode get renderMode => _renderMode;
   static bool get isPerspective => _isPerspective;
   static double get farClip => _farClip;
+  static bool get debugShowCameraOrientation => _debugShowCameraOrientation;
 
   /// Populates the in-memory cache from `shared_preferences`, falling back to
   /// the defaults above for any key never [save]d. [renderModePrefKey] is
@@ -76,6 +85,8 @@ class ViewPreferences {
     );
     _isPerspective = prefs.getBool(perspectivePrefKey) ?? defaultIsPerspective;
     _farClip = prefs.getDouble(farClipPrefKey) ?? kDefaultFarClip;
+    _debugShowCameraOrientation =
+        prefs.getBool(debugShowCameraOrientationPrefKey) ?? defaultDebugShowCameraOrientation;
   }
 
   static Future<void> setBgColourHex(String hex) async {
@@ -112,6 +123,12 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(farClipPrefKey, value);
     _farClip = value;
+  }
+
+  static Future<void> setDebugShowCameraOrientation(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(debugShowCameraOrientationPrefKey, value);
+    _debugShowCameraOrientation = value;
   }
 }
 

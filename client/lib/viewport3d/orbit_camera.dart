@@ -4,6 +4,7 @@ import 'dart:ui' show Size;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'orthographic_camera.dart';
 import 'reference_planes.dart';
 import 'sketch_geometry_3d.dart';
 
@@ -97,12 +98,11 @@ class OrbitCamera {
   /// how far the camera currently is from its target.
   static const double panSensitivityPerDistance = 0.002;
 
-  // A4: perspective vs orthographic toggle. flutter_scene 0.18.x provides only
-  // PerspectiveCamera with a fixed π/4 vertical FOV — true orthographic
-  // projection is not available through its public API. This flag correctly
-  // reflects the user's preference and is wired through the View menu; the
-  // rendering difference will take effect once flutter_scene exposes an
-  // OrthographicCamera or a settable FOV.
+  // A4/Phase 2: perspective vs orthographic toggle, wired through the View
+  // menu. Was a dead flag until the sketcher restructure's Phase 2 - real
+  // orthographic rendering needed flutter_scene to expose a usable
+  // CameraProjection extension point, confirmed possible (and needed) by
+  // Spike B - see [cameraFor] for where this now actually takes effect.
   bool isPerspective = false;
 
   static final vm.Vector3 _localRight = vm.Vector3(1, 0, 0);
@@ -147,30 +147,55 @@ class OrbitCamera {
         _defaultTarget = target ?? vm.Vector3.zero(),
         orientation = _defaultOrientation();
 
-  /// pi/4 azimuth, pi/6 elevation - the angles a previous azimuth/elevation
-  /// version of this camera used as its default view, reproduced here as a
-  /// quaternion so the initial view is unchanged even though the underlying
-  /// representation isn't.
-  static vm.Quaternion _defaultOrientation() {
-    final pitch = vm.Quaternion.axisAngle(_localRight, 0.5235987755982988);
-    final yaw = vm.Quaternion.axisAngle(_localUp, -0.7853981633974483);
-    return (pitch * yaw).normalized();
+  /// On-device feedback + two numeric calibration rounds (a temporary debug
+  /// readout in `part_viewport.dart`, cross-checked against the on-screen
+  /// triad rather than eyeballed): the true isometric corner view - world
+  /// X+/Y+ both read as screen-right (their shared `right` component is
+  /// positive), Z+ reads as pure screen-up. Built from the desired
+  /// [right]/[up] world-space vectors directly (not composed axis-angle
+  /// rotations - the `pitch * yaw` structure this replaced can only ever
+  /// produce an `up` with a zero world-X component, since yaw leaves the
+  /// local-up axis untouched and pitch alone can't introduce that; it's
+  /// structurally incapable of reaching this specific corner). Confirmed
+  /// correct against the *triad's own* screen-right convention specifically,
+  /// not just self-consistency - `OrbitCamera.right`/`.up` themselves are
+  /// the camera's *own* local-frame vectors, not what the triad displays;
+  /// deriving `triadAxes`' formula algebraically found `triadRight =
+  /// -OrbitCamera.right` (`.up` is unaffected) - the very first Z-up attempt
+  /// this ultimately replaced verified only the former, which is exactly why
+  /// it looked mirrored on-device despite passing its own unit tests. The
+  /// second round landed the axis convention but the wrong azimuth (X+/Y+
+  /// reading screen-*left*, not right) - this round's [right]/[up] are the
+  /// exact negation of that round's own, a 180-degree yaw of it, matching a
+  /// second on-device capture precisely.
+  static vm.Quaternion _isometricOrientation() {
+    final right = vm.Vector3(-1, -1, 0).normalized();
+    const elevation = 0.6154797086703873; // asin(1 / sqrt(3)), true isometric
+    final diagonal = math.sin(elevation) / math.sqrt2;
+    final up = vm.Vector3(diagonal, -diagonal, math.cos(elevation));
+    final back = right.cross(up);
+    // vector_math's own Quaternion.rotate() computes `conjugate(this) * v *
+    // this`, not the more commonly assumed `this * v * conjugate(this)` -
+    // .conjugated() compensates so `.rotated(localAxis)` actually produces
+    // right/up/back as constructed above, not their own inverse rotation
+    // (confirmed empirically, not assumed - see the git history of this
+    // file's own previous round for the numeric probe that found it).
+    return vm.Quaternion.fromRotation(vm.Matrix3.columns(right, up, back)).conjugated();
   }
 
-  /// The standard CAD isometric corner view - 45° azimuth (same as
-  /// [_defaultOrientation]'s own yaw), true isometric elevation
-  /// `asin(1/sqrt(3))` ≈ 35.264° (not [_defaultOrientation]'s ~30°
-  /// "pleasant corner default", a deliberately different, looser angle).
-  /// Plane-independent, unlike [orientationFacingPlane] - used for the
-  /// sketch-orientation-definition step, before the user has confirmed
-  /// which plane/flip/rotation they're actually defining, so there's no
-  /// single "facing" view yet to animate the camera toward.
-  static vm.Quaternion isometricOrientation() {
-    const isometricElevation = 0.6154797086703873; // asin(1 / sqrt(3))
-    final pitch = vm.Quaternion.axisAngle(_localRight, isometricElevation);
-    final yaw = vm.Quaternion.axisAngle(_localUp, -0.7853981633974483);
-    return (pitch * yaw).normalized();
-  }
+  /// The default cold-start view - now the same true isometric corner as
+  /// [isometricOrientation] (see [_isometricOrientation]'s own doc comment)
+  /// rather than a separate, looser ~30-degree elevation - on-device feedback
+  /// specifically asked for "the nearest isometric view" as the default.
+  static vm.Quaternion _defaultOrientation() => _isometricOrientation();
+
+  /// The standard CAD isometric corner view, plane-independent unlike
+  /// [orientationFacingPlane] - used for the sketch-orientation-definition
+  /// step, before the user has confirmed which plane/flip/rotation they're
+  /// actually defining, so there's no single "facing" view yet to animate
+  /// the camera toward. Now identical to [_defaultOrientation] (see its own
+  /// doc comment) - both are "the" isometric view, not two different ones.
+  static vm.Quaternion isometricOrientation() => _isometricOrientation();
 
   /// Unit vector from [target] towards the camera.
   vm.Vector3 get _direction => orientation.rotated(_localBack);
@@ -188,14 +213,22 @@ class OrbitCamera {
   /// [distance] - the same value [cameraFor] feeds [PerspectiveCamera].
   vm.Vector3 get position => target + _direction * distance;
 
-  PerspectiveCamera cameraFor(Size size) {
-    return PerspectiveCamera(
-      position: position,
-      target: target,
-      up: _up,
-      fovNear: nearClip,
-      fovFar: farClip,
-    );
+  /// Returns a [PerspectiveCamera] or [OrthographicCamera] depending on
+  /// [isPerspective] - the two are interchangeable to every caller
+  /// (`screenPointToRay`/`getViewTransform`/`getFrustum`/`scene.render` are
+  /// all implemented once on the base `Camera` class), so this is the one
+  /// place that decision gets made.
+  Camera cameraFor(Size size) {
+    if (isPerspective) {
+      return PerspectiveCamera(
+        position: position,
+        target: target,
+        up: _up,
+        fovNear: nearClip,
+        fovFar: farClip,
+      );
+    }
+    return orthographicCameraFor(this, size);
   }
 
   /// Drag-to-orbit: real-device testing found all four drag directions felt
@@ -374,10 +407,30 @@ vm.Quaternion orientationFacingPlane(
 /// word of this function's own derivation above still applies verbatim,
 /// [basis] is just handed in directly instead of built from a
 /// [ReferencePlaneKind] first.
+///
+/// Bug fix (on-device feedback - camera calibration, "8 possible
+/// orientations for each plane" not all working correctly): [basis.flip]
+/// makes [basis.xAxis]/[basis.yAxis] a *left-handed* pair relative to
+/// [basis.normal] - confirmed by computing `xAxis.cross(yAxis)` directly
+/// (not assumed): it equals `-basis.normal` whenever flip is applied, for
+/// every plane, regardless of rotation. `Quaternion.fromRotation` can only
+/// represent a proper rotation (determinant +1); handed a matrix built from
+/// [basis.normal] directly whenever that's left-handed relative to
+/// xAxis/yAxis, it silently produced an incorrect result instead of the
+/// intended flipped/mirrored view - this is what made every previous
+/// per-plane flip default an unpredictable moving target. Fixed by deriving
+/// the camera's own viewing direction from the basis's own *actual*
+/// handedness (`xAxis.cross(yAxis)`) instead of trusting [basis.normal]
+/// blindly - a no-op for every already-correct (right-handed, unflipped)
+/// case, since `xAxis.cross(yAxis) == basis.normal` there by construction;
+/// only changes anything for a flipped (left-handed) basis, exactly the
+/// case that was broken. Verified against three independently-captured
+/// on-device targets (all three fixed planes, `orbit_camera_test.dart`).
 vm.Quaternion orientationFacingBasis(SketchPlaneBasis basis) {
   final targetRight = -basis.xAxis;
   final targetUp = basis.yAxis;
-  final targetBack = -basis.normal;
+  final effectiveNormal = basis.xAxis.cross(basis.yAxis);
+  final targetBack = -effectiveNormal;
   final rotation = vm.Matrix3.columns(
     vm.Vector3(targetRight.x, targetUp.x, targetBack.x),
     vm.Vector3(targetRight.y, targetUp.y, targetBack.y),
