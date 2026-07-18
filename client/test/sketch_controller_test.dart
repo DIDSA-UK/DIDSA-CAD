@@ -83,6 +83,33 @@ class _FakeBackend {
   /// P48's edge-shaped sibling to [convertVertexRequestCount].
   int convertEdgeRequestCount = 0;
 
+  /// On-device feedback ("when deleting lines, curves, trimming I end up
+  /// with floating, redundant points"): every fake `DELETE .../lines|
+  /// circles|arcs|ellipses|polygons|splines|texts/{id}` route reports this
+  /// as its own `pruned_point_ids` - empty by default (matching every
+  /// existing test's own assumption that nothing gets auto-pruned), set by
+  /// a test that specifically wants to exercise the controller's own
+  /// pruned-id handling for a single delete call. Shared across every
+  /// entity kind (not per-kind) since no existing test deletes more than
+  /// one entity kind in the same assertion window.
+  List<String> prunedPointIdsOnNextDelete = const [];
+
+  /// Actually removes [prunedPointIdsOnNextDelete] from this fake's own
+  /// `points` storage (not just reporting them in a delete response) -
+  /// mirrors the real backend's `Sketch._prune_orphaned_points` truly
+  /// deleting them, so a later `solveAndRefresh` (which re-fetches every
+  /// Point wholesale, see `SketchController._solveAndTrackDof`) doesn't
+  /// resurrect one this fake only pretended to prune. Every delete route
+  /// below should return this (not read the field directly), so the
+  /// side effect and the reported ids can never drift apart.
+  List<String> _reportAndApplyPrunedPoints() {
+    final pruned = prunedPointIdsOnNextDelete;
+    for (final id in pruned) {
+      points.remove(id);
+    }
+    return pruned;
+  }
+
   /// P48: mirrors the real backend's `Sketch.add_or_reuse_point` - keyed by
   /// `'bodyId:vertexIndex'` (this fake's deterministic x/y derivation from
   /// those two values makes that an equivalent key to the real thing's
@@ -170,7 +197,7 @@ class _FakeBackend {
     final lineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/(.+)$').firstMatch(path);
     if (lineDeleteMatch != null && request.method == 'DELETE') {
       lines.remove(lineDeleteMatch.group(1));
-      return http.Response('', 204);
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final linePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/(.+)$').firstMatch(path);
@@ -188,18 +215,18 @@ class _FakeBackend {
 
     final circleDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/circles/(.+)$').firstMatch(path);
     if (circleDeleteMatch != null && request.method == 'DELETE') {
-      return http.Response('', 204);
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final arcDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs/(.+)$').firstMatch(path);
     if (arcDeleteMatch != null && request.method == 'DELETE') {
-      return http.Response('', 204);
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final ellipseDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipses/(.+)$').firstMatch(path);
     if (ellipseDeleteMatch != null && request.method == 'DELETE') {
       ellipses.remove(ellipseDeleteMatch.group(1));
-      return http.Response('', 204);
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final ellipsePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipses/(.+)$').firstMatch(path);
@@ -223,7 +250,7 @@ class _FakeBackend {
           constraints.remove(constraintId);
         }
       }
-      return http.Response('', 204);
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final polygonPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/(.+)$').firstMatch(path);
@@ -239,7 +266,7 @@ class _FakeBackend {
     final splineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
     if (splineDeleteMatch != null && request.method == 'DELETE') {
       splines.remove(splineDeleteMatch.group(1));
-      return http.Response('', 204);
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final splinePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
@@ -263,7 +290,7 @@ class _FakeBackend {
     final textDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/texts/(.+)$').firstMatch(path);
     if (textDeleteMatch != null && request.method == 'DELETE') {
       texts.remove(textDeleteMatch.group(1));
-      return http.Response('', 204);
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final textPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/texts/(.+)$').firstMatch(path);
@@ -678,7 +705,7 @@ class _FakeBackend {
       };
       arcs[arcId] = arc;
       circles.remove(circleId);
-      return _json({'arc': arc}, 200);
+      return _json({'arc': arc, 'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final arcTrimMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs/([^/]+)/trim$').firstMatch(path);
@@ -3171,6 +3198,82 @@ void main() {
     expect(controller.ellipses.containsKey(ellipseId), isFalse);
     expect(controller.lines.containsKey(ellipse.majorAxisLineId), isFalse);
     expect(controller.lines.containsKey(ellipse.minorAxisLineId), isFalse);
+  });
+
+  group('deleteSelected auto-pruned Point handling (on-device feedback: "when deleting lines, '
+      'curves, trimming I end up with floating, redundant points")', () {
+    test('a Point the backend reports as auto-pruned is dropped from local state too', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.exitToSelectMode();
+      final line = controller.lines.values.single;
+      final endPointId = line.endPointId;
+      // Off the exact midpoint (which hit-tests as its own materializable
+      // target, not the Line - see the Ellipse regression test's own
+      // comment above for the same pitfall).
+      await controller.handleCanvasTap(3, 0); // selects the Line
+      expect(controller.selectionSet.single.kind, SelectionKind.line);
+      // Simulate the real backend's own auto-prune (Sketch.delete_line):
+      // this Line's own endpoint isn't referenced by anything else, so the
+      // backend reports it pruned in the same response.
+      backend.prunedPointIdsOnNextDelete = [endPointId];
+
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.lines.containsKey(line.id), isFalse);
+      expect(controller.points.containsKey(endPointId), isFalse);
+      backend.prunedPointIdsOnNextDelete = const [];
+    });
+
+    test('undo after an auto-pruned delete recreates both the Line and its pruned Point', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.exitToSelectMode();
+      final line = controller.lines.values.single;
+      final endPointId = line.endPointId;
+      await controller.handleCanvasTap(3, 0);
+      backend.prunedPointIdsOnNextDelete = [endPointId];
+      await controller.deleteSelected();
+      expect(controller.canUndo, isTrue);
+      backend.prunedPointIdsOnNextDelete = const [];
+
+      await controller.undo();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.lines, hasLength(1));
+      final restored = controller.lines.values.single;
+      expect(controller.points.containsKey(restored.startPointId), isTrue);
+      expect(controller.points.containsKey(restored.endPointId), isTrue);
+      expect(controller.points[restored.endPointId]!.x, 10.0);
+      expect(controller.points[restored.endPointId]!.y, 0.0);
+    });
+
+    test('a Point both directly selected and reported as auto-pruned is never deleted twice (no 404)',
+        () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.exitToSelectMode();
+      final line = controller.lines.values.single;
+      final endPointId = line.endPointId;
+      // Directly select both the Line and its own endpoint Point (e.g. a
+      // "select all" style selection) - the endpoint would otherwise get a
+      // second, explicit DELETE call after the Line's own delete already
+      // auto-pruned it server-side, which would 404 against the real
+      // backend.
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: line.id));
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: endPointId));
+      backend.prunedPointIdsOnNextDelete = [endPointId];
+
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.points.containsKey(endPointId), isFalse);
+      backend.prunedPointIdsOnNextDelete = const [];
+    });
   });
 
   // --- Phase 6.2.5: Spline tool ---------------------------------------------

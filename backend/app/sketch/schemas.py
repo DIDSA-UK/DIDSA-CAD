@@ -53,6 +53,21 @@ class PointResponse(BaseModel):
     y: float
 
 
+class DeleteEntityResponse(BaseModel):
+    """On-device feedback ("when deleting lines, curves, trimming I end up
+    with floating, redundant points"): the shared response shape for every
+    `DELETE .../lines|circles|arcs|ellipses|polygons|splines|texts/{id}`
+    endpoint - was a bare `204 No Content` before this, since deleting an
+    entity never used to have anything else to report. Now it always might:
+    `Sketch.delete_line`/`delete_circle`/etc. auto-prune whichever of the
+    deleted entity's own defining Points nothing else references anymore
+    (see `Sketch._prune_orphaned_points`) - `pruned_point_ids` is exactly
+    that list (possibly empty), so the client can drop them from its own
+    local cache too, not just the entity it explicitly asked to delete."""
+
+    pruned_point_ids: list[str] = []
+
+
 class LineCreate(BaseModel):
     """Create a line from an existing start Point, plus either an existing
     end Point's id (explicit sharing - no coordinate-matching/auto-merge)
@@ -307,9 +322,14 @@ class CircleTrimRequest(BaseModel):
 class CircleTrimResponse(BaseModel):
     """The Circle no longer exists (converted, not just modified) - `arc`
     is the new entity replacing it, spanning every angle except the
-    clicked segment."""
+    clicked segment. `pruned_point_ids` (see `DeleteEntityResponse`'s own
+    doc comment) - the old Circle's own `radius_point_id`/
+    `cardinal_point_ids` are prime examples of exactly the "floating,
+    redundant points" this auto-prunes, since the new Arc only ever
+    reuses the old Circle's *center* Point."""
 
     arc: ArcResponse
+    pruned_point_ids: list[str] = []
 
 
 class EllipseCreate(BaseModel):

@@ -203,6 +203,28 @@ class OffsetArcResultDto {
       );
 }
 
+/// P36 (on-device feedback: "trim/extend should work on circles curves and
+/// splines"): the wire counterpart to the backend's `CircleTrimResponse` -
+/// `arc` is the new entity replacing the trimmed Circle, `prunedPointIds`
+/// (on-device feedback: "when... trimming[,] I end up with floating,
+/// redundant points") is the old Circle's own `radius_point_id`/
+/// `cardinal_point_ids` the new Arc never reuses, already removed
+/// server-side - the client should drop them from its own local cache too.
+/// See [SketchApiClient.trimCircle].
+class CircleTrimResultDto {
+  final ArcDto arc;
+  final List<String> prunedPointIds;
+
+  CircleTrimResultDto({required this.arc, this.prunedPointIds = const []});
+
+  factory CircleTrimResultDto.fromJson(Map<String, dynamic> json) => CircleTrimResultDto(
+        arc: ArcDto.fromJson(json['arc'] as Map<String, dynamic>),
+        prunedPointIds: (json['pruned_point_ids'] as List<dynamic>? ?? const [])
+            .map((e) => e as String)
+            .toList(),
+      );
+}
+
 class CircleDto {
   final String id;
   final String centerPointId;
@@ -1533,12 +1555,21 @@ class SketchApiClient {
         (_) {},
       );
 
-  Future<void> deleteLine(String sketchId, String lineId) => _send(
+  /// On-device feedback ("when deleting lines... I end up with floating,
+  /// redundant points"): returns the ids of any of [lineId]'s own endpoint
+  /// Points the backend auto-pruned because nothing else references them
+  /// anymore (`Sketch._prune_orphaned_points`) - possibly empty. Callers
+  /// should drop these from their own local cache too, and (for an undo-
+  /// capable caller) capture their pre-delete state *before* calling this,
+  /// same as the Line itself.
+  Future<List<String>> deleteLine(String sketchId, String lineId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/lines/$lineId'),
               headers: _headers,
             ),
-        (_) {},
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
       );
 
   /// Sketcher-roadmap Phase 11: trims or extends [lineId] by moving
@@ -1591,14 +1622,19 @@ class SketchApiClient {
   /// P36: converts [circleId] into an Arc excluding whichever segment
   /// [clickX]/[clickY] falls on - see the backend's `Sketch.trim_circle`.
   /// A Circle has no "endpoint" to name (unlike [trimLine]/[trimArc]), so
-  /// the click position alone determines the result.
-  Future<ArcDto> trimCircle(String sketchId, String circleId, double clickX, double clickY) => _send(
+  /// the click position alone determines the result. `prunedPointIds`
+  /// (on-device feedback: "when... trimming[,] I end up with floating,
+  /// redundant points") - the old Circle's own `radius_point_id`/
+  /// `cardinal_point_ids` the new Arc never reuses, auto-removed
+  /// server-side (`Sketch._prune_orphaned_points`) - see
+  /// [CircleTrimResultDto]'s own doc comment.
+  Future<CircleTrimResultDto> trimCircle(String sketchId, String circleId, double clickX, double clickY) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/circles/$circleId/trim'),
               headers: _headers,
               body: jsonEncode({'click_x': clickX, 'click_y': clickY}),
             ),
-        (body) => ArcDto.fromJson((body as Map<String, dynamic>)['arc'] as Map<String, dynamic>),
+        (body) => CircleTrimResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Sketcher-roadmap Phase 9 v1 (Offset Entities): a new, real Line
@@ -1640,52 +1676,70 @@ class SketchApiClient {
         (body) => OffsetArcResultDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<void> deleteCircle(String sketchId, String circleId) => _send(
+  /// Returns the ids of any of [circleId]'s own defining Points (center,
+  /// radius, cardinal) the backend auto-pruned because nothing else
+  /// references them anymore - see [deleteLine]'s own doc comment for the
+  /// full "why".
+  Future<List<String>> deleteCircle(String sketchId, String circleId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/circles/$circleId'),
               headers: _headers,
             ),
-        (_) {},
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
       );
 
-  Future<void> deleteArc(String sketchId, String arcId) => _send(
+  /// Offset Entities' `deleteCircle`-sibling - see that method's own doc
+  /// comment.
+  Future<List<String>> deleteArc(String sketchId, String arcId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/arcs/$arcId'),
               headers: _headers,
             ),
-        (_) {},
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
       );
 
-  Future<void> deleteEllipse(String sketchId, String ellipseId) => _send(
+  Future<List<String>> deleteEllipse(String sketchId, String ellipseId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
               headers: _headers,
             ),
-        (_) {},
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
       );
 
-  Future<void> deletePolygon(String sketchId, String polygonId) => _send(
+  Future<List<String>> deletePolygon(String sketchId, String polygonId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/polygons/$polygonId'),
               headers: _headers,
             ),
-        (_) {},
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
       );
 
-  Future<void> deleteSpline(String sketchId, String splineId) => _send(
+  Future<List<String>> deleteSpline(String sketchId, String splineId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/splines/$splineId'),
               headers: _headers,
             ),
-        (_) {},
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
       );
 
-  Future<void> deleteText(String sketchId, String textId) => _send(
+  Future<List<String>> deleteText(String sketchId, String textId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/texts/$textId'),
               headers: _headers,
             ),
-        (_) {},
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
       );
 
   /// Direct-manipulation drag support: repositions a Point without

@@ -87,7 +87,7 @@ def test_trim_circle_reuses_existing_line_endpoints_as_its_new_arc_endpoints():
     # side gets excluded doesn't matter for this test; either way the new
     # Arc's own two endpoints land exactly at those two angles.
     click_x, click_y = on_circle(120)
-    arc = sketch.trim_circle(circle.id, click_x=click_x, click_y=click_y)
+    arc, _pruned_point_ids = sketch.trim_circle(circle.id, click_x=click_x, click_y=click_y)
 
     # The Arc's own start/end must be *literally* Line 1's/Line 2's own
     # endpoint ids - not merely two more Points sitting at the same spot.
@@ -120,7 +120,7 @@ def test_trim_circle_still_creates_fresh_points_when_nothing_is_actually_there()
 
     points_before = set(sketch.points)
     click_x, click_y = 5.0 * math.cos(math.radians(120)), 5.0 * math.sin(math.radians(120))
-    arc = sketch.trim_circle(circle.id, click_x=click_x, click_y=click_y)
+    arc, _pruned_point_ids = sketch.trim_circle(circle.id, click_x=click_x, click_y=click_y)
 
     assert arc.start_point_id not in points_before
     assert arc.end_point_id not in points_before

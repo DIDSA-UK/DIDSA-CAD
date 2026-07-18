@@ -55,6 +55,7 @@ from app.sketch.schemas import (
     ConstraintCreate,
     ConstraintResponse,
     ConstraintValueUpdate,
+    DeleteEntityResponse,
     DistanceConstraintCreate,
     DistanceConstraintResponse,
     EllipseCreate,
@@ -513,11 +514,12 @@ def get_line(sketch_id: str, line_id: str) -> LineResponse:
     return _line_response(sketch, _get_line_or_404(sketch, line_id))
 
 
-@router.delete("/sketches/{sketch_id}/lines/{line_id}", status_code=204)
-def delete_line(sketch_id: str, line_id: str) -> None:
+@router.delete("/sketches/{sketch_id}/lines/{line_id}", response_model=DeleteEntityResponse)
+def delete_line(sketch_id: str, line_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_line_or_404(sketch, line_id)
-    sketch.delete_line(line_id)
+    pruned_point_ids = sketch.delete_line(line_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
 @router.patch("/sketches/{sketch_id}/lines/{line_id}", response_model=LineResponse)
@@ -642,11 +644,12 @@ def update_circle(sketch_id: str, circle_id: str, payload: CircleUpdate) -> Circ
     return _circle_response(sketch, circle)
 
 
-@router.delete("/sketches/{sketch_id}/circles/{circle_id}", status_code=204)
-def delete_circle(sketch_id: str, circle_id: str) -> None:
+@router.delete("/sketches/{sketch_id}/circles/{circle_id}", response_model=DeleteEntityResponse)
+def delete_circle(sketch_id: str, circle_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_circle_or_404(sketch, circle_id)
-    sketch.delete_circle(circle_id)
+    pruned_point_ids = sketch.delete_circle(circle_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
 @router.post("/sketches/{sketch_id}/circles/{circle_id}/trim", response_model=CircleTrimResponse)
@@ -660,12 +663,12 @@ def trim_circle(sketch_id: str, circle_id: str, payload: CircleTrimRequest) -> C
     sketch = _get_sketch_or_404(sketch_id)
     _get_circle_or_404(sketch, circle_id)
     try:
-        arc = sketch.trim_circle(circle_id, payload.click_x, payload.click_y)
+        arc, pruned_point_ids = sketch.trim_circle(circle_id, payload.click_x, payload.click_y)
     except NoIntersectionFoundError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return CircleTrimResponse(arc=_arc_response(sketch, arc))
+    return CircleTrimResponse(arc=_arc_response(sketch, arc), pruned_point_ids=pruned_point_ids)
 
 
 @router.post(
@@ -726,11 +729,12 @@ def update_arc(sketch_id: str, arc_id: str, payload: ArcUpdate) -> ArcResponse:
     return _arc_response(sketch, arc)
 
 
-@router.delete("/sketches/{sketch_id}/arcs/{arc_id}", status_code=204)
-def delete_arc(sketch_id: str, arc_id: str) -> None:
+@router.delete("/sketches/{sketch_id}/arcs/{arc_id}", response_model=DeleteEntityResponse)
+def delete_arc(sketch_id: str, arc_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_arc_or_404(sketch, arc_id)
-    sketch.delete_arc(arc_id)
+    pruned_point_ids = sketch.delete_arc(arc_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
 @router.post("/sketches/{sketch_id}/arcs/{arc_id}/trim", response_model=ArcTrimResponse)
@@ -815,11 +819,12 @@ def update_ellipse(sketch_id: str, ellipse_id: str, payload: EllipseUpdate) -> E
     return _ellipse_response(sketch, ellipse)
 
 
-@router.delete("/sketches/{sketch_id}/ellipses/{ellipse_id}", status_code=204)
-def delete_ellipse(sketch_id: str, ellipse_id: str) -> None:
+@router.delete("/sketches/{sketch_id}/ellipses/{ellipse_id}", response_model=DeleteEntityResponse)
+def delete_ellipse(sketch_id: str, ellipse_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_ellipse_or_404(sketch, ellipse_id)
-    sketch.delete_ellipse(ellipse_id)
+    pruned_point_ids = sketch.delete_ellipse(ellipse_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
 @router.post("/sketches/{sketch_id}/polygons", response_model=PolygonResponse, status_code=201)
@@ -860,11 +865,12 @@ def update_polygon(sketch_id: str, polygon_id: str, payload: PolygonUpdate) -> P
     return _polygon_response(sketch, polygon)
 
 
-@router.delete("/sketches/{sketch_id}/polygons/{polygon_id}", status_code=204)
-def delete_polygon(sketch_id: str, polygon_id: str) -> None:
+@router.delete("/sketches/{sketch_id}/polygons/{polygon_id}", response_model=DeleteEntityResponse)
+def delete_polygon(sketch_id: str, polygon_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_polygon_or_404(sketch, polygon_id)
-    sketch.delete_polygon(polygon_id)
+    pruned_point_ids = sketch.delete_polygon(polygon_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
 @router.post("/sketches/{sketch_id}/splines", response_model=SplineResponse, status_code=201)
@@ -900,11 +906,12 @@ def update_spline(sketch_id: str, spline_id: str, payload: SplineUpdate) -> Spli
     return _spline_response(spline)
 
 
-@router.delete("/sketches/{sketch_id}/splines/{spline_id}", status_code=204)
-def delete_spline(sketch_id: str, spline_id: str) -> None:
+@router.delete("/sketches/{sketch_id}/splines/{spline_id}", response_model=DeleteEntityResponse)
+def delete_spline(sketch_id: str, spline_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_spline_or_404(sketch, spline_id)
-    sketch.delete_spline(spline_id)
+    pruned_point_ids = sketch.delete_spline(spline_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
 @router.post("/sketches/{sketch_id}/texts", response_model=TextResponse, status_code=201)
@@ -955,11 +962,12 @@ def update_text(sketch_id: str, text_id: str, payload: TextUpdate) -> TextRespon
     return _text_response(text)
 
 
-@router.delete("/sketches/{sketch_id}/texts/{text_id}", status_code=204)
-def delete_text(sketch_id: str, text_id: str) -> None:
+@router.delete("/sketches/{sketch_id}/texts/{text_id}", response_model=DeleteEntityResponse)
+def delete_text(sketch_id: str, text_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_text_or_404(sketch, text_id)
-    sketch.delete_text(text_id)
+    pruned_point_ids = sketch.delete_text(text_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
 @router.get("/sketches/{sketch_id}/texts/{text_id}/preview", response_model=TextPreviewResponse)

@@ -4554,7 +4554,38 @@ class SketchController extends ChangeNotifier {
       if (cascade.polygons.isNotEmpty) {
         await _refreshConstraints();
       }
-      for (final current in [...constraintsToDelete, ...shapesToDelete, ...pointsToDelete]) {
+      // On-device feedback ("when deleting lines, curves, trimming I end
+      // up with floating, redundant points"): every shape-delete call
+      // below now also auto-prunes whichever of its own defining Points
+      // nothing else references anymore (`Sketch._prune_orphaned_points`)
+      // - `autoPrunedPointIds` tracks every id reported that way across
+      // this whole batch, so (a) `pointsToDelete`'s own explicit deletes
+      // just below can skip any id a shape-delete already removed
+      // server-side (calling `DELETE .../points/{id}` on an id that's
+      // already gone would 404 and abort the whole cascade), and (b) each
+      // one's pre-delete view gets folded into `capturedPoints` for undo,
+      // exactly like every other Point this cascade explicitly deletes -
+      // `computeDeleteCascade` can't have known about these ahead of time,
+      // since whether a given Point becomes orphaned is a property of the
+      // *result* of deleting its owning shape(s), not of the selection.
+      final autoPrunedPointIds = <String>{};
+      final alreadyCapturedPointIds = capturedPoints.map((p) => p.id).toSet();
+      void applyPrunedPoints(List<String> prunedPointIds) {
+        for (final pointId in prunedPointIds) {
+          // A point already directly in the selection (so already
+          // captured, pre-delete, by the loop above this one) must not be
+          // captured a second time here - it would otherwise be recreated
+          // twice on undo.
+          if (!alreadyCapturedPointIds.contains(pointId)) {
+            final point = points[pointId];
+            if (point != null) capturedPoints.add(point);
+          }
+          points.remove(pointId);
+          autoPrunedPointIds.add(pointId);
+        }
+      }
+
+      for (final current in [...constraintsToDelete, ...shapesToDelete]) {
         switch (current.kind) {
           case SelectionKind.constraint:
             if (!constraints.containsKey(current.id)) break;
@@ -4562,20 +4593,20 @@ class SketchController extends ChangeNotifier {
             constraints.remove(current.id);
             break;
           case SelectionKind.line:
-            await _api.deleteLine(_sketchId!, current.id);
+            applyPrunedPoints(await _api.deleteLine(_sketchId!, current.id));
             lines.remove(current.id);
             break;
           case SelectionKind.circle:
-            await _api.deleteCircle(_sketchId!, current.id);
+            applyPrunedPoints(await _api.deleteCircle(_sketchId!, current.id));
             circles.remove(current.id);
             break;
           case SelectionKind.arc:
-            await _api.deleteArc(_sketchId!, current.id);
+            applyPrunedPoints(await _api.deleteArc(_sketchId!, current.id));
             arcs.remove(current.id);
             break;
           case SelectionKind.ellipse:
             final ellipse = ellipses[current.id];
-            await _api.deleteEllipse(_sketchId!, current.id);
+            applyPrunedPoints(await _api.deleteEllipse(_sketchId!, current.id));
             ellipses.remove(current.id);
             if (ellipse != null) {
               lines.remove(ellipse.majorAxisLineId);
@@ -4583,18 +4614,21 @@ class SketchController extends ChangeNotifier {
             }
             break;
           case SelectionKind.spline:
-            await _api.deleteSpline(_sketchId!, current.id);
+            applyPrunedPoints(await _api.deleteSpline(_sketchId!, current.id));
             splines.remove(current.id);
             break;
           case SelectionKind.text:
-            await _api.deleteText(_sketchId!, current.id);
+            applyPrunedPoints(await _api.deleteText(_sketchId!, current.id));
             texts.remove(current.id);
             break;
           case SelectionKind.point:
-            await _api.deletePoint(_sketchId!, current.id);
-            points.remove(current.id);
-            break;
+            break; // unreachable - constraintsToDelete/shapesToDelete never contain a point.
         }
+      }
+      for (final current in pointsToDelete) {
+        if (autoPrunedPointIds.contains(current.id)) continue;
+        await _api.deletePoint(_sketchId!, current.id);
+        points.remove(current.id);
       }
       _pushUndo(() => _restoreDeletedEntities(
             capturedPoints,
@@ -5618,14 +5652,18 @@ class SketchController extends ChangeNotifier {
 
   /// P36: a Circle has no endpoint to move - trimming it converts it into
   /// an Arc excluding whichever segment [cursorX]/[cursorY] falls on (see
-  /// the backend's `Sketch.trim_circle`). Undo recreates a plain Circle at
-  /// the original centre/radius Points (both untouched by the trim, per
-  /// `delete_circle`'s own doc comment) - a real, accepted imperfection:
-  /// the original Circle's own cardinal Points/constraints are gone for
-  /// good (a fresh `createCircle` call makes brand-new ones), left as
-  /// orphaned geometry rather than chased down and restored, the same
+  /// the backend's `Sketch.trim_circle`). The original Circle's own
+  /// `radius_point_id`/`cardinal_point_ids` are never reused by the new
+  /// Arc - the backend now auto-prunes them (on-device feedback: "when...
+  /// trimming[,] I end up with floating, redundant points" -
+  /// `Sketch._prune_orphaned_points`), and this drops them from local
+  /// state too via `result.prunedPointIds`. Undo still recreates a plain
+  /// Circle at the original centre/radius Points, not the exact pruned
+  /// cardinal Points/constraints (a fresh `createCircle` call makes
+  /// brand-new ones) - a real, accepted imperfection, the same
   /// "additive, not exhaustive" scope this whole round of trim work has
-  /// kept to elsewhere.
+  /// kept to elsewhere; the fix here is that a *forward* trim no longer
+  /// leaves stale, already-deleted Points sitting in local state.
   Future<void> _handleTrimCircleTap(String circleId) async {
     final circle = circles[circleId];
     if (circle == null) return;
@@ -5634,8 +5672,12 @@ class SketchController extends ChangeNotifier {
     final originalConstruction = circle.construction;
 
     await _runGuarded(() async {
-      final arcDto = await _api.trimCircle(_sketchId!, circleId, cursorX, cursorY);
+      final result = await _api.trimCircle(_sketchId!, circleId, cursorX, cursorY);
+      final arcDto = result.arc;
       circles.remove(circleId);
+      for (final pointId in result.prunedPointIds) {
+        points.remove(pointId);
+      }
       arcs[arcDto.id] = SketchArcView(
         id: arcDto.id,
         centerPointId: arcDto.centerPointId,

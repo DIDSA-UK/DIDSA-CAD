@@ -1,6 +1,7 @@
 import math
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
@@ -1251,13 +1252,19 @@ class Sketch:
     def texts(self) -> list[TextEntity]:
         return [entity for entity in self.entities.values() if isinstance(entity, TextEntity)]
 
-    def delete_line(self, line_id: str) -> None:
-        """Remove a Line. Its endpoint Points are left untouched - they may
-        be shared with other Lines, so only an explicit Point deletion can
-        remove them (see `delete_point`)."""
-        if not isinstance(self.entities.get(line_id), Line):
+    def delete_line(self, line_id: str) -> list[str]:
+        """Remove a Line. Its own endpoint Points are pruned automatically
+        if nothing else still needs them (`_prune_orphaned_points`) - never
+        touched if still shared with another Line/entity/Constraint (on-
+        device feedback: "when deleting lines... I end up with floating,
+        redundant points"). Returns the ids of any Points actually
+        removed, so a caller can drop them from its own cache too."""
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
             raise KeyError(line_id)
+        candidates = self._entity_defining_point_ids(line)
         del self.entities[line_id]
+        return self._prune_orphaned_points(candidates)
 
     # Sketcher-roadmap Phase 11: a sane bound on how far a trim/extend
     # target can be from where the Line currently ends, in sketch units -
@@ -1682,7 +1689,7 @@ class Sketch:
         moved_point.x, moved_point.y = best_point
         return (arc, moved_point, False)
 
-    def trim_circle(self, circle_id: str, click_x: float, click_y: float) -> "Arc":
+    def trim_circle(self, circle_id: str, click_x: float, click_y: float) -> tuple["Arc", list[str]]:
         """On-device feedback ("trim/extend should work on circles curves
         and splines"): a Circle has no "end" to move the way
         [trim_or_extend_line]/[trim_or_extend_arc] do - trimming it instead
@@ -1704,7 +1711,13 @@ class Sketch:
         rather than hand-building its constraint scaffolding - see
         [add_arc]'s own doc comment for exactly what that creates. The
         original Circle (and its own radius/cardinal constraints) is then
-        removed via the existing [delete_circle], unmodified.
+        removed via the existing [delete_circle], unmodified - its own
+        `radius_point_id`/`cardinal_point_ids` are exactly the "floating,
+        redundant points" on-device feedback this session's own point-
+        pruning fix (`_prune_orphaned_points`) targets: the new Arc never
+        reuses them (only the *centre* Point carries over), so they'd
+        otherwise be left behind forever. Returns `(arc, pruned_point_ids)`
+        - `delete_circle`'s own return value, passed straight through.
         """
         circle = self.entities.get(circle_id)
         if not isinstance(circle, Circle):
@@ -1757,10 +1770,10 @@ class Sketch:
         new_start = existing_at_start if existing_at_start is not None else self.add_point(*start_xy)
         new_end = existing_at_end if existing_at_end is not None else self.add_point(*end_xy)
         arc = self.add_arc(circle.center_point_id, new_start.id, new_end.id, construction=circle.construction)
-        self.delete_circle(circle_id)
-        return arc
+        pruned_point_ids = self.delete_circle(circle_id)
+        return arc, pruned_point_ids
 
-    def delete_circle(self, circle_id: str) -> None:
+    def delete_circle(self, circle_id: str) -> list[str]:
         """Remove a Circle and every constraint `add_circle` always creates
         alongside it - the radius DistanceConstraint plus the eight
         cardinal-point constraints (see `Circle.cardinal_constraint_ids`'s
@@ -1768,40 +1781,52 @@ class Sketch:
         Circle, not something the user added independently, so they are
         the one exception to "never auto-delete what a deletion didn't
         explicitly target". The center/radius/cardinal Points themselves
-        are left untouched, same as `delete_line`."""
+        are pruned automatically if nothing else still needs them, same as
+        `delete_line` - see `_prune_orphaned_points`. Returns the ids of
+        any Points actually removed."""
         circle = self.entities.get(circle_id)
         if not isinstance(circle, Circle):
             raise KeyError(circle_id)
+        candidates = self._entity_defining_point_ids(circle)
         del self.entities[circle_id]
         self.constraints.pop(circle.radius_constraint_id, None)
         for constraint_id in circle.cardinal_constraint_ids:
             self.constraints.pop(constraint_id, None)
+        return self._prune_orphaned_points(candidates)
 
-    def delete_arc(self, arc_id: str) -> None:
+    def delete_arc(self, arc_id: str) -> list[str]:
         """Remove an Arc and the two radius DistanceConstraints `add_arc`
         always creates alongside it - same "internal implementation
         detail" exception `delete_circle` already makes for its own radius
-        constraint. The center/start/end Points themselves are left
-        untouched, same as `delete_line`/`delete_circle`."""
+        constraint. The center/start/end Points themselves are pruned
+        automatically if nothing else still needs them, same as
+        `delete_line`/`delete_circle` - see `_prune_orphaned_points`.
+        Returns the ids of any Points actually removed."""
         arc = self.entities.get(arc_id)
         if not isinstance(arc, Arc):
             raise KeyError(arc_id)
+        candidates = self._entity_defining_point_ids(arc)
         del self.entities[arc_id]
         self.constraints.pop(arc.radius_constraint_id, None)
         self.constraints.pop(arc.end_radius_constraint_id, None)
+        return self._prune_orphaned_points(candidates)
 
-    def delete_ellipse(self, ellipse_id: str) -> None:
+    def delete_ellipse(self, ellipse_id: str) -> list[str]:
         """Remove an Ellipse and everything `add_ellipse` always creates
         alongside it - both radius DistanceConstraints, both
         AtMidpointConstraints, the PerpendicularConstraint tying its two
         axes together, and both full-diameter axis construction Lines -
         same "internal implementation detail" exception `delete_circle`/
         `delete_arc` already make for their own radius constraint(s). The
-        center/major/minor/major-neg/minor-neg Points themselves are left
-        untouched, same as `delete_line`/`delete_circle`/`delete_arc`."""
+        center/major/minor/major-neg/minor-neg Points themselves are
+        pruned automatically if nothing else still needs them, same as
+        `delete_line`/`delete_circle`/`delete_arc` - see
+        `_prune_orphaned_points`. Returns the ids of any Points actually
+        removed."""
         ellipse = self.entities.get(ellipse_id)
         if not isinstance(ellipse, Ellipse):
             raise KeyError(ellipse_id)
+        candidates = self._entity_defining_point_ids(ellipse)
         del self.entities[ellipse_id]
         # `.pop(id, None)` rather than `del`, matching the constraint
         # cleanup below: an axis Line can also be deleted directly (its own
@@ -1815,21 +1840,23 @@ class Sketch:
         self.constraints.pop(ellipse.major_midpoint_constraint_id, None)
         self.constraints.pop(ellipse.minor_midpoint_constraint_id, None)
         self.constraints.pop(ellipse.perpendicular_constraint_id, None)
+        return self._prune_orphaned_points(candidates)
 
-    def delete_polygon(self, polygon_id: str) -> None:
+    def delete_polygon(self, polygon_id: str) -> list[str]:
         """Remove a Polygon and everything `add_polygon` always creates
         alongside it - all `sides` edge Lines and every constraint in its
         radius/equal-radius/equal-length/angle chain - same "internal
         implementation detail" exception `delete_circle`/`delete_arc`/
         `delete_ellipse` already make for their own radius constraint(s).
         The center and every vertex Point (including the `sides - 1` this
-        Polygon itself created fresh) are left untouched, same as
-        `delete_line`/`delete_circle`/`delete_arc`/`delete_ellipse` -
-        consistent with this codebase's own "an entity never auto-deletes
-        the Points it's built from, even ones only it ever created" rule."""
+        Polygon itself created fresh) are pruned automatically if nothing
+        else still needs them, same as `delete_line`/`delete_circle`/
+        `delete_arc`/`delete_ellipse` - see `_prune_orphaned_points`.
+        Returns the ids of any Points actually removed."""
         polygon = self.entities.get(polygon_id)
         if not isinstance(polygon, Polygon):
             raise KeyError(polygon_id)
+        candidates = self._entity_defining_point_ids(polygon)
         del self.entities[polygon_id]
         # `.pop(id, None)` rather than `del`, matching `delete_ellipse`'s own
         # axis-line cleanup: a Polygon's own Line can also be deleted
@@ -1845,28 +1872,38 @@ class Sketch:
             *polygon.angle_constraint_ids,
         ):
             self.constraints.pop(constraint_id, None)
+        return self._prune_orphaned_points(candidates)
 
-    def delete_spline(self, spline_id: str) -> None:
+    def delete_spline(self, spline_id: str) -> list[str]:
         """Remove a Spline and every `SplineTangentConstraint` `add_spline`
         created alongside it - same "internal implementation detail"
         exception `delete_circle`/`delete_arc`/`delete_ellipse` already
         make for their own radius constraint(s). Every through-point and
-        control-handle Point is left untouched, same as
-        `delete_line`/`delete_circle`/`delete_arc`/`delete_ellipse`."""
+        control-handle Point is pruned automatically if nothing else
+        still needs it, same as `delete_line`/`delete_circle`/`delete_arc`/
+        `delete_ellipse` - see `_prune_orphaned_points`. Returns the ids
+        of any Points actually removed."""
         spline = self.entities.get(spline_id)
         if not isinstance(spline, Spline):
             raise KeyError(spline_id)
+        candidates = self._entity_defining_point_ids(spline)
         del self.entities[spline_id]
         for constraint_id in spline.tangent_constraint_ids:
             self.constraints.pop(constraint_id, None)
+        return self._prune_orphaned_points(candidates)
 
-    def delete_text(self, text_id: str) -> None:
-        """Remove a Text entity. Its anchor Point is left untouched, same
-        as every other entity's own defining Point(s) - it may be shared
-        with other entities via explicit id reference, same as any Point."""
-        if not isinstance(self.entities.get(text_id), TextEntity):
+    def delete_text(self, text_id: str) -> list[str]:
+        """Remove a Text entity. Its anchor Point is pruned automatically
+        if nothing else still needs it - it may be shared with other
+        entities via explicit id reference, same as any Point, in which
+        case it's left untouched. Returns the ids of any Points actually
+        removed (at most one - the anchor)."""
+        text = self.entities.get(text_id)
+        if not isinstance(text, TextEntity):
             raise KeyError(text_id)
+        candidates = self._entity_defining_point_ids(text)
         del self.entities[text_id]
+        return self._prune_orphaned_points(candidates)
 
     def offset_line(self, line_id: str, distance: float, *, construction: bool = False) -> Line:
         """Sketcher-roadmap Phase 9 v1 (Offset Entities): a new Line parallel
@@ -2066,6 +2103,72 @@ class Sketch:
             if point_id in constraint.point_ids():
                 return f"Point is still referenced by constraint {constraint.id}"
         return None
+
+    @staticmethod
+    def _entity_defining_point_ids(entity: "SketchEntity") -> tuple[str, ...]:
+        """Every Point id `entity` itself references - the reverse
+        direction of `_point_deletion_blocker`'s own per-type checks above
+        (that method asks "does *any* entity reference this Point";
+        this asks "which Points does *this* entity reference"). Used by
+        `_prune_orphaned_points`'s own callers (`delete_line`/`delete_
+        circle`/etc., `trim_circle`) to gather candidate Points to check
+        right after removing whatever referenced them - doesn't need to be
+        exhaustive to be safe, since `_prune_orphaned_points` always
+        re-verifies each candidate via `_point_deletion_blocker` (which
+        *is* exhaustive) before actually deleting anything; missing a
+        candidate here just means a genuinely orphaned Point survives
+        (the pre-existing, safe default), never that a still-needed one
+        gets removed."""
+        if isinstance(entity, Line):
+            return entity.endpoint_point_ids()
+        if isinstance(entity, Circle):
+            return (entity.center_point_id, entity.radius_point_id, *entity.cardinal_point_ids)
+        if isinstance(entity, Arc):
+            return (entity.center_point_id, entity.start_point_id, entity.end_point_id)
+        if isinstance(entity, Ellipse):
+            return (
+                entity.center_point_id,
+                entity.major_point_id,
+                entity.major_point_neg_id,
+                entity.minor_point_id,
+                entity.minor_point_neg_id,
+            )
+        if isinstance(entity, Polygon):
+            return (entity.center_point_id, *entity.vertex_point_ids)
+        if isinstance(entity, Spline):
+            return (*entity.through_point_ids, *entity.control_point_ids)
+        if isinstance(entity, TextEntity):
+            return (entity.anchor_point_id,)
+        return ()
+
+    def _prune_orphaned_points(self, candidate_ids: Iterable[str]) -> list[str]:
+        """On-device feedback ("when deleting lines, curves, trimming I end
+        up with floating, redundant points"): deleting/trimming an entity
+        has always deliberately left its own defining Points behind (see
+        every `delete_line`/`delete_circle`/etc.'s own doc comment - a
+        Point might still be shared with something else), which is correct
+        as a *default* but leaves genuinely orphaned Points around forever
+        once nothing else references them - most visibly `trim_circle`,
+        whose old Circle's `radius_point_id`/`cardinal_point_ids` are never
+        reused by the Arc it becomes.
+
+        Removes each candidate Point that `_point_deletion_blocker` finds
+        no remaining reference to (exactly `delete_point`'s own safety
+        check, just applied automatically to a batch of "might now be
+        orphaned" candidates instead of raising on a single explicit
+        request) - never touches a Point still shared with anything else,
+        by construction. Returns the ids actually removed, so callers can
+        report them to a client that needs to also drop them from its own
+        local cache (and undo needs to know what to recreate)."""
+        removed: list[str] = []
+        for point_id in candidate_ids:
+            if point_id not in self.points:
+                continue
+            if self._point_deletion_blocker(point_id) is None:
+                del self.points[point_id]
+                self.external_references.pop(point_id, None)
+                removed.append(point_id)
+        return removed
 
     def delete_point(self, point_id: str) -> None:
         if point_id not in self.points:
