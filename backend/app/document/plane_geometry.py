@@ -115,43 +115,47 @@ def _cross(a: Vector3, b: Vector3) -> Vector3:
     return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
 
 
-def right_handed_x_axis(basis: ResolvedPlane) -> Vector3:
-    """The X reference direction that keeps `(X, basis.y_axis, basis.normal)`
-    a genuinely right-handed triple - derived as `y_axis cross normal`
-    rather than trusting `basis.x_axis` directly.
+def is_mirrored_basis(basis: ResolvedPlane) -> bool:
+    """Whether `basis`'s own `(x_axis, y_axis, normal)` triple is
+    left-handed (`x_axis cross y_axis` points *opposite* `normal`) rather
+    than the right-handed convention every fixed/custom plane is supposed
+    to hold - true exactly when a Sketch's own orientation has been
+    flipped (`apply_orientation`'s `flip` support, above, negates `x_axis`
+    alone, which inverts the triple's handedness on its own).
 
-    Bug fix (on-device feedback: an Arc/Ellipse built on a *flipped* Sketch
-    swept the wrong way in `app.document.extrude` - a Slot's own
-    semicircular end caps came out concave instead of convex, and a
-    Trim/Extend-closed Arc+Line loop extruded the wrong, excluded side):
-    `apply_orientation`'s own `flip` support (above) negates `x_axis`
-    alone (correct for mirroring Point/Line *positions* - straight-line
-    geometry is symmetric under reversal and needs the real, flipped
-    `x_axis` to land in the right world location) but leaves
-    `y_axis`/`normal` untouched - so a flipped Sketch's own `(x_axis,
-    y_axis, normal)` triple is *left-handed* (`x_axis cross y_axis ==
-    -normal`, not `+normal`).
+    Bug fix (on-device feedback, confirmed by direct numeric simulation,
+    not just reasoning about it - a first attempt at "fixing" `app.
+    document.extrude._arc_axis` itself, by deriving a canonicalized
+    right-handed X reference direction instead of using the real
+    `x_axis`, turned out to reproduce the *exact same wrong result* the
+    original bug did): a Slot's own semicircular end-cap Arcs came out
+    concave instead of convex, and a Trim/Extend-closed Arc+Line loop
+    extruded the wrong, excluded side - both only on a *mirrored* Sketch.
 
-    `app.document.extrude._arc_axis`/`_ellipse_axis` used to feed that
-    same (possibly left-handed) `basis.x_axis` straight to OCCT's `gp_Ax2`
-    as a circle's own angle-zero reference direction - but `Arc`'s "CCW
-    from start to end" convention (and the client's own identical 2D/3D
-    rendering, `client/lib/viewport3d/sketch_geometry_3d.dart`) is defined
-    purely from sketch-local `atan2(y, x)` math, with zero awareness of
-    world-space flip state, so a left-handed embedding silently reversed
-    which physical arc segment got built. Deriving the reference direction
-    from `y_axis`/`normal` instead (both untouched by flip) keeps the
-    embedded circle's own "increasing angle" direction matching that
-    convention regardless of flip - `basis_point`/`basis_point_to_world`
-    elsewhere still use the real (flip-correct) `x_axis` for every Point's
-    own world *position*, completely unaffected by this; only an Arc/
-    Ellipse's own angle-zero reference direction changes here.
+    A mirror transform genuinely is supposed to reverse apparent CCW/CW
+    for anything embedded through it (that's what mirroring a curved
+    shape means) - `app.document.extrude._arc_axis` already does the
+    right thing by passing the real (possibly left-handed) `x_axis`
+    straight through to OCCT's `gp_Ax2`. The actual fix lives in `app.
+    document.extrude.wire_for_profile`'s own Arc branch: it swaps which
+    Point is passed as P1 vs P2 to `BRepBuilderAPI_MakeEdge(gp_Circ, P1,
+    P2)` whenever `is_mirrored_basis` is true - confirmed by simulating
+    the *entire* local arc's own point-by-point transform into world
+    space (not just its two endpoints) and checking which of "real
+    x_axis, real P1/P2 order" vs "real x_axis, swapped P1/P2 order" vs
+    "canonicalized x_axis" actually reproduces that ground truth; only
+    the swap does.
 
-    Kept in this OCCT-free module (rather than alongside `_arc_axis` in
-    `app.document.extrude`, which imports pythonocc-core at module level
-    and so can't be executed in every test environment) specifically so
-    this fix's own geometry math has a real, always-runnable test."""
-    return _cross(basis.y_axis, basis.normal)
+    Kept in this OCCT-free module (rather than alongside `wire_for_profile`
+    in `app.document.extrude`, which imports pythonocc-core at module
+    level and so can't be executed in every test environment)
+    specifically so this fix's own geometry math has a real,
+    always-runnable test."""
+    return _dot(_cross(basis.x_axis, basis.y_axis), basis.normal) < 0.0
+
+
+def _dot(a: Vector3, b: Vector3) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def _normalized(v: Vector3) -> Vector3:

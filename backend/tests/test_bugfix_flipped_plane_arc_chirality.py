@@ -5,32 +5,50 @@ orientation had been flipped. Confirmed via the backend's own request logs:
 a wire's real vertex world coordinates showed `x_axis` behaving as
 `(+1, 0, 0)` for a Sketch on the XZ plane, where `app.document.
 plane_geometry._PLANE_BASIS[Plane.XZ]` already documents `x_axis=(-1, 0,
-0)` as the one and only correct, already-fixed value for that plane.
+0)` as the correct, already-fixed value for that plane's *unflipped* case
+- root-caused to `apply_orientation`'s own `flip` support, which negates
+`x_axis` alone and so leaves a flipped Sketch's own `(x_axis, y_axis,
+normal)` triple left-handed.
 
-Root cause: `apply_orientation`'s own `flip` support negates `x_axis`
-alone (correct for mirroring Point/Line *positions*) but leaves
-`y_axis`/`normal` untouched, so a flipped Sketch's own `(x_axis, y_axis,
-normal)` triple is left-handed. `app.document.extrude._arc_axis`/
-`_ellipse_axis` used to feed that same (possibly left-handed) `x_axis`
-straight to OCCT as a circle's own angle-zero reference direction, which
-`BRepBuilderAPI_MakeEdge(gp_Circ, P1, P2)` uses to decide which of the two
-possible arcs between P1/P2 to build - silently swapping in the wrong one
-whenever the basis had been flipped.
+First fix attempt: derive a "canonicalized" right-handed X reference
+direction for `app.document.extrude._arc_axis`, ignoring the real
+(possibly left-handed) `x_axis`. Wrong - disproven by direct numeric
+simulation (transforming an entire local arc, point by point, through the
+real embedding, and comparing against what each candidate fix actually
+built): a mirror transform genuinely is supposed to reverse apparent
+CCW/CW for anything embedded through it, and `_arc_axis` passing the real
+`x_axis` straight through was never the bug. The canonicalized-axis
+"fix" reproduced the exact same wrong (270-degree, long-way) arc the
+original bug did.
 
-Fixed by `right_handed_x_axis`, which derives the reference direction from
-`y_axis`/`normal` alone (both untouched by flip) instead of trusting
-`x_axis`. This is the one piece of that fix that's genuinely OCC-free pure
-math, so it's tested directly here - the actual OCCT wire construction that
-consumes it (`app.document.extrude`) can't be exercised in this environment
-at all (no pythonocc-core available), so on-device confirmation remains the
-real gate for the fix as a whole.
+Real fix: `app.document.extrude.wire_for_profile`'s own Arc branch swaps
+which Point is passed as P1 vs P2 to `BRepBuilderAPI_MakeEdge(gp_Circ, P1,
+P2)` whenever the basis is mirrored (`is_mirrored_basis`, below) - `_arc_
+axis` itself is unchanged from the original code. `is_mirrored_basis` is
+the one piece of this fix that's genuinely OCC-free pure math, so it's
+tested directly here; the actual OCCT wire construction that consumes it
+can't be exercised in this environment at all (no pythonocc-core
+available), so on-device confirmation remains the real gate for the fix
+as a whole.
 """
 
 import math
 
-from app.document.models import ResolvedPlane
-from app.document.plane_geometry import _PLANE_BASIS, apply_orientation, right_handed_x_axis
-from app.sketch.models import Plane
+from app.document.plane_geometry import _PLANE_BASIS, apply_orientation, is_mirrored_basis
+
+
+def test_is_mirrored_basis_is_false_for_every_fixed_plane_unflipped():
+    for plane, basis in _PLANE_BASIS.items():
+        assert not is_mirrored_basis(basis), f"{plane}: an unflipped fixed plane must never read as mirrored"
+
+
+def test_is_mirrored_basis_is_true_exactly_when_flipped_regardless_of_rotation():
+    for plane, basis in _PLANE_BASIS.items():
+        for turns in range(4):
+            unflipped = apply_orientation(basis, flip=False, rotation_quarter_turns=turns)
+            flipped = apply_orientation(basis, flip=True, rotation_quarter_turns=turns)
+            assert not is_mirrored_basis(unflipped), f"{plane} turns={turns}: rotation alone must not mirror"
+            assert is_mirrored_basis(flipped), f"{plane} turns={turns}: flip must always mirror"
 
 
 def _cross(a, b):
@@ -39,66 +57,87 @@ def _cross(a, b):
     return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
 
 
-def _close(a, b, tol=1e-9):
-    return all(math.isclose(x, y, abs_tol=tol) for x, y in zip(a, b))
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
 
 
-def test_right_handed_x_axis_matches_the_documented_correct_value_for_every_fixed_plane():
-    for plane, basis in _PLANE_BASIS.items():
-        assert _close(right_handed_x_axis(basis), basis.x_axis), (
-            f"{plane}: right_handed_x_axis should reproduce _PLANE_BASIS's own already-correct "
-            "x_axis when nothing has been flipped"
+def _local_to_world(basis, lx, ly):
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    return (lx * xx + ly * yx, lx * xy + ly * yy, lx * xz + ly * yz)
+
+
+def _ground_truth_arc_points(basis, radius=5.0, n=13):
+    """Every point of a fixed local arc (center at the sketch origin, CCW
+    from local angle 0deg to 90deg), individually transformed into world
+    space via `basis` - the one unambiguous "correct" answer any embedding
+    strategy must reproduce, since it's just "transform the whole curve",
+    not an OCCT-specific shortcut."""
+    points = []
+    for t in range(n):
+        theta = math.radians(90 * t / (n - 1))
+        points.append(_local_to_world(basis, radius * math.cos(theta), radius * math.sin(theta)))
+    return points
+
+
+def _simulated_occt_sweep(basis, p1_world, p2_world, radius=5.0, n=13):
+    """A pure-Python stand-in for what `BRepBuilderAPI_MakeEdge(gp_Circ(gp_
+    Ax2(center, normal, basis.x_axis), radius), P1, P2)` actually builds -
+    CCW trim from P1 to P2 using the real `basis.x_axis` as the axis's own
+    reference direction and `normal cross x_axis` as its own freshly
+    computed Y direction, mirroring gp_Ax2's own internal construction
+    exactly (never `basis.y_axis` directly - see _arc_axis's own doc
+    comment for why passing the real x_axis, not a "corrected" one, is
+    correct)."""
+    x_axis = basis.x_axis
+    y_computed = _cross(basis.normal, x_axis)
+
+    def local_angle(p):
+        return math.degrees(math.atan2(_dot(p, y_computed), _dot(p, x_axis))) % 360
+
+    a1, a2 = local_angle(p1_world), local_angle(p2_world)
+    sweep = (a2 - a1) % 360
+    points = []
+    for t in range(n):
+        theta = math.radians(a1 + sweep * t / (n - 1))
+        lx, ly = radius * math.cos(theta), radius * math.sin(theta)
+        points.append(
+            (lx * x_axis[0] + ly * y_computed[0], lx * x_axis[1] + ly * y_computed[1], lx * x_axis[2] + ly * y_computed[2])
         )
+    return points
 
 
-def test_right_handed_x_axis_stays_correct_after_a_flip_that_corrupts_x_axis_alone():
-    for plane, basis in _PLANE_BASIS.items():
-        flipped = apply_orientation(basis, flip=True, rotation_quarter_turns=0)
-        # The flip really did negate x_axis (sanity-checking the premise,
-        # not the fix itself) and left y_axis/normal untouched.
-        assert _close(flipped.x_axis, tuple(-c for c in basis.x_axis))
-        assert flipped.y_axis == basis.y_axis
-        assert flipped.normal == basis.normal
-
-        # The bug: naively using flipped.x_axis directly would now be
-        # wrong. The fix: right_handed_x_axis ignores it and re-derives
-        # the *original*, correct direction from y_axis/normal alone.
-        assert _close(right_handed_x_axis(flipped), basis.x_axis), (
-            f"{plane}: right_handed_x_axis must stay correct even once x_axis has been "
-            "flip-corrupted, since y_axis/normal (what it's actually derived from) never change"
-        )
+def _points_close(a, b, tol=1e-6):
+    return len(a) == len(b) and all(
+        all(math.isclose(x, y, abs_tol=tol) for x, y in zip(pa, pb)) for pa, pb in zip(a, b)
+    )
 
 
-def test_right_handed_x_axis_is_always_genuinely_right_handed_even_for_a_flipped_basis():
-    """The property that actually matters for OCCT's own gp_Ax2/gp_Circ
-    parametrization: (X, y_axis, normal) must satisfy X cross y_axis ==
-    normal - not just "happen to equal the unflipped x_axis" (the other
-    two tests above), which only holds for these particular fixed planes
-    because their own x_axis/y_axis/normal are axis-aligned. This is the
-    general property any future non-axis-aligned custom plane also needs."""
-    for basis in _PLANE_BASIS.values():
+def test_swapping_p1_p2_on_a_mirrored_basis_reproduces_the_true_transformed_arc():
+    """The actual property the fix depends on: for every fixed plane, with
+    every flip/rotation combination this codebase supports, building the
+    Arc edge with P1/P2 swapped whenever `is_mirrored_basis` is true (and
+    unswapped otherwise) must exactly reproduce transforming the entire
+    local arc curve through the real basis, point by point - not merely
+    "look plausible" for one hand-picked case."""
+    for plane, base_basis in _PLANE_BASIS.items():
         for flip in (False, True):
             for turns in range(4):
-                oriented = apply_orientation(basis, flip=flip, rotation_quarter_turns=turns)
-                x_ref = right_handed_x_axis(oriented)
-                assert _close(_cross(x_ref, oriented.y_axis), oriented.normal), (
-                    f"flip={flip} turns={turns}: (right_handed_x_axis, y_axis, normal) must be "
-                    "a genuinely right-handed triple"
+                basis = apply_orientation(base_basis, flip=flip, rotation_quarter_turns=turns)
+                ground_truth = _ground_truth_arc_points(basis)
+                start_world = _local_to_world(basis, 5.0, 0.0)
+                end_world = _local_to_world(basis, 0.0, 5.0)
+
+                if is_mirrored_basis(basis):
+                    p1, p2 = end_world, start_world
+                else:
+                    p1, p2 = start_world, end_world
+                swept = _simulated_occt_sweep(basis, p1, p2)
+                # A swapped sweep runs end->start, so its own point order
+                # is the reverse of the (start->end) ground truth.
+                comparable = list(reversed(swept)) if is_mirrored_basis(basis) else swept
+
+                assert _points_close(ground_truth, comparable), (
+                    f"{plane} flip={flip} turns={turns}: swap-based Arc embedding must match the "
+                    "true point-by-point transform of the local arc"
                 )
-
-
-def test_right_handed_x_axis_for_a_custom_non_axis_aligned_plane():
-    """Not just the three fixed planes - a made-up right-handed basis
-    (mirroring what a real CreatePlaneFeature could resolve to) must also
-    round-trip correctly, confirming this isn't coincidentally only working
-    because every fixed plane's own vectors happen to be axis-aligned."""
-    # An arbitrary but genuinely orthonormal, right-handed triple.
-    normal = (0.0, 0.0, 1.0)
-    y_axis = (0.0, 1.0, 0.0)
-    x_axis = (1.0, 0.0, 0.0)
-    basis = ResolvedPlane(origin=(1.0, 2.0, 3.0), normal=normal, x_axis=x_axis, y_axis=y_axis)
-
-    assert _close(right_handed_x_axis(basis), x_axis)
-
-    flipped = apply_orientation(basis, flip=True, rotation_quarter_turns=0)
-    assert _close(right_handed_x_axis(flipped), x_axis)

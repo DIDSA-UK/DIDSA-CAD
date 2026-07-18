@@ -31,7 +31,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Vertex, TopoDS
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
-from app.document.plane_geometry import right_handed_x_axis
+from app.document.plane_geometry import is_mirrored_basis
 from app.document.models import (
     ChamferFeature,
     ExtrudeFeature,
@@ -91,29 +91,43 @@ def _arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
     between two points via `BRepBuilderAPI_MakeEdge(gp_Circ, P1, P2)`,
     which *does* pick one of the circle's two possible arcs based on that
     reference direction (the trim always runs from P1 to P2 in the
-    direction of increasing parameter/angle). Passing [right_handed_x_axis]
-    (not `basis.x_axis` directly - see that function's own doc comment for
-    why) as the explicit 3rd argument pins that parametrization to exactly
-    "standard CCW in the sketch's own local (x, y) coordinates" - the same
-    convention the Arc class docstring documents and the client's 2D
-    rendering must also use - rather than leaving it to whatever direction
-    OCCT happens to auto-select, or to a possibly flip-inverted `x_axis`."""
-    x, y, z = right_handed_x_axis(basis)
+    direction of increasing parameter/angle). Passing the sketch plane's
+    own real local +X axis as the explicit 3rd argument pins that
+    parametrization to exactly "standard CCW in the sketch's own local
+    (x, y) coordinates" - the same convention the Arc class docstring
+    documents and the client's 2D rendering must also use - rather than
+    leaving it to whatever direction OCCT happens to auto-select.
+
+    On a *mirrored* Sketch (`app.document.plane_geometry.apply_orientation`'s
+    `flip`), `basis.x_axis` is itself negated - deliberately still used
+    here as-is, not "corrected" back to a right-handed reference: a mirror
+    transform is *supposed* to reverse apparent CCW/CW, and passing the
+    real (possibly left-handed) `x_axis` straight through is what lets
+    that reversal actually happen. See [wire_for_profile]'s own Arc branch
+    for the other half of this - it swaps which Point is passed as P1 vs
+    P2 whenever the basis is mirrored, which is the piece that actually
+    needed fixing (confirmed by direct numeric simulation, not just
+    reasoning about it - an earlier attempt at "fixing" *this* function
+    instead, by deriving a canonicalized right-handed reference direction,
+    produced the exact same wrong result the original code did)."""
+    x, y, z = basis.x_axis
     return gp_Ax2(basis_point_to_world(basis, center_x, center_y), basis_normal(basis), gp_Dir(x, y, z))
 
 
 def _ellipse_axis(basis: ResolvedPlane, center_x: float, center_y: float, rotation: float) -> gp_Ax2:
     """The `gp_Ax2` an Ellipse's `gp_Elips` is built against - `gp_Elips`
     always places its major axis along the `gp_Ax2`'s own X reference
-    direction, so (mirroring `_arc_axis`'s identical reasoning, including
-    why this reads [right_handed_x_axis] rather than `basis.x_axis`
-    directly) that reference direction must be pinned explicitly rather
-    than left to OCCT's arbitrary default: the sketch plane's own
-    right-handed local +X axis, rotated in-plane by the Ellipse's own
-    `rotation()` (the angle from local +X to its major-axis Point), giving
-    a deterministic major-axis direction that matches the Ellipse class's
-    own convention and the client's 2D rendering."""
-    xx, xy, xz = right_handed_x_axis(basis)
+    direction, so (mirroring `_arc_axis`'s identical reasoning) that
+    reference direction must be pinned explicitly rather than left to
+    OCCT's arbitrary default: the sketch plane's own local +X axis,
+    rotated in-plane by the Ellipse's own `rotation()` (the angle from
+    local +X to its major-axis Point), giving a deterministic major-axis
+    direction that matches the Ellipse class's own convention and the
+    client's 2D rendering. Unlike Arc, a full (untrimmed) ellipse has no
+    CCW-vs-CW ambiguity for [wire_for_profile] to get backwards on a
+    mirrored Sketch - `gp_Elips`'s own major-axis line is direction-
+    symmetric, so this never needed the swap-based fix Arc did."""
+    xx, xy, xz = basis.x_axis
     yx, yy, yz = basis.y_axis
     cos_r, sin_r = math.cos(rotation), math.sin(rotation)
     dx, dy, dz = xx * cos_r + yx * sin_r, xy * cos_r + yy * sin_r, xz * cos_r + yz * sin_r
@@ -262,10 +276,29 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
             axis = _arc_axis(basis, center.x, center.y)
             start = sketch.points[entity.start_point_id]
             end = sketch.points[entity.end_point_id]
+            # Bug fix (on-device feedback: a Slot's own semicircular
+            # end-cap Arcs came out concave instead of convex, and a
+            # Trim/Extend-closed Arc+Line loop extruded the wrong,
+            # excluded side - both only on a *mirrored* Sketch): a mirror
+            # transform genuinely does reverse apparent CCW/CW for
+            # anything embedded through it, which `_arc_axis` (passing the
+            # real, possibly left-handed `basis.x_axis` straight to OCCT)
+            # already correctly allows for - what still needs to flip in
+            # step with it is *which* Point plays P1 vs P2 for
+            # `BRepBuilderAPI_MakeEdge(gp_Circ, P1, P2)`'s own "CCW from
+            # P1 to P2" trim, matching how the same mirror reverses the
+            # Arc's own local `start` -> `end` sweep once embedded in
+            # world space. Confirmed by direct numeric simulation (see
+            # `is_mirrored_basis`'s own doc comment) - not by reasoning
+            # about it, since an earlier fix attempt (adjusting the axis's
+            # own reference direction instead of swapping P1/P2) turned
+            # out to reproduce the exact same wrong arc the original bug
+            # did.
+            p1, p2 = (end, start) if is_mirrored_basis(basis) else (start, end)
             edge = BRepBuilderAPI_MakeEdge(
                 gp_Circ(axis, radius),
-                basis_point_to_world(basis, start.x, start.y),
-                basis_point_to_world(basis, end.x, end.y),
+                basis_point_to_world(basis, p1.x, p1.y),
+                basis_point_to_world(basis, p2.x, p2.y),
             ).Edge()
             wire_maker.Add(edge)
         elif isinstance(entity, Spline):
