@@ -11,7 +11,7 @@ import logging
 import math
 
 from fastapi import HTTPException
-from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRep import BRep_Builder, BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
@@ -259,6 +259,34 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
             axis = _arc_axis(basis, center.x, center.y)
             start = sketch.points[entity.start_point_id]
             end = sketch.points[entity.end_point_id]
+            # On-device feedback debug logging (wrong-region Extrude on an
+            # Arc-containing profile - both a Trim/Extend-closed loop and a
+            # plain Slot's own end-cap Arc): temporary, targeted at
+            # confirming which physical arc segment actually gets built,
+            # since this can't be tested locally (no OCC available in the
+            # dev sandbox) - remove once root-caused.
+            start_angle_deg = math.degrees(math.atan2(start.y - center.y, start.x - center.x)) % 360
+            end_angle_deg = math.degrees(math.atan2(end.y - center.y, end.x - center.x)) % 360
+            logger.warning(
+                "wire_for_profile Arc %s: point_ids[%d]=%s center=(%.4f,%.4f) r=%.4f "
+                "start_point=%s(%.4f,%.4f)@%.2fdeg end_point=%s(%.4f,%.4f)@%.2fdeg "
+                "loop_walk_direction=%s",
+                entity.id,
+                i,
+                profile.point_ids[i],
+                center.x,
+                center.y,
+                radius,
+                entity.start_point_id,
+                start.x,
+                start.y,
+                start_angle_deg,
+                entity.end_point_id,
+                end.x,
+                end.y,
+                end_angle_deg,
+                "forward" if profile.point_ids[i] == entity.start_point_id else "backward",
+            )
             edge = BRepBuilderAPI_MakeEdge(
                 gp_Circ(axis, radius),
                 basis_point_to_world(basis, start.x, start.y),
@@ -284,7 +312,29 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
                 basis_point_to_world(basis, b.x, b.y),
             ).Edge()
             wire_maker.Add(edge)
-    return wire_maker.Wire()
+    wire = wire_maker.Wire()
+    # On-device feedback debug logging (see the Arc branch's own identical
+    # note above) - reports whether the wire actually closed and, more
+    # usefully, its own real vertex positions in world space, so the
+    # *actual* boundary OCCT built can be compared directly against what
+    # was expected instead of inferred indirectly from the final solid.
+    try:
+        vertex_coords = []
+        explorer = TopExp_Explorer(wire, TopAbs_VERTEX)
+        while explorer.More():
+            point = BRep_Tool.Pnt(topods.Vertex(explorer.Current()))
+            vertex_coords.append((round(point.X(), 4), round(point.Y(), 4), round(point.Z(), 4)))
+            explorer.Next()
+        logger.warning(
+            "wire_for_profile: %d hops, IsDone=%s, Closed=%s, vertices(world)=%s",
+            point_count,
+            wire_maker.IsDone(),
+            wire.Closed(),
+            vertex_coords,
+        )
+    except Exception:
+        logger.exception("wire_for_profile: debug logging itself failed")
+    return wire
 
 
 def _wire_normal(wire: TopoDS_Wire) -> gp_Dir:
@@ -505,6 +555,24 @@ def _solid_for_extrude_feature(
     else:
         candidates = result.loops
     profiles = select_profiles(candidates, feature.profile_refs)
+    # On-device feedback debug logging (see wire_for_profile's own identical
+    # note) - reports detect_profile's own status plus exactly which
+    # profile(s)/loop(s) are about to be built, before any OCC geometry
+    # construction, to rule in/out "wrong loop picked among several" versus
+    # a wire/face-construction issue within a single, correctly-picked loop.
+    logger.warning(
+        "_solid_for_extrude_feature %s: detect_profile status=%s, profile_refs=%s, "
+        "%d candidate(s), using %d profile(s): %s",
+        feature.id,
+        result.status.value,
+        feature.profile_refs,
+        len(candidates),
+        len(profiles),
+        [
+            {"point_ids": p.point_ids, "line_ids": p.line_ids, "inner_loops": len(p.inner_loops)}
+            for p in profiles
+        ],
+    )
     solids = [_prism_for_profile(sketch, profile, feature, basis) for profile in profiles]
 
     if len(solids) == 1:
