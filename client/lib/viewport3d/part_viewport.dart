@@ -104,7 +104,7 @@ class PartViewport extends StatefulWidget {
   /// P16: mirrors [selectionMode]'s own cursor/hover/commit shape (see the
   /// "Stage 23 Items 2/3" section below), retargeted from entity-hover to a
   /// continuous [sketchPlaneBasis] raycast - a single-finger drag moves
-  /// [_drawCursorPosition] instead of orbiting, exactly like [selectionMode]
+  /// [_cursorPosition] instead of orbiting, exactly like [selectionMode]
   /// already trades off. Mutually exclusive with [selectionMode] in
   /// practice (never both true at once); kept as its own bool rather than
   /// overloading [selectionMode] itself since that field's
@@ -246,6 +246,36 @@ class PartViewport extends StatefulWidget {
   /// delta while [isDraggingConstraintLabel] is true, in place of
   /// [onDrawCursorMoved].
   final void Function(Offset delta)? onConstraintLabelDragDelta;
+
+  /// P44b bug fix (on-device feedback: "when I click a ghost dimension to
+  /// set its value, nothing happens"): the [constraintOverlayItems] entry
+  /// this many-ID-spaces-removed caller currently wants a value-entry
+  /// widget anchored to - a live `SketchController.activeGhostKey`, the
+  /// same id [onConstraintOverlayItemTap] already reports back on tap.
+  /// `sketch_canvas.dart`'s own flat 2D view has always rendered its own
+  /// inline `_GhostValueEditor` the moment a ghost activates; the embedded
+  /// Orbit View never had an equivalent at all - tapping a ghost here
+  /// successfully called `SketchController.tapGhost` (so the ghost *did*
+  /// highlight as active), but nothing ever appeared for the user to type
+  /// a value into, which is exactly "the click doesn't register" from the
+  /// user's own perspective. Both this and
+  /// [activeConstraintOverlayItemBuilder] are null (the default) whenever
+  /// nothing is active.
+  final String? activeConstraintOverlayItemId;
+
+  /// P44b: builds the value-entry widget for whichever
+  /// [constraintOverlayItems] entry matches [activeConstraintOverlayItemId],
+  /// given that item's own live screen-space anchor (this State's own
+  /// [_camera]/[_viewportSize]/[sketchPlaneBasis], resolved the exact same
+  /// way [_commitDrawCursor]'s own hit-test already does via
+  /// [constraintOverlayItemLabelCenter] - kept a caller-supplied builder,
+  /// not a hardcoded widget, so this generic 3D viewport stays unaware of
+  /// `SketchController`/`DimensionGhost` specifics (confirm/cancel/current-
+  /// value semantics) - mirrors [onConstraintOverlayItemTap]'s own
+  /// delegate-everything-back-to-the-caller shape. The returned widget is
+  /// expected to position itself (e.g. via [Positioned]) using the anchor
+  /// it's given, the same convention `_GhostValueEditor` already follows.
+  final Widget Function(Offset anchor)? activeConstraintOverlayItemBuilder;
 
   /// P8: colour/opacity of [sketchPlaneBasis]'s own rendered surface (see
   /// [buildSketchPlaneSurfaceNode]) - only rendered while [sketchPlaneBasis]
@@ -496,6 +526,8 @@ class PartViewport extends StatefulWidget {
     this.onConstraintOverlayItemTap,
     this.isDraggingConstraintLabel = false,
     this.onConstraintLabelDragDelta,
+    this.activeConstraintOverlayItemId,
+    this.activeConstraintOverlayItemBuilder,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
     this.sketchPlaneSurfaceOpacity = 0.18,
     this.sketchPlaneGridVisible = false,
@@ -686,12 +718,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// off (so the crosshair overlay in [build] hides entirely) or before the
   /// first `didUpdateWidget` entry into selection mode has had a chance to
   /// set it to the viewport centre.
+  ///
+  /// P43/P44 bug fix (on-device feedback: toggling the drag-mode FAB, or
+  /// entering any tool, made the cursor visibly jump - "the cursor should
+  /// not appear to change location to the user"): this used to be two
+  /// separate fields, one for [PartViewport.selectionMode] and one for
+  /// [PartViewport.drawCursorMode] (P16's own `_drawCursorPosition`) - since
+  /// the two modes are always mutually exclusive (never both true at once;
+  /// see [PartViewport.drawCursorMode]'s own doc comment for the full
+  /// mode table), a *fresh-looking* jump was unavoidable with two separate
+  /// fields no matter how carefully `didUpdateWidget` tried to hand a
+  /// position across between them (a fallback chain between two stale
+  /// values is still a jump the moment either value goes stale) - merged
+  /// into this one field instead, so there is nothing to hand across at
+  /// all: whichever mode is active just keeps reading/writing the same
+  /// position the other one already left it at.
   Offset? _cursorPosition;
-
-  /// P16: the [PartViewport.drawCursorMode] equivalent of [_cursorPosition] -
-  /// null whenever draw-cursor mode is off or before `didUpdateWidget`'s
-  /// entry has set it to the viewport centre.
-  Offset? _drawCursorPosition;
 
   /// P16: the draw cursor's current resolved hit on
   /// [PartViewport.sketchPlaneBasis] (via [hitTestSketchPlane]) - null if the
@@ -901,22 +943,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.selectionMode != oldWidget.selectionMode) {
       setState(() {
         if (widget.selectionMode) {
-          // P34 bug fix (on-device feedback: toggling the Orbit/Cursor FAB
-          // made the cursor visibly jump back to centre every time):
-          // restores its own remembered position if it has one; otherwise
-          // - on-device feedback follow-up: still jumped switching between
-          // Select and drag mode, since drag mode's own commit path
-          // actually runs through [_drawCursorPosition] (see
-          // [PartViewport.drawCursorMode]'s own doc comment on why drag
-          // mode counts as `drawCursorMode` too), a *different* field with
-          // no memory of where the Select-mode cursor just was - falls back
-          // to [_drawCursorPosition]'s current value (the field that was
-          // just active, if this is exactly that kind of cross-gate
-          // switch), and only then viewport centre, on this instance's
-          // very first activation of either. Re-clamped in case the
-          // viewport was resized (e.g. a rotation) while the cursor was
-          // hidden.
-          _cursorPosition = _clampToViewport(_cursorPosition ?? _drawCursorPosition ?? _viewportCenter());
+          // P34/P44 fix (on-device feedback: toggling the Orbit/Cursor FAB
+          // made the cursor visibly jump): [_cursorPosition] is now the
+          // single field shared with [PartViewport.drawCursorMode] (see its
+          // own field doc comment for why the merge is safe - the two modes
+          // are always mutually exclusive), so entering selection mode just
+          // keeps reading whatever position the other mode already left it
+          // at; only ever defaults to viewport centre the very first time
+          // either mode is activated. Re-clamped in case the viewport was
+          // resized (e.g. a rotation) while the cursor was hidden.
+          _cursorPosition = _clampToViewport(_cursorPosition ?? _viewportCenter());
           _recomputeHover();
         } else {
           // Item 1: leaving selection mode still hides the crosshair
@@ -938,16 +974,26 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.drawCursorMode != oldWidget.drawCursorMode) {
       setState(() {
         if (widget.drawCursorMode) {
-          // P34/P43 fix: mirrors the selectionMode block above (including
-          // its own cross-gate fallback to `_cursorPosition` - see that
-          // block's own doc comment for exactly why, e.g. Select mode's
-          // cursor handing off to drag mode's) instead of always resetting
-          // to viewport centre.
-          _drawCursorPosition = _clampToViewport(_drawCursorPosition ?? _cursorPosition ?? _viewportCenter());
+          // P34/P44 fix: mirrors the selectionMode block above - reads the
+          // same shared `_cursorPosition` field, so entering any tool (or
+          // drag mode) keeps the cursor exactly where selection mode left
+          // it instead of jumping.
+          _cursorPosition = _clampToViewport(_cursorPosition ?? _viewportCenter());
           _recomputeDrawCursor();
+          // P46: entering a tool should show the entity hover-highlight
+          // straight away, at wherever the cursor already is - not just
+          // wait for the first move/hover event.
+          _recomputeHover();
         } else {
           _drawCursorWorldHit = null;
+          // Guarded on `!widget.selectionMode`: when a tool hands off
+          // straight to Select mode (both flags flip in the same
+          // didUpdateWidget pass), the selectionMode block above already
+          // ran first and computed the correct hover for its own mode -
+          // clearing it here unconditionally would stomp that.
+          if (!widget.selectionMode) _hoverHit = null;
         }
+        _syncHoverNode();
       });
     }
     if (widget.selectedEntities != oldWidget.selectedEntities) {
@@ -2104,10 +2150,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// into this State.
   void _handleDrawCursorMove(Offset delta) {
     final scaledDelta = delta * _cursorDragSensitivity;
-    final current = _drawCursorPosition ?? _viewportCenter();
+    final current = _cursorPosition ?? _viewportCenter();
     setState(() {
-      _drawCursorPosition = _clampToViewport(current + scaledDelta);
+      _cursorPosition = _clampToViewport(current + scaledDelta);
       _recomputeDrawCursor();
+      // P46 bug fix (on-device feedback: "when i enter the dimension tool,
+      // dynamic highlight stops working"): drawCursorMode never ran an
+      // entity-level hover-hit-test at all (only the plane raycast above,
+      // for placing/picking a point on the sketch plane itself) - reuses
+      // [_recomputeHover]/[_syncHoverNode] exactly as selectionMode already
+      // does (see [_handleSelectionPointerMove]), safe now that both modes
+      // share the same [_cursorPosition] field.
+      _recomputeHover();
+      _syncHoverNode();
     });
     // P41: a grabbed constraint label's own offset lives in screen space,
     // not an absolute world/sketch position - see
@@ -2125,8 +2180,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_recomputeDrawCursor].
   void _handleDrawCursorHover(Offset localPosition) {
     setState(() {
-      _drawCursorPosition = _clampToViewport(localPosition);
+      _cursorPosition = _clampToViewport(localPosition);
       _recomputeDrawCursor();
+      // P46: see [_handleDrawCursorMove]'s own doc comment on this pair.
+      _recomputeHover();
+      _syncHoverNode();
     });
     final resolved = _drawCursorWorldHit;
     if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
@@ -2148,7 +2206,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// the genuinely pointer-event-driven callers above, which run outside
   /// any build phase.
   void _recomputeDrawCursor() {
-    final cursor = _drawCursorPosition;
+    final cursor = _cursorPosition;
     final basis = widget.sketchPlaneBasis;
     if (cursor == null || basis == null) {
       _drawCursorWorldHit = null;
@@ -2165,7 +2223,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _commitDrawCursor() {
     if (widget.preferConstraintOverlayHitOnCommit && widget.onConstraintOverlayItemTap != null) {
       final basis = widget.sketchPlaneBasis;
-      final cursor = _drawCursorPosition;
+      final cursor = _cursorPosition;
       final hitId = (basis != null && cursor != null)
           ? constraintOverlayItemAt(_camera.cameraFor(_viewportSize), _viewportSize, basis, widget.constraintOverlayItems, cursor)
           : null;
@@ -2596,6 +2654,35 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 basis: widget.sketchPlaneBasis!,
                 items: widget.constraintOverlayItems,
               ),
+            // P44b (on-device feedback: "when I click a ghost dimension to
+            // set its value, nothing happens"): the embedded view never had
+            // any widget rendering an active ghost's value-entry box at all
+            // - resolves the same live anchor [_commitDrawCursor]'s own
+            // hit-test uses, then hands off to the caller's own builder
+            // (see [PartViewport.activeConstraintOverlayItemBuilder]'s own
+            // doc comment for why this stays a builder rather than a
+            // hardcoded `SketchController`-aware widget here).
+            if (widget.sketchPlaneBasis != null &&
+                widget.activeConstraintOverlayItemId != null &&
+                widget.activeConstraintOverlayItemBuilder != null)
+              Builder(builder: (context) {
+                ConstraintOverlayItem? item;
+                for (final candidate in widget.constraintOverlayItems) {
+                  if (candidate.constraintId == widget.activeConstraintOverlayItemId) {
+                    item = candidate;
+                    break;
+                  }
+                }
+                if (item == null) return const SizedBox.shrink();
+                final anchor = constraintOverlayItemLabelCenter(
+                  _camera.cameraFor(size),
+                  size,
+                  widget.sketchPlaneBasis!,
+                  item,
+                );
+                if (anchor == null) return const SizedBox.shrink();
+                return widget.activeConstraintOverlayItemBuilder!(anchor);
+              }),
             if (widget.selectionMode && _cursorPosition != null)
               IgnorePointer(
                 child: CustomPaint(
@@ -2629,12 +2716,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // [PartViewport.drawCursorHoverColor]'s own doc comment - Trim/
             // Extend now shares this same crosshair but with 2D's own
             // red-for-non-draw tint instead).
-            if (widget.drawCursorMode && _drawCursorPosition != null)
+            if (widget.drawCursorMode && _cursorPosition != null)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,
                   painter: _CursorCrosshairPainter(
-                    position: _drawCursorPosition!,
+                    position: _cursorPosition!,
                     hasHover: _drawCursorWorldHit != null,
                     hoverColor: widget.drawCursorHoverColor ?? const Color(0xFF4CAF50),
                   ),

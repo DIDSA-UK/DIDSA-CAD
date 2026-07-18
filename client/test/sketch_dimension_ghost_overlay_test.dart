@@ -56,6 +56,29 @@ void main() {
     expect(radiusItem.rim, (14.0, 10.0));
   });
 
+  test(
+      'P47 bug fix: radius and diameter ghosts get distinct default labelOffsets, so their '
+      'computed label positions never collide and diameter never silently wins every hit-test',
+      () async {
+    controller.points['center'] = const SketchPointView(id: 'center', x: 10, y: 10);
+    controller.points['rim'] = const SketchPointView(id: 'rim', x: 14, y: 10);
+    controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(10 + 4 * 0.70710678, 10 + 4 * 0.70710678);
+
+    final items = controller.dimensionGhostOverlayItems();
+    final radial = items.cast<ConstraintRadialDimensionItem>();
+    final radiusItem = radial.singleWhere((i) => !i.isDiameter);
+    final diameterItem = radial.singleWhere((i) => i.isDiameter);
+    // Same center/rim (so the same base direction/radius), yet a different
+    // labelOffset is enough on its own to guarantee a different final
+    // label position regardless of camera angle - see
+    // dimensionGhostOverlayItems' own P47 doc comment.
+    expect(radiusItem.center, diameterItem.center);
+    expect(radiusItem.rim, diameterItem.rim);
+    expect(radiusItem.labelOffset, isNot(diameterItem.labelOffset));
+  });
+
   test('the active ghost (tapGhost) is flagged selected; its siblings are not', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 0, y: 0);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 3, y: 0);

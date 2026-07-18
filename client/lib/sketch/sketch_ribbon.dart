@@ -207,6 +207,8 @@ class SketchRibbon extends StatelessWidget {
       // uses, since this button is a fast path into that exact tool (see
       // [SketchController.addRadiusDimensionFor]'s own doc comment).
       ConstraintOptionType.radius => 'assets/icons/actions/action_dimensions.svg',
+      // P45: same fast-path-into-Dimension-mode rationale as radius above.
+      ConstraintOptionType.diameter => 'assets/icons/actions/action_dimensions.svg',
     };
   }
 }

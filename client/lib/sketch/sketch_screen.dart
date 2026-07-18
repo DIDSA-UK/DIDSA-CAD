@@ -982,6 +982,8 @@ class _SketchScreenState extends State<SketchScreen> {
         onConstraintOverlayItemTap: _handleEmbeddedConstraintOverlayTap,
         isDraggingConstraintLabel: _controller.draggingLabelId != null,
         onConstraintLabelDragDelta: _controller.updateLabelDrag,
+        activeConstraintOverlayItemId: _controller.activeGhostKey,
+        activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
         sketchEntityColors: _embeddedSketchEntityColors,
         referencePlanesHidden: true,
@@ -1268,6 +1270,30 @@ class _SketchScreenState extends State<SketchScreen> {
       }
     }
     return false;
+  }
+
+  /// P44b: [PartViewport.activeConstraintOverlayItemBuilder] - the embedded
+  /// view's own [GhostValueEditor] (the same widget `sketch_canvas.dart`'s
+  /// flat 2D view already renders), anchored wherever [PartViewport] itself
+  /// resolved the active ghost's current on-screen label position to. Only
+  /// ever invoked while [PartViewport.activeConstraintOverlayItemId] is
+  /// non-null (see that field's own doc comment), but still defensively
+  /// re-checks [SketchController.activeGhostKey]/[SketchController.ghosts]
+  /// membership itself - the two widgets rebuild from independent
+  /// `AnimatedBuilder`s, so a ghost cancelled/confirmed one frame earlier
+  /// could otherwise still be looked up here on a stale frame.
+  Widget _buildActiveGhostValueEditor(Offset anchor) {
+    final key = _controller.activeGhostKey;
+    if (key == null) return const SizedBox.shrink();
+    DimensionGhost? ghost;
+    for (final candidate in _controller.ghosts) {
+      if (candidate.key == key) {
+        ghost = candidate;
+        break;
+      }
+    }
+    if (ghost == null) return const SizedBox.shrink();
+    return GhostValueEditor(key: ValueKey(key), controller: _controller, ghost: ghost, anchor: anchor);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates

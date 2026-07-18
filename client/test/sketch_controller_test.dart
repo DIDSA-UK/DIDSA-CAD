@@ -2032,8 +2032,9 @@ void main() {
   );
 
   test(
-    'P35: availableConstraintOptions offers Radius for a lone Circle with no dimension yet, '
-    'and addRadiusDimensionFor jumps straight into Dimension mode with it pre-picked',
+    'P35/P45: availableConstraintOptions offers Radius and Diameter for a lone Circle with no '
+    'dimension yet, and addRadiusDimensionFor jumps straight into Dimension mode with it '
+    'pre-picked and the matching ghost pre-activated',
     () async {
       controller.selectDrawTool(SketchTool.circle);
       await controller.handleCanvasTap(0, 0);
@@ -2042,8 +2043,8 @@ void main() {
 
       controller.selectEntity(SketchSelection(kind: SelectionKind.circle, id: circleId));
       final options = controller.availableConstraintOptions;
-      expect(options, hasLength(1));
-      expect(options.single.type, ConstraintOptionType.radius);
+      expect(options, hasLength(2));
+      expect(options.map((o) => o.type), [ConstraintOptionType.radius, ConstraintOptionType.diameter]);
 
       await controller.applyConstraintOption(ConstraintOptionType.radius);
 
@@ -2052,6 +2053,24 @@ void main() {
       expect(controller.dimensionSelection.single.kind, SelectionKind.circle);
       expect(controller.dimensionSelection.single.id, circleId);
       expect(controller.ghosts, isNotEmpty);
+      expect(controller.activeGhostKey, 'radius');
+    },
+  );
+
+  test(
+    'P45: applyConstraintOption(diameter) jumps into Dimension mode with the diameter ghost '
+    'pre-activated instead of radius',
+    () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      final circleId = controller.circles.keys.single;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.circle, id: circleId));
+      await controller.applyConstraintOption(ConstraintOptionType.diameter);
+
+      expect(controller.mode, SketchMode.dimension);
+      expect(controller.activeGhostKey, 'diameter');
     },
   );
 

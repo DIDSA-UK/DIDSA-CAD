@@ -871,6 +871,7 @@ enum ConstraintOptionType {
   equalRadius,
   tangent,
   radius,
+  diameter,
 }
 
 class ConstraintOption {
@@ -5043,11 +5044,18 @@ class SketchController extends ChangeNotifier {
     // conflicting second one; the existing one is edited via its own label
     // drag/ribbon value box instead, same as every other confirmed
     // dimension already is).
+    // P45 (on-device feedback: "it should also offer add radius and add
+    // diameter" - a single generic Radius button couldn't express which
+    // display mode the user actually wanted): offers both as their own
+    // direct actions, each jumping straight into that specific ghost's
+    // value entry (see [addRadiusDimensionFor]'s `diameter` param), same as
+    // `Length`'s own single-purpose chip does for a Line.
     if (sel.length == 1 &&
         (sel.first.kind == SelectionKind.circle || sel.first.kind == SelectionKind.arc) &&
         !_hasRadiusDimension(sel.first)) {
       return const [
         ConstraintOption(type: ConstraintOptionType.radius, label: 'Radius', wired: true),
+        ConstraintOption(type: ConstraintOptionType.diameter, label: 'Diameter', wired: true),
       ];
     }
 
@@ -5115,6 +5123,9 @@ class SketchController extends ChangeNotifier {
       case ConstraintOptionType.radius:
         await addRadiusDimensionFor(_selectionSet.first);
         break;
+      case ConstraintOptionType.diameter:
+        await addRadiusDimensionFor(_selectionSet.first, diameter: true);
+        break;
       default:
         break;
     }
@@ -5146,7 +5157,15 @@ class SketchController extends ChangeNotifier {
   /// ([SketchDimensionBar], [_rebuildDimensionGhosts], [confirmGhostValue])
   /// already works completely unmodified - this only ever fast-forwards
   /// into that same flow, never duplicates any of its logic.
-  Future<void> addRadiusDimensionFor(SketchSelection selection) async {
+  ///
+  /// P45 [diameter] param (on-device feedback: the ribbon's "Radius"/
+  /// "Diameter" chips should each add *that* specific dimension, not just
+  /// drop the user into Dimension mode to pick one themselves): immediately
+  /// activates the matching ghost's own value entry via [tapGhost], the
+  /// same state a user reaches by tapping that ghost label by hand -
+  /// mirrors how `Length`'s own ribbon chip for a Line jumps straight to
+  /// value entry instead of stopping short of it.
+  Future<void> addRadiusDimensionFor(SketchSelection selection, {bool diameter = false}) async {
     if (_busy || _sketchId == null) return;
     if (selection.kind != SelectionKind.circle && selection.kind != SelectionKind.arc) return;
     dropGrabbedEntity();
@@ -5160,6 +5179,10 @@ class SketchController extends ChangeNotifier {
       ..add(selection);
     _activeGhostKey = null;
     _rebuildDimensionGhosts();
+    final key = diameter ? 'diameter' : 'radius';
+    if (_ghosts.any((g) => g.key == key)) {
+      _activeGhostKey = key;
+    }
     notifyListeners();
   }
 
@@ -8255,6 +8278,23 @@ class SketchController extends ChangeNotifier {
           final rim = points[ghost.pointBId];
           if (center == null || rim == null) continue;
           final isDiameter = ghost.kind == GhostKind.diameter;
+          // P47 bug fix (on-device feedback: "when I chose a circle in the
+          // dimension tool, I am offered diameter as an option but I should
+          // also be offered radius"): the radius and diameter ghosts share
+          // the exact same center/rim, so with no drag yet on either
+          // (`labelOffset` both [Offset.zero]) their computed screen-space
+          // label centers land exactly on top of each other -
+          // `constraintOverlayItemAt`'s reversed hit-test order always
+          // resolves that shared spot to whichever was appended last
+          // (diameter), so radius was never reachable. Nudges diameter's
+          // own *default* position (only before the user has ever dragged
+          // it - a real drag always wins via `labelOffsetFor`) away from
+          // radius's, purely so both start out independently visible/
+          // tappable; an arbitrary fixed pixel offset is enough since any
+          // nonzero constant added on top of a generically-angled default
+          // direction lands somewhere different, regardless of camera angle.
+          final defaultNudge =
+              isDiameter && !_labelOffsets.containsKey(ghost.key) ? const Offset(0, 44) : Offset.zero;
           items.add(ConstraintRadialDimensionItem(
             constraintId: ghost.key,
             selected: isActive,
@@ -8263,7 +8303,7 @@ class SketchController extends ChangeNotifier {
             radius: _sketchPointDistanceXY(center, rim),
             isDiameter: isDiameter,
             text: isDiameter ? '⌀?' : '?',
-            labelOffset: labelOffset,
+            labelOffset: labelOffset + defaultNudge,
           ));
         case GhostKind.lineDistance:
           final lineA = lines[ghost.lineAId];

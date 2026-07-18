@@ -12,14 +12,16 @@ void main() {
     controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
   });
 
-  test('a lone Circle with no radius dimension yet offers a Radius option', () {
+  test('a lone Circle with no radius dimension yet offers Radius and Diameter options', () {
     controller.selectEntity(const SketchSelection(kind: SelectionKind.circle, id: 'circ'));
 
     final options = controller.availableConstraintOptions;
 
-    expect(options, hasLength(1));
-    expect(options.single.type, ConstraintOptionType.radius);
-    expect(options.single.wired, isTrue);
+    expect(options, hasLength(2));
+    expect(options[0].type, ConstraintOptionType.radius);
+    expect(options[0].wired, isTrue);
+    expect(options[1].type, ConstraintOptionType.diameter);
+    expect(options[1].wired, isTrue);
   });
 
   test('a Circle that already has a radius dimension offers nothing', () {
@@ -30,7 +32,7 @@ void main() {
     expect(controller.availableConstraintOptions, isEmpty);
   });
 
-  test('a lone Arc with no radius dimension yet also offers a Radius option', () {
+  test('a lone Arc with no radius dimension yet also offers Radius and Diameter options', () {
     controller.points['arcCenter'] = const SketchPointView(id: 'arcCenter', x: 10, y: 10);
     controller.points['arcStart'] = const SketchPointView(id: 'arcStart', x: 14, y: 10);
     controller.points['arcEnd'] = const SketchPointView(id: 'arcEnd', x: 10, y: 14);
@@ -39,8 +41,9 @@ void main() {
     controller.selectEntity(const SketchSelection(kind: SelectionKind.arc, id: 'arc1'));
 
     final options = controller.availableConstraintOptions;
-    expect(options, hasLength(1));
-    expect(options.single.type, ConstraintOptionType.radius);
+    expect(options, hasLength(2));
+    expect(options[0].type, ConstraintOptionType.radius);
+    expect(options[1].type, ConstraintOptionType.diameter);
   });
 
   // addRadiusDimensionFor's own mode-transition behavior needs a real

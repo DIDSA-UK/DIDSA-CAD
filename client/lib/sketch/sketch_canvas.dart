@@ -811,7 +811,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                 if (ghost == null) return const SizedBox.shrink();
                 final layout = _layoutGhost(widget.controller, transform, ghost);
                 if (layout == null) return const SizedBox.shrink();
-                return _GhostValueEditor(
+                return GhostValueEditor(
                   key: ValueKey(key),
                   controller: widget.controller,
                   ghost: ghost,
@@ -1678,13 +1678,19 @@ String? _constraintIdAt(SketchController controller, ViewTransform transform, Of
 /// [SketchController.activeGhostKey] (Stage 13 item 5) - prefilled with the
 /// ghost's live geometric value (see [SketchController.currentGhostValue]),
 /// confirming via [SketchController.confirmGhostValue] on submit/tap, or
-/// dismissing via [SketchController.cancelGhostEdit].
-class _GhostValueEditor extends StatefulWidget {
+/// dismissing via [SketchController.cancelGhostEdit]. Public (P44b) so the
+/// embedded 3D Orbit View (`sketch_screen.dart`, via `PartViewport.
+/// activeConstraintOverlayItemBuilder`) can reuse this exact widget with
+/// its own screen-space anchor, rather than duplicating it - only [anchor]
+/// itself differs between the two call sites (flat [ViewTransform]-derived
+/// vs 3D camera-projection-derived), everything else here is renderer-
+/// agnostic already.
+class GhostValueEditor extends StatefulWidget {
   final SketchController controller;
   final DimensionGhost ghost;
   final Offset anchor;
 
-  const _GhostValueEditor({
+  const GhostValueEditor({
     super.key,
     required this.controller,
     required this.ghost,
@@ -1692,10 +1698,10 @@ class _GhostValueEditor extends StatefulWidget {
   });
 
   @override
-  State<_GhostValueEditor> createState() => _GhostValueEditorState();
+  State<GhostValueEditor> createState() => _GhostValueEditorState();
 }
 
-class _GhostValueEditorState extends State<_GhostValueEditor> {
+class _GhostValueEditorState extends State<GhostValueEditor> {
   late final TextEditingController _text;
   final FocusNode _focusNode = FocusNode();
 
