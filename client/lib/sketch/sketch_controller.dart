@@ -5175,6 +5175,20 @@ class SketchController extends ChangeNotifier {
   /// [availableConstraintOptions]'s own "does [selection] already have a
   /// radius/diameter dimension" check - true if any [DistanceConstraintDto]
   /// resolves to it via [circleForDistanceConstraint]/[arcForDistanceConstraint].
+  ///
+  /// P44d bug fix (on-device feedback: "can't see the new buttons" -
+  /// reproduced on a *freshly drawn* Circle too, not just an old one): the
+  /// centre-point circle tool's own always-zero cardinal axis pin (see
+  /// [isCardinalAxisConstraint]'s own doc comment - center->north carries
+  /// two distinct DistanceConstraints sharing the exact same point pair,
+  /// the real radius one and this always-zero structural one) is *not*
+  /// provisional, so without this check it always satisfied the loop below
+  /// on its own, making every Circle drawn via the standard tool look
+  /// permanently "already dimensioned" - hiding Radius/Diameter forever,
+  /// even on one just placed. [constraintOverlayItems] already had to skip
+  /// this same category for the identical reason (see its own
+  /// `isCardinalAxisConstraint` check); this brings [_hasRadiusDimension]
+  /// in line with it.
   bool _hasRadiusDimension(SketchSelection selection) {
     for (final constraint in constraints.values) {
       if (constraint is! DistanceConstraintDto) continue;
@@ -5183,6 +5197,7 @@ class SketchController extends ChangeNotifier {
       // must not itself count as "already has a dimension" here, or the
       // Radius option would never be offered on anything just drawn.
       if (constraint.provisional) continue;
+      if (isCardinalAxisConstraint(constraint)) continue;
       final ownerId = circleForDistanceConstraint(constraint)?.id ?? arcForDistanceConstraint(constraint)?.id;
       if (ownerId == selection.id) return true;
     }

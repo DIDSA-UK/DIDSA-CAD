@@ -32,6 +32,43 @@ void main() {
     expect(controller.availableConstraintOptions, isEmpty);
   });
 
+  test(
+      'P44d bug fix: a freshly-drawn Circle from the centre-point tool (whose radius Point is also '
+      'its own north cardinal point) still offers Radius/Diameter, even though the backend auto-adds '
+      'a second, non-provisional, always-zero axis-pin DistanceConstraint sharing the exact same '
+      'center/rim point pair as the real radius constraint - on-device feedback: "can\'t see the new '
+      'buttons", reproduced on a circle drawn moments earlier, not just an old already-dimensioned one',
+      () {
+    // Mirrors Sketch.add_circle's own `radius_point_is_north` branch
+    // (backend/app/sketch/models.py): the radius Point doubles as the
+    // circle's own north cardinal point, and the backend creates an
+    // always-zero, non-provisional axis-pin DistanceConstraint between
+    // that exact same (center, rim) pair - completely separate from (and
+    // in addition to) the real, still-provisional radius constraint every
+    // circle also gets.
+    controller.circles['circ'] = const SketchCircleView(
+      id: 'circ',
+      centerPointId: 'center',
+      radiusPointId: 'rim',
+      cardinalPointIds: ['rim'],
+    );
+    controller.constraints['radius0'] =
+        const DistanceConstraintDto(id: 'radius0', pointAId: 'center', pointBId: 'rim', distance: 4.0, provisional: true);
+    controller.constraints['axisPin'] = const DistanceConstraintDto(
+      id: 'axisPin',
+      pointAId: 'center',
+      pointBId: 'rim',
+      distance: 0.0,
+      orientation: 'vertical',
+    );
+    controller.selectEntity(const SketchSelection(kind: SelectionKind.circle, id: 'circ'));
+
+    final options = controller.availableConstraintOptions;
+    expect(options, hasLength(2));
+    expect(options[0].type, ConstraintOptionType.radius);
+    expect(options[1].type, ConstraintOptionType.diameter);
+  });
+
   test('a lone Arc with no radius dimension yet also offers Radius and Diameter options', () {
     controller.points['arcCenter'] = const SketchPointView(id: 'arcCenter', x: 10, y: 10);
     controller.points['arcStart'] = const SketchPointView(id: 'arcStart', x: 14, y: 10);
