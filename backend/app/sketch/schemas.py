@@ -163,24 +163,13 @@ class OffsetLineResponse(BaseModel):
     start_point: PointResponse
     end_point: PointResponse
 
-
-class OffsetCircleResponse(BaseModel):
-    """`Sketch.offset_circle` always reuses the *same* center Point (see
-    its own doc comment - concentric is unambiguous) - only `radius_point`
-    is ever new, so that's the only Point bundled here."""
-
-    circle: CircleResponse
-    radius_point: PointResponse
-
-
-class OffsetArcResponse(BaseModel):
-    """`Sketch.offset_arc`'s own sibling to `OffsetLineResponse` - the
-    center Point is reused unchanged (same reasoning as
-    `OffsetCircleResponse`), but the start/end Points are always fresh."""
-
-    arc: ArcResponse
-    start_point: PointResponse
-    end_point: PointResponse
+# `OffsetCircleResponse`/`OffsetArcResponse` (referencing `CircleResponse`/
+# `ArcResponse`) live further down this file, right after those two are
+# defined - Pydantic evaluates field type annotations at class-definition
+# time (no `from __future__ import annotations` here), so a forward
+# reference to a not-yet-defined class raises `NameError` at import, same
+# pitfall `SketchEntityRefSchema`'s own doc comment already documents for
+# this exact file.
 
 
 class LineSplitTrimRequest(BaseModel):
@@ -283,6 +272,28 @@ class ArcResponse(BaseModel):
     end_point_id: str
     radius: float
     construction: bool = False
+
+
+class OffsetCircleResponse(BaseModel):
+    """Offset Entities' Circle-shaped sibling to `OffsetLineResponse` (see
+    that class's own doc comment for why this lives here, after
+    `CircleResponse`, rather than back with `OffsetRequest`/
+    `OffsetLineResponse`) - `Sketch.offset_circle` always reuses the
+    *same* center Point (concentric is unambiguous), so only
+    `radius_point` is ever new and needs bundling here."""
+
+    circle: CircleResponse
+    radius_point: PointResponse
+
+
+class OffsetArcResponse(BaseModel):
+    """Offset Entities' Arc-shaped sibling to `OffsetCircleResponse` (same
+    "lives after `ArcResponse`" reasoning) - the center Point is reused
+    unchanged, but the start/end Points are always fresh."""
+
+    arc: ArcResponse
+    start_point: PointResponse
+    end_point: PointResponse
 
 
 class ArcUpdate(BaseModel):
