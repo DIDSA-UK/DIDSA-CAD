@@ -126,6 +126,48 @@ class LineTrimResponse(BaseModel):
     created_new_point: bool
 
 
+class OffsetRequest(BaseModel):
+    """Sketcher-roadmap Phase 9 v1 (Offset Entities): shared payload for
+    `POST .../lines/{id}/offset`, `.../circles/{id}/offset`, and
+    `.../arcs/{id}/offset` - see `Sketch.offset_line`/`offset_circle`/
+    `offset_arc`'s own doc comments for the sign convention and what a
+    negative `distance` means for each entity kind."""
+
+    distance: float
+    construction: bool = False
+
+
+class OffsetLineResponse(BaseModel):
+    """`Sketch.offset_line` always creates two brand-new Points (or reuses
+    existing ones via `add_or_reuse_point`) that the client has no other
+    way to learn the coordinates of - bundled here the same way
+    `ExternalEdgeReferenceResponse`/`LineTrimResponse` already bundle
+    whatever new Point data their own callers need, in one round trip."""
+
+    line: LineResponse
+    start_point: PointResponse
+    end_point: PointResponse
+
+
+class OffsetCircleResponse(BaseModel):
+    """`Sketch.offset_circle` always reuses the *same* center Point (see
+    its own doc comment - concentric is unambiguous) - only `radius_point`
+    is ever new, so that's the only Point bundled here."""
+
+    circle: CircleResponse
+    radius_point: PointResponse
+
+
+class OffsetArcResponse(BaseModel):
+    """`Sketch.offset_arc`'s own sibling to `OffsetLineResponse` - the
+    center Point is reused unchanged (same reasoning as
+    `OffsetCircleResponse`), but the start/end Points are always fresh."""
+
+    arc: ArcResponse
+    start_point: PointResponse
+    end_point: PointResponse
+
+
 class LineSplitTrimRequest(BaseModel):
     """On-device feedback follow-up: where on the Line the user actually
     clicked (sketch-space coordinates, not necessarily exactly on the Line

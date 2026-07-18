@@ -170,6 +170,39 @@ class ArcTrimResultDto {
       );
 }
 
+/// Sketcher-roadmap Phase 9 v1 (Offset Entities): the wire counterpart to
+/// the backend's `OffsetCircleResponse` - bundles the offset Circle
+/// alongside its own freshly-materialized `radius_point` (the center Point
+/// is always reused unchanged, so the client already has it). See
+/// [SketchApiClient.offsetCircle].
+class OffsetCircleResultDto {
+  final CircleDto circle;
+  final PointDto radiusPoint;
+
+  OffsetCircleResultDto({required this.circle, required this.radiusPoint});
+
+  factory OffsetCircleResultDto.fromJson(Map<String, dynamic> json) => OffsetCircleResultDto(
+        circle: CircleDto.fromJson(json['circle'] as Map<String, dynamic>),
+        radiusPoint: PointDto.fromJson(json['radius_point'] as Map<String, dynamic>),
+      );
+}
+
+/// [OffsetCircleResultDto]'s Arc-shaped sibling - the wire counterpart to
+/// `OffsetArcResponse`. See [SketchApiClient.offsetArc].
+class OffsetArcResultDto {
+  final ArcDto arc;
+  final PointDto startPoint;
+  final PointDto endPoint;
+
+  OffsetArcResultDto({required this.arc, required this.startPoint, required this.endPoint});
+
+  factory OffsetArcResultDto.fromJson(Map<String, dynamic> json) => OffsetArcResultDto(
+        arc: ArcDto.fromJson(json['arc'] as Map<String, dynamic>),
+        startPoint: PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
+        endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
+      );
+}
+
 class CircleDto {
   final String id;
   final String centerPointId;
@@ -1565,6 +1598,45 @@ class SketchApiClient {
               body: jsonEncode({'click_x': clickX, 'click_y': clickY}),
             ),
         (body) => ArcDto.fromJson((body as Map<String, dynamic>)['arc'] as Map<String, dynamic>),
+      );
+
+  /// Sketcher-roadmap Phase 9 v1 (Offset Entities): a new, real Line
+  /// parallel to [lineId] - see the backend's `Sketch.offset_line` for the
+  /// sign convention (positive = left of travel direction, negative =
+  /// right) and v1's single-entity (no corner-join) scope. Reuses
+  /// [ExternalEdgeReferenceDto] for the response - `OffsetLineResponse`'s
+  /// wire shape (`line`/`start_point`/`end_point`) is identical.
+  Future<ExternalEdgeReferenceDto> offsetLine(String sketchId, String lineId, double distance) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/lines/$lineId/offset'),
+              headers: _headers,
+              body: jsonEncode({'distance': distance}),
+            ),
+        (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Offset Entities' Circle-shaped sibling to [offsetLine] - a new,
+  /// concentric Circle (same center Point) at `radius + distance`. See the
+  /// backend's `Sketch.offset_circle`.
+  Future<OffsetCircleResultDto> offsetCircle(String sketchId, String circleId, double distance) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/circles/$circleId/offset'),
+              headers: _headers,
+              body: jsonEncode({'distance': distance}),
+            ),
+        (body) => OffsetCircleResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Offset Entities' Arc-shaped sibling to [offsetCircle] - a new,
+  /// concentric Arc at `radius + distance`, same sweep. See the backend's
+  /// `Sketch.offset_arc`.
+  Future<OffsetArcResultDto> offsetArc(String sketchId, String arcId, double distance) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/arcs/$arcId/offset'),
+              headers: _headers,
+              body: jsonEncode({'distance': distance}),
+            ),
+        (body) => OffsetArcResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<void> deleteCircle(String sketchId, String circleId) => _send(

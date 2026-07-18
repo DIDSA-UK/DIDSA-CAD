@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -104,6 +106,22 @@ class SketchRibbon extends StatelessWidget {
           onTap: controller.busy
               ? null
               : () => _showSetLengthDialog(context, controller, selectionSet.first.id),
+        ),
+      // Sketcher-roadmap Phase 9 v1 (Offset Entities): a single selected
+      // Line/Circle/Arc offers "Offset" - creates a new, real, parallel
+      // (or concentric) copy at a signed distance. See `SketchController.
+      // offsetLine`/`offsetCircle`/`offsetArc`'s own doc comments for the
+      // sign convention per entity kind.
+      if (selectionSet.length == 1 &&
+          (selectionSet.first.kind == SelectionKind.line ||
+              selectionSet.first.kind == SelectionKind.circle ||
+              selectionSet.first.kind == SelectionKind.arc))
+        _RibbonActionChip(
+          svgAsset: 'assets/icons/ribbon/ribbon_offset.svg',
+          label: 'Offset',
+          onTap: controller.busy
+              ? null
+              : () => _showOffsetDialog(context, controller, selectionSet.first),
         ),
       // A Text entity has no draggable/tap-driven way to change its own
       // content/size/rotation at all (unlike every geometric entity here,
@@ -402,6 +420,110 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
         FilledButton(
           onPressed: _submit,
           child: const Text('Set'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Sketcher-roadmap Phase 9 v1 (Offset Entities): prompts for a signed
+/// offset distance, then dispatches to [SketchController.offsetLine]/
+/// [offsetCircle]/[offsetArc] depending on [entity]'s own kind - mirrors
+/// [_showSetLengthDialog]'s "read, edit, commit" shape, but with no
+/// current-value pre-fill (there is no single "current offset" a fresh
+/// copy has) and a different validity rule (only exactly zero is
+/// rejected - negative is meaningful, see each of those methods' own sign
+/// convention doc comments).
+Future<void> _showOffsetDialog(
+  BuildContext context,
+  SketchController controller,
+  SketchSelection entity,
+) async {
+  final textController = TextEditingController();
+  final value = await showDialog<double>(
+    context: context,
+    builder: (context) => _OffsetDialog(textController: textController),
+  );
+  textController.dispose();
+  if (!context.mounted) return;
+  if (value == null) return;
+  switch (entity.kind) {
+    case SelectionKind.line:
+      unawaited(controller.offsetLine(entity.id, value));
+    case SelectionKind.circle:
+      unawaited(controller.offsetCircle(entity.id, value));
+    case SelectionKind.arc:
+      unawaited(controller.offsetArc(entity.id, value));
+    default:
+      break;
+  }
+}
+
+class _OffsetDialog extends StatefulWidget {
+  final TextEditingController textController;
+
+  const _OffsetDialog({required this.textController});
+
+  @override
+  State<_OffsetDialog> createState() => _OffsetDialogState();
+}
+
+class _OffsetDialogState extends State<_OffsetDialog> {
+  String? _error;
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = double.tryParse(widget.textController.text);
+    if (value == null || value == 0) {
+      setState(() => _error = 'Enter a non-zero number');
+      return;
+    }
+    _dismiss(value);
+  }
+
+  void _cancel() => _dismiss(null);
+
+  // Same post-frame-callback deferral as _SetLengthDialogState._dismiss -
+  // see that method's own comment for why.
+  void _dismiss(double? value) {
+    _focusNode.unfocus();
+    final navigator = Navigator.of(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (navigator.mounted) navigator.pop(value);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Offset'),
+      content: TextField(
+        controller: widget.textController,
+        focusNode: _focusNode,
+        autofocus: true,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+        decoration: InputDecoration(
+          suffixText: 'mm',
+          helperText: 'Positive/negative picks which side',
+          errorText: _error,
+          border: const OutlineInputBorder(),
+        ),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _cancel,
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('Offset'),
         ),
       ],
     );

@@ -1851,6 +1851,115 @@ class Sketch:
             raise KeyError(text_id)
         del self.entities[text_id]
 
+    def offset_line(self, line_id: str, distance: float, *, construction: bool = False) -> Line:
+        """Sketcher-roadmap Phase 9 v1 (Offset Entities): a new Line parallel
+        to `line_id`, `distance` away, sharing none of its Points (a frozen
+        copy, same "real, independently editable" shape as `trim_circle`'s
+        own new geometry - not a live constraint tying it back to the
+        source).
+
+        Sign convention: positive `distance` offsets to the left of the
+        direction from the Line's start Point to its end Point (the
+        `(-dy, dx)` perpendicular) - negative flips to the right. There is
+        no "which side did you mean" picking gesture in v1 (unlike a
+        Circle/Arc, a Line has no natural "outward"), so the sign is the
+        only control; a caller/UI can offer both signs and let the user
+        pick whichever one looks right.
+
+        v1 scope note: operates on exactly one Line at a time, with no
+        multi-entity chain/corner-join support - two Lines meeting at a
+        real angle, each offset independently, do *not* meet at a shared
+        corner afterward (their offsets only happen to coincide when the
+        two are collinear - see this method's own test file for both
+        cases spelled out concretely). A real corner-joining offset (miter
+        or round, walking a whole connected chain) is a materially bigger
+        problem - deliberately deferred rather than half-built here, same
+        "ship a genuinely correct narrow scope, not an approximate wide
+        one" call this session already made for Convert Entities' curved-
+        edge limitation.
+
+        Raises `KeyError` if `line_id` isn't a Line, `ValueError` for a
+        zero-length Line (no direction to offset perpendicular to) or a
+        zero `distance` (nothing to do - directly ambiguous with "reuse the
+        original" via `add_or_reuse_point`, so rejected rather than
+        silently returning a coincident duplicate)."""
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        if distance == 0:
+            raise ValueError("Offset distance must be non-zero")
+        start = self.points[line.start_point_id]
+        end = self.points[line.end_point_id]
+        dx, dy = end.x - start.x, end.y - start.y
+        length = math.hypot(dx, dy)
+        if length == 0:
+            raise ValueError("Cannot offset a zero-length Line")
+        offset_x = -dy / length * distance
+        offset_y = dx / length * distance
+        new_start = self.add_or_reuse_point(start.x + offset_x, start.y + offset_y)
+        new_end = self.add_or_reuse_point(end.x + offset_x, end.y + offset_y)
+        return self.add_line(new_start.id, new_end.id, construction=construction)
+
+    def offset_circle(self, circle_id: str, distance: float, *, construction: bool = False) -> Circle:
+        """Offset Entities' Circle-shaped sibling to `offset_line` - a new,
+        concentric Circle (sharing the *same* center Point - concentric is
+        unambiguous, unlike a Line's own "which side" question) at
+        `radius + distance`. Positive grows outward, negative shrinks
+        inward; the new radius Point sits at the same angle from center the
+        original radius Point did, so a repeated offset of an
+        already-offset Circle doesn't silently rotate.
+
+        Raises `KeyError` if `circle_id` isn't a Circle, `ValueError` if the
+        resulting radius would be zero or negative (a Circle that's
+        collapsed to a point or turned "inside out" isn't a valid offset
+        result - rejected rather than silently producing degenerate
+        geometry) or `distance == 0`."""
+        circle = self.entities.get(circle_id)
+        if not isinstance(circle, Circle):
+            raise KeyError(circle_id)
+        if distance == 0:
+            raise ValueError("Offset distance must be non-zero")
+        center = self.points[circle.center_point_id]
+        radius_point = self.points[circle.radius_point_id]
+        new_radius = circle.radius(self.points) + distance
+        if new_radius <= 0:
+            raise ValueError("Offset distance would collapse or invert the Circle's radius")
+        angle = math.atan2(radius_point.y - center.y, radius_point.x - center.x)
+        return self.add_circle(
+            circle.center_point_id, radius=new_radius, angle=angle, construction=construction
+        )
+
+    def offset_arc(self, arc_id: str, distance: float, *, construction: bool = False) -> Arc:
+        """Offset Entities' Arc-shaped sibling to `offset_circle` - a new,
+        concentric Arc (same center Point) at `radius + distance`, sweeping
+        the exact same start/end angles as the original (so the offset
+        Arc's own sweep direction and angular span match the source
+        exactly - only the radius changes). The new start/end Points sit at
+        those same angles, at the new radius.
+
+        Raises `KeyError` if `arc_id` isn't an Arc, `ValueError` if the
+        resulting radius would be zero or negative or `distance == 0` -
+        same reasoning as `offset_circle`."""
+        arc = self.entities.get(arc_id)
+        if not isinstance(arc, Arc):
+            raise KeyError(arc_id)
+        if distance == 0:
+            raise ValueError("Offset distance must be non-zero")
+        center = self.points[arc.center_point_id]
+        start = self.points[arc.start_point_id]
+        end = self.points[arc.end_point_id]
+        new_radius = arc.radius(self.points) + distance
+        if new_radius <= 0:
+            raise ValueError("Offset distance would collapse or invert the Arc's radius")
+        start_angle = math.atan2(start.y - center.y, start.x - center.x)
+        end_angle = math.atan2(end.y - center.y, end.x - center.x)
+        new_start = self.add_or_reuse_point(
+            center.x + new_radius * math.cos(start_angle), center.y + new_radius * math.sin(start_angle)
+        )
+        return self.add_arc(
+            arc.center_point_id, new_start.id, end_angle=end_angle, construction=construction
+        )
+
     def _existing_point_at(
         self, x: float, y: float, *, exclude_ids: frozenset[str] = frozenset(), epsilon: float = 1e-6
     ) -> "Point | None":

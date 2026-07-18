@@ -5872,6 +5872,111 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Sketcher-roadmap Phase 9 v1 (Offset Entities): ribbon "Offset" action
+  /// for a single selected Line - creates a new, real Line parallel to
+  /// [lineId] at [distance] (see the backend's `Sketch.offset_line` for
+  /// the sign convention: positive offsets to the left of the direction
+  /// from the Line's start Point to its end Point, negative to the
+  /// right). One undo entry, same "delete only what this call actually
+  /// created" shape as [pickConvertEntityEdge]'s own undo (lines before
+  /// points, and only points the backend didn't reuse via
+  /// `add_or_reuse_point`).
+  Future<void> offsetLine(String lineId, double distance) async {
+    if (_busy || _sketchId == null) return;
+    await _runGuarded(() async {
+      final result = await _api.offsetLine(_sketchId!, lineId, distance);
+      final newPointIds = <String>[];
+      for (final p in [result.startPoint, result.endPoint]) {
+        if (points.containsKey(p.id)) continue;
+        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+        newPointIds.add(p.id);
+      }
+      lines[result.line.id] = SketchLineView(
+        id: result.line.id,
+        startPointId: result.line.startPointId,
+        endPointId: result.line.endPointId,
+        construction: result.line.construction,
+      );
+      final sketchId = _sketchId!;
+      final newLineId = result.line.id;
+      _pushUndo(() async {
+        await _api.deleteLine(sketchId, newLineId);
+        lines.remove(newLineId);
+        for (final pointId in newPointIds) {
+          await _api.deletePoint(sketchId, pointId);
+          points.remove(pointId);
+        }
+      });
+    });
+  }
+
+  /// Offset Entities' Circle-shaped sibling to [offsetLine] - creates a
+  /// new, concentric Circle (same center Point - see `Sketch.
+  /// offset_circle`'s own doc comment for why that's unambiguous) at
+  /// `radius + distance`. The center Point is always reused unchanged, so
+  /// undo only ever needs to consider the new radius Point.
+  Future<void> offsetCircle(String circleId, double distance) async {
+    if (_busy || _sketchId == null) return;
+    await _runGuarded(() async {
+      final result = await _api.offsetCircle(_sketchId!, circleId, distance);
+      final radiusPoint = result.radiusPoint;
+      final isNewPoint = !points.containsKey(radiusPoint.id);
+      if (isNewPoint) {
+        points[radiusPoint.id] = SketchPointView(id: radiusPoint.id, x: radiusPoint.x, y: radiusPoint.y);
+      }
+      circles[result.circle.id] = SketchCircleView(
+        id: result.circle.id,
+        centerPointId: result.circle.centerPointId,
+        radiusPointId: result.circle.radiusPointId,
+        construction: result.circle.construction,
+        cardinalPointIds: result.circle.cardinalPointIds,
+      );
+      final sketchId = _sketchId!;
+      final newCircleId = result.circle.id;
+      _pushUndo(() async {
+        await _api.deleteCircle(sketchId, newCircleId);
+        circles.remove(newCircleId);
+        if (isNewPoint) {
+          await _api.deletePoint(sketchId, radiusPoint.id);
+          points.remove(radiusPoint.id);
+        }
+      });
+    });
+  }
+
+  /// Offset Entities' Arc-shaped sibling to [offsetCircle] - creates a
+  /// new, concentric Arc (same center Point, same sweep) at
+  /// `radius + distance` - see `Sketch.offset_arc`.
+  Future<void> offsetArc(String arcId, double distance) async {
+    if (_busy || _sketchId == null) return;
+    await _runGuarded(() async {
+      final result = await _api.offsetArc(_sketchId!, arcId, distance);
+      final newPointIds = <String>[];
+      for (final p in [result.startPoint, result.endPoint]) {
+        if (points.containsKey(p.id)) continue;
+        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+        newPointIds.add(p.id);
+      }
+      arcs[result.arc.id] = SketchArcView(
+        id: result.arc.id,
+        centerPointId: result.arc.centerPointId,
+        startPointId: result.arc.startPointId,
+        endPointId: result.arc.endPointId,
+        construction: result.arc.construction,
+      );
+      final sketchId = _sketchId!;
+      final newArcId = result.arc.id;
+      _pushUndo(() async {
+        await _api.deleteArc(sketchId, newArcId);
+        arcs.remove(newArcId);
+        for (final pointId in newPointIds) {
+          await _api.deletePoint(sketchId, pointId);
+          points.remove(pointId);
+        }
+      });
+    });
+  }
+
   /// Dispatches [_dimensionSelection]'s current shape onto a ghost set, per
   /// the new work package's combination table: one Line -> length; one
   /// Circle or Arc -> radius+diameter; two Points, or a Point+Line

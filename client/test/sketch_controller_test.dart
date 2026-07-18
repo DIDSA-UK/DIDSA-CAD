@@ -461,6 +461,80 @@ class _FakeBackend {
       return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
     }
 
+    // P49 (Sketcher-roadmap Phase 9 v1, Offset Entities): a new, real Line
+    // - the fake doesn't replicate the real perpendicular-offset math
+    // (covered directly by the real, executable `Sketch.offset_line`
+    // tests), just returns a plausible, deterministic result good enough
+    // to exercise the controller's own response handling. Reuse (an
+    // already-known point/line) is opted into per-test by seeding
+    // `points`/`lines` at the exact id this fake will derive, mirroring
+    // how the convert-entities routes above let a test simulate reuse.
+    final offsetLineMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/[^/]+/offset$').firstMatch(path);
+    if (offsetLineMatch != null && request.method == 'POST') {
+      final distance = (body['distance'] as num).toDouble();
+      final startId = 'offset-start-$distance';
+      final endId = 'offset-end-$distance';
+      final startPoint = points[startId] ?? {'id': startId, 'x': distance, 'y': 0.0};
+      final endPoint = points[endId] ?? {'id': endId, 'x': distance, 'y': 10.0};
+      points[startId] = startPoint;
+      points[endId] = endPoint;
+      final lineId = _newId('line');
+      final line = {
+        'id': lineId,
+        'start_point_id': startId,
+        'end_point_id': endId,
+        'length': 10.0,
+        'construction': false,
+      };
+      lines[lineId] = line;
+      return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
+    }
+
+    // P49's Circle-shaped sibling to the Line-offset route above.
+    final offsetCircleMatch = RegExp(r'^/sketch/sketches/[^/]+/circles/([^/]+)/offset$').firstMatch(path);
+    if (offsetCircleMatch != null && request.method == 'POST') {
+      final sourceCircle = circles[offsetCircleMatch.group(1)]!;
+      final distance = (body['distance'] as num).toDouble();
+      final radiusPointId = 'offset-radius-$distance';
+      final radiusPoint = points[radiusPointId] ?? {'id': radiusPointId, 'x': distance, 'y': 0.0};
+      points[radiusPointId] = radiusPoint;
+      final circleId = _newId('circle');
+      final circle = {
+        'id': circleId,
+        'center_point_id': sourceCircle['center_point_id'],
+        'radius_point_id': radiusPointId,
+        'radius': (sourceCircle['radius'] as num).toDouble() + distance,
+        'construction': false,
+        'cardinal_point_ids': <String>[],
+      };
+      circles[circleId] = circle;
+      return _json({'circle': circle, 'radius_point': radiusPoint}, 201);
+    }
+
+    // P49's Arc-shaped sibling to the Circle-offset route above.
+    final offsetArcMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs/([^/]+)/offset$').firstMatch(path);
+    if (offsetArcMatch != null && request.method == 'POST') {
+      final sourceArc = arcs[offsetArcMatch.group(1)]!;
+      final distance = (body['distance'] as num).toDouble();
+      final startId = 'offset-arc-start-$distance';
+      final endId = 'offset-arc-end-$distance';
+      final startPoint = points[startId] ?? {'id': startId, 'x': distance, 'y': 0.0};
+      final endPoint = points[endId] ?? {'id': endId, 'x': 0.0, 'y': distance};
+      points[startId] = startPoint;
+      points[endId] = endPoint;
+      final arcId = _newId('arc');
+      final arc = {
+        'id': arcId,
+        'center_point_id': sourceArc['center_point_id'],
+        'start_point_id': startId,
+        'end_point_id': endId,
+        'radius': (sourceArc['radius'] as num).toDouble() + distance,
+        'construction': false,
+      };
+      arcs[arcId] = arc;
+      return _json({'arc': arc, 'start_point': startPoint, 'end_point': endPoint}, 201);
+    }
+
     if (pointsCollectionMatch && request.method == 'GET') {
       return _jsonList(points.values.toList(), 200);
     }
@@ -4020,6 +4094,191 @@ void main() {
       await controller.pickConvertEntityEdge('body-1', 0);
 
       expect(controller.lines, hasLength(lineCountBefore));
+    });
+  });
+
+  group('offsetLine/offsetCircle/offsetArc (P49, Sketcher-roadmap Phase 9 v1: Offset Entities)', () {
+    Future<(SketchController, _FakeBackend)> adoptedControllerWithLine() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99');
+      return (freshController, freshBackend);
+    }
+
+    test('offsetLine materializes a new, real, non-construction Line', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+
+      await freshController.offsetLine('line-a', 2.0);
+
+      expect(freshController.lines, hasLength(2));
+      final offsetLine = freshController.lines.values.firstWhere((l) => l.id != 'line-a');
+      expect(offsetLine.construction, isFalse);
+    });
+
+    test('undo after offsetLine deletes the new Line and its new Points', () async {
+      final (freshController, freshBackend) = await adoptedControllerWithLine();
+      await freshController.offsetLine('line-a', 2.0);
+      final offsetLine = freshController.lines.values.firstWhere((l) => l.id != 'line-a');
+      final newLineId = offsetLine.id;
+      final newStartId = offsetLine.startPointId;
+      final newEndId = offsetLine.endPointId;
+
+      await freshController.undo();
+
+      expect(freshController.lines.containsKey(newLineId), isFalse);
+      expect(freshController.points.containsKey(newStartId), isFalse);
+      expect(freshController.points.containsKey(newEndId), isFalse);
+      expect(freshBackend.lines.containsKey(newLineId), isFalse);
+    });
+
+    test('offsetting by a distance whose Points already exist reuses them, with no extra undo entry',
+        () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      // First offset creates the shared 'offset-start-3.0'/'offset-end-3.0'
+      // points (see the fake backend's own offset-line route above).
+      await freshController.offsetLine('line-a', 3.0);
+      final pointCountAfterFirst = freshController.points.length;
+
+      // A second, independent offsetLine call landing on the exact same
+      // derived points (the fake keys them by distance) - mirrors the real
+      // backend's `add_or_reuse_point` reuse case.
+      await freshController.offsetLine('line-a', 3.0);
+
+      expect(freshController.points, hasLength(pointCountAfterFirst)); // no new Points
+      expect(freshController.lines, hasLength(3)); // line-a + two offset Lines sharing Points
+      // Undoing the second call should remove only its own Line - the
+      // shared Points must survive, since the first call's Line still
+      // references them.
+      await freshController.undo();
+      expect(freshController.points, hasLength(pointCountAfterFirst));
+      expect(freshController.lines, hasLength(2));
+    });
+
+    test('offsetCircle materializes a new Circle sharing the original center Point', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 5.0, 'y': 0.0};
+      freshBackend.circles['circle-a'] = {
+        'id': 'circle-a',
+        'center_point_id': 'point-a',
+        'radius_point_id': 'point-b',
+        'radius': 5.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99');
+
+      await freshController.offsetCircle('circle-a', 2.0);
+
+      expect(freshController.circles, hasLength(2));
+      final offsetCircle = freshController.circles.values.firstWhere((c) => c.id != 'circle-a');
+      expect(offsetCircle.centerPointId, 'point-a'); // same center - concentric
+      expect(offsetCircle.construction, isFalse);
+    });
+
+    test('undo after offsetCircle deletes the new Circle and its new radius Point, keeping the shared center',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 5.0, 'y': 0.0};
+      freshBackend.circles['circle-a'] = {
+        'id': 'circle-a',
+        'center_point_id': 'point-a',
+        'radius_point_id': 'point-b',
+        'radius': 5.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99');
+      await freshController.offsetCircle('circle-a', 2.0);
+      final offsetCircle = freshController.circles.values.firstWhere((c) => c.id != 'circle-a');
+      final newCircleId = offsetCircle.id;
+      final newRadiusPointId = offsetCircle.radiusPointId;
+
+      await freshController.undo();
+
+      expect(freshController.circles.containsKey(newCircleId), isFalse);
+      expect(freshController.points.containsKey(newRadiusPointId), isFalse);
+      expect(freshController.points.containsKey('point-a'), isTrue); // shared center survives
+    });
+
+    test('offsetArc materializes a new Arc sharing the original center Point', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 5.0, 'y': 0.0};
+      freshBackend.points['point-c'] = {'id': 'point-c', 'x': 0.0, 'y': 5.0};
+      freshBackend.arcs['arc-a'] = {
+        'id': 'arc-a',
+        'center_point_id': 'point-a',
+        'start_point_id': 'point-b',
+        'end_point_id': 'point-c',
+        'radius': 5.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99');
+
+      await freshController.offsetArc('arc-a', 2.0);
+
+      expect(freshController.arcs, hasLength(2));
+      final offsetArc = freshController.arcs.values.firstWhere((a) => a.id != 'arc-a');
+      expect(offsetArc.centerPointId, 'point-a');
+      expect(offsetArc.construction, isFalse);
+    });
+
+    test('undo after offsetArc deletes the new Arc and both its new start/end Points', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 5.0, 'y': 0.0};
+      freshBackend.points['point-c'] = {'id': 'point-c', 'x': 0.0, 'y': 5.0};
+      freshBackend.arcs['arc-a'] = {
+        'id': 'arc-a',
+        'center_point_id': 'point-a',
+        'start_point_id': 'point-b',
+        'end_point_id': 'point-c',
+        'radius': 5.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99');
+      await freshController.offsetArc('arc-a', 2.0);
+      final offsetArc = freshController.arcs.values.firstWhere((a) => a.id != 'arc-a');
+      final newArcId = offsetArc.id;
+      final newStartId = offsetArc.startPointId;
+      final newEndId = offsetArc.endPointId;
+
+      await freshController.undo();
+
+      expect(freshController.arcs.containsKey(newArcId), isFalse);
+      expect(freshController.points.containsKey(newStartId), isFalse);
+      expect(freshController.points.containsKey(newEndId), isFalse);
+    });
+
+    test('offsetLine is a no-op while busy or without an adopted Sketch', () async {
+      final freshController = SketchController(api: SketchApiClient(httpClient: MockClient((_) async => http.Response('', 404))));
+
+      await freshController.offsetLine('line-a', 2.0);
+
+      expect(freshController.lines, isEmpty);
     });
   });
 

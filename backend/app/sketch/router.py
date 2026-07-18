@@ -76,6 +76,10 @@ from app.sketch.schemas import (
     LineTrimRequest,
     LineTrimResponse,
     LineUpdate,
+    OffsetArcResponse,
+    OffsetCircleResponse,
+    OffsetLineResponse,
+    OffsetRequest,
     ParallelConstraintCreate,
     ParallelConstraintResponse,
     PerpendicularConstraintCreate,
@@ -579,6 +583,26 @@ def split_trim_line(sketch_id: str, line_id: str, payload: LineSplitTrimRequest)
     return LineSplitTrimResponse(line1=_line_response(sketch, line1), line2=_line_response(sketch, line2))
 
 
+@router.post("/sketches/{sketch_id}/lines/{line_id}/offset", response_model=OffsetLineResponse, status_code=201)
+def offset_line(sketch_id: str, line_id: str, payload: OffsetRequest) -> OffsetLineResponse:
+    """Sketcher-roadmap Phase 9 v1 (Offset Entities): a new, real Line
+    parallel to [line_id] - see `Sketch.offset_line`'s own doc comment for
+    the sign convention and v1's single-entity (no corner-join) scope.
+    404 for a missing Line; every `ValueError` (zero-length Line, zero
+    distance) is a 400."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_line_or_404(sketch, line_id)
+    try:
+        line = sketch.offset_line(line_id, payload.distance, construction=payload.construction)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OffsetLineResponse(
+        line=_line_response(sketch, line),
+        start_point=_point_response(sketch.points[line.start_point_id]),
+        end_point=_point_response(sketch.points[line.end_point_id]),
+    )
+
+
 @router.post("/sketches/{sketch_id}/circles", response_model=CircleResponse, status_code=201)
 def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -642,6 +666,25 @@ def trim_circle(sketch_id: str, circle_id: str, payload: CircleTrimRequest) -> C
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CircleTrimResponse(arc=_arc_response(sketch, arc))
+
+
+@router.post(
+    "/sketches/{sketch_id}/circles/{circle_id}/offset", response_model=OffsetCircleResponse, status_code=201
+)
+def offset_circle(sketch_id: str, circle_id: str, payload: OffsetRequest) -> OffsetCircleResponse:
+    """Offset Entities' Circle-shaped sibling to `offset_line` - see
+    `Sketch.offset_circle`'s own doc comment. 404 for a missing Circle;
+    every `ValueError` (zero distance, resulting radius <= 0) is a 400."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_circle_or_404(sketch, circle_id)
+    try:
+        circle = sketch.offset_circle(circle_id, payload.distance, construction=payload.construction)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OffsetCircleResponse(
+        circle=_circle_response(sketch, circle),
+        radius_point=_point_response(sketch.points[circle.radius_point_id]),
+    )
 
 
 @router.post("/sketches/{sketch_id}/arcs", response_model=ArcResponse, status_code=201)
@@ -711,6 +754,24 @@ def trim_arc(sketch_id: str, arc_id: str, payload: ArcTrimRequest) -> ArcTrimRes
         arc=_arc_response(sketch, arc),
         moved_point=_point_response(moved_point),
         created_new_point=created_new_point,
+    )
+
+
+@router.post("/sketches/{sketch_id}/arcs/{arc_id}/offset", response_model=OffsetArcResponse, status_code=201)
+def offset_arc(sketch_id: str, arc_id: str, payload: OffsetRequest) -> OffsetArcResponse:
+    """Offset Entities' Arc-shaped sibling to `offset_circle` - see
+    `Sketch.offset_arc`'s own doc comment. 404 for a missing Arc; every
+    `ValueError` (zero distance, resulting radius <= 0) is a 400."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_arc_or_404(sketch, arc_id)
+    try:
+        arc = sketch.offset_arc(arc_id, payload.distance, construction=payload.construction)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OffsetArcResponse(
+        arc=_arc_response(sketch, arc),
+        start_point=_point_response(sketch.points[arc.start_point_id]),
+        end_point=_point_response(sketch.points[arc.end_point_id]),
     )
 
 
