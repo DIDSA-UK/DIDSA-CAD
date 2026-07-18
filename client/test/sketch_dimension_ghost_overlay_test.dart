@@ -35,7 +35,7 @@ void main() {
     }
   });
 
-  test('a picked Circle produces radius ("?") and diameter ("⌀?") ghost items', () async {
+  test('a picked Circle produces radius ("R?") and diameter ("⌀?") ghost items', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 10, y: 10);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 14, y: 10);
     controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
@@ -48,7 +48,7 @@ void main() {
     final radial = items.cast<ConstraintRadialDimensionItem>();
     final radiusItem = radial.singleWhere((i) => !i.isDiameter);
     final diameterItem = radial.singleWhere((i) => i.isDiameter);
-    expect(radiusItem.text, '?');
+    expect(radiusItem.text, 'R?');
     expect(diameterItem.text, '⌀?');
     expect(radiusItem.radius, closeTo(4.0, 1e-9));
     expect(diameterItem.radius, closeTo(4.0, 1e-9));
@@ -57,7 +57,7 @@ void main() {
   });
 
   test(
-      'P47 bug fix: radius and diameter ghosts get distinct default labelOffsets, so their '
+      'P47 bug fix: radius and diameter ghosts get a distinct default leader angle, so their '
       'computed label positions never collide and diameter never silently wins every hit-test',
       () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 10, y: 10);
@@ -70,13 +70,15 @@ void main() {
     final radial = items.cast<ConstraintRadialDimensionItem>();
     final radiusItem = radial.singleWhere((i) => !i.isDiameter);
     final diameterItem = radial.singleWhere((i) => i.isDiameter);
-    // Same center/rim (so the same base direction/radius), yet a different
-    // labelOffset is enough on its own to guarantee a different final
-    // label position regardless of camera angle - see
+    // Same center/rim (so the same base direction/radius) and the same
+    // (un-dragged) labelOffset, yet a different defaultAngleOffsetDegrees
+    // is enough on its own to guarantee a different final label position
+    // regardless of camera angle or circle size - see
     // dimensionGhostOverlayItems' own P47 doc comment.
     expect(radiusItem.center, diameterItem.center);
     expect(radiusItem.rim, diameterItem.rim);
-    expect(radiusItem.labelOffset, isNot(diameterItem.labelOffset));
+    expect(radiusItem.labelOffset, diameterItem.labelOffset);
+    expect(radiusItem.defaultAngleOffsetDegrees, isNot(diameterItem.defaultAngleOffsetDegrees));
   });
 
   test('the active ghost (tapGhost) is flagged selected; its siblings are not', () async {

@@ -76,6 +76,18 @@ const double _minDimensionOffsetMagnitude = 6.0;
 const double _radialLegLength = 24.0;
 const double _diameterSymbolScale = 1.35;
 
+/// [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees]'s own rotation
+/// - shared by [_ConstraintOverlayPainter._paintRadialDimension] and
+/// [constraintOverlayItemLabelCenter] so a ghost's hit-test target always
+/// matches wherever it's actually drawn.
+Offset _rotateOffset(Offset v, double degrees) {
+  if (degrees == 0.0) return v;
+  final radians = degrees * math.pi / 180.0;
+  final cosT = math.cos(radians);
+  final sinT = math.sin(radians);
+  return Offset(v.dx * cosT - v.dy * sinT, v.dx * sinT + v.dy * cosT);
+}
+
 class _ConstraintOverlayPainter extends CustomPainter {
   final Camera camera;
   final Size viewportSize;
@@ -201,7 +213,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final radiusPixels = item.radius * pixelsPerUnit;
     if (radiusPixels < 1e-6) return;
 
-    final defaultDelta = rimScreen - centerScreen;
+    final defaultDelta = _rotateOffset(rimScreen - centerScreen, item.defaultAngleOffsetDegrees);
     final defaultLength = defaultDelta.distance;
     final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
 
@@ -389,7 +401,7 @@ Offset? constraintOverlayItemLabelCenter(
       final pixelsPerUnit = (rimScreen - centerScreen).distance / rimSketchDistance;
       final radiusPixels = it.radius * pixelsPerUnit;
       if (radiusPixels < 1e-6) return null;
-      final defaultDelta = rimScreen - centerScreen;
+      final defaultDelta = _rotateOffset(rimScreen - centerScreen, it.defaultAngleOffsetDegrees);
       final defaultLength = defaultDelta.distance;
       final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
       return centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + it.labelOffset;

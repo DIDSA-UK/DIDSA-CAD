@@ -331,6 +331,20 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
   final String text;
   final Offset labelOffset;
 
+  /// P47 follow-up (on-device feedback: "the two ghost dimensions need
+  /// separation" - a fixed-pixel [labelOffset] nudge on its own barely
+  /// registered against a large-radius circle's own already-huge
+  /// [radius]-scaled leader length): rotates the *default* leader angle
+  /// (derived from [rim], before any drag - see this class's own doc
+  /// comment) by this many degrees before [labelOffset] is added on top.
+  /// Unlike a fixed pixel nudge, an angular offset scales with the circle's
+  /// own screen-space size, so it stays a meaningfully visible separation
+  /// no matter how large or small the circle is. Zero (the default) for
+  /// every ordinary *confirmed* dimension - only [SketchController.
+  /// dimensionGhostOverlayItems]' diameter ghost ever sets this, so its
+  /// default position doesn't collide with its sibling radius ghost's.
+  final double defaultAngleOffsetDegrees;
+
   const ConstraintRadialDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -340,6 +354,7 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
     required this.isDiameter,
     required this.text,
     required this.labelOffset,
+    this.defaultAngleOffsetDegrees = 0.0,
   });
 
   @override
@@ -352,11 +367,12 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
       other.radius == radius &&
       other.isDiameter == isDiameter &&
       other.text == text &&
-      other.labelOffset == labelOffset;
+      other.labelOffset == labelOffset &&
+      other.defaultAngleOffsetDegrees == defaultAngleOffsetDegrees;
 
   @override
-  int get hashCode =>
-      Object.hash(constraintId, selected, center, rim, radius, isDiameter, text, labelOffset);
+  int get hashCode => Object.hash(
+      constraintId, selected, center, rim, radius, isDiameter, text, labelOffset, defaultAngleOffsetDegrees);
 }
 
 class SketchTextContourOffsets {
@@ -3462,9 +3478,29 @@ class SketchController extends ChangeNotifier {
   /// Point or Line drag is already active. Unlike [beginPointDrag] this
   /// never touches the backend, so there's no busy/sketch-id guard to fail
   /// on.
+  ///
+  /// P44c bug fix (on-device feedback: "when I try to grab a constraint
+  /// glyph, nothing happens" - still true even after the cursor-jump fix):
+  /// this used to never call [notifyListeners], unlike every other
+  /// begin*Drag method. Point/Line dragging in the embedded 3D view never
+  /// needed one, since its own move handler reads [draggingPointId]/
+  /// [draggingLineId] straight off this controller at call time - but
+  /// label dragging is the one drag kind [PartViewport] gates through a
+  /// *widget constructor prop* instead ([PartViewport.
+  /// isDraggingConstraintLabel], computed by `sketch_screen.dart` from
+  /// [draggingLabelId] once per rebuild - see that field's own doc
+  /// comment), and a prop only ever updates when its owning
+  /// `AnimatedBuilder` rebuilds, which only happens on
+  /// [notifyListeners]. Without it, [draggingLabelId] flips internally but
+  /// the widget tree never finds out, so every subsequent drag delta kept
+  /// silently routing to the ordinary world-point path instead of
+  /// [SketchController.updateLabelDrag] - a grab that "worked" (the field
+  /// really did get set) but was completely invisible to the user, exactly
+  /// matching "nothing happens".
   bool beginLabelDrag(String constraintId) {
     if (_draggingPointId != null || _draggingLineId != null) return false;
     _draggingLabelId = constraintId;
+    notifyListeners();
     return true;
   }
 
@@ -3484,8 +3520,13 @@ class SketchController extends ChangeNotifier {
   /// Ends the current label drag (if any). The accumulated offset is kept
   /// as-is - a drag that actually moved the label leaves it wherever it
   /// was dropped.
+  ///
+  /// P44c: mirrors [beginLabelDrag]'s own notifyListeners fix - without it,
+  /// [PartViewport.isDraggingConstraintLabel] would stay stuck true after a
+  /// drop, misrouting the very next cursor move as a further label drag.
   void endLabelDrag() {
     _draggingLabelId = null;
+    notifyListeners();
   }
 
   /// On-device feedback: session-only display-mode override for a circle's
@@ -8281,20 +8322,22 @@ class SketchController extends ChangeNotifier {
           // P47 bug fix (on-device feedback: "when I chose a circle in the
           // dimension tool, I am offered diameter as an option but I should
           // also be offered radius"): the radius and diameter ghosts share
-          // the exact same center/rim, so with no drag yet on either
-          // (`labelOffset` both [Offset.zero]) their computed screen-space
-          // label centers land exactly on top of each other -
-          // `constraintOverlayItemAt`'s reversed hit-test order always
-          // resolves that shared spot to whichever was appended last
-          // (diameter), so radius was never reachable. Nudges diameter's
-          // own *default* position (only before the user has ever dragged
-          // it - a real drag always wins via `labelOffsetFor`) away from
-          // radius's, purely so both start out independently visible/
-          // tappable; an arbitrary fixed pixel offset is enough since any
-          // nonzero constant added on top of a generically-angled default
-          // direction lands somewhere different, regardless of camera angle.
-          final defaultNudge =
-              isDiameter && !_labelOffsets.containsKey(ghost.key) ? const Offset(0, 44) : Offset.zero;
+          // the exact same center/rim, so with no drag yet on either their
+          // computed screen-space label centers would otherwise land
+          // exactly on top of each other - `constraintOverlayItemAt`'s
+          // reversed hit-test order always resolves that shared spot to
+          // whichever was appended last (diameter), so radius was never
+          // reachable. Rotates diameter's own *default* leader angle (only
+          // before the user has ever dragged it - a real drag always wins
+          // via `labelOffsetFor`) away from radius's via
+          // [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees] - a
+          // proper angular offset rather than a fixed pixel nudge (P47's
+          // first attempt), since a fixed pixel amount barely registered
+          // against a large circle's own already-huge radius-scaled leader
+          // ("the two ghost dimensions need separation" follow-up): an
+          // angle scales with the circle's own screen size automatically.
+          final defaultAngleOffsetDegrees =
+              isDiameter && !_labelOffsets.containsKey(ghost.key) ? 50.0 : 0.0;
           items.add(ConstraintRadialDimensionItem(
             constraintId: ghost.key,
             selected: isActive,
@@ -8302,8 +8345,12 @@ class SketchController extends ChangeNotifier {
             rim: (rim.x, rim.y),
             radius: _sketchPointDistanceXY(center, rim),
             isDiameter: isDiameter,
-            text: isDiameter ? '⌀?' : '?',
-            labelOffset: labelOffset + defaultNudge,
+            // "R" prefix (P47 follow-up: "radius glyph needs an R") mirrors
+            // a confirmed radius dimension's own text exactly - see
+            // constraintOverlayItems()'s `'R${c.distance...}'` case.
+            text: isDiameter ? '⌀?' : 'R?',
+            labelOffset: labelOffset,
+            defaultAngleOffsetDegrees: defaultAngleOffsetDegrees,
           ));
         case GhostKind.lineDistance:
           final lineA = lines[ghost.lineAId];

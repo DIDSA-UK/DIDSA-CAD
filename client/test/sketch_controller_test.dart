@@ -1999,6 +1999,33 @@ void main() {
     expect(controller.labelOffsetFor(constraintId), const Offset(12, -4));
   });
 
+  test(
+      'P44c bug fix: beginLabelDrag and endLabelDrag both notify listeners, so a widget-prop-driven '
+      'consumer (PartViewport.isDraggingConstraintLabel) sees the grab/drop immediately - on-device '
+      'feedback: "when I try to grab a constraint glyph, nothing happens" traced to this being missing',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    var notifyCount = 0;
+    controller.addListener(() => notifyCount++);
+
+    controller.beginLabelDrag(constraintId);
+    expect(notifyCount, greaterThan(0), reason: 'beginLabelDrag must notify so isDraggingConstraintLabel flips');
+
+    notifyCount = 0;
+    controller.endLabelDrag();
+    expect(notifyCount, greaterThan(0), reason: 'endLabelDrag must notify so isDraggingConstraintLabel flips back');
+  });
+
   test('closedProfileFills is populated with the ordered loop once a chain closes', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
