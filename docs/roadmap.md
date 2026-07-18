@@ -67,6 +67,23 @@ entries) - with one real gap confirmed by a direct code audit:
 
 ## Other open items
 
+- **Cast option for the main CAD viewport and the 3D mesh viewer.** User
+  ask (2026-07-18): a proper in-app Cast button (matching YouTube/Netflix-
+  style casting), not just Android's built-in screen-mirror toggle - lets
+  a Chromecast/Cast-enabled TV show the 3D view directly. This needs
+  Google's Cast Application Framework: a Custom Receiver (an HTML/JS page
+  using the CAF Receiver SDK - effectively a second WebGL renderer for the
+  mesh, since a live interactive 3D view can't just be a video stream)
+  registered under a Google Cast SDK Developer Console account (one-time
+  $5 fee), hosted at a public HTTPS URL, plus a sender-side integration in
+  the Flutter app (no official Flutter plugin - would need a platform
+  channel wrapping Android's native Cast SDK). Real scope, not a small
+  addition. Not started - open questions before any implementation: does
+  the user want to set up (or already have) a Google Cast developer
+  account, and where would the receiver page be hosted (their own Pi, or
+  a static host like GitHub Pages)? A sensible v1/v2 split once scoped:
+  v1 a simpler static/turntable render or periodic snapshot pushed to the
+  receiver, v2 a fully live orbit-synced remote render.
 - **"Hidden lines" view mode.** Mentioned by the user as a wanted future
   addition. Not implemented. Would need its own render-mode entry
   (alongside Shaded / Shaded+Edges / Wireframe) that renders occluded
