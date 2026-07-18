@@ -1368,21 +1368,36 @@ class Sketch:
         # other entity's Point already sits there (e.g. trimming/extending
         # this Line to meet a Circle that itself gets trimmed at the very
         # same spot later). Looked up before mutating anything, so there's
-        # nothing to accidentally self-match.
+        # nothing to accidentally self-match. Reuses that existing Point's
+        # own id directly (the same "explicit sharing" pattern `add_line`/
+        # `add_arc` already document) rather than creating a new Point and
+        # tying the two together with a CoincidentConstraint - a real, if
+        # subtle, difference: a constraint-tied pair is still two distinct
+        # Point ids that only `app.sketch.profile`'s own canonicalization
+        # treats as one graph node, and `app.document.extrude.
+        # wire_for_profile`'s Arc branch deliberately does *not* go through
+        # that canonicalization (it always builds an Arc edge from the
+        # entity's own literal start/end Point, on purpose - see that
+        # branch's own comment) - so a constraint-tied Arc endpoint and its
+        # neighbouring Line's own (canonicalized) endpoint could resolve to
+        # two different-but-coincident OCC vertices instead of one shared
+        # one. Sharing the literal Point id sidesteps that gap entirely.
         if self._point_deletion_blocker(moved_point_id, exclude_entity_id=line_id) is not None:
             existing = self._existing_point_at(*best_point)
-            new_point = self.add_point(*best_point)
-            if existing is not None:
-                self.add_coincident_constraint(new_point.id, existing.id)
+            new_point = existing if existing is not None else self.add_point(*best_point)
             if moved_point_id == line.start_point_id:
                 line.start_point_id = new_point.id
             else:
                 line.end_point_id = new_point.id
             return (line, new_point, True)
         existing = self._existing_point_at(*best_point, exclude_ids=frozenset({moved_point_id}))
-        moved_point.x, moved_point.y = best_point
         if existing is not None:
-            self.add_coincident_constraint(moved_point_id, existing.id)
+            if moved_point_id == line.start_point_id:
+                line.start_point_id = existing.id
+            else:
+                line.end_point_id = existing.id
+            return (line, existing, True)
+        moved_point.x, moved_point.y = best_point
         return (line, moved_point, False)
 
     def _line_candidates_against(self, a_xy: tuple[float, float], b_xy: tuple[float, float], exclude_id: str):
@@ -1612,21 +1627,30 @@ class Sketch:
 
         # On-device feedback (closed-profile bug fix): see
         # `_existing_point_at`'s own doc comment / `trim_or_extend_line`'s
-        # identical comment - same reasoning, ported to an Arc's endpoint.
+        # identical comment (including why this reuses the existing Point's
+        # own id directly, not a CoincidentConstraint) - same reasoning,
+        # ported to an Arc's endpoint. Doubly important here specifically:
+        # `wire_for_profile`'s Arc branch always builds an Arc edge from
+        # *this exact* `start_point_id`/`end_point_id`, ignoring any
+        # constraint-based canonicalization entirely - sharing the literal
+        # id is the only way this Arc's own new endpoint reliably lines up
+        # with whatever it's now coincident with.
         if self._point_deletion_blocker(moved_point_id, exclude_entity_id=arc_id) is not None:
             existing = self._existing_point_at(*best_point)
-            new_point = self.add_point(*best_point)
-            if existing is not None:
-                self.add_coincident_constraint(new_point.id, existing.id)
+            new_point = existing if existing is not None else self.add_point(*best_point)
             if moved_point_id == arc.start_point_id:
                 arc.start_point_id = new_point.id
             else:
                 arc.end_point_id = new_point.id
             return (arc, new_point, True)
         existing = self._existing_point_at(*best_point, exclude_ids=frozenset({moved_point_id}))
-        moved_point.x, moved_point.y = best_point
         if existing is not None:
-            self.add_coincident_constraint(moved_point_id, existing.id)
+            if moved_point_id == arc.start_point_id:
+                arc.start_point_id = existing.id
+            else:
+                arc.end_point_id = existing.id
+            return (arc, existing, True)
+        moved_point.x, moved_point.y = best_point
         return (arc, moved_point, False)
 
     def trim_circle(self, circle_id: str, click_x: float, click_y: float) -> "Arc":
@@ -1679,17 +1703,30 @@ class Sketch:
         # lookup to accidentally match against itself - see
         # `_existing_point_at`'s own doc comment for why this whole step
         # exists (a Line previously trimmed/extended to meet this Circle
-        # left its own Point sitting at this exact spot; without tying the
-        # two together, the resulting Arc+Line loop looks closed but isn't,
+        # left its own Point sitting at this exact spot; without reusing
+        # it, the resulting Arc+Line loop looks closed but isn't,
         # topologically).
+        #
+        # Reuses the existing Point's own id directly (`add_arc`'s own
+        # documented "explicit sharing" pattern) rather than creating a new
+        # Point and tying the two together with a CoincidentConstraint -
+        # `app.document.extrude.wire_for_profile`'s own Arc branch always
+        # builds this Arc's edge from its literal `start_point_id`/
+        # `end_point_id`, deliberately bypassing `app.sketch.profile`'s
+        # constraint-based canonicalization (on purpose, for its own
+        # reasons - see that branch's own comment) - so a constraint-tied
+        # pair here would resolve to two different-but-coincident OCC
+        # vertices instead of one shared one, at real risk of an
+        # incorrectly-closed (or wrongly-oriented) wire once actually
+        # extruded, even though `detect_profile`'s own loop walk (and so
+        # the client's live shading) already reads it as one closed loop
+        # either way. Sharing the literal Point id sidesteps that gap
+        # entirely - this Arc's own start/end *is* the Line's own endpoint,
+        # not merely constrained to match it.
         existing_at_start = self._existing_point_at(*start_xy)
         existing_at_end = self._existing_point_at(*end_xy)
-        new_start = self.add_point(*start_xy)
-        new_end = self.add_point(*end_xy)
-        if existing_at_start is not None:
-            self.add_coincident_constraint(new_start.id, existing_at_start.id)
-        if existing_at_end is not None:
-            self.add_coincident_constraint(new_end.id, existing_at_end.id)
+        new_start = existing_at_start if existing_at_start is not None else self.add_point(*start_xy)
+        new_end = existing_at_end if existing_at_end is not None else self.add_point(*end_xy)
         arc = self.add_arc(circle.center_point_id, new_start.id, new_end.id, construction=circle.construction)
         self.delete_circle(circle_id)
         return arc
