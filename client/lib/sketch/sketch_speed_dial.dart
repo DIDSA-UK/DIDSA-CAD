@@ -24,14 +24,21 @@ class SketchSpeedDial extends StatelessWidget {
   /// (`_clickTextTool` is a plain, already-generic tap handler), but has no
   /// 3D glyph rendering at all (`sketchGeometry3DFrom`'s own doc comment:
   /// "a separate, larger piece of work") - selecting it here would silently
-  /// place invisible geometry. Dimensions stays excluded too (unrelated to
-  /// the tool-list restriction, still gated by this same flag) - it relies
-  /// on the 2D-only reference-body ghost-picking system, plus constraint-
-  /// label/value rendering that doesn't exist in 3D yet. P30: Trim/Extend
-  /// no longer stays excluded here - its own tap-commit logic never
-  /// depended on ghost-picking in the first place, so it was only ever
-  /// blocked by this flag hiding its menu entry, not by any real
-  /// 2D-specific dependency.
+  /// place invisible geometry. P30: Trim/Extend no longer stays excluded
+  /// here - its own tap-commit logic never depended on ghost-picking in the
+  /// first place, so it was only ever blocked by this flag hiding its menu
+  /// entry, not by any real 2D-specific dependency. P38: Dimensions no
+  /// longer excluded either - both blockers this doc comment used to cite
+  /// are gone: constraint-label/value rendering now exists in 3D (P32's
+  /// `ConstraintOverlay`), and referencing an external Body's own vertex/
+  /// edge (`SketchController.pickReferenceGhostVertex`/`pickReferenceGhostEdge`)
+  /// already works in Orbit View too, via a *different*, already-existing
+  /// mechanism (`PartViewport.preferEntityPick`/`onSketchEntityTap`,
+  /// `sketch_screen.dart`'s own `_preferEntityPickOnTap`/
+  /// `_handleEmbeddedSketchEntityTap`, built in P10 specifically for
+  /// Dimension mode) - real Body geometry is already directly tappable in
+  /// 3D via ordinary hit-testing, with no need for the 2D canvas's own
+  /// projected-ghost-overlay trick at all.
   final bool restrictToEmbeddedTools;
 
   const SketchSpeedDial({super.key, required this.controller, this.restrictToEmbeddedTools = false});
@@ -109,22 +116,24 @@ class SketchSpeedDial extends StatelessWidget {
         return const [];
       case FabMenuState.categories:
         return [
-          if (!restrictToEmbeddedTools)
-            _SpeedDialAction(
-              svgAsset: 'assets/icons/actions/action_dimensions.svg',
-              label: 'Dimensions',
-              onPressed: controller.enterDimensionMode,
-            ),
+          // P38: Dimensions works in Orbit View now too - see
+          // [restrictToEmbeddedTools]'s own doc comment for why both of
+          // its old blockers no longer apply.
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/actions/action_dimensions.svg',
+            label: 'Dimensions',
+            onPressed: controller.enterDimensionMode,
+          ),
           _SpeedDialAction(
             svgAsset: 'assets/icons/actions/action_sketch_entities.svg',
             label: 'Sketch Entities',
             onPressed: controller.showSketchEntitiesCategory,
           ),
-          // P30: Trim/Extend works in Orbit View now - unlike Dimensions
-          // (still gated above), its tap-commit logic never depended on the
-          // 2D-only reference-body ghost-picking system in the first place
-          // (see SketchController._handleTrimTap's own doc comment), so it
-          // was only ever blocked by this menu hiding it.
+          // P30: Trim/Extend works in Orbit View now - its own tap-commit
+          // logic never depended on the 2D-only reference-body ghost-
+          // picking system in the first place (see
+          // SketchController._handleTrimTap's own doc comment), so it was
+          // only ever blocked by this menu hiding it.
           _SpeedDialAction(
             svgAsset: 'assets/icons/actions/action_trim.svg',
             label: 'Trim/Extend',

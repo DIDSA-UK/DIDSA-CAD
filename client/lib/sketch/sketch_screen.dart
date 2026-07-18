@@ -783,11 +783,14 @@ class _SketchScreenState extends State<SketchScreen> {
                         // and every tool's own Exit button live only in this
                         // bar, and P20 already opened every one of these
                         // tools up to Orbit View without bringing this along.
-                        // Dimension mode's own bar stays 2D-only (unrelated,
-                        // still out of scope - relies on 2D-only ghost-
-                        // picking).
+                        // P38: Dimension mode's own bar shown in Orbit View
+                        // too now - SketchDimensionBar has no ViewTransform/
+                        // 2D-canvas dependency of its own (a plain
+                        // screen-space overlay, same as SketchRibbon already
+                        // is), so nothing here needed to change beyond
+                        // dropping this gate.
                         final showConstructionBar = mode == SketchMode.draw;
-                        final showDimensionBar = mode == SketchMode.dimension && !_orbitViewActive;
+                        final showDimensionBar = mode == SketchMode.dimension;
                         final visible = showConstructionBar || showDimensionBar;
                         final bar = mode == SketchMode.dimension
                             ? SketchDimensionBar(controller: _controller)
@@ -949,10 +952,15 @@ class _SketchScreenState extends State<SketchScreen> {
         // including _handleTrimTap) for any mode that isn't drag, so
         // widening this gate is the only plumbing Trim/Extend needs to get
         // the same "aim precisely, then tap to commit" cursor model every
-        // other mode already has.
+        // other mode already has. P38: same reasoning extends to Dimension
+        // mode now that it's reachable in Orbit View too -
+        // [_handleEmbeddedSketchTap] already dispatches into
+        // `handleCanvasTap` -> `_handleDimensionTap` unmodified; this is
+        // still the only plumbing it needed.
         drawCursorMode: _orbitCursorActive &&
             (_controller.mode == SketchMode.draw ||
                 _controller.mode == SketchMode.trim ||
+                _controller.mode == SketchMode.dimension ||
                 _dragModeActiveInOrbitView),
         onDrawCursorMoved: _handleDrawCursorMoved,
         onDrawCursorCommit: _handleEmbeddedDrawOrDragCommit,
@@ -1431,8 +1439,18 @@ class _SketchScreenState extends State<SketchScreen> {
   /// comparison here, not a reference check.
   List<ConstraintOverlayItem> _cachedConstraintOverlayItems = const [];
 
+  /// P39: [_embeddedConstraintOverlayItems] combines every confirmed
+  /// constraint's own overlay with [SketchController.dimensionGhostOverlayItems]'
+  /// live, in-progress preview - the exact same two-source combination
+  /// `sketch_canvas.dart`'s own paint order already has (`_paintDimensionOverlays`
+  /// then `_paintGhosts`), just merged into one list here since
+  /// [ConstraintOverlay] takes a single flat list rather than layering two
+  /// separate painters.
   List<ConstraintOverlayItem> get _embeddedConstraintOverlayItems {
-    final fresh = _controller.constraintOverlayItems();
+    final fresh = [
+      ..._controller.constraintOverlayItems(),
+      ..._controller.dimensionGhostOverlayItems(),
+    ];
     final cached = _cachedConstraintOverlayItems;
     if (listEquals(fresh, cached)) return cached;
     _cachedConstraintOverlayItems = fresh;

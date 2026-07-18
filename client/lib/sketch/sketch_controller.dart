@@ -8127,6 +8127,100 @@ class SketchController extends ChangeNotifier {
     return items;
   }
 
+  /// P39 (2D-sketcher feature parity): [ghosts]' own overlay layout, in the
+  /// same sketch-local, renderer-agnostic [ConstraintOverlayItem] shapes
+  /// [constraintOverlayItems] already produces for *confirmed* constraints -
+  /// mirrors `sketch_canvas.dart`'s own `_paintGhosts` (every ghost dashed
+  /// and labeled a literal `?`/`⌀?`, never the live geometric value - see
+  /// [currentGhostValue]'s own doc comment for why), just reusing the fuller
+  /// witness-line/arrowhead layout every other dimension already renders
+  /// with here, rather than `_paintGhosts`'s own plainer dashed-segment-only
+  /// look - a deliberate simplification: once a ghost is confirmed (see
+  /// [confirmGhostValue]), it becomes an ordinary constraint rendered by
+  /// this exact same machinery anyway, so the two now look consistent
+  /// throughout a dimension's whole lifecycle instead of changing style the
+  /// moment it's confirmed. [selected] carries "this is the active ghost"
+  /// (see [activeGhostKey]) rather than "this is a selected constraint" -
+  /// the same emphasis-color meaning, different trigger.
+  List<ConstraintOverlayItem> dimensionGhostOverlayItems() {
+    final items = <ConstraintOverlayItem>[];
+    for (final ghost in _ghosts) {
+      final isActive = ghost.key == _activeGhostKey;
+      final labelOffset = labelOffsetFor(ghost.key);
+      switch (ghost.kind) {
+        case GhostKind.length:
+        case GhostKind.linear:
+        case GhostKind.vertical:
+        case GhostKind.horizontal:
+          final a = points[ghost.pointAId];
+          final b = points[ghost.pointBId];
+          if (a == null || b == null) continue;
+          items.add(ConstraintLinearDimensionItem(
+            constraintId: ghost.key,
+            selected: isActive,
+            pointA: (a.x, a.y),
+            pointB: (b.x, b.y),
+            orientation: switch (ghost.kind) {
+              GhostKind.vertical => 'vertical',
+              GhostKind.horizontal => 'horizontal',
+              _ => 'linear',
+            },
+            text: '?',
+            labelOffset: labelOffset,
+          ));
+        case GhostKind.radius:
+        case GhostKind.diameter:
+          final center = points[ghost.pointAId];
+          final rim = points[ghost.pointBId];
+          if (center == null || rim == null) continue;
+          final isDiameter = ghost.kind == GhostKind.diameter;
+          items.add(ConstraintRadialDimensionItem(
+            constraintId: ghost.key,
+            selected: isActive,
+            center: (center.x, center.y),
+            rim: (rim.x, rim.y),
+            radius: _sketchPointDistanceXY(center, rim),
+            isDiameter: isDiameter,
+            text: isDiameter ? '⌀?' : '?',
+            labelOffset: labelOffset,
+          ));
+        case GhostKind.lineDistance:
+          final lineA = lines[ghost.lineAId];
+          final lineB = lines[ghost.lineBId];
+          if (lineA == null || lineB == null) continue;
+          final line1Start = points[lineA.startPointId];
+          final line1End = points[lineA.endPointId];
+          final line2Start = points[lineB.startPointId];
+          final line2End = points[lineB.endPointId];
+          if (line1Start == null || line1End == null || line2Start == null || line2End == null) continue;
+          items.add(ConstraintLineDistanceDimensionItem(
+            constraintId: ghost.key,
+            selected: isActive,
+            line1Start: (line1Start.x, line1Start.y),
+            line1End: (line1End.x, line1End.y),
+            line2Start: (line2Start.x, line2Start.y),
+            line2End: (line2End.x, line2End.y),
+            text: '?',
+            labelOffset: labelOffset,
+          ));
+        case GhostKind.angle:
+          final mid1 = _lineMidpointXY(ghost.lineAId ?? '');
+          final mid2 = _lineMidpointXY(ghost.lineBId ?? '');
+          if (mid1 == null || mid2 == null) continue;
+          items.add(ConstraintLabelItem(
+            constraintId: ghost.key,
+            selected: isActive,
+            anchorA: mid1,
+            anchorB: mid2,
+            text: '?',
+            labelOffset: labelOffset,
+            plainBlackText: true,
+          ));
+      }
+    }
+    return items;
+  }
+
   ConstraintLabelItem? _pairMidpointLabel(
     String pointAId,
     String pointBId,
