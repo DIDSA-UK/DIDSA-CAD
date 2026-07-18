@@ -1362,14 +1362,27 @@ class Sketch:
             raise NoIntersectionFoundError(f"No intersection found to trim/extend line {line_id} to")
         _, best_point = min(valid, key=lambda candidate: abs(candidate[0] - current_t))
 
+        # On-device feedback (closed-profile bug fix): see
+        # `_existing_point_at`'s own doc comment - `best_point` is a purely
+        # geometric target, with no awareness on its own of whether some
+        # other entity's Point already sits there (e.g. trimming/extending
+        # this Line to meet a Circle that itself gets trimmed at the very
+        # same spot later). Looked up before mutating anything, so there's
+        # nothing to accidentally self-match.
         if self._point_deletion_blocker(moved_point_id, exclude_entity_id=line_id) is not None:
+            existing = self._existing_point_at(*best_point)
             new_point = self.add_point(*best_point)
+            if existing is not None:
+                self.add_coincident_constraint(new_point.id, existing.id)
             if moved_point_id == line.start_point_id:
                 line.start_point_id = new_point.id
             else:
                 line.end_point_id = new_point.id
             return (line, new_point, True)
+        existing = self._existing_point_at(*best_point, exclude_ids=frozenset({moved_point_id}))
         moved_point.x, moved_point.y = best_point
+        if existing is not None:
+            self.add_coincident_constraint(moved_point_id, existing.id)
         return (line, moved_point, False)
 
     def _line_candidates_against(self, a_xy: tuple[float, float], b_xy: tuple[float, float], exclude_id: str):
@@ -1597,14 +1610,23 @@ class Sketch:
             raise NoIntersectionFoundError(f"No intersection found to trim/extend arc {arc_id} to")
         _, best_point = min(valid, key=lambda candidate: abs(candidate[0] - current_t))
 
+        # On-device feedback (closed-profile bug fix): see
+        # `_existing_point_at`'s own doc comment / `trim_or_extend_line`'s
+        # identical comment - same reasoning, ported to an Arc's endpoint.
         if self._point_deletion_blocker(moved_point_id, exclude_entity_id=arc_id) is not None:
+            existing = self._existing_point_at(*best_point)
             new_point = self.add_point(*best_point)
+            if existing is not None:
+                self.add_coincident_constraint(new_point.id, existing.id)
             if moved_point_id == arc.start_point_id:
                 arc.start_point_id = new_point.id
             else:
                 arc.end_point_id = new_point.id
             return (arc, new_point, True)
+        existing = self._existing_point_at(*best_point, exclude_ids=frozenset({moved_point_id}))
         moved_point.x, moved_point.y = best_point
+        if existing is not None:
+            self.add_coincident_constraint(moved_point_id, existing.id)
         return (arc, moved_point, False)
 
     def trim_circle(self, circle_id: str, click_x: float, click_y: float) -> "Arc":
@@ -1650,8 +1672,24 @@ class Sketch:
         next_angle = next((a for a in angles if a > click_angle + 1e-9), angles[0])
         prev_angle = next((a for a in reversed(angles) if a < click_angle - 1e-9), angles[-1])
 
-        new_start = self.add_point(center.x + radius * math.cos(next_angle), center.y + radius * math.sin(next_angle))
-        new_end = self.add_point(center.x + radius * math.cos(prev_angle), center.y + radius * math.sin(prev_angle))
+        start_xy = (center.x + radius * math.cos(next_angle), center.y + radius * math.sin(next_angle))
+        end_xy = (center.x + radius * math.cos(prev_angle), center.y + radius * math.sin(prev_angle))
+        # On-device feedback (closed-profile bug fix): looked up *before*
+        # creating the new Points below, so there's nothing for either
+        # lookup to accidentally match against itself - see
+        # `_existing_point_at`'s own doc comment for why this whole step
+        # exists (a Line previously trimmed/extended to meet this Circle
+        # left its own Point sitting at this exact spot; without tying the
+        # two together, the resulting Arc+Line loop looks closed but isn't,
+        # topologically).
+        existing_at_start = self._existing_point_at(*start_xy)
+        existing_at_end = self._existing_point_at(*end_xy)
+        new_start = self.add_point(*start_xy)
+        new_end = self.add_point(*end_xy)
+        if existing_at_start is not None:
+            self.add_coincident_constraint(new_start.id, existing_at_start.id)
+        if existing_at_end is not None:
+            self.add_coincident_constraint(new_end.id, existing_at_end.id)
         arc = self.add_arc(circle.center_point_id, new_start.id, new_end.id, construction=circle.construction)
         self.delete_circle(circle_id)
         return arc
@@ -1763,6 +1801,40 @@ class Sketch:
         if not isinstance(self.entities.get(text_id), TextEntity):
             raise KeyError(text_id)
         del self.entities[text_id]
+
+    def _existing_point_at(
+        self, x: float, y: float, *, exclude_ids: frozenset[str] = frozenset(), epsilon: float = 1e-6
+    ) -> "Point | None":
+        """The first existing Point within `epsilon` of `(x, y)` whose id
+        isn't in `exclude_ids`, or None.
+
+        On-device feedback (a Line trimmed/extended to meet a Circle, then
+        that Circle itself trimmed at the very same spot, formed a wedge
+        that visually looked closed but never registered as a closed
+        profile): `trim_or_extend_line`/`trim_or_extend_arc`/`trim_circle`
+        all place a fresh (or moved) Point at a *computed* target position -
+        purely geometric, with no awareness of whether some other entity's
+        Point already sits there. Two different Point objects at the same
+        `(x, y)` are not topologically connected on their own, so
+        `detect_profile`'s connectivity walk (`app.sketch.profile`) never
+        saw the two as one loop.
+
+        This is the lookup half of the fix - each trim/extend call site
+        checks this *before* creating/moving its own Point, then ties the
+        result together with `add_coincident_constraint` if found (see each
+        call site). Uses a real Constraint rather than merging the Point
+        objects themselves, consistent with how this Sketch always
+        represents coincidence elsewhere (`add_coincident_constraint`'s own
+        doc comment) - and `_coincident_canonical_ids` (`app.sketch.
+        profile`) already treats any such pair as one graph node for loop
+        detection, so no change was needed there at all.
+        """
+        for point in self.points.values():
+            if point.id in exclude_ids:
+                continue
+            if math.hypot(point.x - x, point.y - y) <= epsilon:
+                return point
+        return None
 
     def _point_deletion_blocker(self, point_id: str, *, exclude_entity_id: str | None = None) -> str | None:
         """A human-readable reason this Point cannot be deleted, or None if

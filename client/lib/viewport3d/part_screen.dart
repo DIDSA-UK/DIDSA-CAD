@@ -1054,10 +1054,18 @@ class _PartScreenState extends State<PartScreen> {
   /// entitiesBeforeX field serves.
   Set<SelectionEntityRef>? _entitiesBeforeProfilePicker;
 
-  /// Restricts the picker session to `sketchLine`/`sketchCircle` hits only -
-  /// a tap on either toggles that entity's whole containing loop (see
+  /// Restricts the picker session to sketch-curve hits only - a tap on any
+  /// of them toggles that entity's whole containing loop (see
   /// [_toggleProfileLoop]), a Circle-only loop being a single-entity "loop"
   /// of exactly one Circle (see `app.sketch.profile._circle_profile`).
+  ///
+  /// On-device feedback ("the profile picker doesn't recognize Arc/Spline
+  /// loop members"): used to only allow `sketchLine`/`sketchCircle` -
+  /// widened to every curve kind a profile loop can actually contain (a
+  /// rounded-corner rectangle's own Arc hop, a Spline edge, ...), matching
+  /// [_profileEntityKind]'s own widened classifier below. `sketchEllipse`
+  /// included too for the same single-entity-loop reason as Circle, even
+  /// though it's not one of the originally-reported gap's own two kinds.
   static const _profilePickerSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -1066,8 +1074,23 @@ class _PartScreenState extends State<PartScreen> {
     sketchPoint: false,
     sketchLine: true,
     sketchCircle: true,
+    sketchArc: true,
+    sketchEllipse: true,
+    sketchSpline: true,
     plane: false,
   );
+
+  /// [_profilePickerSelectionFilter]'s own `Set` counterpart - every
+  /// [SelectionEntityKind] a profile loop member can resolve to (see
+  /// [_profileEntityKind]), used to filter [_selectedEntities] down to
+  /// "picker-relevant" entries in [_profilePickedCount]/[_confirmProfilePicker].
+  static const _profilePickableKinds = {
+    SelectionEntityKind.sketchLine,
+    SelectionEntityKind.sketchCircle,
+    SelectionEntityKind.sketchArc,
+    SelectionEntityKind.sketchSpline,
+    SelectionEntityKind.sketchEllipse,
+  };
 
   /// The loop index in [_profilePickerLoops] containing [sketchEntityId], or
   /// null if it belongs to none (shouldn't happen for a real hit against a
@@ -1165,14 +1188,49 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Whether [entityId] (one of [_profilePickerLoops]' member ids, for
-  /// [sketchFeatureId]) is a Circle rather than a Line - a Circle-only loop
-  /// is exactly one Circle id (see `app.sketch.profile._circle_profile`),
-  /// so this is what tells [_toggleProfileLoop]/[_confirmProfilePicker]
-  /// which [SelectionEntityKind]/`SketchEntityRefDto.entityType` to build
-  /// for a given member id, instead of assuming every member is a Line.
-  bool _isProfileCircleEntity(String sketchFeatureId, String entityId) =>
-      _allSketchGeometries[sketchFeatureId]?.circleIds.contains(entityId) ?? false;
+  /// Which kind of Sketch entity [entityId] (one of [_profilePickerLoops]'
+  /// member ids, for [sketchFeatureId]) actually is - what tells
+  /// [_toggleProfileLoop]/[_confirmProfilePicker] which
+  /// [SelectionEntityKind]/`SketchEntityRefDto.entityType` to build for a
+  /// given member id, instead of assuming every non-Circle member is a
+  /// Line.
+  ///
+  /// On-device feedback ("the profile picker doesn't recognize Arc/Spline
+  /// loop members"): this used to be a binary Circle-vs-Line check
+  /// (`_isProfileCircleEntity`) - a profile loop containing an Arc hop
+  /// (e.g. a rounded-corner rectangle) or a Spline edge got its member
+  /// mislabeled `sketchLine`/`'line'`, which 422s the moment that member is
+  /// picked as a loop's own anchor (`resolve_sketch_entity` validates
+  /// `entity_type` against the real entity via `isinstance`). Checked
+  /// against every id list [SketchGeometry3D] carries, same pattern
+  /// [ConstraintOverlayItem] building already uses elsewhere in this
+  /// codebase. Returns null only for a genuinely unrecognized id (stale
+  /// data against a Sketch that's since changed).
+  SelectionEntityKind? _profileEntityKind(String sketchFeatureId, String entityId) {
+    final geometry = _allSketchGeometries[sketchFeatureId];
+    if (geometry == null) return null;
+    if (geometry.circleIds.contains(entityId)) return SelectionEntityKind.sketchCircle;
+    if (geometry.arcIds.contains(entityId)) return SelectionEntityKind.sketchArc;
+    if (geometry.splineIds.contains(entityId)) return SelectionEntityKind.sketchSpline;
+    if (geometry.ellipseIds.contains(entityId)) return SelectionEntityKind.sketchEllipse;
+    if (geometry.lineIds.contains(entityId)) return SelectionEntityKind.sketchLine;
+    return null;
+  }
+
+  /// [_profileEntityKind]'s own backend-facing counterpart - the exact
+  /// lowercase string `SketchEntityType` (backend `app.sketch.models`)
+  /// expects for `SketchEntityRefDto.entityType`. Falls back to `'line'`
+  /// only for a genuinely unrecognized id (stale data), matching this
+  /// file's other defensive by-id lookups.
+  String _profileEntityTypeString(String sketchFeatureId, String entityId) {
+    return switch (_profileEntityKind(sketchFeatureId, entityId)) {
+      SelectionEntityKind.sketchCircle => 'circle',
+      SelectionEntityKind.sketchArc => 'arc',
+      SelectionEntityKind.sketchSpline => 'spline',
+      SelectionEntityKind.sketchEllipse => 'ellipse',
+      _ => 'line',
+    };
+  }
 
   /// [_toggleSelectedEntity]'s profile-picker special-case - toggles every
   /// entity in [tappedEntity]'s whole containing loop in/out of
@@ -1186,9 +1244,7 @@ class _PartScreenState extends State<PartScreen> {
     final loopEntities = {
       for (final entityId in _profilePickerLoops[index])
         SelectionEntityRef(
-          kind: _isProfileCircleEntity(tappedEntity.sketchFeatureId, entityId)
-              ? SelectionEntityKind.sketchCircle
-              : SelectionEntityKind.sketchLine,
+          kind: _profileEntityKind(tappedEntity.sketchFeatureId, entityId) ?? SelectionEntityKind.sketchLine,
           sketchFeatureId: tappedEntity.sketchFeatureId,
           sketchEntityId: entityId,
         ),
@@ -1211,10 +1267,7 @@ class _PartScreenState extends State<PartScreen> {
   int _profilePickedCount() {
     final pickedLoopIndices = <int>{};
     for (final entity in _selectedEntities) {
-      if (entity.kind != SelectionEntityKind.sketchLine &&
-          entity.kind != SelectionEntityKind.sketchCircle) {
-        continue;
-      }
+      if (!_profilePickableKinds.contains(entity.kind)) continue;
       final index = _profileLoopIndexFor(entity.sketchEntityId);
       if (index != null) pickedLoopIndices.add(index);
     }
@@ -1237,27 +1290,23 @@ class _PartScreenState extends State<PartScreen> {
 
     final pickedLoopIndices = <int>{};
     for (final entity in _selectedEntities) {
-      if (entity.kind != SelectionEntityKind.sketchLine &&
-          entity.kind != SelectionEntityKind.sketchCircle) {
-        continue;
-      }
+      if (!_profilePickableKinds.contains(entity.kind)) continue;
       final index = _profileLoopIndexFor(entity.sketchEntityId);
       if (index != null) pickedLoopIndices.add(index);
     }
     final sketchId = sketchFeature.sketchId!;
     // On-device feedback: `entityType` used to be hardcoded to `'line'`,
-    // which broke the moment a picked loop's anchor member was actually a
-    // Circle's own id (a Circle-only loop, per `_circle_profile`) - the
-    // backend's `resolve_sketch_entity` validates `entity_type` against the
-    // real entity's type (`isinstance(entity, expected_type)`) and 422s a
-    // mismatch, so this now reports whichever type the anchor id really is.
+    // then only correctly distinguished Circle from Line - now covers
+    // Arc/Spline/Ellipse too (see [_profileEntityTypeString]'s own doc
+    // comment) - the backend's `resolve_sketch_entity` validates
+    // `entity_type` against the real entity's type
+    // (`isinstance(entity, expected_type)`) and 422s a mismatch, so this
+    // reports whichever type the anchor id really is.
     final profileRefs = [
       for (final index in pickedLoopIndices)
         SketchEntityRefDto(
           sketchId: sketchId,
-          entityType: _isProfileCircleEntity(sketchFeature.id, _profilePickerLoops[index].first)
-              ? 'circle'
-              : 'line',
+          entityType: _profileEntityTypeString(sketchFeature.id, _profilePickerLoops[index].first),
           entityId: _profilePickerLoops[index].first,
         ),
     ];
