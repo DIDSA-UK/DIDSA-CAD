@@ -1247,8 +1247,25 @@ class _SketchScreenState extends State<SketchScreen> {
       }
       return false;
     }
-    if (_dragModeActiveInOrbitView && hitId != null && _controller.constraints.containsKey(hitId)) {
-      return _controller.beginLabelDrag(hitId);
+    if (_dragModeActiveInOrbitView) {
+      // P43 bug fix (on-device feedback: "drag glyphs/dimensions doesn't
+      // work" - a label could be grabbed, but never actually dropped):
+      // mirrors `_handleDragModeTap`'s own top-priority check exactly -
+      // *something already grabbed* always means "drop it", checked before
+      // ever looking at what's under the cursor. Without this, dropping a
+      // label by tapping back down near wherever it was just dragged to
+      // (the overwhelmingly common case - that's the whole point of a
+      // drag) hit this same label again and silently re-grabbed it via
+      // [SketchController.beginLabelDrag] instead (that method's own guard
+      // only checks a grabbed Point/Line, never an already-grabbed label),
+      // so the label could start moving but never stop. Returning false
+      // here (not consumed) correctly falls through to
+      // [_handleEmbeddedDrawOrDragCommit]'s own existing drag-mode branch,
+      // which already drops whatever is grabbed unconditionally.
+      if (_controller.isEntityGrabbed) return false;
+      if (hitId != null && _controller.constraints.containsKey(hitId)) {
+        return _controller.beginLabelDrag(hitId);
+      }
     }
     return false;
   }

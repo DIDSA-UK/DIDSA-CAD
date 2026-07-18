@@ -903,12 +903,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (widget.selectionMode) {
           // P34 bug fix (on-device feedback: toggling the Orbit/Cursor FAB
           // made the cursor visibly jump back to centre every time):
-          // only default to viewport centre the very first time this
-          // instance ever enters selection mode (no position remembered
-          // yet) - re-clamped in case the viewport was resized (e.g. a
-          // rotation) while the cursor was hidden, but otherwise restores
-          // exactly where the user left it, not a fresh centre reset.
-          _cursorPosition = _clampToViewport(_cursorPosition ?? _viewportCenter());
+          // restores its own remembered position if it has one; otherwise
+          // - on-device feedback follow-up: still jumped switching between
+          // Select and drag mode, since drag mode's own commit path
+          // actually runs through [_drawCursorPosition] (see
+          // [PartViewport.drawCursorMode]'s own doc comment on why drag
+          // mode counts as `drawCursorMode` too), a *different* field with
+          // no memory of where the Select-mode cursor just was - falls back
+          // to [_drawCursorPosition]'s current value (the field that was
+          // just active, if this is exactly that kind of cross-gate
+          // switch), and only then viewport centre, on this instance's
+          // very first activation of either. Re-clamped in case the
+          // viewport was resized (e.g. a rotation) while the cursor was
+          // hidden.
+          _cursorPosition = _clampToViewport(_cursorPosition ?? _drawCursorPosition ?? _viewportCenter());
           _recomputeHover();
         } else {
           // Item 1: leaving selection mode still hides the crosshair
@@ -930,10 +938,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.drawCursorMode != oldWidget.drawCursorMode) {
       setState(() {
         if (widget.drawCursorMode) {
-          // P34 fix: mirrors the selectionMode block above - restores the
-          // remembered position (re-clamped) instead of always resetting
+          // P34/P43 fix: mirrors the selectionMode block above (including
+          // its own cross-gate fallback to `_cursorPosition` - see that
+          // block's own doc comment for exactly why, e.g. Select mode's
+          // cursor handing off to drag mode's) instead of always resetting
           // to viewport centre.
-          _drawCursorPosition = _clampToViewport(_drawCursorPosition ?? _viewportCenter());
+          _drawCursorPosition = _clampToViewport(_drawCursorPosition ?? _cursorPosition ?? _viewportCenter());
           _recomputeDrawCursor();
         } else {
           _drawCursorWorldHit = null;
