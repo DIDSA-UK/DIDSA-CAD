@@ -75,6 +75,21 @@ class _FakeBackend {
   /// own request counter, mirroring [externalReferenceRequestCount].
   int externalEdgeReferenceRequestCount = 0;
 
+  /// P48 (Sketcher-roadmap Phase 9 v1, Convert Entities): the convert-a-
+  /// Body-vertex endpoint's own request counter, mirroring
+  /// [externalReferenceRequestCount].
+  int convertVertexRequestCount = 0;
+
+  /// P48's edge-shaped sibling to [convertVertexRequestCount].
+  int convertEdgeRequestCount = 0;
+
+  /// P48: mirrors the real backend's `Sketch.add_or_reuse_point` - keyed by
+  /// `'bodyId:vertexIndex'` (this fake's deterministic x/y derivation from
+  /// those two values makes that an equivalent key to the real thing's
+  /// position-epsilon match), so a test can exercise the client's own
+  /// "backend returned an id I already have - don't double it up" handling.
+  final Map<String, String> _convertedVertexPointIds = {};
+
   /// Sketcher-roadmap Phase 11: the coordinate `/lines/{id}/trim` should
   /// report as the chosen intersection - set by the test before calling
   /// [SketchController.handleCanvasTap] in trim mode, mirroring the real
@@ -389,6 +404,58 @@ class _FakeBackend {
         // reference to dimension against, not new solid geometry - mirrors
         // create_external_edge_reference's own construction=True.
         'construction': true,
+      };
+      lines[lineId] = line;
+      return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
+    }
+
+    // P48 (Sketcher-roadmap Phase 9 v1, Convert Entities): materializes a
+    // Body vertex as an ordinary, real (non-construction) Point - same
+    // "derive something deterministic from body_id/vertex_index" fake as
+    // the external-reference route above, but a real Point, not one this
+    // fake needs to track any back-link for.
+    final convertVertexMatch = RegExp(
+      r'^/document/parts/[^/]+/features/sketch/[^/]+/convert-entities/vertex$',
+    ).hasMatch(path);
+    if (convertVertexMatch && request.method == 'POST') {
+      convertVertexRequestCount++;
+      final key = '${body['body_id']}:${body['vertex_index']}';
+      final reusedId = _convertedVertexPointIds[key];
+      if (reusedId != null && points.containsKey(reusedId)) {
+        return _json(points[reusedId]!, 201);
+      }
+      final id = _newId('point');
+      final point = {
+        'id': id,
+        'x': (body['body_id'] as String).length.toDouble(),
+        'y': (body['vertex_index'] as num).toDouble(),
+      };
+      points[id] = point;
+      _convertedVertexPointIds[key] = id;
+      return _json(point, 201);
+    }
+
+    // P48's edge-shaped sibling to the vertex route above.
+    final convertEdgeMatch = RegExp(
+      r'^/document/parts/[^/]+/features/sketch/[^/]+/convert-entities/edge$',
+    ).hasMatch(path);
+    if (convertEdgeMatch && request.method == 'POST') {
+      convertEdgeRequestCount++;
+      final bodyId = body['body_id'] as String;
+      final edgeIndex = (body['edge_index'] as num).toDouble();
+      final startId = _newId('point');
+      final endId = _newId('point');
+      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex};
+      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex};
+      points[startId] = startPoint;
+      points[endId] = endPoint;
+      final lineId = _newId('line');
+      final line = {
+        'id': lineId,
+        'start_point_id': startId,
+        'end_point_id': endId,
+        'length': 10.0,
+        'construction': false,
       };
       lines[lineId] = line;
       return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
@@ -3836,6 +3903,123 @@ void main() {
       await controller.pickReferenceGhostEdge('body-1', 0);
 
       expect(controller.dimensionSelection, isEmpty);
+    });
+  });
+
+  group('pickConvertEntityVertex (P48, Sketcher-roadmap Phase 9 v1: Convert Entities)', () {
+    Future<(SketchController, _FakeBackend)> adoptedController() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      return (freshController, freshBackend);
+    }
+
+    test('materializes a real, non-construction Point (not a dimension pick)', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+
+      await freshController.pickConvertEntityVertex('body-1', 3);
+
+      expect(freshBackend.convertVertexRequestCount, 1);
+      // Unlike pickReferenceGhostVertex, this never touches dimensionSelection
+      // - Convert Entities just drops real geometry into the sketch.
+      expect(freshController.dimensionSelection, isEmpty);
+      expect(freshController.points, hasLength(2)); // origin + the converted point
+      expect(freshController.errorMessage, isNull);
+    });
+
+    test('undo deletes the Point this call created', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      await freshController.pickConvertEntityVertex('body-1', 3);
+      final pointId = freshController.points.keys.firstWhere((id) => id != 'origin-99');
+      expect(freshController.canUndo, isTrue);
+
+      await freshController.undo();
+
+      expect(freshController.points.containsKey(pointId), isFalse);
+      expect(freshBackend.points.containsKey(pointId), isFalse);
+    });
+
+    test('re-picking the same body vertex (backend reuses the existing Point) pushes no extra undo entry',
+        () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      await freshController.pickConvertEntityVertex('body-1', 3);
+
+      await freshController.pickConvertEntityVertex('body-1', 3);
+
+      expect(freshBackend.convertVertexRequestCount, 2); // still hits the network each tap...
+      expect(freshController.points, hasLength(2)); // ...but the backend reused the same Point id
+      // One undo should remove the Point entirely, proving the second pick
+      // never pushed its own delete entry on top of the first's.
+      await freshController.undo();
+      expect(freshController.points, hasLength(1));
+      expect(freshController.canUndo, isFalse);
+    });
+
+    test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
+      controller.enterConvertEntitiesMode();
+      final pointCountBefore = controller.points.length;
+
+      await controller.pickConvertEntityVertex('body-1', 0);
+
+      expect(controller.points, hasLength(pointCountBefore));
+    });
+  });
+
+  group('pickConvertEntityEdge (P48, Sketcher-roadmap Phase 9 v1: Convert Entities)', () {
+    Future<(SketchController, _FakeBackend)> adoptedController() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      return (freshController, freshBackend);
+    }
+
+    test('materializes a real, non-construction Line and its two endpoint Points', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+
+      await freshController.pickConvertEntityEdge('body-1', 0);
+
+      expect(freshBackend.convertEdgeRequestCount, 1);
+      expect(freshController.dimensionSelection, isEmpty);
+      expect(freshController.lines, hasLength(1));
+      final line = freshController.lines.values.single;
+      expect(line.construction, isFalse);
+      expect(freshController.points.containsKey(line.startPointId), isTrue);
+      expect(freshController.points.containsKey(line.endPointId), isTrue);
+      expect(freshController.errorMessage, isNull);
+    });
+
+    test('undo deletes the Line and both Points this call created, lines before points', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      await freshController.pickConvertEntityEdge('body-1', 0);
+      final line = freshController.lines.values.single;
+      final lineId = line.id;
+      final startId = line.startPointId;
+      final endId = line.endPointId;
+
+      await freshController.undo();
+
+      expect(freshController.lines.containsKey(lineId), isFalse);
+      expect(freshController.points.containsKey(startId), isFalse);
+      expect(freshController.points.containsKey(endId), isFalse);
+      expect(freshBackend.lines.containsKey(lineId), isFalse);
+    });
+
+    test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
+      controller.enterConvertEntitiesMode();
+      final lineCountBefore = controller.lines.length;
+
+      await controller.pickConvertEntityEdge('body-1', 0);
+
+      expect(controller.lines, hasLength(lineCountBefore));
     });
   });
 

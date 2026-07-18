@@ -1082,6 +1082,46 @@ class SketchApiClient {
         (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Sketcher-roadmap Phase 9 v1 (Convert Entities): [createExternalVertexReference]'s
+  /// non-referenced sibling - materializes a Body vertex as an ordinary,
+  /// real Point (no live-pinned back-link) the user can freely edit or
+  /// delete, rather than a dimensioning reference. See the backend's
+  /// `app.document.router.convert_body_vertex` doc comment.
+  Future<PointDto> convertBodyVertex(
+    String partId,
+    String sketchFeatureId,
+    String bodyId,
+    int vertexIndex,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/vertex'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'vertex_index': vertexIndex}),
+            ),
+        (body) => PointDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// [convertBodyVertex]'s edge-shaped sibling - materializes a Body edge
+  /// as a real, non-construction Line (see the backend's
+  /// `app.document.router.convert_body_edge` doc comment for v1's "straight
+  /// chord only" scope note). Reuses [ExternalEdgeReferenceDto]'s shape
+  /// (line + both endpoint Points) since the wire response is identical.
+  Future<ExternalEdgeReferenceDto> convertBodyEdge(
+    String partId,
+    String sketchFeatureId,
+    String bodyId,
+    int edgeIndex,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/edge'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex}),
+            ),
+        (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<List<PointDto>> listPoints(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/points'), headers: _headers),
         (body) => (body as List)

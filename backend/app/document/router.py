@@ -50,6 +50,9 @@ from app.document.schemas import (
     ChamferFeatureCreate,
     ChamferFeatureResponse,
     ChamferFeatureUpdate,
+    ConvertEdgeCreate,
+    ConvertEdgeResponse,
+    ConvertVertexCreate,
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
     CreatePlaneFeatureUpdate,
@@ -840,6 +843,99 @@ def create_external_edge_reference(
     # reference-only Line already is.
     line = sketch.add_line(start_point.id, end_point.id, construction=True)
     return ExternalEdgeReferenceResponse(
+        line=LineResponse(
+            id=line.id,
+            start_point_id=line.start_point_id,
+            end_point_id=line.end_point_id,
+            length=line.length(sketch.points),
+            construction=line.construction,
+        ),
+        start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y),
+        end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y),
+    )
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/vertex",
+    response_model=PointResponse,
+    status_code=201,
+)
+def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCreate) -> PointResponse:
+    """Sketcher-roadmap Phase 9 v1 (Convert Entities): materializes
+    `payload` (a Body vertex) as an ordinary, real Point in this
+    SketchFeature's own Sketch - reuses `create_external_vertex_reference`'s
+    exact OCCT resolution (`resolve_external_vertex_position`, itself
+    `_resolve_vertex_position` + `_basis_for_sketch` + `world_point_to_
+    basis` - the same plane-embedding every other projection of this
+    Sketch's geometry into/out of world space already goes through, so
+    this carries no new precision risk of its own), but calls
+    `Sketch.add_point` instead of `add_external_vertex_reference` - a
+    frozen, one-time copy with no `external_references` back-link, no
+    re-pinning on solve, no staleness tracking. Same `missing_reference`
+    422 as the reference-picking endpoint if `payload` doesn't resolve
+    against this Part's current Bodies."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    ref = ExternalVertexReference(body_id=payload.body_id, vertex_index=payload.vertex_index)
+    bodies = compute_part_bodies(part)
+    x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
+    point = sketch.add_or_reuse_point(x, y)
+    return PointResponse(id=point.id, x=point.x, y=point.y)
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/edge",
+    response_model=ConvertEdgeResponse,
+    status_code=201,
+)
+def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
+    """Convert Entities' edge-shaped sibling to `convert_body_vertex` -
+    mirrors `create_external_edge_reference`'s own "resolve both endpoint
+    vertices, connect with a real Line" shape, but the Line (and its two
+    Points) are ordinary, non-construction, non-referenced entities, via
+    `Sketch.add_or_reuse_point`/`add_line(construction=False)` - real,
+    extrude-participating geometry the user can edit or delete freely, not
+    a pinned dimensioning reference.
+
+    Scope note (v1): only ever produces a straight Line between the edge's
+    two endpoints, exactly like `create_external_edge_reference` already
+    does today - a curved (Arc/Circle) Body edge converts as its own chord,
+    not its true curve; real Arc/Circle extraction is unbuilt (needs OCCT
+    curve-type introspection this endpoint doesn't do), left as an explicit
+    fast-follow rather than silently shipping an inexact polyline
+    approximation.
+
+    `add_or_reuse_point` (not a fresh `add_point` for every call) is what
+    lets two separately-converted adjacent edges end up sharing one real
+    Point at their common Body vertex, so the result can register as a
+    closed profile for Extrude - same reasoning as `trim_circle`'s own
+    point-reuse fix.
+
+    Fails closed with the same `missing_reference`/`degenerate_edge` 422s
+    as `create_external_edge_reference`."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    bodies = compute_part_bodies(part)
+    edge_ref = SubShapeRef(body_id=payload.body_id, shape_type=SubShapeType.EDGE, index=payload.edge_index)
+    start_ref, end_ref = edge_endpoint_vertex_refs(bodies, edge_ref)
+    if start_ref.index == end_ref.index:
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
+        )
+
+    start_vertex_ref = ExternalVertexReference(body_id=start_ref.body_id, vertex_index=start_ref.index)
+    start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies)
+    start_point = sketch.add_or_reuse_point(start_x, start_y)
+
+    end_vertex_ref = ExternalVertexReference(body_id=end_ref.body_id, vertex_index=end_ref.index)
+    end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies)
+    end_point = sketch.add_or_reuse_point(end_x, end_y)
+
+    line = sketch.add_line(start_point.id, end_point.id, construction=False)
+    return ConvertEdgeResponse(
         line=LineResponse(
             id=line.id,
             start_point_id=line.start_point_id,

@@ -1032,25 +1032,36 @@ class _SketchScreenState extends State<SketchScreen> {
   /// with Dimension mode, which already supports referencing real Body
   /// geometry on the flat 2D canvas (via ghost-pick - see
   /// [SketchController.pickReferenceGhostVertex]/[pickReferenceGhostEdge]'s
-  /// own doc comments). A single boolean expression rather than a dedicated
-  /// field, so a later mode (Convert Entity/Offset Entity, once those tools
-  /// exist) is a one-line addition here, not a redesign of
-  /// [PartViewport.preferEntityPick]'s own plumbing.
-  bool get _preferEntityPickOnTap => _controller.mode == SketchMode.dimension;
+  /// own doc comments). P48 (Sketcher-roadmap Phase 9 v1): Convert Entities
+  /// is exactly the "later mode" this getter's own doc comment anticipated
+  /// - the one-line addition it predicted.
+  bool get _preferEntityPickOnTap =>
+      _controller.mode == SketchMode.dimension || _controller.mode == SketchMode.convert;
 
   /// P10: [PartViewport.onSketchEntityTap]'s handler - materializes a real
-  /// Body vertex/edge as a dimensionable Point/Line via the exact same
-  /// [SketchController] methods the flat 2D canvas's own ghost-pick already
-  /// uses. Once materialized, a picked Body entity is indistinguishable
-  /// from any other Point/Line, so every existing ghost-building/confirm/
-  /// undo path already works against it unmodified - see those methods' own
-  /// doc comments for the full picture.
+  /// Body vertex/edge as either a dimensionable Point/Line ([SketchMode.
+  /// dimension], via the exact same [SketchController] methods the flat 2D
+  /// canvas's own ghost-pick already uses) or a real, non-construction
+  /// Point/Line ([SketchMode.convert], P48) - once materialized, a picked
+  /// Body entity is indistinguishable from any other Point/Line, so every
+  /// existing ghost-building/confirm/undo (dimension) or delete/edit
+  /// (convert) path already works against it unmodified - see those
+  /// methods' own doc comments for the full picture.
   void _handleEmbeddedSketchEntityTap(SelectionEntityRef entity) {
+    final convert = _controller.mode == SketchMode.convert;
     switch (entity.kind) {
       case SelectionEntityKind.vertex:
-        unawaited(_controller.pickReferenceGhostVertex(entity.bodyId, entity.id));
+        unawaited(
+          convert
+              ? _controller.pickConvertEntityVertex(entity.bodyId, entity.id)
+              : _controller.pickReferenceGhostVertex(entity.bodyId, entity.id),
+        );
       case SelectionEntityKind.edge:
-        unawaited(_controller.pickReferenceGhostEdge(entity.bodyId, entity.id));
+        unawaited(
+          convert
+              ? _controller.pickConvertEntityEdge(entity.bodyId, entity.id)
+              : _controller.pickReferenceGhostEdge(entity.bodyId, entity.id),
+        );
       default:
         break;
     }

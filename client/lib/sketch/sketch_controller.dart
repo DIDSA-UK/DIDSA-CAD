@@ -858,8 +858,11 @@ const bool kTapToPlace = true;
 /// from [SketchTool], which only matters while [draw] is active - picking a
 /// tool from the FAB's "Sketch Entities" category both sets [SketchTool]
 /// and enters [draw]; the FAB's "Dimensions" category enters [dimension]
-/// directly, with no further tool choice.
-enum SketchMode { select, draw, dimension, trim }
+/// directly, with no further tool choice. [convert] (Sketcher-roadmap
+/// Phase 9 v1, Convert Entities) is the same "no further tool choice"
+/// shape - every tap just picks a Body vertex/edge to copy in as real
+/// sketch geometry.
+enum SketchMode { select, draw, dimension, trim, convert }
 
 /// The kind of entity a [SketchSelection] refers to. [constraint] covers
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
@@ -1259,6 +1262,8 @@ class SketchController extends ChangeNotifier {
         return 'Dimension';
       case SketchMode.trim:
         return 'Trim/Extend';
+      case SketchMode.convert:
+        return 'Convert Entities';
     }
   }
 
@@ -1333,6 +1338,25 @@ class SketchController extends ChangeNotifier {
   void enterTrimMode() {
     dropGrabbedEntity();
     _mode = SketchMode.trim;
+    _fabMenu = FabMenuState.closed;
+    _resetTransientDrawState();
+    _selectionSet.clear();
+    _ribbonVisible = false;
+    _dimensionSelection.clear();
+    _ghosts = [];
+    _activeGhostKey = null;
+    notifyListeners();
+  }
+
+  /// FAB → Convert Entities (Sketcher-roadmap Phase 9 v1): enters
+  /// [SketchMode.convert], same no-further-tool-choice shape as
+  /// [enterTrimMode] - every tap picks a Body vertex/edge (via the same
+  /// ghost-overlay hit test [enterDimensionMode] already uses) and
+  /// immediately copies it in as a real Point/Line, see
+  /// [pickConvertEntityVertex]/[pickConvertEntityEdge].
+  void enterConvertEntitiesMode() {
+    dropGrabbedEntity();
+    _mode = SketchMode.convert;
     _fabMenu = FabMenuState.closed;
     _resetTransientDrawState();
     _selectionSet.clear();
@@ -4120,6 +4144,15 @@ class SketchController extends ChangeNotifier {
       case SketchMode.trim:
         await _handleTrimTap(radius);
         break;
+      case SketchMode.convert:
+        // Convert Entities only ever creates anything from a Body
+        // vertex/edge ghost tap, already handled and returned from before
+        // this is reached (see SketchCanvas._dispatchTap /
+        // SketchScreen._handleEmbeddedSketchEntityTap). A tap that gets
+        // here missed every ghost (or landed on a real sketch entity
+        // instead, which this mode has nothing to do with) - nothing to
+        // do.
+        break;
     }
   }
 
@@ -5762,6 +5795,81 @@ class SketchController extends ChangeNotifier {
       hit = SketchSelection(kind: SelectionKind.line, id: result.line.id);
     });
     _applyDimensionHit(hit);
+  }
+
+  /// Sketcher-roadmap Phase 9 v1 (Convert Entities): [SketchMode.convert]'s
+  /// own body-vertex pick - called by [SketchCanvas]/[SketchScreen] (2D and
+  /// Orbit View respectively) when a tap lands on a `referenceGhostVertices`
+  /// marker while in [SketchMode.convert]. Materializes the vertex as an
+  /// ordinary, real Point via the backend's `convert_body_vertex` endpoint -
+  /// unlike [pickReferenceGhostVertex], no `external_references` back-link,
+  /// no re-pinning on solve; a frozen copy the user can edit or delete like
+  /// anything else they drew. One undo entry per tap, mirroring every other
+  /// single-commit draw action - a no-op (not pushed) if the backend
+  /// reused an existing Point already at that location (`Sketch.
+  /// add_or_reuse_point`) rather than creating a new one, so undo never
+  /// deletes something that predates this tap. Same no-op guard as
+  /// [pickReferenceGhostVertex] for a bare, non-Part Sketch.
+  Future<void> pickConvertEntityVertex(String bodyId, int vertexIndex) async {
+    if (_busy || _sketchId == null) return;
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    if (partId == null || sketchFeatureId == null) return;
+
+    await _runGuarded(() async {
+      final point = await _api.convertBodyVertex(partId, sketchFeatureId, bodyId, vertexIndex);
+      if (points.containsKey(point.id)) return;
+      points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      final sketchId = _sketchId!;
+      _pushUndo(() async {
+        await _api.deletePoint(sketchId, point.id);
+        points.remove(point.id);
+      });
+    });
+  }
+
+  /// [pickConvertEntityVertex]'s edge-shaped sibling - materializes a Body
+  /// edge as an ordinary, real, non-construction Line via the backend's
+  /// `convert_body_edge` endpoint (v1 scope note: a curved edge converts as
+  /// its own straight chord, not its true curve - see that endpoint's own
+  /// doc comment). One undo entry per tap that undoes everything this call
+  /// actually created (the Line, and only whichever of its two endpoint
+  /// Points weren't already reused from something already in the Sketch -
+  /// see `Sketch.add_or_reuse_point`), lines-before-points so a Point never
+  /// gets asked to delete out from under a Line still referencing it, same
+  /// ordering [deleteSelected]'s own undo already uses.
+  Future<void> pickConvertEntityEdge(String bodyId, int edgeIndex) async {
+    if (_busy || _sketchId == null) return;
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    if (partId == null || sketchFeatureId == null) return;
+
+    await _runGuarded(() async {
+      final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex);
+      final newPointIds = <String>[];
+      for (final p in [result.startPoint, result.endPoint]) {
+        if (points.containsKey(p.id)) continue;
+        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+        newPointIds.add(p.id);
+      }
+      if (lines.containsKey(result.line.id)) return;
+      lines[result.line.id] = SketchLineView(
+        id: result.line.id,
+        startPointId: result.line.startPointId,
+        endPointId: result.line.endPointId,
+        construction: result.line.construction,
+      );
+      final sketchId = _sketchId!;
+      final lineId = result.line.id;
+      _pushUndo(() async {
+        await _api.deleteLine(sketchId, lineId);
+        lines.remove(lineId);
+        for (final pointId in newPointIds) {
+          await _api.deletePoint(sketchId, pointId);
+          points.remove(pointId);
+        }
+      });
+    });
   }
 
   /// Dispatches [_dimensionSelection]'s current shape onto a ghost set, per

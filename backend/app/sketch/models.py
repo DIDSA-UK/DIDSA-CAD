@@ -652,6 +652,18 @@ class Sketch:
         self.points[point.id] = point
         return point
 
+    def add_or_reuse_point(self, x: float, y: float, *, epsilon: float = 1e-6) -> Point:
+        """`add_point`, but returns an existing Point at `(x, y)` (see
+        `_existing_point_at`) instead of creating a duplicate when one's
+        already there - Convert Entities' own edge case (two converted Body
+        edges sharing a Body vertex): reusing the same Point id is what
+        keeps the two converted Lines topologically connected for
+        `detect_profile`'s connectivity walk, the same reasoning
+        `trim_circle`/`trim_or_extend_line` already established for
+        trim/extend's own point reuse."""
+        existing = self._existing_point_at(x, y, epsilon=epsilon)
+        return existing if existing is not None else self.add_point(x, y)
+
     def add_external_vertex_reference(self, x: float, y: float, ref: ExternalVertexReference) -> Point:
         """Sketcher-roadmap Phase 4.3 v1: materializes `ref` as a real Point
         at its already-resolved-and-projected `(x, y)` (the document layer

@@ -139,6 +139,18 @@ class SketchSpeedDial extends StatelessWidget {
             label: 'Trim/Extend',
             onPressed: controller.enterTrimMode,
           ),
+          // P48 (Sketcher-roadmap Phase 9 v1): Convert Entities - always
+          // shown, same as Dimensions above, even though it only has
+          // anything to do for a Part-backed Sketch with sibling Bodies -
+          // a bare/no-Part Sketch just has no ghost geometry to tap,
+          // mirroring how Dimension mode's own external-reference picking
+          // already tolerates that case as a graceful no-op rather than
+          // hiding the whole category.
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/actions/action_convert_entities.svg',
+            label: 'Convert Entities',
+            onPressed: controller.enterConvertEntitiesMode,
+          ),
         ];
       case FabMenuState.sketchEntities:
         final showFinishChain = controller.activeTool == SketchTool.line && controller.chainInProgress;

@@ -461,16 +461,28 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         controller.tapGhost(hitKey);
         return;
       }
-      // Sketcher-roadmap Phase 4.3 v1: only reachable once a tap misses
-      // every real ghost/value-editor, and (see hasEntityNear below) every
-      // real sketch entity too - the reference body's own ghost geometry
-      // is a backdrop, so it never steals a tap real geometry would
-      // otherwise have won.
+    }
+    if (controller.mode == SketchMode.dimension || controller.mode == SketchMode.convert) {
+      // Sketcher-roadmap Phase 4.3 v1 / Phase 9 v1: only reachable once a
+      // tap misses every real ghost/value-editor (dimension mode only -
+      // convert mode has no ghost-value-editor of its own), and (see
+      // hasEntityNear below) every real sketch entity too - the reference
+      // body's own ghost geometry is a backdrop, so it never steals a tap
+      // real geometry would otherwise have won. [SketchMode.convert] picks
+      // via [SketchController.pickConvertEntityVertex]/
+      // [pickConvertEntityEdge] instead of [pickReferenceGhostVertex]/
+      // [pickReferenceGhostEdge] - same ghost hit-testing, different
+      // controller call, since a converted entity is real, editable
+      // geometry rather than a pinned dimensioning reference.
       final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
       if (!controller.hasEntityNear(controller.cursorX, controller.cursorY, hitRadius)) {
         final ghostVertex = _referenceGhostVertexAt(transform, cursorScreen);
         if (ghostVertex != null) {
-          controller.pickReferenceGhostVertex(ghostVertex.$1, ghostVertex.$2);
+          if (controller.mode == SketchMode.convert) {
+            controller.pickConvertEntityVertex(ghostVertex.$1, ghostVertex.$2);
+          } else {
+            controller.pickReferenceGhostVertex(ghostVertex.$1, ghostVertex.$2);
+          }
           return;
         }
         // Sketcher-roadmap Phase 4.3 v2: only reached once a tap misses
@@ -480,7 +492,11 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         // never its ambiguous choice of two adjacent edges.
         final ghostEdge = _referenceGhostEdgeAt(transform, cursorScreen);
         if (ghostEdge != null) {
-          controller.pickReferenceGhostEdge(ghostEdge.$1, ghostEdge.$2);
+          if (controller.mode == SketchMode.convert) {
+            controller.pickConvertEntityEdge(ghostEdge.$1, ghostEdge.$2);
+          } else {
+            controller.pickReferenceGhostEdge(ghostEdge.$1, ghostEdge.$2);
+          }
           return;
         }
       }

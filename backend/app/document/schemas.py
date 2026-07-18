@@ -193,6 +193,43 @@ class ExternalEdgeReferenceResponse(BaseModel):
     end_point: PointResponse
 
 
+class ConvertVertexCreate(BaseModel):
+    """Sketcher-roadmap Phase 9 v1 (Convert Entities): the payload for
+    materializing a Body vertex as a real, plain Point in the active
+    Sketch - deliberately its own schema, not `ExternalVertexReferenceCreate`,
+    since the two endpoints create genuinely different things: this one
+    creates an ordinary Point via `Sketch.add_point` (no
+    `external_references` back-link, no re-resolve-on-solve pinning, no
+    `missing_reference` staleness tracking) - a frozen, one-time copy the
+    user can freely edit/delete like anything else they drew, not a
+    live-pinned reference for dimensioning against."""
+
+    body_id: str
+    vertex_index: int
+
+
+class ConvertEdgeCreate(BaseModel):
+    """Convert Entities' edge-shaped sibling to `ConvertVertexCreate` - see
+    that schema's own doc comment for why this is a separate concept from
+    `ExternalEdgeReferenceCreate` despite the identical wire shape."""
+
+    body_id: str
+    edge_index: int
+
+
+class ConvertEdgeResponse(BaseModel):
+    """Convert Entities' edge-shaped sibling to `ExternalEdgeReferenceResponse`
+    - same "one response carries the Line and both Points" reasoning.
+    `start_point`/`end_point` may each be either a freshly created Point or
+    an existing one this Sketch already had at that exact location (see
+    `Sketch.add_or_reuse_point`) - the client should upsert by id either
+    way, same as it already treats `create_line`'s own endpoint response."""
+
+    line: LineResponse
+    start_point: PointResponse
+    end_point: PointResponse
+
+
 class PointRefSchema(BaseModel):
     """C4: the wire counterpart to `app.document.models.PointRef` - exactly
     one of `vertex_ref`/`sketch_point_ref` should be supplied, matching
