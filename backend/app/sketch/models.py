@@ -676,6 +676,23 @@ class Sketch:
         self.external_references[point.id] = ref
         return point
 
+    def add_or_reuse_external_vertex_reference(self, x: float, y: float, ref: ExternalVertexReference) -> Point:
+        """`add_external_vertex_reference`, but returns the Point already
+        tracking `ref` (matched by *identity* - `ExternalVertexReference`
+        is a frozen, comparable dataclass - not position) instead of
+        minting a second live-linked Point for the same Body vertex twice.
+        Sketcher-roadmap Phase 9 v2 (Convert Entities): this is what lets
+        `app.document.router.convert_body_vertex`/`convert_body_edge` be
+        re-picked idempotently, mirroring `add_or_reuse_point`'s own
+        "don't duplicate" reasoning for the frozen-copy v1 case - keyed by
+        the Body reference itself here, since two picks of the exact same
+        vertex are unambiguously the same thing regardless of any
+        floating-point position match."""
+        for point_id, existing_ref in self.external_references.items():
+            if existing_ref == ref and point_id in self.points:
+                return self.points[point_id]
+        return self.add_external_vertex_reference(x, y, ref)
+
     @property
     def origin_point_id(self) -> str | None:
         """The origin Point's id if it has been created (via `origin_point`)

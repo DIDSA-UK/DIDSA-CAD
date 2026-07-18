@@ -463,7 +463,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       }
     }
     if (controller.mode == SketchMode.dimension || controller.mode == SketchMode.convert) {
-      // Sketcher-roadmap Phase 4.3 v1 / Phase 9 v1: only reachable once a
+      // Sketcher-roadmap Phase 4.3 v1 / Phase 9 v2: only reachable once a
       // tap misses every real ghost/value-editor (dimension mode only -
       // convert mode has no ghost-value-editor of its own), and (see
       // hasEntityNear below) every real sketch entity too - the reference

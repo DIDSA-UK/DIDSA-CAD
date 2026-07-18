@@ -194,15 +194,20 @@ class ExternalEdgeReferenceResponse(BaseModel):
 
 
 class ConvertVertexCreate(BaseModel):
-    """Sketcher-roadmap Phase 9 v1 (Convert Entities): the payload for
-    materializing a Body vertex as a real, plain Point in the active
-    Sketch - deliberately its own schema, not `ExternalVertexReferenceCreate`,
-    since the two endpoints create genuinely different things: this one
-    creates an ordinary Point via `Sketch.add_point` (no
-    `external_references` back-link, no re-resolve-on-solve pinning, no
-    `missing_reference` staleness tracking) - a frozen, one-time copy the
-    user can freely edit/delete like anything else they drew, not a
-    live-pinned reference for dimensioning against."""
+    """Sketcher-roadmap Phase 9 v2 (Convert Entities): the payload for
+    materializing a Body vertex as a real, *associative* Point in the
+    active Sketch - deliberately its own schema, not
+    `ExternalVertexReferenceCreate`, since the two endpoints create
+    genuinely different things even though both are now backed by
+    `Sketch.add_or_reuse_external_vertex_reference`: this one's Point is
+    meant to participate in ordinary sketch geometry (profile detection,
+    Extrude) as real, non-construction geometry, not to be a pinned
+    dimensioning target - see `app.document.router.convert_body_vertex`'s
+    own doc comment for the full picture, including what "associative"
+    means here (staleness detection and the feature-tree lost-reference
+    indicator both fall out for free) and its one known limitation
+    (inherited, not introduced: dragging one snaps back on the next
+    solve, same as every other external-reference Point)."""
 
     body_id: str
     vertex_index: int
@@ -220,10 +225,11 @@ class ConvertEdgeCreate(BaseModel):
 class ConvertEdgeResponse(BaseModel):
     """Convert Entities' edge-shaped sibling to `ExternalEdgeReferenceResponse`
     - same "one response carries the Line and both Points" reasoning.
-    `start_point`/`end_point` may each be either a freshly created Point or
-    an existing one this Sketch already had at that exact location (see
-    `Sketch.add_or_reuse_point`) - the client should upsert by id either
-    way, same as it already treats `create_line`'s own endpoint response."""
+    `start_point`/`end_point` may each be either a freshly created,
+    associative Point or one this Sketch already had tracking the exact
+    same Body vertex (see `Sketch.add_or_reuse_external_vertex_reference`)
+    - the client should upsert by id either way, same as it already
+    treats `create_line`'s own endpoint response."""
 
     line: LineResponse
     start_point: PointResponse

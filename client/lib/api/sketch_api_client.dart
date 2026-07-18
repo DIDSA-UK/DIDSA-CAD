@@ -1115,11 +1115,12 @@ class SketchApiClient {
         (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// Sketcher-roadmap Phase 9 v1 (Convert Entities): [createExternalVertexReference]'s
-  /// non-referenced sibling - materializes a Body vertex as an ordinary,
-  /// real Point (no live-pinned back-link) the user can freely edit or
-  /// delete, rather than a dimensioning reference. See the backend's
-  /// `app.document.router.convert_body_vertex` doc comment.
+  /// Sketcher-roadmap Phase 9 v2 (Convert Entities): [createExternalVertexReference]'s
+  /// sibling for real (non-construction) geometry - materializes a Body
+  /// vertex as a real, associative Point meant to participate in ordinary
+  /// sketch geometry (profile detection, Extrude), not a dimensioning-only
+  /// reference. See the backend's `app.document.router.convert_body_vertex`
+  /// doc comment for what "associative" means here.
   Future<PointDto> convertBodyVertex(
     String partId,
     String sketchFeatureId,

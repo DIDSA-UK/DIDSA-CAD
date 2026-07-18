@@ -1032,9 +1032,9 @@ class _SketchScreenState extends State<SketchScreen> {
   /// with Dimension mode, which already supports referencing real Body
   /// geometry on the flat 2D canvas (via ghost-pick - see
   /// [SketchController.pickReferenceGhostVertex]/[pickReferenceGhostEdge]'s
-  /// own doc comments). P48 (Sketcher-roadmap Phase 9 v1): Convert Entities
-  /// is exactly the "later mode" this getter's own doc comment anticipated
-  /// - the one-line addition it predicted.
+  /// own doc comments). P48/P50 (Sketcher-roadmap Phase 9 v1/v2): Convert
+  /// Entities is exactly the "later mode" this getter's own doc comment
+  /// anticipated - the one-line addition it predicted.
   bool get _preferEntityPickOnTap =>
       _controller.mode == SketchMode.dimension || _controller.mode == SketchMode.convert;
 

@@ -861,26 +861,42 @@ def create_external_edge_reference(
     status_code=201,
 )
 def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCreate) -> PointResponse:
-    """Sketcher-roadmap Phase 9 v1 (Convert Entities): materializes
-    `payload` (a Body vertex) as an ordinary, real Point in this
+    """Sketcher-roadmap Phase 9 v2 (Convert Entities): materializes
+    `payload` (a Body vertex) as a real, *associative* Point in this
     SketchFeature's own Sketch - reuses `create_external_vertex_reference`'s
-    exact OCCT resolution (`resolve_external_vertex_position`, itself
-    `_resolve_vertex_position` + `_basis_for_sketch` + `world_point_to_
-    basis` - the same plane-embedding every other projection of this
-    Sketch's geometry into/out of world space already goes through, so
-    this carries no new precision risk of its own), but calls
-    `Sketch.add_point` instead of `add_external_vertex_reference` - a
-    frozen, one-time copy with no `external_references` back-link, no
-    re-pinning on solve, no staleness tracking. Same `missing_reference`
-    422 as the reference-picking endpoint if `payload` doesn't resolve
-    against this Part's current Bodies."""
+    exact OCCT resolution (`resolve_external_vertex_position`) and its
+    exact persistence (`Sketch.add_or_reuse_external_vertex_reference`,
+    Convert Entities' own re-pick-idempotent wrapper around
+    `add_external_vertex_reference`) - the *only* difference from Phase
+    4.3's own reference-picking endpoint is what this Point is *for*: a
+    real, non-construction Point meant to participate in ordinary sketch
+    geometry (profile detection, Extrude), not a pinned dimensioning
+    target. It still gets Phase 4.3's full associative behavior for free,
+    since nothing about `external_references`/`solve_sketch`'s pinning/
+    `refresh_external_references`/`SketchFeatureResponse.has_lost_
+    reference` is construction-status-aware - staleness detection and the
+    feature-tree "lost reference" indicator already work for this without
+    any changes of their own.
+
+    v1 (frozen, one-time copy, no live link) is gone - this replaces it at
+    the same endpoint/wire shape, not a new parallel mode. Known,
+    inherited limitation from reusing Phase 4.3's pinning mechanism
+    verbatim: like every other external-reference Point, this one is
+    pinned (`solve_sketch` never moves it) but the client's own
+    `dragTargetPointIdAt` has no explicit exclusion for external-reference
+    Points (only the origin is excluded) - dragging one *looks* possible
+    but the next solve snaps it back to its Body-derived position. Not
+    introduced by this change; not fixed by it either.
+
+    Same `missing_reference` 422 as the reference-picking endpoint if
+    `payload` doesn't resolve against this Part's current Bodies."""
     part = get_part_or_404(part_id)
     sketch_feature = _get_sketch_feature_or_404(part, feature_id)
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     ref = ExternalVertexReference(body_id=payload.body_id, vertex_index=payload.vertex_index)
     bodies = compute_part_bodies(part)
     x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
-    point = sketch.add_or_reuse_point(x, y)
+    point = sketch.add_or_reuse_external_vertex_reference(x, y, ref)
     return PointResponse(id=point.id, x=point.x, y=point.y)
 
 
@@ -890,27 +906,34 @@ def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCre
     status_code=201,
 )
 def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
-    """Convert Entities' edge-shaped sibling to `convert_body_vertex` -
+    """Convert Entities' edge-shaped sibling to `convert_body_vertex` (v2) -
     mirrors `create_external_edge_reference`'s own "resolve both endpoint
-    vertices, connect with a real Line" shape, but the Line (and its two
-    Points) are ordinary, non-construction, non-referenced entities, via
-    `Sketch.add_or_reuse_point`/`add_line(construction=False)` - real,
-    extrude-participating geometry the user can edit or delete freely, not
-    a pinned dimensioning reference.
+    vertices, connect with a real Line" shape, but the Line stays
+    non-construction (`add_line(construction=False)`) - real,
+    extrude-participating geometry, not a pinned dimensioning reference.
+    Its two endpoint Points are associative (`add_or_reuse_external_vertex_
+    reference`), same as `convert_body_vertex` - see that endpoint's own
+    doc comment for what "associative" gets for free (staleness detection,
+    the feature-tree lost-reference indicator) and its one known,
+    inherited limitation (drag-then-snap-back).
 
-    Scope note (v1): only ever produces a straight Line between the edge's
-    two endpoints, exactly like `create_external_edge_reference` already
-    does today - a curved (Arc/Circle) Body edge converts as its own chord,
-    not its true curve; real Arc/Circle extraction is unbuilt (needs OCCT
-    curve-type introspection this endpoint doesn't do), left as an explicit
+    Scope note (v1, unchanged in v2): only ever produces a straight Line
+    between the edge's two endpoints, exactly like
+    `create_external_edge_reference` already does today - a curved
+    (Arc/Circle) Body edge converts as its own chord, not its true curve;
+    real Arc/Circle extraction is unbuilt (needs OCCT curve-type
+    introspection this endpoint doesn't do), left as an explicit
     fast-follow rather than silently shipping an inexact polyline
     approximation.
 
-    `add_or_reuse_point` (not a fresh `add_point` for every call) is what
-    lets two separately-converted adjacent edges end up sharing one real
-    Point at their common Body vertex, so the result can register as a
-    closed profile for Extrude - same reasoning as `trim_circle`'s own
-    point-reuse fix.
+    `add_or_reuse_external_vertex_reference`'s own identity-based (not
+    position-based) matching is what lets two separately-converted
+    adjacent edges end up sharing one real Point at their common Body
+    vertex - `edge_endpoint_vertex_refs` resolves both edges' shared
+    corner to the *exact same* `(body_id, vertex_index)`, so the reuse
+    lookup finds it deterministically, not by floating-point luck - so the
+    result can still register as a closed profile for Extrude, same
+    reasoning as `trim_circle`'s own point-reuse fix.
 
     Fails closed with the same `missing_reference`/`degenerate_edge` 422s
     as `create_external_edge_reference`."""
@@ -928,11 +951,11 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
 
     start_vertex_ref = ExternalVertexReference(body_id=start_ref.body_id, vertex_index=start_ref.index)
     start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies)
-    start_point = sketch.add_or_reuse_point(start_x, start_y)
+    start_point = sketch.add_or_reuse_external_vertex_reference(start_x, start_y, start_vertex_ref)
 
     end_vertex_ref = ExternalVertexReference(body_id=end_ref.body_id, vertex_index=end_ref.index)
     end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies)
-    end_point = sketch.add_or_reuse_point(end_x, end_y)
+    end_point = sketch.add_or_reuse_external_vertex_reference(end_x, end_y, end_vertex_ref)
 
     line = sketch.add_line(start_point.id, end_point.id, construction=False)
     return ConvertEdgeResponse(

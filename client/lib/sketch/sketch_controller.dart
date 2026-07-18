@@ -859,9 +859,9 @@ const bool kTapToPlace = true;
 /// tool from the FAB's "Sketch Entities" category both sets [SketchTool]
 /// and enters [draw]; the FAB's "Dimensions" category enters [dimension]
 /// directly, with no further tool choice. [convert] (Sketcher-roadmap
-/// Phase 9 v1, Convert Entities) is the same "no further tool choice"
-/// shape - every tap just picks a Body vertex/edge to copy in as real
-/// sketch geometry.
+/// Phase 9 v2, Convert Entities) is the same "no further tool choice"
+/// shape - every tap just picks a Body vertex/edge to bring in as real,
+/// associative sketch geometry.
 enum SketchMode { select, draw, dimension, trim, convert }
 
 /// The kind of entity a [SketchSelection] refers to. [constraint] covers
@@ -1348,11 +1348,11 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// FAB → Convert Entities (Sketcher-roadmap Phase 9 v1): enters
+  /// FAB → Convert Entities (Sketcher-roadmap Phase 9 v2): enters
   /// [SketchMode.convert], same no-further-tool-choice shape as
   /// [enterTrimMode] - every tap picks a Body vertex/edge (via the same
   /// ghost-overlay hit test [enterDimensionMode] already uses) and
-  /// immediately copies it in as a real Point/Line, see
+  /// immediately brings it in as a real, associative Point/Line, see
   /// [pickConvertEntityVertex]/[pickConvertEntityEdge].
   void enterConvertEntitiesMode() {
     dropGrabbedEntity();
@@ -5797,17 +5797,26 @@ class SketchController extends ChangeNotifier {
     _applyDimensionHit(hit);
   }
 
-  /// Sketcher-roadmap Phase 9 v1 (Convert Entities): [SketchMode.convert]'s
+  /// Sketcher-roadmap Phase 9 v2 (Convert Entities): [SketchMode.convert]'s
   /// own body-vertex pick - called by [SketchCanvas]/[SketchScreen] (2D and
   /// Orbit View respectively) when a tap lands on a `referenceGhostVertices`
-  /// marker while in [SketchMode.convert]. Materializes the vertex as an
-  /// ordinary, real Point via the backend's `convert_body_vertex` endpoint -
-  /// unlike [pickReferenceGhostVertex], no `external_references` back-link,
-  /// no re-pinning on solve; a frozen copy the user can edit or delete like
-  /// anything else they drew. One undo entry per tap, mirroring every other
-  /// single-commit draw action - a no-op (not pushed) if the backend
-  /// reused an existing Point already at that location (`Sketch.
-  /// add_or_reuse_point`) rather than creating a new one, so undo never
+  /// marker while in [SketchMode.convert]. Materializes the vertex as a
+  /// real, *associative* Point via the backend's `convert_body_vertex`
+  /// endpoint - same live-linked/pinned mechanism [pickReferenceGhostVertex]
+  /// already uses (`external_references`, re-resolved on every solve,
+  /// surfaced as the feature tree's "lost reference" indicator if the Body
+  /// changes underneath it), but non-construction: real geometry meant to
+  /// participate in a profile/Extrude, not a dimensioning-only reference.
+  /// Known, inherited limitation: like any external-reference Point, this
+  /// one is pinned server-side, but nothing here excludes it from
+  /// [dragTargetPointIdAt] - dragging one visually "works" but the next
+  /// solve snaps it back to its Body-derived position.
+  ///
+  /// One undo entry per tap, mirroring every other single-commit draw
+  /// action - a no-op (not pushed) if the backend reused an existing,
+  /// already-tracking-this-exact-vertex Point (`Sketch.
+  /// add_or_reuse_external_vertex_reference`, identity-matched, not
+  /// position-matched) rather than creating a new one, so undo never
   /// deletes something that predates this tap. Same no-op guard as
   /// [pickReferenceGhostVertex] for a bare, non-Part Sketch.
   Future<void> pickConvertEntityVertex(String bodyId, int vertexIndex) async {
@@ -5829,15 +5838,17 @@ class SketchController extends ChangeNotifier {
   }
 
   /// [pickConvertEntityVertex]'s edge-shaped sibling - materializes a Body
-  /// edge as an ordinary, real, non-construction Line via the backend's
-  /// `convert_body_edge` endpoint (v1 scope note: a curved edge converts as
-  /// its own straight chord, not its true curve - see that endpoint's own
-  /// doc comment). One undo entry per tap that undoes everything this call
-  /// actually created (the Line, and only whichever of its two endpoint
-  /// Points weren't already reused from something already in the Sketch -
-  /// see `Sketch.add_or_reuse_point`), lines-before-points so a Point never
-  /// gets asked to delete out from under a Line still referencing it, same
-  /// ordering [deleteSelected]'s own undo already uses.
+  /// edge as a real, non-construction Line with associative endpoint
+  /// Points via the backend's `convert_body_edge` endpoint (scope note
+  /// unchanged from v1: a curved edge converts as its own straight chord,
+  /// not its true curve - see that endpoint's own doc comment). One undo
+  /// entry per tap that undoes everything this call actually created (the
+  /// Line, and only whichever of its two endpoint Points weren't already
+  /// reused from something already in the Sketch - see `Sketch.
+  /// add_or_reuse_external_vertex_reference`), lines-before-points so a
+  /// Point never gets asked to delete out from under a Line still
+  /// referencing it, same ordering [deleteSelected]'s own undo already
+  /// uses.
   Future<void> pickConvertEntityEdge(String bodyId, int edgeIndex) async {
     if (_busy || _sketchId == null) return;
     final partId = _documentPartId;

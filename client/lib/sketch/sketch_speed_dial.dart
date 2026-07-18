@@ -139,7 +139,7 @@ class SketchSpeedDial extends StatelessWidget {
             label: 'Trim/Extend',
             onPressed: controller.enterTrimMode,
           ),
-          // P48 (Sketcher-roadmap Phase 9 v1): Convert Entities - always
+          // P48/P50 (Sketcher-roadmap Phase 9 v1/v2): Convert Entities - always
           // shown, same as Dimensions above, even though it only has
           // anything to do for a Part-backed Sketch with sibling Bodies -
           // a bare/no-Part Sketch just has no ghost geometry to tap,
