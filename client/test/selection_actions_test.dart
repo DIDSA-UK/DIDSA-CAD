@@ -39,12 +39,14 @@ void main() {
 
     test(
       'C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face), plus '
-      'on-device feedback\'s New Sketch on Face shortcut',
+      'on-device feedback\'s New Sketch on Face, Chamfer, and Fillet shortcuts',
       () {
         final actions = contextActionsFor({_face0});
         expect(actions, [
           const SelectionContextAction('Create Plane', enabled: true),
           const SelectionContextAction('New Sketch on Face', enabled: true),
+          const SelectionContextAction('Chamfer', enabled: true),
+          const SelectionContextAction('Fillet', enabled: true),
         ]);
       },
     );

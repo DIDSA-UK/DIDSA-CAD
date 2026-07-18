@@ -144,10 +144,20 @@ List<SelectionContextAction> contextActionsFor(
     // same sketch-orientation flow a plane-based new sketch already goes
     // through, rather than making the user create the plane first and then
     // separately start a sketch on it.
+    //
+    // On-device feedback: also offers Chamfer/Fillet directly, resolved
+    // against the face's own boundary edge loop (mirrors the ambient
+    // [_toggleFilletFaceEdges]/[_toggleChamferFaceEdges] "tap a face while
+    // the picker is already open" convenience, just reachable before that
+    // picker session exists) - a lone face was previously a dead end for
+    // Fillet/Chamfer entirely, requiring the user to hunt down and select
+    // its individual boundary edges by hand first.
     if (faces.length == 1) {
       return const [
         SelectionContextAction('Create Plane', enabled: true),
         SelectionContextAction('New Sketch on Face', enabled: true),
+        SelectionContextAction('Chamfer', enabled: true),
+        SelectionContextAction('Fillet', enabled: true),
       ];
     }
     // On-device feedback (bug fix): a lone reference plane or existing

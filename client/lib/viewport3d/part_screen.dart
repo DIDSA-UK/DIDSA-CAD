@@ -557,22 +557,8 @@ class _PartScreenState extends State<PartScreen> {
   /// that's since changed) or the face borders no edges at all (never
   /// happens for a real solid, but there's nothing to toggle either way).
   void _toggleFilletFaceEdges(SelectionEntityRef faceEntity) {
-    BodyMeshDto? body;
-    for (final candidate in _bodies) {
-      if (candidate.bodyId == faceEntity.bodyId) {
-        body = candidate;
-        break;
-      }
-    }
-    final faceEdgeIds = body?.mesh.faceEdgeIds;
-    if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return;
-    final loopEdgeIds = faceEdgeIds[faceEntity.id];
-    if (loopEdgeIds.isEmpty) return;
-
-    final loopEntities = [
-      for (final edgeId in loopEdgeIds)
-        SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: faceEntity.bodyId, id: edgeId),
-    ];
+    final loopEntities = _faceBoundaryEdges(faceEntity);
+    if (loopEntities.isEmpty) return;
     final allSelected = loopEntities.every(_selectedEntities.contains);
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
@@ -589,22 +575,8 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_toggleFilletFaceEdges] exactly for the Chamfer flow - see
   /// that method's own doc comment for the full reasoning.
   void _toggleChamferFaceEdges(SelectionEntityRef faceEntity) {
-    BodyMeshDto? body;
-    for (final candidate in _bodies) {
-      if (candidate.bodyId == faceEntity.bodyId) {
-        body = candidate;
-        break;
-      }
-    }
-    final faceEdgeIds = body?.mesh.faceEdgeIds;
-    if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return;
-    final loopEdgeIds = faceEdgeIds[faceEntity.id];
-    if (loopEdgeIds.isEmpty) return;
-
-    final loopEntities = [
-      for (final edgeId in loopEdgeIds)
-        SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: faceEntity.bodyId, id: edgeId),
-    ];
+    final loopEntities = _faceBoundaryEdges(faceEntity);
+    if (loopEntities.isEmpty) return;
     final allSelected = loopEntities.every(_selectedEntities.contains);
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
@@ -616,6 +588,32 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = next;
     });
     if (_chamferActive) _scheduleChamferPreview();
+  }
+
+  /// Resolves [faceEntity]'s own Body/face id to that face's whole boundary
+  /// edge loop (`BodyMeshDto.mesh.faceEdgeIds`, backend
+  /// `app.document.mesh._extract_face_edge_ids`) - shared by
+  /// [_toggleFilletFaceEdges]/[_toggleChamferFaceEdges] (an ambient tap while
+  /// a picker is already open) and [_onFilletTapped]/[_onChamferTapped] (the
+  /// [SelectionContextPanel] button for a lone selected face, before any
+  /// picker session exists). Returns an empty list if the face's body/index
+  /// can't be resolved (stale hit against mesh data that's since changed) or
+  /// the face borders no edges at all (never happens for a real solid).
+  List<SelectionEntityRef> _faceBoundaryEdges(SelectionEntityRef faceEntity) {
+    BodyMeshDto? body;
+    for (final candidate in _bodies) {
+      if (candidate.bodyId == faceEntity.bodyId) {
+        body = candidate;
+        break;
+      }
+    }
+    final faceEdgeIds = body?.mesh.faceEdgeIds;
+    if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return const [];
+    final loopEdgeIds = faceEdgeIds[faceEntity.id];
+    return [
+      for (final edgeId in loopEdgeIds)
+        SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: faceEntity.bodyId, id: edgeId),
+    ];
   }
 
   /// Every Feature's 3D Sketch geometry, keyed by Feature id, regardless of
@@ -4540,12 +4538,22 @@ class _PartScreenState extends State<PartScreen> {
     _openFilletPanel(edgeEntities: const []);
   }
 
-  /// [SelectionContextPanel.onFillet]'s callback - `contextActionsFor` only
-  /// ever enables this button for a selection that's one or more edges, all
-  /// on the same Body, so there is no combination to re-derive the way
-  /// [_onCreatePlaneTapped] has to for its own six flows.
+  /// [SelectionContextPanel.onFillet]'s callback - `contextActionsFor`
+  /// enables this button for either one or more edges (all on the same
+  /// Body) or a single lone face, resolved here to that face's own boundary
+  /// edge loop via [_faceBoundaryEdges] (mirrors [_toggleFilletFaceEdges]'s
+  /// ambient face-tap convenience, just reachable before a Fillet picker
+  /// session exists at all).
   void _onFilletTapped() {
     final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    if (edges.isEmpty) {
+      final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face);
+      if (faces.isNotEmpty) {
+        final face = faces.first;
+        _openFilletPanel(edgeEntities: _faceBoundaryEdges(face));
+        return;
+      }
+    }
     _openFilletPanel(edgeEntities: edges);
   }
 
@@ -4864,6 +4872,14 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_onFilletTapped] exactly.
   void _onChamferTapped() {
     final edges = _selectedEntities.where((e) => e.kind == SelectionEntityKind.edge).toList();
+    if (edges.isEmpty) {
+      final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face);
+      if (faces.isNotEmpty) {
+        final face = faces.first;
+        _openChamferPanel(edgeEntities: _faceBoundaryEdges(face));
+        return;
+      }
+    }
     _openChamferPanel(edgeEntities: edges);
   }
 

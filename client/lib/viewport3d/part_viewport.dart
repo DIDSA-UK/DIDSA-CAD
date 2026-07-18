@@ -791,6 +791,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   static final vm.Vector4 _hoverColor = vector4FromHex('#FFC107', opacity: 0.55);
   static final vm.Vector4 _selectedColor = vector4FromHex('#2196F3', opacity: 0.85);
 
+  /// On-device feedback ("when a face is selected, it isn't clear it's
+  /// selected - the colour change should be higher contrast or brighter"):
+  /// a selected Face used to share [_selectedColor] with a selected
+  /// Vertex - kept that one unchanged (still used for vertices, see
+  /// [_syncSelectedEntitiesNode]'s own vertex branch) and gave Face its
+  /// own, brighter/more saturated constant instead, so this fix can't
+  /// accidentally wash out vertex-selection contrast the same complaint
+  /// wasn't about. Material "Blue A400" (a vivid accent blue, distinctly
+  /// brighter/more saturated than Blue 500's `_selectedColor`) at a higher
+  /// opacity than before (0.95 vs 0.85) - both changes push in the same
+  /// "more contrast" direction the feedback asked for.
+  static final vm.Vector4 _selectedFaceColor = vector4FromHex('#2979FF', opacity: 0.95);
+
   /// Darker than [_selectedColor] so a selected edge reads as visually
   /// distinct from a selected face's tint - Material Blue 900.
   static final vm.Vector4 _selectedEdgeColor = vector4FromHex('#0D47A1', opacity: 0.85);
@@ -2489,7 +2502,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
 
     if (faceTriangles.isNotEmpty) {
-      final node = buildHighlightFacesNode(faceTriangles, color: _selectedColor);
+      final node = buildHighlightFacesNode(faceTriangles, color: _selectedFaceColor);
       scene.add(node);
       _selectedFacesNode = node;
       debugPrint(
