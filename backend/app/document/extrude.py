@@ -11,7 +11,7 @@ import logging
 import math
 
 from fastapi import HTTPException
-from OCC.Core.BRep import BRep_Builder, BRep_Tool
+from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
@@ -31,6 +31,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Vertex, TopoDS
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
+from app.document.plane_geometry import right_handed_x_axis
 from app.document.models import (
     ChamferFeature,
     ExtrudeFeature,
@@ -90,27 +91,29 @@ def _arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
     between two points via `BRepBuilderAPI_MakeEdge(gp_Circ, P1, P2)`,
     which *does* pick one of the circle's two possible arcs based on that
     reference direction (the trim always runs from P1 to P2 in the
-    direction of increasing parameter/angle). Passing the sketch plane's
-    own local +X axis as the explicit 3rd argument pins that parametrization
-    to exactly "standard CCW in the sketch's own local (x, y) coordinates"
-    - the same convention the Arc class docstring documents and the
-    client's 2D rendering must also use - rather than leaving it to
-    whatever direction OCCT happens to auto-select."""
-    x, y, z = basis.x_axis
+    direction of increasing parameter/angle). Passing [right_handed_x_axis]
+    (not `basis.x_axis` directly - see that function's own doc comment for
+    why) as the explicit 3rd argument pins that parametrization to exactly
+    "standard CCW in the sketch's own local (x, y) coordinates" - the same
+    convention the Arc class docstring documents and the client's 2D
+    rendering must also use - rather than leaving it to whatever direction
+    OCCT happens to auto-select, or to a possibly flip-inverted `x_axis`."""
+    x, y, z = right_handed_x_axis(basis)
     return gp_Ax2(basis_point_to_world(basis, center_x, center_y), basis_normal(basis), gp_Dir(x, y, z))
 
 
 def _ellipse_axis(basis: ResolvedPlane, center_x: float, center_y: float, rotation: float) -> gp_Ax2:
     """The `gp_Ax2` an Ellipse's `gp_Elips` is built against - `gp_Elips`
     always places its major axis along the `gp_Ax2`'s own X reference
-    direction, so (mirroring `_arc_axis`'s identical reasoning for Arc)
-    that reference direction must be pinned explicitly rather than left to
-    OCCT's arbitrary default: the sketch plane's local +X axis, rotated
-    in-plane by the Ellipse's own `rotation()` (the angle from local +X to
-    its major-axis Point), giving a deterministic major-axis direction
-    that matches the Ellipse class's own convention and the client's 2D
-    rendering."""
-    xx, xy, xz = basis.x_axis
+    direction, so (mirroring `_arc_axis`'s identical reasoning, including
+    why this reads [right_handed_x_axis] rather than `basis.x_axis`
+    directly) that reference direction must be pinned explicitly rather
+    than left to OCCT's arbitrary default: the sketch plane's own
+    right-handed local +X axis, rotated in-plane by the Ellipse's own
+    `rotation()` (the angle from local +X to its major-axis Point), giving
+    a deterministic major-axis direction that matches the Ellipse class's
+    own convention and the client's 2D rendering."""
+    xx, xy, xz = right_handed_x_axis(basis)
     yx, yy, yz = basis.y_axis
     cos_r, sin_r = math.cos(rotation), math.sin(rotation)
     dx, dy, dz = xx * cos_r + yx * sin_r, xy * cos_r + yy * sin_r, xz * cos_r + yz * sin_r
@@ -259,34 +262,6 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
             axis = _arc_axis(basis, center.x, center.y)
             start = sketch.points[entity.start_point_id]
             end = sketch.points[entity.end_point_id]
-            # On-device feedback debug logging (wrong-region Extrude on an
-            # Arc-containing profile - both a Trim/Extend-closed loop and a
-            # plain Slot's own end-cap Arc): temporary, targeted at
-            # confirming which physical arc segment actually gets built,
-            # since this can't be tested locally (no OCC available in the
-            # dev sandbox) - remove once root-caused.
-            start_angle_deg = math.degrees(math.atan2(start.y - center.y, start.x - center.x)) % 360
-            end_angle_deg = math.degrees(math.atan2(end.y - center.y, end.x - center.x)) % 360
-            logger.warning(
-                "wire_for_profile Arc %s: point_ids[%d]=%s center=(%.4f,%.4f) r=%.4f "
-                "start_point=%s(%.4f,%.4f)@%.2fdeg end_point=%s(%.4f,%.4f)@%.2fdeg "
-                "loop_walk_direction=%s",
-                entity.id,
-                i,
-                profile.point_ids[i],
-                center.x,
-                center.y,
-                radius,
-                entity.start_point_id,
-                start.x,
-                start.y,
-                start_angle_deg,
-                entity.end_point_id,
-                end.x,
-                end.y,
-                end_angle_deg,
-                "forward" if profile.point_ids[i] == entity.start_point_id else "backward",
-            )
             edge = BRepBuilderAPI_MakeEdge(
                 gp_Circ(axis, radius),
                 basis_point_to_world(basis, start.x, start.y),
@@ -312,29 +287,7 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
                 basis_point_to_world(basis, b.x, b.y),
             ).Edge()
             wire_maker.Add(edge)
-    wire = wire_maker.Wire()
-    # On-device feedback debug logging (see the Arc branch's own identical
-    # note above) - reports whether the wire actually closed and, more
-    # usefully, its own real vertex positions in world space, so the
-    # *actual* boundary OCCT built can be compared directly against what
-    # was expected instead of inferred indirectly from the final solid.
-    try:
-        vertex_coords = []
-        explorer = TopExp_Explorer(wire, TopAbs_VERTEX)
-        while explorer.More():
-            point = BRep_Tool.Pnt(topods.Vertex(explorer.Current()))
-            vertex_coords.append((round(point.X(), 4), round(point.Y(), 4), round(point.Z(), 4)))
-            explorer.Next()
-        logger.warning(
-            "wire_for_profile: %d hops, IsDone=%s, Closed=%s, vertices(world)=%s",
-            point_count,
-            wire_maker.IsDone(),
-            wire.Closed(),
-            vertex_coords,
-        )
-    except Exception:
-        logger.exception("wire_for_profile: debug logging itself failed")
-    return wire
+    return wire_maker.Wire()
 
 
 def _wire_normal(wire: TopoDS_Wire) -> gp_Dir:
@@ -555,24 +508,6 @@ def _solid_for_extrude_feature(
     else:
         candidates = result.loops
     profiles = select_profiles(candidates, feature.profile_refs)
-    # On-device feedback debug logging (see wire_for_profile's own identical
-    # note) - reports detect_profile's own status plus exactly which
-    # profile(s)/loop(s) are about to be built, before any OCC geometry
-    # construction, to rule in/out "wrong loop picked among several" versus
-    # a wire/face-construction issue within a single, correctly-picked loop.
-    logger.warning(
-        "_solid_for_extrude_feature %s: detect_profile status=%s, profile_refs=%s, "
-        "%d candidate(s), using %d profile(s): %s",
-        feature.id,
-        result.status.value,
-        feature.profile_refs,
-        len(candidates),
-        len(profiles),
-        [
-            {"point_ids": p.point_ids, "line_ids": p.line_ids, "inner_loops": len(p.inner_loops)}
-            for p in profiles
-        ],
-    )
     solids = [_prism_for_profile(sketch, profile, feature, basis) for profile in profiles]
 
     if len(solids) == 1:
