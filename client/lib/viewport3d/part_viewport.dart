@@ -201,6 +201,52 @@ class PartViewport extends StatefulWidget {
   /// against. Empty (the default) renders no overlay at all.
   final List<ConstraintOverlayItem> constraintOverlayItems;
 
+  /// P41 (on-device feedback: "I can't grab them or pick a ghost
+  /// dimension"): while true, [_commitDrawCursor] checks [constraintOverlayItems]'
+  /// own rendered labels for a hit *before* resolving the ordinary
+  /// [onDrawCursorCommit] world-point commit - mirrors `sketch_canvas.dart`'s
+  /// own `_dispatchTap`/`_handleDragModeTap`, which only intercept a tap for
+  /// a ghost/constraint-label hit while in [SketchMode.dimension] or drag
+  /// mode respectively, never during ordinary drawing/selecting (a tap
+  /// landing near an existing dimension must never block placing new
+  /// geometry there). The caller ([SketchScreen]) computes this the same
+  /// way, from its own [SketchController.mode]/drag-mode state.
+  final bool preferConstraintOverlayHitOnCommit;
+
+  /// P41: fired instead of [onDrawCursorCommit] when
+  /// [preferConstraintOverlayHitOnCommit] is true and the commit lands on
+  /// one of [constraintOverlayItems]' own rendered labels - `hitConstraintId`
+  /// is that item's own [ConstraintOverlayItem.constraintId] (a live
+  /// Constraint id or a [SketchController.ghosts] key, the caller's own job
+  /// to tell apart - see [constraintOverlayItemAt]'s own doc comment), or
+  /// null if [preferConstraintOverlayHitOnCommit] was on but the tap missed
+  /// every label. Returns whether the tap was actually consumed (true skips
+  /// the ordinary [onDrawCursorCommit] fallback entirely, matching
+  /// `_dispatchTap`'s own "activeGhostKey set, tap misses everything -
+  /// cancel the edit, still don't fall through to placing geometry"
+  /// behaviour) - false (including when this callback is itself null) lets
+  /// [onDrawCursorCommit] fire normally.
+  final bool Function(String? hitConstraintId)? onConstraintOverlayItemTap;
+
+  /// P41: while true, [_handleDrawCursorMove] feeds its own raw screen
+  /// delta to [onConstraintLabelDragDelta] instead of resolving/reporting a
+  /// world-plane hit - mirrors `sketch_canvas.dart`'s own
+  /// `_feedMouseSwipeToGrabbedEntity`'s "a grabbed label's offset lives in
+  /// screen space, not an absolute cursor position" branch exactly (see
+  /// [SketchController.updateLabelDrag]'s own doc comment for why). The
+  /// caller computes this from [SketchController.draggingLabelId] - dropping
+  /// the grabbed label again is already handled entirely by the existing
+  /// [onDrawCursorCommit]/drag-mode-commit path via
+  /// [SketchController.dropGrabbedEntity] (already routes to
+  /// [SketchController.endLabelDrag] on its own), so no separate "stop
+  /// dragging a label" plumbing was needed here.
+  final bool isDraggingConstraintLabel;
+
+  /// P41: fired with this State's own already-sensitivity-scaled screen
+  /// delta while [isDraggingConstraintLabel] is true, in place of
+  /// [onDrawCursorMoved].
+  final void Function(Offset delta)? onConstraintLabelDragDelta;
+
   /// P8: colour/opacity of [sketchPlaneBasis]'s own rendered surface (see
   /// [buildSketchPlaneSurfaceNode]) - only rendered while [sketchPlaneBasis]
   /// is non-null. Unlike [bodyColourHex]/[bodyOpacity], there's no separate
@@ -446,6 +492,10 @@ class PartViewport extends StatefulWidget {
     this.profileFillOutlines = const [],
     this.profileBranchMarkers = const [],
     this.constraintOverlayItems = const [],
+    this.preferConstraintOverlayHitOnCommit = false,
+    this.onConstraintOverlayItemTap,
+    this.isDraggingConstraintLabel = false,
+    this.onConstraintLabelDragDelta,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
     this.sketchPlaneSurfaceOpacity = 0.18,
     this.sketchPlaneGridVisible = false,
@@ -2043,11 +2093,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// why), same as every other genuinely pointer-event-driven entry point
   /// into this State.
   void _handleDrawCursorMove(Offset delta) {
+    final scaledDelta = delta * _cursorDragSensitivity;
     final current = _drawCursorPosition ?? _viewportCenter();
     setState(() {
-      _drawCursorPosition = _clampToViewport(current + delta * _cursorDragSensitivity);
+      _drawCursorPosition = _clampToViewport(current + scaledDelta);
       _recomputeDrawCursor();
     });
+    // P41: a grabbed constraint label's own offset lives in screen space,
+    // not an absolute world/sketch position - see
+    // [PartViewport.isDraggingConstraintLabel]'s own doc comment.
+    if (widget.isDraggingConstraintLabel) {
+      widget.onConstraintLabelDragDelta?.call(scaledDelta);
+      return;
+    }
     final resolved = _drawCursorWorldHit;
     if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
   }
@@ -2095,6 +2153,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_onPointerEnd]), commits the current [_drawCursorWorldHit] if the
   /// cursor is actually resolving to a point on the plane.
   void _commitDrawCursor() {
+    if (widget.preferConstraintOverlayHitOnCommit && widget.onConstraintOverlayItemTap != null) {
+      final basis = widget.sketchPlaneBasis;
+      final cursor = _drawCursorPosition;
+      final hitId = (basis != null && cursor != null)
+          ? constraintOverlayItemAt(_camera.cameraFor(_viewportSize), _viewportSize, basis, widget.constraintOverlayItems, cursor)
+          : null;
+      final consumed = widget.onConstraintOverlayItemTap!(hitId);
+      if (consumed) return;
+    }
     final hit = _drawCursorWorldHit;
     if (hit != null) {
       widget.onDrawCursorCommit?.call(hit);
@@ -2505,6 +2572,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 onPressed: () => setState(_doRecentre),
               ),
             ),
+            // P41 (on-device feedback: "the cursor goes behind dimensions
+            // and constraint glyphs and I can't grab them or pick a ghost
+            // dimension"): moved ahead of both cursor crosshairs below (was
+            // the very last child, drawing on top of and visually
+            // swallowing them) - the crosshair itself is IgnorePointer'd
+            // regardless of draw order, so this reordering only changes who
+            // paints on top, never who receives a tap.
+            if (widget.sketchPlaneBasis != null && widget.constraintOverlayItems.isNotEmpty)
+              ConstraintOverlay(
+                camera: _camera.cameraFor(size),
+                viewportSize: size,
+                basis: widget.sketchPlaneBasis!,
+                items: widget.constraintOverlayItems,
+              ),
             if (widget.selectionMode && _cursorPosition != null)
               IgnorePointer(
                 child: CustomPaint(
@@ -2564,13 +2645,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             if (ViewPreferences.debugShowCameraOrientation)
               DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
-            if (widget.sketchPlaneBasis != null && widget.constraintOverlayItems.isNotEmpty)
-              ConstraintOverlay(
-                camera: _camera.cameraFor(size),
-                viewportSize: size,
-                basis: widget.sketchPlaneBasis!,
-                items: widget.constraintOverlayItems,
-              ),
           ],
         );
       },

@@ -1065,7 +1065,19 @@ List<int> earClipTriangleIndices(List<(double, double)> polygon) {
       var anyOtherVertexInside = false;
       for (final idx in remaining) {
         if (idx == iPrev || idx == iCur || idx == iNext) continue;
-        if (_pointInTriangle(polygon[idx], a, b, c)) {
+        final candidate = polygon[idx];
+        // A hole "bridged" into the outer boundary (see
+        // SketchController.profileLoopOutlineWithHoles) deliberately
+        // revisits the same (x, y) at two different indices (the zero-
+        // width slit connecting the two) - a coordinate-duplicate of one
+        // of *this* candidate ear's own three corners is the same point in
+        // space as that corner, not a genuinely separate vertex sitting
+        // inside the ear, so it must never block it the way a real
+        // interior point would.
+        if (_pointsCoincide(candidate, a) || _pointsCoincide(candidate, b) || _pointsCoincide(candidate, c)) {
+          continue;
+        }
+        if (_pointInTriangle(candidate, a, b, c)) {
           anyOtherVertexInside = true;
           break;
         }
@@ -1080,6 +1092,11 @@ List<int> earClipTriangleIndices(List<(double, double)> polygon) {
   }
   if (remaining.length == 3) triangles.addAll(remaining);
   return triangles;
+}
+
+bool _pointsCoincide((double, double) p, (double, double) q) {
+  const epsilon = 1e-9;
+  return (p.$1 - q.$1).abs() < epsilon && (p.$2 - q.$2).abs() < epsilon;
 }
 
 bool _isConvexEarVertex((double, double) a, (double, double) b, (double, double) c, bool ccw) {

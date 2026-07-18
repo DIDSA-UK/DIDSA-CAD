@@ -977,6 +977,11 @@ class _SketchScreenState extends State<SketchScreen> {
         profileFillOutlines: _embeddedProfileFillOutlines,
         profileBranchMarkers: _embeddedProfileBranchMarkers,
         constraintOverlayItems: _embeddedConstraintOverlayItems,
+        preferConstraintOverlayHitOnCommit:
+            _controller.mode == SketchMode.dimension || _dragModeActiveInOrbitView,
+        onConstraintOverlayItemTap: _handleEmbeddedConstraintOverlayTap,
+        isDraggingConstraintLabel: _controller.draggingLabelId != null,
+        onConstraintLabelDragDelta: _controller.updateLabelDrag,
         sketchGeometries: _embeddedSketchGeometries,
         sketchEntityColors: _embeddedSketchEntityColors,
         referencePlanesHidden: true,
@@ -1207,6 +1212,47 @@ class _SketchScreenState extends State<SketchScreen> {
     }
   }
 
+  /// P41 (on-device feedback: "I can't grab them or pick a ghost
+  /// dimension"): [PartViewport.onConstraintOverlayItemTap]'s handler -
+  /// mirrors `sketch_canvas.dart`'s own `_dispatchTap` (Dimension-mode
+  /// ghost-tap branch) and `_handleDragModeTap` (constraint-label-drag
+  /// branch) exactly, just re-derived from a resolved hit id instead of
+  /// re-walking the geometry itself (already done once, in
+  /// [PartViewport]'s own `_commitDrawCursor`, via [constraintOverlayItemAt]).
+  ///
+  /// [hitId] is deliberately untyped (could be a ghost's own key or a real
+  /// Constraint's own id, or neither) - this checks *actual current
+  /// membership* in [SketchController.ghosts]/`.constraints` before acting
+  /// on it, rather than trusting the caller's context alone, so a tap that
+  /// happens to land near an unrelated confirmed dimension while in
+  /// Dimension mode (no ghost there) is correctly treated as a miss, not a
+  /// wrong-mode action - see [PartViewport.preferConstraintOverlayHitOnCommit]'s
+  /// own doc comment for why *whether this fires at all* is still mode-
+  /// gated one level up from this.
+  bool _handleEmbeddedConstraintOverlayTap(String? hitId) {
+    if (_controller.mode == SketchMode.dimension) {
+      final isGhost = hitId != null && _controller.ghosts.any((g) => g.key == hitId);
+      if (_controller.activeGhostKey != null) {
+        // Mirrors _dispatchTap exactly: any tap while an edit is open
+        // either confirms staying on the same ghost (no-op, handled by the
+        // caller's own value-entry bar) or cancels it - never falls
+        // through to placing/picking anything else, matching "tap away to
+        // cancel" being unconditional here.
+        if (hitId != _controller.activeGhostKey) _controller.cancelGhostEdit();
+        return true;
+      }
+      if (isGhost) {
+        _controller.tapGhost(hitId);
+        return true;
+      }
+      return false;
+    }
+    if (_dragModeActiveInOrbitView && hitId != null && _controller.constraints.containsKey(hitId)) {
+      return _controller.beginLabelDrag(hitId);
+    }
+    return false;
+  }
+
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates
   /// [SketchController.activeDrawGhost] (already live from
   /// [_handleDrawCursorMoved] above) via [ghostPolylines] into sketch-local
@@ -1378,7 +1424,7 @@ class _SketchScreenState extends State<SketchScreen> {
   List<List<(double, double)>> get _embeddedProfileFillOutlines {
     final fresh = <List<(double, double)>>[
       for (final loop in _controller.closedProfileFills)
-        if (_controller.profileLoopOutline(loop) case final outline?)
+        if (_controller.profileLoopOutlineWithHoles(loop) case final outline?)
           if (outline.length >= 3) outline,
     ];
     final cached = _cachedProfileFillOutlines;

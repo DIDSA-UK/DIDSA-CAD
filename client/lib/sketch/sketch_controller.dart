@@ -7990,6 +7990,87 @@ class SketchController extends ChangeNotifier {
     return math.sqrt(dx * dx + dy * dy);
   }
 
+  /// P42 (on-device feedback: "a punch out in a profile doesn't show on the
+  /// shaded area in the sketcher"): [profileLoopOutline]'s own outer
+  /// boundary, with every one of [loop]'s own [ProfileLoopDto.innerLoops]
+  /// (holes) merged into it via the standard "bridge" technique - a hole is
+  /// spliced into the outer sequence as `..., O, hole[0], hole[1], ...,
+  /// hole[0], O, ...` (walk out to the hole's own nearest vertex, all the
+  /// way around it, back to that same vertex, back to the outer vertex),
+  /// turning "simple polygon with a hole" into one ordinary simple polygon
+  /// [earClipTriangleIndices] (`sketch_geometry_3d.dart`) already knows how
+  /// to triangulate, with no changes needed there at all - the zero-width
+  /// slit this leaves is exactly why that function's own hard iteration cap
+  /// matters here (a real, if degenerate, edge case it already has to
+  /// tolerate, not a new risk introduced by this).
+  ///
+  /// V1 scope, matching [profileLoopOutline]'s own doc comment: only
+  /// [loop]'s own *direct* holes - a hole's own further-nested holes
+  /// (`innerLoops` recursively) are not bridged in turn, an accepted,
+  /// documented gap for the rare "hole inside a hole" case, not every real
+  /// sketch this is meant to fix. Multiple sibling holes are each bridged
+  /// independently to whichever outer/already-merged vertex is nearest -
+  /// correct for the common case (holes that don't touch or overlap each
+  /// other), not a fully general, crossing-proof solver.
+  List<(double, double)>? profileLoopOutlineWithHoles(ProfileLoopDto loop) {
+    var outline = profileLoopOutline(loop);
+    if (outline == null) return null;
+    final outlineIsCcw = _signedArea(outline) >= 0;
+    for (final hole in loop.innerLoops) {
+      var holeOutline = profileLoopOutline(hole);
+      if (holeOutline == null || holeOutline.length < 3) continue;
+      // A hole must wind opposite the outer boundary for the bridge/keyhole
+      // technique below to leave a genuinely simple (non-self-crossing)
+      // polygon behind - reverse it if [profileLoopOutline] happened to
+      // hand back the same winding as the outer loop.
+      final holeIsCcw = _signedArea(holeOutline) >= 0;
+      if (holeIsCcw == outlineIsCcw) holeOutline = holeOutline.reversed.toList();
+      outline = _bridgeHoleIntoOutline(outline!, holeOutline);
+    }
+    return outline;
+  }
+
+  double _signedArea(List<(double, double)> polygon) {
+    var area = 0.0;
+    for (var i = 0; i < polygon.length; i++) {
+      final (x1, y1) = polygon[i];
+      final (x2, y2) = polygon[(i + 1) % polygon.length];
+      area += x1 * y2 - x2 * y1;
+    }
+    return area / 2;
+  }
+
+  List<(double, double)> _bridgeHoleIntoOutline(
+    List<(double, double)> outline,
+    List<(double, double)> hole,
+  ) {
+    var bestOuterIndex = 0;
+    var bestHoleIndex = 0;
+    var bestDistSq = double.infinity;
+    for (var oi = 0; oi < outline.length; oi++) {
+      for (var hi = 0; hi < hole.length; hi++) {
+        final dx = outline[oi].$1 - hole[hi].$1;
+        final dy = outline[oi].$2 - hole[hi].$2;
+        final distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestOuterIndex = oi;
+          bestHoleIndex = hi;
+        }
+      }
+    }
+    final holeLength = hole.length;
+    final reorderedHole = [
+      for (var i = 0; i <= holeLength; i++) hole[(bestHoleIndex + i) % holeLength],
+    ];
+    return [
+      ...outline.sublist(0, bestOuterIndex + 1),
+      ...reorderedHole,
+      outline[bestOuterIndex],
+      ...outline.sublist(bestOuterIndex + 1),
+    ];
+  }
+
   /// P32 (2D-sketcher feature parity): every visible constraint's own
   /// overlay layout, in sketch-local space - mirrors `sketch_canvas.dart`'s
   /// own `_paintDimensionOverlays` dispatch/filtering exactly (same

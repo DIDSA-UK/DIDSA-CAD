@@ -230,16 +230,6 @@ class _ConstraintOverlayPainter extends CustomPainter {
     _drawDimensionLabel(canvas, labelCenter, item.text, color, plainBlackText: true);
   }
 
-  double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
-    if (labelOffset == Offset.zero) return _defaultDimensionOffset;
-    final projected = labelOffset.dx * normal.dx + labelOffset.dy * normal.dy;
-    final raw = _defaultDimensionOffset + projected;
-    if (raw.abs() < _minDimensionOffsetMagnitude) {
-      return raw.isNegative ? -_minDimensionOffsetMagnitude : _minDimensionOffsetMagnitude;
-    }
-    return raw;
-  }
-
   void _drawExtensionLine(Canvas canvas, Offset from, Offset to, Paint paint) {
     final delta = to - from;
     final length = delta.distance;
@@ -304,4 +294,128 @@ class _ConstraintOverlayPainter extends CustomPainter {
   bool shouldRepaint(covariant _ConstraintOverlayPainter oldDelegate) {
     return oldDelegate.camera != camera || oldDelegate.viewportSize != viewportSize || oldDelegate.items != items;
   }
+}
+
+double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
+  if (labelOffset == Offset.zero) return _defaultDimensionOffset;
+  final projected = labelOffset.dx * normal.dx + labelOffset.dy * normal.dy;
+  final raw = _defaultDimensionOffset + projected;
+  if (raw.abs() < _minDimensionOffsetMagnitude) {
+    return raw.isNegative ? -_minDimensionOffsetMagnitude : _minDimensionOffsetMagnitude;
+  }
+  return raw;
+}
+
+/// P41 (on-device feedback: "I can't grab them or pick a ghost dimension"):
+/// [item]'s own screen-space label centre, projected via [camera]/
+/// [viewportSize]/[basis] - the exact same position each `_paint*` method
+/// above draws its label chip at (this function is the standalone,
+/// hit-testable twin of that math, not a separate approximation of it), so
+/// a caller can reliably tell "did this tap land on item's own rendered
+/// label" without needing to actually paint anything. Returns null if
+/// [item]'s own anchors don't resolve (missing entity, behind the camera,
+/// or a degenerate direction-vector case none of the paint methods can
+/// draw either).
+Offset? constraintOverlayItemLabelCenter(
+  Camera camera,
+  Size viewportSize,
+  SketchPlaneBasis basis,
+  ConstraintOverlayItem item,
+) {
+  Offset? project((double, double) sketchXY) =>
+      worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+
+  switch (item) {
+    case ConstraintLabelItem it:
+      final a = project(it.anchorA);
+      final b = project(it.anchorB);
+      if (a == null || b == null) return null;
+      return (a + b) / 2 + it.labelOffset;
+
+    case ConstraintLinearDimensionItem it:
+      final aScreen = project(it.pointA);
+      final bScreen = project(it.pointB);
+      if (aScreen == null || bScreen == null) return null;
+      final Offset p1;
+      final Offset p2;
+      switch (it.orientation) {
+        case 'vertical':
+          const normal = Offset(1, 0);
+          final offsetX = math.max(aScreen.dx, bScreen.dx) + _dimensionOffsetDistance(normal, it.labelOffset);
+          p1 = Offset(offsetX, aScreen.dy);
+          p2 = Offset(offsetX, bScreen.dy);
+        case 'horizontal':
+          const normal = Offset(0, 1);
+          final offsetY = math.max(aScreen.dy, bScreen.dy) + _dimensionOffsetDistance(normal, it.labelOffset);
+          p1 = Offset(aScreen.dx, offsetY);
+          p2 = Offset(bScreen.dx, offsetY);
+        default:
+          final delta = bScreen - aScreen;
+          final length = delta.distance;
+          if (length < 1e-6) return null;
+          final normal = Offset(-delta.dy, delta.dx) / length;
+          final offsetVec = normal * _dimensionOffsetDistance(normal, it.labelOffset);
+          p1 = aScreen + offsetVec;
+          p2 = bScreen + offsetVec;
+      }
+      return (p1 + p2) / 2;
+
+    case ConstraintLineDistanceDimensionItem it:
+      final line1Start = project(it.line1Start);
+      final line1End = project(it.line1End);
+      final line2Start = project(it.line2Start);
+      if (line1Start == null || line1End == null || line2Start == null) return null;
+      final midA = (line1Start + line1End) / 2;
+      final dirA = line1End - line1Start;
+      final lengthA = dirA.distance;
+      if (lengthA < 1e-6) return null;
+      final alongA = dirA / lengthA;
+      final perpToA = Offset(-dirA.dy, dirA.dx) / lengthA;
+      final toLineB = line2Start - midA;
+      final t = toLineB.dx * perpToA.dx + toLineB.dy * perpToA.dy;
+      final midB = midA + perpToA * t;
+      if ((midB - midA).distance < 1e-6) return null;
+      final offset = alongA * _dimensionOffsetDistance(alongA, it.labelOffset);
+      return (midA + offset + midB + offset) / 2;
+
+    case ConstraintRadialDimensionItem it:
+      final centerScreen = project(it.center);
+      final rimScreen = project(it.rim);
+      if (centerScreen == null || rimScreen == null) return null;
+      final rimSketchDx = it.rim.$1 - it.center.$1;
+      final rimSketchDy = it.rim.$2 - it.center.$2;
+      final rimSketchDistance = math.sqrt(rimSketchDx * rimSketchDx + rimSketchDy * rimSketchDy);
+      if (rimSketchDistance < 1e-9) return null;
+      final pixelsPerUnit = (rimScreen - centerScreen).distance / rimSketchDistance;
+      final radiusPixels = it.radius * pixelsPerUnit;
+      if (radiusPixels < 1e-6) return null;
+      final defaultDelta = rimScreen - centerScreen;
+      final defaultLength = defaultDelta.distance;
+      final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
+      return centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + it.labelOffset;
+  }
+}
+
+/// P41: the [ConstraintOverlayItem.constraintId] of whichever of [items]'
+/// own rendered label [screenPos] landed within [radius] of, checked in
+/// reverse paint order (last-drawn/topmost first, standard hit-test
+/// convention) - or null if it missed every one. Mirrors
+/// `sketch_canvas.dart`'s own `dimensionLabelAt`, just resolving anchors
+/// through [camera]/[viewportSize]/[basis] instead of a flat
+/// `ViewTransform`.
+String? constraintOverlayItemAt(
+  Camera camera,
+  Size viewportSize,
+  SketchPlaneBasis basis,
+  List<ConstraintOverlayItem> items,
+  Offset screenPos, {
+  double radius = 20.0, // matches sketch_canvas.dart's own _ghostHitRadiusPixels
+}) {
+  for (final item in items.reversed) {
+    final center = constraintOverlayItemLabelCenter(camera, viewportSize, basis, item);
+    if (center != null && (screenPos - center).distance <= radius) {
+      return item.constraintId;
+    }
+  }
+  return null;
 }
