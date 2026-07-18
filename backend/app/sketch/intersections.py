@@ -1,6 +1,7 @@
-"""Sketcher-roadmap Phase 11: line-line/line-circle/line-arc intersection
-geometry for the trim/extend tool - see `Sketch.trim_or_extend_line`, the
-only caller.
+"""Sketcher-roadmap Phase 11 (+ on-device feedback follow-up): line-line/
+line-circle/line-arc/circle-circle/circle-arc/arc-arc intersection geometry
+for the trim/extend tool - see `Sketch.trim_or_extend_line`/
+`trim_or_extend_arc`/`trim_circle`/`split_trim_line`, the only callers.
 
 Nothing here existed anywhere in this codebase before Phase 11: the only
 prior intersection-related code is `profile.py`'s `_segments_intersect`, a
@@ -9,12 +10,14 @@ coordinate solve. Deliberately plain `(x, y)` tuples throughout, not
 `Point`/`Sketch` - this module is pure geometry, decoupled from the domain
 model the same way `_segments_intersect` already is.
 
-Splines and Ellipses are out of scope for v1 (no closed-form line
-intersection without curve-specific root-finding) - only Line/Circle/Arc
-are supported as intersection targets, and only a Line can be the entity
-actually trimmed/extended (see `Sketch.trim_or_extend_line`'s own doc
-comment for why trimming an Arc/Circle itself is a materially bigger
-problem, deferred rather than half-built here).
+Splines and Ellipses are still out of scope (no closed-form intersection
+without curve-specific root-finding/numerical subdivision - a materially
+bigger, separate undertaking) - neither is ever an intersection target, and
+neither can itself be trimmed/extended. Line/Circle/Arc are now all valid
+both as intersection targets AND as the entity trimmed/extended - Phase 11
+only supported Line as the trimmed entity; the on-device feedback round
+that added `circle_vs_circle`/`circle_vs_arc`/`arc_vs_arc` below (plus
+`Sketch.trim_or_extend_arc`/`trim_circle`) closed that gap for Circle/Arc.
 """
 
 import math
@@ -131,3 +134,91 @@ def _angle_in_ccw_sweep(angle: float, start_angle: float, end_angle: float) -> b
     if normalized_start <= normalized_end:
         return normalized_start - tolerance <= normalized_angle <= normalized_end + tolerance
     return normalized_angle >= normalized_start - tolerance or normalized_angle <= normalized_end + tolerance
+
+
+def circle_vs_circle(center1: Point2D, radius1: float, center2: Point2D, radius2: float) -> list[Point2D]:
+    """Every point (0, 1 tangent, or 2) where two full circles cross -
+    standard radical-line construction: the two circles' intersection
+    points both lie on the line perpendicular to the centre-to-centre axis,
+    at distance `a` from `center1` along that axis (solved from the two
+    circle equations' difference) and `h` off it either side.
+
+    Unlike [line_vs_circle]/[line_vs_arc], neither circle has an "end" to
+    clip against on this side either - every real solution is a valid
+    candidate; a caller trimming an *Arc* (not a full Circle) is
+    responsible for filtering to its own sweep itself (see
+    [circle_vs_arc]/[arc_vs_arc] below, which do exactly that).
+    """
+    c1x, c1y = center1
+    c2x, c2y = center2
+    dx, dy = c2x - c1x, c2y - c1y
+    d = math.hypot(dx, dy)
+    if d < 1e-9:
+        return []  # concentric circles - either coincident (infinite) or no crossing; neither is a usable candidate
+    if d > radius1 + radius2 + 1e-9 or d < abs(radius1 - radius2) - 1e-9:
+        return []  # too far apart, or one strictly contains the other, with no crossing either way
+    a = (radius1 * radius1 - radius2 * radius2 + d * d) / (2 * d)
+    h_sq = radius1 * radius1 - a * a
+    h = math.sqrt(h_sq) if h_sq > 0 else 0.0
+    mid_x = c1x + a * dx / d
+    mid_y = c1y + a * dy / d
+    if h < 1e-9:
+        return [(mid_x, mid_y)]  # externally/internally tangent - one repeated root
+    perp_x, perp_y = -dy / d, dx / d
+    return [
+        (mid_x + h * perp_x, mid_y + h * perp_y),
+        (mid_x - h * perp_x, mid_y - h * perp_y),
+    ]
+
+
+def circle_vs_arc(
+    circle_center: Point2D,
+    circle_radius: float,
+    arc_center: Point2D,
+    arc_radius: float,
+    arc_start: Point2D,
+    arc_end: Point2D,
+) -> list[Point2D]:
+    """[circle_vs_circle], filtered to the Arc's own swept portion of its
+    circle - mirrors [line_vs_arc]'s identical relationship to
+    [line_vs_circle]."""
+    candidates = circle_vs_circle(circle_center, circle_radius, arc_center, arc_radius)
+    if not candidates:
+        return []
+    acx, acy = arc_center
+    start_angle = math.atan2(arc_start[1] - acy, arc_start[0] - acx)
+    end_angle = math.atan2(arc_end[1] - acy, arc_end[0] - acx)
+    return [
+        point
+        for point in candidates
+        if _angle_in_ccw_sweep(math.atan2(point[1] - acy, point[0] - acx), start_angle, end_angle)
+    ]
+
+
+def arc_vs_arc(
+    center1: Point2D,
+    radius1: float,
+    start1: Point2D,
+    end1: Point2D,
+    center2: Point2D,
+    radius2: float,
+    start2: Point2D,
+    end2: Point2D,
+) -> list[Point2D]:
+    """[circle_vs_circle], filtered to *both* Arcs' own swept portions -
+    mirrors [circle_vs_arc], just clipped from both sides instead of one."""
+    candidates = circle_vs_circle(center1, radius1, center2, radius2)
+    if not candidates:
+        return []
+    c1x, c1y = center1
+    c2x, c2y = center2
+    start_angle1 = math.atan2(start1[1] - c1y, start1[0] - c1x)
+    end_angle1 = math.atan2(end1[1] - c1y, end1[0] - c1x)
+    start_angle2 = math.atan2(start2[1] - c2y, start2[0] - c2x)
+    end_angle2 = math.atan2(end2[1] - c2y, end2[0] - c2x)
+    return [
+        point
+        for point in candidates
+        if _angle_in_ccw_sweep(math.atan2(point[1] - c1y, point[0] - c1x), start_angle1, end_angle1)
+        and _angle_in_ccw_sweep(math.atan2(point[1] - c2y, point[0] - c2x), start_angle2, end_angle2)
+    ]

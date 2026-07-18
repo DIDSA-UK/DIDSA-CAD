@@ -968,6 +968,7 @@ class _SketchScreenState extends State<SketchScreen> {
         drawIndicatorMarkers: _embeddedDrawIndicatorMarkers,
         profileFillOutlines: _embeddedProfileFillOutlines,
         profileBranchMarkers: _embeddedProfileBranchMarkers,
+        constraintOverlayItems: _embeddedConstraintOverlayItems,
         sketchGeometries: _embeddedSketchGeometries,
         sketchEntityColors: _embeddedSketchEntityColors,
         referencePlanesHidden: true,
@@ -1038,10 +1039,10 @@ class _SketchScreenState extends State<SketchScreen> {
     }
   }
 
-  /// P12: only Point/Line are real 3D-drawable/selectable kinds right now
-  /// (Circle/etc. don't exist there yet) - Body vertex/edge/face picking is
-  /// a separate concern P10's own `preferEntityPick` already owns for
-  /// Dimension mode specifically, not this cursor mode's job.
+  /// P12/P33: every real Sketch-entity kind is selectable in this cursor
+  /// mode (Point/Line/Circle/Arc/Ellipse/Spline) - Body vertex/edge/face
+  /// picking is a separate concern P10's own `preferEntityPick` already
+  /// owns for Dimension mode specifically, not this cursor mode's job.
   static const SelectionFilterState _embeddedCursorModeFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -1049,7 +1050,10 @@ class _SketchScreenState extends State<SketchScreen> {
     body: false,
     sketchPoint: true,
     sketchLine: true,
-    sketchCircle: false,
+    sketchCircle: true,
+    sketchArc: true,
+    sketchEllipse: true,
+    sketchSpline: true,
     plane: false,
   );
 
@@ -1064,6 +1068,10 @@ class _SketchScreenState extends State<SketchScreen> {
     final kind = switch (entity.kind) {
       SelectionEntityKind.sketchPoint => SelectionKind.point,
       SelectionEntityKind.sketchLine => SelectionKind.line,
+      SelectionEntityKind.sketchCircle => SelectionKind.circle,
+      SelectionEntityKind.sketchArc => SelectionKind.arc,
+      SelectionEntityKind.sketchEllipse => SelectionKind.ellipse,
+      SelectionEntityKind.sketchSpline => SelectionKind.spline,
       _ => null,
     };
     if (kind == null) return;
@@ -1078,16 +1086,30 @@ class _SketchScreenState extends State<SketchScreen> {
     final featureId = _controller.sketchId ?? 'active-sketch';
     return {
       for (final selection in _controller.selectionSet)
-        if (selection.kind == SelectionKind.point || selection.kind == SelectionKind.line)
+        if (_embeddedSelectionEntityKind(selection.kind) case final kind?)
           SelectionEntityRef(
-            kind: selection.kind == SelectionKind.point
-                ? SelectionEntityKind.sketchPoint
-                : SelectionEntityKind.sketchLine,
+            kind: kind,
             sketchFeatureId: featureId,
             sketchEntityId: selection.id,
           ),
     };
   }
+
+  /// P33: [SelectionKind] -> [SelectionEntityKind] for every real Sketch
+  /// entity kind the 3D cursor mode can select (see
+  /// [_embeddedCursorModeFilter]/[_handleEmbeddedSelectionToggle]'s own
+  /// inverse of this mapping) - null for [SelectionKind.constraint]/`.text`,
+  /// which have no [SelectionEntityKind] counterpart (a Constraint has no 3D
+  /// hit-test of its own yet; Text isn't drawable in Orbit View at all).
+  SelectionEntityKind? _embeddedSelectionEntityKind(SelectionKind kind) => switch (kind) {
+        SelectionKind.point => SelectionEntityKind.sketchPoint,
+        SelectionKind.line => SelectionEntityKind.sketchLine,
+        SelectionKind.circle => SelectionEntityKind.sketchCircle,
+        SelectionKind.arc => SelectionEntityKind.sketchArc,
+        SelectionKind.ellipse => SelectionEntityKind.sketchEllipse,
+        SelectionKind.spline => SelectionEntityKind.sketchSpline,
+        SelectionKind.constraint || SelectionKind.text => null,
+      };
 
   /// Sketcher restructure Phase 2: [PartViewport.onSketchPlaneTap]'s
   /// handler - converts the resolved world-space hit point back to this
@@ -1396,6 +1418,25 @@ class _SketchScreenState extends State<SketchScreen> {
       if (a[i].point != b[i].point || a[i].color != b[i].color || a[i].width != b[i].width) return false;
     }
     return true;
+  }
+
+  /// P32 (2D-sketcher feature parity): [PartViewport.constraintOverlayItems]'
+  /// data source. Mode-independent, same as `sketch_canvas.dart`'s own
+  /// `_paintDimensionOverlays` (constraints stay visible in every mode, not
+  /// just while editing). Cached and content-compared, same reasoning as
+  /// [_embeddedProfileFillOutlines] - a fresh `List` every notification
+  /// would otherwise force an unconditional overlay repaint on every tick
+  /// even when nothing constraint-related changed. [ConstraintOverlayItem]'s
+  /// own `==`/`hashCode` (see its doc comment) make [listEquals] a true deep
+  /// comparison here, not a reference check.
+  List<ConstraintOverlayItem> _cachedConstraintOverlayItems = const [];
+
+  List<ConstraintOverlayItem> get _embeddedConstraintOverlayItems {
+    final fresh = _controller.constraintOverlayItems();
+    final cached = _cachedConstraintOverlayItems;
+    if (listEquals(fresh, cached)) return cached;
+    _cachedConstraintOverlayItems = fresh;
+    return fresh;
   }
 
   /// P27 bug fix (on-device feedback: Rectangle placement still froze/ANR'd

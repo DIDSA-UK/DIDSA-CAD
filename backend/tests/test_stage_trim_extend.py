@@ -100,6 +100,117 @@ def test_trim_extend_against_an_arc_respects_its_own_sweep():
     assert moved_point.y == pytest.approx(0.0)
 
 
+# --- On-device feedback follow-up: Arc/Circle trim, and Line split-trim ----
+
+
+def test_trim_or_extend_arc_moves_its_end_point_to_the_nearest_crossing():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    start = sketch.add_point(10.0, 0.0)  # angle 0
+    end = sketch.add_point(0.0, 10.0)  # angle 90deg
+    arc = sketch.add_arc(center.id, start.id, end.id)
+    lx = 10.0 / math.sqrt(2)
+    a = sketch.add_point(lx, -5.0)
+    b = sketch.add_point(lx, 15.0)
+    sketch.add_line(a.id, b.id)
+
+    _, moved_point, created = sketch.trim_or_extend_arc(arc.id, end.id)
+
+    assert created is False
+    angle = math.atan2(moved_point.y - center.y, moved_point.x - center.x)
+    assert angle == pytest.approx(math.pi / 4, abs=1e-4)
+
+
+def test_trim_or_extend_arc_extends_its_start_point_past_the_current_sweep():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    start = sketch.add_point(10.0, 0.0)
+    end = sketch.add_point(0.0, 10.0)
+    arc = sketch.add_arc(center.id, start.id, end.id)
+    a = sketch.add_point(-15.0, -2.0)
+    b = sketch.add_point(15.0, -2.0)
+    sketch.add_line(a.id, b.id)
+    expected_angle = math.atan2(-2.0, math.sqrt(100.0 - 4.0))
+
+    _, moved_point, _ = sketch.trim_or_extend_arc(arc.id, start.id)
+
+    angle = math.atan2(moved_point.y - center.y, moved_point.x - center.x)
+    assert angle == pytest.approx(expected_angle, abs=1e-4)
+
+
+def test_trim_circle_converts_it_into_an_arc_excluding_the_clicked_segment():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    rim = sketch.add_point(5.0, 0.0)
+    circle = sketch.add_circle(center.id, rim.id)
+    a1 = sketch.add_point(3.0, -10.0)
+    a2 = sketch.add_point(3.0, 10.0)
+    sketch.add_line(a1.id, a2.id)
+    b1 = sketch.add_point(-3.0, -10.0)
+    b2 = sketch.add_point(-3.0, 10.0)
+    sketch.add_line(b1.id, b2.id)
+
+    new_arc = sketch.trim_circle(circle.id, click_x=0.0, click_y=5.0)
+
+    assert circle.id not in sketch.entities
+    assert new_arc.id in sketch.entities
+    start_pt = sketch.points[new_arc.start_point_id]
+    end_pt = sketch.points[new_arc.end_point_id]
+    start_angle = math.atan2(start_pt.y - center.y, start_pt.x - center.x) % (2 * math.pi)
+    end_angle = math.atan2(end_pt.y - center.y, end_pt.x - center.x) % (2 * math.pi)
+    click_angle = math.atan2(5.0, 0.0) % (2 * math.pi)
+
+    def in_ccw_sweep(angle: float, s: float, e: float) -> bool:
+        return (s <= angle <= e) if s <= e else (angle >= s or angle <= e)
+
+    assert not in_ccw_sweep(click_angle, start_angle, end_angle), "the kept arc must not contain the clicked angle"
+
+
+def test_trim_circle_raises_with_fewer_than_two_crossings():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    rim = sketch.add_point(5.0, 0.0)
+    circle = sketch.add_circle(center.id, rim.id)
+
+    with pytest.raises(NoIntersectionFoundError):
+        sketch.trim_circle(circle.id, click_x=5.0, click_y=0.0)
+
+
+def test_split_trim_line_removes_only_the_clicked_segment_of_a_line_crossing_a_circle():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    p0 = sketch.add_point(-10.0, 0.0)
+    p1 = sketch.add_point(10.0, 0.0)
+    line = sketch.add_line(p0.id, p1.id)
+    center = sketch.add_point(0.0, 0.0)
+    rim = sketch.add_point(3.0, 0.0)
+    sketch.add_circle(center.id, rim.id)  # crosses the line at x=-3 and x=3
+
+    line1, line2 = sketch.split_trim_line(line.id, click_x=0.0, click_y=0.0)
+
+    assert line.id not in sketch.entities
+    assert sketch.points[line1.start_point_id].x == pytest.approx(-10.0)
+    assert sketch.points[line1.end_point_id].x == pytest.approx(-3.0)
+    assert sketch.points[line2.start_point_id].x == pytest.approx(3.0)
+    assert sketch.points[line2.end_point_id].x == pytest.approx(10.0)
+
+
+def test_split_trim_line_raises_when_click_isnt_bracketed_by_two_interior_crossings():
+    """A click near one original end, with only one crossing on the far
+    side - not a genuine "passes through" case, so the caller should fall
+    back to `trim_or_extend_line`'s own single-endpoint-move behaviour
+    instead (see `app.sketch.router`'s trim endpoint)."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    p0 = sketch.add_point(-10.0, 0.0)
+    p1 = sketch.add_point(10.0, 0.0)
+    line = sketch.add_line(p0.id, p1.id)
+    center = sketch.add_point(0.0, 0.0)
+    rim = sketch.add_point(3.0, 0.0)
+    sketch.add_circle(center.id, rim.id)
+
+    with pytest.raises(NoIntersectionFoundError):
+        sketch.split_trim_line(line.id, click_x=-8.0, click_y=0.0)
+
+
 def test_a_shared_endpoint_creates_a_fresh_point_leaving_the_original_untouched():
     """The moved endpoint is also the corner of an unrelated chain (shared
     with `other_line`) - moving it in place would silently drag that other

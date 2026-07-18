@@ -202,6 +202,11 @@ class SketchRibbon extends StatelessWidget {
       ConstraintOptionType.concentric => 'assets/icons/ribbon/ribbon_concentric.svg',
       ConstraintOptionType.equalRadius => 'assets/icons/ribbon/ribbon_equal_radius.svg',
       ConstraintOptionType.tangent => 'assets/icons/ribbon/ribbon_tangent.svg',
+      // P35: no dedicated ribbon glyph exists yet - reuses the same
+      // dimension-tool icon `SketchDimensionBar`'s own FAB entry point
+      // uses, since this button is a fast path into that exact tool (see
+      // [SketchController.addRadiusDimensionFor]'s own doc comment).
+      ConstraintOptionType.radius => 'assets/icons/actions/action_dimensions.svg',
     };
   }
 }

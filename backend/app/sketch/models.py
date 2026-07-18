@@ -23,7 +23,14 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.intersections import line_vs_arc, line_vs_circle, line_vs_segment
+from app.sketch.intersections import (
+    arc_vs_arc,
+    circle_vs_arc,
+    circle_vs_circle,
+    line_vs_arc,
+    line_vs_circle,
+    line_vs_segment,
+)
 
 
 class Plane(str, Enum):
@@ -1364,6 +1371,290 @@ class Sketch:
             return (line, new_point, True)
         moved_point.x, moved_point.y = best_point
         return (line, moved_point, False)
+
+    def _line_candidates_against(self, a_xy: tuple[float, float], b_xy: tuple[float, float], exclude_id: str):
+        """Every `(t, point)` where some other entity crosses the *infinite*
+        line through `a_xy`/`b_xy`, `t` the parameter along `a_xy -> b_xy` -
+        the exact candidate-gathering loop `trim_or_extend_line` already
+        used, factored out so [split_trim_line] can reuse it unmodified
+        rather than duplicating it."""
+        candidates: list[tuple[float, tuple[float, float]]] = []
+        for entity in self.entities.values():
+            if entity.id == exclude_id:
+                continue
+            if isinstance(entity, Line):
+                other_start = self.points[entity.start_point_id]
+                other_end = self.points[entity.end_point_id]
+                hit = line_vs_segment(a_xy, b_xy, (other_start.x, other_start.y), (other_end.x, other_end.y))
+                if hit is not None:
+                    candidates.append(hit)
+            elif isinstance(entity, Circle):
+                center = self.points[entity.center_point_id]
+                candidates.extend(line_vs_circle(a_xy, b_xy, (center.x, center.y), entity.radius(self.points)))
+            elif isinstance(entity, Arc):
+                center = self.points[entity.center_point_id]
+                start = self.points[entity.start_point_id]
+                end = self.points[entity.end_point_id]
+                candidates.extend(
+                    line_vs_arc(
+                        a_xy, b_xy, (center.x, center.y), entity.radius(self.points), (start.x, start.y), (end.x, end.y)
+                    )
+                )
+        return candidates
+
+    def split_trim_line(self, line_id: str, click_x: float, click_y: float) -> tuple[Line, Line]:
+        """On-device feedback ("trim/extend should prioritize the part of
+        the line clicked, it maybe the middle, eg. a line completely
+        crossing through a circle"): [trim_or_extend_line] only ever moves
+        one of the Line's own two existing endpoints - it can shorten or
+        lengthen the Line, but can never remove a *middle* segment while
+        keeping both outer pieces, because there is only ever one Line
+        entity to move an end of. This is the real, separate operation that
+        case needs: [click_x]/[click_y] is projected onto the Line's own
+        infinite extension exactly the way [trim_or_extend_line]'s own
+        candidates are gathered (see [_line_candidates_against]), and if
+        the click falls strictly between two *interior* crossings (real
+        intersections found on both sides of it, neither at the Line's own
+        original start/end), the clicked segment between them is removed by
+        splitting the Line into two new Lines - `[start, nearer-crossing]`
+        and `[farther-crossing, end]` - and deleting the original.
+
+        Raises `NoIntersectionFoundError` if the click isn't bracketed by
+        two interior crossings (the click's own cell touches an original
+        endpoint instead, or there's no crossing on one side at all) - the
+        caller (see `app.sketch.router`'s trim endpoint) falls back to
+        [trim_or_extend_line]'s own single-endpoint-move behaviour for
+        that case, unchanged.
+
+        A real, documented limitation, not a crash risk: any Vertical/
+        Horizontal/Parallel/... constraint that captured this Line's own
+        id (not just its Point ids - see `VerticalConstraint`'s own
+        docstring for why solving is unaffected) goes visually dangling
+        once the Line is deleted - the solve itself stays correct (those
+        constraints solve against captured Point ids, which are untouched),
+        but the client's own rendering already degrades that gracefully
+        (skips a constraint whose entity id no longer resolves, per
+        `SketchController.constraintOverlayItems`'s own null-guards) rather
+        than crashing, so this is accepted rather than blocked outright -
+        matching this method's own "additive, not a rewrite of the
+        existing single-endpoint path" scope.
+        """
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        for entity in self.entities.values():
+            if isinstance(entity, Polygon) and line_id in entity.line_ids:
+                raise ValueError(f"Cannot split line {line_id} - it is an edge of polygon {entity.id}")
+
+        a = self.points[line.start_point_id]
+        b = self.points[line.end_point_id]
+        a_xy = (a.x, a.y)
+        b_xy = (b.x, b.y)
+        dx, dy = b_xy[0] - a_xy[0], b_xy[1] - a_xy[1]
+        length_sq = dx * dx + dy * dy
+        if length_sq < 1e-18:
+            raise ValueError(f"Cannot split a zero-length line {line_id}")
+        click_t = ((click_x - a_xy[0]) * dx + (click_y - a_xy[1]) * dy) / length_sq
+
+        candidates = self._line_candidates_against(a_xy, b_xy, exclude_id=line_id)
+        tolerance = 1e-6
+        interior = sorted((t, point) for t, point in candidates if tolerance < t < 1 - tolerance)
+
+        left = None
+        right = None
+        for t, point in interior:
+            if t <= click_t:
+                left = (t, point)
+            elif right is None:
+                right = (t, point)
+                break
+        if left is None or right is None:
+            raise NoIntersectionFoundError(
+                f"Click on line {line_id} isn't bracketed by two interior crossings to split at"
+            )
+
+        left_point = self.add_point(*left[1])
+        right_point = self.add_point(*right[1])
+        line1 = self.add_line(line.start_point_id, left_point.id, construction=line.construction)
+        line2 = self.add_line(right_point.id, line.end_point_id, construction=line.construction)
+        self.delete_line(line_id)
+        return (line1, line2)
+
+    def _circle_candidates_against(self, center: tuple[float, float], radius: float, exclude_id: str) -> list[tuple[float, float]]:
+        """Every point where some other entity crosses the full circle at
+        `center`/`radius` - shared by [trim_or_extend_arc] (which further
+        filters by angular sweep distance from its own fixed endpoint) and
+        [trim_circle] (which brackets them around the click angle
+        instead). Mirrors [_line_candidates_against]'s exact same
+        per-entity-type dispatch, just from the circle's own perspective:
+        a Line target is clipped to its own real segment (`line_vs_circle`
+        doesn't clip on the line side by itself); a Circle/Arc target needs
+        no clipping beyond what [circle_vs_circle]/[circle_vs_arc]
+        themselves already apply.
+        """
+        points: list[tuple[float, float]] = []
+        for entity in self.entities.values():
+            if entity.id == exclude_id:
+                continue
+            if isinstance(entity, Line):
+                other_start = self.points[entity.start_point_id]
+                other_end = self.points[entity.end_point_id]
+                for t, point in line_vs_circle(
+                    (other_start.x, other_start.y), (other_end.x, other_end.y), center, radius
+                ):
+                    if -1e-9 <= t <= 1 + 1e-9:
+                        points.append(point)
+            elif isinstance(entity, Circle):
+                other_center = self.points[entity.center_point_id]
+                points.extend(
+                    circle_vs_circle(center, radius, (other_center.x, other_center.y), entity.radius(self.points))
+                )
+            elif isinstance(entity, Arc):
+                other_center = self.points[entity.center_point_id]
+                other_start = self.points[entity.start_point_id]
+                other_end = self.points[entity.end_point_id]
+                points.extend(
+                    circle_vs_arc(
+                        center,
+                        radius,
+                        (other_center.x, other_center.y),
+                        entity.radius(self.points),
+                        (other_start.x, other_start.y),
+                        (other_end.x, other_end.y),
+                    )
+                )
+        return points
+
+    def trim_or_extend_arc(self, arc_id: str, moved_point_id: str) -> tuple["Arc", "Point", bool]:
+        """[trim_or_extend_line]'s own algorithm, ported to an Arc's angular
+        sweep instead of a Line's linear extent - on-device feedback ("trim/
+        extend should work on circles curves and splines"; this is the
+        "curves" half, Circle's own conversion lives in [trim_circle]).
+
+        `moved_point_id` identifies which of the Arc's own start/end Points
+        is being adjusted, mirroring [trim_or_extend_line]'s identical
+        contract exactly; the *other* end (`fixed_point_id`) anchors the
+        angle searched from. Since an Arc's own sweep is always
+        counter-clockwise from start to end (see the `Arc` class
+        docstring), the search direction is CCW from the fixed angle when
+        `end_point_id` is being moved (that already matches the arc's own
+        growing-sweep direction) and CW when `start_point_id` is being
+        moved (searching CCW from the *end* instead would measure the wrong
+        way around) - `direction` below picks between them, and
+        `_signed_sweep` folds every angle (candidates and the moved point's
+        own current position alike) into "how far around, in the search
+        direction, from the fixed angle" so both cases compare on the same
+        footing, the same way [trim_or_extend_line]'s own `current_t`/`t`
+        pair does for a straight line.
+
+        Every other Line/Circle/Arc in the Sketch is checked for a crossing
+        against this Arc's own *full* underlying circle (not just its
+        current sweep - an extend target may currently lie outside it),
+        then filtered/ranked exactly like [trim_or_extend_line]: skip
+        anything behind the fixed end or at the current position, skip
+        anything farther than `_TRIM_MAX_DISTANCE` (arc length, not a
+        straight line, but the same guard), and take whichever remains
+        nearest the current position.
+        """
+        arc = self.entities.get(arc_id)
+        if not isinstance(arc, Arc):
+            raise KeyError(arc_id)
+        if moved_point_id == arc.start_point_id:
+            fixed_point_id = arc.end_point_id
+            direction = -1.0
+        elif moved_point_id == arc.end_point_id:
+            fixed_point_id = arc.start_point_id
+            direction = 1.0
+        else:
+            raise ValueError(f"Point {moved_point_id} is not an endpoint of arc {arc_id}")
+
+        center = self.points[arc.center_point_id]
+        center_xy = (center.x, center.y)
+        radius = arc.radius(self.points)
+        if radius < 1e-9:
+            raise ValueError(f"Cannot trim/extend a degenerate arc {arc_id}")
+
+        fixed_point = self.points[fixed_point_id]
+        moved_point = self.points[moved_point_id]
+        fixed_angle = math.atan2(fixed_point.y - center.y, fixed_point.x - center.x)
+        two_pi = 2 * math.pi
+
+        def signed_sweep(x: float, y: float) -> float:
+            return ((math.atan2(y - center.y, x - center.x) - fixed_angle) * direction) % two_pi
+
+        current_t = signed_sweep(moved_point.x, moved_point.y)
+
+        candidate_points = self._circle_candidates_against(center_xy, radius, exclude_id=arc_id)
+        valid = []
+        for px, py in candidate_points:
+            t = signed_sweep(px, py)
+            if t <= 1e-9 or abs(t - current_t) <= 1e-9:
+                continue
+            if abs(t - current_t) * radius > self._TRIM_MAX_DISTANCE:
+                continue
+            valid.append((t, (px, py)))
+        if not valid:
+            raise NoIntersectionFoundError(f"No intersection found to trim/extend arc {arc_id} to")
+        _, best_point = min(valid, key=lambda candidate: abs(candidate[0] - current_t))
+
+        if self._point_deletion_blocker(moved_point_id, exclude_entity_id=arc_id) is not None:
+            new_point = self.add_point(*best_point)
+            if moved_point_id == arc.start_point_id:
+                arc.start_point_id = new_point.id
+            else:
+                arc.end_point_id = new_point.id
+            return (arc, new_point, True)
+        moved_point.x, moved_point.y = best_point
+        return (arc, moved_point, False)
+
+    def trim_circle(self, circle_id: str, click_x: float, click_y: float) -> "Arc":
+        """On-device feedback ("trim/extend should work on circles curves
+        and splines"): a Circle has no "end" to move the way
+        [trim_or_extend_line]/[trim_or_extend_arc] do - trimming it instead
+        means converting it into an Arc that excludes whichever segment was
+        clicked, the standard CAD convention for trimming a closed curve.
+
+        Every other Line/Circle/Arc's crossing against this Circle is
+        found (see [_circle_candidates_against]) and converted to an angle
+        around the centre; at least 2 are required; the two angularly
+        nearest the click (bracketing it - one reached by sweeping CCW from
+        the click, one by sweeping CW) become the new Arc's own start/end,
+        chosen so the Arc's own CCW start->end sweep goes the *other* way
+        around, deliberately excluding the click's own neighbourhood -
+        exactly the segment "under the cursor" is what gets removed, the
+        rest survives as the new Arc.
+
+        Delegates the new Arc's own construction to [add_arc] (reusing the
+        Circle's existing centre Point, two freshly-placed boundary Points)
+        rather than hand-building its constraint scaffolding - see
+        [add_arc]'s own doc comment for exactly what that creates. The
+        original Circle (and its own radius/cardinal constraints) is then
+        removed via the existing [delete_circle], unmodified.
+        """
+        circle = self.entities.get(circle_id)
+        if not isinstance(circle, Circle):
+            raise KeyError(circle_id)
+        center = self.points[circle.center_point_id]
+        center_xy = (center.x, center.y)
+        radius = circle.radius(self.points)
+        if radius < 1e-9:
+            raise ValueError(f"Cannot trim a degenerate circle {circle_id}")
+
+        candidate_points = self._circle_candidates_against(center_xy, radius, exclude_id=circle_id)
+        two_pi = 2 * math.pi
+        angles = sorted({math.atan2(py - center.y, px - center.x) % two_pi for px, py in candidate_points})
+        if len(angles) < 2:
+            raise NoIntersectionFoundError(f"Fewer than 2 crossings found to trim circle {circle_id} at")
+
+        click_angle = math.atan2(click_y - center.y, click_x - center.x) % two_pi
+        next_angle = next((a for a in angles if a > click_angle + 1e-9), angles[0])
+        prev_angle = next((a for a in reversed(angles) if a < click_angle - 1e-9), angles[-1])
+
+        new_start = self.add_point(center.x + radius * math.cos(next_angle), center.y + radius * math.sin(next_angle))
+        new_end = self.add_point(center.x + radius * math.cos(prev_angle), center.y + radius * math.sin(prev_angle))
+        arc = self.add_arc(circle.center_point_id, new_start.id, new_end.id, construction=circle.construction)
+        self.delete_circle(circle_id)
+        return arc
 
     def delete_circle(self, circle_id: str) -> None:
         """Remove a Circle and every constraint `add_circle` always creates

@@ -146,6 +146,14 @@ class SelectionListDrawer extends StatelessWidget {
         return const Icon(Icons.timeline);
       case SelectionEntityKind.sketchCircle:
         return const SvgIcon('assets/icons/viewport/selection_sketch_circle.svg');
+      case SelectionEntityKind.sketchArc:
+      case SelectionEntityKind.sketchEllipse:
+      case SelectionEntityKind.sketchSpline:
+        // P33: no dedicated icon exists for these yet - the Circle glyph
+        // reads as "a curved Sketch entity" closely enough until one does,
+        // same fallback reasoning `sketchLine`'s own Material glyph note
+        // above already established for this list.
+        return const SvgIcon('assets/icons/viewport/selection_sketch_circle.svg');
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return const SvgIcon('assets/icons/viewport/selection_plane.svg');
@@ -168,6 +176,12 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Sketch Line';
       case SelectionEntityKind.sketchCircle:
         return 'Sketch Circle';
+      case SelectionEntityKind.sketchArc:
+        return 'Sketch Arc';
+      case SelectionEntityKind.sketchEllipse:
+        return 'Sketch Ellipse';
+      case SelectionEntityKind.sketchSpline:
+        return 'Sketch Spline';
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return 'Plane';

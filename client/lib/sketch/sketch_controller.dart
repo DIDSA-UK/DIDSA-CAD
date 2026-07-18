@@ -177,6 +177,188 @@ class SketchSplineView {
 /// Point's `(x, y)` - repositions every contour for free on the very next
 /// frame, with no re-fetch: [SketchController.textAbsoluteContours] just
 /// adds the anchor's *current* position back on read.
+/// P32 (2D-sketcher feature parity): [SketchController.constraintOverlayItems]'
+/// own output - deliberately renderer-agnostic (sketch-local anchors, no
+/// screen-space math at all), since [SketchController] is shared by both
+/// the flat 2D canvas and the 3D-embedded Orbit View. A caller projects
+/// each item's own anchor(s) to its own coordinate space (2D:
+/// `transform.sketchToScreen`; 3D: `sketchPointToWorld` + `worldToScreen`)
+/// and only then applies the shared screen-space dimension-line/arrowhead/
+/// label-chip layout math itself - see `sketch_canvas.dart`'s own
+/// `_paintDimensionOverlays` and its helpers for that math (the layout
+/// this mirrors exactly), and `sketch_constraint_overlay.dart`
+/// (`viewport3d`) for the 3D port of it. [labelOffset] carries the same
+/// *pixel* semantics [SketchController.labelOffsetFor] always has -
+/// applied after projection, not before.
+sealed class ConstraintOverlayItem {
+  final String constraintId;
+  final bool selected;
+  const ConstraintOverlayItem({required this.constraintId, required this.selected});
+}
+
+/// A bare relationship glyph (V/H/Coinc./∥/⟂/=/Collin.) or a value-only
+/// label with no dimension line (Angle, Point-Line distance) - a simple
+/// chip at the midpoint between [anchorA]/[anchorB]. [plainBlackText]
+/// mirrors `sketch_canvas.dart`'s own `_drawDimensionLabel` parameter:
+/// true for a numeric measurement (near-white chip, black text), false for
+/// a bare relationship glyph (solid-color-fill chip, white text).
+class ConstraintLabelItem extends ConstraintOverlayItem {
+  final (double, double) anchorA;
+  final (double, double) anchorB;
+  final String text;
+  final Offset labelOffset;
+  final bool plainBlackText;
+
+  const ConstraintLabelItem({
+    required super.constraintId,
+    required super.selected,
+    required this.anchorA,
+    required this.anchorB,
+    required this.text,
+    required this.labelOffset,
+    required this.plainBlackText,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ConstraintLabelItem &&
+      other.constraintId == constraintId &&
+      other.selected == selected &&
+      other.anchorA == anchorA &&
+      other.anchorB == anchorB &&
+      other.text == text &&
+      other.labelOffset == labelOffset &&
+      other.plainBlackText == plainBlackText;
+
+  @override
+  int get hashCode => Object.hash(constraintId, selected, anchorA, anchorB, text, labelOffset, plainBlackText);
+}
+
+/// A point-to-point (or Ellipse-axis) linear dimension - mirrors
+/// `sketch_canvas.dart`'s own `_paintDistanceDimension`. [orientation] is
+/// `DistanceConstraintDto.orientation` verbatim ('vertical'/'horizontal'/
+/// null) - see that field's own doc comment for why a horizontal/vertical
+/// dimension lays out along a fixed screen axis rather than along
+/// [pointA]-[pointB]'s own direction.
+class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
+  final (double, double) pointA;
+  final (double, double) pointB;
+  final String? orientation;
+  final String text;
+  final Offset labelOffset;
+
+  const ConstraintLinearDimensionItem({
+    required super.constraintId,
+    required super.selected,
+    required this.pointA,
+    required this.pointB,
+    required this.orientation,
+    required this.text,
+    required this.labelOffset,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ConstraintLinearDimensionItem &&
+      other.constraintId == constraintId &&
+      other.selected == selected &&
+      other.pointA == pointA &&
+      other.pointB == pointB &&
+      other.orientation == orientation &&
+      other.text == text &&
+      other.labelOffset == labelOffset;
+
+  @override
+  int get hashCode => Object.hash(constraintId, selected, pointA, pointB, orientation, text, labelOffset);
+}
+
+/// A Line-to-Line perpendicular-distance dimension - mirrors
+/// `sketch_canvas.dart`'s own `_paintLineDistanceDimension`. Carries both
+/// Lines' own endpoints (not just their midpoints) because the renderer
+/// needs each Line's own direction to find the true perpendicular anchor
+/// on Line 2 from Line 1's midpoint - see that method's own doc comment
+/// for exactly why.
+class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
+  final (double, double) line1Start;
+  final (double, double) line1End;
+  final (double, double) line2Start;
+  final (double, double) line2End;
+  final String text;
+  final Offset labelOffset;
+
+  const ConstraintLineDistanceDimensionItem({
+    required super.constraintId,
+    required super.selected,
+    required this.line1Start,
+    required this.line1End,
+    required this.line2Start,
+    required this.line2End,
+    required this.text,
+    required this.labelOffset,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ConstraintLineDistanceDimensionItem &&
+      other.constraintId == constraintId &&
+      other.selected == selected &&
+      other.line1Start == line1Start &&
+      other.line1End == line1End &&
+      other.line2Start == line2Start &&
+      other.line2End == line2End &&
+      other.text == text &&
+      other.labelOffset == labelOffset;
+
+  @override
+  int get hashCode =>
+      Object.hash(constraintId, selected, line1Start, line1End, line2Start, line2End, text, labelOffset);
+}
+
+/// A radius/diameter dimension - mirrors `sketch_canvas.dart`'s own
+/// `_paintRadiusDiameterDimension`/`_radialDimensionGeometry`. [rim] is only
+/// ever used to derive the *default* leader angle before [labelOffset] has
+/// ever been dragged - see `_radialDimensionGeometry`'s own doc comment for
+/// why the leader otherwise sweeps freely around [center] as the label
+/// moves, rather than staying pinned to a fixed Point. V1 scope: unlike the
+/// 2D canvas's own `_paintArcExtensionIfNeeded`, an Arc's leader touching
+/// outside its own drawn sweep does not (yet) draw a dashed extension arc -
+/// a deliberate, documented gap, not a missed case.
+class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
+  final (double, double) center;
+  final (double, double) rim;
+  final double radius;
+  final bool isDiameter;
+  final String text;
+  final Offset labelOffset;
+
+  const ConstraintRadialDimensionItem({
+    required super.constraintId,
+    required super.selected,
+    required this.center,
+    required this.rim,
+    required this.radius,
+    required this.isDiameter,
+    required this.text,
+    required this.labelOffset,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ConstraintRadialDimensionItem &&
+      other.constraintId == constraintId &&
+      other.selected == selected &&
+      other.center == center &&
+      other.rim == rim &&
+      other.radius == radius &&
+      other.isDiameter == isDiameter &&
+      other.text == text &&
+      other.labelOffset == labelOffset;
+
+  @override
+  int get hashCode =>
+      Object.hash(constraintId, selected, center, rim, radius, isDiameter, text, labelOffset);
+}
+
 class SketchTextContourOffsets {
   final List<(double, double)> outer;
   final List<List<(double, double)>> holes;
@@ -688,6 +870,7 @@ enum ConstraintOptionType {
   concentric,
   equalRadius,
   tangent,
+  radius,
 }
 
 class ConstraintOption {
@@ -4853,6 +5036,21 @@ class SketchController extends ChangeNotifier {
       ];
     }
 
+    // P35 (on-device feedback: selecting a Circle/Arc offered nothing at
+    // all here - not even a way to give it a size) - offered whenever
+    // there's no radius/diameter DistanceConstraint on it yet (skip if one
+    // already exists so this doesn't invite creating a redundant/
+    // conflicting second one; the existing one is edited via its own label
+    // drag/ribbon value box instead, same as every other confirmed
+    // dimension already is).
+    if (sel.length == 1 &&
+        (sel.first.kind == SelectionKind.circle || sel.first.kind == SelectionKind.arc) &&
+        !_hasRadiusDimension(sel.first)) {
+      return const [
+        ConstraintOption(type: ConstraintOptionType.radius, label: 'Radius', wired: true),
+      ];
+    }
+
     if (sel.length != 2) return const [];
 
     final kinds = sel.map((s) => s.kind).toSet();
@@ -4914,9 +5112,55 @@ class SketchController extends ChangeNotifier {
       case ConstraintOptionType.collinear:
         await addCollinearConstraint();
         break;
+      case ConstraintOptionType.radius:
+        await addRadiusDimensionFor(_selectionSet.first);
+        break;
       default:
         break;
     }
+  }
+
+  /// [availableConstraintOptions]'s own "does [selection] already have a
+  /// radius/diameter dimension" check - true if any [DistanceConstraintDto]
+  /// resolves to it via [circleForDistanceConstraint]/[arcForDistanceConstraint].
+  bool _hasRadiusDimension(SketchSelection selection) {
+    for (final constraint in constraints.values) {
+      if (constraint is! DistanceConstraintDto) continue;
+      // A provisional constraint (see its own doc comment) is invisible to
+      // the user - a freshly-placed Circle/Arc already carries one, but it
+      // must not itself count as "already has a dimension" here, or the
+      // Radius option would never be offered on anything just drawn.
+      if (constraint.provisional) continue;
+      final ownerId = circleForDistanceConstraint(constraint)?.id ?? arcForDistanceConstraint(constraint)?.id;
+      if (ownerId == selection.id) return true;
+    }
+    return false;
+  }
+
+  /// P35 (on-device feedback: selecting a Circle/Arc offered no way to add
+  /// its radius/diameter without first switching to the Dimension tool and
+  /// re-tapping it): the ribbon's own fast path - jumps straight into
+  /// [SketchMode.dimension] with [selection] already picked, exactly the
+  /// state a user would reach by switching tools and tapping the same
+  /// entity once, so every existing ghost-building/value-entry/undo path
+  /// ([SketchDimensionBar], [_rebuildDimensionGhosts], [confirmGhostValue])
+  /// already works completely unmodified - this only ever fast-forwards
+  /// into that same flow, never duplicates any of its logic.
+  Future<void> addRadiusDimensionFor(SketchSelection selection) async {
+    if (_busy || _sketchId == null) return;
+    if (selection.kind != SelectionKind.circle && selection.kind != SelectionKind.arc) return;
+    dropGrabbedEntity();
+    _mode = SketchMode.dimension;
+    _fabMenu = FabMenuState.closed;
+    _resetTransientDrawState();
+    _selectionSet.clear();
+    _ribbonVisible = false;
+    _dimensionSelection
+      ..clear()
+      ..add(selection);
+    _activeGhostKey = null;
+    _rebuildDimensionGhosts();
+    notifyListeners();
   }
 
   Future<void> addVerticalConstraint() async {
@@ -4983,47 +5227,107 @@ class SketchController extends ChangeNotifier {
     _applyDimensionHit(hit);
   }
 
-  /// [SketchMode.trim]'s tap handling (Phase 11) - hit-tests only Lines
-  /// (unlike [_entityAt], Points/Circles/Arcs are never a valid *pick* here,
-  /// only intersection targets the backend scans for on its own), then
-  /// reinterprets the tap as "which end is closer" the same way every
-  /// mainstream 2D CAD trim/extend gesture does - that closer endpoint is
-  /// the one [SketchApiClient.trimLine] moves, matching
-  /// `Sketch.trim_or_extend_line`'s "moved_point_id" contract (the far end
-  /// always stays put). Stays in trim mode after every tap, hit or miss -
-  /// a miss (no Line within [hitRadius]) is silently ignored, and a 400/422
-  /// from the backend (nothing to trim/extend to, or a rejected pick)
-  /// surfaces via [errorMessage] exactly like any other API failure - both
-  /// leave the tool "hot" for another attempt rather than exiting, mirroring
-  /// a real CAD trim tool.
+  /// [SketchMode.trim]'s tap handling (Phase 11, extended by the on-device
+  /// feedback round that added Circle/Arc/split-Line support) - reuses
+  /// [_entityAt] (the same nearest-entity hit-test Select mode's own tap
+  /// handling uses) rather than a Line-only search, then dispatches by
+  /// kind: [_handleTrimLineTap]/[_handleTrimCircleTap]/[_handleTrimArcTap].
+  /// Point/Ellipse/Spline/Text/Constraint hits are silently ignored (not
+  /// valid trim targets - Spline/Ellipse have no backend intersection
+  /// support at all, see `intersections.py`'s own module doc comment).
+  /// Stays in trim mode after every tap, hit or miss - a miss is silently
+  /// ignored, and a 400/422 from the backend surfaces via [errorMessage]
+  /// exactly like any other API failure - both leave the tool "hot" for
+  /// another attempt rather than exiting, mirroring a real CAD trim tool.
   Future<void> _handleTrimTap(double hitRadius) async {
     if (_busy || _sketchId == null) return;
-    String? nearestLineId;
-    var nearestDistance = double.infinity;
-    for (final line in lines.values) {
-      final start = points[line.startPointId];
-      final end = points[line.endPointId];
-      if (start == null || end == null) continue;
-      final distance = _distanceToSegment(cursorX, cursorY, start.x, start.y, end.x, end.y);
-      if (distance <= hitRadius && distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestLineId = line.id;
-      }
+    final hit = _entityAt(cursorX, cursorY, hitRadius);
+    if (hit == null) return;
+    switch (hit.kind) {
+      case SelectionKind.line:
+        await _handleTrimLineTap(hit.id);
+      case SelectionKind.circle:
+        await _handleTrimCircleTap(hit.id);
+      case SelectionKind.arc:
+        await _handleTrimArcTap(hit.id);
+      default:
+        return;
     }
-    if (nearestLineId == null) return;
-    final line = lines[nearestLineId]!;
-    final start = points[line.startPointId]!;
-    final end = points[line.endPointId]!;
-    final toStartSq = (cursorX - start.x) * (cursorX - start.x) + (cursorY - start.y) * (cursorY - start.y);
-    final toEndSq = (cursorX - end.x) * (cursorX - end.x) + (cursorY - end.y) * (cursorY - end.y);
-    final movedPointId = toStartSq <= toEndSq ? line.startPointId : line.endPointId;
-    final keptPointId = movedPointId == line.startPointId ? line.endPointId : line.startPointId;
-    final movedPointOldX = movedPointId == line.startPointId ? start.x : end.x;
-    final movedPointOldY = movedPointId == line.startPointId ? start.y : end.y;
-    final lineId = line.id;
+  }
+
+  /// P37 (on-device feedback: "trim/extend should prioritize the part of
+  /// the line clicked, it maybe the middle, eg. a line completely crossing
+  /// through a circle"): tries [SketchApiClient.splitTrimLine] first
+  /// (click-position-based - removes just the clicked segment when it's
+  /// genuinely bracketed by two interior crossings), falling back to the
+  /// original nearest-endpoint [SketchApiClient.trimLine] behaviour on a
+  /// 422 (see that method's own doc comment for exactly what 422 means
+  /// here) - every other failure propagates normally. This preserves 100%
+  /// of the original single-endpoint trim/extend behaviour for every case
+  /// split-trim doesn't apply to, additive rather than a replacement.
+  Future<void> _handleTrimLineTap(String lineId) async {
+    final line = lines[lineId];
+    if (line == null) return;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return;
     final originalConstruction = line.construction;
+    final originalStartPointId = line.startPointId;
+    final originalEndPointId = line.endPointId;
 
     await _runGuarded(() async {
+      try {
+        final result = await _api.splitTrimLine(_sketchId!, lineId, cursorX, cursorY);
+        lines.remove(lineId);
+        for (final split in [result.line1, result.line2]) {
+          lines[split.id] = SketchLineView(
+            id: split.id,
+            startPointId: split.startPointId,
+            endPointId: split.endPointId,
+            construction: split.construction,
+          );
+        }
+        // The two new boundary Points (one per split line, at each
+        // crossing) aren't in `points` yet - `_solveAndTrackDof` below
+        // fully refreshes `points` from the backend's own authoritative
+        // solve response (see its own doc comment), so they land correctly
+        // without needing to be staged here first.
+        final newLine1Id = result.line1.id;
+        final newLine2Id = result.line2.id;
+        _pushUndo(() async {
+          await _api.deleteLine(_sketchId!, newLine1Id);
+          lines.remove(newLine1Id);
+          await _api.deleteLine(_sketchId!, newLine2Id);
+          lines.remove(newLine2Id);
+          final restored = await _api.createLine(
+            _sketchId!,
+            originalStartPointId,
+            originalEndPointId,
+            construction: originalConstruction,
+          );
+          lines[restored.id] = SketchLineView(
+            id: restored.id,
+            startPointId: restored.startPointId,
+            endPointId: restored.endPointId,
+            construction: restored.construction,
+          );
+        });
+        await _solveAndTrackDof();
+        return;
+      } on ApiException catch (e) {
+        if (e.statusCode != 422) rethrow;
+        // Not bracketed by two interior crossings - fall through to the
+        // original single-endpoint trim/extend below, unmodified.
+      }
+
+      final toStartSq =
+          (cursorX - start.x) * (cursorX - start.x) + (cursorY - start.y) * (cursorY - start.y);
+      final toEndSq = (cursorX - end.x) * (cursorX - end.x) + (cursorY - end.y) * (cursorY - end.y);
+      final movedPointId = toStartSq <= toEndSq ? line.startPointId : line.endPointId;
+      final keptPointId = movedPointId == line.startPointId ? line.endPointId : line.startPointId;
+      final movedPointOldX = movedPointId == line.startPointId ? start.x : end.x;
+      final movedPointOldY = movedPointId == line.startPointId ? start.y : end.y;
+
       final result = await _api.trimLine(_sketchId!, lineId, movedPointId);
       lines[result.line.id] = SketchLineView(
         id: result.line.id,
@@ -5074,6 +5378,125 @@ class SketchController extends ChangeNotifier {
         });
       }
 
+      await _solveAndTrackDof();
+    });
+  }
+
+  /// P36 (on-device feedback: "trim/extend should work on circles curves
+  /// and splines"): [SketchApiClient.trimArc] mirrors [trimLine]'s own
+  /// nearest-endpoint contract exactly, so this handler is a near-verbatim
+  /// copy of the Line case above (split-trim doesn't apply to a curved
+  /// entity - there's no equivalent "clicked the middle segment" case for
+  /// an Arc the way there is for a straight Line).
+  Future<void> _handleTrimArcTap(String arcId) async {
+    final arc = arcs[arcId];
+    if (arc == null) return;
+    final start = points[arc.startPointId];
+    final end = points[arc.endPointId];
+    if (start == null || end == null) return;
+    final originalConstruction = arc.construction;
+
+    await _runGuarded(() async {
+      final toStartSq =
+          (cursorX - start.x) * (cursorX - start.x) + (cursorY - start.y) * (cursorY - start.y);
+      final toEndSq = (cursorX - end.x) * (cursorX - end.x) + (cursorY - end.y) * (cursorY - end.y);
+      final movedPointId = toStartSq <= toEndSq ? arc.startPointId : arc.endPointId;
+      final keptPointId = movedPointId == arc.startPointId ? arc.endPointId : arc.startPointId;
+      final movedPointOldX = movedPointId == arc.startPointId ? start.x : end.x;
+      final movedPointOldY = movedPointId == arc.startPointId ? start.y : end.y;
+      final centerPointId = arc.centerPointId;
+
+      final result = await _api.trimArc(_sketchId!, arcId, movedPointId);
+      arcs[result.arc.id] = SketchArcView(
+        id: result.arc.id,
+        centerPointId: result.arc.centerPointId,
+        startPointId: result.arc.startPointId,
+        endPointId: result.arc.endPointId,
+        construction: result.arc.construction,
+      );
+      points[result.movedPoint.id] = SketchPointView(
+        id: result.movedPoint.id,
+        x: result.movedPoint.x,
+        y: result.movedPoint.y,
+      );
+      if (result.createdNewPoint) {
+        final newPointId = result.movedPoint.id;
+        _pushUndo(() async {
+          await _api.deleteArc(_sketchId!, arcId);
+          arcs.remove(arcId);
+          await _api.deletePoint(_sketchId!, newPointId);
+          points.remove(newPointId);
+          final restored = await _api.createArc(
+            _sketchId!,
+            centerPointId,
+            movedPointId,
+            keptPointId,
+            construction: originalConstruction,
+          );
+          arcs[restored.id] = SketchArcView(
+            id: restored.id,
+            centerPointId: restored.centerPointId,
+            startPointId: restored.startPointId,
+            endPointId: restored.endPointId,
+            construction: restored.construction,
+          );
+        });
+      } else {
+        _pushUndo(() async {
+          await _api.updatePoint(_sketchId!, movedPointId, movedPointOldX, movedPointOldY);
+          points[movedPointId] = SketchPointView(id: movedPointId, x: movedPointOldX, y: movedPointOldY);
+        });
+      }
+
+      await _solveAndTrackDof();
+    });
+  }
+
+  /// P36: a Circle has no endpoint to move - trimming it converts it into
+  /// an Arc excluding whichever segment [cursorX]/[cursorY] falls on (see
+  /// the backend's `Sketch.trim_circle`). Undo recreates a plain Circle at
+  /// the original centre/radius Points (both untouched by the trim, per
+  /// `delete_circle`'s own doc comment) - a real, accepted imperfection:
+  /// the original Circle's own cardinal Points/constraints are gone for
+  /// good (a fresh `createCircle` call makes brand-new ones), left as
+  /// orphaned geometry rather than chased down and restored, the same
+  /// "additive, not exhaustive" scope this whole round of trim work has
+  /// kept to elsewhere.
+  Future<void> _handleTrimCircleTap(String circleId) async {
+    final circle = circles[circleId];
+    if (circle == null) return;
+    final centerPointId = circle.centerPointId;
+    final radiusPointId = circle.radiusPointId;
+    final originalConstruction = circle.construction;
+
+    await _runGuarded(() async {
+      final arcDto = await _api.trimCircle(_sketchId!, circleId, cursorX, cursorY);
+      circles.remove(circleId);
+      arcs[arcDto.id] = SketchArcView(
+        id: arcDto.id,
+        centerPointId: arcDto.centerPointId,
+        startPointId: arcDto.startPointId,
+        endPointId: arcDto.endPointId,
+        construction: arcDto.construction,
+      );
+      final newArcId = arcDto.id;
+      _pushUndo(() async {
+        await _api.deleteArc(_sketchId!, newArcId);
+        arcs.remove(newArcId);
+        final restored = await _api.createCircle(
+          _sketchId!,
+          centerPointId,
+          radiusPointId,
+          construction: originalConstruction,
+        );
+        circles[restored.id] = SketchCircleView(
+          id: restored.id,
+          centerPointId: restored.centerPointId,
+          radiusPointId: restored.radiusPointId,
+          construction: restored.construction,
+          cardinalPointIds: restored.cardinalPointIds,
+        );
+      });
       await _solveAndTrackDof();
     });
   }
@@ -7565,6 +7988,197 @@ class SketchController extends ChangeNotifier {
     final dx = b.x - a.x;
     final dy = b.y - a.y;
     return math.sqrt(dx * dx + dy * dy);
+  }
+
+  /// P32 (2D-sketcher feature parity): every visible constraint's own
+  /// overlay layout, in sketch-local space - mirrors `sketch_canvas.dart`'s
+  /// own `_paintDimensionOverlays` dispatch/filtering exactly (same
+  /// [isCardinalAxisConstraint]/`provisional`/[isImplicitPolygonEdgeTie]
+  /// skips), just producing [ConstraintOverlayItem] data instead of
+  /// drawing. See that type's own doc comment for why this stays
+  /// renderer-agnostic (no screen-space math here at all).
+  List<ConstraintOverlayItem> constraintOverlayItems() {
+    final items = <ConstraintOverlayItem>[];
+    for (final entry in constraints.entries) {
+      final isSelected = selectionSet.any((s) => s.kind == SelectionKind.constraint && s.id == entry.key);
+      final labelOffset = labelOffsetFor(entry.key);
+      switch (entry.value) {
+        case DistanceConstraintDto c:
+          if (isCardinalAxisConstraint(c)) break;
+          if (c.provisional) break;
+          if (isRadiusDistanceConstraint(c)) {
+            final center = points[c.pointAId];
+            final rim = points[c.pointBId];
+            if (center == null || rim == null) break;
+            final showsDiameter = showsDiameterFor(entry.key);
+            items.add(ConstraintRadialDimensionItem(
+              constraintId: entry.key,
+              selected: isSelected,
+              center: (center.x, center.y),
+              rim: (rim.x, rim.y),
+              radius: c.distance,
+              isDiameter: showsDiameter,
+              text: showsDiameter ? '⌀${(c.distance * 2).toStringAsFixed(2)}' : 'R${c.distance.toStringAsFixed(2)}',
+              labelOffset: labelOffset,
+            ));
+            break;
+          }
+          final ellipseAxis = ellipseAxisForDistanceConstraint(c);
+          final String pointAId;
+          final String pointBId;
+          final double displayValue;
+          if (ellipseAxis != null) {
+            (pointAId, pointBId) = ellipseAxis;
+            displayValue = c.distance * 2;
+          } else {
+            pointAId = c.pointAId;
+            pointBId = c.pointBId;
+            displayValue = c.distance;
+          }
+          final a = points[pointAId];
+          final b = points[pointBId];
+          if (a == null || b == null) break;
+          items.add(ConstraintLinearDimensionItem(
+            constraintId: entry.key,
+            selected: isSelected,
+            pointA: (a.x, a.y),
+            pointB: (b.x, b.y),
+            orientation: c.orientation,
+            text: displayValue.toStringAsFixed(2),
+            labelOffset: labelOffset,
+          ));
+        case VerticalConstraintDto c:
+          final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'V', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case HorizontalConstraintDto c:
+          final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'H', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case AngleConstraintDto c:
+          if (isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) break;
+          final labelItem = _lineMidpointPairLabel(
+            c.line1Id,
+            c.line2Id,
+            '${c.angleDegrees.toStringAsFixed(1)}°',
+            entry.key,
+            isSelected,
+            labelOffset,
+            plainBlackText: true,
+          );
+          if (labelItem != null) items.add(labelItem);
+        case LineDistanceConstraintDto c:
+          final line1 = lines[c.line1Id];
+          final line2 = lines[c.line2Id];
+          if (line1 == null || line2 == null) break;
+          final line1Start = points[line1.startPointId];
+          final line1End = points[line1.endPointId];
+          final line2Start = points[line2.startPointId];
+          final line2End = points[line2.endPointId];
+          if (line1Start == null || line1End == null || line2Start == null || line2End == null) break;
+          items.add(ConstraintLineDistanceDimensionItem(
+            constraintId: entry.key,
+            selected: isSelected,
+            line1Start: (line1Start.x, line1Start.y),
+            line1End: (line1End.x, line1End.y),
+            line2Start: (line2Start.x, line2Start.y),
+            line2End: (line2End.x, line2End.y),
+            text: c.distance.toStringAsFixed(2),
+            labelOffset: labelOffset,
+          ));
+        case CoincidentConstraintDto c:
+          final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'Coinc.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case ParallelConstraintDto c:
+          final labelItem =
+              _lineMidpointPairLabel(c.line1Id, c.line2Id, '∥', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case PerpendicularConstraintDto c:
+          final labelItem =
+              _lineMidpointPairLabel(c.line1Id, c.line2Id, '⟂', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case EqualLengthConstraintDto c:
+          if (isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) break;
+          final labelItem = _lineMidpointPairLabel(c.line1Id, c.line2Id, '=', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case CollinearConstraintDto c:
+          final labelItem =
+              _lineMidpointPairLabel(c.line1Id, c.line2Id, 'Collin.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case PointLineDistanceConstraintDto c:
+          final point = points[c.pointId];
+          final line = lines[c.lineId];
+          if (point == null || line == null) break;
+          final lineStart = points[line.startPointId];
+          final lineEnd = points[line.endPointId];
+          if (lineStart == null || lineEnd == null) break;
+          final lineMid = ((lineStart.x + lineEnd.x) / 2, (lineStart.y + lineEnd.y) / 2);
+          items.add(ConstraintLabelItem(
+            constraintId: entry.key,
+            selected: isSelected,
+            anchorA: (point.x, point.y),
+            anchorB: lineMid,
+            text: c.distance.toStringAsFixed(2),
+            labelOffset: labelOffset,
+            plainBlackText: true,
+          ));
+        default:
+          break;
+      }
+    }
+    return items;
+  }
+
+  ConstraintLabelItem? _pairMidpointLabel(
+    String pointAId,
+    String pointBId,
+    String text,
+    String constraintId,
+    bool selected,
+    Offset labelOffset,
+  ) {
+    final a = points[pointAId];
+    final b = points[pointBId];
+    if (a == null || b == null) return null;
+    return ConstraintLabelItem(
+      constraintId: constraintId,
+      selected: selected,
+      anchorA: (a.x, a.y),
+      anchorB: (b.x, b.y),
+      text: text,
+      labelOffset: labelOffset,
+      plainBlackText: false,
+    );
+  }
+
+  ConstraintLabelItem? _lineMidpointPairLabel(
+    String line1Id,
+    String line2Id,
+    String text,
+    String constraintId,
+    bool selected,
+    Offset labelOffset, {
+    bool plainBlackText = false,
+  }) {
+    final mid1 = _lineMidpointXY(line1Id);
+    final mid2 = _lineMidpointXY(line2Id);
+    if (mid1 == null || mid2 == null) return null;
+    return ConstraintLabelItem(
+      constraintId: constraintId,
+      selected: selected,
+      anchorA: mid1,
+      anchorB: mid2,
+      text: text,
+      labelOffset: labelOffset,
+      plainBlackText: plainBlackText,
+    );
+  }
+
+  (double, double)? _lineMidpointXY(String lineId) {
+    final line = lines[lineId];
+    if (line == null) return null;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return null;
+    return ((start.x + end.x) / 2, (start.y + end.y) / 2);
   }
 
   // --- Stage 19b item 4: undo --------------------------------------------

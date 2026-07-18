@@ -33,6 +33,17 @@ class SelectionFilterState {
   /// pickable (Prompt G follow-up).
   final bool sketchCircle;
 
+  /// On-device feedback: gates `SelectionEntityKind.sketchArc`/
+  /// `.sketchEllipse`/`.sketchSpline` the same way [sketchCircle] gates
+  /// `.sketchCircle` - Circle selection shipped first, but Arc/Ellipse/
+  /// Spline had no hit-testing at all until this same on-device round
+  /// surfaced it (a Circle worked, its curved siblings silently didn't).
+  /// All three default to `true`, same "always considered by default"
+  /// precedent every other sketch-entity filter field already has.
+  final bool sketchArc;
+  final bool sketchEllipse;
+  final bool sketchSpline;
+
   /// On-device feedback: gates both `SelectionEntityKind.referencePlane` and
   /// `.createPlane` hover/hit-testing (see `part_viewport.dart`'s
   /// `_hoverHitTestPlanes`) - a single field for both plane kinds, not a
@@ -57,6 +68,9 @@ class SelectionFilterState {
     this.sketchPoint = true,
     this.sketchLine = true,
     this.sketchCircle = true,
+    this.sketchArc = true,
+    this.sketchEllipse = true,
+    this.sketchSpline = true,
     this.plane = true,
   });
 
@@ -77,6 +91,9 @@ class SelectionFilterState {
     bool? sketchPoint,
     bool? sketchLine,
     bool? sketchCircle,
+    bool? sketchArc,
+    bool? sketchEllipse,
+    bool? sketchSpline,
     bool? plane,
   }) {
     return SelectionFilterState(
@@ -87,6 +104,9 @@ class SelectionFilterState {
       sketchPoint: sketchPoint ?? this.sketchPoint,
       sketchLine: sketchLine ?? this.sketchLine,
       sketchCircle: sketchCircle ?? this.sketchCircle,
+      sketchArc: sketchArc ?? this.sketchArc,
+      sketchEllipse: sketchEllipse ?? this.sketchEllipse,
+      sketchSpline: sketchSpline ?? this.sketchSpline,
       plane: plane ?? this.plane,
     );
   }
@@ -101,14 +121,26 @@ class SelectionFilterState {
       other.sketchPoint == sketchPoint &&
       other.sketchLine == sketchLine &&
       other.sketchCircle == sketchCircle &&
+      other.sketchArc == sketchArc &&
+      other.sketchEllipse == sketchEllipse &&
+      other.sketchSpline == sketchSpline &&
       other.plane == plane;
 
   @override
-  int get hashCode =>
-      Object.hash(vertex, edge, face, body, sketchPoint, sketchLine, sketchCircle, plane);
+  int get hashCode => Object.hash(
+        vertex,
+        edge,
+        face,
+        body,
+        sketchPoint,
+        sketchLine,
+        sketchCircle,
+        Object.hash(sketchArc, sketchEllipse, sketchSpline, plane),
+      );
 
   @override
   String toString() =>
       'SelectionFilterState(vertex: $vertex, edge: $edge, face: $face, body: $body, '
-      'sketchPoint: $sketchPoint, sketchLine: $sketchLine, sketchCircle: $sketchCircle, plane: $plane)';
+      'sketchPoint: $sketchPoint, sketchLine: $sketchLine, sketchCircle: $sketchCircle, '
+      'sketchArc: $sketchArc, sketchEllipse: $sketchEllipse, sketchSpline: $sketchSpline, plane: $plane)';
 }

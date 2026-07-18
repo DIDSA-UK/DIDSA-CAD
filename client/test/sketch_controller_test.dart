@@ -84,6 +84,20 @@ class _FakeBackend {
   /// `NoIntersectionFoundError`).
   (double, double)? trimTargetPoint;
 
+  /// On-device feedback follow-up (P37): the two crossing coordinates
+  /// `/lines/{id}/split-trim` should report - set by a test that wants to
+  /// exercise the split path; null (the default) means "not bracketed by
+  /// two interior crossings" (a 422), matching every existing trim test's
+  /// own single-endpoint-only setup via [trimTargetPoint] - the client's
+  /// own fallback to `/trim` is exercised by every one of those, not just
+  /// a dedicated split test.
+  ((double, double), (double, double))? splitTrimTargets;
+
+  /// On-device feedback follow-up (P36): the resolved touch point
+  /// `/circles/{id}/trim`/`/arcs/{id}/trim` should report - mirrors
+  /// [trimTargetPoint]'s own "set by the test, null means 422" contract.
+  (double, double)? curveTrimTargetPoint;
+
   String _newId(String prefix) => '$prefix-${_nextId++}';
 
   /// A deterministic fake outline for [text]'s preview endpoint - a single
@@ -460,6 +474,107 @@ class _FakeBackend {
       movedPoint['x'] = target.$1;
       movedPoint['y'] = target.$2;
       return _json({'line': line, 'moved_point': movedPoint, 'created_new_point': false}, 200);
+    }
+
+    final splitTrimMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/([^/]+)/split-trim$').firstMatch(path);
+    if (splitTrimMatch != null && request.method == 'POST') {
+      final lineId = splitTrimMatch.group(1)!;
+      final line = lines[lineId];
+      if (line == null) return http.Response('not found', 404);
+      final targets = splitTrimTargets;
+      if (targets == null) {
+        return _json({'detail': 'Click on line isn\'t bracketed by two interior crossings to split at'}, 422);
+      }
+      final startId = line['start_point_id'] as String;
+      final endId = line['end_point_id'] as String;
+      final leftId = _newId('point');
+      points[leftId] = {'id': leftId, 'x': targets.$1.$1, 'y': targets.$1.$2};
+      final rightId = _newId('point');
+      points[rightId] = {'id': rightId, 'x': targets.$2.$1, 'y': targets.$2.$2};
+      final line1Id = _newId('line');
+      final line1 = {
+        'id': line1Id,
+        'start_point_id': startId,
+        'end_point_id': leftId,
+        'length': 0.0,
+        'construction': line['construction'],
+      };
+      final line2Id = _newId('line');
+      final line2 = {
+        'id': line2Id,
+        'start_point_id': rightId,
+        'end_point_id': endId,
+        'length': 0.0,
+        'construction': line['construction'],
+      };
+      lines.remove(lineId);
+      lines[line1Id] = line1;
+      lines[line2Id] = line2;
+      return _json({'line1': line1, 'line2': line2}, 200);
+    }
+
+    final circleTrimMatch = RegExp(r'^/sketch/sketches/[^/]+/circles/([^/]+)/trim$').firstMatch(path);
+    if (circleTrimMatch != null && request.method == 'POST') {
+      final circleId = circleTrimMatch.group(1)!;
+      final circle = circles[circleId];
+      if (circle == null) return http.Response('not found', 404);
+      final target = curveTrimTargetPoint;
+      if (target == null) {
+        return _json({'detail': 'Fewer than 2 crossings found to trim circle at'}, 422);
+      }
+      final startId = _newId('point');
+      points[startId] = {'id': startId, 'x': target.$1, 'y': target.$2};
+      final endId = _newId('point');
+      points[endId] = {'id': endId, 'x': target.$1, 'y': target.$2};
+      final arcId = _newId('arc');
+      final arc = {
+        'id': arcId,
+        'center_point_id': circle['center_point_id'],
+        'start_point_id': startId,
+        'end_point_id': endId,
+        'radius': circle['radius'],
+        'construction': circle['construction'],
+      };
+      arcs[arcId] = arc;
+      circles.remove(circleId);
+      return _json({'arc': arc}, 200);
+    }
+
+    final arcTrimMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs/([^/]+)/trim$').firstMatch(path);
+    if (arcTrimMatch != null && request.method == 'POST') {
+      final arcId = arcTrimMatch.group(1)!;
+      final arc = arcs[arcId];
+      if (arc == null) return http.Response('not found', 404);
+      final movedPointId = body['moved_point_id'] as String;
+      final startId = arc['start_point_id'] as String;
+      final endId = arc['end_point_id'] as String;
+      if (movedPointId != startId && movedPointId != endId) {
+        return _json({'detail': 'moved_point_id is not one of this Arc\'s own endpoints'}, 400);
+      }
+      final target = curveTrimTargetPoint;
+      if (target == null) {
+        return _json({'detail': 'Nothing found to trim/extend this Arc to'}, 422);
+      }
+      final sharedElsewhere = lines.values.any(
+            (other) => other['start_point_id'] == movedPointId || other['end_point_id'] == movedPointId,
+          ) ||
+          arcs.values.any(
+            (other) => other != arc && (other['start_point_id'] == movedPointId || other['end_point_id'] == movedPointId),
+          );
+      if (sharedElsewhere) {
+        final newPointId = _newId('point');
+        points[newPointId] = {'id': newPointId, 'x': target.$1, 'y': target.$2};
+        if (movedPointId == startId) {
+          arc['start_point_id'] = newPointId;
+        } else {
+          arc['end_point_id'] = newPointId;
+        }
+        return _json({'arc': arc, 'moved_point': points[newPointId], 'created_new_point': true}, 200);
+      }
+      final movedPoint = points[movedPointId]!;
+      movedPoint['x'] = target.$1;
+      movedPoint['y'] = target.$2;
+      return _json({'arc': arc, 'moved_point': movedPoint, 'created_new_point': false}, 200);
     }
 
     final circlesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/circles$').hasMatch(path);
@@ -1913,6 +2028,30 @@ void main() {
 
       expect(controller.closedProfileFills, hasLength(1));
       expect(controller.closedProfileFills.single.pointIds, hasLength(2));
+    },
+  );
+
+  test(
+    'P35: availableConstraintOptions offers Radius for a lone Circle with no dimension yet, '
+    'and addRadiusDimensionFor jumps straight into Dimension mode with it pre-picked',
+    () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      final circleId = controller.circles.keys.single;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.circle, id: circleId));
+      final options = controller.availableConstraintOptions;
+      expect(options, hasLength(1));
+      expect(options.single.type, ConstraintOptionType.radius);
+
+      await controller.applyConstraintOption(ConstraintOptionType.radius);
+
+      expect(controller.mode, SketchMode.dimension);
+      expect(controller.dimensionSelection, hasLength(1));
+      expect(controller.dimensionSelection.single.kind, SelectionKind.circle);
+      expect(controller.dimensionSelection.single.id, circleId);
+      expect(controller.ghosts, isNotEmpty);
     },
   );
 
@@ -5753,6 +5892,180 @@ void main() {
             (l.startPointId == 'point-b' && l.endPointId == 'point-a'),
       );
       expect(recreated.id, isNot('line-a'));
+    });
+
+    // --- On-device feedback follow-up: split-trim (P37), Circle/Arc trim (P36) ---
+
+    test('P37: a click bracketed by two interior crossings splits the Line into two, discarding '
+        'the clicked segment, instead of moving either original endpoint', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-split-1', 'origin-split-1');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': -10.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 20.0,
+        'construction': false,
+      };
+      freshBackend.splitTrimTargets = ((-3.0, 0.0), (3.0, 0.0));
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-split-1');
+      freshController.enterTrimMode();
+
+      await freshController.handleCanvasTap(0, 0); // the middle, between the two configured crossings
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.lines.containsKey('line-a'), isFalse);
+      expect(freshController.lines, hasLength(2));
+      final byStartX = freshController.lines.values.toList()
+        ..sort((a, b) => freshController.points[a.startPointId]!.x.compareTo(freshController.points[b.startPointId]!.x));
+      expect(freshController.points[byStartX[0].startPointId]!.x, closeTo(-10.0, 1e-9));
+      expect(freshController.points[byStartX[0].endPointId]!.x, closeTo(-3.0, 1e-9));
+      expect(freshController.points[byStartX[1].startPointId]!.x, closeTo(3.0, 1e-9));
+      expect(freshController.points[byStartX[1].endPointId]!.x, closeTo(10.0, 1e-9));
+      expect(freshController.mode, SketchMode.trim);
+    });
+
+    test('P37: undo after a split-trim deletes both new Lines and recreates the original',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-split-2', 'origin-split-2');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': -10.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 20.0,
+        'construction': false,
+      };
+      freshBackend.splitTrimTargets = ((-3.0, 0.0), (3.0, 0.0));
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-split-2');
+      freshController.enterTrimMode();
+
+      await freshController.handleCanvasTap(0, 0);
+      expect(freshController.lines, hasLength(2));
+      expect(freshController.canUndo, isTrue);
+
+      await freshController.undo();
+
+      expect(freshController.lines, hasLength(1));
+      final recreated = freshController.lines.values.single;
+      expect(freshController.points[recreated.startPointId]!.x, closeTo(-10.0, 1e-9));
+      expect(freshController.points[recreated.endPointId]!.x, closeTo(10.0, 1e-9));
+    });
+
+    test('P37: a click NOT bracketed by two interior crossings falls back to the original '
+        'single-endpoint trim/extend', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-split-3', 'origin-split-3');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      // splitTrimTargets left null (422) - only a single-endpoint target is
+      // configured, exactly like the original Phase 11 tests above.
+      freshBackend.trimTargetPoint = (15.0, 0.0);
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-split-3');
+      freshController.enterTrimMode();
+
+      await freshController.handleCanvasTap(9, 0);
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.lines, hasLength(1));
+      expect(freshController.points['point-b']!.x, closeTo(15.0, 1e-9));
+    });
+
+    test('P36: trimming a Circle converts it into an Arc', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-curve-1', 'origin-curve-1');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-curve-1');
+      freshController.selectDrawTool(SketchTool.circle);
+      await freshController.handleCanvasTap(0, 0);
+      await freshController.handleCanvasTap(5, 0);
+      final circleId = freshController.circles.keys.single;
+
+      freshBackend.curveTrimTargetPoint = (0.0, 5.0);
+      freshController.enterTrimMode();
+      // The Circle tool places its own radius Point at a canonical angle
+      // (north, i.e. (0, 5) here), not necessarily the second tap's own
+      // position - clicking there would hit that Point first (a Point
+      // always outranks a Circle in `_entityAt`'s own priority order), not
+      // the circle's own curve. 45deg around the circle (~3.54, 3.54) is
+      // clearly on the boundary but far from every one of the Circle's own
+      // defining Points.
+      await freshController.handleCanvasTap(5 * 0.70710678, 5 * 0.70710678);
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.circles.containsKey(circleId), isFalse);
+      expect(freshController.arcs, hasLength(1));
+      expect(freshController.mode, SketchMode.trim);
+    });
+
+    test('P36: undo after trimming a Circle deletes the new Arc and recreates a plain Circle',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-curve-2', 'origin-curve-2');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-curve-2');
+      freshController.selectDrawTool(SketchTool.circle);
+      await freshController.handleCanvasTap(0, 0);
+      await freshController.handleCanvasTap(5, 0);
+
+      freshBackend.curveTrimTargetPoint = (0.0, 5.0);
+      freshController.enterTrimMode();
+      await freshController.handleCanvasTap(5 * 0.70710678, 5 * 0.70710678);
+      expect(freshController.canUndo, isTrue);
+
+      await freshController.undo();
+
+      expect(freshController.arcs, isEmpty);
+      expect(freshController.circles, hasLength(1));
+    });
+
+    test('P36: trimming an Arc extends its end Point to the configured target, in place',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-curve-3', 'origin-curve-3');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-curve-3');
+      freshController.selectDrawTool(SketchTool.arc);
+      await freshController.handleCanvasTap(0, 0); // center
+      await freshController.handleCanvasTap(5, 0); // start (0deg)
+      await freshController.handleCanvasTap(0, 5); // end (90deg)
+      final arcId = freshController.arcs.keys.single;
+      final arc = freshController.arcs[arcId]!;
+      final startPointId = arc.startPointId;
+
+      freshBackend.curveTrimTargetPoint = (0.0, -5.0);
+      freshController.enterTrimMode();
+      // 20deg around the arc - clearly on its own sweep and far from every
+      // one of its own defining Points (a Point always outranks an Arc in
+      // `_entityAt`'s own priority order - see the Circle test above for
+      // why this matters), and clearly nearer the start (0deg) than the
+      // end (90deg), so start is the Point that moves.
+      await freshController.handleCanvasTap(5 * 0.93969262, 5 * 0.34202014);
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.points[startPointId]!.x, closeTo(0.0, 1e-9));
+      expect(freshController.points[startPointId]!.y, closeTo(-5.0, 1e-9));
+      expect(freshController.arcs[arcId]!.startPointId, startPointId);
     });
   });
 }

@@ -8,6 +8,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+import '../sketch/sketch_controller.dart' show ConstraintOverlayItem;
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
@@ -16,6 +17,7 @@ import 'render_mode.dart';
 import 'scene_preferences.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
+import 'sketch_constraint_overlay.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
 import 'sketch_plane_hit_test.dart';
@@ -187,6 +189,17 @@ class PartViewport extends StatefulWidget {
   /// since its visibility isn't draw-mode-gated the way that list is.
   /// Empty (the default) renders no marker node at all.
   final List<DrawIndicatorMarker> profileBranchMarkers;
+
+  /// P32 (2D-sketcher feature parity): every visible constraint's own
+  /// label/glyph/dimension overlay (see [SketchController.constraintOverlayItems]) -
+  /// rendered as a screen-space billboard overlay via [ConstraintOverlay],
+  /// same "live inside this State's own build, not externally driven"
+  /// requirement [sketchOrientationBasis] already has (see
+  /// [SketchOrientationIndicator]'s own doc comment for why). Only rendered
+  /// while [sketchPlaneBasis] is also set - a constraint anchor is
+  /// meaningless without a plane to resolve its sketch-local coordinates
+  /// against. Empty (the default) renders no overlay at all.
+  final List<ConstraintOverlayItem> constraintOverlayItems;
 
   /// P8: colour/opacity of [sketchPlaneBasis]'s own rendered surface (see
   /// [buildSketchPlaneSurfaceNode]) - only rendered while [sketchPlaneBasis]
@@ -432,6 +445,7 @@ class PartViewport extends StatefulWidget {
     this.drawIndicatorMarkers = const [],
     this.profileFillOutlines = const [],
     this.profileBranchMarkers = const [],
+    this.constraintOverlayItems = const [],
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
     this.sketchPlaneSurfaceOpacity = 0.18,
     this.sketchPlaneGridVisible = false,
@@ -837,12 +851,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.selectionMode != oldWidget.selectionMode) {
       setState(() {
         if (widget.selectionMode) {
-          // Item 2: "re-entering resets to viewport centre".
-          _cursorPosition = _viewportCenter();
+          // P34 bug fix (on-device feedback: toggling the Orbit/Cursor FAB
+          // made the cursor visibly jump back to centre every time):
+          // only default to viewport centre the very first time this
+          // instance ever enters selection mode (no position remembered
+          // yet) - re-clamped in case the viewport was resized (e.g. a
+          // rotation) while the cursor was hidden, but otherwise restores
+          // exactly where the user left it, not a fresh centre reset.
+          _cursorPosition = _clampToViewport(_cursorPosition ?? _viewportCenter());
           _recomputeHover();
         } else {
-          // Item 1/2: leaving selection mode "removes cursor".
-          _cursorPosition = null;
+          // Item 1: leaving selection mode still hides the crosshair
+          // (gated on `widget.selectionMode` at the paint site, not on
+          // `_cursorPosition` itself, so leaving the position set here is
+          // enough) and clears the hover highlight.
           _hoverHit = null;
           // P25: a marquee gesture (or pending long-press) mid-flight when
           // selectionMode turns off would otherwise leave its overlay
@@ -858,12 +880,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.drawCursorMode != oldWidget.drawCursorMode) {
       setState(() {
         if (widget.drawCursorMode) {
-          // Mirrors the selectionMode block above: re-entering resets to
-          // viewport centre.
-          _drawCursorPosition = _viewportCenter();
+          // P34 fix: mirrors the selectionMode block above - restores the
+          // remembered position (re-clamped) instead of always resetting
+          // to viewport centre.
+          _drawCursorPosition = _clampToViewport(_drawCursorPosition ?? _viewportCenter());
           _recomputeDrawCursor();
         } else {
-          _drawCursorPosition = null;
           _drawCursorWorldHit = null;
         }
       });
@@ -2206,6 +2228,33 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               }
             }
           }
+        case SelectionEntityKind.sketchArc:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.arcIds.length; i++) {
+              if (geometry.arcIds[i] == entity.sketchEntityId) {
+                edgeSegments.addAll(_polygonSegments(geometry.arcPolylines[i]));
+              }
+            }
+          }
+        case SelectionEntityKind.sketchEllipse:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.ellipseIds.length; i++) {
+              if (geometry.ellipseIds[i] == entity.sketchEntityId) {
+                edgeSegments.addAll(_polygonSegments(geometry.ellipsePolygons[i]));
+              }
+            }
+          }
+        case SelectionEntityKind.sketchSpline:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.splineIds.length; i++) {
+              if (geometry.splineIds[i] == entity.sketchEntityId) {
+                edgeSegments.addAll(_polygonSegments(geometry.splinePolylines[i]));
+              }
+            }
+          }
         case SelectionEntityKind.referencePlane:
         case SelectionEntityKind.createPlane:
           // C5: a selected plane's highlight is its own quad rendering
@@ -2324,6 +2373,30 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         ];
         if (circleSegments.isEmpty) return null;
         return buildMeshEdgesNode(circleSegments, color: color, width: kHighlightEdgeStrokeWidth);
+      case SelectionEntityKind.sketchArc:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final index = geometry.arcIds.indexOf(entity.sketchEntityId);
+        if (index == -1) return null;
+        final segments = _polygonSegments(geometry.arcPolylines[index]);
+        if (segments.isEmpty) return null;
+        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+      case SelectionEntityKind.sketchEllipse:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final index = geometry.ellipseIds.indexOf(entity.sketchEntityId);
+        if (index == -1) return null;
+        final segments = _polygonSegments(geometry.ellipsePolygons[index]);
+        if (segments.isEmpty) return null;
+        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+      case SelectionEntityKind.sketchSpline:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final index = geometry.splineIds.indexOf(entity.sketchEntityId);
+        if (index == -1) return null;
+        final segments = _polygonSegments(geometry.splinePolylines[index]);
+        if (segments.isEmpty) return null;
+        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
       case SelectionEntityKind.referencePlane:
         final plane = entity.referencePlaneKind;
         if (plane == null) return null;
@@ -2491,6 +2564,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             if (ViewPreferences.debugShowCameraOrientation)
               DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
+            if (widget.sketchPlaneBasis != null && widget.constraintOverlayItems.isNotEmpty)
+              ConstraintOverlay(
+                camera: _camera.cameraFor(size),
+                viewportSize: size,
+                basis: widget.sketchPlaneBasis!,
+                items: widget.constraintOverlayItems,
+              ),
           ],
         );
       },

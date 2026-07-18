@@ -126,6 +126,29 @@ class LineTrimResponse(BaseModel):
     created_new_point: bool
 
 
+class LineSplitTrimRequest(BaseModel):
+    """On-device feedback follow-up: where on the Line the user actually
+    clicked (sketch-space coordinates, not necessarily exactly on the Line
+    itself) - see `Sketch.split_trim_line`'s own doc comment for how this
+    is resolved into which segment gets removed. A 422 (see
+    `app.sketch.router`'s endpoint) means the click wasn't bracketed by two
+    interior crossings - the caller should fall back to `POST .../trim`
+    (`LineTrimRequest`) instead, exactly as before this endpoint existed."""
+
+    click_x: float
+    click_y: float
+
+
+class LineSplitTrimResponse(BaseModel):
+    """The two Lines the original was split into - `line1` runs from the
+    original start Point to the nearer-of-two crossing, `line2` from the
+    farther crossing to the original end Point (see `split_trim_line`'s own
+    doc comment). The original Line id no longer exists."""
+
+    line1: LineResponse
+    line2: LineResponse
+
+
 class CircleCreate(BaseModel):
     """Create a circle from an existing center Point, plus one of three
     ways to define the radius Point: an existing Point's id (explicit
@@ -211,6 +234,40 @@ class ArcUpdate(BaseModel):
     DistanceConstraints (see Sketch.add_arc), not edited directly."""
 
     construction: bool | None = None
+
+
+class ArcTrimRequest(BaseModel):
+    """`Sketch.trim_or_extend_arc`'s own request shape - identical contract
+    to `LineTrimRequest`, just for an Arc's start/end Point instead of a
+    Line's."""
+
+    moved_point_id: str
+
+
+class ArcTrimResponse(BaseModel):
+    """Mirrors `LineTrimResponse` exactly, for an Arc instead of a Line."""
+
+    arc: ArcResponse
+    moved_point: PointResponse
+    created_new_point: bool
+
+
+class CircleTrimRequest(BaseModel):
+    """`Sketch.trim_circle`'s own request shape - a Circle has no endpoint
+    to name, so the click position itself (sketch-space coordinates)
+    determines which segment is excluded from the resulting Arc - see that
+    method's own doc comment."""
+
+    click_x: float
+    click_y: float
+
+
+class CircleTrimResponse(BaseModel):
+    """The Circle no longer exists (converted, not just modified) - `arc`
+    is the new entity replacing it, spanning every angle except the
+    clicked segment."""
+
+    arc: ArcResponse
 
 
 class EllipseCreate(BaseModel):

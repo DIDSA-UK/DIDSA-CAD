@@ -66,6 +66,9 @@ enum SelectionEntityKind {
   sketchPoint,
   sketchLine,
   sketchCircle,
+  sketchArc,
+  sketchEllipse,
+  sketchSpline,
   referencePlane,
   createPlane,
 }
@@ -154,7 +157,10 @@ class SelectionEntityRef {
   String toString() => switch (kind) {
         SelectionEntityKind.sketchPoint ||
         SelectionEntityKind.sketchLine ||
-        SelectionEntityKind.sketchCircle =>
+        SelectionEntityKind.sketchCircle ||
+        SelectionEntityKind.sketchArc ||
+        SelectionEntityKind.sketchEllipse ||
+        SelectionEntityKind.sketchSpline =>
           'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)',
         SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
         SelectionEntityKind.createPlane => 'SelectionEntityRef($kind, planeFeatureId: $planeFeatureId)',
@@ -374,13 +380,100 @@ HoverHit? hitTestSketchCircles(
   List<List<vm.Vector3>> polygons,
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+}) =>
+    _hitTestSketchPolylines(
+      ray,
+      viewportSize,
+      sketchFeatureId,
+      polygons,
+      ids,
+      SelectionEntityKind.sketchCircle,
+      radiusPixels: radiusPixels,
+    );
+
+/// On-device feedback: a Circle could be selected but an Arc/Ellipse/
+/// Spline silently couldn't - there was never any hit-test for them at all,
+/// not a filter/gating bug. Mirrors [hitTestSketchCircles] exactly (each
+/// rendered as a polyline of straight segments - see `sketch_geometry_3d.dart`'s
+/// `arcPolylines`), just tagging the hit as [SelectionEntityKind.sketchArc].
+/// An Arc's own polyline is already open (no closing duplicate point, unlike
+/// a Circle's), which needs no special-casing here - testing consecutive
+/// pairs up to `length - 1` already stops short of wrapping around.
+HoverHit? hitTestSketchArcs(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<List<vm.Vector3>> polylines,
+  List<String> ids, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+}) =>
+    _hitTestSketchPolylines(
+      ray,
+      viewportSize,
+      sketchFeatureId,
+      polylines,
+      ids,
+      SelectionEntityKind.sketchArc,
+      radiusPixels: radiusPixels,
+    );
+
+/// Mirrors [hitTestSketchCircles] for an Ellipse's own closed polygon (see
+/// `sketch_geometry_3d.dart`'s `ellipsePolygons`) - see [hitTestSketchArcs]'s
+/// own doc comment for why this was missing entirely, not just gated off.
+HoverHit? hitTestSketchEllipses(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<List<vm.Vector3>> polygons,
+  List<String> ids, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+}) =>
+    _hitTestSketchPolylines(
+      ray,
+      viewportSize,
+      sketchFeatureId,
+      polygons,
+      ids,
+      SelectionEntityKind.sketchEllipse,
+      radiusPixels: radiusPixels,
+    );
+
+/// Mirrors [hitTestSketchArcs] for a Spline's own tessellated polyline (see
+/// `sketch_geometry_3d.dart`'s `splinePolylines`) - see [hitTestSketchArcs]'s
+/// own doc comment for why this was missing entirely, not just gated off.
+HoverHit? hitTestSketchSplines(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<List<vm.Vector3>> polylines,
+  List<String> ids, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+}) =>
+    _hitTestSketchPolylines(
+      ray,
+      viewportSize,
+      sketchFeatureId,
+      polylines,
+      ids,
+      SelectionEntityKind.sketchSpline,
+      radiusPixels: radiusPixels,
+    );
+
+HoverHit? _hitTestSketchPolylines(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<List<vm.Vector3>> polylines,
+  List<String> ids,
+  SelectionEntityKind kind, {
+  double radiusPixels = kSelectionHitRadiusPixels,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
-  for (var p = 0; p < polygons.length; p++) {
-    final polygon = polygons[p];
-    for (var i = 0; i < polygon.length - 1; i++) {
-      final closest = _closestRaySegmentDistance(ray.origin, direction, polygon[i], polygon[i + 1]);
+  for (var p = 0; p < polylines.length; p++) {
+    final polyline = polylines[p];
+    for (var i = 0; i < polyline.length - 1; i++) {
+      final closest = _closestRaySegmentDistance(ray.origin, direction, polyline[i], polyline[i + 1]);
       if (closest == null) continue;
       final (t, worldDistance) = closest;
       final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
@@ -388,7 +481,7 @@ HoverHit? hitTestSketchCircles(
       if (best == null || pixelDistance < best.pixelDistance!) {
         best = HoverHit(
           entity: SelectionEntityRef(
-            kind: SelectionEntityKind.sketchCircle,
+            kind: kind,
             sketchFeatureId: sketchFeatureId,
             sketchEntityId: ids[p],
           ),
@@ -704,6 +797,45 @@ HoverHit? hitTestBodies({
         entry.key,
         geometry.circlePolygons,
         geometry.circleIds,
+        radiusPixels: radiusPixels,
+      );
+      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchArc) {
+      final hit = hitTestSketchArcs(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.arcPolylines,
+        geometry.arcIds,
+        radiusPixels: radiusPixels,
+      );
+      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchEllipse) {
+      final hit = hitTestSketchEllipses(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.ellipsePolygons,
+        geometry.ellipseIds,
+        radiusPixels: radiusPixels,
+      );
+      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchSpline) {
+      final hit = hitTestSketchSplines(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.splinePolylines,
+        geometry.splineIds,
         radiusPixels: radiusPixels,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {

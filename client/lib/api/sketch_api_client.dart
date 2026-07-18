@@ -7,10 +7,19 @@ import '../config.dart';
 /// Raised for any backend call that fails - unreachable host, timeout, or a
 /// non-2xx response - so callers can show one consistent error message
 /// rather than handling each failure mode separately.
+///
+/// [statusCode] is the HTTP status when the server actually responded (null
+/// for a network-level failure - unreachable host, timeout) - most callers
+/// only need [message], but a caller that must distinguish a specific,
+/// expected non-2xx outcome from a genuine failure (e.g.
+/// [SketchController]'s split-then-fall-back-to-endpoint-trim logic reading
+/// a 422 as "not applicable here, try the other endpoint" rather than a
+/// real error) can check it directly instead of string-matching [message].
 class ApiException implements Exception {
   final String message;
+  final int? statusCode;
 
-  ApiException(this.message);
+  ApiException(this.message, {this.statusCode});
 
   @override
   String toString() => message;
@@ -123,6 +132,39 @@ class LineTrimResultDto {
 
   factory LineTrimResultDto.fromJson(Map<String, dynamic> json) => LineTrimResultDto(
         line: LineDto.fromJson(json['line'] as Map<String, dynamic>),
+        movedPoint: PointDto.fromJson(json['moved_point'] as Map<String, dynamic>),
+        createdNewPoint: json['created_new_point'] as bool,
+      );
+}
+
+/// On-device feedback follow-up (P37: "trim/extend should prioritize the
+/// part of the line clicked"): the wire counterpart to the backend's
+/// `LineSplitTrimResponse` - see [SketchApiClient.splitTrimLine].
+class LineSplitTrimResultDto {
+  final LineDto line1;
+  final LineDto line2;
+
+  LineSplitTrimResultDto({required this.line1, required this.line2});
+
+  factory LineSplitTrimResultDto.fromJson(Map<String, dynamic> json) => LineSplitTrimResultDto(
+        line1: LineDto.fromJson(json['line1'] as Map<String, dynamic>),
+        line2: LineDto.fromJson(json['line2'] as Map<String, dynamic>),
+      );
+}
+
+/// On-device feedback follow-up (P36: "trim/extend should work on circles
+/// curves and splines"): the wire counterpart to the backend's
+/// `ArcTrimResponse` - mirrors [LineTrimResultDto] exactly, for an Arc
+/// instead of a Line. See [SketchApiClient.trimArc].
+class ArcTrimResultDto {
+  final ArcDto arc;
+  final PointDto movedPoint;
+  final bool createdNewPoint;
+
+  ArcTrimResultDto({required this.arc, required this.movedPoint, required this.createdNewPoint});
+
+  factory ArcTrimResultDto.fromJson(Map<String, dynamic> json) => ArcTrimResultDto(
+        arc: ArcDto.fromJson(json['arc'] as Map<String, dynamic>),
         movedPoint: PointDto.fromJson(json['moved_point'] as Map<String, dynamic>),
         createdNewPoint: json['created_new_point'] as bool,
       );
@@ -922,7 +964,10 @@ class SketchApiClient {
       throw ApiException('Could not reach the server: $e');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}');
+      throw ApiException(
+        'Server returned ${response.statusCode}: ${_detailOf(response)}',
+        statusCode: response.statusCode,
+      );
     }
     final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
     return onSuccess(decoded);
@@ -1437,6 +1482,49 @@ class SketchApiClient {
               body: jsonEncode({'moved_point_id': movedPointId}),
             ),
         (body) => LineTrimResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// P37 (on-device feedback: "trim/extend should prioritize the part of
+  /// the line clicked, it maybe the middle, eg. a line completely crossing
+  /// through a circle"): see the backend's `Sketch.split_trim_line` for the
+  /// full behaviour - splits [lineId] into two Lines around whichever
+  /// segment [clickX]/[clickY] falls in, discarding that segment. Throws
+  /// [ApiException] with `statusCode == 422` when the click isn't bracketed
+  /// by two interior crossings - callers should catch specifically that and
+  /// fall back to [trimLine] instead (see [SketchController._handleTrimTap]).
+  Future<LineSplitTrimResultDto> splitTrimLine(String sketchId, String lineId, double clickX, double clickY) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/lines/$lineId/split-trim'),
+              headers: _headers,
+              body: jsonEncode({'click_x': clickX, 'click_y': clickY}),
+            ),
+        (body) => LineSplitTrimResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// P36 (on-device feedback: "trim/extend should work on circles curves
+  /// and splines"): mirrors [trimLine] exactly, for an Arc's own start/end
+  /// Point instead of a Line's - see the backend's `Sketch.
+  /// trim_or_extend_arc`.
+  Future<ArcTrimResultDto> trimArc(String sketchId, String arcId, String movedPointId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/arcs/$arcId/trim'),
+              headers: _headers,
+              body: jsonEncode({'moved_point_id': movedPointId}),
+            ),
+        (body) => ArcTrimResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// P36: converts [circleId] into an Arc excluding whichever segment
+  /// [clickX]/[clickY] falls on - see the backend's `Sketch.trim_circle`.
+  /// A Circle has no "endpoint" to name (unlike [trimLine]/[trimArc]), so
+  /// the click position alone determines the result.
+  Future<ArcDto> trimCircle(String sketchId, String circleId, double clickX, double clickY) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/circles/$circleId/trim'),
+              headers: _headers,
+              body: jsonEncode({'click_x': clickX, 'click_y': clickY}),
+            ),
+        (body) => ArcDto.fromJson((body as Map<String, dynamic>)['arc'] as Map<String, dynamic>),
       );
 
   Future<void> deleteCircle(String sketchId, String circleId) => _send(

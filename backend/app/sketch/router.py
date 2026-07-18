@@ -38,11 +38,15 @@ from app.sketch.schemas import (
     AngleConstraintResponse,
     ArcCreate,
     ArcResponse,
+    ArcTrimRequest,
+    ArcTrimResponse,
     ArcUpdate,
     AtMidpointConstraintCreate,
     AtMidpointConstraintResponse,
     CircleCreate,
     CircleResponse,
+    CircleTrimRequest,
+    CircleTrimResponse,
     CircleUpdate,
     CoincidentConstraintCreate,
     CoincidentConstraintResponse,
@@ -67,6 +71,8 @@ from app.sketch.schemas import (
     LineDistanceConstraintCreate,
     LineDistanceConstraintResponse,
     LineResponse,
+    LineSplitTrimRequest,
+    LineSplitTrimResponse,
     LineTrimRequest,
     LineTrimResponse,
     LineUpdate,
@@ -548,6 +554,31 @@ def trim_line(sketch_id: str, line_id: str, payload: LineTrimRequest) -> LineTri
     )
 
 
+@router.post("/sketches/{sketch_id}/lines/{line_id}/split-trim", response_model=LineSplitTrimResponse)
+def split_trim_line(sketch_id: str, line_id: str, payload: LineSplitTrimRequest) -> LineSplitTrimResponse:
+    """On-device feedback follow-up ("trim/extend should prioritize the
+    part of the line clicked, it maybe the middle, eg. a line completely
+    crossing through a circle"): see `Sketch.split_trim_line`'s own doc
+    comment for the full behaviour and why this is a separate endpoint
+    from `POST .../trim` rather than a rewrite of it.
+
+    404 for a missing Line; 422 specifically for `NoIntersectionFoundError`
+    - a real, expected "the click isn't bracketed by two interior
+    crossings" outcome, not a client error, and the specific signal the
+    client uses to fall back to `POST .../trim` instead (see that
+    endpoint's own `moved_point_id` contract); every other `ValueError`
+    (Polygon-owned edge, zero-length Line) stays the usual 400."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_line_or_404(sketch, line_id)
+    try:
+        line1, line2 = sketch.split_trim_line(line_id, payload.click_x, payload.click_y)
+    except NoIntersectionFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LineSplitTrimResponse(line1=_line_response(sketch, line1), line2=_line_response(sketch, line2))
+
+
 @router.post("/sketches/{sketch_id}/circles", response_model=CircleResponse, status_code=201)
 def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -594,6 +625,25 @@ def delete_circle(sketch_id: str, circle_id: str) -> None:
     sketch.delete_circle(circle_id)
 
 
+@router.post("/sketches/{sketch_id}/circles/{circle_id}/trim", response_model=CircleTrimResponse)
+def trim_circle(sketch_id: str, circle_id: str, payload: CircleTrimRequest) -> CircleTrimResponse:
+    """On-device feedback ("trim/extend should work on circles curves and
+    splines"): see `Sketch.trim_circle`'s own doc comment - converts
+    [circle_id] into an Arc excluding whichever segment was clicked. 404
+    for a missing Circle; 422 specifically for `NoIntersectionFoundError`
+    (fewer than 2 real crossings found - nothing to trim against, a real
+    expected outcome, not a client error)."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_circle_or_404(sketch, circle_id)
+    try:
+        arc = sketch.trim_circle(circle_id, payload.click_x, payload.click_y)
+    except NoIntersectionFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CircleTrimResponse(arc=_arc_response(sketch, arc))
+
+
 @router.post("/sketches/{sketch_id}/arcs", response_model=ArcResponse, status_code=201)
 def create_arc(sketch_id: str, payload: ArcCreate) -> ArcResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -638,6 +688,30 @@ def delete_arc(sketch_id: str, arc_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_arc_or_404(sketch, arc_id)
     sketch.delete_arc(arc_id)
+
+
+@router.post("/sketches/{sketch_id}/arcs/{arc_id}/trim", response_model=ArcTrimResponse)
+def trim_arc(sketch_id: str, arc_id: str, payload: ArcTrimRequest) -> ArcTrimResponse:
+    """On-device feedback ("trim/extend should work on circles curves and
+    splines"): see `Sketch.trim_or_extend_arc`'s own doc comment - mirrors
+    `POST .../lines/{line_id}/trim` exactly, just for an Arc's own start/
+    end Point. 404 for a missing Point/Arc; 422 specifically for
+    `NoIntersectionFoundError`; every other `ValueError` (invalid endpoint,
+    degenerate arc) stays the usual 400."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_arc_or_404(sketch, arc_id)
+    _get_point_or_404(sketch, payload.moved_point_id)
+    try:
+        arc, moved_point, created_new_point = sketch.trim_or_extend_arc(arc_id, payload.moved_point_id)
+    except NoIntersectionFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ArcTrimResponse(
+        arc=_arc_response(sketch, arc),
+        moved_point=_point_response(moved_point),
+        created_new_point=created_new_point,
+    )
 
 
 @router.post("/sketches/{sketch_id}/ellipses", response_model=EllipseResponse, status_code=201)
