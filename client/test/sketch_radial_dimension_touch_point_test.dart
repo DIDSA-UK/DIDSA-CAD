@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/viewport3d/orthographic_camera.dart';
 import 'package:didsa_cad_client/viewport3d/screen_projection.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_constraint_overlay.dart';
@@ -111,5 +112,77 @@ void main() {
 
     expect(touchScreen, const Offset(100, 140));
     expect(direction, desiredDirection);
+  });
+
+  test(
+      'bug fix follow-up (on-device feedback: dimension lines "should remain connected to the same '
+      'part of the circle while orbiting - currently they slide round"): a ghost\'s default (never '
+      'dragged) direction stays anchored to the same fixed point on the circle across two different '
+      'camera orientations, instead of drifting because defaultAngleOffsetDegrees used to be applied '
+      'as a screen-space rotation', () {
+    final basis = SketchPlaneBasis(
+      origin: vm.Vector3.zero(),
+      xAxis: vm.Vector3(1, 0, 0),
+      yAxis: vm.Vector3(0, 1, 0),
+      normal: vm.Vector3(0, 0, 1),
+    );
+    const viewportSize = Size(800, 600);
+    // Two genuinely different oblique orientations - not just two points on
+    // the same orbit path, to make sure this isn't accidentally passing by
+    // coincidence of a shared axis.
+    final cameraA = OrthographicCamera(
+      position: vm.Vector3(6, 4, 10),
+      target: vm.Vector3.zero(),
+      up: vm.Vector3(0, 1, 0),
+      halfHeight: 8,
+    );
+    final cameraB = OrthographicCamera(
+      position: vm.Vector3(-3, 9, 5),
+      target: vm.Vector3.zero(),
+      up: vm.Vector3(0, 1, 0),
+      halfHeight: 8,
+    );
+
+    const center = (2.0, 1.0);
+    const rim = (6.0, 1.0); // radius 4, rim at sketch-local angle 0.
+    const diameterGhost = ConstraintRadialDimensionItem(
+      constraintId: 'diameter',
+      selected: false,
+      center: center,
+      rim: rim,
+      radius: 4.0,
+      isDiameter: true,
+      text: '⌀?',
+      labelOffset: Offset.zero,
+      defaultAngleOffsetDegrees: 50.0, // matches dimensionGhostOverlayItems' own diameter default.
+    );
+
+    // The fixed sketch-local point the ghost's default direction should
+    // always resolve toward, regardless of camera: rim rotated 50 degrees
+    // around center, in sketch-local space.
+    const expectedAngle = 50.0 * math.pi / 180.0;
+    final expectedSketchPoint = (
+      center.$1 + 4.0 * math.cos(expectedAngle),
+      center.$2 + 4.0 * math.sin(expectedAngle),
+    );
+
+    for (final camera in [cameraA, cameraB]) {
+      final centerScreen =
+          worldToScreen(camera, viewportSize, sketchPointToWorld(basis, center.$1, center.$2))!;
+      final expectedScreen = worldToScreen(
+        camera,
+        viewportSize,
+        sketchPointToWorld(basis, expectedSketchPoint.$1, expectedSketchPoint.$2),
+      )!;
+      final expectedDelta = expectedScreen - centerScreen;
+      final expectedDirection = expectedDelta / expectedDelta.distance;
+
+      final labelCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, diameterGhost)!;
+      final actualDelta = labelCenter - centerScreen;
+      final actualDirection = actualDelta / actualDelta.distance;
+
+      expect(actualDirection.dx, closeTo(expectedDirection.dx, 1e-3));
+      expect(actualDirection.dy, closeTo(expectedDirection.dy, 1e-3));
+    }
   });
 }

@@ -80,12 +80,32 @@ const double _diameterSymbolScale = 1.35;
 /// - shared by [_ConstraintOverlayPainter._paintRadialDimension] and
 /// [constraintOverlayItemLabelCenter] so a ghost's hit-test target always
 /// matches wherever it's actually drawn.
-Offset _rotateOffset(Offset v, double degrees) {
-  if (degrees == 0.0) return v;
-  final radians = degrees * math.pi / 180.0;
-  final cosT = math.cos(radians);
-  final sinT = math.sin(radians);
-  return Offset(v.dx * cosT - v.dy * sinT, v.dx * sinT + v.dy * cosT);
+///
+/// Bug fix (on-device feedback: "[dimension lines] should remain connected
+/// to the same part of the circle while orbiting - currently they slide
+/// round"): this used to rotate the already-*projected* `rimScreen -
+/// centerScreen` vector by [degrees] directly in screen space - but a
+/// fixed screen-space rotation does not correspond to a fixed point on the
+/// circle as the camera orbits, since the projection's own local "ellipse
+/// basis" (see [radialDimensionTouchPoint]) itself changes shape with the
+/// camera. Rotating [rim] around [center] in *sketch-local* space first
+/// (this function), then letting the caller project the *result*, anchors
+/// [degrees] to a genuinely fixed point on the circle instead - by the same
+/// reasoning [radialDimensionTouchPoint] itself relies on: solving for (or
+/// here, directly using) a sketch-local point and projecting it is exact
+/// under any camera orientation, unlike approximating in screen space.
+(double, double) _rotateSketchPointAroundCenter(
+  (double, double) center,
+  (double, double) point,
+  double degrees,
+) {
+  if (degrees == 0.0) return point;
+  final dx = point.$1 - center.$1;
+  final dy = point.$2 - center.$2;
+  final radius = math.sqrt(dx * dx + dy * dy);
+  if (radius < 1e-9) return point;
+  final angle = math.atan2(dy, dx) + degrees * math.pi / 180.0;
+  return (center.$1 + radius * math.cos(angle), center.$2 + radius * math.sin(angle));
 }
 
 /// Bug fix (on-device feedback: "when I orbit, the radius and diameter
@@ -265,7 +285,9 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final radiusPixels = item.radius * pixelsPerUnit;
     if (radiusPixels < 1e-6) return;
 
-    final defaultDelta = _rotateOffset(rimScreen - centerScreen, item.defaultAngleOffsetDegrees);
+    final defaultSketchPoint = _rotateSketchPointAroundCenter(item.center, item.rim, item.defaultAngleOffsetDegrees);
+    final defaultScreen = _project(defaultSketchPoint);
+    final defaultDelta = defaultScreen == null ? (rimScreen - centerScreen) : defaultScreen - centerScreen;
     final defaultLength = defaultDelta.distance;
     final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
 
@@ -471,7 +493,9 @@ Offset? constraintOverlayItemLabelCenter(
       final pixelsPerUnit = (rimScreen - centerScreen).distance / rimSketchDistance;
       final radiusPixels = it.radius * pixelsPerUnit;
       if (radiusPixels < 1e-6) return null;
-      final defaultDelta = _rotateOffset(rimScreen - centerScreen, it.defaultAngleOffsetDegrees);
+      final defaultSketchPoint = _rotateSketchPointAroundCenter(it.center, it.rim, it.defaultAngleOffsetDegrees);
+      final defaultScreen = project(defaultSketchPoint);
+      final defaultDelta = defaultScreen == null ? (rimScreen - centerScreen) : defaultScreen - centerScreen;
       final defaultLength = defaultDelta.distance;
       final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
       return centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + it.labelOffset;
