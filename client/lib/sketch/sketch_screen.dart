@@ -1010,6 +1010,11 @@ class _SketchScreenState extends State<SketchScreen> {
         // just above no longer implies "actively drawing" by itself.
         drawCursorHoverColor:
             _controller.mode == SketchMode.draw || _dragModeActiveInOrbitView ? const Color(0xFF4CAF50) : Colors.red,
+        // On-device feedback ("when I grab something to perform a drag,
+        // the cursor should disappear... it should feel like I'm now
+        // moving the entity around"): see PartViewport.suppressDrawCursor's
+        // own doc comment.
+        suppressDrawCursor: _dragModeActiveInOrbitView && _controller.isEntityGrabbed,
         drawGhostPolylines: _embeddedDrawGhostPolylines,
         drawGhostColor: _embeddedDrawGhostColor,
         drawGhostGuidePolylines: _embeddedDrawGhostGuidePolylines,

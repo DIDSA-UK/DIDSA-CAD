@@ -137,6 +137,20 @@ class PartViewport extends StatefulWidget {
   /// pre-P30 plain green.
   final Color? drawCursorHoverColor;
 
+  /// On-device feedback ("when I grab something to perform a drag, the
+  /// cursor should disappear and it should feel like I'm now moving the
+  /// entity around. after dropping the entity, the cursor should reappear
+  /// at the drop location"): true while [SketchScreen]'s own drag-mode has
+  /// something actually grabbed - hides the [drawCursorMode] crosshair
+  /// entirely for as long as this is true, so the moving entity itself
+  /// (not a separate reticle riding alongside it) is what visually reads
+  /// as "being dragged". [_cursorPosition] itself keeps updating
+  /// throughout regardless (it drives [SketchController.
+  /// updateGrabbedPosition] via [onDrawCursorMoved]), so the crosshair
+  /// simply reappears wherever it already is - the drop location - the
+  /// next time this flips back to `false`, with no extra plumbing needed.
+  final bool suppressDrawCursor;
+
   /// P17: the active draw tool's live ghost preview (see
   /// `SketchController.activeDrawGhost`/`ghostPolylines`), already
   /// tessellated and mapped into world space by the caller
@@ -542,6 +556,7 @@ class PartViewport extends StatefulWidget {
     this.onDrawCursorMoved,
     this.onDrawCursorCommit,
     this.drawCursorHoverColor,
+    this.suppressDrawCursor = false,
     this.drawGhostPolylines = const [],
     this.drawGhostColor,
     this.drawGhostGuidePolylines = const [],
@@ -2851,7 +2866,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // [PartViewport.drawCursorHoverColor]'s own doc comment - Trim/
             // Extend now shares this same crosshair but with 2D's own
             // red-for-non-draw tint instead).
-            if (widget.drawCursorMode && _cursorPosition != null)
+            if (widget.drawCursorMode && _cursorPosition != null && !widget.suppressDrawCursor)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,
