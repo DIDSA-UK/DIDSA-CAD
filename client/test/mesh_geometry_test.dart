@@ -221,6 +221,29 @@ void main() {
     expect(biased[0].$1, vm.Vector3(5, 5, 5));
   });
 
+  test('biasTrianglesTowardCamera pushes each vertex towards the camera by amount (on-device feedback: '
+      'face highlight lost to the Body\'s own translucent surface)', () {
+    final triangles = [(vm.Vector3(0, 0, 0), vm.Vector3(10, 0, 0), vm.Vector3(0, 10, 0))];
+
+    final biased = biasTrianglesTowardCamera(triangles, vm.Vector3(-5, 0, 0), 1.0);
+
+    expect(biased[0].$1, vm.Vector3(-1, 0, 0));
+    expect(biased[0].$2, vm.Vector3(9, 0, 0));
+    // (0,10,0) pulled 1 unit toward (-5,0,0): direction (-5,-10,0), length
+    // sqrt(125) ≈ 11.1803, normalized ≈ (-0.4472, -0.8944, 0).
+    expect(biased[0].$3.x, closeTo(-0.4472, 1e-3));
+    expect(biased[0].$3.y, closeTo(9.1056, 1e-3));
+    expect(biased[0].$3.z, closeTo(0.0, 1e-9));
+  });
+
+  test('biasTrianglesTowardCamera leaves a vertex exactly at the camera unchanged', () {
+    final triangles = [(vm.Vector3(5, 5, 5), vm.Vector3(10, 0, 0), vm.Vector3(0, 10, 0))];
+
+    final biased = biasTrianglesTowardCamera(triangles, vm.Vector3(5, 5, 5), 1.0);
+
+    expect(biased[0].$1, vm.Vector3(5, 5, 5));
+  });
+
   group('vertexMarkerSegments', () {
     test('turns each position into a near-zero-length segment starting at that position', () {
       final segments = vertexMarkerSegments([vm.Vector3(1, 2, 3), vm.Vector3(4, 5, 6)]);

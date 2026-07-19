@@ -194,8 +194,10 @@ MeshBounds? boundsOfBodies(List<BodyMeshDto> bodies) {
 
 /// Line width (screen pixels, per [PolylineGeometry]'s default
 /// `widthMode`) for both edge-rendering modes - Stage 19a Item 3 narrowed
-/// this from the original `2.0` towards a more typical CAD wireframe weight.
-const double kEdgeStrokeWidth = 1.1;
+/// this from the original `2.0` towards a more typical CAD wireframe
+/// weight, then on-device feedback ("increase line thickness for edges
+/// slightly") nudged it back up a bit from that `1.1`.
+const double kEdgeStrokeWidth = 1.4;
 
 /// C3: how far (world units) [biasSegmentsTowardCamera] pushes each edge
 /// point towards the camera - the closest available substitute for a real
@@ -336,6 +338,37 @@ List<(vm.Vector3, vm.Vector3)> biasSegmentsTowardCamera(
   }
 
   return [for (final segment in segments) (biased(segment.$1), biased(segment.$2))];
+}
+
+/// [biasSegmentsTowardCamera]'s triangle-mesh sibling - on-device feedback
+/// ("dynamic face[s] hilight is not working"): a face highlight sits
+/// exactly coincident with the Body's own surface (same triangle
+/// positions, from [faceTrianglesForId]/[trianglesFromMesh]) - fine when
+/// the Body itself renders opaque, but the embedded 3D sketcher's Orbit
+/// View defaults Body opacity below 100% (`sketch_screen.dart`'s
+/// `_orbitBodyOpacity`), which pushes the Body's own material onto
+/// `AlphaMode.blend` - the exact pass [buildMeshEdgesNode]'s own doc
+/// comment already documents as having an unreliable on-device depth test,
+/// so the (correctly opaque) highlight underneath can get redrawn over by
+/// the translucent Body's own face, even though it should be occluding
+/// nothing at the *same* depth. Nudging the highlight's own triangles
+/// toward the camera - the same fix [kEdgeDepthBias]/
+/// [biasSegmentsTowardCamera] already established for edges hitting this
+/// identical class of bug - gives it a real, if small, depth advantage
+/// that doesn't depend on the blend pass's depth test being trustworthy at
+/// all.
+List<(vm.Vector3, vm.Vector3, vm.Vector3)> biasTrianglesTowardCamera(
+  List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles,
+  vm.Vector3 cameraPosition,
+  double amount,
+) {
+  vm.Vector3 biased(vm.Vector3 point) {
+    final direction = cameraPosition - point;
+    if (direction.length2 < 1e-12) return point.clone();
+    return point + direction.normalized() * amount;
+  }
+
+  return [for (final triangle in triangles) (biased(triangle.$1), biased(triangle.$2), biased(triangle.$3))];
 }
 
 /// Builds the [Node] rendering [segments] as [color]d polylines - one

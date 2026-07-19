@@ -1006,7 +1006,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.bodyColourHex != oldWidget.bodyColourHex ||
         widget.bodyOpacity != oldWidget.bodyOpacity ||
         widget.roughness != oldWidget.roughness ||
-        widget.emissiveIntensity != oldWidget.emissiveIntensity) {
+        widget.emissiveIntensity != oldWidget.emissiveIntensity ||
+        // On-device feedback ("the eye ball FAB that should hide/show all
+        // bodies currently does nothing"): _syncMeshNode/_syncEdgesNode are
+        // the only things that actually read bodiesHidden (see their own
+        // gates) - without this, flipping the toggle updated the widget's
+        // own prop but never re-ran either sync method, so the already-
+        // built mesh/edge Nodes in the Scene just sat there unchanged.
+        widget.bodiesHidden != oldWidget.bodiesHidden) {
       setState(_syncMeshNode);
     }
     if (widget.lightIntensity != oldWidget.lightIntensity) {
@@ -1015,7 +1022,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.bodies != oldWidget.bodies ||
         widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
         widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
-        widget.renderMode != oldWidget.renderMode) {
+        widget.renderMode != oldWidget.renderMode ||
+        widget.bodiesHidden != oldWidget.bodiesHidden) {
       setState(_syncEdgesNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane ||
@@ -2672,7 +2680,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
 
     if (faceTriangles.isNotEmpty) {
-      final node = buildHighlightFacesNode(faceTriangles, color: _highContrastFaceHighlightColor());
+      // On-device feedback ("dynamic face[s] hilight is not working"): see
+      // [biasTrianglesTowardCamera]'s own doc comment - the embedded 3D
+      // sketcher's Body opacity defaults below 100%, which routes the
+      // Body's own material onto the translucent pass and its unreliable
+      // depth test, so an un-biased highlight sitting exactly on the
+      // Body's own surface can get redrawn over.
+      final biasedTriangles = biasTrianglesTowardCamera(faceTriangles, _camera.position, kEdgeDepthBias);
+      final node = buildHighlightFacesNode(biasedTriangles, color: _highContrastFaceHighlightColor());
       scene.add(node);
       _selectedFacesNode = node;
       debugPrint(
@@ -2721,7 +2736,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (body == null) return null;
         final triangles = faceTrianglesForId(body.mesh, entity.id);
         if (triangles.isEmpty) return null;
-        return buildHighlightFacesNode(triangles, color: color);
+        // On-device feedback ("dynamic face[s] hilight is not working") -
+        // see [biasTrianglesTowardCamera]'s own doc comment.
+        return buildHighlightFacesNode(
+          biasTrianglesTowardCamera(triangles, _camera.position, kEdgeDepthBias),
+          color: color,
+        );
       case SelectionEntityKind.edge:
         final body = _bodyFor(entity.bodyId);
         if (body == null) return null;
@@ -2741,7 +2761,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (body == null) return null;
         final triangles = trianglesFromMesh(body.mesh);
         if (triangles.isEmpty) return null;
-        return buildHighlightFacesNode(triangles, color: color);
+        return buildHighlightFacesNode(
+          biasTrianglesTowardCamera(triangles, _camera.position, kEdgeDepthBias),
+          color: color,
+        );
       case SelectionEntityKind.sketchPoint:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
