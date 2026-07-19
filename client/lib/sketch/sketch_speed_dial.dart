@@ -77,6 +77,15 @@ class SketchSpeedDial extends StatelessWidget {
         VoidCallback finishAction() {
           if (controller.chainInProgress) return controller.finishChain;
           if (controller.splineInProgress) return controller.finishSpline;
+          // P54 (on-device feedback: "offset should allow the selection of
+          // multiple entities... if the origin lines are connected, the
+          // offset lines should be connected"): Offset mode picks
+          // accumulate (see SketchController.pendingOffsetTarget's own doc
+          // comment on _handleOffsetTap) rather than committing per-tap the
+          // way every other Tools mode does - Finish is what actually
+          // submits the picked set, not just a bare "done, go back to
+          // Select" like the other three Tools modes below.
+          if (controller.mode == SketchMode.offset) return controller.finishOffsetChain;
           return controller.exitToSelectMode;
         }
 

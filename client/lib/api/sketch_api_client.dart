@@ -203,6 +203,36 @@ class OffsetArcResultDto {
       );
 }
 
+/// Offset Entities v2 (on-device feedback: "offset should allow the
+/// selection of multiple entities... if the origin lines are connected,
+/// the offset lines should be connected"): the wire counterpart to the
+/// backend's `OffsetChainResponse` - one new Line or Arc per entity id in
+/// the request (same kind as its source), plus every new/reused Point
+/// either one of them references, deduplicated (a Point shared at a
+/// joined corner appears once). See [SketchApiClient.offsetChain].
+class OffsetChainResultDto {
+  final List<LineDto> lines;
+  final List<ArcDto> arcs;
+  final List<PointDto> points;
+
+  OffsetChainResultDto({this.lines = const [], this.arcs = const [], this.points = const []});
+
+  factory OffsetChainResultDto.fromJson(Map<String, dynamic> json) => OffsetChainResultDto(
+        lines: [
+          for (final line in (json['lines'] as List<dynamic>? ?? const []))
+            LineDto.fromJson(line as Map<String, dynamic>),
+        ],
+        arcs: [
+          for (final arc in (json['arcs'] as List<dynamic>? ?? const []))
+            ArcDto.fromJson(arc as Map<String, dynamic>),
+        ],
+        points: [
+          for (final point in (json['points'] as List<dynamic>? ?? const []))
+            PointDto.fromJson(point as Map<String, dynamic>),
+        ],
+      );
+}
+
 /// P36 (on-device feedback: "trim/extend should work on circles curves and
 /// splines"): the wire counterpart to the backend's `CircleTrimResponse` -
 /// `arc` is the new entity replacing the trimmed Circle, `prunedPointIds`
@@ -1674,6 +1704,22 @@ class SketchApiClient {
               body: jsonEncode({'distance': distance}),
             ),
         (body) => OffsetArcResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Offset Entities v2 (on-device feedback: "offset should allow the
+  /// selection of multiple entities... if the origin lines are connected,
+  /// the offset lines should be connected effectively trimming or
+  /// extending the new lines to their intersect") - [entityIds] may be any
+  /// mix of Line/Arc ids (not Circle - see the backend's `Sketch.
+  /// offset_chain` for why). See that method's own doc comment for the
+  /// corner-join algorithm and its v1 limits.
+  Future<OffsetChainResultDto> offsetChain(String sketchId, List<String> entityIds, double distance) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/offset-chain'),
+              headers: _headers,
+              body: jsonEncode({'entity_ids': entityIds, 'distance': distance}),
+            ),
+        (body) => OffsetChainResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Returns the ids of any of [circleId]'s own defining Points (center,

@@ -562,6 +562,76 @@ class _FakeBackend {
       return _json({'arc': arc, 'start_point': startPoint, 'end_point': endPoint}, 201);
     }
 
+    // P54 (Offset Entities v2, chain-aware/corner-joining Offset) - same
+    // "the fake doesn't replicate the real math, just a plausible
+    // deterministic result" contract as offsetLineMatch/offsetArcMatch
+    // above (the real corner-join math is covered directly by the real,
+    // executable `Sketch.offset_chain` tests). Simulates a joined corner
+    // by deriving each new Point's id from the *original* shared Point id
+    // (`offset-chain-<original id>`) rather than from distance - two
+    // entities that shared an original Point naturally derive the exact
+    // same new Point id here, the same "same id = same join" signal the
+    // real backend's own `add_or_reuse_point` produces.
+    final offsetChainMatch = RegExp(r'^/sketch/sketches/[^/]+/offset-chain$').firstMatch(path);
+    if (offsetChainMatch != null && request.method == 'POST') {
+      final entityIds = (body['entity_ids'] as List).cast<String>();
+      final distance = (body['distance'] as num).toDouble();
+      final construction = body['construction'] as bool? ?? false;
+      final newLines = <Map<String, dynamic>>[];
+      final newArcs = <Map<String, dynamic>>[];
+      final newPoints = <Map<String, dynamic>>[];
+      final seenPointIds = <String>{};
+      void addPoint(Map<String, dynamic> point) {
+        if (seenPointIds.add(point['id'] as String)) newPoints.add(point);
+      }
+
+      for (final entityId in entityIds) {
+        final sourceLine = lines[entityId];
+        final sourceArc = arcs[entityId];
+        if (sourceLine != null) {
+          final startId = 'offset-chain-${sourceLine['start_point_id']}';
+          final endId = 'offset-chain-${sourceLine['end_point_id']}';
+          final startPoint = points[startId] ?? {'id': startId, 'x': distance, 'y': 0.0};
+          final endPoint = points[endId] ?? {'id': endId, 'x': distance, 'y': 10.0};
+          points[startId] = startPoint;
+          points[endId] = endPoint;
+          final lineId = _newId('line');
+          final line = {
+            'id': lineId,
+            'start_point_id': startId,
+            'end_point_id': endId,
+            'length': 10.0,
+            'construction': construction,
+          };
+          lines[lineId] = line;
+          newLines.add(line);
+          addPoint(startPoint);
+          addPoint(endPoint);
+        } else if (sourceArc != null) {
+          final startId = 'offset-chain-${sourceArc['start_point_id']}';
+          final endId = 'offset-chain-${sourceArc['end_point_id']}';
+          final startPoint = points[startId] ?? {'id': startId, 'x': distance, 'y': 0.0};
+          final endPoint = points[endId] ?? {'id': endId, 'x': 0.0, 'y': distance};
+          points[startId] = startPoint;
+          points[endId] = endPoint;
+          final arcId = _newId('arc');
+          final arc = {
+            'id': arcId,
+            'center_point_id': sourceArc['center_point_id'],
+            'start_point_id': startId,
+            'end_point_id': endId,
+            'radius': (sourceArc['radius'] as num).toDouble() + distance,
+            'construction': construction,
+          };
+          arcs[arcId] = arc;
+          newArcs.add(arc);
+          addPoint(startPoint);
+          addPoint(endPoint);
+        }
+      }
+      return _json({'lines': newLines, 'arcs': newArcs, 'points': newPoints}, 201);
+    }
+
     if (pointsCollectionMatch && request.method == 'GET') {
       return _jsonList(points.values.toList(), 200);
     }
@@ -6755,39 +6825,84 @@ void main() {
       return (freshController, freshBackend);
     }
 
-    test('tapping a Line sets pendingOffsetTarget without calling the offset API yet', () async {
+    test('tapping a Line adds it to selectionSet without calling the offset API yet (P54)', () async {
       final (freshController, freshBackend) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
 
       await freshController.handleCanvasTap(3, 0); // off the exact midpoint, on the Line itself
 
-      expect(freshController.pendingOffsetTarget?.kind, SelectionKind.line);
-      expect(freshController.pendingOffsetTarget?.id, 'line-a');
+      expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.line);
+      expect(freshController.selectionSet.single.id, 'line-a');
       expect(freshBackend.requestLog.any((r) => r.contains('/offset')), isFalse);
     });
 
-    test('tapping empty canvas leaves pendingOffsetTarget null', () async {
+    test('tapping the same Line again removes it from selectionSet (P54)', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(3, 0);
+      expect(freshController.selectionSet, isNotEmpty);
+
+      await freshController.handleCanvasTap(3, 0);
+
+      expect(freshController.selectionSet, isEmpty);
+    });
+
+    test('tapping empty canvas leaves pendingOffsetTarget null and selectionSet empty', () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
 
       await freshController.handleCanvasTap(500, 500);
 
       expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.selectionSet, isEmpty);
     });
 
-    test('tapping a Point (not a valid offset target) leaves pendingOffsetTarget null', () async {
+    test('tapping a Point (not a valid offset target) leaves pendingOffsetTarget null and selectionSet empty',
+        () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
 
       await freshController.handleCanvasTap(0, 0); // point-a
 
       expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.selectionSet, isEmpty);
+    });
+
+    test('a Circle tap still goes straight to pendingOffsetTarget (P54: no chain endpoint for a lone Circle)',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-offset-circle', 'origin-offset-circle');
+      freshBackend.points['center'] = {'id': 'center', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['rim'] = {'id': 'rim', 'x': 5.0, 'y': 0.0};
+      freshBackend.circles['circle-a'] = {
+        'id': 'circle-a',
+        'center_point_id': 'center',
+        'radius_point_id': 'rim',
+        'radius': 5.0,
+        'construction': false,
+        'cardinal_point_ids': ['n', 'e', 's', 'w'],
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-offset-circle');
+      freshController.enterOffsetMode();
+
+      // 45deg around the boundary - away from the rim Point at (5, 0),
+      // which would otherwise win hit-test priority over the Circle itself.
+      await freshController.handleCanvasTap(5 * 0.70710678, 5 * 0.70710678);
+
+      expect(freshController.pendingOffsetTarget?.kind, SelectionKind.circle);
+      expect(freshController.pendingOffsetTarget?.id, 'circle-a');
+      expect(freshController.selectionSet, isEmpty);
     });
 
     test('clearPendingOffsetTarget clears it and notifies listeners', () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
       await freshController.handleCanvasTap(3, 0);
+      freshController.finishOffsetChain(); // exactly one pick -> the fast, single-entity path
       expect(freshController.pendingOffsetTarget, isNotNull);
       var notified = false;
       freshController.addListener(() => notified = true);
@@ -6802,11 +6917,126 @@ void main() {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
       await freshController.handleCanvasTap(3, 0);
+      freshController.finishOffsetChain();
       expect(freshController.pendingOffsetTarget, isNotNull);
 
       freshController.enterOffsetMode();
 
       expect(freshController.pendingOffsetTarget, isNull);
+    });
+  });
+
+  group('offset chain (P54: multi-entity, corner-joining Offset)', () {
+    // Deliberately non-`<prefix>-<n>`-shaped seed ids (`line-a`/`line-b`,
+    // matching `offsetLine/offsetCircle/offsetArc`'s own
+    // `adoptedControllerWithLine` convention above) - `_FakeBackend._newId`
+    // mints its own ids as `line-1`, `line-2`, ... from a fresh per-instance
+    // counter, so a seed id shaped like `line-1` would silently collide
+    // with (and get overwritten by) the fake's own first auto-generated id.
+    Future<(SketchController, _FakeBackend)> adoptedControllerWithTwoConnectedLines() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-offset-chain-1', 'origin-offset-chain-1');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-corner'] = {'id': 'point-corner', 'x': 10.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 10.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-corner',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.lines['line-b'] = {
+        'id': 'line-b',
+        'start_point_id': 'point-corner',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-offset-chain-1');
+      return (freshController, freshBackend);
+    }
+
+    test('finishing with nothing picked exits to select mode', () async {
+      final (freshController, _) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+
+      freshController.finishOffsetChain();
+
+      expect(freshController.mode, SketchMode.select);
+      expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.pendingOffsetChainTargets, isNull);
+    });
+
+    test('picking two connected Lines then finishing hands off pendingOffsetChainTargets, clearing selectionSet',
+        () async {
+      final (freshController, freshBackend) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(5, 0); // line-a
+      await freshController.handleCanvasTap(10, 5); // line-b
+
+      freshController.finishOffsetChain();
+
+      final targets = freshController.pendingOffsetChainTargets;
+      expect(targets, isNotNull);
+      expect(targets!.length, 2);
+      expect(targets.any((s) => s.kind == SelectionKind.line && s.id == 'line-a'), isTrue);
+      expect(targets.any((s) => s.kind == SelectionKind.line && s.id == 'line-b'), isTrue);
+      expect(freshController.selectionSet, isEmpty);
+      expect(freshBackend.requestLog.any((r) => r.contains('/offset')), isFalse);
+    });
+
+    test('clearPendingOffsetChainTargets clears it and notifies listeners', () async {
+      final (freshController, _) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(5, 0);
+      await freshController.handleCanvasTap(10, 5);
+      freshController.finishOffsetChain();
+      expect(freshController.pendingOffsetChainTargets, isNotNull);
+      var notified = false;
+      freshController.addListener(() => notified = true);
+
+      freshController.clearPendingOffsetChainTargets();
+
+      expect(freshController.pendingOffsetChainTargets, isNull);
+      expect(notified, isTrue);
+    });
+
+    test('offsetChain applies the joined corner to local state with undo support', () async {
+      final (freshController, freshBackend) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+
+      await freshController.offsetChain(['line-a', 'line-b'], 1.0);
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.lines.length, 4); // the 2 originals + 2 new offsets
+      final newLines = freshController.lines.values.where((l) => l.id != 'line-a' && l.id != 'line-b').toList();
+      expect(newLines, hasLength(2));
+      // The fake backend derives each new Point's id from the *original*
+      // shared corner id (see the fake's own offsetChainMatch route) - the
+      // two new Lines sharing that same derived id is exactly the "stayed
+      // connected" signal the real corner-join produces.
+      final line1Offset = newLines.firstWhere((l) => l.startPointId == 'offset-chain-point-a');
+      final line2Offset = newLines.firstWhere((l) => l.startPointId != 'offset-chain-point-a');
+      expect(line1Offset.endPointId, 'offset-chain-point-corner');
+      expect(line2Offset.startPointId, 'offset-chain-point-corner');
+      expect(line2Offset.endPointId, 'offset-chain-point-b');
+
+      await freshController.undo();
+
+      expect(freshController.lines.keys.toSet(), {'line-a', 'line-b'});
+      expect(freshBackend.requestLog.where((r) => r.contains('DELETE') && r.contains('/lines/')), hasLength(2));
+    });
+
+    test('offsetChain is a no-op with an empty entity list', () async {
+      final (freshController, freshBackend) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+
+      await freshController.offsetChain([], 1.0);
+
+      expect(freshBackend.requestLog.any((r) => r.contains('/offset-chain')), isFalse);
     });
   });
 }

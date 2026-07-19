@@ -5555,20 +5555,94 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// P54 on-device feedback ("offset should allow the selection of
+  /// multiple entities and should operate intuitively... if the origin
+  /// lines are connected, the offset lines should be connected"):
+  /// [_handleOffsetTap]'s own accumulator for a Line/Arc pick, reusing
+  /// [selectionSet] purely as storage - it's already rendered as a
+  /// highlight in both the 2D canvas and the embedded 3D view with zero
+  /// extra plumbing (see `sketch_screen.dart`'s `_embeddedSelectedEntities`),
+  /// and [enterOffsetMode] already clears it on entry same as every other
+  /// tool. Deliberately bypasses [selectEntity]/[deselect] - both are
+  /// Select-mode-specific (gated on/toggling [_ribbonVisible], which offset
+  /// mode never shows) - a second tap on an already-picked entity removes
+  /// it instead (an intuitive "changed my mind" affordance), never
+  /// replaces the whole set the way [selectEntity] does outside a ribbon.
+  void _toggleOffsetChainPick(SketchSelection hit) {
+    final index = _selectionSet.indexWhere((s) => s.sameAs(hit));
+    if (index != -1) {
+      _selectionSet.removeAt(index);
+    } else {
+      _selectionSet.add(hit);
+    }
+    notifyListeners();
+  }
+
   /// [SketchMode.offset]'s own tap handler - mirrors [_handleTrimTap]'s
   /// shape (hit-test under the cursor, dispatch by kind), but a Point/
   /// Ellipse/Spline/Text/Constraint hit is silently ignored (not a valid
-  /// offset target - `Sketch.offset_line`/`offset_circle`/`offset_arc`
-  /// only exist for those three kinds). Stays in offset mode after every
-  /// tap, hit or miss, same as trim mode.
+  /// offset target - `Sketch.offset_line`/`offset_circle`/`offset_arc`/
+  /// `offset_chain` only exist for those three kinds). Stays in offset
+  /// mode after every tap, hit or miss, same as trim mode.
+  ///
+  /// P54: a Circle goes straight to [_pendingOffsetTarget] (the immediate,
+  /// single-entity dialog) same as before - a Circle has no chain
+  /// endpoints to join (see `offset_chain`'s own doc comment), so there's
+  /// nothing multi-pick would ever add for one. A Line/Arc instead
+  /// accumulates into [_toggleOffsetChainPick]'s set - [finishOffsetChain]
+  /// (the Tools flyup's persistent Finish button, already wired for every
+  /// Tools mode) is what actually submits the picked set.
   Future<void> _handleOffsetTap(double hitRadius) async {
     if (_busy || _sketchId == null) return;
     final hit = _entityAt(cursorX, cursorY, hitRadius);
     if (hit == null) return;
-    if (hit.kind != SelectionKind.line && hit.kind != SelectionKind.circle && hit.kind != SelectionKind.arc) {
+    if (hit.kind == SelectionKind.circle) {
+      _pendingOffsetTarget = hit;
+      notifyListeners();
       return;
     }
-    _pendingOffsetTarget = hit;
+    if (hit.kind != SelectionKind.line && hit.kind != SelectionKind.arc) return;
+    _toggleOffsetChainPick(hit);
+  }
+
+  /// P54: [pendingOffsetTarget]'s multi-entity sibling - the hand-off point
+  /// for [finishOffsetChain]'s picked [selectionSet], the same "controller
+  /// has no BuildContext, so the hosting widget listens for null -> non-null
+  /// and shows the dialog itself" pattern [pendingOffsetTarget]'s own doc
+  /// comment already documents. Null whenever there's no pending chain
+  /// dialog to show.
+  List<SketchSelection>? _pendingOffsetChainTargets;
+  List<SketchSelection>? get pendingOffsetChainTargets => _pendingOffsetChainTargets;
+
+  void clearPendingOffsetChainTargets() {
+    if (_pendingOffsetChainTargets == null) return;
+    _pendingOffsetChainTargets = null;
+    notifyListeners();
+  }
+
+  /// P54: the Tools flyup's persistent Finish button, for [SketchMode.
+  /// offset] specifically (see `sketch_speed_dial.dart`'s `finishAction`).
+  /// An empty pick set just exits offset mode outright (matching every
+  /// other Tools mode's Finish with nothing picked). Exactly one picked
+  /// entity skips the chain endpoint entirely and goes through the
+  /// existing single-entity [pendingOffsetTarget] path instead - there's no
+  /// corner to join with only one entity, so `offset_line`/`offset_arc`
+  /// (already shipped, already tested) does the exact same thing
+  /// `offset_chain` would, with less surface area. Two or more hands off to
+  /// [pendingOffsetChainTargets].
+  void finishOffsetChain() {
+    if (_selectionSet.isEmpty) {
+      exitToSelectMode();
+      return;
+    }
+    if (_selectionSet.length == 1) {
+      _pendingOffsetTarget = _selectionSet.first;
+      _selectionSet.clear();
+      notifyListeners();
+      return;
+    }
+    _pendingOffsetChainTargets = List.of(_selectionSet);
+    _selectionSet.clear();
     notifyListeners();
   }
 
@@ -6194,6 +6268,66 @@ class SketchController extends ChangeNotifier {
       _pushUndo(() async {
         await _api.deleteArc(sketchId, newArcId);
         arcs.remove(newArcId);
+        for (final pointId in newPointIds) {
+          await _api.deletePoint(sketchId, pointId);
+          points.remove(pointId);
+        }
+      });
+    });
+  }
+
+  /// Offset Entities v2 (on-device feedback: "offset should allow the
+  /// selection of multiple entities... if the origin lines are connected,
+  /// the offset lines should be connected effectively trimming or
+  /// extending the new lines to their intersect") - [offsetLine]/
+  /// [offsetArc]'s multi-entity sibling, driven by [finishOffsetChain]'s
+  /// [pendingOffsetChainTargets] hand-off. See the backend's `Sketch.
+  /// offset_chain` for the corner-join algorithm itself; this method is
+  /// purely "apply whatever it returned to local state, with one combined
+  /// undo step for the whole set" - same shape as every other offset/
+  /// convert method here, just fanned out over a list of mixed Line/Arc
+  /// results instead of exactly one.
+  Future<void> offsetChain(List<String> entityIds, double distance) async {
+    if (_busy || _sketchId == null || entityIds.isEmpty) return;
+    await _runGuarded(() async {
+      final result = await _api.offsetChain(_sketchId!, entityIds, distance);
+      final newPointIds = <String>[];
+      for (final p in result.points) {
+        if (points.containsKey(p.id)) continue;
+        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+        newPointIds.add(p.id);
+      }
+      final newLineIds = <String>[];
+      for (final l in result.lines) {
+        lines[l.id] = SketchLineView(
+          id: l.id,
+          startPointId: l.startPointId,
+          endPointId: l.endPointId,
+          construction: l.construction,
+        );
+        newLineIds.add(l.id);
+      }
+      final newArcIds = <String>[];
+      for (final a in result.arcs) {
+        arcs[a.id] = SketchArcView(
+          id: a.id,
+          centerPointId: a.centerPointId,
+          startPointId: a.startPointId,
+          endPointId: a.endPointId,
+          construction: a.construction,
+        );
+        newArcIds.add(a.id);
+      }
+      final sketchId = _sketchId!;
+      _pushUndo(() async {
+        for (final lineId in newLineIds) {
+          await _api.deleteLine(sketchId, lineId);
+          lines.remove(lineId);
+        }
+        for (final arcId in newArcIds) {
+          await _api.deleteArc(sketchId, arcId);
+          arcs.remove(arcId);
+        }
         for (final pointId in newPointIds) {
           await _api.deletePoint(sketchId, pointId);
           points.remove(pointId);

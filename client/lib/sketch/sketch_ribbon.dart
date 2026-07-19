@@ -464,6 +464,30 @@ Future<void> showOffsetDialogFor(
   }
 }
 
+/// P54 (on-device feedback: "offset should allow the selection of
+/// multiple entities... if the origin lines are connected, the offset
+/// lines should be connected"): [showOffsetDialogFor]'s multi-entity
+/// sibling - one distance prompt for the whole picked set, dispatching to
+/// [SketchController.offsetChain] instead of the single-entity offset*
+/// methods. `sketch_screen.dart` reuses [_OffsetDialog] here the same way,
+/// driven by [SketchController.pendingOffsetChainTargets] instead of
+/// [SketchController.pendingOffsetTarget].
+Future<void> showOffsetChainDialogFor(
+  BuildContext context,
+  SketchController controller,
+  List<SketchSelection> entities,
+) async {
+  final textController = TextEditingController();
+  final value = await showDialog<double>(
+    context: context,
+    builder: (context) => _OffsetDialog(textController: textController),
+  );
+  textController.dispose();
+  if (!context.mounted) return;
+  if (value == null) return;
+  unawaited(controller.offsetChain([for (final entity in entities) entity.id], value));
+}
+
 class _OffsetDialog extends StatefulWidget {
   final TextEditingController textController;
 

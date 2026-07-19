@@ -331,14 +331,29 @@ class _SketchScreenState extends State<SketchScreen> {
   void _showOffsetDialogIfPending() {
     if (!mounted || _offsetDialogShowing) return;
     final target = _controller.pendingOffsetTarget;
-    if (target == null) return;
+    if (target != null) {
+      _offsetDialogShowing = true;
+      // Consumed immediately (not after the dialog resolves) so a
+      // re-entrant notifyListeners call while the dialog is already
+      // showing (e.g. an unrelated state change) can't be mistaken for a
+      // fresh pick.
+      _controller.clearPendingOffsetTarget();
+      unawaited(
+        showOffsetDialogFor(context, _controller, target).whenComplete(() => _offsetDialogShowing = false),
+      );
+      return;
+    }
+    // P54: [SketchController.pendingOffsetChainTargets]'s own sibling hand-
+    // off - mutually exclusive with [pendingOffsetTarget] by construction
+    // (see [SketchController.finishOffsetChain]), so no risk of showing
+    // both dialogs for the same notifyListeners.
+    final chainTargets = _controller.pendingOffsetChainTargets;
+    if (chainTargets == null) return;
     _offsetDialogShowing = true;
-    // Consumed immediately (not after the dialog resolves) so a re-entrant
-    // notifyListeners call while the dialog is already showing (e.g. an
-    // unrelated state change) can't be mistaken for a fresh pick.
-    _controller.clearPendingOffsetTarget();
+    _controller.clearPendingOffsetChainTargets();
     unawaited(
-      showOffsetDialogFor(context, _controller, target).whenComplete(() => _offsetDialogShowing = false),
+      showOffsetChainDialogFor(context, _controller, chainTargets)
+          .whenComplete(() => _offsetDialogShowing = false),
     );
   }
 
