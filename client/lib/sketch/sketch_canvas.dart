@@ -2903,6 +2903,48 @@ class _SketchPainter extends CustomPainter {
     }
   }
 
+  /// On-device feedback round 2 ("in the offset tool, a ghost preview
+  /// should be shown so the user knows which is positive and negative"):
+  /// [SketchController.offsetPreviewGhosts]' own painter - always a
+  /// [LineGhost]/[CircleGhost]/[ArcGhost] (see that getter's own doc
+  /// comment for why), so this only needs those three of
+  /// [_paintActiveDrawGhost]'s own cases, not the full switch. Same dashed
+  /// [_drawGhostColor] styling - the two are mutually exclusive by mode
+  /// ([SketchController.activeDrawGhost] is always null in
+  /// [SketchMode.offset]), so there's no risk of the two reading as the
+  /// same kind of feedback when they're actually showing different things.
+  void _paintOffsetPreviewGhosts(Canvas canvas) {
+    final paint = Paint()
+      ..color = _drawGhostColor
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    for (final ghost in controller.offsetPreviewGhosts) {
+      switch (ghost) {
+        case LineGhost g:
+          _drawDashedLine(
+            canvas,
+            transform.sketchToScreen(g.startX, g.startY),
+            transform.sketchToScreen(g.endX, g.endY),
+            paint,
+          );
+        case CircleGhost g:
+          final center = transform.sketchToScreen(g.centerX, g.centerY);
+          final edge = transform.sketchToScreen(g.edgeX, g.edgeY);
+          _drawDashedCircle(canvas, center, (edge - center).distance, paint);
+        case ArcGhost g:
+          final center = transform.sketchToScreen(g.centerX, g.centerY);
+          final start = transform.sketchToScreen(g.startX, g.startY);
+          final radiusPixels = (start - center).distance;
+          final rect = Rect.fromCircle(center: center, radius: radiusPixels);
+          final (startAngle, sweepAngle) =
+              _arcScreenAngles(g.centerX, g.centerY, g.startX, g.startY, g.endX, g.endY);
+          _drawDashedArc(canvas, rect, startAngle, sweepAngle, paint);
+        default:
+          break;
+      }
+    }
+  }
+
   /// On-device feedback: fills the closed loop(s) formed by
   /// [referenceGhostSegments] (the existing Body's real edges, projected
   /// onto this Sketch's plane) with a soft tint - "shade the area enclosed
@@ -3626,6 +3668,7 @@ class _SketchPainter extends CustomPainter {
     _paintSnapCandidateHighlight(canvas);
     _paintAutoCoincidentIndicator(canvas);
     _paintActiveDrawGhost(canvas);
+    _paintOffsetPreviewGhosts(canvas);
 
     // Bug-fix round: the cursor's sketch-space position is never itself
     // touched by panning/zooming (see SketchController's class doc

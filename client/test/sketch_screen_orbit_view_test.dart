@@ -15,6 +15,7 @@ import 'package:didsa_cad_client/sketch/sketch_speed_dial.dart';
 import 'package:didsa_cad_client/sketch/sketcher_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/selection_filter.dart';
 
 /// Phase 4.2's Orbit View toggle. A minimal fake backend - [ensureSketch]
 /// only ever calls `POST /sketch/sketches` (see
@@ -273,6 +274,85 @@ void main() {
     await tester.pump();
 
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).drawCursorMode, isTrue);
+  });
+
+  testWidgets(
+      'bug fix (on-device feedback: "when in selecting edges, vertices, faces to convert or '
+      'offset, there should be dynamic highlight so the user knows what will need selected"): '
+      'the hover selectionFilter now enables Body vertex/edge (and face, for Convert only) for '
+      'Dimension/Convert/Offset, matching what the tap path already targets - it used to be '
+      'permanently off, so nothing but Sketch entities ever hover-highlighted', (tester) async {
+    final controller = await _freshController();
+    await _openInOrbitView(tester, controller);
+
+    SelectionFilterState currentFilter() =>
+        tester.widget<PartViewport>(find.byType(PartViewport)).selectionFilter;
+
+    // SketchMode.select (the default on entry): unchanged - Body geometry
+    // was never a hover target here, only Sketch entities.
+    expect(currentFilter().vertex, isFalse);
+    expect(currentFilter().edge, isFalse);
+    expect(currentFilter().face, isFalse);
+
+    controller.enterDimensionMode();
+    await tester.pump();
+    expect(currentFilter().vertex, isTrue);
+    expect(currentFilter().edge, isTrue);
+    expect(currentFilter().face, isFalse);
+
+    controller.enterConvertEntitiesMode();
+    await tester.pump();
+    expect(currentFilter().vertex, isTrue);
+    expect(currentFilter().edge, isTrue);
+    expect(currentFilter().face, isTrue);
+
+    controller.enterOffsetMode();
+    await tester.pump();
+    expect(currentFilter().vertex, isTrue);
+    expect(currentFilter().edge, isTrue);
+    expect(currentFilter().face, isFalse);
+
+    // Trim/Extend never references Body geometry at all - stays off.
+    controller.enterTrimMode();
+    await tester.pump();
+    expect(currentFilter().vertex, isFalse);
+    expect(currentFilter().edge, isFalse);
+    expect(currentFilter().face, isFalse);
+  });
+
+  testWidgets(
+      'on-device feedback: OffsetValueBar appears once picking is finished, drives a live ghost '
+      'preview via typed distance, and disappears again once cancelled', (tester) async {
+    final controller = await _freshController();
+    await _openInOrbitView(tester, controller);
+
+    controller.points['point-a'] = const SketchPointView(id: 'point-a', x: 0, y: 0);
+    controller.points['point-b'] = const SketchPointView(id: 'point-b', x: 10, y: 0);
+    controller.lines['line-a'] = const SketchLineView(id: 'line-a', startPointId: 'point-a', endPointId: 'point-b');
+    controller.enterOffsetMode();
+    await tester.pump();
+
+    // Not visible yet - picking isn't finished.
+    expect(find.widgetWithText(TextField, 'Distance'), findsNothing);
+
+    await controller.handleCanvasTap(3, 0); // picks line-a, off its exact midpoint
+    controller.finishOffsetChain();
+    await tester.pump();
+
+    expect(find.widgetWithText(TextField, 'Distance'), findsOneWidget);
+    expect(controller.offsetPreviewGhosts, isEmpty);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Distance'), '2');
+    await tester.pump();
+
+    expect(controller.offsetPreviewDistance, 2.0);
+    expect(controller.offsetPreviewGhosts, hasLength(1));
+
+    controller.cancelOffsetPreview();
+    await tester.pump();
+
+    expect(controller.offsetPreviewTargets, isNull);
+    expect(find.widgetWithText(TextField, 'Distance'), findsNothing);
   });
 
   // The 'Sketch Orientation (Sketcher-roadmap Phase 5)' group that used to

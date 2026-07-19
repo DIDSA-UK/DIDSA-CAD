@@ -4313,7 +4313,7 @@ void main() {
       return (freshController, freshBackend);
     }
 
-    test('converts the Body edge, then hands it straight to pendingOffsetTarget', () async {
+    test('converts the Body edge, then hands it straight to offsetPreviewTargets', () async {
       final (freshController, freshBackend) = await adoptedController();
       freshController.enterOffsetMode();
 
@@ -4323,8 +4323,9 @@ void main() {
       expect(freshController.lines, hasLength(1));
       final line = freshController.lines.values.single;
       expect(line.construction, isFalse);
-      expect(freshController.pendingOffsetTarget?.kind, SelectionKind.line);
-      expect(freshController.pendingOffsetTarget?.id, line.id);
+      expect(freshController.offsetPreviewTargets, hasLength(1));
+      expect(freshController.offsetPreviewTargets!.single.kind, SelectionKind.line);
+      expect(freshController.offsetPreviewTargets!.single.id, line.id);
     });
 
     test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
@@ -4334,7 +4335,7 @@ void main() {
       await controller.pickBodyEdgeForOffset('body-1', 0);
 
       expect(controller.lines, hasLength(lineCountBefore));
-      expect(controller.pendingOffsetTarget, isNull);
+      expect(controller.offsetPreviewTargets, isNull);
     });
   });
 
@@ -6831,7 +6832,7 @@ void main() {
 
       await freshController.handleCanvasTap(3, 0); // off the exact midpoint, on the Line itself
 
-      expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.offsetPreviewTargets, isNull);
       expect(freshController.selectionSet, hasLength(1));
       expect(freshController.selectionSet.single.kind, SelectionKind.line);
       expect(freshController.selectionSet.single.id, 'line-a');
@@ -6849,28 +6850,28 @@ void main() {
       expect(freshController.selectionSet, isEmpty);
     });
 
-    test('tapping empty canvas leaves pendingOffsetTarget null and selectionSet empty', () async {
+    test('tapping empty canvas leaves offsetPreviewTargets null and selectionSet empty', () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
 
       await freshController.handleCanvasTap(500, 500);
 
-      expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.offsetPreviewTargets, isNull);
       expect(freshController.selectionSet, isEmpty);
     });
 
-    test('tapping a Point (not a valid offset target) leaves pendingOffsetTarget null and selectionSet empty',
+    test('tapping a Point (not a valid offset target) leaves offsetPreviewTargets null and selectionSet empty',
         () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
 
       await freshController.handleCanvasTap(0, 0); // point-a
 
-      expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.offsetPreviewTargets, isNull);
       expect(freshController.selectionSet, isEmpty);
     });
 
-    test('a Circle tap still goes straight to pendingOffsetTarget (P54: no chain endpoint for a lone Circle)',
+    test('a Circle tap still goes straight to offsetPreviewTargets (P54: no chain endpoint for a lone Circle)',
         () async {
       final freshBackend = _FakeBackend();
       freshBackend.seedSketch('sketch-offset-circle', 'origin-offset-circle');
@@ -6893,36 +6894,37 @@ void main() {
       // which would otherwise win hit-test priority over the Circle itself.
       await freshController.handleCanvasTap(5 * 0.70710678, 5 * 0.70710678);
 
-      expect(freshController.pendingOffsetTarget?.kind, SelectionKind.circle);
-      expect(freshController.pendingOffsetTarget?.id, 'circle-a');
+      expect(freshController.offsetPreviewTargets, hasLength(1));
+      expect(freshController.offsetPreviewTargets!.single.kind, SelectionKind.circle);
+      expect(freshController.offsetPreviewTargets!.single.id, 'circle-a');
       expect(freshController.selectionSet, isEmpty);
     });
 
-    test('clearPendingOffsetTarget clears it and notifies listeners', () async {
+    test('cancelOffsetPreview clears offsetPreviewTargets and notifies listeners', () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
       await freshController.handleCanvasTap(3, 0);
-      freshController.finishOffsetChain(); // exactly one pick -> the fast, single-entity path
-      expect(freshController.pendingOffsetTarget, isNotNull);
+      freshController.finishOffsetChain(); // exactly one pick -> opens the value bar
+      expect(freshController.offsetPreviewTargets, isNotNull);
       var notified = false;
       freshController.addListener(() => notified = true);
 
-      freshController.clearPendingOffsetTarget();
+      freshController.cancelOffsetPreview();
 
-      expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.offsetPreviewTargets, isNull);
       expect(notified, isTrue);
     });
 
-    test('entering offset mode clears any stale pendingOffsetTarget from a previous session', () async {
+    test('entering offset mode clears any stale offsetPreviewTargets from a previous session', () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterOffsetMode();
       await freshController.handleCanvasTap(3, 0);
       freshController.finishOffsetChain();
-      expect(freshController.pendingOffsetTarget, isNotNull);
+      expect(freshController.offsetPreviewTargets, isNotNull);
 
       freshController.enterOffsetMode();
 
-      expect(freshController.pendingOffsetTarget, isNull);
+      expect(freshController.offsetPreviewTargets, isNull);
     });
   });
 
@@ -6966,11 +6968,10 @@ void main() {
       freshController.finishOffsetChain();
 
       expect(freshController.mode, SketchMode.select);
-      expect(freshController.pendingOffsetTarget, isNull);
-      expect(freshController.pendingOffsetChainTargets, isNull);
+      expect(freshController.offsetPreviewTargets, isNull);
     });
 
-    test('picking two connected Lines then finishing hands off pendingOffsetChainTargets, clearing selectionSet',
+    test('picking two connected Lines then finishing hands off offsetPreviewTargets, clearing selectionSet',
         () async {
       final (freshController, freshBackend) = await adoptedControllerWithTwoConnectedLines();
       freshController.enterOffsetMode();
@@ -6979,7 +6980,7 @@ void main() {
 
       freshController.finishOffsetChain();
 
-      final targets = freshController.pendingOffsetChainTargets;
+      final targets = freshController.offsetPreviewTargets;
       expect(targets, isNotNull);
       expect(targets!.length, 2);
       expect(targets.any((s) => s.kind == SelectionKind.line && s.id == 'line-a'), isTrue);
@@ -6988,20 +6989,90 @@ void main() {
       expect(freshBackend.requestLog.any((r) => r.contains('/offset')), isFalse);
     });
 
-    test('clearPendingOffsetChainTargets clears it and notifies listeners', () async {
+    test('cancelOffsetPreview clears offsetPreviewTargets and notifies listeners', () async {
       final (freshController, _) = await adoptedControllerWithTwoConnectedLines();
       freshController.enterOffsetMode();
       await freshController.handleCanvasTap(5, 0);
       await freshController.handleCanvasTap(10, 5);
       freshController.finishOffsetChain();
-      expect(freshController.pendingOffsetChainTargets, isNotNull);
+      expect(freshController.offsetPreviewTargets, isNotNull);
       var notified = false;
       freshController.addListener(() => notified = true);
 
-      freshController.clearPendingOffsetChainTargets();
+      freshController.cancelOffsetPreview();
 
-      expect(freshController.pendingOffsetChainTargets, isNull);
+      expect(freshController.offsetPreviewTargets, isNull);
       expect(notified, isTrue);
+    });
+
+    test(
+        'updateOffsetPreviewDistance sets offsetPreviewDistance and offsetPreviewGhosts previews a raw '
+        'offset per target, live', () async {
+      final (freshController, _) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(5, 0);
+      await freshController.handleCanvasTap(10, 5);
+      freshController.finishOffsetChain();
+      expect(freshController.offsetPreviewGhosts, isEmpty); // no distance typed yet
+
+      freshController.updateOffsetPreviewDistance(1.0);
+
+      expect(freshController.offsetPreviewDistance, 1.0);
+      final ghosts = freshController.offsetPreviewGhosts;
+      expect(ghosts, hasLength(2));
+      expect(ghosts, everyElement(isA<LineGhost>()));
+      // line-a: (0,0)->(10,0), offset by +1 -> perpendicular (0,1) shift.
+      final lineAGhost =
+          ghosts.cast<LineGhost>().firstWhere((g) => g.startX == 0.0 && g.startY == 1.0);
+      expect(lineAGhost.endX, 10.0);
+      expect(lineAGhost.endY, 1.0);
+
+      // Flipping the sign should flip which side the ghost lands on.
+      freshController.updateOffsetPreviewDistance(-1.0);
+      final flipped = freshController.offsetPreviewGhosts.cast<LineGhost>();
+      expect(flipped.any((g) => g.startY == -1.0), isTrue);
+    });
+
+    test('confirmOffsetPreview with a single target calls the single-entity offset endpoint, not offsetChain',
+        () async {
+      final (freshController, freshBackend) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(5, 0); // line-a only
+      freshController.finishOffsetChain();
+      freshController.updateOffsetPreviewDistance(1.0);
+
+      await freshController.confirmOffsetPreview();
+
+      expect(freshController.offsetPreviewTargets, isNull);
+      expect(freshController.offsetPreviewDistance, isNull);
+      expect(freshBackend.requestLog.any((r) => r.contains('/offset-chain')), isFalse);
+      expect(freshBackend.requestLog.any((r) => r.contains('/lines/line-a/offset')), isTrue);
+    });
+
+    test('confirmOffsetPreview with multiple targets calls offsetChain', () async {
+      final (freshController, freshBackend) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(5, 0);
+      await freshController.handleCanvasTap(10, 5);
+      freshController.finishOffsetChain();
+      freshController.updateOffsetPreviewDistance(1.0);
+
+      await freshController.confirmOffsetPreview();
+
+      expect(freshController.offsetPreviewTargets, isNull);
+      expect(freshBackend.requestLog.any((r) => r.contains('/offset-chain')), isTrue);
+    });
+
+    test('confirmOffsetPreview with no distance typed is a no-op', () async {
+      final (freshController, freshBackend) = await adoptedControllerWithTwoConnectedLines();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(5, 0);
+      freshController.finishOffsetChain();
+
+      await freshController.confirmOffsetPreview();
+
+      expect(freshController.offsetPreviewTargets, isNull); // still cleared, just no API call
+      expect(freshBackend.requestLog.any((r) => r.contains('/offset')), isFalse);
     });
 
     test('offsetChain applies the joined corner to local state with undo support', () async {

@@ -435,10 +435,16 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
 /// rejected - negative is meaningful, see each of those methods' own sign
 /// convention doc comments).
 ///
-/// Public (not `_`-prefixed) so `sketch_screen.dart` can reuse it for
-/// [SketchMode.offset]'s own cursor-driven pick (`SketchController.
-/// pendingOffsetTarget`) - the ribbon's single-selection "Offset" chip
-/// (below) and the cursor-mode tool both end up here, one round trip.
+/// Public (not `_`-prefixed) so it stays available from other files if
+/// needed. On-device feedback round 2 ("in the offset tool, a ghost
+/// preview should be shown... the screen layout will need to change so
+/// the user can actually see the preview"): [SketchMode.offset]'s own
+/// cursor-driven pick no longer reuses this modal dialog - a modal
+/// barrier can't show a live ghost preview underneath it. It now goes
+/// through a non-modal fly-up bar instead (`sketch_screen.dart`'s
+/// `OffsetValueBar`, driven by [SketchController.offsetPreviewTargets]/
+/// [SketchController.confirmOffsetPreview]). Only the ribbon's own
+/// single-selection "Offset" chip (below) still uses this.
 Future<void> showOffsetDialogFor(
   BuildContext context,
   SketchController controller,
@@ -462,30 +468,6 @@ Future<void> showOffsetDialogFor(
     default:
       break;
   }
-}
-
-/// P54 (on-device feedback: "offset should allow the selection of
-/// multiple entities... if the origin lines are connected, the offset
-/// lines should be connected"): [showOffsetDialogFor]'s multi-entity
-/// sibling - one distance prompt for the whole picked set, dispatching to
-/// [SketchController.offsetChain] instead of the single-entity offset*
-/// methods. `sketch_screen.dart` reuses [_OffsetDialog] here the same way,
-/// driven by [SketchController.pendingOffsetChainTargets] instead of
-/// [SketchController.pendingOffsetTarget].
-Future<void> showOffsetChainDialogFor(
-  BuildContext context,
-  SketchController controller,
-  List<SketchSelection> entities,
-) async {
-  final textController = TextEditingController();
-  final value = await showDialog<double>(
-    context: context,
-    builder: (context) => _OffsetDialog(textController: textController),
-  );
-  textController.dispose();
-  if (!context.mounted) return;
-  if (value == null) return;
-  unawaited(controller.offsetChain([for (final entity in entities) entity.id], value));
 }
 
 class _OffsetDialog extends StatefulWidget {

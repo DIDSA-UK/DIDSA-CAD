@@ -22,6 +22,7 @@ import 'sketch_canvas.dart';
 import 'sketch_construction_method_bar.dart';
 import 'sketch_controller.dart';
 import 'sketch_dimension_bar.dart';
+import 'sketch_offset_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
 import 'sketcher_preferences.dart';
@@ -314,47 +315,6 @@ class _SketchScreenState extends State<SketchScreen> {
       _controller.ensureSketch();
     }
     _loadInitialOrbitViewPreference();
-    // On-device feedback ("when I start the offset tool, the cursor should
-    // be available so I can select the entities to offset"): fired every
-    // time SketchMode.offset's own cursor pick lands on something (see
-    // SketchController.pendingOffsetTarget's own doc comment) - stays
-    // registered for the widget's whole lifetime (unlike
-    // _enterOrbitViewOncePlaneReadyIfPreferred, which only ever needs to
-    // fire once), guarded by _offsetDialogShowing so a rapid extra
-    // notifyListeners while the dialog is already up can't show a second
-    // one.
-    _controller.addListener(_showOffsetDialogIfPending);
-  }
-
-  bool _offsetDialogShowing = false;
-
-  void _showOffsetDialogIfPending() {
-    if (!mounted || _offsetDialogShowing) return;
-    final target = _controller.pendingOffsetTarget;
-    if (target != null) {
-      _offsetDialogShowing = true;
-      // Consumed immediately (not after the dialog resolves) so a
-      // re-entrant notifyListeners call while the dialog is already
-      // showing (e.g. an unrelated state change) can't be mistaken for a
-      // fresh pick.
-      _controller.clearPendingOffsetTarget();
-      unawaited(
-        showOffsetDialogFor(context, _controller, target).whenComplete(() => _offsetDialogShowing = false),
-      );
-      return;
-    }
-    // P54: [SketchController.pendingOffsetChainTargets]'s own sibling hand-
-    // off - mutually exclusive with [pendingOffsetTarget] by construction
-    // (see [SketchController.finishOffsetChain]), so no risk of showing
-    // both dialogs for the same notifyListeners.
-    final chainTargets = _controller.pendingOffsetChainTargets;
-    if (chainTargets == null) return;
-    _offsetDialogShowing = true;
-    _controller.clearPendingOffsetChainTargets();
-    unawaited(
-      showOffsetChainDialogFor(context, _controller, chainTargets)
-          .whenComplete(() => _offsetDialogShowing = false),
-    );
   }
 
   /// Sketcher restructure Phase 2's rollout default: [SketcherPreferences]
@@ -391,7 +351,6 @@ class _SketchScreenState extends State<SketchScreen> {
   @override
   void dispose() {
     _controller.removeListener(_enterOrbitViewOncePlaneReadyIfPreferred);
-    _controller.removeListener(_showOffsetDialogIfPending);
     // Only dispose a controller this widget created itself - an injected
     // (e.g. test-owned, or PartScreen-owned) controller's lifecycle belongs
     // to its caller.
@@ -835,12 +794,22 @@ class _SketchScreenState extends State<SketchScreen> {
                         // screen-space overlay, same as SketchRibbon already
                         // is), so nothing here needed to change beyond
                         // dropping this gate.
+                        //
+                        // On-device feedback round 2: OffsetValueBar only
+                        // once picking is actually done (offsetPreviewTargets
+                        // non-null) - the picking phase itself relies on the
+                        // hover highlight and the Tools flyup's own Finish
+                        // button, not this bar.
                         final showConstructionBar = mode == SketchMode.draw;
                         final showDimensionBar = mode == SketchMode.dimension;
-                        final visible = showConstructionBar || showDimensionBar;
-                        final bar = mode == SketchMode.dimension
-                            ? SketchDimensionBar(controller: _controller)
-                            : SketchConstructionMethodBar(controller: _controller);
+                        final showOffsetBar =
+                            mode == SketchMode.offset && _controller.offsetPreviewTargets != null;
+                        final visible = showConstructionBar || showDimensionBar || showOffsetBar;
+                        final bar = switch (mode) {
+                          SketchMode.dimension => SketchDimensionBar(controller: _controller),
+                          SketchMode.offset => OffsetValueBar(controller: _controller),
+                          _ => SketchConstructionMethodBar(controller: _controller),
+                        };
                         return IgnorePointer(
                           ignoring: !visible,
                           child: AnimatedSlide(
@@ -1130,7 +1099,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// On-device feedback (P52): [SketchMode.offset]'s own Body-edge pick -
   /// converts the edge (same mechanism as Convert Entities) then
   /// immediately offers the result up for offsetting via
-  /// [SketchController.pendingOffsetTarget], rather than requiring two
+  /// [SketchController.offsetPreviewTargets], rather than requiring two
   /// separate tool sessions. A Face hit only ever means anything in
   /// Convert Entities ("selecting a face brings in all the face edges as
   /// lines") - converts every one of the face's own boundary edges in one
@@ -1193,22 +1162,38 @@ class _SketchScreenState extends State<SketchScreen> {
   }
 
   /// P12/P33: every real Sketch-entity kind is selectable in this cursor
-  /// mode (Point/Line/Circle/Arc/Ellipse/Spline) - Body vertex/edge/face
-  /// picking is a separate concern P10's own `preferEntityPick` already
-  /// owns for Dimension mode specifically, not this cursor mode's job.
-  static const SelectionFilterState _embeddedCursorModeFilter = SelectionFilterState(
-    vertex: false,
-    edge: false,
-    face: false,
-    body: false,
-    sketchPoint: true,
-    sketchLine: true,
-    sketchCircle: true,
-    sketchArc: true,
-    sketchEllipse: true,
-    sketchSpline: true,
-    plane: false,
-  );
+  /// mode (Point/Line/Circle/Arc/Ellipse/Spline). Body vertex/edge/face
+  /// picking used to be permanently off here - this getter's own doc
+  /// comment used to claim that was fine because "P10's own
+  /// `preferEntityPick` already owns [it] for Dimension mode specifically"
+  /// - true for the *tap* path (`_handleTap`/`_commitDrawCursor` build
+  /// their own bespoke [SelectionFilterState] locally, keyed off
+  /// [_preferEntityPickOnTap]/[preferEntityPickIncludesFace], never off
+  /// this field), but this field alone drives [PartViewport]'s *hover*
+  /// highlight (`_recomputeHover`'s own `filter: widget.selectionFilter`) -
+  /// so a permanently-off body vertex/edge/face here meant Dimension/
+  /// Convert Entities/Offset could always be *tapped* against real Body
+  /// geometry, but never showed any hover feedback first (on-device
+  /// feedback: "when in selecting edges, vertices, faces to convert or
+  /// offset, there should be dynamic highlight so the user knows what
+  /// will need selected"). Now mirrors the tap path's own logic exactly,
+  /// so whatever's tappable is also the thing that lights up first.
+  SelectionFilterState get _embeddedCursorModeFilter {
+    final targetsBodyGeometry = _preferEntityPickOnTap;
+    return SelectionFilterState(
+      vertex: targetsBodyGeometry,
+      edge: targetsBodyGeometry,
+      face: _controller.mode == SketchMode.convert,
+      body: false,
+      sketchPoint: true,
+      sketchLine: true,
+      sketchCircle: true,
+      sketchArc: true,
+      sketchEllipse: true,
+      sketchSpline: true,
+      plane: false,
+    );
+  }
 
   /// P13: [PartViewport.onSelectionToggle]'s handler - converts the
   /// resolved [SelectionEntityRef] (3D ray-hit vocabulary) into the matching
@@ -1486,11 +1471,26 @@ class _SketchScreenState extends State<SketchScreen> {
   /// own default.
   List<List<vm.Vector3>> get _embeddedDrawGhostPolylines {
     final basis = _effectiveOrbitBasis;
+    if (basis == null) return const [];
     final ghost = _controller.activeDrawGhost;
-    if (basis == null || ghost == null) return const [];
+    if (ghost != null) {
+      return [
+        for (final polyline in ghostPolylines(ghost))
+          [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
+      ];
+    }
+    // On-device feedback ("in the offset tool, a ghost preview should be
+    // shown so the user knows which is positive and negative"):
+    // [SketchController.activeDrawGhost] is always null in
+    // [SketchMode.offset] (only Draw mode ever sets it) - reusing this
+    // same prop for [SketchController.offsetPreviewGhosts] instead of
+    // adding a parallel one costs nothing (the two are mutually exclusive
+    // by mode) and gets the offset preview the exact same rendering this
+    // draw-tool ghost already has.
     return [
-      for (final polyline in ghostPolylines(ghost))
-        [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
+      for (final offsetGhost in _controller.offsetPreviewGhosts)
+        for (final polyline in ghostPolylines(offsetGhost))
+          [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
     ];
   }
 

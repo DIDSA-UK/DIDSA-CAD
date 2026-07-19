@@ -80,11 +80,11 @@ class SketchSpeedDial extends StatelessWidget {
           // P54 (on-device feedback: "offset should allow the selection of
           // multiple entities... if the origin lines are connected, the
           // offset lines should be connected"): Offset mode picks
-          // accumulate (see SketchController.pendingOffsetTarget's own doc
-          // comment on _handleOffsetTap) rather than committing per-tap the
-          // way every other Tools mode does - Finish is what actually
-          // submits the picked set, not just a bare "done, go back to
-          // Select" like the other three Tools modes below.
+          // accumulate (see SketchController._handleOffsetTap's own doc
+          // comment) rather than committing per-tap the way every other
+          // Tools mode does - Finish is what actually opens the value bar
+          // for the picked set, not just a bare "done, go back to Select"
+          // like the other three Tools modes below.
           if (controller.mode == SketchMode.offset) return controller.finishOffsetChain;
           return controller.exitToSelectMode;
         }
@@ -163,10 +163,12 @@ class SketchSpeedDial extends StatelessWidget {
           ),
         ];
       case FabMenuState.tools:
-        // On-device feedback: grouped exactly like FabMenuState.
-        // sketchEntities's own tool list - a Back button returns to the
+        // On-device feedback ("the 'tools' menu in sketcher should change
+        // to 2 rows to match the sketch tools menu"): grouped exactly like
+        // FabMenuState.sketchEntities's own 2-row layout below (see
+        // [_rowOf]'s own doc comment) - a Back button returns to the
         // top-level categories, mirrored below.
-        return [
+        final toolActions = [
           // P38: Dimensions works in Orbit View now too - see
           // [restrictToEmbeddedTools]'s own doc comment for why both of
           // its old blockers no longer apply.
@@ -205,6 +207,11 @@ class SketchSpeedDial extends StatelessWidget {
             label: 'Offset',
             onPressed: controller.enterOffsetMode,
           ),
+        ];
+        final toolsSplitAt = (toolActions.length / 2).ceil();
+        return [
+          _rowOf(toolActions.sublist(0, toolsSplitAt)),
+          _rowOf(toolActions.sublist(toolsSplitAt)),
           _SpeedDialAction(
             svgAsset: 'assets/icons/actions/action_back.svg',
             label: 'Back',
@@ -307,16 +314,6 @@ class SketchSpeedDial extends StatelessWidget {
             ? allTools.where((action) => action.tool != SketchTool.text).toList()
             : allTools;
         final splitAt = (tools.length / 2).ceil();
-        Widget rowOf(List<_SpeedDialAction> rowTools) => Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (var i = 0; i < rowTools.length; i++)
-                  Padding(
-                    padding: EdgeInsets.only(left: i == 0 ? 0 : 8),
-                    child: rowTools[i],
-                  ),
-              ],
-            );
         return [
           if (showFinishChain)
             _SpeedDialAction(
@@ -330,8 +327,8 @@ class SketchSpeedDial extends StatelessWidget {
               label: 'Finish',
               onPressed: controller.finishSpline,
             ),
-          rowOf(tools.sublist(0, splitAt)),
-          rowOf(tools.sublist(splitAt)),
+          _rowOf(tools.sublist(0, splitAt)),
+          _rowOf(tools.sublist(splitAt)),
           _SpeedDialAction(
             svgAsset: 'assets/icons/actions/action_back.svg',
             label: 'Back',
@@ -340,6 +337,24 @@ class SketchSpeedDial extends StatelessWidget {
         ];
     }
   }
+
+  /// Lays out [rowTools] side by side - Sketch Entities' own "two rows of 5
+  /// instead of one long vertical column" fix (see its own doc comment,
+  /// above), now reused by the Tools category too (on-device feedback:
+  /// "the 'tools' menu in sketcher should change to 2 rows to match the
+  /// sketch tools menu") for the same reason: a consistent, roughly-square
+  /// flyout shape across every category, rather than Tools being the one
+  /// remaining single-column ladder.
+  Widget _rowOf(List<_SpeedDialAction> rowTools) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < rowTools.length; i++)
+            Padding(
+              padding: EdgeInsets.only(left: i == 0 ? 0 : 8),
+              child: rowTools[i],
+            ),
+        ],
+      );
 }
 
 class _SpeedDialAction extends StatelessWidget {

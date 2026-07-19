@@ -900,8 +900,8 @@ const bool kTapToPlace = true;
 /// the offset tool, the cursor should be available so I can select the
 /// entities to offset") is the cursor-driven sibling to the ribbon's own
 /// single-selection "Offset" action - every tap picks a Line/Circle/Arc,
-/// then [pendingOffsetTarget] hands off to the UI layer for the same
-/// distance-entry dialog the ribbon action already uses.
+/// then [offsetPreviewTargets] hands off to the UI layer's own non-modal
+/// value bar (with a live ghost preview - see [offsetPreviewGhosts]).
 enum SketchMode { select, draw, dimension, trim, convert, offset }
 
 /// The kind of entity a [SketchSelection] refers to. [constraint] covers
@@ -1424,9 +1424,8 @@ class SketchController extends ChangeNotifier {
   /// FAB → Offset (on-device feedback): enters [SketchMode.offset], same
   /// no-further-tool-choice shape as [enterTrimMode]/[enterConvertEntitiesMode]
   /// - every tap picks a Line/Circle/Arc under the cursor (see
-  /// [_handleOffsetTap]), surfaced via [pendingOffsetTarget] for the UI
-  /// layer to prompt for a distance and call [offsetLine]/[offsetCircle]/
-  /// [offsetArc].
+  /// [_handleOffsetTap]), surfaced via [offsetPreviewTargets] for the UI
+  /// layer's value bar to prompt for a distance and call [confirmOffsetPreview].
   void enterOffsetMode() {
     dropGrabbedEntity();
     _mode = SketchMode.offset;
@@ -1437,7 +1436,8 @@ class SketchController extends ChangeNotifier {
     _dimensionSelection.clear();
     _ghosts = [];
     _activeGhostKey = null;
-    _pendingOffsetTarget = null;
+    _offsetPreviewTargets = null;
+    _offsetPreviewDistance = null;
     notifyListeners();
   }
 
@@ -5557,25 +5557,79 @@ class SketchController extends ChangeNotifier {
   /// ignored, and a 400/422 from the backend surfaces via [errorMessage]
   /// exactly like any other API failure - both leave the tool "hot" for
   /// another attempt rather than exiting, mirroring a real CAD trim tool.
-  /// On-device feedback ("when I start the offset tool, the cursor should
-  /// be available so I can select the entities to offset"): [SketchMode.
-  /// offset]'s own pending pick - set by [_handleOffsetTap] when a tap
-  /// lands on an offsettable Line/Circle/Arc. The controller has no
-  /// [BuildContext] of its own to prompt for a distance with, so this is
-  /// the hand-off point: the hosting widget (`SketchScreen`, both 2D and
-  /// Orbit View) listens for this going from null to non-null, shows the
-  /// same distance-entry dialog the ribbon's own single-selection "Offset"
-  /// action already uses (`sketch_ribbon.dart`'s `showOffsetDialogFor`),
-  /// and calls [clearPendingOffsetTarget] once it resolves either way -
-  /// mirrors how [activeGhostKey] already lets a value-entry UI react to
-  /// controller state without the controller itself owning any UI.
-  SketchSelection? _pendingOffsetTarget;
-  SketchSelection? get pendingOffsetTarget => _pendingOffsetTarget;
+  /// On-device feedback round 2 ("in the offset tool, a ghost preview
+  /// should be shown so the user knows which is positive and negative.
+  /// the screen layout will need to change so the user can actually see
+  /// the preview"): the entities awaiting a distance, once picking is done
+  /// (either a Circle tap - immediate, see [_handleOffsetTap] - or
+  /// [finishOffsetChain] for one or more Line/Arc picks). Replaces the
+  /// original P54 design's separate `pendingOffsetTarget`(single)/
+  /// `pendingOffsetChainTargets`(multi) one-shot hand-off to a modal
+  /// dialog - a *live*, non-modal value editor (`sketch_screen.dart`'s new
+  /// bottom fly-up bar, mirroring [SketchDimensionBar]'s own "non-modal,
+  /// taps still reach the canvas" shape) needs this to stay populated for
+  /// as long as it's open, not just for one hand-off frame, so the ghost
+  /// preview ([offsetPreviewGhosts]) and the real [confirmOffsetPreview]
+  /// call both have something to read from at any point while it's up.
+  List<SketchSelection>? _offsetPreviewTargets;
+  List<SketchSelection>? get offsetPreviewTargets => _offsetPreviewTargets;
 
-  void clearPendingOffsetTarget() {
-    if (_pendingOffsetTarget == null) return;
-    _pendingOffsetTarget = null;
+  /// The distance currently typed into the offset value bar - null while
+  /// empty/not yet typed (in which case [offsetPreviewGhosts] shows
+  /// nothing, since there's no direction to preview yet), updated on every
+  /// keystroke so the ghost preview - and which side is which - reads live
+  /// as the user types, sign included.
+  double? _offsetPreviewDistance;
+  double? get offsetPreviewDistance => _offsetPreviewDistance;
+
+  void updateOffsetPreviewDistance(double? distance) {
+    _offsetPreviewDistance = distance;
     notifyListeners();
+  }
+
+  /// Dismisses the value bar without offsetting anything - its Cancel
+  /// button, or backing out of offset mode entirely.
+  void cancelOffsetPreview() {
+    if (_offsetPreviewTargets == null && _offsetPreviewDistance == null) return;
+    _offsetPreviewTargets = null;
+    _offsetPreviewDistance = null;
+    notifyListeners();
+  }
+
+  /// The value bar's Confirm action (or submitting the text field) -
+  /// dispatches to the single-entity [offsetLine]/[offsetCircle]/[offsetArc]
+  /// for exactly one target (no corner to join with only one entity, so
+  /// there's nothing `offsetChain` would do differently, with more
+  /// round-trip surface area) or [offsetChain] for two or more, mirroring
+  /// the dispatch [finishOffsetChain] used to make eagerly at pick-time -
+  /// now made once, here, at confirm-time instead, since a single unified
+  /// [offsetPreviewTargets] no longer distinguishes the two cases up
+  /// front. Clears the preview state immediately (before the API call
+  /// resolves) so the ghost/bar disappear right away, same as every other
+  /// commit-on-tap interaction in this controller - the real geometry
+  /// replaces it once the call actually completes.
+  Future<void> confirmOffsetPreview() async {
+    final targets = _offsetPreviewTargets;
+    final distance = _offsetPreviewDistance;
+    _offsetPreviewTargets = null;
+    _offsetPreviewDistance = null;
+    notifyListeners();
+    if (targets == null || targets.isEmpty || distance == null || distance == 0) return;
+    if (targets.length == 1) {
+      final target = targets.single;
+      switch (target.kind) {
+        case SelectionKind.line:
+          await offsetLine(target.id, distance);
+        case SelectionKind.circle:
+          await offsetCircle(target.id, distance);
+        case SelectionKind.arc:
+          await offsetArc(target.id, distance);
+        default:
+          break;
+      }
+    } else {
+      await offsetChain([for (final target in targets) target.id], distance);
+    }
   }
 
   /// P54 on-device feedback ("offset should allow the selection of
@@ -5608,19 +5662,20 @@ class SketchController extends ChangeNotifier {
   /// `offset_chain` only exist for those three kinds). Stays in offset
   /// mode after every tap, hit or miss, same as trim mode.
   ///
-  /// P54: a Circle goes straight to [_pendingOffsetTarget] (the immediate,
-  /// single-entity dialog) same as before - a Circle has no chain
-  /// endpoints to join (see `offset_chain`'s own doc comment), so there's
-  /// nothing multi-pick would ever add for one. A Line/Arc instead
-  /// accumulates into [_toggleOffsetChainPick]'s set - [finishOffsetChain]
-  /// (the Tools flyup's persistent Finish button, already wired for every
-  /// Tools mode) is what actually submits the picked set.
+  /// P54: a Circle goes straight to [offsetPreviewTargets] (the value bar
+  /// opens immediately) same as before - a Circle has no chain endpoints
+  /// to join (see `offset_chain`'s own doc comment), so there's nothing
+  /// multi-pick would ever add for one. A Line/Arc instead accumulates
+  /// into [_toggleOffsetChainPick]'s set - [finishOffsetChain] (the Tools
+  /// flyup's persistent Finish button, already wired for every Tools mode)
+  /// is what actually opens the value bar for the picked set.
   Future<void> _handleOffsetTap(double hitRadius) async {
     if (_busy || _sketchId == null) return;
     final hit = _entityAt(cursorX, cursorY, hitRadius);
     if (hit == null) return;
     if (hit.kind == SelectionKind.circle) {
-      _pendingOffsetTarget = hit;
+      _offsetPreviewTargets = [hit];
+      _offsetPreviewDistance = null;
       notifyListeners();
       return;
     }
@@ -5628,43 +5683,20 @@ class SketchController extends ChangeNotifier {
     _toggleOffsetChainPick(hit);
   }
 
-  /// P54: [pendingOffsetTarget]'s multi-entity sibling - the hand-off point
-  /// for [finishOffsetChain]'s picked [selectionSet], the same "controller
-  /// has no BuildContext, so the hosting widget listens for null -> non-null
-  /// and shows the dialog itself" pattern [pendingOffsetTarget]'s own doc
-  /// comment already documents. Null whenever there's no pending chain
-  /// dialog to show.
-  List<SketchSelection>? _pendingOffsetChainTargets;
-  List<SketchSelection>? get pendingOffsetChainTargets => _pendingOffsetChainTargets;
-
-  void clearPendingOffsetChainTargets() {
-    if (_pendingOffsetChainTargets == null) return;
-    _pendingOffsetChainTargets = null;
-    notifyListeners();
-  }
-
-  /// P54: the Tools flyup's persistent Finish button, for [SketchMode.
-  /// offset] specifically (see `sketch_speed_dial.dart`'s `finishAction`).
-  /// An empty pick set just exits offset mode outright (matching every
-  /// other Tools mode's Finish with nothing picked). Exactly one picked
-  /// entity skips the chain endpoint entirely and goes through the
-  /// existing single-entity [pendingOffsetTarget] path instead - there's no
-  /// corner to join with only one entity, so `offset_line`/`offset_arc`
-  /// (already shipped, already tested) does the exact same thing
-  /// `offset_chain` would, with less surface area. Two or more hands off to
-  /// [pendingOffsetChainTargets].
+  /// The Tools flyup's persistent Finish button, for [SketchMode.offset]
+  /// specifically (see `sketch_speed_dial.dart`'s `finishAction`). An
+  /// empty pick set just exits offset mode outright (matching every other
+  /// Tools mode's Finish with nothing picked); otherwise opens the value
+  /// bar for whatever's been picked - see [confirmOffsetPreview]'s own
+  /// doc comment for how the single-vs-chain dispatch is now made at
+  /// confirm-time instead of here.
   void finishOffsetChain() {
     if (_selectionSet.isEmpty) {
       exitToSelectMode();
       return;
     }
-    if (_selectionSet.length == 1) {
-      _pendingOffsetTarget = _selectionSet.first;
-      _selectionSet.clear();
-      notifyListeners();
-      return;
-    }
-    _pendingOffsetChainTargets = List.of(_selectionSet);
+    _offsetPreviewTargets = List.of(_selectionSet);
+    _offsetPreviewDistance = null;
     _selectionSet.clear();
     notifyListeners();
   }
@@ -5677,17 +5709,110 @@ class SketchController extends ChangeNotifier {
   /// Sketch entities via [_entityAt]). Converts the edge first (reusing
   /// [_convertBodyEdgeToLocalState] - the exact same projected, associative
   /// Line Convert Entities itself creates), then hands the result straight
-  /// to [pendingOffsetTarget] instead of leaving it selected - one cursor
-  /// tap gets the user straight to the distance prompt, rather than
-  /// requiring a separate Convert Entities session followed by a second
-  /// Offset session against what it just created.
+  /// to [offsetPreviewTargets] instead of leaving it selected - one cursor
+  /// tap gets the user straight to the value bar, rather than requiring a
+  /// separate Convert Entities session followed by a second Offset session
+  /// against what it just created.
   Future<void> pickBodyEdgeForOffset(String bodyId, int edgeIndex) async {
     if (_busy || _sketchId == null) return;
     if (_documentPartId == null || _documentSketchFeatureId == null) return;
     await _runGuarded(() async {
       final lineId = await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
-      _pendingOffsetTarget = SketchSelection(kind: SelectionKind.line, id: lineId);
+      _offsetPreviewTargets = [SketchSelection(kind: SelectionKind.line, id: lineId)];
+      _offsetPreviewDistance = null;
     });
+  }
+
+  /// On-device feedback ("a ghost preview should be shown so the user
+  /// knows which is positive and negative"): [offsetPreviewTargets]'
+  /// own live preview, tessellated the exact same way [ghostPolylines]
+  /// already renders an in-progress draw-tool ghost - reuses [LineGhost]/
+  /// [CircleGhost]/[ArcGhost] directly (a raw offset result *is* just a
+  /// parallel Line/concentric Circle/concentric Arc, precisely what those
+  /// three ghost kinds already represent) rather than inventing a fourth.
+  ///
+  /// v1 scope note, mirroring `Sketch.offset_chain`'s own real corner-join
+  /// disclaimer: each target's *raw* (unjoined) offset is previewed
+  /// independently - replicating the backend's own line/circle/arc
+  /// intersection math client-side, live, on every keystroke, just for a
+  /// preview, was judged not worth the duplication risk (two independent
+  /// implementations of the same geometry silently drifting apart over
+  /// time). The real corner-joining still happens once [confirmOffsetPreview]
+  /// actually calls [offsetChain] - this preview undersells a joined
+  /// chain's true result at the corners, but still answers the actual
+  /// question asked ("which direction is positive/negative") correctly
+  /// for every entity shown.
+  List<DrawGhost> get offsetPreviewGhosts {
+    final targets = _offsetPreviewTargets;
+    final distance = _offsetPreviewDistance;
+    if (targets == null || targets.isEmpty || distance == null || distance == 0) return const [];
+    return [
+      for (final target in targets)
+        if (_offsetPreviewGhostFor(target, distance) case final ghost?) ghost,
+    ];
+  }
+
+  DrawGhost? _offsetPreviewGhostFor(SketchSelection target, double distance) {
+    switch (target.kind) {
+      case SelectionKind.line:
+        final line = lines[target.id];
+        if (line == null) return null;
+        final start = points[line.startPointId];
+        final end = points[line.endPointId];
+        if (start == null || end == null) return null;
+        final dx = end.x - start.x;
+        final dy = end.y - start.y;
+        final length = math.sqrt(dx * dx + dy * dy);
+        if (length == 0) return null;
+        final offsetX = -dy / length * distance;
+        final offsetY = dx / length * distance;
+        return LineGhost(
+          startX: start.x + offsetX,
+          startY: start.y + offsetY,
+          endX: end.x + offsetX,
+          endY: end.y + offsetY,
+        );
+      case SelectionKind.circle:
+        final circle = circles[target.id];
+        if (circle == null) return null;
+        final center = points[circle.centerPointId];
+        final radiusPoint = points[circle.radiusPointId];
+        if (center == null || radiusPoint == null) return null;
+        final dx = radiusPoint.x - center.x;
+        final dy = radiusPoint.y - center.y;
+        final newRadius = math.sqrt(dx * dx + dy * dy) + distance;
+        if (newRadius <= 0) return null;
+        final angle = math.atan2(dy, dx);
+        return CircleGhost(
+          centerX: center.x,
+          centerY: center.y,
+          edgeX: center.x + newRadius * math.cos(angle),
+          edgeY: center.y + newRadius * math.sin(angle),
+        );
+      case SelectionKind.arc:
+        final arc = arcs[target.id];
+        if (arc == null) return null;
+        final center = points[arc.centerPointId];
+        final start = points[arc.startPointId];
+        final end = points[arc.endPointId];
+        if (center == null || start == null || end == null) return null;
+        final startDx = start.x - center.x;
+        final startDy = start.y - center.y;
+        final newRadius = math.sqrt(startDx * startDx + startDy * startDy) + distance;
+        if (newRadius <= 0) return null;
+        final startAngle = math.atan2(startDy, startDx);
+        final endAngle = math.atan2(end.y - center.y, end.x - center.x);
+        return ArcGhost(
+          centerX: center.x,
+          centerY: center.y,
+          startX: center.x + newRadius * math.cos(startAngle),
+          startY: center.y + newRadius * math.sin(startAngle),
+          endX: center.x + newRadius * math.cos(endAngle),
+          endY: center.y + newRadius * math.sin(endAngle),
+        );
+      default:
+        return null;
+    }
   }
 
   Future<void> _handleTrimTap(double hitRadius) async {
@@ -6303,8 +6428,8 @@ class SketchController extends ChangeNotifier {
   /// selection of multiple entities... if the origin lines are connected,
   /// the offset lines should be connected effectively trimming or
   /// extending the new lines to their intersect") - [offsetLine]/
-  /// [offsetArc]'s multi-entity sibling, driven by [finishOffsetChain]'s
-  /// [pendingOffsetChainTargets] hand-off. See the backend's `Sketch.
+  /// [offsetArc]'s multi-entity sibling, driven by [confirmOffsetPreview]'s
+  /// own dispatch off [offsetPreviewTargets]. See the backend's `Sketch.
   /// offset_chain` for the corner-join algorithm itself; this method is
   /// purely "apply whatever it returned to local state, with one combined
   /// undo step for the whole set" - same shape as every other offset/
