@@ -5517,6 +5517,27 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// On-device feedback ("in the offset tool, I should be able to select
+  /// edges from other bodies to create sketch geometry offset from the
+  /// body edges as if they were projected onto the sketch plane"):
+  /// [SketchMode.offset]'s own Body-edge pick, fired via [PartViewport.
+  /// onSketchEntityTap] (not [_handleOffsetTap], which only ever sees real
+  /// Sketch entities via [_entityAt]). Converts the edge first (reusing
+  /// [_convertBodyEdgeToLocalState] - the exact same projected, associative
+  /// Line Convert Entities itself creates), then hands the result straight
+  /// to [pendingOffsetTarget] instead of leaving it selected - one cursor
+  /// tap gets the user straight to the distance prompt, rather than
+  /// requiring a separate Convert Entities session followed by a second
+  /// Offset session against what it just created.
+  Future<void> pickBodyEdgeForOffset(String bodyId, int edgeIndex) async {
+    if (_busy || _sketchId == null) return;
+    if (_documentPartId == null || _documentSketchFeatureId == null) return;
+    await _runGuarded(() async {
+      final lineId = await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
+      _pendingOffsetTarget = SketchSelection(kind: SelectionKind.line, id: lineId);
+    });
+  }
+
   Future<void> _handleTrimTap(double hitRadius) async {
     if (_busy || _sketchId == null) return;
     final hit = _entityAt(cursorX, cursorY, hitRadius);
@@ -5973,36 +5994,52 @@ class SketchController extends ChangeNotifier {
   /// uses.
   Future<void> pickConvertEntityEdge(String bodyId, int edgeIndex) async {
     if (_busy || _sketchId == null) return;
-    final partId = _documentPartId;
-    final sketchFeatureId = _documentSketchFeatureId;
-    if (partId == null || sketchFeatureId == null) return;
-
+    if (_documentPartId == null || _documentSketchFeatureId == null) return;
     await _runGuarded(() async {
-      final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex);
-      final newPointIds = <String>[];
-      for (final p in [result.startPoint, result.endPoint]) {
-        if (points.containsKey(p.id)) continue;
-        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
-        newPointIds.add(p.id);
-      }
-      if (lines.containsKey(result.line.id)) return;
-      lines[result.line.id] = SketchLineView(
-        id: result.line.id,
-        startPointId: result.line.startPointId,
-        endPointId: result.line.endPointId,
-        construction: result.line.construction,
-      );
-      final sketchId = _sketchId!;
-      final lineId = result.line.id;
-      _pushUndo(() async {
-        await _api.deleteLine(sketchId, lineId);
-        lines.remove(lineId);
-        for (final pointId in newPointIds) {
-          await _api.deletePoint(sketchId, pointId);
-          points.remove(pointId);
-        }
-      });
+      await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
     });
+  }
+
+  /// The actual "materialize a Body edge into local state, push its own
+  /// undo entry" core of [pickConvertEntityEdge] - factored out (P52, on-
+  /// device feedback) so [pickBodyEdgeForOffset] can reuse the exact same
+  /// convert step before immediately offering the result up for
+  /// offsetting, rather than duplicating this logic. Must be called from
+  /// inside an already-open [_runGuarded] block, after already confirming
+  /// [_documentPartId]/[_documentSketchFeatureId] are non-null (does no
+  /// guarding of its own - every caller already checks this first, same
+  /// no-op-for-a-bare-non-Part-Sketch contract every other Convert
+  /// Entities/Offset method here uses). Returns the converted Line's real
+  /// id - always a real id, whether freshly created or an already-existing
+  /// re-pick (see `Sketch.add_or_reuse_external_vertex_reference`).
+  Future<String> _convertBodyEdgeToLocalState(String bodyId, int edgeIndex) async {
+    final partId = _documentPartId!;
+    final sketchFeatureId = _documentSketchFeatureId!;
+    final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex);
+    final newPointIds = <String>[];
+    for (final p in [result.startPoint, result.endPoint]) {
+      if (points.containsKey(p.id)) continue;
+      points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+      newPointIds.add(p.id);
+    }
+    if (lines.containsKey(result.line.id)) return result.line.id;
+    lines[result.line.id] = SketchLineView(
+      id: result.line.id,
+      startPointId: result.line.startPointId,
+      endPointId: result.line.endPointId,
+      construction: result.line.construction,
+    );
+    final sketchId = _sketchId!;
+    final lineId = result.line.id;
+    _pushUndo(() async {
+      await _api.deleteLine(sketchId, lineId);
+      lines.remove(lineId);
+      for (final pointId in newPointIds) {
+        await _api.deletePoint(sketchId, pointId);
+        points.remove(pointId);
+      }
+    });
+    return result.line.id;
   }
 
   /// Sketcher-roadmap Phase 9 v1 (Offset Entities): ribbon "Offset" action

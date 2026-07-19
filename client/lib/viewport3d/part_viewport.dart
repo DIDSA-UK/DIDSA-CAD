@@ -47,6 +47,18 @@ class PartViewport extends StatefulWidget {
   /// content actually changes (see [didUpdateWidget]), the same contract
   /// [sketchGeometries] below already documents for its own `Map`.
   final List<BodyMeshDto> bodies;
+
+  /// On-device feedback ("Show reference body button in the sketcher
+  /// should now toggle visibility of all bodies on/off to show user a
+  /// clear view of the sketch"): true suppresses every rendered mesh/edge
+  /// Node [bodies] would otherwise produce (see [_syncMeshNode]/
+  /// [_syncEdgesNode]'s own gates) - a purely visual toggle, [bodies]
+  /// itself stays fully intact for everything else that still needs it
+  /// (real-Body hit-testing via [preferEntityPick]/`hitTestBodies`, camera
+  /// framing via `boundsOfBodies`), so Convert Entities/Dimension/Offset
+  /// mode's own Body-edge picking keeps working while bodies are hidden.
+  final bool bodiesHidden;
+
   final ReferencePlaneKind? selectedPlane;
   final void Function(ReferencePlaneKind plane) onPlaneTap;
   final VoidCallback onBackgroundTap;
@@ -339,6 +351,16 @@ class PartViewport extends StatefulWidget {
   /// computes this from the active [SketchController.mode].
   final bool preferEntityPick;
 
+  /// On-device feedback ("selecting a face brings in all the face edges as
+  /// lines"): widens [preferEntityPick]'s own real-Body hit test to also
+  /// consider a Face, not just vertex/edge - false (the pre-existing
+  /// default) for every mode except Convert Entities, since a Face was
+  /// never a meaningful pick target for Dimension mode (no
+  /// `pickReferenceGhostFace`-equivalent exists there) - see
+  /// [_handleTap]/[_commitDrawCursor]'s own `hitTestBodies` filter
+  /// construction for exactly where this plugs in.
+  final bool preferEntityPickIncludesFace;
+
   /// P10: fired instead of [onSketchPlaneTap] when [preferEntityPick] is
   /// true and the tap resolves to a real Body vertex/edge (via
   /// [hitTestBodies]) rather than landing near an existing Sketch entity
@@ -542,6 +564,7 @@ class PartViewport extends StatefulWidget {
   const PartViewport({
     super.key,
     this.bodies = const [],
+    this.bodiesHidden = false,
     required this.selectedPlane,
     required this.onPlaneTap,
     required this.onBackgroundTap,
@@ -576,6 +599,7 @@ class PartViewport extends StatefulWidget {
     this.sketchPlaneSurfaceOpacity = 0.18,
     this.sketchPlaneGridVisible = false,
     this.preferEntityPick = false,
+    this.preferEntityPickIncludesFace = false,
     this.onSketchEntityTap,
     this.hasEntityNearSketchTap,
     this.isPreviewMesh = false,
@@ -1139,7 +1163,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // entirely (only the edges Nodes built by _syncEdgesNode are shown) -
     // but the camera target/zoom bounds below are still derived from the
     // real mesh data either way, so switching modes never moves the camera.
-    if (widget.renderMode.showsFilledFaces) {
+    // On-device feedback ("Show reference body button... should now toggle
+    // visibility of all bodies on/off to show user a clear view of the
+    // sketch"): skips only the Node-creation loop below, not the camera-
+    // bounds computation just past it (bodies staying hidden shouldn't
+    // also make the camera re-target/re-zoom) or anything `widget.bodies`
+    // itself still feeds elsewhere (hitTestBodies/boundsOfBodies) - hiding
+    // is purely a rendering concern, real-Body picking (Convert Entities/
+    // Dimension mode's own preferEntityPick) stays fully working while
+    // bodies are hidden.
+    if (widget.renderMode.showsFilledFaces && !widget.bodiesHidden) {
       for (final body in bodies) {
         // On-device feedback: if this is the one Body [previewOverlayMesh]
         // targets, render *that* mesh (the operation's actual current
@@ -1256,6 +1289,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _edgesNodes = {};
     if (!widget.renderMode.showsEdges) return;
+    // On-device feedback: see _syncMeshNode's identical bodiesHidden gate.
+    if (widget.bodiesHidden) return;
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
     var totalSegments = 0;
     for (final body in widget.bodies) {
@@ -1753,17 +1788,24 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           final (localX, localY) = worldPointToSketch(sketchPlaneBasis, sketchHit.$1);
           final nearExisting = widget.hasEntityNearSketchTap?.call(localX, localY) ?? false;
           if (!nearExisting) {
-            // vertex/edge only - a face isn't a valid dimension target (no
-            // `pickReferenceGhostFace`-equivalent exists), and leaving
-            // `filter.face` at its default `true` would otherwise swallow
-            // the tap silently (onSketchEntityTap fired with a `.face` kind
-            // widget.onSketchEntityTap has no case for) instead of correctly
-            // falling through to the ordinary plane-tap miss behavior below.
+            // vertex/edge only by default - a face isn't a valid dimension
+            // target (no `pickReferenceGhostFace`-equivalent exists there),
+            // and leaving `filter.face` at its default `true` would
+            // otherwise swallow the tap silently (onSketchEntityTap fired
+            // with a `.face` kind widget.onSketchEntityTap has no case for)
+            // instead of correctly falling through to the ordinary
+            // plane-tap miss behavior below. On-device feedback: Convert
+            // Entities widens this via [preferEntityPickIncludesFace].
             final bodyHit = hitTestBodies(
               ray: ray,
               viewportSize: _viewportSize,
               bodies: widget.bodies,
-              filter: const SelectionFilterState(vertex: true, edge: true, face: false, body: false),
+              filter: SelectionFilterState(
+                vertex: true,
+                edge: true,
+                face: widget.preferEntityPickIncludesFace,
+                body: false,
+              ),
             );
             if (bodyHit != null) {
               widget.onSketchEntityTap?.call(bodyHit.entity);
@@ -2366,15 +2408,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final (localX, localY) = worldPointToSketch(basis, hit);
         final nearExisting = widget.hasEntityNearSketchTap?.call(localX, localY) ?? false;
         if (!nearExisting) {
-          // Same "vertex/edge only" filter as [_handleTap]'s own branch -
-          // see that branch's own comment for why a face is deliberately
-          // excluded.
+          // Same filter as [_handleTap]'s own branch - see that branch's
+          // own comment for why a face is excluded by default and how
+          // [preferEntityPickIncludesFace] widens it.
           final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
           final bodyHit = hitTestBodies(
             ray: ray,
             viewportSize: _viewportSize,
             bodies: widget.bodies,
-            filter: const SelectionFilterState(vertex: true, edge: true, face: false, body: false),
+            filter: SelectionFilterState(
+              vertex: true,
+              edge: true,
+              face: widget.preferEntityPickIncludesFace,
+              body: false,
+            ),
           );
           if (bodyHit != null) {
             widget.onSketchEntityTap?.call(bodyHit.entity);

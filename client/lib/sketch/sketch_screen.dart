@@ -222,7 +222,11 @@ class _SketchScreenState extends State<SketchScreen> {
   late final SketchController _controller;
 
   /// Stage 12 item 9's Hide/Show Reference Body toggle - in-memory only,
-  /// same as PartScreen's `_referencePlanesHidden`. Defaults to shown.
+  /// same as PartScreen's `_referencePlanesHidden`. Defaults to shown. On-
+  /// device feedback: originally gated only `SketchCanvas`'s own projected
+  /// ghost-wireframe overlay (2D canvas); now also gates the real body
+  /// meshes `PartViewport` renders in Orbit View (`bodiesHidden`) - one
+  /// toggle, "give me a clear view of just the sketch" either way.
   bool _referenceBodyHidden = false;
 
   /// Whether the hamburger menu panel (see [_buildMenuPanel]) is open -
@@ -953,6 +957,11 @@ class _SketchScreenState extends State<SketchScreen> {
       return PartViewport(
         key: _orbitViewportKey,
         bodies: widget.bodies,
+        // On-device feedback ("Show reference body button in the sketcher
+        // should now toggle visibility of all bodies on/off"): the same
+        // toggle that used to only gate the 2D canvas's own projected
+        // ghost overlay now also suppresses the real 3D body meshes.
+        bodiesHidden: _referenceBodyHidden,
         selectedPlane: null,
         onPlaneTap: (_) {},
         onBackgroundTap: () {},
@@ -1042,6 +1051,10 @@ class _SketchScreenState extends State<SketchScreen> {
         sketchPlaneSurfaceOpacity: _orbitCanvasOpacity,
         sketchPlaneGridVisible: _orbitGridVisible,
         preferEntityPick: _preferEntityPickOnTap,
+        // On-device feedback ("selecting a face brings in all the face
+        // edges as lines"): only Convert Entities ever wants a Face hit -
+        // see PartViewport.preferEntityPickIncludesFace's own doc comment.
+        preferEntityPickIncludesFace: _controller.mode == SketchMode.convert,
         onSketchEntityTap: _handleEmbeddedSketchEntityTap,
         hasEntityNearSketchTap: (x, y) => _controller.hasEntityNear(x, y, SketchController.snapRadius),
         // P19 on-device feedback: same _orbitCursorActive gating as
@@ -1079,9 +1092,13 @@ class _SketchScreenState extends State<SketchScreen> {
   /// [SketchController.pickReferenceGhostVertex]/[pickReferenceGhostEdge]'s
   /// own doc comments). P48/P50 (Sketcher-roadmap Phase 9 v1/v2): Convert
   /// Entities is exactly the "later mode" this getter's own doc comment
-  /// anticipated - the one-line addition it predicted.
+  /// anticipated - the one-line addition it predicted. On-device feedback
+  /// (P52): Offset mode too - "select edges from other bodies to create
+  /// sketch geometry offset from the body edges".
   bool get _preferEntityPickOnTap =>
-      _controller.mode == SketchMode.dimension || _controller.mode == SketchMode.convert;
+      _controller.mode == SketchMode.dimension ||
+      _controller.mode == SketchMode.convert ||
+      _controller.mode == SketchMode.offset;
 
   /// P10: [PartViewport.onSketchEntityTap]'s handler - materializes a real
   /// Body vertex/edge as either a dimensionable Point/Line ([SketchMode.
@@ -1092,8 +1109,19 @@ class _SketchScreenState extends State<SketchScreen> {
   /// existing ghost-building/confirm/undo (dimension) or delete/edit
   /// (convert) path already works against it unmodified - see those
   /// methods' own doc comments for the full picture.
+  ///
+  /// On-device feedback (P52): [SketchMode.offset]'s own Body-edge pick -
+  /// converts the edge (same mechanism as Convert Entities) then
+  /// immediately offers the result up for offsetting via
+  /// [SketchController.pendingOffsetTarget], rather than requiring two
+  /// separate tool sessions. A Face hit only ever means anything in
+  /// Convert Entities ("selecting a face brings in all the face edges as
+  /// lines") - converts every one of the face's own boundary edges in one
+  /// tap, reusing [_toggleFilletFaceEdges]'s own `faceEdgeIds` resolution
+  /// pattern from `part_screen.dart`.
   void _handleEmbeddedSketchEntityTap(SelectionEntityRef entity) {
     final convert = _controller.mode == SketchMode.convert;
+    final offset = _controller.mode == SketchMode.offset;
     switch (entity.kind) {
       case SelectionEntityKind.vertex:
         unawaited(
@@ -1102,13 +1130,48 @@ class _SketchScreenState extends State<SketchScreen> {
               : _controller.pickReferenceGhostVertex(entity.bodyId, entity.id),
         );
       case SelectionEntityKind.edge:
+        if (offset) {
+          unawaited(_controller.pickBodyEdgeForOffset(entity.bodyId, entity.id));
+          return;
+        }
         unawaited(
           convert
               ? _controller.pickConvertEntityEdge(entity.bodyId, entity.id)
               : _controller.pickReferenceGhostEdge(entity.bodyId, entity.id),
         );
+      case SelectionEntityKind.face:
+        if (convert) unawaited(_convertFaceEdges(entity));
       default:
         break;
+    }
+  }
+
+  /// On-device feedback ("selecting a face brings in all the face edges as
+  /// lines"): resolves [faceEntity]'s own boundary edge loop from the
+  /// already-fetched mesh data (same `BodyMeshDto.mesh.faceEdgeIds`
+  /// `part_screen.dart`'s `_toggleFilletFaceEdges` already resolves against
+  /// - a stale hit against mesh data that's since changed, or a face
+  /// bordering no edges at all, is a silent no-op, same as that method),
+  /// then converts each edge in turn. Sequential (not `Future.wait`), not
+  /// just for a stable insertion order: two adjacent edges around the
+  /// loop share a Body vertex, and `Sketch.add_or_reuse_external_vertex_
+  /// reference`'s own reuse only works correctly if the first edge's own
+  /// convert call has actually completed (and so materialized that shared
+  /// vertex) before the second one's request goes out - firing them
+  /// concurrently would race and likely mint two separate Points for the
+  /// same corner instead of one shared one.
+  Future<void> _convertFaceEdges(SelectionEntityRef faceEntity) async {
+    BodyMeshDto? body;
+    for (final candidate in widget.bodies) {
+      if (candidate.bodyId == faceEntity.bodyId) {
+        body = candidate;
+        break;
+      }
+    }
+    final faceEdgeIds = body?.mesh.faceEdgeIds;
+    if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return;
+    for (final edgeId in faceEdgeIds[faceEntity.id]) {
+      await _controller.pickConvertEntityEdge(faceEntity.bodyId, edgeId);
     }
   }
 

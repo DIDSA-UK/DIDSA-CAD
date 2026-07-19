@@ -4200,6 +4200,42 @@ void main() {
     });
   });
 
+  group('pickBodyEdgeForOffset (on-device feedback: "in the offset tool, I should be able to select '
+      'edges from other bodies to create sketch geometry offset from the body edges")', () {
+    Future<(SketchController, _FakeBackend)> adoptedController() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      return (freshController, freshBackend);
+    }
+
+    test('converts the Body edge, then hands it straight to pendingOffsetTarget', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterOffsetMode();
+
+      await freshController.pickBodyEdgeForOffset('body-1', 0);
+
+      expect(freshBackend.convertEdgeRequestCount, 1);
+      expect(freshController.lines, hasLength(1));
+      final line = freshController.lines.values.single;
+      expect(line.construction, isFalse);
+      expect(freshController.pendingOffsetTarget?.kind, SelectionKind.line);
+      expect(freshController.pendingOffsetTarget?.id, line.id);
+    });
+
+    test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
+      controller.enterOffsetMode();
+      final lineCountBefore = controller.lines.length;
+
+      await controller.pickBodyEdgeForOffset('body-1', 0);
+
+      expect(controller.lines, hasLength(lineCountBefore));
+      expect(controller.pendingOffsetTarget, isNull);
+    });
+  });
+
   group('offsetLine/offsetCircle/offsetArc (P49, Sketcher-roadmap Phase 9 v1: Offset Entities)', () {
     Future<(SketchController, _FakeBackend)> adoptedControllerWithLine() async {
       final freshBackend = _FakeBackend();
