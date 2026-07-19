@@ -1024,6 +1024,7 @@ class _SketchScreenState extends State<SketchScreen> {
             (_controller.mode == SketchMode.draw ||
                 _controller.mode == SketchMode.trim ||
                 _controller.mode == SketchMode.dimension ||
+                _controller.mode == SketchMode.convert ||
                 _controller.mode == SketchMode.offset ||
                 _dragModeActiveInOrbitView),
         onDrawCursorMoved: _handleDrawCursorMoved,

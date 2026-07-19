@@ -282,50 +282,62 @@ class _ConstraintOverlayPainter extends CustomPainter {
       ..color = color
       ..strokeWidth = _dimensionStrokeWidth;
 
+    // P52 follow-up (on-device feedback: "dimension fix is working on one
+    // end of a linear dimension, but the other side still slides") - the
+    // original P52 fix only covered the `default:` (general-direction)
+    // orientation below; 'vertical'/'horizontal' (an axis-aligned
+    // dimension, e.g. a rectangle's own width/height - a very common case
+    // to hit in real testing) still used the raw camera-dependent
+    // `_dimensionOffsetDistance(normal, item.labelOffset)` path, which is
+    // very likely what the report's "other side" actually was. The scale
+    // factor (known sketch-local length vs. its current screen
+    // projection) is identical regardless of orientation, so it's resolved
+    // once up front and reused by all three branches via
+    // [_resolveDimensionOffsetMagnitude].
+    final sketchDx = item.pointB.$1 - item.pointA.$1;
+    final sketchDy = item.pointB.$2 - item.pointA.$2;
+    final sketchLength = math.sqrt(sketchDx * sketchDx + sketchDy * sketchDy);
+    final screenDelta = bScreen - aScreen;
+    final screenLength = screenDelta.distance;
+
     final Offset p1;
     final Offset p2;
     switch (item.orientation) {
       case 'vertical':
         const normal = Offset(1, 0);
-        final offsetX = math.max(aScreen.dx, bScreen.dx) + _dimensionOffsetDistance(normal, item.labelOffset);
+        final offsetX = math.max(aScreen.dx, bScreen.dx) +
+            _resolveDimensionOffsetMagnitude(
+              normal: normal,
+              labelOffset: item.labelOffset,
+              sketchLocalOffsetDistance: item.sketchLocalOffsetDistance,
+              sketchReferenceLength: sketchLength,
+              screenReferenceLength: screenLength,
+            );
         p1 = Offset(offsetX, aScreen.dy);
         p2 = Offset(offsetX, bScreen.dy);
       case 'horizontal':
         const normal = Offset(0, 1);
-        final offsetY = math.max(aScreen.dy, bScreen.dy) + _dimensionOffsetDistance(normal, item.labelOffset);
+        final offsetY = math.max(aScreen.dy, bScreen.dy) +
+            _resolveDimensionOffsetMagnitude(
+              normal: normal,
+              labelOffset: item.labelOffset,
+              sketchLocalOffsetDistance: item.sketchLocalOffsetDistance,
+              sketchReferenceLength: sketchLength,
+              screenReferenceLength: screenLength,
+            );
         p1 = Offset(aScreen.dx, offsetY);
         p2 = Offset(bScreen.dx, offsetY);
       default:
-        final delta = bScreen - aScreen;
-        final length = delta.distance;
-        if (length < 1e-6) return;
-        final normal = Offset(-delta.dy, delta.dx) / length;
-        final double offsetMagnitude;
-        final sketchLocalOffsetDistance = item.sketchLocalOffsetDistance;
-        if (sketchLocalOffsetDistance != null) {
-          // Bug fix (on-device feedback: "when orbiting, linear dimensions
-          // slide along the line") - mirrors `_paintRadialDimension`'s own
-          // already-proven technique: no single "pixels per sketch unit"
-          // scalar exists in a perspective 3D view, but it's exactly
-          // recoverable locally by comparing this dimension's own known
-          // sketch-space point-to-point distance against its current
-          // projected screen distance (already computed as [length]
-          // above), then scaling the user's stored sketch-local offset
-          // distance ([sketchLocalOffsetDistance], set by
-          // [SketchController.setLinearOffsetDistance]) by it - unlike
-          // `item.labelOffset`, a raw screen-pixel delta captured under
-          // whatever camera orientation was live at drag time, which goes
-          // stale (and visibly drifts) the instant the camera orbits.
-          final sketchDx = item.pointB.$1 - item.pointA.$1;
-          final sketchDy = item.pointB.$2 - item.pointA.$2;
-          final sketchLength = math.sqrt(sketchDx * sketchDx + sketchDy * sketchDy);
-          offsetMagnitude = sketchLength < 1e-9
-              ? _dimensionOffsetDistance(normal, item.labelOffset)
-              : sketchLocalOffsetDistance * (length / sketchLength);
-        } else {
-          offsetMagnitude = _dimensionOffsetDistance(normal, item.labelOffset);
-        }
-        final offsetVec = normal * offsetMagnitude;
+        if (screenLength < 1e-6) return;
+        final normal = Offset(-screenDelta.dy, screenDelta.dx) / screenLength;
+        final offsetVec = normal *
+            _resolveDimensionOffsetMagnitude(
+              normal: normal,
+              labelOffset: item.labelOffset,
+              sketchLocalOffsetDistance: item.sketchLocalOffsetDistance,
+              sketchReferenceLength: sketchLength,
+              screenReferenceLength: screenLength,
+            );
         p1 = aScreen + offsetVec;
         p2 = bScreen + offsetVec;
     }
@@ -356,7 +368,24 @@ class _ConstraintOverlayPainter extends CustomPainter {
 
     final delta = midB - midA;
     if (delta.distance < 1e-6) return;
-    final offset = alongA * _dimensionOffsetDistance(alongA, item.labelOffset);
+    // P52 follow-up: this dimension kind (a Line-to-Line distance, e.g.
+    // two parallel edges) was never covered by the original P52 fix at
+    // all - see [ConstraintLineDistanceDimensionItem.sketchLocalOffsetDistance]'s
+    // own doc comment. Line 1's own sketch-local length vs. its current
+    // screen projection ([lengthA], already computed above) stands in for
+    // [_paintLinearDimension]'s own pointA/pointB pair as the local
+    // pixels-per-unit reference.
+    final sketchDx = item.line1End.$1 - item.line1Start.$1;
+    final sketchDy = item.line1End.$2 - item.line1Start.$2;
+    final sketchLengthA = math.sqrt(sketchDx * sketchDx + sketchDy * sketchDy);
+    final offset = alongA *
+        _resolveDimensionOffsetMagnitude(
+          normal: alongA,
+          labelOffset: item.labelOffset,
+          sketchLocalOffsetDistance: item.sketchLocalOffsetDistance,
+          sketchReferenceLength: sketchLengthA,
+          screenReferenceLength: lengthA,
+        );
 
     final dimPaint = Paint()
       ..color = color
@@ -510,6 +539,39 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
     return raw.isNegative ? -_minDimensionOffsetMagnitude : _minDimensionOffsetMagnitude;
   }
   return raw;
+}
+
+/// P52 follow-up (on-device feedback: "dimension fix is working on one end
+/// of a linear dimension, but the other side still slides") - shared by
+/// every dimension-offset call site in this file ([_paintLinearDimension]'s
+/// three orientation branches and [_paintLineDistanceDimension]), not just
+/// the one P52 originally touched. Mirrors [_paintRadialDimension]'s own
+/// already-proven technique: no single "pixels per sketch unit" scalar
+/// exists in a perspective 3D view, but it's exactly recoverable locally by
+/// comparing a dimension-specific known sketch-space reference length
+/// ([sketchReferenceLength]) against its current on-screen projection
+/// ([screenReferenceLength]), then scaling the user's stored sketch-local
+/// offset distance ([sketchLocalOffsetDistance], set by
+/// [SketchController.setLinearOffsetDistance]) by that ratio - unlike
+/// [labelOffset], a raw screen-pixel delta captured under whatever camera
+/// orientation was live at drag time, which goes stale (and visibly drifts)
+/// the instant the camera orbits.
+///
+/// Falls back to the legacy [_dimensionOffsetDistance] (camera-dependent,
+/// but the only option before the label has ever been dragged) whenever
+/// [sketchLocalOffsetDistance] is null or [sketchReferenceLength] is too
+/// small to divide by safely.
+double _resolveDimensionOffsetMagnitude({
+  required Offset normal,
+  required Offset labelOffset,
+  required double? sketchLocalOffsetDistance,
+  required double sketchReferenceLength,
+  required double screenReferenceLength,
+}) {
+  if (sketchLocalOffsetDistance == null || sketchReferenceLength < 1e-9) {
+    return _dimensionOffsetDistance(normal, labelOffset);
+  }
+  return sketchLocalOffsetDistance * (screenReferenceLength / sketchReferenceLength);
 }
 
 /// P41 (on-device feedback: "I can't grab them or pick a ghost dimension"):

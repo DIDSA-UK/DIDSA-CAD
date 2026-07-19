@@ -261,6 +261,20 @@ void main() {
     expect(tester.widget<SketchCanvas>(find.byType(SketchCanvas)).referenceBodyHidden, isTrue);
   });
 
+  testWidgets(
+      'bug fix (on-device feedback: "I still can\'t use the convert entities tool as it doesn\'t '
+      'give me a cursor"): drawCursorMode is true for SketchMode.convert, matching every other '
+      'Tools mode - it was missing from PartViewport\'s own gate despite a doc comment claiming '
+      'otherwise', (tester) async {
+    final controller = await _freshController();
+    await _openInOrbitView(tester, controller);
+
+    controller.enterConvertEntitiesMode();
+    await tester.pump();
+
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).drawCursorMode, isTrue);
+  });
+
   // The 'Sketch Orientation (Sketcher-roadmap Phase 5)' group that used to
   // live here tested a hamburger-menu 'Sketch Orientation' entry inside
   // *this* widget (SketchScreen). Task #95 ("Move sketch orientation UI:

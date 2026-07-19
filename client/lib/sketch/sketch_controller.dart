@@ -298,6 +298,18 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
   final String text;
   final Offset labelOffset;
 
+  /// P52 follow-up (on-device feedback: "dimension fix is working on one
+  /// end of a linear dimension, but the other side still slides") -
+  /// [ConstraintLinearDimensionItem.sketchLocalOffsetDistance]'s own
+  /// sibling for a Line-to-Line distance dimension, stored in the exact
+  /// same [SketchController._linearOffsetDistances] map (keyed by
+  /// [constraintId], which never collides between the two dimension
+  /// kinds) - the P52 fix only ever touched [ConstraintLinearDimensionItem]
+  /// (a point-to-point/length dimension), leaving this, genuinely
+  /// different, dimension kind on the old camera-dependent raw-pixel
+  /// [labelOffset] path.
+  final double? sketchLocalOffsetDistance;
+
   const ConstraintLineDistanceDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -307,6 +319,7 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
     required this.line2End,
     required this.text,
     required this.labelOffset,
+    this.sketchLocalOffsetDistance,
   });
 
   @override
@@ -319,11 +332,21 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
       other.line2Start == line2Start &&
       other.line2End == line2End &&
       other.text == text &&
-      other.labelOffset == labelOffset;
+      other.labelOffset == labelOffset &&
+      other.sketchLocalOffsetDistance == sketchLocalOffsetDistance;
 
   @override
-  int get hashCode =>
-      Object.hash(constraintId, selected, line1Start, line1End, line2Start, line2End, text, labelOffset);
+  int get hashCode => Object.hash(
+        constraintId,
+        selected,
+        line1Start,
+        line1End,
+        line2Start,
+        line2End,
+        text,
+        labelOffset,
+        sketchLocalOffsetDistance,
+      );
 }
 
 /// A radius/diameter dimension - mirrors `sketch_canvas.dart`'s own
@@ -8877,6 +8900,7 @@ class SketchController extends ChangeNotifier {
             line2End: (line2End.x, line2End.y),
             text: c.distance.toStringAsFixed(2),
             labelOffset: labelOffset,
+            sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
           ));
         case CoincidentConstraintDto c:
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'Coinc.', entry.key, isSelected, labelOffset);
@@ -9025,6 +9049,7 @@ class SketchController extends ChangeNotifier {
             line2End: (line2End.x, line2End.y),
             text: '?',
             labelOffset: labelOffset,
+            sketchLocalOffsetDistance: linearOffsetDistanceFor(ghost.key),
           ));
         case GhostKind.angle:
           final mid1 = _lineMidpointXY(ghost.lineAId ?? '');

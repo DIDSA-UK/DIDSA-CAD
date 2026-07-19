@@ -176,4 +176,27 @@ void main() {
     expect(items.single, isA<ConstraintLineDistanceDimensionItem>());
     expect((items.single as ConstraintLineDistanceDimensionItem).text, '?');
   });
+
+  test(
+      'P52 follow-up bug fix: a lineDistance ghost\'s sketchLocalOffsetDistance is null until '
+      'setLinearOffsetDistance is called, keyed by its own ghost key just like the point-to-point case',
+      () async {
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 0, y: 3);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 5, y: 3);
+    controller.lines['l0'] = const SketchLineView(id: 'l0', startPointId: 'p0', endPointId: 'p1');
+    controller.lines['l1'] = const SketchLineView(id: 'l1', startPointId: 'p2', endPointId: 'p3');
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(1.5, 0);
+    await controller.handleCanvasTap(1.5, 3);
+
+    final beforeItem =
+        controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;
+    expect(beforeItem.sketchLocalOffsetDistance, isNull);
+
+    controller.setLinearOffsetDistance('lineDistance', 1.75);
+
+    final afterItem =
+        controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;
+    expect(afterItem.sketchLocalOffsetDistance, 1.75);
+  });
 }

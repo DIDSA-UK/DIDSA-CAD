@@ -734,6 +734,113 @@ void main() {
     });
   });
 
+  group('on-device feedback: facesOccludeOtherHits (picking edges/vertices through shaded faces)', () {
+    // A single body: a face at z=5, and a topology vertex/edge at z=10 -
+    // *behind* that face along the ray, but still within screen-space pixel
+    // radius of it (the same 0.06 offset `farBody()` above already proves is
+    // in-range at z=10), so hitTestVertices/hitTestEdges' own purely
+    // screen-space test would pick it in preference to the nearer face with
+    // no depth awareness at all - exactly the reported bug.
+    BodyMeshDto occludingBody() => BodyMeshDto(
+          bodyId: 'occluding',
+          source: 'computed',
+          mesh: MeshDto(
+            vertices: const [
+              [-1, -1, 5],
+              [1, -1, 5],
+              [0, 1, 5],
+            ],
+            normals: const [],
+            triangleIndices: const [
+              [0, 1, 2],
+            ],
+            faceIds: const [7],
+            topologyVertices: const [
+              [0.06, 0, 10],
+            ],
+            topologyVertexIds: const [3],
+            edges: const [0.06, -1, 10, 0.06, 1, 10],
+            edgeIds: const [5],
+          ),
+        );
+
+    test('default (facesOccludeOtherHits: false) keeps the old reach-through behavior - no regression', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingBody()],
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.vertex);
+    });
+
+    test('facesOccludeOtherHits: true rejects a vertex behind the nearest face, falling through to it', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingBody()],
+        filter: const SelectionFilterState(vertex: true, edge: true, face: true, body: false),
+        facesOccludeOtherHits: true,
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.face);
+      expect(hit?.entity.id, 7);
+    });
+
+    test('facesOccludeOtherHits: true rejects an edge behind the nearest face, falling through to it', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingBody()],
+        filter: const SelectionFilterState(vertex: false, edge: true, face: true, body: false),
+        facesOccludeOtherHits: true,
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.face);
+    });
+
+    test('facesOccludeOtherHits: true with no face fallback available (face filtered off) returns null', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingBody()],
+        filter: const SelectionFilterState(vertex: true, edge: true, face: false, body: false),
+        facesOccludeOtherHits: true,
+      );
+      expect(hit, isNull);
+    });
+
+    test('a vertex essentially coplanar with the nearest face (within tolerance) is not falsely occluded', () {
+      final coplanarBody = BodyMeshDto(
+        bodyId: 'coplanar',
+        source: 'computed',
+        mesh: MeshDto(
+          vertices: const [
+            [-1, -1, 5],
+            [1, -1, 5],
+            [0, 1, 5],
+          ],
+          normals: const [],
+          triangleIndices: const [
+            [0, 1, 2],
+          ],
+          faceIds: const [7],
+          topologyVertices: const [
+            [0.01, 0, 5], // same depth as the face itself - e.g. a Sketch drawn directly on it
+          ],
+          topologyVertexIds: const [3],
+          edges: const [],
+          edgeIds: const [],
+        ),
+      );
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [coplanarBody],
+        filter: const SelectionFilterState(vertex: true, edge: true, face: true, body: false),
+        facesOccludeOtherHits: true,
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.vertex);
+    });
+  });
+
   group('Prompt C1: hitTestBodies with sketchGeometries', () {
     // A lone Sketch Point/Line, no Body geometry at all - the "bare Sketch,
     // no Extrude yet" case _recomputeHover's own fix (see part_viewport.dart)

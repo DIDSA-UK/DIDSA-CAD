@@ -542,28 +542,22 @@ Node buildHighlightFacesNode(
   return Node(name: 'highlight-faces', mesh: Mesh(geometry, material));
 }
 
-/// On-device feedback ("when a face is highlighted in 3d viewport, it's
-/// still not clear it's selected. try making it glow with colour change
-/// and light"): [PartViewport]'s selected-face "glow" pulse blends
-/// [base] toward white by [t] - RGB only, [base]'s own alpha passes
-/// through untouched (moot anyway, since [buildHighlightFacesNode]'s
-/// material is forced to [AlphaMode.opaque], which ignores alpha - see
-/// that function's own doc comment for why a real translucency-based
-/// glow wasn't an option here).
-///
-/// [t] is clamped to `[0, 1]` (`0` returns [base] unchanged, `1` returns
-/// solid white) - [PartViewport] drives it from a repeating, reversing
-/// `AnimationController` for a breathing/pulsing brighten-and-fade look,
-/// re-using the existing selected-face [Node]/geometry and only mutating
-/// its already-bound [UnlitMaterial.baseColorFactor] in place each tick
-/// (no geometry rebuild - see [PartViewport]'s own doc comment on why
-/// that matters for this codebase specifically).
-vm.Vector4 pulseTowardWhite(vm.Vector4 base, double t) {
-  final clamped = t.clamp(0.0, 1.0);
-  return vm.Vector4(
-    base.x + (1.0 - base.x) * clamped,
-    base.y + (1.0 - base.y) * clamped,
-    base.z + (1.0 - base.z) * clamped,
-    base.w,
+/// On-device feedback ("the selected face colour was very similar to the
+/// body colour I had selected"): [PartViewport]'s selected-face highlight
+/// used to be one fixed color, which is guaranteed to eventually collide
+/// with *some* user-chosen Body Colour. Picks whichever entry in
+/// [palette] is furthest (by squared RGB distance - cheap, and monotonic
+/// with true distance so it picks the same winner) from [referenceColor],
+/// so the highlight stays visually distinct regardless of what the body
+/// itself is colored. [palette] must be non-empty.
+vm.Vector4 highContrastColorFrom(List<vm.Vector4> palette, vm.Vector4 referenceColor) {
+  double distanceSquared(vm.Vector4 a, vm.Vector4 b) {
+    final dr = a.x - b.x, dg = a.y - b.y, db = a.z - b.z;
+    return dr * dr + dg * dg + db * db;
+  }
+
+  return palette.reduce(
+    (best, candidate) =>
+        distanceSquared(candidate, referenceColor) > distanceSquared(best, referenceColor) ? candidate : best,
   );
 }

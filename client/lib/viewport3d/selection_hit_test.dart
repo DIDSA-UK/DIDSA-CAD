@@ -707,6 +707,20 @@ HoverHit? hitTestMeshEntities({
 /// [hitTestSketchLines] rather than a second hit-test path, per this
 /// project's standing "extend the existing projection/hit-test logic"
 /// principle.
+/// On-device feedback ("I'm able to pick edges through faces. when the
+/// body is shaded, this shouldn't happen"): tolerance (world units) for
+/// [hitTestBodies]' own face-occlusion check - a vertex/edge whose own
+/// ray parameter is farther than the nearest face's by more than this is
+/// treated as hidden behind that face, not a legitimate pick. Reuses
+/// `mesh_geometry.dart`'s `meshEdgeNudgeAmount`/[biasSegmentsTowardCamera]
+/// constant (`0.02`) rather than inventing a second on-device-tuned
+/// magnitude - same "small enough not to misjudge genuinely coplanar
+/// geometry (e.g. a Sketch drawn directly on a Body face), big enough to
+/// survive float noise" tradeoff that constant's own doc comment already
+/// works through, and the same order of magnitude is exactly what's
+/// needed here too.
+const double kFaceOcclusionEpsilon = 0.02;
+
 HoverHit? hitTestBodies({
   required vm.Ray ray,
   required Size viewportSize,
@@ -715,6 +729,23 @@ HoverHit? hitTestBodies({
   double radiusPixels = kSelectionHitRadiusPixels,
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   SelectionFilterState filter = SelectionFilterState.defaults,
+  // On-device feedback ("I'm able to pick edges through faces. when the
+  // body is shaded, this shouldn't happen"): vertex/edge hit-testing
+  // below is purely 2D-screen-space (see hitTestVertices/hitTestEdges'
+  // own doc comments) and previously always won outright over a face
+  // hit, with no regard for which one the camera would actually see -
+  // a vertex/edge on the *far* side of a shaded body can project to
+  // nearly the same screen position as the near face in front of it.
+  // When true, a face intersection is computed regardless of
+  // filter.face/filter.body (those only gate whether a face/Body is
+  // itself a *selectable outcome*, not whether rendered faces occlude
+  // other picks) and used to drop any vertex/edge candidate that sits
+  // behind it - see kFaceOcclusionEpsilon. The caller is expected to
+  // pass this as `renderMode.showsFilledFaces && !bodiesHidden` (i.e.
+  // only when faces are actually being drawn solid) - in wireframe
+  // there is nothing rendered to be "behind", so reaching through stays
+  // intentional there.
+  bool facesOccludeOtherHits = false,
 }) {
   HoverHit taggedWithBody(HoverHit hit, String bodyId) => HoverHit(
         entity: SelectionEntityRef(kind: hit.entity.kind, bodyId: bodyId, id: hit.entity.id),
@@ -753,7 +784,7 @@ HoverHit? hitTestBodies({
         bestEdge = taggedWithBody(hit, body.bodyId);
       }
     }
-    if (filter.face || filter.body) {
+    if (filter.face || filter.body || facesOccludeOtherHits) {
       final hit = hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
       if (hit != null && (bestFace == null || hit.rayT < bestFace.rayT)) {
         bestFace = hit;
@@ -841,6 +872,15 @@ HoverHit? hitTestBodies({
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
         bestEdge = hit;
       }
+    }
+  }
+
+  if (facesOccludeOtherHits && bestFace != null) {
+    if (bestVertex != null && bestVertex.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
+      bestVertex = null;
+    }
+    if (bestEdge != null && bestEdge.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
+      bestEdge = null;
     }
   }
 
