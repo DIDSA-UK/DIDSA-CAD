@@ -30,6 +30,7 @@ from app.sketch.intersections import (
     circle_vs_circle,
     line_vs_arc,
     line_vs_circle,
+    line_vs_line,
     line_vs_segment,
 )
 
@@ -2013,6 +2014,194 @@ class Sketch:
         return self.add_arc(
             arc.center_point_id, new_start.id, end_angle=end_angle, construction=construction
         )
+
+    def offset_chain(
+        self, entity_ids: list[str], distance: float, *, construction: bool = False
+    ) -> list["Line | Arc"]:
+        """Offset Entities v2 (on-device feedback: "offset should allow the
+        selection of multiple entities and should operate intuitively. eg
+        offset two connected lines results in two connected lines... if the
+        origin lines are connected, the offset lines should be connected
+        effectively trimming or extending the new lines to their
+        intersect") - `offset_line`/`offset_arc`'s multi-entity,
+        corner-joining sibling, closing the v1 scope gap both of those
+        methods' own doc comments already called out. Circles aren't
+        accepted here - a Circle has no endpoints to join at (see
+        `offset_circle` for the standalone case).
+
+        No explicit chain-ordering/traversal-direction walk: every
+        entity's raw offset is computed independently first (identical
+        perpendicular/radial math to `offset_line`/`offset_arc`, same
+        `distance` and sign convention - see those methods' own doc
+        comments), then for every *original* Point shared by exactly two
+        of the given entities, the two raw offsets are trimmed or extended
+        to their own nearest intersection instead of being left wherever
+        the raw offset alone put them (see `_offset_chain_join`). A Point
+        shared by more than two of the given entities (a branch/
+        T-junction) or fewer than two (an unshared end, or a corner shared
+        with an entity *not* in this call) just keeps its raw, unjoined
+        offset - no error, simply no join at that corner. This also means
+        a chain need not be a single connected path: disjoint groups (or
+        entirely unconnected entities) in the same call are handled
+        correctly, each only joining within its own group.
+
+        Sign-convention caveat specific to chains: `distance`'s sign
+        applies identically to every entity, each still relative to *its
+        own* stored start->end direction (or radial-outward, for an Arc) -
+        there's no attempt to detect or normalize a single "outside of the
+        chain" direction across entities that happen to have been drawn
+        with inconsistent point ordering. A chain that offsets to the
+        wrong side on just one segment was very likely drawn in the
+        opposite direction to its neighbors - an existing characteristic
+        of this offset direction convention (see `offset_line`'s own doc
+        comment), not something new this method introduces.
+
+        Raises `ValueError` for an empty `entity_ids`, a non-Line/Arc
+        entity id, a zero-length Line, an Arc whose offset radius would
+        collapse/invert, `distance == 0`, or a Line/Arc collapsed to a
+        single Point by the resolved join (both ends landed on the same
+        Point); `KeyError` for a missing entity id - the same error
+        classes `offset_line`/`offset_arc` already use.
+        """
+        if not entity_ids:
+            raise ValueError("offset_chain requires at least one entity id")
+        if distance == 0:
+            raise ValueError("Offset distance must be non-zero")
+
+        entities: dict[str, Line | Arc] = {}
+        for entity_id in entity_ids:
+            entity = self.entities.get(entity_id)
+            if entity is None:
+                raise KeyError(entity_id)
+            if not isinstance(entity, (Line, Arc)):
+                raise ValueError(f"offset_chain only supports Lines and Arcs, got {entity_id!r}")
+            entities[entity_id] = entity
+
+        # Raw (unjoined) offset geometry per entity - identical math to
+        # offset_line/offset_arc, just not materialized into real Points
+        # yet, since a join below may still move either end first.
+        raw: dict[str, dict] = {}
+        for entity_id, entity in entities.items():
+            if isinstance(entity, Line):
+                start = self.points[entity.start_point_id]
+                end = self.points[entity.end_point_id]
+                dx, dy = end.x - start.x, end.y - start.y
+                length = math.hypot(dx, dy)
+                if length == 0:
+                    raise ValueError(f"Cannot offset a zero-length Line: {entity_id}")
+                offset_x = -dy / length * distance
+                offset_y = dx / length * distance
+                raw[entity_id] = {
+                    "kind": "line",
+                    "start_xy": (start.x + offset_x, start.y + offset_y),
+                    "end_xy": (end.x + offset_x, end.y + offset_y),
+                    "orig_start_id": entity.start_point_id,
+                    "orig_end_id": entity.end_point_id,
+                }
+            else:
+                center = self.points[entity.center_point_id]
+                new_radius = entity.radius(self.points) + distance
+                if new_radius <= 0:
+                    raise ValueError(
+                        f"Offset distance would collapse or invert the Arc's radius: {entity_id}"
+                    )
+                start = self.points[entity.start_point_id]
+                end = self.points[entity.end_point_id]
+                start_angle = math.atan2(start.y - center.y, start.x - center.x)
+                end_angle = math.atan2(end.y - center.y, end.x - center.x)
+                raw[entity_id] = {
+                    "kind": "arc",
+                    "center_xy": (center.x, center.y),
+                    "radius": new_radius,
+                    "start_xy": (
+                        center.x + new_radius * math.cos(start_angle),
+                        center.y + new_radius * math.sin(start_angle),
+                    ),
+                    "end_xy": (
+                        center.x + new_radius * math.cos(end_angle),
+                        center.y + new_radius * math.sin(end_angle),
+                    ),
+                    "orig_start_id": entity.start_point_id,
+                    "orig_end_id": entity.end_point_id,
+                }
+
+        # resolved[entity_id]["start_xy"/"end_xy"] starts as a copy of the
+        # raw endpoint, overwritten in place per joined corner below.
+        resolved: dict[str, dict] = {
+            entity_id: {"start_xy": r["start_xy"], "end_xy": r["end_xy"]} for entity_id, r in raw.items()
+        }
+
+        point_to_ends: dict[str, list[tuple[str, str]]] = {}
+        for entity_id, r in raw.items():
+            point_to_ends.setdefault(r["orig_start_id"], []).append((entity_id, "start_xy"))
+            point_to_ends.setdefault(r["orig_end_id"], []).append((entity_id, "end_xy"))
+
+        for original_point_id, ends in point_to_ends.items():
+            if len(ends) != 2:
+                continue  # branch/T-junction, or an end not shared within this call - no join
+            (entity_a, end_a), (entity_b, end_b) = ends
+            corner = self.points[original_point_id]
+            joined = self._offset_chain_join(raw[entity_a], raw[entity_b], (corner.x, corner.y))
+            if joined is None:
+                continue
+            resolved[entity_a][end_a] = joined
+            resolved[entity_b][end_b] = joined
+
+        results: list[Line | Arc] = []
+        for entity_id, entity in entities.items():
+            r = raw[entity_id]
+            res = resolved[entity_id]
+            start_point = self.add_or_reuse_point(*res["start_xy"])
+            end_point = self.add_or_reuse_point(*res["end_xy"])
+            if start_point.id == end_point.id:
+                raise ValueError(f"Offset collapsed {entity_id} to a single point")
+            if r["kind"] == "line":
+                results.append(self.add_line(start_point.id, end_point.id, construction=construction))
+            else:
+                results.append(
+                    self.add_arc(
+                        entity.center_point_id, start_point.id, end_point.id, construction=construction
+                    )
+                )
+        return results
+
+    @staticmethod
+    def _offset_chain_join(
+        raw_a: dict, raw_b: dict, corner_xy: tuple[float, float]
+    ) -> tuple[float, float] | None:
+        """`offset_chain`'s own corner resolver: given the two raw
+        (unjoined) offsets meeting at one original corner, dispatches to
+        whichever of `line_vs_line`/`line_vs_circle`/`circle_vs_circle`
+        matches the pair's kinds - both curve-involving cases can return
+        up to two candidates (a line can cross a circle twice; two circles
+        can cross twice), so this picks whichever candidate is nearest
+        `corner_xy` (the *original*, pre-offset corner - the natural
+        "which of the two intersections did the user mean" tiebreaker,
+        since the offset corner is always close to the original one).
+
+        Returns None with no candidates at all (parallel Lines offset the
+        same direction never meet again; an offset Arc's new radius/center
+        pairing may simply no longer reach the other curve) - `offset_chain`
+        leaves both raw endpoints untouched in that case rather than
+        raising, the same "degrade gracefully, don't crash" choice this
+        module already makes for `line_vs_segment`/`circle_vs_circle`'s own
+        parallel/non-intersecting cases.
+        """
+        if raw_a["kind"] == "line" and raw_b["kind"] == "line":
+            return line_vs_line(raw_a["start_xy"], raw_a["end_xy"], raw_b["start_xy"], raw_b["end_xy"])
+        if raw_a["kind"] == "arc" and raw_b["kind"] == "arc":
+            candidates = circle_vs_circle(raw_a["center_xy"], raw_a["radius"], raw_b["center_xy"], raw_b["radius"])
+        else:
+            line_raw, circle_raw = (raw_a, raw_b) if raw_a["kind"] == "line" else (raw_b, raw_a)
+            candidates = [
+                point
+                for _, point in line_vs_circle(
+                    line_raw["start_xy"], line_raw["end_xy"], circle_raw["center_xy"], circle_raw["radius"]
+                )
+            ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda p: math.hypot(p[0] - corner_xy[0], p[1] - corner_xy[1]))
 
     def _existing_point_at(
         self, x: float, y: float, *, exclude_ids: frozenset[str] = frozenset(), epsilon: float = 1e-6

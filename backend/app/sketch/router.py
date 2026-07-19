@@ -78,6 +78,8 @@ from app.sketch.schemas import (
     LineTrimResponse,
     LineUpdate,
     OffsetArcResponse,
+    OffsetChainRequest,
+    OffsetChainResponse,
     OffsetCircleResponse,
     OffsetLineResponse,
     OffsetRequest,
@@ -603,6 +605,43 @@ def offset_line(sketch_id: str, line_id: str, payload: OffsetRequest) -> OffsetL
         start_point=_point_response(sketch.points[line.start_point_id]),
         end_point=_point_response(sketch.points[line.end_point_id]),
     )
+
+
+@router.post("/sketches/{sketch_id}/offset-chain", response_model=OffsetChainResponse, status_code=201)
+def offset_chain(sketch_id: str, payload: OffsetChainRequest) -> OffsetChainResponse:
+    """Offset Entities v2 (on-device feedback: "offset should allow the
+    selection of multiple entities... if the origin lines are connected,
+    the offset lines should be connected") - see `Sketch.offset_chain`'s
+    own doc comment for the corner-joining algorithm and its v1 limits.
+    404 for any entity id in the payload that doesn't exist; 400 for a
+    non-Line/Arc entity id, a zero-length Line, a collapsing Arc radius,
+    zero distance, or a join that collapsed an entity to a single Point."""
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        results = sketch.offset_chain(payload.entity_ids, payload.distance, construction=payload.construction)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    lines: list[LineResponse] = []
+    arcs: list[ArcResponse] = []
+    seen_point_ids: set[str] = set()
+    points: list[PointResponse] = []
+    for entity in results:
+        point_ids: tuple[str, str]
+        if isinstance(entity, Line):
+            lines.append(_line_response(sketch, entity))
+            point_ids = (entity.start_point_id, entity.end_point_id)
+        else:
+            arcs.append(_arc_response(sketch, entity))
+            point_ids = (entity.start_point_id, entity.end_point_id)
+        for point_id in point_ids:
+            if point_id in seen_point_ids:
+                continue
+            seen_point_ids.add(point_id)
+            points.append(_point_response(sketch.points[point_id]))
+    return OffsetChainResponse(lines=lines, arcs=arcs, points=points)
 
 
 @router.post("/sketches/{sketch_id}/circles", response_model=CircleResponse, status_code=201)

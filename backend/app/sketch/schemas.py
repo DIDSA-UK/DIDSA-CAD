@@ -163,6 +163,28 @@ class OffsetLineResponse(BaseModel):
     start_point: PointResponse
     end_point: PointResponse
 
+
+class OffsetChainRequest(BaseModel):
+    """Offset Entities v2 (on-device feedback: "offset should allow the
+    selection of multiple entities and should operate intuitively... if
+    the origin lines are connected, the offset lines should be connected
+    effectively trimming or extending the new lines to their intersect"):
+    `entity_ids` may be any mix of Line and Arc ids (not Circle - see
+    `Sketch.offset_chain`'s own doc comment for why). `distance`/
+    `construction` carry the exact same meaning as `OffsetRequest`, just
+    applied to every listed entity at once - see `offset_chain`'s own doc
+    comment for the sign-convention caveat that's specific to a chain of
+    more than one entity."""
+
+    entity_ids: list[str]
+    distance: float
+    construction: bool = False
+
+# `OffsetChainResponse` (referencing `LineResponse`/`ArcResponse`) lives
+# further down this file, right after `OffsetArcResponse` - same forward-
+# reference pitfall as `OffsetCircleResponse`/`OffsetArcResponse` below
+# (`ArcResponse` isn't defined yet at this point in the file).
+
 # `OffsetCircleResponse`/`OffsetArcResponse` (referencing `CircleResponse`/
 # `ArcResponse`) live further down this file, right after those two are
 # defined - Pydantic evaluates field type annotations at class-definition
@@ -294,6 +316,19 @@ class OffsetArcResponse(BaseModel):
     arc: ArcResponse
     start_point: PointResponse
     end_point: PointResponse
+
+
+class OffsetChainResponse(BaseModel):
+    """`Sketch.offset_chain`'s response - the resulting Lines and Arcs
+    (each entity id in the request produces exactly one of these, in the
+    same kind as its source), plus every new/reused Point either
+    referenced (deduplicated: a Point shared at a joined corner appears
+    here once, not once per entity that references it - the client should
+    upsert by id, same as everywhere else in this API)."""
+
+    lines: list[LineResponse] = []
+    arcs: list[ArcResponse] = []
+    points: list[PointResponse] = []
 
 
 class ArcUpdate(BaseModel):

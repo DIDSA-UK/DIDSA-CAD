@@ -65,6 +65,31 @@ def line_vs_segment(a1: Point2D, a2: Point2D, seg_start: Point2D, seg_end: Point
     return (t, point)
 
 
+def line_vs_line(a1: Point2D, a2: Point2D, b1: Point2D, b2: Point2D) -> Point2D | None:
+    """Where the *infinite* lines through (a1, a2) and (b1, b2) cross, or
+    None if they're parallel (or too close to it to be numerically
+    meaningful). Unlike [line_vs_segment], *neither* line is clipped to its
+    own segment's span - used by `Sketch.offset_chain`'s corner-join, where
+    two Lines that met at a real corner before offsetting generally need to
+    be extended or trimmed past their own raw offset endpoints to meet
+    again, which is exactly what an unclipped intersection gives. Same
+    Cramer's-rule algebra as [line_vs_segment], with the `u`-bound clip
+    check dropped.
+    """
+    ax1, ay1 = a1
+    ax2, ay2 = a2
+    bx1, by1 = b1
+    bx2, by2 = b2
+    dir_a = (ax2 - ax1, ay2 - ay1)
+    dir_b = (bx2 - bx1, by2 - by1)
+    to_b = (bx1 - ax1, by1 - ay1)
+    denominator = dir_b[0] * dir_a[1] - dir_a[0] * dir_b[1]
+    if abs(denominator) < 1e-9:
+        return None
+    t = (dir_b[0] * to_b[1] - to_b[0] * dir_b[1]) / denominator
+    return (ax1 + t * dir_a[0], ay1 + t * dir_a[1])
+
+
 def line_vs_circle(a1: Point2D, a2: Point2D, center: Point2D, radius: float) -> list[tuple[float, Point2D]]:
     """Every point (0, 1, or 2, tangent counting as a repeated 1) where the
     infinite line through (a1, a2) crosses the circle at `center`/`radius` -
