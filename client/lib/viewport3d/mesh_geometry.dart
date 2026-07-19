@@ -541,3 +541,29 @@ Node buildHighlightFacesNode(
     ..baseColorFactor = color;
   return Node(name: 'highlight-faces', mesh: Mesh(geometry, material));
 }
+
+/// On-device feedback ("when a face is highlighted in 3d viewport, it's
+/// still not clear it's selected. try making it glow with colour change
+/// and light"): [PartViewport]'s selected-face "glow" pulse blends
+/// [base] toward white by [t] - RGB only, [base]'s own alpha passes
+/// through untouched (moot anyway, since [buildHighlightFacesNode]'s
+/// material is forced to [AlphaMode.opaque], which ignores alpha - see
+/// that function's own doc comment for why a real translucency-based
+/// glow wasn't an option here).
+///
+/// [t] is clamped to `[0, 1]` (`0` returns [base] unchanged, `1` returns
+/// solid white) - [PartViewport] drives it from a repeating, reversing
+/// `AnimationController` for a breathing/pulsing brighten-and-fade look,
+/// re-using the existing selected-face [Node]/geometry and only mutating
+/// its already-bound [UnlitMaterial.baseColorFactor] in place each tick
+/// (no geometry rebuild - see [PartViewport]'s own doc comment on why
+/// that matters for this codebase specifically).
+vm.Vector4 pulseTowardWhite(vm.Vector4 base, double t) {
+  final clamped = t.clamp(0.0, 1.0);
+  return vm.Vector4(
+    base.x + (1.0 - base.x) * clamped,
+    base.y + (1.0 - base.y) * clamped,
+    base.z + (1.0 - base.z) * clamped,
+    base.w,
+  );
+}

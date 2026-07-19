@@ -274,4 +274,27 @@ void main() {
       expect(buffers.vertexData.sublist(3, 6), [0, 0, 0]);
     });
   });
+
+  group('pulseTowardWhite (P53: selected-face glow)', () {
+    test('t=0 returns base unchanged', () {
+      final base = vm.Vector4(0.1, 0.2, 0.3, 0.4);
+      expect(pulseTowardWhite(base, 0), vm.Vector4(0.1, 0.2, 0.3, 0.4));
+    });
+
+    test('t=1 returns solid white, preserving base alpha', () {
+      final base = vm.Vector4(0.1, 0.2, 0.3, 0.4);
+      expect(pulseTowardWhite(base, 1), vm.Vector4(1, 1, 1, 0.4));
+    });
+
+    test('t=0.5 lerps each RGB channel halfway to white', () {
+      final base = vm.Vector4(0.2, 0.4, 0.6, 1.0);
+      expect(pulseTowardWhite(base, 0.5), vm.Vector4(0.6, 0.7, 0.8, 1.0));
+    });
+
+    test('t is clamped to [0, 1] rather than overshooting/undershooting', () {
+      final base = vm.Vector4(0.2, 0.4, 0.6, 1.0);
+      expect(pulseTowardWhite(base, -5), pulseTowardWhite(base, 0));
+      expect(pulseTowardWhite(base, 5), pulseTowardWhite(base, 1));
+    });
+  });
 }

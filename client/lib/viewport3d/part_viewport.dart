@@ -860,6 +860,59 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// "more contrast" direction the feedback asked for.
   static final vm.Vector4 _selectedFaceColor = vector4FromHex('#2979FF', opacity: 0.95);
 
+  /// P53 on-device feedback ("when a face is highlighted in 3d viewport,
+  /// it's still not clear it's selected. try making it glow with colour
+  /// change and light"): even after [_selectedFaceColor]'s own earlier
+  /// brightness/contrast bump (see its own doc comment), a *static* tint
+  /// was still reported as easy to miss - a repeating, reversing pulse
+  /// (via [pulseTowardWhite]) adds motion, which reads far more clearly
+  /// as "this is actively selected" than any single fixed shade can.
+  ///
+  /// [_selectedFaceMaterial] is the live [UnlitMaterial] instance already
+  /// bound into [_selectedFacesNode]'s [Mesh] (retrieved, not rebuilt -
+  /// see [_syncSelectedEntityNodes]) - each tick mutates its
+  /// `baseColorFactor` field in place and calls `setState` to trigger a
+  /// repaint, without ever re-uploading geometry. This matters: rebuilding
+  /// [buildHighlightFacesNode]'s vertex/index buffers dozens of times a
+  /// second is exactly the "GPU-rebuild-storm" class of bug that caused
+  /// the Rectangle-tool ANR fixed earlier this project (see
+  /// `sketchGeometries`' own doc comments) - a real risk to guard against
+  /// here, not a hypothetical one.
+  ///
+  /// Only runs while at least one Face is actually selected
+  /// ([_selectedFaceMaterial] non-null) - created in
+  /// [_syncSelectedEntityNodes] the moment a Face selection first appears,
+  /// stopped and disposed the moment it's gone, so an idle viewport with
+  /// nothing selected never pays for a running ticker.
+  AnimationController? _faceGlowController;
+  UnlitMaterial? _selectedFaceMaterial;
+
+  void _startOrContinueFaceGlow() {
+    if (_faceGlowController != null) return;
+    final controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))
+      ..addListener(_onFaceGlowTick)
+      ..repeat(reverse: true);
+    _faceGlowController = controller;
+  }
+
+  void _stopFaceGlow() {
+    _faceGlowController?.removeListener(_onFaceGlowTick);
+    _faceGlowController?.dispose();
+    _faceGlowController = null;
+    _selectedFaceMaterial = null;
+  }
+
+  void _onFaceGlowTick() {
+    final material = _selectedFaceMaterial;
+    final controller = _faceGlowController;
+    if (material == null || controller == null || !mounted) return;
+    setState(() {
+      // Pulses only up to a third of the way to white - enough to read as
+      // motion without washing out [_selectedFaceColor]'s own hue/contrast.
+      material.baseColorFactor = pulseTowardWhite(_selectedFaceColor, controller.value * 0.35);
+    });
+  }
+
   /// Darker than [_selectedColor] so a selected edge reads as visually
   /// distinct from a selected face's tint - Material Blue 900.
   static final vm.Vector4 _selectedEdgeColor = vector4FromHex('#0D47A1', opacity: 0.85);
@@ -972,6 +1025,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // not fire after this State is torn down - it would call setState on a
     // disposed Element.
     _marqueeLongPressTimer?.cancel();
+    _faceGlowController?.removeListener(_onFaceGlowTick);
+    _faceGlowController?.dispose();
     super.dispose();
   }
 
@@ -2651,10 +2706,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final node = buildHighlightFacesNode(faceTriangles, color: _selectedFaceColor);
       scene.add(node);
       _selectedFacesNode = node;
+      // P53: [buildHighlightFacesNode] always builds exactly one
+      // [MeshPrimitive] (see its own doc comment/implementation) - the
+      // material it just bound is grabbed here (not rebuilt) so the glow
+      // ticker can mutate it in place every frame.
+      _selectedFaceMaterial = node.mesh?.primitives.first.material as UnlitMaterial?;
+      _startOrContinueFaceGlow();
       debugPrint(
         '[PartViewport][RenderDebug] selected faces: triangles=${faceTriangles.length} '
         'cameraDistance=${_camera.distance}',
       );
+    } else {
+      _stopFaceGlow();
     }
     if (edgeSegments.isNotEmpty) {
       final node = buildMeshEdgesNode(
