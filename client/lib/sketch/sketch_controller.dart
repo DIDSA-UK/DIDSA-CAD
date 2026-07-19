@@ -247,6 +247,15 @@ class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
   final String text;
   final Offset labelOffset;
 
+  /// Sketch-local perpendicular offset distance (see
+  /// [SketchController._linearOffsetDistances]' own doc comment) - null
+  /// until the user has dragged this dimension's label at least once, in
+  /// which case the renderer prefers this over [labelOffset] for the
+  /// `default:` (non axis-locked) orientation, since it stays put on the
+  /// line as the 3D camera orbits where [labelOffset]'s raw screen pixels
+  /// do not.
+  final double? sketchLocalOffsetDistance;
+
   const ConstraintLinearDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -255,6 +264,7 @@ class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
     required this.orientation,
     required this.text,
     required this.labelOffset,
+    this.sketchLocalOffsetDistance,
   });
 
   @override
@@ -266,10 +276,12 @@ class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
       other.pointB == pointB &&
       other.orientation == orientation &&
       other.text == text &&
-      other.labelOffset == labelOffset;
+      other.labelOffset == labelOffset &&
+      other.sketchLocalOffsetDistance == sketchLocalOffsetDistance;
 
   @override
-  int get hashCode => Object.hash(constraintId, selected, pointA, pointB, orientation, text, labelOffset);
+  int get hashCode =>
+      Object.hash(constraintId, selected, pointA, pointB, orientation, text, labelOffset, sketchLocalOffsetDistance);
 }
 
 /// A Line-to-Line perpendicular-distance dimension - mirrors
@@ -3575,6 +3587,49 @@ class SketchController extends ChangeNotifier {
   /// position into a sketch-local angle in the first place.
   void setRadialAngleOffset(String constraintId, double degrees) {
     _radialAngleOffsets[constraintId] = degrees;
+    notifyListeners();
+  }
+
+  /// On-device feedback ("when orbiting, linear dimensions slide along the
+  /// line. they should stay in the same place on the line. similar to what
+  /// we did with circle dimensions earlier") - [_radialAngleOffsets]'
+  /// exact sibling for a point-to-point linear dimension's own perpendicular
+  /// placement, in SKETCH UNITS (not screen pixels, and not the raw
+  /// [_labelOffsets] pixel accumulator either - see that map's own doc
+  /// comment, still correct for every *other* dimension kind and for the
+  /// flat 2D canvas). A sketch-unit distance is camera-independent by
+  /// construction, same reasoning [_radialAngleOffsets] already
+  /// established for an angle - the renderer (`sketch_constraint_
+  /// overlay.dart`'s `_paintLinearDimension`) re-derives a fresh screen-
+  /// pixel offset from it every frame using the *current* camera's own
+  /// local pixels-per-sketch-unit scale (the same technique
+  /// `_paintRadialDimension` already uses for its own radius), rather than
+  /// this ever storing - or this Sketch's own geometry ever needing to
+  /// carry - a screen-space quantity that would go stale the moment the
+  /// camera moves.
+  ///
+  /// Scope note: only the general (non-axis-locked) case - a `null`
+  /// `DistanceConstraintDto.orientation` - goes through this; 'vertical'/
+  /// 'horizontal' dimensions still lay out along a fixed *screen* axis in
+  /// the 3D view (a separate, pre-existing camera-relative-ness in their
+  /// own offset *direction*, not just magnitude - out of scope for this
+  /// fix, which only addresses the reported "slides along the line"
+  /// symptom for the general case).
+  final Map<String, double> _linearOffsetDistances = {};
+
+  /// [constraintId]'s user-chosen perpendicular offset distance (see
+  /// [_linearOffsetDistances]' own doc comment), or null if never dragged -
+  /// callers fall back to whatever default distance makes sense for their
+  /// own context.
+  double? linearOffsetDistanceFor(String constraintId) => _linearOffsetDistances[constraintId];
+
+  /// Sets [constraintId]'s own perpendicular offset distance. Same
+  /// "always an absolute value, resolved fresh from the live cursor each
+  /// drag-move frame, never an accumulated delta" contract as
+  /// [setRadialAngleOffset] - only [PartViewport]'s own linear label-drag
+  /// handling calls this.
+  void setLinearOffsetDistance(String constraintId, double distance) {
+    _linearOffsetDistances[constraintId] = distance;
     notifyListeners();
   }
 
@@ -8650,6 +8705,7 @@ class SketchController extends ChangeNotifier {
             orientation: c.orientation,
             text: displayValue.toStringAsFixed(2),
             labelOffset: labelOffset,
+            sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
           ));
         case VerticalConstraintDto c:
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'V', entry.key, isSelected, labelOffset);
@@ -8771,6 +8827,7 @@ class SketchController extends ChangeNotifier {
             },
             text: '?',
             labelOffset: labelOffset,
+            sketchLocalOffsetDistance: linearOffsetDistanceFor(ghost.key),
           ));
         case GhostKind.radius:
         case GhostKind.diameter:

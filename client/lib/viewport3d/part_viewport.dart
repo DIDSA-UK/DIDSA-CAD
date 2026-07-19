@@ -8,7 +8,8 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../sketch/sketch_controller.dart' show ConstraintOverlayItem, ConstraintRadialDimensionItem;
+import '../sketch/sketch_controller.dart'
+    show ConstraintOverlayItem, ConstraintLinearDimensionItem, ConstraintRadialDimensionItem;
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
@@ -299,6 +300,21 @@ class PartViewport extends StatefulWidget {
   /// live camera/projection - the one piece of context only [PartViewport]
   /// itself has), for the caller to persist directly, camera-independent.
   final void Function(double angleDegrees)? onRadialLabelAngleDragged;
+
+  /// P52 bug fix (on-device feedback: "when orbiting, linear dimensions
+  /// slide along the line. they should stay in the same place on the
+  /// line"), [onRadialLabelAngleDragged]'s exact sibling for a
+  /// [ConstraintLinearDimensionItem]: fired in place of
+  /// [onConstraintLabelDragDelta] whenever [draggingConstraintLabelId]
+  /// resolves to one. Unlike radial's angle (which needs a screen-space
+  /// resolve, see that field's own doc comment), a linear dimension's
+  /// perpendicular offset is directly computable in sketch-local space with
+  /// no camera-frame math at all - this State raycasts the live cursor
+  /// onto [sketchPlaneBasis] (the same plane every other cursor-mode pick
+  /// already uses) and reports the resulting sketch-unit perpendicular
+  /// distance from the dimensioned line, for the caller to persist via
+  /// [SketchController.setLinearOffsetDistance].
+  final void Function(double distance)? onLinearLabelOffsetDragged;
 
   /// P44b bug fix (on-device feedback: "when I click a ghost dimension to
   /// set its value, nothing happens"): the [constraintOverlayItems] entry
@@ -593,6 +609,7 @@ class PartViewport extends StatefulWidget {
     this.onConstraintLabelDragDelta,
     this.draggingConstraintLabelId,
     this.onRadialLabelAngleDragged,
+    this.onLinearLabelOffsetDragged,
     this.activeConstraintOverlayItemId,
     this.activeConstraintOverlayItemBuilder,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
@@ -2322,6 +2339,38 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               widget.onRadialLabelAngleDragged?.call(angle);
               return;
             }
+          }
+        }
+      }
+      // P52 bug fix (on-device feedback: "when orbiting, linear dimensions
+      // slide along the line") - [onLinearLabelOffsetDragged]'s own doc
+      // comment covers why; unlike radial's angle resolve above, this needs
+      // no screen-space math at all: the cursor's own sketch-plane raycast
+      // hit (already available via [hitTestSketchPlane]/[worldPointToSketch]
+      // in this same file) is directly a sketch-local point, so the
+      // perpendicular offset is a plain dot product away.
+      ConstraintLinearDimensionItem? linearItem;
+      for (final candidate in widget.constraintOverlayItems) {
+        if (candidate.constraintId == widget.draggingConstraintLabelId &&
+            candidate is ConstraintLinearDimensionItem) {
+          linearItem = candidate;
+          break;
+        }
+      }
+      if (linearItem != null && basis != null && cursor != null) {
+        final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+        final hit = hitTestSketchPlane(ray, basis);
+        if (hit != null) {
+          final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
+          final dx = linearItem.pointB.$1 - linearItem.pointA.$1;
+          final dy = linearItem.pointB.$2 - linearItem.pointA.$2;
+          final lineLength = math.sqrt(dx * dx + dy * dy);
+          if (lineLength > 1e-9) {
+            final normalX = -dy / lineLength;
+            final normalY = dx / lineLength;
+            final distance = (cursorX - linearItem.pointA.$1) * normalX + (cursorY - linearItem.pointA.$2) * normalY;
+            widget.onLinearLabelOffsetDragged?.call(distance);
+            return;
           }
         }
       }

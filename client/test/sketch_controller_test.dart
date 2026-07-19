@@ -2128,6 +2128,38 @@ void main() {
     expect(dimensionLabelAt(controller, transform, const Offset(530, 308), 5), constraintId);
   });
 
+  test(
+      'P52 bug fix: setLinearOffsetDistance flows through constraintOverlayItems as '
+      'sketchLocalOffsetDistance for a confirmed DistanceConstraint, camera-independent unlike '
+      'labelOffset', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintLinearDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalOffsetDistance, isNull);
+    expect(controller.linearOffsetDistanceFor(constraintId), isNull);
+
+    controller.setLinearOffsetDistance(constraintId, 3.5);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintLinearDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalOffsetDistance, 3.5);
+    expect(controller.linearOffsetDistanceFor(constraintId), 3.5);
+  });
+
   test('updateLabelDrag sums successive deltas onto the offset', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);

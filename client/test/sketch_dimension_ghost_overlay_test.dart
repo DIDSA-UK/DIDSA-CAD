@@ -103,6 +103,30 @@ void main() {
     expect(controller.radialAngleOffsetFor('radius'), isNull, reason: 'radius was never dragged');
   });
 
+  test(
+      'P52 bug fix: a linear ghost\'s sketchLocalOffsetDistance is null until '
+      'setLinearOffsetDistance is called, then flows through by ghost key, keyed independently '
+      'per orientation', () async {
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+
+    final beforeItems = controller.dimensionGhostOverlayItems().cast<ConstraintLinearDimensionItem>();
+    for (final item in beforeItems) {
+      expect(item.sketchLocalOffsetDistance, isNull);
+    }
+    expect(controller.linearOffsetDistanceFor('linear'), isNull);
+
+    controller.setLinearOffsetDistance('linear', 2.5);
+
+    final afterItems = controller.dimensionGhostOverlayItems().cast<ConstraintLinearDimensionItem>();
+    final byOrientation = {for (final item in afterItems) item.orientation: item};
+    expect(byOrientation['linear']!.sketchLocalOffsetDistance, 2.5);
+    expect(byOrientation['vertical']!.sketchLocalOffsetDistance, isNull);
+    expect(byOrientation['horizontal']!.sketchLocalOffsetDistance, isNull);
+    expect(controller.linearOffsetDistanceFor('linear'), 2.5);
+  });
+
   test('the active ghost (tapGhost) is flagged selected; its siblings are not', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 0, y: 0);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 3, y: 0);

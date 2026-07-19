@@ -300,7 +300,32 @@ class _ConstraintOverlayPainter extends CustomPainter {
         final length = delta.distance;
         if (length < 1e-6) return;
         final normal = Offset(-delta.dy, delta.dx) / length;
-        final offsetVec = normal * _dimensionOffsetDistance(normal, item.labelOffset);
+        final double offsetMagnitude;
+        final sketchLocalOffsetDistance = item.sketchLocalOffsetDistance;
+        if (sketchLocalOffsetDistance != null) {
+          // Bug fix (on-device feedback: "when orbiting, linear dimensions
+          // slide along the line") - mirrors `_paintRadialDimension`'s own
+          // already-proven technique: no single "pixels per sketch unit"
+          // scalar exists in a perspective 3D view, but it's exactly
+          // recoverable locally by comparing this dimension's own known
+          // sketch-space point-to-point distance against its current
+          // projected screen distance (already computed as [length]
+          // above), then scaling the user's stored sketch-local offset
+          // distance ([sketchLocalOffsetDistance], set by
+          // [SketchController.setLinearOffsetDistance]) by it - unlike
+          // `item.labelOffset`, a raw screen-pixel delta captured under
+          // whatever camera orientation was live at drag time, which goes
+          // stale (and visibly drifts) the instant the camera orbits.
+          final sketchDx = item.pointB.$1 - item.pointA.$1;
+          final sketchDy = item.pointB.$2 - item.pointA.$2;
+          final sketchLength = math.sqrt(sketchDx * sketchDx + sketchDy * sketchDy);
+          offsetMagnitude = sketchLength < 1e-9
+              ? _dimensionOffsetDistance(normal, item.labelOffset)
+              : sketchLocalOffsetDistance * (length / sketchLength);
+        } else {
+          offsetMagnitude = _dimensionOffsetDistance(normal, item.labelOffset);
+        }
+        final offsetVec = normal * offsetMagnitude;
         p1 = aScreen + offsetVec;
         p2 = bScreen + offsetVec;
     }

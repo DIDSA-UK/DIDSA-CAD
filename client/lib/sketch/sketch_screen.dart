@@ -1038,6 +1038,7 @@ class _SketchScreenState extends State<SketchScreen> {
         onConstraintLabelDragDelta: _controller.updateLabelDrag,
         draggingConstraintLabelId: _controller.draggingLabelId,
         onRadialLabelAngleDragged: _handleEmbeddedRadialLabelAngleDragged,
+        onLinearLabelOffsetDragged: _handleEmbeddedLinearLabelOffsetDragged,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
@@ -1446,6 +1447,16 @@ class _SketchScreenState extends State<SketchScreen> {
     final id = _controller.draggingLabelId;
     if (id == null) return;
     _controller.setRadialAngleOffset(id, angleDegrees);
+  }
+
+  /// P52 bug fix (on-device feedback: "when orbiting, linear dimensions
+  /// slide along the line"): [PartViewport.onLinearLabelOffsetDragged]'s
+  /// handler - [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
+  /// [SketchController.setLinearOffsetDistance].
+  void _handleEmbeddedLinearLabelOffsetDragged(double distance) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setLinearOffsetDistance(id, distance);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates
