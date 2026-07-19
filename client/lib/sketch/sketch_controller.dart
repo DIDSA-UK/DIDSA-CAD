@@ -861,8 +861,13 @@ const bool kTapToPlace = true;
 /// directly, with no further tool choice. [convert] (Sketcher-roadmap
 /// Phase 9 v2, Convert Entities) is the same "no further tool choice"
 /// shape - every tap just picks a Body vertex/edge to bring in as real,
-/// associative sketch geometry.
-enum SketchMode { select, draw, dimension, trim, convert }
+/// associative sketch geometry. [offset] (on-device feedback: "when I start
+/// the offset tool, the cursor should be available so I can select the
+/// entities to offset") is the cursor-driven sibling to the ribbon's own
+/// single-selection "Offset" action - every tap picks a Line/Circle/Arc,
+/// then [pendingOffsetTarget] hands off to the UI layer for the same
+/// distance-entry dialog the ribbon action already uses.
+enum SketchMode { select, draw, dimension, trim, convert, offset }
 
 /// The kind of entity a [SketchSelection] refers to. [constraint] covers
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
@@ -885,8 +890,12 @@ class SketchSelection {
 /// The FAB's own open/closed/expanded state (Stage 13 item 4) - tracked on
 /// the controller (rather than as `State` local to the FAB widget) so a
 /// full-screen "tap outside closes it" barrier living elsewhere in the
-/// widget tree can react to it via the same [SketchController].
-enum FabMenuState { closed, categories, sketchEntities }
+/// widget tree can react to it via the same [SketchController]. [tools]
+/// (on-device feedback: "the tools trim/extend, convert/offset, dimension
+/// should be grouped together in a 'tools' fab similar to sketch entity
+/// tools") mirrors [sketchEntities]'s own two-level shape - a category
+/// button expands in place into that mode list, with its own "Back".
+enum FabMenuState { closed, categories, sketchEntities, tools }
 
 /// A constraint type the flyout (Stage 13 item 6) can offer for the current
 /// multi-entity [SketchController.selectionSet]. [vertical], [horizontal],
@@ -1264,6 +1273,8 @@ class SketchController extends ChangeNotifier {
         return 'Trim/Extend';
       case SketchMode.convert:
         return 'Convert Entities';
+      case SketchMode.offset:
+        return 'Offset';
     }
   }
 
@@ -1285,8 +1296,16 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Back navigation from the expanded "Sketch Entities" list to the
-  /// top-level category list (Stage 13 item 4).
+  /// On-device feedback: expands the FAB's "Tools" category in place -
+  /// Dimensions/Trim/Extend/Convert Entities/Offset, mirrors
+  /// [showSketchEntitiesCategory]'s own shape exactly.
+  void showToolsCategory() {
+    _fabMenu = FabMenuState.tools;
+    notifyListeners();
+  }
+
+  /// Back navigation from the expanded "Sketch Entities"/"Tools" list to
+  /// the top-level category list (Stage 13 item 4).
   void backToFabCategories() {
     _fabMenu = FabMenuState.categories;
     notifyListeners();
@@ -1364,6 +1383,26 @@ class SketchController extends ChangeNotifier {
     _dimensionSelection.clear();
     _ghosts = [];
     _activeGhostKey = null;
+    notifyListeners();
+  }
+
+  /// FAB → Offset (on-device feedback): enters [SketchMode.offset], same
+  /// no-further-tool-choice shape as [enterTrimMode]/[enterConvertEntitiesMode]
+  /// - every tap picks a Line/Circle/Arc under the cursor (see
+  /// [_handleOffsetTap]), surfaced via [pendingOffsetTarget] for the UI
+  /// layer to prompt for a distance and call [offsetLine]/[offsetCircle]/
+  /// [offsetArc].
+  void enterOffsetMode() {
+    dropGrabbedEntity();
+    _mode = SketchMode.offset;
+    _fabMenu = FabMenuState.closed;
+    _resetTransientDrawState();
+    _selectionSet.clear();
+    _ribbonVisible = false;
+    _dimensionSelection.clear();
+    _ghosts = [];
+    _activeGhostKey = null;
+    _pendingOffsetTarget = null;
     notifyListeners();
   }
 
@@ -4153,6 +4192,9 @@ class SketchController extends ChangeNotifier {
         // instead, which this mode has nothing to do with) - nothing to
         // do.
         break;
+      case SketchMode.offset:
+        await _handleOffsetTap(radius);
+        break;
     }
   }
 
@@ -5437,6 +5479,44 @@ class SketchController extends ChangeNotifier {
   /// ignored, and a 400/422 from the backend surfaces via [errorMessage]
   /// exactly like any other API failure - both leave the tool "hot" for
   /// another attempt rather than exiting, mirroring a real CAD trim tool.
+  /// On-device feedback ("when I start the offset tool, the cursor should
+  /// be available so I can select the entities to offset"): [SketchMode.
+  /// offset]'s own pending pick - set by [_handleOffsetTap] when a tap
+  /// lands on an offsettable Line/Circle/Arc. The controller has no
+  /// [BuildContext] of its own to prompt for a distance with, so this is
+  /// the hand-off point: the hosting widget (`SketchScreen`, both 2D and
+  /// Orbit View) listens for this going from null to non-null, shows the
+  /// same distance-entry dialog the ribbon's own single-selection "Offset"
+  /// action already uses (`sketch_ribbon.dart`'s `showOffsetDialogFor`),
+  /// and calls [clearPendingOffsetTarget] once it resolves either way -
+  /// mirrors how [activeGhostKey] already lets a value-entry UI react to
+  /// controller state without the controller itself owning any UI.
+  SketchSelection? _pendingOffsetTarget;
+  SketchSelection? get pendingOffsetTarget => _pendingOffsetTarget;
+
+  void clearPendingOffsetTarget() {
+    if (_pendingOffsetTarget == null) return;
+    _pendingOffsetTarget = null;
+    notifyListeners();
+  }
+
+  /// [SketchMode.offset]'s own tap handler - mirrors [_handleTrimTap]'s
+  /// shape (hit-test under the cursor, dispatch by kind), but a Point/
+  /// Ellipse/Spline/Text/Constraint hit is silently ignored (not a valid
+  /// offset target - `Sketch.offset_line`/`offset_circle`/`offset_arc`
+  /// only exist for those three kinds). Stays in offset mode after every
+  /// tap, hit or miss, same as trim mode.
+  Future<void> _handleOffsetTap(double hitRadius) async {
+    if (_busy || _sketchId == null) return;
+    final hit = _entityAt(cursorX, cursorY, hitRadius);
+    if (hit == null) return;
+    if (hit.kind != SelectionKind.line && hit.kind != SelectionKind.circle && hit.kind != SelectionKind.arc) {
+      return;
+    }
+    _pendingOffsetTarget = hit;
+    notifyListeners();
+  }
+
   Future<void> _handleTrimTap(double hitRadius) async {
     if (_busy || _sketchId == null) return;
     final hit = _entityAt(cursorX, cursorY, hitRadius);

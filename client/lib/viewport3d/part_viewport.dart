@@ -2331,9 +2331,44 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (consumed) return;
     }
     final hit = _drawCursorWorldHit;
-    if (hit != null) {
-      widget.onDrawCursorCommit?.call(hit);
+    if (hit == null) return;
+    // On-device feedback ("clicking an edge of a previously created body
+    // should allow dimensions to be created from this edge... it doesn't
+    // look like it's working"): [PartViewport.preferEntityPick]'s own
+    // real-Body vertex/edge pick - mirrors [_handleTap]'s identical branch
+    // exactly. Dimension mode's own `drawCursorMode` gate (added later, to
+    // give it the same cursor-precision model Draw/Trim already had) meant
+    // every tap in Orbit View started routing through *this* method
+    // instead of [_handleTap] - which was never taught to also consult
+    // [preferEntityPick]/[hasEntityNearSketchTap]/[hitTestBodies], silently
+    // making [PartViewport.onSketchEntityTap] unreachable dead code for
+    // Dimension (and, since this session, Convert Entities/Offset) mode
+    // the moment `drawCursorMode` started covering them too.
+    if (widget.preferEntityPick) {
+      final basis = widget.sketchPlaneBasis;
+      final cursor = _cursorPosition;
+      if (basis != null && cursor != null) {
+        final (localX, localY) = worldPointToSketch(basis, hit);
+        final nearExisting = widget.hasEntityNearSketchTap?.call(localX, localY) ?? false;
+        if (!nearExisting) {
+          // Same "vertex/edge only" filter as [_handleTap]'s own branch -
+          // see that branch's own comment for why a face is deliberately
+          // excluded.
+          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final bodyHit = hitTestBodies(
+            ray: ray,
+            viewportSize: _viewportSize,
+            bodies: widget.bodies,
+            filter: const SelectionFilterState(vertex: true, edge: true, face: false, body: false),
+          );
+          if (bodyHit != null) {
+            widget.onSketchEntityTap?.call(bodyHit.entity);
+            return;
+          }
+        }
+      }
     }
+    widget.onDrawCursorCommit?.call(hit);
   }
 
   // ---- A3: recentre + auto-fit far clip ---------------------------------

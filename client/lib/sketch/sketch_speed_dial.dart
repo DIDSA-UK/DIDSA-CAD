@@ -58,7 +58,28 @@ class SketchSpeedDial extends StatelessWidget {
         // Sketch Entities. This persistent copy shows regardless of
         // fabMenu's own open/closed state, right above the main FAB, for as
         // long as a Line chain or Spline is actually in progress.
-        final showPersistentFinish = controller.chainInProgress || controller.splineInProgress;
+        //
+        // On-device feedback ("when I start the offset tool... there
+        // should be a fly up menu at the bottom with a button to finish
+        // the tool. same applies to trim/extend tool"): the same
+        // "no visible way out" gap applies to every mode entered via the
+        // new "Tools" category (Dimensions/Trim/Extend/Convert Entities/
+        // Offset) - none of them auto-return to Select on their own, and
+        // the only other way out (tapping the mode label in the toolbar)
+        // isn't obviously a button. `exitToSelectMode` is the correct
+        // "done" action for all four - none of them has its own
+        // finish-and-commit step the way chain/spline drawing does.
+        final activeToolMode = switch (controller.mode) {
+          SketchMode.dimension || SketchMode.trim || SketchMode.convert || SketchMode.offset => true,
+          _ => false,
+        };
+        final showPersistentFinish = controller.chainInProgress || controller.splineInProgress || activeToolMode;
+        VoidCallback finishAction() {
+          if (controller.chainInProgress) return controller.finishChain;
+          if (controller.splineInProgress) return controller.finishSpline;
+          return controller.exitToSelectMode;
+        }
+
         return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -69,7 +90,7 @@ class SketchSpeedDial extends StatelessWidget {
                 child: _SpeedDialAction(
                   svgAsset: 'assets/icons/actions/action_finish.svg',
                   label: 'Finish',
-                  onPressed: controller.chainInProgress ? controller.finishChain : controller.finishSpline,
+                  onPressed: finishAction(),
                 ),
               ),
             if (actions.isNotEmpty)
@@ -116,6 +137,27 @@ class SketchSpeedDial extends StatelessWidget {
         return const [];
       case FabMenuState.categories:
         return [
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/actions/action_sketch_entities.svg',
+            label: 'Sketch Entities',
+            onPressed: controller.showSketchEntitiesCategory,
+          ),
+          // On-device feedback ("the tools trim/extend, convert/offset,
+          // dimension should be grouped together in a 'tools' fab similar
+          // to sketch entity tools"): replaces what used to be three (now
+          // four, with Offset) separate top-level entries here - see the
+          // FabMenuState.tools case below.
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/actions/action_trim.svg',
+            label: 'Tools',
+            onPressed: controller.showToolsCategory,
+          ),
+        ];
+      case FabMenuState.tools:
+        // On-device feedback: grouped exactly like FabMenuState.
+        // sketchEntities's own tool list - a Back button returns to the
+        // top-level categories, mirrored below.
+        return [
           // P38: Dimensions works in Orbit View now too - see
           // [restrictToEmbeddedTools]'s own doc comment for why both of
           // its old blockers no longer apply.
@@ -123,11 +165,6 @@ class SketchSpeedDial extends StatelessWidget {
             svgAsset: 'assets/icons/actions/action_dimensions.svg',
             label: 'Dimensions',
             onPressed: controller.enterDimensionMode,
-          ),
-          _SpeedDialAction(
-            svgAsset: 'assets/icons/actions/action_sketch_entities.svg',
-            label: 'Sketch Entities',
-            onPressed: controller.showSketchEntitiesCategory,
           ),
           // P30: Trim/Extend works in Orbit View now - its own tap-commit
           // logic never depended on the 2D-only reference-body ghost-
@@ -150,6 +187,19 @@ class SketchSpeedDial extends StatelessWidget {
             svgAsset: 'assets/icons/actions/action_convert_entities.svg',
             label: 'Convert Entities',
             onPressed: controller.enterConvertEntitiesMode,
+          ),
+          // On-device feedback: Offset's own cursor-driven mode (the
+          // ribbon's single-selection "Offset" chip still exists
+          // separately, for when something's already selected).
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/ribbon/ribbon_offset.svg',
+            label: 'Offset',
+            onPressed: controller.enterOffsetMode,
+          ),
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/actions/action_back.svg',
+            label: 'Back',
+            onPressed: controller.backToFabCategories,
           ),
         ];
       case FabMenuState.sketchEntities:

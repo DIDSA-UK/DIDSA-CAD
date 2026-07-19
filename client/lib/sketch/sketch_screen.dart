@@ -310,6 +310,32 @@ class _SketchScreenState extends State<SketchScreen> {
       _controller.ensureSketch();
     }
     _loadInitialOrbitViewPreference();
+    // On-device feedback ("when I start the offset tool, the cursor should
+    // be available so I can select the entities to offset"): fired every
+    // time SketchMode.offset's own cursor pick lands on something (see
+    // SketchController.pendingOffsetTarget's own doc comment) - stays
+    // registered for the widget's whole lifetime (unlike
+    // _enterOrbitViewOncePlaneReadyIfPreferred, which only ever needs to
+    // fire once), guarded by _offsetDialogShowing so a rapid extra
+    // notifyListeners while the dialog is already up can't show a second
+    // one.
+    _controller.addListener(_showOffsetDialogIfPending);
+  }
+
+  bool _offsetDialogShowing = false;
+
+  void _showOffsetDialogIfPending() {
+    if (!mounted || _offsetDialogShowing) return;
+    final target = _controller.pendingOffsetTarget;
+    if (target == null) return;
+    _offsetDialogShowing = true;
+    // Consumed immediately (not after the dialog resolves) so a re-entrant
+    // notifyListeners call while the dialog is already showing (e.g. an
+    // unrelated state change) can't be mistaken for a fresh pick.
+    _controller.clearPendingOffsetTarget();
+    unawaited(
+      showOffsetDialogFor(context, _controller, target).whenComplete(() => _offsetDialogShowing = false),
+    );
   }
 
   /// Sketcher restructure Phase 2's rollout default: [SketcherPreferences]
@@ -346,6 +372,7 @@ class _SketchScreenState extends State<SketchScreen> {
   @override
   void dispose() {
     _controller.removeListener(_enterOrbitViewOncePlaneReadyIfPreferred);
+    _controller.removeListener(_showOffsetDialogIfPending);
     // Only dispose a controller this widget created itself - an injected
     // (e.g. test-owned, or PartScreen-owned) controller's lifecycle belongs
     // to its caller.
@@ -934,15 +961,15 @@ class _SketchScreenState extends State<SketchScreen> {
         // P18/P20: "sketching should always be done with the cursor, not
         // with taps" - covers every draw tool reachable while this
         // landing's SketchMode.draw is active (see [SketchSpeedDial.
-        // restrictToEmbeddedTools] - everything except Text). Dimension/
-        // Select stay on the plain-tap onSketchPlaneTap/onSketchEntityTap
-        // path above, unaffected (Trim/Extend moved onto this cursor path
-        // too as of P30 - see below). Also gated on
-        // _orbitCursorActive (P19 on-device feedback: the orbit-view-toggle
-        // FAB now swaps between this cursor
-        // model and plain camera orbiting with immediate tap-to-place - see
-        // that field's own doc comment) - false reverts a tap straight to
-        // onSketchPlaneTap below, exactly the pre-P16 behaviour.
+        // restrictToEmbeddedTools] - everything except Text). Select stays
+        // on the plain-tap `_handleTap`/`onSketchEntityTap` path in
+        // `PartViewport` (not reached at all while `drawCursorMode` is
+        // true), unaffected. Also gated on _orbitCursorActive (P19
+        // on-device feedback: the orbit-view-toggle FAB now swaps between
+        // this cursor model and plain camera orbiting with immediate
+        // tap-to-place - see that field's own doc comment) - false reverts
+        // a tap straight to the plain-tap path, exactly the pre-P16
+        // behaviour.
         // P24: also covers drag mode ([_dragModeActiveInOrbitView]) -
         // dragging needs this same plane-raycast cursor, not Selection
         // mode's mesh-hover one (see that field's own doc comment). P30:
@@ -952,15 +979,28 @@ class _SketchScreenState extends State<SketchScreen> {
         // including _handleTrimTap) for any mode that isn't drag, so
         // widening this gate is the only plumbing Trim/Extend needs to get
         // the same "aim precisely, then tap to commit" cursor model every
-        // other mode already has. P38: same reasoning extends to Dimension
-        // mode now that it's reachable in Orbit View too -
-        // [_handleEmbeddedSketchTap] already dispatches into
-        // `handleCanvasTap` -> `_handleDimensionTap` unmodified; this is
-        // still the only plumbing it needed.
+        // other mode already has. P38 added Dimension mode to this same
+        // gate for the same reason - but on-device feedback later showed
+        // this comment's own claim above ("Dimension... stay on the
+        // plain-tap... path") was **wrong**: once Dimension moved onto
+        // *this* cursor-commit path, real-Body vertex/edge picking
+        // (`PartViewport.preferEntityPick`/`onSketchEntityTap`, P10) - which
+        // only `_handleTap` ever consulted - silently stopped firing for
+        // every Dimension-mode tap, since `_handleTap` itself is
+        // unreachable whenever `drawCursorMode` is true (see
+        // `_onPointerEnd`). Fixed at the root - `PartViewport.
+        // _commitDrawCursor` now also consults `preferEntityPick`/
+        // `hitTestBodies`/`onSketchEntityTap` before falling back to its
+        // own plane-point commit - not by excluding Dimension mode from
+        // this gate again. Convert Entities/Offset (added since, same
+        // reasoning as Trim/Extend - `_handleOffsetTap`/`pickConvertEntity*`
+        // dispatch the same generic way) get this fix for free too, since
+        // they share the exact same `preferEntityPick` mechanism.
         drawCursorMode: _orbitCursorActive &&
             (_controller.mode == SketchMode.draw ||
                 _controller.mode == SketchMode.trim ||
                 _controller.mode == SketchMode.dimension ||
+                _controller.mode == SketchMode.offset ||
                 _dragModeActiveInOrbitView),
         onDrawCursorMoved: _handleDrawCursorMoved,
         onDrawCursorCommit: _handleEmbeddedDrawOrDragCommit,

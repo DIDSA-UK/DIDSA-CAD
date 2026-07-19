@@ -121,7 +121,7 @@ class SketchRibbon extends StatelessWidget {
           label: 'Offset',
           onTap: controller.busy
               ? null
-              : () => _showOffsetDialog(context, controller, selectionSet.first),
+              : () => showOffsetDialogFor(context, controller, selectionSet.first),
         ),
       // A Text entity has no draggable/tap-driven way to change its own
       // content/size/rotation at all (unlike every geometric entity here,
@@ -434,7 +434,12 @@ class _SetLengthDialogState extends State<_SetLengthDialog> {
 /// copy has) and a different validity rule (only exactly zero is
 /// rejected - negative is meaningful, see each of those methods' own sign
 /// convention doc comments).
-Future<void> _showOffsetDialog(
+///
+/// Public (not `_`-prefixed) so `sketch_screen.dart` can reuse it for
+/// [SketchMode.offset]'s own cursor-driven pick (`SketchController.
+/// pendingOffsetTarget`) - the ribbon's single-selection "Offset" chip
+/// (below) and the cursor-mode tool both end up here, one round trip.
+Future<void> showOffsetDialogFor(
   BuildContext context,
   SketchController controller,
   SketchSelection entity,

@@ -6660,4 +6660,85 @@ void main() {
       expect(freshController.arcs[arcId]!.startPointId, startPointId);
     });
   });
+
+  group('offset tool (on-device feedback: "when I start the offset tool, the cursor should be '
+      'available so I can select the entities to offset")', () {
+    test('enterOffsetMode switches to SketchMode.offset with an "Offset" label', () {
+      controller.enterOffsetMode();
+      expect(controller.mode, SketchMode.offset);
+      expect(controller.modeLabel, 'Offset');
+    });
+
+    Future<(SketchController, _FakeBackend)> adoptedControllerWithLine() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-offset-1', 'origin-offset-1');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-offset-1');
+      return (freshController, freshBackend);
+    }
+
+    test('tapping a Line sets pendingOffsetTarget without calling the offset API yet', () async {
+      final (freshController, freshBackend) = await adoptedControllerWithLine();
+      freshController.enterOffsetMode();
+
+      await freshController.handleCanvasTap(3, 0); // off the exact midpoint, on the Line itself
+
+      expect(freshController.pendingOffsetTarget?.kind, SelectionKind.line);
+      expect(freshController.pendingOffsetTarget?.id, 'line-a');
+      expect(freshBackend.requestLog.any((r) => r.contains('/offset')), isFalse);
+    });
+
+    test('tapping empty canvas leaves pendingOffsetTarget null', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterOffsetMode();
+
+      await freshController.handleCanvasTap(500, 500);
+
+      expect(freshController.pendingOffsetTarget, isNull);
+    });
+
+    test('tapping a Point (not a valid offset target) leaves pendingOffsetTarget null', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterOffsetMode();
+
+      await freshController.handleCanvasTap(0, 0); // point-a
+
+      expect(freshController.pendingOffsetTarget, isNull);
+    });
+
+    test('clearPendingOffsetTarget clears it and notifies listeners', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(3, 0);
+      expect(freshController.pendingOffsetTarget, isNotNull);
+      var notified = false;
+      freshController.addListener(() => notified = true);
+
+      freshController.clearPendingOffsetTarget();
+
+      expect(freshController.pendingOffsetTarget, isNull);
+      expect(notified, isTrue);
+    });
+
+    test('entering offset mode clears any stale pendingOffsetTarget from a previous session', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterOffsetMode();
+      await freshController.handleCanvasTap(3, 0);
+      expect(freshController.pendingOffsetTarget, isNotNull);
+
+      freshController.enterOffsetMode();
+
+      expect(freshController.pendingOffsetTarget, isNull);
+    });
+  });
 }

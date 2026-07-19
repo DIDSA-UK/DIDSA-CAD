@@ -216,7 +216,13 @@ void main() {
       'orthographic 2D canvas was an unfixable mismatch - see SketchScreen._buildBaseLayer\'s own '
       'doc comment); Orbit View is now the only place a Sketch\'s real Body geometry is shown',
       (tester) async {
-    SharedPreferences.setMockInitialValues({});
+    // On-device feedback ("when I tap a sketch in the tree, it sends me to
+    // the old 2d editor"): SketcherPreferences.defaultUse3DSketcher flipped
+    // to true, so this test (which specifically wants the 2D-canvas path)
+    // must force it explicitly now, rather than relying on the ambient
+    // default - same convention _openInOrbitView's own doc comment already
+    // established for the opposite case.
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
     final controller = await _freshController();
 
     await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
@@ -231,7 +237,9 @@ void main() {
       'the Hide Reference Body toggle flips SketchCanvas.referenceBodyHidden, which gates the '
       'projected reference-body ghost overlay drawn on the canvas itself - its only remaining '
       'purpose now that there is no more shaded body backdrop to hide alongside it', (tester) async {
-    SharedPreferences.setMockInitialValues({});
+    // Same forced-2D reasoning as the test above - this one specifically
+    // exercises SketchCanvas.referenceBodyHidden.
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
     final controller = await _freshController();
 
     await tester.pumpWidget(

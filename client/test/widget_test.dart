@@ -71,10 +71,27 @@ void main() {
     await tester.tap(find.byIcon(Icons.add));
     await tester.pump();
 
-    // First level: categories, not individual tools yet.
+    // First level: categories, not individual tools yet. On-device
+    // feedback ("the tools trim/extend, convert/offset, dimension should
+    // be grouped together in a 'tools' fab similar to sketch entity
+    // tools"): Dimensions/Trim/Extend/Convert Entities/Offset now live one
+    // level down, inside "Tools" - only "Sketch Entities" and "Tools"
+    // themselves show at this top level.
     expect(find.byTooltip('Sketch Entities').hitTestable(), findsOneWidget);
-    expect(find.byTooltip('Dimensions').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Tools').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Dimensions').hitTestable(), findsNothing);
     expect(find.byTooltip('Circle').hitTestable(), findsNothing);
+
+    // "Tools" expands to the grouped mode list, same two-level shape as
+    // "Sketch Entities" itself.
+    await tester.tap(find.byTooltip('Tools').hitTestable());
+    await tester.pump();
+    expect(find.byTooltip('Dimensions').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Trim/Extend').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Convert Entities').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Offset').hitTestable(), findsOneWidget);
+    await tester.tap(find.byTooltip('Back').hitTestable());
+    await tester.pump();
 
     await tester.tap(find.byTooltip('Sketch Entities').hitTestable());
     await tester.pump();
