@@ -1114,6 +1114,47 @@ DecodedMesh applyUpAxis(DecodedMesh mesh, MeshUpAxis axis) {
 }
 
 // ---------------------------------------------------------------------------
+// App-wide rendering-pipeline mirror correction
+// ---------------------------------------------------------------------------
+
+/// Corrects the same confirmed rendering-pipeline bug documented on
+/// `viewport3d/mesh_geometry.dart`'s `renderMirrorCorrectedMesh`: proven (in
+/// Part Modeller, via a labeled reference STEP file at a known fixed camera
+/// pose, then independently confirmed by an import/export round-trip showing
+/// the stored geometry itself is untouched) to be a rendering-only issue, not
+/// a per-file data problem - see docs/status.md's own investigation notes.
+///
+/// Applied unconditionally, after [applyUpAxis] (so it operates on the app's
+/// own post-up-axis-correction Z, matching what Part Modeller calls Z) and
+/// independently of the user-facing [applyMirror] toggle below, which keeps
+/// its original, distinct purpose: correcting a file that is *itself*
+/// genuinely mirrored in its own raw data (a real, separate, per-file
+/// problem this decoder has always had no reliable way to auto-detect).
+/// With this correction in place, [applyMirror] off should be the normal,
+/// correct default for a file that isn't independently self-mirrored.
+DecodedMesh applyRenderMirrorCorrection(DecodedMesh mesh) {
+  Float32List negateZ(Float32List src) {
+    final out = Float32List(src.length);
+    for (var i = 0; i + 2 < src.length; i += 3) {
+      out[i] = src[i];
+      out[i + 1] = src[i + 1];
+      out[i + 2] = -src[i + 2];
+    }
+    return out;
+  }
+
+  return DecodedMesh(
+    positions: negateZ(mesh.positions),
+    normals: negateZ(mesh.normals),
+    uvs: mesh.uvs,
+    textureBytes: mesh.textureBytes,
+    textureMimeType: mesh.textureMimeType,
+    materialGroups: mesh.materialGroups,
+    sourceTriangleCount: mesh.sourceTriangleCount,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Mirror correction
 // ---------------------------------------------------------------------------
 

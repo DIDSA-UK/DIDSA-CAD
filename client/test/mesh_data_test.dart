@@ -813,6 +813,52 @@ void main() {
     });
   });
 
+  group('applyRenderMirrorCorrection (confirmed rendering-pipeline Z-mirror fix)', () {
+    DecodedMesh meshWithOneVertex(double x, double y, double z) => DecodedMesh(
+          positions: Float32List.fromList([x, y, z, x, y, z, x, y, z]),
+          normals: Float32List.fromList([1, 0, 0, 1, 0, 0, 1, 0, 0]),
+          uvs: Float32List(6),
+        );
+
+    test('negates Z only, for positions and normals', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      final corrected = applyRenderMirrorCorrection(mesh);
+      expect(corrected.positions.sublist(0, 3), [1.0, 2.0, -3.0]);
+      expect(corrected.normals.sublist(0, 3), [1.0, 0.0, 0.0]);
+    });
+
+    test('applying it twice returns to the original - a reflection is its own inverse', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      final roundTripped = applyRenderMirrorCorrection(applyRenderMirrorCorrection(mesh));
+      expect(roundTripped.positions.sublist(0, 3), [1.0, 2.0, 3.0]);
+    });
+
+    test('preserves materialGroups/textureBytes/sourceTriangleCount unchanged', () {
+      final mesh = DecodedMesh(
+        positions: Float32List.fromList([1, 2, 3, 1, 2, 3, 1, 2, 3]),
+        normals: Float32List.fromList([1, 0, 0, 1, 0, 0, 1, 0, 0]),
+        uvs: Float32List(6),
+        textureBytes: Uint8List.fromList([1, 2, 3]),
+        textureMimeType: 'image/png',
+        materialGroups: const [
+          MeshMaterialGroup(startTriangle: 0, triangleCount: 1, textureBytes: null, textureMimeType: null),
+        ],
+        sourceTriangleCount: 5,
+      );
+      final corrected = applyRenderMirrorCorrection(mesh);
+      expect(corrected.textureBytes, mesh.textureBytes);
+      expect(corrected.textureMimeType, mesh.textureMimeType);
+      expect(corrected.materialGroups, mesh.materialGroups);
+      expect(corrected.sourceTriangleCount, 5);
+    });
+
+    test('composed with applyMirror negates both X and Z (independent, orthogonal corrections)', () {
+      final mesh = meshWithOneVertex(1, 2, 3);
+      final corrected = applyMirror(applyRenderMirrorCorrection(mesh), true);
+      expect(corrected.positions.sublist(0, 3), [-1.0, 2.0, -3.0]);
+    });
+  });
+
   group('decimateToTriangleBudget', () {
     DecodedMesh meshWithTriangles(int count) => DecodedMesh(
           positions: Float32List(count * 9),

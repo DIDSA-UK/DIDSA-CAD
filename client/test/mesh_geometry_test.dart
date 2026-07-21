@@ -322,4 +322,49 @@ void main() {
       expect(highContrastColorFrom(onlyOption, vm.Vector4(0.5, 0.5, 0.5, 1)), onlyOption.single);
     });
   });
+
+  group('renderMirrorCorrectedMesh (confirmed rendering-pipeline Z-mirror fix)', () {
+    MeshDto sampleMesh() => MeshDto(
+          vertices: [
+            [1, 2, 3],
+            [4, 5, 6],
+          ],
+          normals: [
+            [0, 1, 0],
+            [1, 0, 0],
+          ],
+          triangleIndices: [
+            [0, 1, 0],
+          ],
+          edges: [1, 2, 3, 4, 5, 6],
+          topologyVertices: [
+            [1, 2, 3],
+          ],
+        );
+
+    test('negates only the Z component of every position field', () {
+      final corrected = renderMirrorCorrectedMesh(sampleMesh());
+      expect(corrected.vertices, [
+        [1, 2, -3],
+        [4, 5, -6],
+      ]);
+      expect(corrected.normals, [
+        [0, 1, 0],
+        [1, 0, 0],
+      ]);
+      expect(corrected.edges, [1, 2, -3, 4, 5, -6]);
+      expect(corrected.topologyVertices, [
+        [1, 2, -3],
+      ]);
+      // Untouched: indices/ids don't represent positions.
+      expect(corrected.triangleIndices, sampleMesh().triangleIndices);
+    });
+
+    test('applying it twice restores the original values', () {
+      final mesh = sampleMesh();
+      final roundTripped = renderMirrorCorrectedMesh(renderMirrorCorrectedMesh(mesh));
+      expect(roundTripped.vertices, mesh.vertices);
+      expect(roundTripped.edges, mesh.edges);
+    });
+  });
 }

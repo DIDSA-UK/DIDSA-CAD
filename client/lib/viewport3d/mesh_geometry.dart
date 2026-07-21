@@ -6,6 +6,57 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 
+/// Corrects a real, confirmed rendering-pipeline bug: every Body's geometry
+/// renders with world Z reflected relative to its true, stored coordinates -
+/// proven by importing a labeled reference STEP file (three arrows along
+/// +X/+Y/+Z) and comparing its known tip coordinates against where they
+/// actually appeared on screen at a known, fixed camera pose, then
+/// independently confirmed by round-tripping that same file through
+/// import -> in-memory OCCT shape -> export and finding the stored/exported
+/// geometry byte-identical to the original (so the backend/OCCT/export path
+/// is provably innocent - see docs/status.md's own investigation notes).
+///
+/// The practical consequence went both directions: an imported file rendered
+/// mirrored on screen even though its stored data was correct, and - because
+/// modeling and visual comparison both happen "by eye" against this same
+/// mirrored viewport - a Part built in DIDSA-CAD would end up with genuinely
+/// Z-inverted stored geometry (calibrated against the wrong picture), which
+/// then round-tripped incorrectly through STEP export into any standards-
+/// compliant external viewer (confirmed directly: SolidWorks).
+///
+/// Negates Z only (`(x, y, z) -> (x, y, -z)`) on every position-like field
+/// ([MeshDto.vertices]/[MeshDto.normals]/[MeshDto.edges]/
+/// [MeshDto.topologyVertices]) - the one axis identified. Deliberately
+/// leaves [MeshDto.triangleIndices] (and the id lists) untouched - a
+/// single-axis negation reverses each triangle's winding relative to its
+/// stored index order, but nothing here depends on winding for visibility:
+/// every confirmed Body already renders `doubleSided` (see
+/// `part_viewport.dart`'s `_syncMeshNode`), so there is no back-face culling
+/// for a reversed winding to break. Applied identically to both the
+/// filled-faces mesh and the edge polylines built from the same [MeshDto],
+/// so the two stay visually coincident.
+MeshDto renderMirrorCorrectedMesh(MeshDto mesh) {
+  List<List<double>> negateZTriples(List<List<double>> triples) => [
+        for (final t in triples) [t[0], t[1], -t[2]],
+      ];
+
+  List<double> negateZFlat(List<double> flat) => [
+        for (var i = 0; i + 2 < flat.length; i += 3) ...[flat[i], flat[i + 1], -flat[i + 2]],
+      ];
+
+  return MeshDto(
+    vertices: negateZTriples(mesh.vertices),
+    normals: negateZTriples(mesh.normals),
+    triangleIndices: mesh.triangleIndices,
+    edges: negateZFlat(mesh.edges),
+    faceIds: mesh.faceIds,
+    edgeIds: mesh.edgeIds,
+    topologyVertices: negateZTriples(mesh.topologyVertices),
+    topologyVertexIds: mesh.topologyVertexIds,
+    faceEdgeIds: mesh.faceEdgeIds,
+  );
+}
+
 /// Holds the pure, GPU-independent vertex/index buffers `flutter_scene`
 /// expects for an [UnskinnedGeometry] - kept separate from
 /// [geometryFromMesh] so this data-layout logic can be unit-tested without a

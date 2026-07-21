@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -289,5 +290,59 @@ void main() {
     camera.reset();
 
     expect(camera.distance, camera.maxDistance);
+  });
+
+  group('frameRadius (on-device feedback: Reset View too close for a large imported body)', () {
+    test('a larger radius requires a larger distance to stay framed', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
+      camera.frameRadius(10, size);
+      final smallDistance = camera.distance;
+      camera.frameRadius(100, size);
+      final largeDistance = camera.distance;
+
+      expect(largeDistance, greaterThan(smallDistance));
+    });
+
+    test('a landscape viewport is height-limited: matches the vertical-FOV-only formula', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
+      const landscape = Size(400, 100); // aspectRatio 4, comfortably >= 1.
+      camera.frameRadius(50, landscape);
+
+      const halfFovY = 45 * 3.141592653589793 / 180 / 2;
+      final expected = 50 * 1.2 / (0.4142135623730951 /* tan(halfFovY) */);
+      expect(camera.distance, closeTo(expected, 1e-6));
+      // Sanity-check the hand-computed tan constant above against dart:math.
+      expect(0.4142135623730951, closeTo(math.tan(halfFovY), 1e-9));
+    });
+
+    test('a portrait viewport is width-limited: needs more distance than landscape for the same radius', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
+      const portrait = Size(100, 400); // aspectRatio 0.25.
+      const landscape = Size(400, 100);
+
+      camera.frameRadius(50, portrait);
+      final portraitDistance = camera.distance;
+      camera.frameRadius(50, landscape);
+      final landscapeDistance = camera.distance;
+
+      expect(portraitDistance, greaterThan(landscapeDistance));
+    });
+
+    test('clamps into the current min/max zoom bounds rather than escaping them', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1); // maxDistance = 20.
+      camera.frameRadius(1000, size); // Would otherwise demand a huge distance.
+      expect(camera.distance, camera.maxDistance);
+    });
+
+    test('non-positive radius or empty viewport size is a no-op', () {
+      final camera = OrbitCamera();
+      final original = camera.distance;
+      camera.frameRadius(0, size);
+      expect(camera.distance, original);
+      camera.frameRadius(-5, size);
+      expect(camera.distance, original);
+      camera.frameRadius(50, Size.zero);
+      expect(camera.distance, original);
+    });
   });
 }

@@ -314,6 +314,39 @@ class OrbitCamera {
     distance = _defaultDistance.clamp(minDistance, maxDistance);
     target = _defaultTarget;
   }
+
+  /// Keeps a body from touching the exact viewport edge once framed - purely
+  /// cosmetic breathing room, not a correctness factor.
+  static const double _frameRadiusPadding = 1.2;
+
+  /// Sets [distance] to frame a sphere of [radius] within [viewportSize] -
+  /// the auto-fit [reset] never actually did: [reset] alone only returns
+  /// [distance] to [_defaultDistance], a fixed value tuned against the
+  /// *reference planes'* own fixed size (see that constant's own doc
+  /// comment), never the current body's actual size. On-device feedback: a
+  /// body significantly larger than that tuning (e.g. an imported STEP file
+  /// spanning 100+ world units) left "Reset View" pointed at a distance far
+  /// too close to show any of it.
+  ///
+  /// Matches [orthographicCameraFor]'s identical 45-degree vertical FOV
+  /// assumption (see its own doc comment) so perspective/orthographic frame
+  /// the same body identically, and accounts for [viewportSize]'s aspect
+  /// ratio the same way that function's `halfWidth = halfHeight *
+  /// aspectRatio` does - a portrait viewport is width-limited, a landscape
+  /// one height-limited, so this picks whichever bound is actually tighter
+  /// rather than assuming a square viewport.
+  ///
+  /// No-op (leaves [distance] untouched) for a non-positive [radius] or an
+  /// empty [viewportSize] - nothing meaningful to frame yet, same "caller
+  /// falls back to the `default*` constants" contract [setZoomBoundsForRadius]
+  /// already uses.
+  void frameRadius(double radius, Size viewportSize) {
+    if (radius <= 0 || viewportSize.isEmpty) return;
+    const halfFovY = 45 * math.pi / 180 / 2;
+    final aspectRatio = viewportSize.width / viewportSize.height;
+    final limitingTan = math.tan(halfFovY) * math.min(1.0, aspectRatio);
+    distance = (radius * _frameRadiusPadding / limitingTan).clamp(minDistance, maxDistance);
+  }
 }
 
 /// The camera orientation that looks straight at [plane] for the

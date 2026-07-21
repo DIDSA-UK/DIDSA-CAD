@@ -89,18 +89,21 @@ class _DecodeRequest {
   return (mesh, mesh.sourceTriangleCount);
 }
 
-/// Runs [applyUpAxis] then [applyMirror] off the main isolate via [compute]
-/// too - a photogrammetry-scale mesh can still have millions of vertices
-/// even after decimation, and this needs to re-run every time the View
-/// menu's "Up axis"/"Mirror" toggles change (not just once at load), so it
-/// can't assume it's cheap enough for the main thread. Both corrections are
-/// combined into one isolate hop (rather than two separate [compute] calls)
-/// to avoid copying the whole position/normal arrays twice for a single
-/// toggle change. Takes a record (rather than each function's own
-/// positional parameters) since [compute] only passes a single argument to
-/// its isolate entry point.
-DecodedMesh _applyCorrectionsIsolate((DecodedMesh, MeshUpAxis, bool) args) =>
-    applyMirror(applyUpAxis(args.$1, args.$2), args.$3);
+/// Runs [applyUpAxis], the app-wide [applyRenderMirrorCorrection], then
+/// [applyMirror] off the main isolate via [compute] too - a
+/// photogrammetry-scale mesh can still have millions of vertices even after
+/// decimation, and this needs to re-run every time the View menu's "Up
+/// axis"/"Mirror" toggles change (not just once at load), so it can't assume
+/// it's cheap enough for the main thread. All three corrections are combined
+/// into one isolate hop (rather than separate [compute] calls) to avoid
+/// copying the whole position/normal arrays repeatedly for a single toggle
+/// change. Takes a record (rather than each function's own positional
+/// parameters) since [compute] only passes a single argument to its isolate
+/// entry point.
+DecodedMesh _applyCorrectionsIsolate((DecodedMesh, MeshUpAxis, bool) args) => applyMirror(
+      applyRenderMirrorCorrection(applyUpAxis(args.$1, args.$2)),
+      args.$3,
+    );
 
 /// Runs the actual [MeshExportFormat.stl]/[MeshExportFormat.glb] byte
 /// encoding off the main isolate via [compute] - `encodeMeshAsStl`/

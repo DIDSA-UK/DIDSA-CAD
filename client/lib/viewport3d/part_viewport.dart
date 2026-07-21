@@ -1226,7 +1226,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // `body.mesh`), only the rendered geometry for this one Node swaps.
         final isPreviewOverlay =
             widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId;
-        final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh;
+        final mesh = renderMirrorCorrectedMesh(
+          isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh,
+        );
         if (mesh.vertices.isEmpty) {
           // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
           // GPU device buffer sized off the vertex/index data - a
@@ -1342,9 +1344,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // See _syncMeshNode's identical substitution for why - keeps the
       // wireframe/shaded-with-edges overlay consistent with whichever mesh
       // (stable or preview) that Body's filled faces are actually showing.
-      final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
-          ? widget.previewOverlayMesh!
-          : body.mesh;
+      final mesh = renderMirrorCorrectedMesh(
+        (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
+            ? widget.previewOverlayMesh!
+            : body.mesh,
+      );
       var segments = edgeSegmentsFromMesh(mesh);
       if (segments.isEmpty) continue;
       if (biased) {
@@ -2542,6 +2546,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _camera.farClip = newFarClip;
     _camera.nearClip = kDefaultNearClip;
     widget.onFarClipChanged?.call(newFarClip);
+    // On-device feedback: "Reset view" alone left the camera at a fixed
+    // distance tuned only for the reference planes' own size, too close to
+    // show a body significantly larger than that - frame the real geometry
+    // instead (half the diagonal is the same bounding-sphere-radius
+    // approximation `boundsOfMesh`/`boundsOfBodies` already use elsewhere).
+    _camera.frameRadius(diagonal / 2, _viewportSize);
   }
 
   // -----------------------------------------------------------------------
