@@ -37,10 +37,19 @@ const Color triadColorZ = Color(0xFF3A7BD5);
 /// [Camera] (not [PerspectiveCamera] specifically) since it only ever reads
 /// [Camera.forward]/[Camera.up], both implemented identically by
 /// [OrthographicCamera].
+///
+/// `right`/`up` here must always match whatever the *actual* renderer
+/// computes on screen - previously `camera.up.cross(forward)`, deliberately
+/// matching flutter_scene's own (confirmed-mirrored, 2026-07-22)
+/// `PerspectiveCamera` internals so the compass stayed consistent with a
+/// buggy render. Now that the render itself is fixed (see
+/// `orthographic_camera.dart`'s `correctedLookAt`, which both
+/// `FixedPerspectiveCamera` and `OrthographicCamera` use), this uses the
+/// same corrected `forward.cross(up)` order to stay in sync with it.
 List<TriadAxis> triadAxes(Camera camera) {
   final forward = camera.forward;
-  final right = camera.up.cross(forward).normalized();
-  final up = forward.cross(right).normalized();
+  final right = forward.cross(camera.up).normalized();
+  final up = right.cross(forward).normalized();
 
   Offset project(vm.Vector3 worldAxis) => Offset(worldAxis.dot(right), -worldAxis.dot(up));
 
@@ -56,17 +65,17 @@ List<TriadAxis> triadAxes(Camera camera) {
 /// and pointing *out of* the screen toward the camera (vs. into it) - the
 /// exact three numbers a sentence like "Z out of the screen"/"Z right"/"Y
 /// up" describes directly. Shares [triadAxes]' own right/up derivation
-/// (`camera.up.cross(camera.forward)`, then `forward.cross(right)`) rather
-/// than reading `OrbitCamera.right`/`.up` directly - those are the camera's
-/// own local-frame vectors, and (confirmed by deriving this formula
-/// algebraically, not assumed) read the *opposite* sign for "right" from
-/// what actually renders on screen. Shared by [PartViewport] and the mesh
-/// viewer's own viewport so both read identically to the trusted on-screen
-/// triad.
+/// (`forward.cross(camera.up)`, then `right.cross(forward)` - see that
+/// function's own doc comment for why this changed from the mirrored
+/// `camera.up.cross(forward)` order) rather than reading
+/// `OrbitCamera.right`/`.up` directly - those are the camera's own
+/// local-frame vectors, not what actually renders on screen. Shared by
+/// [PartViewport] and the mesh viewer's own viewport so both read
+/// identically to the trusted on-screen triad.
 String debugCameraOrientationText(Camera camera) {
   final forward = camera.forward;
-  final right = camera.up.cross(forward).normalized();
-  final up = forward.cross(right).normalized();
+  final right = forward.cross(camera.up).normalized();
+  final up = right.cross(forward).normalized();
   final towardCamera = -forward;
 
   String axisLine(String label, vm.Vector3 axis) {

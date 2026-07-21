@@ -18,15 +18,16 @@ void main() {
 
     test('looking down -Z with +Y up projects Y up on screen and Z towards the camera', () {
       // The simplest case: camera at the origin looking down -Z, up = +Y.
-      // [triadAxes] derives its `right`/`up` basis the same way
-      // flutter_scene's own `_matrix4LookAt` does (`right =
-      // up.cross(forward)`) precisely so the triad's screen directions
-      // always agree with how the real scene actually renders - which
-      // means world +X projects to *screen-left* here, not the
-      // conventionally "intuitive" screen-right (`up.cross(forward)`, not
-      // `forward.cross(up)`, is the swapped-handedness choice
-      // flutter_scene's matrix itself makes). Y, unaffected by that swap,
-      // projects the intuitive way: screen-up.
+      // [triadAxes] derives its `right`/`up` basis to always agree with how
+      // the real scene actually renders - `FixedPerspectiveCamera`'s own
+      // `correctedLookAt` (`right = forward.cross(up)`), the standard
+      // right-handed view-space convention (world +X projects to the
+      // conventionally "intuitive" screen-right here). Previously this
+      // deliberately matched flutter_scene's own *mirrored*
+      // `PerspectiveCamera` (`up.cross(forward)`, world +X projecting to
+      // screen-left) - a real, confirmed rendering bug, fixed 2026-07-22 (see
+      // `orthographic_camera.dart`'s `correctedLookAt`). Y, unaffected by
+      // that swap either way, projects the intuitive way: screen-up.
       final camera = PerspectiveCamera(
         position: vm.Vector3(0, 0, 0),
         target: vm.Vector3(0, 0, -1),
@@ -38,7 +39,7 @@ void main() {
       final y = axes.firstWhere((a) => a.label == 'Y').direction;
       final z = axes.firstWhere((a) => a.label == 'Z').direction;
 
-      expect(x.dx, closeTo(-1, 1e-6));
+      expect(x.dx, closeTo(1, 1e-6));
       expect(x.dy, closeTo(0, 1e-6));
       expect(y.dx, closeTo(0, 1e-6));
       expect(y.dy, closeTo(-1, 1e-6));

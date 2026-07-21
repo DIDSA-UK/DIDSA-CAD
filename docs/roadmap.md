@@ -147,21 +147,27 @@ deliberately unbuilt along the way, not yet scoped further:
   Needs an on-device repro to make further progress - does it happen on a
   fixed-plane Sketch, a custom-plane one, or specifically "New Sketch on
   Face"? Immediately on entry, or only after orbiting the camera?
-- **Whether Import-sourced Bodies still need their own Z-mirror correction.**
-  The 2026-07-21 `renderMirrorCorrectedMesh` fix was applied uniformly to
-  every Body source, then reverted for the Part Modeller the same day once
-  an on-device test showed it broke Extrude/Sweep/Revolve rendering
-  (rendered mesh diverged from the hit-testable one - see status.md's
-  "over-applied" entry). The original labeled-reference-STEP-file finding
-  that motivated the fix most likely does still apply to Import
-  specifically, but that's unconfirmed - needs a repeat of that same test
-  (import a labeled reference file, compare on-screen position to hit-test
-  position) with the reverted code. If Import genuinely still needs
-  correcting, `BodyMeshResponse.source` (`"placeholder"`/`"computed"`
-  today) has no way to distinguish an Import-produced Body from any other
-  kind - a small backend addition (e.g. tagging the originating Feature
-  type) would be needed before the fix could be scoped correctly rather
-  than reapplied uniformly again.
+- **Re-confirm the default cold-start camera angle now that the real
+  mirror bug is fixed (2026-07-22).** The `renderMirrorCorrectedMesh`
+  saga from 2026-07-21 turned out to be chasing a symptom of a genuine
+  bug in `flutter_scene` 0.18.1's own view-matrix construction (see
+  status.md's "the real root cause found" entry) - fixed at its root via
+  `FixedPerspectiveCamera`/`correctedLookAt`, which also resolves the
+  Import-mirroring question that entry used to live here (no source-based
+  scoping needed at all; every Body source renders correctly now,
+  confirmed by the same fix covering both the SolidWorks import case and
+  a from-scratch DIDSA-CAD Boss). One deliberately-untouched piece of
+  fallout: `OrbitCamera._isometricOrientation()`'s hardcoded default
+  cold-start quaternion has no compensating logic (unlike
+  `orientationFacingBasis`, which was re-derived to keep its exact prior
+  behavior) - it will now render as a genuine left-right mirror of
+  whatever it showed before, which is the correct effect of the fix, but
+  the "nicest isometric corner" was an aesthetic choice calibrated by eye
+  over multiple July 17 sessions against the buggy renderer. Needs a
+  fresh on-device look to confirm the new default still reads well, and
+  a possible re-tune if not - using the existing, already-trusted numeric
+  debug camera-orientation overlay (`ViewPreferences.debugShowCameraOrientation`)
+  rather than guessing again.
 - **Cast option for the main CAD viewport and the 3D mesh viewer.** User
   ask (2026-07-18): a proper in-app Cast button (matching YouTube/Netflix-
   style casting), not just Android's built-in screen-mirror toggle - lets

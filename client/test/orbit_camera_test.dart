@@ -33,30 +33,40 @@ void main() {
   /// on-screen triad, `triad.dart`'s `triadAxes`) - not just be internally
   /// self-consistent with [OrbitCamera.right]/[OrbitCamera.up] themselves,
   /// which are the camera's own *local-frame* vectors and (confirmed by
-  /// deriving `triadAxes`' formula algebraically) read the *opposite* sign
+  /// deriving `triadAxes`' formula algebraically) read a *different* sign
   /// for "right" from what the triad actually displays. A previous round's
   /// camera rewrite passed its own self-consistency tests but still looked
   /// mirrored on-device for exactly this reason - this test reproduces
   /// `triadAxes`' own formula directly instead, so a regression here would
   /// have been caught the same way the on-device confidence test caught it.
+  ///
+  /// **2026-07-22**: `triadRight`'s own formula changed from
+  /// `camera.up.cross(forward)` to `forward.cross(camera.up)` - see
+  /// `orthographic_camera.dart`'s `correctedLookAt` doc comment for the full
+  /// story (flutter_scene's own `PerspectiveCamera` had a confirmed,
+  /// genuine left-right mirror baked into its view-matrix construction;
+  /// `triad.dart`'s `triadAxes`, which this test reproduces, now uses the
+  /// corrected formula to match the corrected renderer). `expectAxis`'s
+  /// right-column values are the exact negation of what this test asserted
+  /// before that fix (up unchanged - the fix only flips the horizontal
+  /// axis) - re-derived from the same identity `up.cross(forward) =
+  /// -(forward.cross(up))`, not re-captured on-device, since the *camera
+  /// orientation itself* (still the pre-fix isometric quaternion) hasn't
+  /// changed, only which screen-direction it now correctly renders as.
   test('the default/isometric orientation matches the on-screen triad exactly', () {
     final camera = OrbitCamera();
     final towardCamera = (camera.position - camera.target).normalized();
     final forward = -towardCamera;
-    final triadRight = camera.up.cross(forward).normalized();
-    final triadUp = forward.cross(triadRight).normalized();
+    final triadRight = forward.cross(camera.up).normalized();
+    final triadUp = triadRight.cross(forward).normalized();
 
     void expectAxis(vm.Vector3 axis, double expectedRight, double expectedUp) {
       expect(axis.dot(triadRight), closeTo(expectedRight, 0.01));
       expect(axis.dot(triadUp), closeTo(expectedUp, 0.01));
     }
 
-    // Values confirmed against the user's own on-device readout during the
-    // calibration round (X/Y both read screen-right, Z reads pure screen-up)
-    // - a second round corrected the azimuth from an earlier round's own
-    // (self-consistent but on-device-wrong) screen-left version.
-    expectAxis(vm.Vector3(1, 0, 0), 0.71, 0.41);
-    expectAxis(vm.Vector3(0, 1, 0), 0.71, -0.41);
+    expectAxis(vm.Vector3(1, 0, 0), -0.71, 0.41);
+    expectAxis(vm.Vector3(0, 1, 0), -0.71, -0.41);
     expectAxis(vm.Vector3(0, 0, 1), 0.0, 0.82);
   });
 
