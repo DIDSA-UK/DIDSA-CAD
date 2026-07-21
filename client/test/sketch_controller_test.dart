@@ -2209,8 +2209,12 @@ void main() {
     const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
     // Default anchor for this Line's DistanceConstraint label, per
     // _paintDistanceDimension's own layout: the two Points' screen
-    // positions, each nudged 18px along the perpendicular normal, averaged.
-    const defaultAnchor = Offset(500, 318);
+    // positions, each nudged 18px along the perpendicular normal, then
+    // averaged - the normal here is _canonicalPerpendicular's fixed
+    // "prefer up-screen" convention (negative dy), not raw
+    // Offset(-delta.dy, delta.dx), so a rightward line offsets *up* (300 -
+    // 18 = 282), not down.
+    const defaultAnchor = Offset(500, 282);
 
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), constraintId);
 
@@ -2218,8 +2222,15 @@ void main() {
     controller.updateLabelDrag(const Offset(30, -10));
     controller.endLabelDrag();
 
+    // On-device feedback ("dimensions should be movable anywhere"): the
+    // drag's perpendicular component (-10 along the up-pointing normal, so
+    // the line itself moves a further 10px up: 282 - 10 = 272) and its
+    // tangential component (+30 along the line's own rightward direction,
+    // sliding the label - not just the whole line - 30px right) are now
+    // both honored, computed once by _dimensionLabelPlacement and reused
+    // identically by the painter and this hit-test.
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), isNull);
-    expect(dimensionLabelAt(controller, transform, const Offset(530, 308), 5), constraintId);
+    expect(dimensionLabelAt(controller, transform, const Offset(530, 272), 5), constraintId);
   });
 
   test(
@@ -4954,6 +4965,34 @@ void main() {
   });
 
   test(
+      'on-device feedback: adding a horizontal dimension between two points that already have a '
+      'vertical one leaves the vertical one in place instead of deleting it - vertical and '
+      'horizontal are complementary, not conflicting, unlike linear-vs-specific', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('v', 4.0);
+    final verticalId = controller.constraints.values.whereType<DistanceConstraintDto>().single.id;
+
+    // Re-pick the same two points and confirm the complementary orientation.
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('h', 3.0);
+
+    final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>();
+    expect(distanceConstraints.length, 2); // both coexist - not over-writing each other
+    final vertical = distanceConstraints.firstWhere((c) => c.id == verticalId);
+    expect(vertical.orientation, 'vertical');
+    expect(vertical.distance, 4.0);
+    final horizontal = distanceConstraints.firstWhere((c) => c.id != verticalId);
+    expect(horizontal.orientation, 'horizontal');
+    expect(horizontal.distance, 3.0);
+  });
+
+  test(
       'bug-fix: a confirmed horizontal DistanceConstraint renders/hit-tests at its '
       'orientation-aware anchor, not the plain diagonal linear-dimension layout '
       '(this is what made a horizontal dimension look like it "became linear" on-device)',
@@ -5859,6 +5898,151 @@ void main() {
       math.pow(otherPoint.x - draggedPoint.x, 2) + math.pow(otherPoint.y - draggedPoint.y, 2),
     );
     expect(distance, closeTo(50.0, 1e-6));
+  });
+
+  test(
+      'updateLineDrag also solves locally (no /solve round trip) when a native library is injected, '
+      'reflowing a third Point to satisfy a live DistanceConstraint on the dragged Line\'s own endpoint '
+      '(on-device feedback: line drag never got the same in-process-solver treatment point drag did)',
+      () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    // Third Point created *before* the Line, not after - beginLineDrag
+    // records its drag-start offset from the controller's own persistent
+    // cursor position (see beginLineDrag's doc comment), so an unrelated
+    // tap between finishing the Line and starting the drag would corrupt
+    // that baseline. Placing this first keeps the Line's own last tap as
+    // the drag's actual starting cursor position, same as every other
+    // drag test in this file.
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(100, 100);
+    localController.exitToSelectMode();
+    final thirdPointId = localController.points.keys.firstWhere(
+      (id) => id != localController.originPointId,
+    );
+
+    localController.selectDrawTool(SketchTool.line);
+    // Away from (0, 0) on purpose - same origin-snap reasoning as the
+    // point-drag test above. Deliberately off-axis (not near-horizontal/
+    // vertical), unlike the regression test below - see that test's own
+    // doc comment for why an axis-aligned Line is a separate case.
+    await localController.handleCanvasTap(5, 5);
+    localBackend.dof = 1;
+    await localController.handleCanvasTap(19, 12);
+    localController.finishChain();
+    localController.exitToSelectMode();
+    final line = localController.lines.values.last;
+    final lineStartId = line.startPointId;
+    // Injected directly, same reasoning as the point-drag test above - the
+    // in-process solver reads live controller state, not the fake backend.
+    localController.constraints['dc1'] =
+        DistanceConstraintDto(id: 'dc1', pointAId: lineStartId, pointBId: thirdPointId, distance: 25.0);
+
+    final grabbed = localController.beginLineDrag(line.id);
+    expect(grabbed, isTrue);
+    localBackend.requestLog.clear();
+    await localController.updateLineDrag(20, 20);
+
+    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+
+    final draggedStart = localController.points[lineStartId]!;
+    final third = localController.points[thirdPointId]!;
+    final distance = math.sqrt(
+      math.pow(third.x - draggedStart.x, 2) + math.pow(third.y - draggedStart.y, 2),
+    );
+    expect(distance, closeTo(25.0, 1e-6));
+  });
+
+  test(
+      'updateLineDrag falls back to the server round trip (never applies a partial/inconsistent '
+      'local result) when dragging an axis-aligned Line whose own Horizontal Constraint, combined '
+      'with a separate Constraint reaching out to a third free Point, confuses the native solver\'s '
+      'anchor pinning - on-device-investigation bug fix: found via the test above, generalized - a '
+      'Horizontal/Vertical Constraint between two simultaneously-anchored Points is fine on its own, '
+      'but combined with any other Constraint reaching from one of them to a free Point, the native '
+      'solver was found to sometimes move an "anchored" Point anyway, which would otherwise silently '
+      'teleport the dragged Line somewhere else - not yet root-caused at the FFI/SLVS level, so this '
+      'checks anchor points landed where they were pinned before trusting the rest of a local solve\'s '
+      'result at all, falling back to the safe network path if not',
+      () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    // Third Point first, same drag-start-cursor reasoning as the passing
+    // test above.
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(100, 100);
+    localController.exitToSelectMode();
+    final thirdPointId = localController.points.keys.firstWhere(
+      (id) => id != localController.originPointId,
+    );
+
+    localController.selectDrawTool(SketchTool.line);
+    // Away from (0, 0) on purpose, same reasoning as every other test in
+    // this group - and exactly horizontal, so placing it auto-adds a
+    // HorizontalConstraint between the Line's own two Points (see
+    // "placing a near-horizontal line auto-adds a HorizontalConstraint on
+    // tap" elsewhere in this file) - both of which this drag anchors
+    // simultaneously.
+    await localController.handleCanvasTap(5, 5);
+    localBackend.dof = 1;
+    await localController.handleCanvasTap(15, 5);
+    localController.finishChain();
+    localController.exitToSelectMode();
+    final line = localController.lines.values.last;
+    expect(
+      localController.constraints.values.whereType<HorizontalConstraintDto>(),
+      isNotEmpty,
+      reason: 'sanity check: this scenario only reproduces the bug if the auto-Horizontal-Constraint '
+          'actually landed',
+    );
+    localController.constraints['dc1'] = DistanceConstraintDto(
+      id: 'dc1',
+      pointAId: line.startPointId,
+      pointBId: thirdPointId,
+      distance: 25.0,
+    );
+
+    final grabbed = localController.beginLineDrag(line.id);
+    expect(grabbed, isTrue);
+    localBackend.requestLog.clear();
+    await localController.updateLineDrag(20, 20);
+    // The network fallback's own solve fires via `unawaited(...)` (see
+    // _maybeSolveDuringDrag) - a real pointer-move handler can't block on
+    // it either, so updateLineDrag itself doesn't await it - one microtask
+    // turn lets it actually reach the (fake) backend before asserting on
+    // requestLog below.
+    await Future<void>.delayed(Duration.zero);
+
+    // The local solve's anchor-drift safety check must have rejected its
+    // own result (see _trySolveDuringDragLocally's own doc comment),
+    // falling back to the throttled server round trip instead - not left
+    // silently un-reflowed, and *definitely* not left with the dragged
+    // Line's endpoints moved somewhere other than where the drag put them.
+    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isTrue);
+    expect(localController.points[line.startPointId]!.x, 10); // 5 + (20 - 15)
+    expect(localController.points[line.startPointId]!.y, 20); // 5 + (20 - 5)
+    expect(localController.points[line.endPointId]!.x, 20); // 15 + (20 - 15)
+    expect(localController.points[line.endPointId]!.y, 20); // 5 + (20 - 5)
   });
 
   test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {

@@ -423,25 +423,41 @@ def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[Ske
     select_profiles(candidates, profile_refs)
 
 
+_SWEEP_PATH_ENTITY_TYPES = frozenset(
+    {SketchEntityType.LINE, SketchEntityType.ARC, SketchEntityType.ELLIPSE, SketchEntityType.SPLINE}
+)
+
+
 def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
     """A SweepFeature must name at least one `path_refs` entry (422,
     mirroring Cut's own "at least one target_body_ids entry" check in
-    `_validate_target_body_ids`) and every named ref must be a Line (422,
-    mirroring `_validate_fillet_edge_refs`'s own `shape_type == EDGE`
-    check) - these are payload-shape checks. Whether the named Lines
-    actually resolve and chain into one connected path (open or closed) is
-    a referential/geometric check made by `app.document.sweep.resolve_
+    `_validate_target_body_ids`) and every named ref must be a Line/Arc/
+    Ellipse/Spline (422, mirroring `_validate_fillet_edge_refs`'s own
+    `shape_type == EDGE` check) - these are payload-shape checks. Whether
+    the named entities actually resolve, chain into one connected path
+    (open or closed), or - for a closed/standalone Ellipse - stand alone,
+    is a referential/geometric check made by `app.document.sweep.resolve_
     sweep` instead (the same "payload shape in the router, resolution in
     the OCCT module" split every other structured Feature error in this
-    codebase already uses)."""
+    codebase already uses).
+
+    On-device feedback ("unable to select an arc as the sweep path...
+    ellipses and splines should also be valid targets"): this used to
+    reject anything but LINE right here, before `app.document.sweep`'s own
+    `_resolve_path_segment` (which already handles all four types) ever
+    got a chance to run - the actual geometry support was reachable from
+    neither the client nor a direct API call until this gate widened too."""
     if not path_refs:
         raise HTTPException(
             status_code=422,
             detail="SweepFeature requires at least one path_refs entry",
         )
     for ref in path_refs:
-        if ref.entity_type != SketchEntityType.LINE:
-            raise HTTPException(status_code=422, detail="path_refs entries must have entity_type=line")
+        if ref.entity_type not in _SWEEP_PATH_ENTITY_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail="path_refs entries must have entity_type one of line, arc, ellipse, spline",
+            )
 
 
 def _validate_fillet_radius(radius: float) -> None:

@@ -22,7 +22,7 @@ import pytest
 
 from app.document.graph import build_feature_graph
 from app.document.models import ExtrudeFeature, ExtrudeType, Part, SketchFeature
-from app.document.native_format import _sketch_from_dict, _sketch_to_dict
+from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.document.plane_geometry import (
     basis_point,
     oriented_basis_for_plane,
@@ -204,8 +204,8 @@ def test_native_format_round_trips_external_references():
     ref = ExternalVertexReference(body_id="body-1", vertex_index=5)
     point = sketch.add_external_vertex_reference(12.0, 8.0, ref)
 
-    data = _sketch_to_dict(sketch)
-    restored = _sketch_from_dict(data)
+    data = sketch_to_dict(sketch)
+    restored = sketch_from_dict(data)
 
     assert restored.external_references[point.id] == ref
     assert (restored.points[point.id].x, restored.points[point.id].y) == (12.0, 8.0)
@@ -213,9 +213,9 @@ def test_native_format_round_trips_external_references():
 
 def test_native_format_defaults_external_references_to_empty_for_an_older_save_file():
     sketch = Sketch(id="s1", plane=Plane.XY)
-    data = _sketch_to_dict(sketch)
+    data = sketch_to_dict(sketch)
     del data["external_references"]  # simulates a file saved before this feature existed
 
-    restored = _sketch_from_dict(data)
+    restored = sketch_from_dict(data)
 
     assert restored.external_references == {}

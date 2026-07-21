@@ -329,7 +329,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
         p2 = Offset(bScreen.dx, offsetY);
       default:
         if (screenLength < 1e-6) return;
-        final normal = Offset(-screenDelta.dy, screenDelta.dx) / screenLength;
+        final normal = _canonicalPerpendicular(screenDelta);
         final offsetVec = normal *
             _resolveDimensionOffsetMagnitude(
               normal: normal,
@@ -346,7 +346,14 @@ class _ConstraintOverlayPainter extends CustomPainter {
     _drawExtensionLine(canvas, bScreen, p2, dimPaint);
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
-    _drawDimensionLabel(canvas, (p1 + p2) / 2, item.text, color, plainBlackText: true);
+    // On-device feedback ("dimensions should be movable anywhere, leaders
+    // and extension lines should work as expected") - see
+    // [_dimensionLabelPlacement]'s own doc comment.
+    final placement = _dimensionLabelPlacement(p1, p2, item.labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, item.text, color, plainBlackText: true);
   }
 
   void _paintLineDistanceDimension(Canvas canvas, ConstraintLineDistanceDimensionItem item, Color color) {
@@ -390,11 +397,17 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final dimPaint = Paint()
       ..color = color
       ..strokeWidth = _dimensionStrokeWidth;
-    _drawExtensionLine(canvas, midA, midA + offset, dimPaint);
-    _drawExtensionLine(canvas, midB, midB + offset, dimPaint);
-    canvas.drawLine(midA + offset, midB + offset, dimPaint);
-    _drawDimensionArrows(canvas, midA + offset, midB + offset, color);
-    _drawDimensionLabel(canvas, (midA + offset + midB + offset) / 2, item.text, color, plainBlackText: true);
+    final p1 = midA + offset;
+    final p2 = midB + offset;
+    _drawExtensionLine(canvas, midA, p1, dimPaint);
+    _drawExtensionLine(canvas, midB, p2, dimPaint);
+    canvas.drawLine(p1, p2, dimPaint);
+    _drawDimensionArrows(canvas, p1, p2, color);
+    final placement = _dimensionLabelPlacement(p1, p2, item.labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, item.text, color, plainBlackText: true);
   }
 
   void _paintRadialDimension(Canvas canvas, ConstraintRadialDimensionItem item, Color color) {
@@ -541,6 +554,59 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
   return raw;
 }
 
+/// A unit vector perpendicular to [delta], canonicalized to a fixed
+/// screen-relative sign regardless of [delta]'s own direction - mirrors
+/// `sketch_canvas.dart`'s identical fix/doc comment for the flat 2D canvas
+/// (duplicated rather than imported - this package deliberately never
+/// imports from `sketch/`, see this file's own header doc comment).
+///
+/// On-device feedback ("swiping up/down moves the dimension in the wrong
+/// direction"): the diagonal/generic dimension case used to derive its
+/// offset normal from `Offset(-delta.dy, delta.dx)`, whose sign flips
+/// depending on which of the two constrained Points happens to be stored
+/// as A vs B - roughly half of all diagonal dimensions offset from an
+/// identical drag gesture in the visually opposite direction from their
+/// siblings. This was fixed in the flat 2D canvas; this is the 3D-embedded
+/// sketcher's own copy of the same bug, found and fixed in the same pass.
+Offset _canonicalPerpendicular(Offset delta) {
+  final length = delta.distance;
+  if (length < 1e-6) return const Offset(0, -1);
+  var normal = Offset(-delta.dy, delta.dx) / length;
+  if (normal.dy > 1e-9 || (normal.dy.abs() <= 1e-9 && normal.dx < 0)) {
+    normal = -normal;
+  }
+  return normal;
+}
+
+/// On-device feedback ("dimensions should be movable anywhere, leaders and
+/// extension lines should work as expected") - the 3D-embedded sketcher's
+/// own copy of `sketch_canvas.dart`'s `_dimensionLabelPlacement`, ported
+/// verbatim: once a linear/line-distance dimension's own dimension line has
+/// been positioned ([p1]/[p2], already offset perpendicular to the
+/// measured geometry), this places the label itself - honoring whatever's
+/// left of [labelOffset] *along* that line, with a short leader back to the
+/// line once the label has actually moved off it, mirroring the radial
+/// dimension's own already-existing shoulder/landing-leg pattern. Pure
+/// screen-space math - identical either way regardless of whether [p1]/[p2]
+/// came from a flat [ViewTransform] or a 3D camera projection, so no
+/// camera-specific adaptation was needed to port this.
+const double _dimensionLeaderThreshold = 4.0;
+
+({Offset labelCenter, Offset? leaderFrom}) _dimensionLabelPlacement(
+  Offset p1,
+  Offset p2,
+  Offset labelOffset,
+) {
+  final anchor = (p1 + p2) / 2;
+  final delta = p2 - p1;
+  final length = delta.distance;
+  if (length < 1e-6) return (labelCenter: anchor, leaderFrom: null);
+  final tangent = delta / length;
+  final along = labelOffset.dx * tangent.dx + labelOffset.dy * tangent.dy;
+  if (along.abs() < _dimensionLeaderThreshold) return (labelCenter: anchor, leaderFrom: null);
+  return (labelCenter: anchor + tangent * along, leaderFrom: anchor);
+}
+
 /// P52 follow-up (on-device feedback: "dimension fix is working on one end
 /// of a linear dimension, but the other side still slides") - shared by
 /// every dimension-offset call site in this file ([_paintLinearDimension]'s
@@ -604,29 +670,63 @@ Offset? constraintOverlayItemLabelCenter(
       final aScreen = project(it.pointA);
       final bScreen = project(it.pointB);
       if (aScreen == null || bScreen == null) return null;
+      // Calls the exact same [_resolveDimensionOffsetMagnitude]/
+      // [_canonicalPerpendicular]/[_dimensionLabelPlacement] helpers
+      // [_ConstraintOverlayPainter._paintLinearDimension] does, so this can
+      // never drift from where the dimension is actually drawn - fixes two
+      // bugs at once: the order-dependent normal sign in the diagonal case,
+      // and a real paint/hit-test mismatch the earlier P52 camera-
+      // independent-offset fix introduced (the painter already used
+      // [_resolveDimensionOffsetMagnitude], this hit-test never did, so the
+      // two disagreed the instant the camera moved since the label was last
+      // dragged).
+      final sketchDx = it.pointB.$1 - it.pointA.$1;
+      final sketchDy = it.pointB.$2 - it.pointA.$2;
+      final sketchLength = math.sqrt(sketchDx * sketchDx + sketchDy * sketchDy);
+      final screenDelta = bScreen - aScreen;
+      final screenLength = screenDelta.distance;
       final Offset p1;
       final Offset p2;
       switch (it.orientation) {
         case 'vertical':
           const normal = Offset(1, 0);
-          final offsetX = math.max(aScreen.dx, bScreen.dx) + _dimensionOffsetDistance(normal, it.labelOffset);
+          final offsetX = math.max(aScreen.dx, bScreen.dx) +
+              _resolveDimensionOffsetMagnitude(
+                normal: normal,
+                labelOffset: it.labelOffset,
+                sketchLocalOffsetDistance: it.sketchLocalOffsetDistance,
+                sketchReferenceLength: sketchLength,
+                screenReferenceLength: screenLength,
+              );
           p1 = Offset(offsetX, aScreen.dy);
           p2 = Offset(offsetX, bScreen.dy);
         case 'horizontal':
           const normal = Offset(0, 1);
-          final offsetY = math.max(aScreen.dy, bScreen.dy) + _dimensionOffsetDistance(normal, it.labelOffset);
+          final offsetY = math.max(aScreen.dy, bScreen.dy) +
+              _resolveDimensionOffsetMagnitude(
+                normal: normal,
+                labelOffset: it.labelOffset,
+                sketchLocalOffsetDistance: it.sketchLocalOffsetDistance,
+                sketchReferenceLength: sketchLength,
+                screenReferenceLength: screenLength,
+              );
           p1 = Offset(aScreen.dx, offsetY);
           p2 = Offset(bScreen.dx, offsetY);
         default:
-          final delta = bScreen - aScreen;
-          final length = delta.distance;
-          if (length < 1e-6) return null;
-          final normal = Offset(-delta.dy, delta.dx) / length;
-          final offsetVec = normal * _dimensionOffsetDistance(normal, it.labelOffset);
+          if (screenLength < 1e-6) return null;
+          final normal = _canonicalPerpendicular(screenDelta);
+          final offsetVec = normal *
+              _resolveDimensionOffsetMagnitude(
+                normal: normal,
+                labelOffset: it.labelOffset,
+                sketchLocalOffsetDistance: it.sketchLocalOffsetDistance,
+                sketchReferenceLength: sketchLength,
+                screenReferenceLength: screenLength,
+              );
           p1 = aScreen + offsetVec;
           p2 = bScreen + offsetVec;
       }
-      return (p1 + p2) / 2;
+      return _dimensionLabelPlacement(p1, p2, it.labelOffset).labelCenter;
 
     case ConstraintLineDistanceDimensionItem it:
       final line1Start = project(it.line1Start);
@@ -643,8 +743,18 @@ Offset? constraintOverlayItemLabelCenter(
       final t = toLineB.dx * perpToA.dx + toLineB.dy * perpToA.dy;
       final midB = midA + perpToA * t;
       if ((midB - midA).distance < 1e-6) return null;
-      final offset = alongA * _dimensionOffsetDistance(alongA, it.labelOffset);
-      return (midA + offset + midB + offset) / 2;
+      final sketchDx = it.line1End.$1 - it.line1Start.$1;
+      final sketchDy = it.line1End.$2 - it.line1Start.$2;
+      final sketchLengthA = math.sqrt(sketchDx * sketchDx + sketchDy * sketchDy);
+      final offset = alongA *
+          _resolveDimensionOffsetMagnitude(
+            normal: alongA,
+            labelOffset: it.labelOffset,
+            sketchLocalOffsetDistance: it.sketchLocalOffsetDistance,
+            sketchReferenceLength: sketchLengthA,
+            screenReferenceLength: lengthA,
+          );
+      return _dimensionLabelPlacement(midA + offset, midB + offset, it.labelOffset).labelCenter;
 
     case ConstraintRadialDimensionItem it:
       final centerScreen = project(it.center);

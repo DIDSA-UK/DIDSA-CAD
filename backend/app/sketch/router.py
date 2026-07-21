@@ -1,4 +1,5 @@
 import math
+import uuid
 
 from fastapi import APIRouter, HTTPException
 
@@ -118,6 +119,7 @@ from app.sketch.schemas import (
     VerticalConstraintResponse,
 )
 from app.sketch.solver import SolveResult, solve_sketch
+from app.sketch.store import add_sketch as _add_sketch
 from app.sketch.store import create_sketch as _create_sketch
 from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
 from app.sketch.text_geometry import place_local_point, text_to_polygons
@@ -424,6 +426,54 @@ def create_sketch(payload: SketchCreate) -> SketchResponse:
 @router.get("/sketches/{sketch_id}", response_model=SketchResponse)
 def get_sketch(sketch_id: str) -> SketchResponse:
     sketch = _get_sketch_or_404(sketch_id)
+    return _sketch_response(sketch)
+
+
+@router.get("/sketches/{sketch_id}/export")
+def export_sketch(sketch_id: str) -> dict:
+    """Standalone "2D Drawing" tool save: a bare Sketch's own full state as
+    a plain JSON dict, for the client to write straight to a local file -
+    mirrors `app.document.router.export_native_document`'s identical
+    "hand back a dict, client owns the actual file" shape, just scoped to
+    one Sketch instead of a whole Document (a bare Sketch, reached via this
+    standalone `/sketch` API rather than the Document/Part/Feature layer,
+    has no Part to export *with* - see `app.document.native_format.
+    sketch_to_dict`'s own doc comment for why this reuses that exact
+    serialization rather than inventing a second one).
+
+    Function-local import (not module-level): `app.document.native_format`
+    imports from `app.sketch.models`/`constraints`, so a module-level
+    import back the other way would be a real circular dependency between
+    the `app.sketch` and `app.document` packages - the same avoidance
+    `app.document.sweep`'s own docstring documents for its own
+    `app.document.extrude` import."""
+    from app.document.native_format import sketch_to_dict
+
+    sketch = _get_sketch_or_404(sketch_id)
+    return sketch_to_dict(sketch)
+
+
+@router.post("/sketches/import", response_model=SketchResponse, status_code=201)
+def import_sketch(payload: dict) -> SketchResponse:
+    """Standalone "2D Drawing" tool open: the inverse of [export_sketch] -
+    creates a brand-new Sketch in the store from a previously-exported
+    dict, *not* a full-store replace the way `app.document.router.
+    import_native_document` is (that one owns the entire process's state;
+    this is one Sketch among however many already exist). Always assigns a
+    fresh id (never the id the export happened to carry) so re-opening the
+    same save file twice, or opening it alongside the Sketch it was
+    originally exported from, never collides with an existing entry.
+
+    Fails closed with a 422 for anything malformed, same convention
+    `import_native_document` uses for the Document-level format."""
+    from app.document.native_format import NativeFormatError, sketch_from_dict
+
+    try:
+        sketch = sketch_from_dict(payload)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid sketch file: {exc}")
+    sketch.id = str(uuid.uuid4())
+    _add_sketch(sketch)
     return _sketch_response(sketch)
 
 

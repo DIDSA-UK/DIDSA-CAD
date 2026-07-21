@@ -1126,6 +1126,31 @@ class SketchApiClient {
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Standalone "2D Drawing" tool save: [sketchId]'s own full state as a
+  /// plain JSON object, for the caller to write straight to a local file -
+  /// see the backend's `app.sketch.router.export_sketch`/`app.document.
+  /// native_format.sketch_to_dict` for the exact shape (points/entities/
+  /// constraints/external_references, the same per-Sketch shape the
+  /// Part-level native file format already uses for a Sketch that belongs
+  /// to a SketchFeature).
+  Future<Map<String, dynamic>> exportSketch(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/export'), headers: _headers),
+        (body) => body as Map<String, dynamic>,
+      );
+
+  /// [exportSketch]'s inverse: creates a brand-new Sketch from a
+  /// previously-exported [data], always under a fresh id (never the id the
+  /// file happened to carry) - see the backend's `import_sketch` doc
+  /// comment for why. Throws [ApiException] (422) for a malformed file.
+  Future<SketchDto> importSketch(Map<String, dynamic> data) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/import'),
+              headers: _headers,
+              body: jsonEncode(data),
+            ),
+        (body) => SketchDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Sketcher-roadmap Phase 5's retrospective-redefine entry point - both
   /// fields required together, mirroring the backend's own
   /// `SketchOrientationUpdate` (see that class's own doc comment for why

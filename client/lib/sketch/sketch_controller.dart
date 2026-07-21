@@ -1008,6 +1008,14 @@ class DimensionGhost {
 class SketchController extends ChangeNotifier {
   final SketchApiClient _api;
 
+  /// The standalone "2D Drawing" tool's own Save/Open (`sketch_screen.dart`'s
+  /// `_saveStandaloneSketch`/`_openStandaloneSketch`) needs direct access to
+  /// [SketchApiClient.exportSketch]/`.importSketch` - neither has (or needs)
+  /// a `SketchController`-level wrapper of its own, since both operate on a
+  /// whole Sketch's serialized state, not this controller's live in-memory
+  /// one.
+  SketchApiClient get api => _api;
+
   /// [localSolverBindings] lets a test inject an already-loaded native
   /// library (e.g. the host desktop build under client/native/slvs/
   /// build-host/) so the in-process solve path itself - not just its
@@ -3197,6 +3205,34 @@ class SketchController extends ChangeNotifier {
         anchorPointIds: anchorPointIds.toSet(),
       );
       final anchorSet = anchorPointIds.toSet();
+      // Safety check (on-device feedback investigation, Batch 7 - dragging
+      // an axis-aligned Line surfaced this): a pinned/anchored point is
+      // supposed to stay exactly where it was pinned - `point2d` puts it in
+      // `slvsFixedGroup`, whose parameters `bindings.solve` never varies.
+      // Confirmed (via a new test - "updateLineDrag also solves locally...")
+      // that a Horizontal/Vertical Constraint whose *both* endpoints are
+      // simultaneously anchored (e.g. dragging an already-axis-aligned Line,
+      // an ordinary and common case, not a contrived one) can still come
+      // back with the "fixed" point moved - a real gap in the native
+      // solver's own group handling, not yet root-caused at the FFI/SLVS
+      // level. When that happens, every *other* point's solved position is
+      // equally untrustworthy (each was computed relative to the anchor's
+      // now-wrong position), so nothing here is applied at all - same
+      // "never partially applied, caller falls back to the safe network
+      // path" contract this method already had for a load/solve failure,
+      // just extended to cover an internally-inconsistent success too, not
+      // only an outright one.
+      const anchorDriftTolerance = 1e-4;
+      for (final anchorId in anchorSet) {
+        final solved = result.solvedPoints[anchorId];
+        final input = pointXY[anchorId];
+        if (solved == null || input == null) continue;
+        final (sx, sy) = solved;
+        final (ix, iy) = input;
+        if ((sx - ix).abs() > anchorDriftTolerance || (sy - iy).abs() > anchorDriftTolerance) {
+          return false;
+        }
+      }
       for (final entry in result.solvedPoints.entries) {
         if (anchorSet.contains(entry.key)) continue;
         final (x, y) = entry.value;
@@ -3465,10 +3501,19 @@ class SketchController extends ChangeNotifier {
       if (_draggingLineId != lineId) return;
       points[line.endPointId] = SketchPointView(id: updatedEnd.id, x: updatedEnd.x, y: updatedEnd.y);
       notifyListeners();
-      _maybeSolveDuringDrag(
-        [line.startPointId, line.endPointId],
-        () => _draggingLineId == lineId,
-      );
+      // Sketcher restructure plan Phase 1 item 4 ("land behind one narrow,
+      // real interaction path first... before widening"): [updatePointDrag]
+      // already tries the in-process solver first, falling back to the
+      // throttled server round trip - this was the one documented gap
+      // ("[updateLineDrag]'s own mid-drag solve is untouched"), now closed
+      // the same way, with both endpoints anchored (mirrors
+      // [_trySolveDuringDragLocally]'s single-Point-drag call exactly).
+      if (!_trySolveDuringDragLocally([line.startPointId, line.endPointId])) {
+        _maybeSolveDuringDrag(
+          [line.startPointId, line.endPointId],
+          () => _draggingLineId == lineId,
+        );
+      }
     } on ApiException catch (e) {
       errorMessage = e.message;
       notifyListeners();
@@ -6961,8 +7006,19 @@ class SketchController extends ChangeNotifier {
         // creating a second, conflicting DistanceConstraint alongside it
         // (having both a linear and a horizontal constraint on the same
         // pair simultaneously over-constrains them).
+        //
+        // On-device feedback ("adding a horizontal dimension between two
+        // points that already had a vertical dimension made the first one
+        // disappear"): this used to replace *any* differently-oriented
+        // constraint on the pair, not just a generic 'linear' one - but
+        // vertical and horizontal are complementary, not conflicting (one
+        // pins the Y separation, the other the X separation; together they
+        // fully constrain the pair's relative position, same as two
+        // ordinary dimensions on perpendicular axes always would) - only a
+        // 'linear' constraint (which pins the same overall distance a more
+        // specific orientation would) is genuinely superseded here.
         final mismatched = _findDistanceConstraint(pointAId, pointBId);
-        if (mismatched != null) {
+        if (mismatched != null && mismatched.orientation == 'linear') {
           await _api.deleteConstraint(_sketchId!, mismatched.id);
           _pushUndo(() async {
             await _api.createDistanceConstraint(

@@ -6,19 +6,20 @@ import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
 import 'sketch/sketcher_settings_screen.dart';
-import 'viewport3d/part_screen.dart';
+import 'tool_chooser_screen.dart';
 import 'viewport3d/svg_icon.dart';
 
 /// Stage 18's splash/connection screen - shown on cold launch before
-/// [PartScreen], and again later from [PartScreen]'s File menu's "Connection
-/// Settings" entry. Loads [ApiConfig]'s stored `server_url`/`api_key`
-/// (pre-filling the fields once the async read completes, never blocking the
-/// initial frame - see [_loadExisting]), and on Connect runs a `GET /health`
-/// check before persisting anything, so a bad URL/key is never silently
-/// saved.
+/// [ToolChooserScreen] (which then leads to either `PartScreen` or a
+/// standalone `SketchScreen`), and again later from `PartScreen`'s File
+/// menu's "Connection Settings" entry. Loads [ApiConfig]'s stored
+/// `server_url`/`api_key` (pre-filling the fields once the async read
+/// completes, never blocking the initial frame - see [_loadExisting]), and
+/// on Connect runs a `GET /health` check before persisting anything, so a
+/// bad URL/key is never silently saved.
 class ConnectionScreen extends StatefulWidget {
-  /// True when reached from [PartScreen]'s File menu rather than cold
-  /// launch - a successful Connect then pops back to the [PartScreen]
+  /// True when reached from `PartScreen`'s File menu rather than cold
+  /// launch - a successful Connect then pops back to the `PartScreen`
   /// already underneath instead of pushing a brand new one.
   final bool isSettingsRevisit;
 
@@ -91,7 +92,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       if (widget.isSettingsRevisit) {
         Navigator.of(context).pop();
       } else {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const PartScreen()));
+        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const ToolChooserScreen()));
       }
     } catch (_) {
       if (!mounted) return;

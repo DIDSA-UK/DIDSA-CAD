@@ -314,7 +314,17 @@ def _constraint_from_dict(data: dict) -> Constraint:
         raise NativeFormatError(f"Malformed {constraint_type!r} constraint: {exc}") from exc
 
 
-def _sketch_to_dict(sketch: Sketch) -> dict:
+def sketch_to_dict(sketch: Sketch) -> dict:
+    """A `Sketch`'s full state, serialized to a plain dict - the same shape
+    `export_native`'s own `"sketches"` array entries use.
+
+    Public (no leading underscore) since the standalone "2D Drawing" tool's
+    own bare-Sketch save/open endpoints (`app.sketch.router`) reuse this
+    verbatim rather than re-deriving a second serialization for the exact
+    same `Sketch` shape - a bare Sketch has no Part/Document context, so it
+    needed a save/open path independent of `export_native`/`import_native`'s
+    own Document-level format, but the underlying per-Sketch dict shape is
+    identical either way."""
     return {
         "id": sketch.id,
         "plane": sketch.plane.value if sketch.plane is not None else None,
@@ -333,7 +343,8 @@ def _sketch_to_dict(sketch: Sketch) -> dict:
     }
 
 
-def _sketch_from_dict(data: dict) -> Sketch:
+def sketch_from_dict(data: dict) -> Sketch:
+    """The inverse of [sketch_to_dict] - public for the same reason."""
     plane_value = data.get("plane")
     sketch = Sketch(id=_require(data, "id"), plane=Plane(plane_value) if plane_value is not None else None)
     sketch._origin_point_id = data.get("origin_point_id")
@@ -617,7 +628,7 @@ def export_native(document: Document, sketches: dict[str, Sketch]) -> dict:
             "parts": [_part_to_dict(part) for part in document.parts.values()],
         },
         "sketches": [
-            _sketch_to_dict(sketches[sketch_id])
+            sketch_to_dict(sketches[sketch_id])
             for sketch_id in sorted(referenced_sketch_ids)
             if sketch_id in sketches
         ],
@@ -640,7 +651,7 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
 
     sketches: dict[str, Sketch] = {}
     for sketch_data in data.get("sketches", []):
-        sketch = _sketch_from_dict(sketch_data)
+        sketch = sketch_from_dict(sketch_data)
         sketches[sketch.id] = sketch
 
     document_data = _require(data, "document")
