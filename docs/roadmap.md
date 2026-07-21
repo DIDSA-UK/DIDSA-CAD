@@ -65,6 +65,29 @@ entries) - with one real gap confirmed by a direct code audit:
   entity, low-risk round-trip reductions) for a dedicated scoping
   session. Nothing in it has been decided or started yet.
 
+## Convert Entities / Offset Entities follow-ups
+
+Both tools shipped (Convert Entities v1→v2, Offset Entities v1→v2 with
+chain-aware corner-joining, curved-edge-to-Arc conversion - full history in
+`docs/status.md`'s 2026-07-18 through 2026-07-21 entries). Known gaps left
+deliberately unbuilt along the way, not yet scoped further:
+
+- **A full circular Body edge (a real closed loop - both topological
+  endpoints the same Body vertex) still 422s as `degenerate_edge`** before
+  ever reaching curve-type detection, for both Convert Entities and Offset's
+  body-edge picking. Real Circle extraction (as opposed to the now-shipped
+  open-Arc case) is a separate, not-yet-built follow-up.
+- **A converted circular edge's Arc centre Point is non-associative**
+  (a plain `add_point`, not an external vertex reference) - unlike its
+  start/end Points, it won't itself track a later change to the Body's
+  shape. No existing mechanism pins a circular edge's own centre the way a
+  vertex reference pins a corner; would need new backend design, not
+  attempted.
+- **Dragging a Convert-Entities-created (associative) Point visually works
+  but snaps back on the next solve** - `dragTargetPointIdAt` has no
+  exclusion for external-reference Points, the same inherited limitation
+  every other pinned reference already has. Not fixed, not newly introduced.
+
 ## Other open items
 
 - **Cast option for the main CAD viewport and the 3D mesh viewer.** User
