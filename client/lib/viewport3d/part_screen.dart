@@ -25,6 +25,7 @@ import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'fillet_panel.dart';
+import 'import_format_dialog.dart';
 import 'mesh_geometry.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
@@ -2446,20 +2447,30 @@ class _PartScreenState extends State<PartScreen> {
   /// [DocumentApiClient.createImportFeature]. `type: FileType.any` for the
   /// same reason [_openNativeFile] uses it, not an extension allow-list -
   /// see that method's own doc comment for the Android MIME-type-filtering
-  /// bug this sidesteps.
-  static const Map<String, String> _importSourceFormatByExtension = {
-    'step': 'step',
-    'stp': 'step',
-    'stl': 'stl',
-    'obj': 'obj',
-    'gltf': 'gltf',
-    'glb': 'gltf',
-  };
-
+  /// bug this sidesteps (confirmed the same way here: `FileType.custom` +
+  /// `allowedExtensions` scoped to just the chosen format's own extensions
+  /// would be the more obviously "correct" choice once the user has already
+  /// picked a format below, but it's the exact bug already documented on
+  /// the mesh viewer's own `_pickAndLoad` - only the first extension in the
+  /// list reliably stays enabled on Android, greying out the rest).
+  ///
+  /// On-device request: folded the File menu's four separate format-specific
+  /// import entries into the single "Import…" entry it already had -
+  /// [showImportFormatDialog] is the first step now instead of four
+  /// ListTiles, mirroring Export's own explicit format choice without
+  /// needing Export's four-rows shape. Replaces the previous single-entry
+  /// behavior of silently guessing the format from whichever file's
+  /// extension the user happened to pick; now the user's chosen format is
+  /// authoritative, and a mismatched file is a clear, specific error instead
+  /// of an incorrectly-guessed import.
   Future<void> _importGeometry() async {
     setState(() => _toolbarOpen = false);
     final part = _part;
     if (part == null) return;
+
+    final sourceFormat = await showImportFormatDialog(context);
+    if (sourceFormat == null || !mounted) return;
+    final option = importFormatOptions.firstWhere((o) => o.value == sourceFormat);
 
     final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
     if (result == null || result.files.isEmpty || !mounted) return;
@@ -2468,9 +2479,12 @@ class _PartScreenState extends State<PartScreen> {
     if (bytes == null) return;
 
     final extension = (picked.extension ?? picked.name.split('.').last).toLowerCase();
-    final sourceFormat = _importSourceFormatByExtension[extension];
-    if (sourceFormat == null) {
-      setState(() => _errorMessage = 'Unrecognized file type: .$extension (expected STEP/STL/OBJ/glTF)');
+    if (!option.extensions.contains(extension)) {
+      setState(
+        () => _errorMessage =
+            'That file is .$extension, but you chose to import ${option.label} '
+            '(expected .${option.extensions.join('/.')})',
+      );
       return;
     }
 

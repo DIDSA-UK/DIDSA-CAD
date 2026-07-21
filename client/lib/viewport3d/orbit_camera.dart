@@ -156,20 +156,35 @@ class OrbitCamera {
   /// rotations - the `pitch * yaw` structure this replaced can only ever
   /// produce an `up` with a zero world-X component, since yaw leaves the
   /// local-up axis untouched and pitch alone can't introduce that; it's
-  /// structurally incapable of reaching this specific corner). Confirmed
-  /// correct against the *triad's own* screen-right convention specifically,
-  /// not just self-consistency - `OrbitCamera.right`/`.up` themselves are
-  /// the camera's *own* local-frame vectors, not what the triad displays;
-  /// deriving `triadAxes`' formula algebraically found `triadRight =
-  /// -OrbitCamera.right` (`.up` is unaffected) - the very first Z-up attempt
-  /// this ultimately replaced verified only the former, which is exactly why
-  /// it looked mirrored on-device despite passing its own unit tests. The
-  /// second round landed the axis convention but the wrong azimuth (X+/Y+
-  /// reading screen-*left*, not right) - this round's [right]/[up] are the
-  /// exact negation of that round's own, a 180-degree yaw of it, matching a
-  /// second on-device capture precisely.
+  /// structurally incapable of reaching this specific corner).
+  ///
+  /// **2026-07-22**: [right] negated (`(1, 1, 0)`, was `(-1, -1, 0)`) - not a
+  /// re-calibration, a mechanical correction for [FixedPerspectiveCamera]'s
+  /// own fix (see `orthographic_camera.dart`'s `correctedLookAt`). Unlike
+  /// [orientationFacingBasis], this function has no compensating logic at
+  /// all - it builds a raw quaternion directly from hardcoded world vectors,
+  /// so the same on-screen picture needs a different quaternion once the
+  /// renderer's own right/forward relationship changes. Hand-derived (not
+  /// guessed) via the same vector algebra as [orientationFacingBasis]'s own
+  /// fix: with the old renderer, `renderRight = up.cross(forward)` reduced -
+  /// through this constructor's `back = right.cross(up)`, `forward =
+  /// -orientation.rotated(localBack) = -back` - to `renderRight = -right`
+  /// (this variable, negated) via `up.cross(-back) = -(up.cross(right.cross(up)))
+  /// = -right` (vector triple product, `up`⊥`right` by construction); with
+  /// the new renderer, `renderRight = forward.cross(up) = (-back).cross(up)`
+  /// reduces to `+right` instead (`back.cross(up) = -right` by the matching
+  /// identity) - an exact sign flip on `renderRight` alone, `renderUp`
+  /// provably unchanged either way (`right.cross(forward)` reduces to `up`
+  /// under both orderings, since the `up`-component of the triple product's
+  /// other term vanishes by the same perpendicularity). Negating [right]
+  /// exactly cancels that flip, reproducing the identical on-screen corner
+  /// as before this whole investigation - confirmed by the fact that
+  /// `orbit_camera_test.dart`'s own "matches the on-screen triad exactly"
+  /// values are back to their original (pre-2026-07-22) numbers once both
+  /// this fix and the test's own updated triad formula are in place
+  /// together.
   static vm.Quaternion _isometricOrientation() {
-    final right = vm.Vector3(-1, -1, 0).normalized();
+    final right = vm.Vector3(1, 1, 0).normalized();
     const elevation = 0.6154797086703873; // asin(1 / sqrt(3)), true isometric
     final diagonal = math.sin(elevation) / math.sqrt2;
     final up = vm.Vector3(diagonal, -diagonal, math.cos(elevation));
@@ -240,8 +255,8 @@ class OrbitCamera {
   /// signs were flipped to `+dyPixels`/`+dxPixels`. That fixed vertical
   /// (pitch) orbit, but horizontal (yaw) orbit was still backwards -
   /// swiping left rotated the model right and vice versa - so only the yaw
-  /// term is flipped again here, back to `-dxPixels`; the pitch term's
-  /// `+dyPixels` is untouched and confirmed correct on-device. Pitch is
+  /// term was flipped again, back to `-dxPixels`; the pitch term's
+  /// `+dyPixels` untouched and confirmed correct on-device. Pitch is
   /// applied about the camera's *current* right axis, and yaw about the
   /// camera's *current* up axis - both read fresh from [orientation] every
   /// call, so each always tilts/swings the view the way it's currently
@@ -257,9 +272,22 @@ class OrbitCamera {
   /// point of view, at any orientation - this is the standard
   /// trackball-style orbit. Composed as quaternions, with no clamping, so
   /// this never gets stuck.
+  ///
+  /// **2026-07-22**: yaw's sign flipped back to `+dxPixels` (pitch
+  /// untouched). This drag mapping was hand-tuned entirely by feel against
+  /// [FixedPerspectiveCamera]'s predecessor - flutter_scene's own, now-fixed
+  /// `PerspectiveCamera`, which had a confirmed left-right mirror baked into
+  /// its view matrix (see `orthographic_camera.dart`'s `correctedLookAt`).
+  /// [_right]/[_up]/[orientation]'s own math are all untouched by that fix
+  /// (only how a given orientation actually renders on screen changed), so
+  /// a horizontal swipe now visibly swings the model the opposite way it
+  /// used to for the exact same [orientation] change - on-device feedback
+  /// confirmed only horizontal orbit felt backwards post-fix, consistent
+  /// with the render fix only mirroring the horizontal axis, vertical
+  /// unaffected (see [FixedPerspectiveCamera]'s own doc comment).
   void orbitByScreenDelta(double dxPixels, double dyPixels) {
     final pitch = vm.Quaternion.axisAngle(_right, dyPixels * orbitSensitivity);
-    final yaw = vm.Quaternion.axisAngle(_up, -dxPixels * orbitSensitivity);
+    final yaw = vm.Quaternion.axisAngle(_up, dxPixels * orbitSensitivity);
     orientation = (orientation * pitch * yaw).normalized();
   }
 
