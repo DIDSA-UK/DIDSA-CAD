@@ -147,6 +147,21 @@ deliberately unbuilt along the way, not yet scoped further:
   Needs an on-device repro to make further progress - does it happen on a
   fixed-plane Sketch, a custom-plane one, or specifically "New Sketch on
   Face"? Immediately on entry, or only after orbiting the camera?
+- **Whether Import-sourced Bodies still need their own Z-mirror correction.**
+  The 2026-07-21 `renderMirrorCorrectedMesh` fix was applied uniformly to
+  every Body source, then reverted for the Part Modeller the same day once
+  an on-device test showed it broke Extrude/Sweep/Revolve rendering
+  (rendered mesh diverged from the hit-testable one - see status.md's
+  "over-applied" entry). The original labeled-reference-STEP-file finding
+  that motivated the fix most likely does still apply to Import
+  specifically, but that's unconfirmed - needs a repeat of that same test
+  (import a labeled reference file, compare on-screen position to hit-test
+  position) with the reverted code. If Import genuinely still needs
+  correcting, `BodyMeshResponse.source` (`"placeholder"`/`"computed"`
+  today) has no way to distinguish an Import-produced Body from any other
+  kind - a small backend addition (e.g. tagging the originating Feature
+  type) would be needed before the fix could be scoped correctly rather
+  than reapplied uniformly again.
 - **Cast option for the main CAD viewport and the 3D mesh viewer.** User
   ask (2026-07-18): a proper in-app Cast button (matching YouTube/Netflix-
   style casting), not just Android's built-in screen-mirror toggle - lets

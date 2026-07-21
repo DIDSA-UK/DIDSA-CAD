@@ -1226,9 +1226,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // `body.mesh`), only the rendered geometry for this one Node swaps.
         final isPreviewOverlay =
             widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId;
-        final mesh = renderMirrorCorrectedMesh(
-          isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh,
-        );
+        // Deliberately *not* renderMirrorCorrectedMesh (on-device feedback,
+        // 2026-07-21 follow-up round): that correction was applied
+        // uniformly to every Body source, but a controlled on-device test
+        // (fresh Boss along +Z) showed hitTestBodies/boundsOfBodies - both
+        // still reading `body.mesh` raw, unmodified - land exactly where
+        // the user actually expected the body to be, while this
+        // render-only correction shifted the *visible* mesh to the
+        // opposite side, so a tap on the visible (wrong-side) geometry hit
+        // nothing and the real hit-test highlights appeared on the empty
+        // (correct-side) space instead. Since no on-device report ever
+        // flagged Extrude/Revolve/Sweep rendering mirrored before today,
+        // the original labeled-reference-file finding this correction was
+        // built from most likely implicates Import specifically, not every
+        // Body source uniformly - reverted here pending a properly
+        // source-scoped re-diagnosis (see mesh_geometry.dart's
+        // renderMirrorCorrectedMesh doc comment).
+        final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh;
         if (mesh.vertices.isEmpty) {
           // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
           // GPU device buffer sized off the vertex/index data - a
@@ -1344,11 +1358,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // See _syncMeshNode's identical substitution for why - keeps the
       // wireframe/shaded-with-edges overlay consistent with whichever mesh
       // (stable or preview) that Body's filled faces are actually showing.
-      final mesh = renderMirrorCorrectedMesh(
-        (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
-            ? widget.previewOverlayMesh!
-            : body.mesh,
-      );
+      // Deliberately not renderMirrorCorrectedMesh - see _syncMeshNode's
+      // identical reversion for why.
+      final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
+          ? widget.previewOverlayMesh!
+          : body.mesh;
       var segments = edgeSegmentsFromMesh(mesh);
       if (segments.isEmpty) continue;
       if (biased) {
