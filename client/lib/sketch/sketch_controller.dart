@@ -5708,18 +5708,32 @@ class SketchController extends ChangeNotifier {
   /// onSketchEntityTap] (not [_handleOffsetTap], which only ever sees real
   /// Sketch entities via [_entityAt]). Converts the edge first (reusing
   /// [_convertBodyEdgeToLocalState] - the exact same projected, associative
-  /// Line Convert Entities itself creates), then hands the result straight
-  /// to [offsetPreviewTargets] instead of leaving it selected - one cursor
-  /// tap gets the user straight to the value bar, rather than requiring a
-  /// separate Convert Entities session followed by a second Offset session
-  /// against what it just created.
+  /// Line Convert Entities itself creates).
+  ///
+  /// Bug fix (on-device feedback: "when I select the first edge, it sends
+  /// me to the text box to type the offset. then I can't add more lines or
+  /// curves"): this used to hand the freshly-converted edge straight to
+  /// [offsetPreviewTargets], immediately opening the value bar - correct
+  /// back when Offset was single-entity only, but never updated once P54
+  /// added multi-entity picking. A Body edge is exactly as valid a chain
+  /// member as a Line/Arc already drawn in the Sketch, so this now
+  /// accumulates into [_toggleOffsetChainPick]'s set instead, same as
+  /// [_handleOffsetTap]'s own Line/Arc branch - [finishOffsetChain] (the
+  /// Tools flyup's Finish button) is what actually opens the value bar,
+  /// letting further Body-edge or Sketch-entity taps keep adding to the
+  /// same pick set first.
   Future<void> pickBodyEdgeForOffset(String bodyId, int edgeIndex) async {
     if (_busy || _sketchId == null) return;
     if (_documentPartId == null || _documentSketchFeatureId == null) return;
     await _runGuarded(() async {
-      final lineId = await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
-      _offsetPreviewTargets = [SketchSelection(kind: SelectionKind.line, id: lineId)];
-      _offsetPreviewDistance = null;
+      // On-device feedback ("when I offset a curved edge it creates a
+      // straight line"): a converted Body edge can now be a real Arc, not
+      // just a Line - the accumulated pick set already treats both kinds
+      // identically (see [_handleOffsetTap]'s own Line/Arc branch), so
+      // this just passes through whichever [_convertBodyEdgeToLocalState]
+      // actually resolved.
+      final selection = await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
+      _toggleOffsetChainPick(selection);
     });
   }
 
@@ -6289,25 +6303,56 @@ class SketchController extends ChangeNotifier {
   /// Entities/Offset method here uses). Returns the converted Line's real
   /// id - always a real id, whether freshly created or an already-existing
   /// re-pick (see `Sketch.add_or_reuse_external_vertex_reference`).
-  Future<String> _convertBodyEdgeToLocalState(String bodyId, int edgeIndex) async {
+  /// On-device feedback ("when I offset a curved edge it creates a
+  /// straight line"): now returns a [SketchSelection] (kind-aware)
+  /// instead of a bare Line id - `convert_body_edge` can hand back either
+  /// a Line (the original chord fallback) or a real Arc (a coplanar
+  /// circular Body edge - see the backend's own doc comment), never both,
+  /// so callers that used to assume "always a Line" (like
+  /// [pickBodyEdgeForOffset]) now dispatch on [SketchSelection.kind].
+  Future<SketchSelection> _convertBodyEdgeToLocalState(String bodyId, int edgeIndex) async {
     final partId = _documentPartId!;
     final sketchFeatureId = _documentSketchFeatureId!;
     final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex);
     final newPointIds = <String>[];
-    for (final p in [result.startPoint, result.endPoint]) {
+    for (final p in [result.startPoint, result.endPoint, if (result.centerPoint case final c?) c]) {
       if (points.containsKey(p.id)) continue;
       points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
       newPointIds.add(p.id);
     }
-    if (lines.containsKey(result.line.id)) return result.line.id;
-    lines[result.line.id] = SketchLineView(
-      id: result.line.id,
-      startPointId: result.line.startPointId,
-      endPointId: result.line.endPointId,
-      construction: result.line.construction,
-    );
     final sketchId = _sketchId!;
-    final lineId = result.line.id;
+
+    final arc = result.arc;
+    if (arc != null) {
+      if (arcs.containsKey(arc.id)) return SketchSelection(kind: SelectionKind.arc, id: arc.id);
+      arcs[arc.id] = SketchArcView(
+        id: arc.id,
+        centerPointId: arc.centerPointId,
+        startPointId: arc.startPointId,
+        endPointId: arc.endPointId,
+        construction: arc.construction,
+      );
+      final arcId = arc.id;
+      _pushUndo(() async {
+        await _api.deleteArc(sketchId, arcId);
+        arcs.remove(arcId);
+        for (final pointId in newPointIds) {
+          await _api.deletePoint(sketchId, pointId);
+          points.remove(pointId);
+        }
+      });
+      return SketchSelection(kind: SelectionKind.arc, id: arc.id);
+    }
+
+    final line = result.line!;
+    if (lines.containsKey(line.id)) return SketchSelection(kind: SelectionKind.line, id: line.id);
+    lines[line.id] = SketchLineView(
+      id: line.id,
+      startPointId: line.startPointId,
+      endPointId: line.endPointId,
+      construction: line.construction,
+    );
+    final lineId = line.id;
     _pushUndo(() async {
       await _api.deleteLine(sketchId, lineId);
       lines.remove(lineId);
@@ -6316,7 +6361,7 @@ class SketchController extends ChangeNotifier {
         points.remove(pointId);
       }
     });
-    return result.line.id;
+    return SketchSelection(kind: SelectionKind.line, id: line.id);
   }
 
   /// Sketcher-roadmap Phase 9 v1 (Offset Entities): ribbon "Offset" action

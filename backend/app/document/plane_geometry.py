@@ -14,6 +14,7 @@ import math
 from fastapi import HTTPException
 
 from app.document.models import ResolvedPlane
+from app.sketch.intersections import angle_in_ccw_sweep
 from app.sketch.models import Line, Plane, Point, SketchEntityRef
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
@@ -92,7 +93,7 @@ def apply_orientation(basis: ResolvedPlane, *, flip: bool, rotation_quarter_turn
     """`oriented_basis_for_plane`'s own flip-then-rotate transform,
     generalized to start from any `ResolvedPlane` rather than only a fixed
     `Plane`'s - a custom (`CreatePlaneFeature`) plane's own resolved basis
-    is exactly as valid a starting point. Bug fix: `_basis_for_sketch`
+    is exactly as valid a starting point. Bug fix: `basis_for_sketch`
     (app.document.create_plane) used to resolve a custom-plane Sketch's
     embedding straight from `resolve_create_plane_from_bodies`, silently
     ignoring that Sketch's own `flip`/`rotation_quarter_turns` entirely -
@@ -221,6 +222,92 @@ def world_point_to_basis(basis: ResolvedPlane, point: Vector3) -> tuple[float, f
     xx, xy, xz = basis.x_axis
     yx, yy, yz = basis.y_axis
     return (dx * xx + dy * xy + dz * xz, dx * yx + dy * yy + dz * yz)
+
+
+def signed_distance_to_plane(basis: ResolvedPlane, point: Vector3) -> float:
+    """On-device feedback ("when I offset a curved edge it creates a
+    straight line"): the piece `resolve_planar_circle` needs that
+    `world_point_to_basis` alone doesn't give - how far `point` sits
+    *off* `basis`'s own plane (its component along `normal`), not just
+    where it projects *onto* it. Positive on the side `normal` points
+    towards."""
+    return _dot(_sub(point, basis.origin), basis.normal)
+
+
+def resolve_planar_circle(
+    basis: ResolvedPlane,
+    *,
+    circle_center: Vector3,
+    circle_axis: Vector3,
+    circle_radius: float,
+    tolerance: float = 1e-4,
+) -> tuple[float, float, float] | None:
+    """On-device feedback ("when I offset a curved edge it creates a
+    straight line"): `Sketch.offset_chain`'s (and Convert Entities'/Offset's
+    body-edge-picking) missing piece for a circular Body edge - whether
+    its underlying OCCT circle actually lies *in* `basis`'s own plane, and
+    if so, its centre projected into that plane's local (x, y).
+    `circle_radius` passes straight through unchanged: a circle coplanar
+    with a *flat* embedding plane is never foreshortened, so there is no
+    "effective 2D radius" distinct from its real 3D one the way there
+    would be for e.g. an ellipse cross-section.
+
+    A circle is coplanar with a plane exactly when its own axis (normal)
+    is parallel or anti-parallel to the plane's normal *and* its centre
+    lies on the plane (the axis check alone only proves the two planes are
+    parallel, not coincident - a circle sitting in a parallel plane a
+    fixed distance away would pass an axis-only check while still being
+    very much not embeddable as flat 2D geometry here). Both checks use
+    the same `tolerance` (unitless for the axis's own dot product, world
+    units for the centre's off-plane distance) - deliberately loose enough
+    to tolerate ordinary floating-point noise from OCCT's own tessellation/
+    projection pipeline while still rejecting a curve that's genuinely not
+    flat against this plane (e.g. a helix, or a circle on an unrelated
+    face). Returns `None` when either check fails - callers fall back to
+    the existing chord-Line behaviour in that case, exactly as before this
+    fix existed.
+    """
+    axis = _normalized(circle_axis)
+    if abs(abs(_dot(axis, basis.normal)) - 1.0) > tolerance:
+        return None
+    if abs(signed_distance_to_plane(basis, circle_center)) > tolerance:
+        return None
+    center_x, center_y = world_point_to_basis(basis, circle_center)
+    return (center_x, center_y, circle_radius)
+
+
+def resolve_ccw_arc_endpoints(
+    center_xy: tuple[float, float],
+    start_xy: tuple[float, float],
+    mid_xy: tuple[float, float],
+    end_xy: tuple[float, float],
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """On-device feedback ("when I offset a curved edge it creates a
+    straight line"): `Sketch.add_arc` always sweeps counter-clockwise from
+    its own start Point to its end Point (see e.g. `app.sketch.
+    intersections`' own module doc comment) - but a real OCCT edge's own
+    direction, once projected into a Sketch's local 2D basis, sweeps
+    whichever way it actually sweeps, with no guarantee it lines up with
+    that convention (a mirrored Sketch, or simply which of the edge's two
+    topological endpoints OCCT happened to call "first", can go either
+    way). `mid_xy` - a genuine third point sampled from partway along the
+    real curve, not derived from `start_xy`/`end_xy` alone - is what makes
+    this decidable at all: swaps `(start_xy, end_xy)` to `(end_xy,
+    start_xy)` whenever `mid_xy` falls on the *clockwise* arc from
+    `start_xy` to `end_xy` instead of the counter-clockwise one, so the
+    returned pair always sweeps CCW through the real edge's own actual
+    path - the same "which one is really first" correction
+    `is_mirrored_basis`'s own doc comment describes for a different
+    (Slot/Trim+Extend Arc-loop) code path, solved here by directly
+    checking the real sampled direction instead of reasoning about
+    handedness in the abstract.
+    """
+    start_angle = math.atan2(start_xy[1] - center_xy[1], start_xy[0] - center_xy[0])
+    mid_angle = math.atan2(mid_xy[1] - center_xy[1], mid_xy[0] - center_xy[0])
+    end_angle = math.atan2(end_xy[1] - center_xy[1], end_xy[0] - center_xy[0])
+    if angle_in_ccw_sweep(mid_angle, start_angle, end_angle):
+        return start_xy, end_xy
+    return end_xy, start_xy
 
 
 def _basis_vector(basis: ResolvedPlane, dx: float, dy: float) -> Vector3:

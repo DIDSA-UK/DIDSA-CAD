@@ -523,8 +523,10 @@ double _normalizeAngle(double angle) {
 final vm.Vector4 sketchLineColor = vm.Vector4(0.85, 0.85, 0.85, 1.0);
 // P19 on-device feedback: thinner than the original 2.0/8.0 - both read as
 // too thick once real geometry (not just the grid/plane backdrop) was
-// visible to compare against.
-const double sketchLineWidth = 1.2;
+// visible to compare against. Later on-device feedback ("make sketch
+// lines more visible, increase the thickness slightly") nudged this back
+// up a bit from that pass's `1.2`.
+const double sketchLineWidth = 1.5;
 
 /// P19 on-device feedback: deliberately its own constant, not
 /// [kVertexMarkerWidth] (`mesh_geometry.dart`'s shared default) - that

@@ -43,6 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
+/android/app/build/
+/android/.gradle/
 
 # Pre-Stage-18 local secrets file - superseded by the runtime Connection
 # screen (shared_preferences), but still ignored in case a stale copy

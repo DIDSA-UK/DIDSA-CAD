@@ -119,6 +119,40 @@ class ExternalEdgeReferenceDto {
       );
 }
 
+/// On-device feedback ("when I offset a curved edge it creates a straight
+/// line"): the wire counterpart to the backend's `ConvertEdgeResponse` -
+/// [SketchApiClient.convertBodyEdge]'s own dedicated DTO, separate from
+/// [ExternalEdgeReferenceDto] (still exactly right for
+/// `create_external_edge_reference`, which this fix left unchanged, "always
+/// a chord" and all) since `convert_body_edge`'s own response can now be
+/// *either* [line] or [arc] - exactly one is ever non-null, mirroring the
+/// backend schema's own doc comment. [centerPoint] is only present
+/// alongside [arc].
+class ConvertEdgeResultDto {
+  final LineDto? line;
+  final ArcDto? arc;
+  final PointDto startPoint;
+  final PointDto endPoint;
+  final PointDto? centerPoint;
+
+  ConvertEdgeResultDto({
+    this.line,
+    this.arc,
+    required this.startPoint,
+    required this.endPoint,
+    this.centerPoint,
+  });
+
+  factory ConvertEdgeResultDto.fromJson(Map<String, dynamic> json) => ConvertEdgeResultDto(
+        line: json['line'] == null ? null : LineDto.fromJson(json['line'] as Map<String, dynamic>),
+        arc: json['arc'] == null ? null : ArcDto.fromJson(json['arc'] as Map<String, dynamic>),
+        startPoint: PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
+        endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
+        centerPoint:
+            json['center_point'] == null ? null : PointDto.fromJson(json['center_point'] as Map<String, dynamic>),
+      );
+}
+
 /// Sketcher-roadmap Phase 11: the wire counterpart to the backend's
 /// `LineTrimResponse` - the trimmed/extended Line alongside the Point that
 /// moved (or was freshly created, per [createdNewPoint]) to the chosen
@@ -1189,11 +1223,14 @@ class SketchApiClient {
       );
 
   /// [convertBodyVertex]'s edge-shaped sibling - materializes a Body edge
-  /// as a real, non-construction Line (see the backend's
-  /// `app.document.router.convert_body_edge` doc comment for v1's "straight
-  /// chord only" scope note). Reuses [ExternalEdgeReferenceDto]'s shape
-  /// (line + both endpoint Points) since the wire response is identical.
-  Future<ExternalEdgeReferenceDto> convertBodyEdge(
+  /// as either a real, non-construction Line (the original v1 chord) or a
+  /// real Arc (on-device feedback: "when I offset a curved edge it
+  /// creates a straight line" - see the backend's `app.document.router.
+  /// convert_body_edge` doc comment for the coplanar-circular-edge
+  /// detection this added, and its own v1 limits). [ConvertEdgeResultDto]
+  /// carries either, never [ExternalEdgeReferenceDto]'s old fixed "always
+  /// a Line" shape.
+  Future<ConvertEdgeResultDto> convertBodyEdge(
     String partId,
     String sketchFeatureId,
     String bodyId,
@@ -1205,7 +1242,7 @@ class SketchApiClient {
               headers: _headers,
               body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex}),
             ),
-        (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
+        (body) => ConvertEdgeResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<List<PointDto>> listPoints(String sketchId) => _send(

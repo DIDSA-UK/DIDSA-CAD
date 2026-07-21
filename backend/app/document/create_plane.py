@@ -200,7 +200,7 @@ def _resolve_plane_ref(
     `bodies` accumulator - never a fresh `compute_part_bodies` call, same
     "would recurse forever from inside `compute_part_bodies`'s own loop"
     reasoning this module's own docstring already gives for
-    `_basis_for_sketch`). A cycle (a Plane transitively referencing itself)
+    `basis_for_sketch`). A cycle (a Plane transitively referencing itself)
     is structurally impossible: a `plane_feature_id` can only ever name a
     Feature created *before* this one, and Feature creation is strictly
     append-only, so the reference graph is a DAG by construction. The
@@ -395,7 +395,7 @@ def resolve_parallel_face_through_vertex(
     )
 
 
-def _basis_for_sketch(
+def basis_for_sketch(
     part: Part,
     sketch: Sketch,
     bodies: dict[str, TopoDS_Shape],
@@ -447,7 +447,7 @@ def resolve_sketch_basis(
     2D geometry into world space regardless of whether that Sketch sits on
     a fixed plane or a custom one."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
-    return _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
+    return basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
 
 
 def resolve_external_vertex_position(
@@ -464,13 +464,13 @@ def resolve_external_vertex_position(
     `ExternalVertexReference` into the document layer's `SubShapeRef`
     (`shape_type=VERTEX`) at this exact boundary, then reuses
     `_resolve_vertex_position` (fails closed with `missing_reference`,
-    same as every other `SubShapeRef` resolution) and `_basis_for_sketch`
+    same as every other `SubShapeRef` resolution) and `basis_for_sketch`
     (the same basis every other embedding of this Sketch's geometry into
     world space already goes through) verbatim - no new resolution or
     projection logic, just composing two already-existing pieces."""
     vertex_ref = SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=ref.vertex_index)
     world_point = _resolve_vertex_position(bodies, vertex_ref)
-    basis = _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
+    basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
     return world_point_to_basis(basis, (world_point.X(), world_point.Y(), world_point.Z()))
 
 
@@ -512,7 +512,7 @@ def _resolve_point_ref_position(
     """C4: `point_ref`'s own world-space position - a Body vertex's directly
     (see `_resolve_vertex_position`), or a Sketch Point's local (x, y)
     mapped through its own Sketch's resolved basis (fixed or custom, via
-    `_basis_for_sketch` - the same recursive resolution `resolve_create_
+    `basis_for_sketch` - the same recursive resolution `resolve_create_
     plane_from_bodies`'s own `NORMAL_TO_LINE_AT_POINT` branch already uses)."""
     if point_ref.vertex_ref is not None:
         point = _resolve_vertex_position(bodies, point_ref.vertex_ref)
@@ -522,7 +522,7 @@ def _resolve_point_ref_position(
     sketch_point = resolve_sketch_entity(ref)
     assert isinstance(sketch_point, Point)  # entity_type already validated POINT by resolve_sketch_entity
     sketch = get_sketch_or_404(ref.sketch_id)
-    basis = _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
+    basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
     return basis_point(basis, sketch_point.x, sketch_point.y)
 
 
@@ -593,7 +593,7 @@ def resolve_create_plane_from_bodies(
         return resolve_three_points_from_bodies(part, bodies, feature.point_refs, excluded_feature_ids)
     assert feature.line_ref is not None and feature.point_ref is not None
     sketch = get_sketch_or_404(feature.line_ref.sketch_id)
-    basis = _basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
+    basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
     return resolve_normal_to_line_at_point(feature.line_ref, feature.point_ref, basis)
 
 

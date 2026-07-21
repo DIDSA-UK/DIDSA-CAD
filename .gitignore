@@ -4,3 +4,10 @@ __pycache__/
 .venv/
 *.egg-info/
 .DS_Store
+
+# Local secrets - docker-compose.yml here has historically been used to
+# stash a real CAD_API_KEY for local runs; never let that reach the repo.
+docker-compose.yml
+docker-compose.override.yml
+.env
+.env.*

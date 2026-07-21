@@ -12,7 +12,7 @@ import math
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
-from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
@@ -23,6 +23,7 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.Geom import Geom_BezierCurve
+from OCC.Core.GeomAbs import GeomAbs_Circle
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
@@ -31,7 +32,12 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Vertex, TopoDS
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
-from app.document.plane_geometry import is_mirrored_basis
+from app.document.plane_geometry import (
+    is_mirrored_basis,
+    resolve_ccw_arc_endpoints,
+    resolve_planar_circle,
+    world_point_to_basis,
+)
 from app.document.models import (
     ChamferFeature,
     ExtrudeFeature,
@@ -1006,6 +1012,66 @@ def edge_endpoint_vertex_refs(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef)
         SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=vertex_map.FindIndex(start_vertex) - 1),
         SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.VERTEX, index=vertex_map.FindIndex(end_vertex) - 1),
     )
+
+
+def resolve_circular_edge_arc(
+    bodies: dict[str, TopoDS_Shape],
+    ref: SubShapeRef,
+    basis: ResolvedPlane,
+    start_xy: tuple[float, float],
+    end_xy: tuple[float, float],
+) -> tuple[float, float, float, tuple[float, float], tuple[float, float]] | None:
+    """On-device feedback ("when I offset a curved edge it creates a
+    straight line"): `edge_endpoint_vertex_refs`'s own sibling for
+    `app.document.router.convert_body_edge`/`create_external_edge_reference`
+    - whether `ref` (an EDGE) is a circular arc lying flat in `basis`'s
+    own plane, and if so, its centre/radius/endpoints as real sketch-local
+    (x, y) - the OCCT-bound half of the fix, thin by design: every actual
+    decision (coplanarity, CCW direction) is delegated to `app.document.
+    plane_geometry`'s pure, independently-tested functions, so this is
+    just "pull the right numbers out of OCCT and hand them off".
+
+    `start_xy`/`end_xy` are the caller's *already-resolved* Point
+    positions (from the exact same `edge_endpoint_vertex_refs` +
+    `resolve_external_vertex_position` call the chord-Line path already
+    makes) - not re-derived here - so the Arc this produces shares its
+    endpoints exactly with whatever associative, pinned Points the caller
+    already created from them; only the mid-parameter sample point is new
+    (needed solely to resolve `resolve_ccw_arc_endpoints`'s own "which way
+    does this really sweep" question, see that function's own doc
+    comment - it is never itself returned or made into a Point).
+
+    Returns `None` for anything not circular (`BRepAdaptor_Curve.GetType()
+    != GeomAbs_Circle` - a Line/Bezier/BSpline edge, the overwhelming
+    majority) or not coplanar with `basis` (`resolve_planar_circle`
+    returning `None`) - the caller's own existing chord-Line fallback
+    already exists for exactly this case, unchanged.
+    """
+    edge_shape = resolve_subshape_from_bodies(bodies, ref)
+    edge = topods.Edge(edge_shape)
+    adaptor = BRepAdaptor_Curve(edge)
+    if adaptor.GetType() != GeomAbs_Circle:
+        return None
+
+    circle = adaptor.Circle()
+    center_point = circle.Location()
+    axis_direction = circle.Axis().Direction()
+    planar = resolve_planar_circle(
+        basis,
+        circle_center=(center_point.X(), center_point.Y(), center_point.Z()),
+        circle_axis=(axis_direction.X(), axis_direction.Y(), axis_direction.Z()),
+        circle_radius=circle.Radius(),
+    )
+    if planar is None:
+        return None
+    center_x, center_y, radius = planar
+
+    mid_parameter = (adaptor.FirstParameter() + adaptor.LastParameter()) / 2.0
+    mid_point = adaptor.Value(mid_parameter)
+    mid_xy = world_point_to_basis(basis, (mid_point.X(), mid_point.Y(), mid_point.Z()))
+
+    resolved_start, resolved_end = resolve_ccw_arc_endpoints((center_x, center_y), start_xy, mid_xy, end_xy)
+    return (center_x, center_y, radius, resolved_start, resolved_end)
 
 
 def resolve_subshape(

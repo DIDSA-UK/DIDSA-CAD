@@ -12,7 +12,7 @@ from app.document.models import (
     SweepMode,
 )
 from app.sketch.models import Plane, SketchEntityType
-from app.sketch.schemas import LineResponse, PointResponse
+from app.sketch.schemas import ArcResponse, LineResponse, PointResponse
 
 
 class PartCreate(BaseModel):
@@ -224,16 +224,31 @@ class ConvertEdgeCreate(BaseModel):
 
 class ConvertEdgeResponse(BaseModel):
     """Convert Entities' edge-shaped sibling to `ExternalEdgeReferenceResponse`
-    - same "one response carries the Line and both Points" reasoning.
+    - same "one response carries the new entity and both Points" reasoning.
     `start_point`/`end_point` may each be either a freshly created,
     associative Point or one this Sketch already had tracking the exact
     same Body vertex (see `Sketch.add_or_reuse_external_vertex_reference`)
     - the client should upsert by id either way, same as it already
-    treats `create_line`'s own endpoint response."""
+    treats `create_line`'s own endpoint response.
 
-    line: LineResponse
+    On-device feedback ("when I offset a curved edge it creates a straight
+    line"): exactly one of `line`/`arc` is ever set now - a coplanar
+    circular Body edge resolves as a real `arc` instead of always `line`
+    (its own chord), matching `PointRef`'s established "exactly one of two
+    optional fields" convention. `center_point` is only present alongside
+    `arc` - v1 limitation, spelled out on `router.convert_body_edge`'s own
+    doc comment: unlike `start_point`/`end_point`, the center is a plain,
+    non-associative Point (no existing mechanism pins a circular edge's
+    own center the way a vertex reference does), so it won't itself track
+    a later change to the Body's shape - only the Arc's start/end will,
+    via the same 'lost reference' machinery every other external reference
+    already has."""
+
+    line: LineResponse | None = None
+    arc: ArcResponse | None = None
     start_point: PointResponse
     end_point: PointResponse
+    center_point: PointResponse | None = None
 
 
 class PointRefSchema(BaseModel):

@@ -476,6 +476,30 @@ class _FakeBackend {
       final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex};
       points[startId] = startPoint;
       points[endId] = endPoint;
+      // On-device feedback ("when I offset a curved edge it creates a
+      // straight line"): edgeIndex 99 is this fake's own sentinel for "the
+      // real backend detected a coplanar circular edge" - returns an arc
+      // instead of a line, exercising the client's own dispatch on
+      // whichever of the two the response actually carries.
+      if (edgeIndex == 99) {
+        final centerId = _newId('point');
+        final centerPoint = {'id': centerId, 'x': bodyId.length.toDouble() + 5, 'y': edgeIndex};
+        points[centerId] = centerPoint;
+        final arcId = _newId('arc');
+        final arc = {
+          'id': arcId,
+          'center_point_id': centerId,
+          'start_point_id': startId,
+          'end_point_id': endId,
+          'radius': 5.0,
+          'construction': false,
+        };
+        arcs[arcId] = arc;
+        return _json(
+          {'arc': arc, 'start_point': startPoint, 'end_point': endPoint, 'center_point': centerPoint},
+          201,
+        );
+      }
       final lineId = _newId('line');
       final line = {
         'id': lineId,
@@ -4313,7 +4337,9 @@ void main() {
       return (freshController, freshBackend);
     }
 
-    test('converts the Body edge, then hands it straight to offsetPreviewTargets', () async {
+    test(
+        'converts the Body edge, then accumulates it into the pick set (bug fix: "when I select the '
+        'first edge, it sends me to the text box... then I can\'t add more lines or curves")', () async {
       final (freshController, freshBackend) = await adoptedController();
       freshController.enterOffsetMode();
 
@@ -4323,9 +4349,20 @@ void main() {
       expect(freshController.lines, hasLength(1));
       final line = freshController.lines.values.single;
       expect(line.construction, isFalse);
-      expect(freshController.offsetPreviewTargets, hasLength(1));
-      expect(freshController.offsetPreviewTargets!.single.kind, SelectionKind.line);
-      expect(freshController.offsetPreviewTargets!.single.id, line.id);
+      // Not yet in offsetPreviewTargets - only Finish opens the value bar,
+      // same as a Sketch-entity Line/Arc pick.
+      expect(freshController.offsetPreviewTargets, isNull);
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.line);
+      expect(freshController.selectionSet.single.id, line.id);
+
+      // A second Body-edge tap keeps accumulating rather than jumping
+      // straight to the value bar.
+      await freshController.pickBodyEdgeForOffset('body-1', 1);
+      expect(freshController.selectionSet, hasLength(2));
+
+      freshController.finishOffsetChain();
+      expect(freshController.offsetPreviewTargets, hasLength(2));
     });
 
     test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
@@ -4336,6 +4373,36 @@ void main() {
 
       expect(controller.lines, hasLength(lineCountBefore));
       expect(controller.offsetPreviewTargets, isNull);
+    });
+
+    test(
+        'bug fix ("when I offset a curved edge it creates a straight line"): a curved Body edge '
+        'converts as a real Arc, with its own center Point, and accumulates as an Arc pick', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterOffsetMode();
+
+      await freshController.pickBodyEdgeForOffset('body-1', 99); // 99 = this fake's "curved edge" sentinel
+
+      expect(freshController.lines, isEmpty);
+      expect(freshController.arcs, hasLength(1));
+      final arc = freshController.arcs.values.single;
+      expect(arc.construction, isFalse);
+      expect(freshController.points.containsKey(arc.centerPointId), isTrue);
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.arc);
+      expect(freshController.selectionSet.single.id, arc.id);
+
+      final centerId = arc.centerPointId;
+      final startId = arc.startPointId;
+      final endId = arc.endPointId;
+
+      await freshController.undo();
+
+      expect(freshController.arcs.containsKey(arc.id), isFalse);
+      expect(freshController.points.containsKey(centerId), isFalse);
+      expect(freshController.points.containsKey(startId), isFalse);
+      expect(freshController.points.containsKey(endId), isFalse);
+      expect(freshBackend.requestLog.any((r) => r.contains('DELETE') && r.contains('/arcs/')), isTrue);
     });
   });
 

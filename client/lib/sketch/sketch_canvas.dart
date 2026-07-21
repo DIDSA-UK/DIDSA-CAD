@@ -1936,8 +1936,8 @@ class _SketchPainter extends CustomPainter {
   static const double _pointRadiusEmphasis = 4.5; // was 6 (chain-start/circle-center/hover)
   static const double _pointRadiusSelected = 5.0; // was 7
   static const double _pointRadiusSnapping = 7.0; // was 11 (chain-start snap-to-close)
-  static const double _lineStrokeWidth = 1.5; // was 2
-  static const double _lineStrokeWidthEmphasis = 2.25; // was 3 (selected/hover)
+  static const double _lineStrokeWidth = 1.8; // was 2, then 1.5 (on-device feedback: "increase line thickness for sketch lines slightly")
+  static const double _lineStrokeWidthEmphasis = 2.7; // was 3, then 2.25 (selected/hover) - same 1.5x ratio to _lineStrokeWidth
   static const double _originHalfSize = 5.0; // was 7
   static const double _originHalfSizeSnapping = 7.0; // was 10
   static const double _dimensionFontSize = 9.5; // was 11

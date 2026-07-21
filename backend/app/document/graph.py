@@ -143,7 +143,7 @@ def sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
     don't resolve to a real ExtrudeFeature.
 
     C3: public (no leading underscore) since `app.document.create_plane.
-    _basis_for_sketch` now also needs it, to find a Sketch's owning
+    basis_for_sketch` now also needs it, to find a Sketch's owning
     SketchFeature (and so its `plane_feature_id`, if any) starting from just
     a bare `Sketch` - the same lookup this module's own `build_feature_graph`
     already needed for a `NORMAL_TO_LINE_AT_POINT` CreatePlaneFeature's

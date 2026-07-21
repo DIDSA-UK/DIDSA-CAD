@@ -142,11 +142,11 @@ def line_vs_arc(
     return [
         (t, point)
         for t, point in candidates
-        if _angle_in_ccw_sweep(math.atan2(point[1] - cy, point[0] - cx), start_angle, end_angle)
+        if angle_in_ccw_sweep(math.atan2(point[1] - cy, point[0] - cx), start_angle, end_angle)
     ]
 
 
-def _angle_in_ccw_sweep(angle: float, start_angle: float, end_angle: float) -> bool:
+def angle_in_ccw_sweep(angle: float, start_angle: float, end_angle: float) -> bool:
     """Whether `angle` lies on the counter-clockwise sweep from
     `start_angle` to `end_angle` - normalizes all three into `[0, 2*pi)`
     and checks containment on a circular interval, wrapping through 0 when
@@ -216,7 +216,7 @@ def circle_vs_arc(
     return [
         point
         for point in candidates
-        if _angle_in_ccw_sweep(math.atan2(point[1] - acy, point[0] - acx), start_angle, end_angle)
+        if angle_in_ccw_sweep(math.atan2(point[1] - acy, point[0] - acx), start_angle, end_angle)
     ]
 
 
@@ -244,6 +244,6 @@ def arc_vs_arc(
     return [
         point
         for point in candidates
-        if _angle_in_ccw_sweep(math.atan2(point[1] - c1y, point[0] - c1x), start_angle1, end_angle1)
-        and _angle_in_ccw_sweep(math.atan2(point[1] - c2y, point[0] - c2x), start_angle2, end_angle2)
+        if angle_in_ccw_sweep(math.atan2(point[1] - c1y, point[0] - c1x), start_angle1, end_angle1)
+        and angle_in_ccw_sweep(math.atan2(point[1] - c2y, point[0] - c2x), start_angle2, end_angle2)
     ]

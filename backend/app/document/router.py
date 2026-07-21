@@ -8,11 +8,17 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import (
+    basis_for_sketch,
     refresh_external_references,
     resolve_create_plane,
     resolve_external_vertex_position,
 )
-from app.document.extrude import compute_part_bodies, edge_endpoint_vertex_refs, select_profiles
+from app.document.extrude import (
+    compute_part_bodies,
+    edge_endpoint_vertex_refs,
+    resolve_circular_edge_arc,
+    select_profiles,
+)
 from app.document.fillet import resolve_fillet
 from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
 from app.document.import_geometry import resolve_import
@@ -89,7 +95,7 @@ from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
-from app.sketch.schemas import LineResponse, PointResponse
+from app.sketch.schemas import ArcResponse, LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
 logger = logging.getLogger(__name__)
@@ -908,23 +914,34 @@ def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCre
 def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
     """Convert Entities' edge-shaped sibling to `convert_body_vertex` (v2) -
     mirrors `create_external_edge_reference`'s own "resolve both endpoint
-    vertices, connect with a real Line" shape, but the Line stays
-    non-construction (`add_line(construction=False)`) - real,
-    extrude-participating geometry, not a pinned dimensioning reference.
-    Its two endpoint Points are associative (`add_or_reuse_external_vertex_
-    reference`), same as `convert_body_vertex` - see that endpoint's own
-    doc comment for what "associative" gets for free (staleness detection,
-    the feature-tree lost-reference indicator) and its one known,
-    inherited limitation (drag-then-snap-back).
+    vertices" shape. Its two endpoint Points are associative
+    (`add_or_reuse_external_vertex_reference`), same as `convert_body_vertex`
+    - see that endpoint's own doc comment for what "associative" gets for
+    free (staleness detection, the feature-tree lost-reference indicator)
+    and its one known, inherited limitation (drag-then-snap-back).
 
-    Scope note (v1, unchanged in v2): only ever produces a straight Line
-    between the edge's two endpoints, exactly like
-    `create_external_edge_reference` already does today - a curved
-    (Arc/Circle) Body edge converts as its own chord, not its true curve;
-    real Arc/Circle extraction is unbuilt (needs OCCT curve-type
-    introspection this endpoint doesn't do), left as an explicit
-    fast-follow rather than silently shipping an inexact polyline
-    approximation.
+    On-device feedback ("when I offset a curved edge it creates a straight
+    line"): used to *always* connect those two Points with a straight
+    Line - correct for the overwhelming majority of edges (which are
+    straight), but silently flattened a curved one to its own chord no
+    matter what. Now tries `resolve_circular_edge_arc` first: a circular
+    Body edge lying flat in this Sketch's own plane resolves as a real,
+    non-construction Arc instead (`add_arc(..., construction=False)`,
+    same "real, extrude-participating geometry" contract the chord-Line
+    path already had) - only falling back to the chord-Line behaviour
+    when that returns `None` (not circular at all, or circular but not
+    coplanar with this Sketch - e.g. a curve on an unrelated face).
+
+    v1 limitation of the new Arc path specifically: its centre Point is a
+    plain, non-associative `add_point` - unlike `start_point`/`end_point`
+    (still real external vertex references), nothing currently pins a
+    circular edge's own *centre* the way a vertex reference pins a
+    corner, so it won't itself track a later change to the Body's shape.
+    Still out of scope, unchanged from before this fix: a full circular
+    edge (both topological endpoints the same Body vertex) still 422s as
+    `degenerate_edge` before ever reaching curve-type detection - real
+    Circle extraction for that case is a separate, not-yet-built
+    follow-up.
 
     `add_or_reuse_external_vertex_reference`'s own identity-based (not
     position-based) matching is what lets two separately-converted
@@ -956,6 +973,30 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
     end_vertex_ref = ExternalVertexReference(body_id=end_ref.body_id, vertex_index=end_ref.index)
     end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies)
     end_point = sketch.add_or_reuse_external_vertex_reference(end_x, end_y, end_vertex_ref)
+
+    basis = basis_for_sketch(part, sketch, bodies, frozenset())
+    arc_params = resolve_circular_edge_arc(bodies, edge_ref, basis, (start_x, start_y), (end_x, end_y))
+    if arc_params is not None:
+        center_x, center_y, _radius, resolved_start_xy, resolved_end_xy = arc_params
+        if resolved_start_xy == (start_x, start_y):
+            arc_start_point, arc_end_point = start_point, end_point
+        else:
+            arc_start_point, arc_end_point = end_point, start_point
+        center_point = sketch.add_point(center_x, center_y)
+        arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=False)
+        return ConvertEdgeResponse(
+            arc=ArcResponse(
+                id=arc.id,
+                center_point_id=arc.center_point_id,
+                start_point_id=arc.start_point_id,
+                end_point_id=arc.end_point_id,
+                radius=arc.radius(sketch.points),
+                construction=arc.construction,
+            ),
+            start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y),
+            end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y),
+            center_point=PointResponse(id=center_point.id, x=center_point.x, y=center_point.y),
+        )
 
     line = sketch.add_line(start_point.id, end_point.id, construction=False)
     return ConvertEdgeResponse(
