@@ -24,6 +24,7 @@ import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
+import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
 import 'mesh_geometry.dart';
@@ -2501,10 +2502,17 @@ class _PartScreenState extends State<PartScreen> {
   /// file's extension) via [DocumentApiClient.exportPart]. The backend 400s
   /// (surfaced as [_errorMessage] by [_runGuarded]) if the Part has no
   /// solid geometry yet - there is nothing to export before a first Boss.
-  Future<void> _exportPart(String format) async {
+  ///
+  /// On-device request: folded the File menu's four separate format-specific
+  /// export entries into one "Export…" entry - [showExportFormatDialog] is
+  /// the new first step, then the existing folder/filename picker below,
+  /// mirroring [_importGeometry]'s own single-entry-plus-dialog shape.
+  Future<void> _exportPart() async {
     setState(() => _toolbarOpen = false);
     final part = _part;
     if (part == null) return;
+    final format = await showExportFormatDialog(context);
+    if (format == null || !mounted) return;
     await _runGuarded(() async {
       final bytes = await _api.exportPart(part.id, format);
       await FilePicker.platform.saveFile(

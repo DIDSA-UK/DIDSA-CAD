@@ -79,8 +79,12 @@ class PartToolbar extends StatelessWidget {
 
   /// Export: writes the current Part's geometry out to one of four
   /// interchange formats (`'step'`/`'stl'`/`'obj'`/`'glb'`) - see
-  /// `PartScreen._exportPart`.
-  final void Function(String format)? onExportPart;
+  /// `PartScreen._exportPart`. The four separate format-specific File-menu
+  /// entries this used to drive were folded into this one "Export…" entry
+  /// (per direct request) - `_exportPart` now prompts for the format itself
+  /// (`showExportFormatDialog`) before writing anything, mirroring
+  /// `onImportGeometry`'s own single-entry-plus-dialog shape.
+  final VoidCallback? onExportPart;
 
   /// Import: brings an external STEP/STL/OBJ/glTF file in as a fixed,
   /// non-parametric Body - see `PartScreen._importGeometry`.
@@ -218,14 +222,6 @@ class PartToolbar extends StatelessWidget {
     );
   }
 
-  // format, label, icon asset - each drives one Export ListTile below.
-  static const List<(String, String, String)> _exportFormats = [
-    ('step', 'Export STEP', 'assets/icons/feature/parttoolbar_export.svg'),
-    ('stl', 'Export STL', 'assets/icons/feature/parttoolbar_export.svg'),
-    ('obj', 'Export OBJ', 'assets/icons/feature/parttoolbar_export.svg'),
-    ('glb', 'Export glTF', 'assets/icons/feature/parttoolbar_export.svg'),
-  ];
-
   Widget _buildFileMenu(BuildContext context) {
     return ExpansionTile(
       leading: const SvgIcon('assets/icons/feature/parttoolbar_file.svg'),
@@ -256,12 +252,11 @@ class PartToolbar extends StatelessWidget {
           title: const Text('Import…'),
           onTap: onImportGeometry,
         ),
-        for (final (format, label, icon) in _exportFormats)
-          ListTile(
-            leading: SvgIcon(icon),
-            title: Text(label),
-            onTap: onExportPart == null ? null : () => onExportPart!(format),
-          ),
+        ListTile(
+          leading: const SvgIcon('assets/icons/feature/parttoolbar_export.svg'),
+          title: const Text('Export…'),
+          onTap: onExportPart,
+        ),
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_exit.svg'),
           title: const Text('Exit'),
