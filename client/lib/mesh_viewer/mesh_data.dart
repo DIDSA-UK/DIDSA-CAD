@@ -1130,8 +1130,9 @@ DecodedMesh applyUpAxis(DecodedMesh mesh, MeshUpAxis axis) {
 /// its original, distinct purpose: correcting a file that is *itself*
 /// genuinely mirrored in its own raw data (a real, separate, per-file
 /// problem this decoder has always had no reliable way to auto-detect).
-/// With this correction in place, [applyMirror] off should be the normal,
-/// correct default for a file that isn't independently self-mirrored.
+/// On-device confirmed: with this correction in place, [applyMirror] off is
+/// the normal, correct default for a file that isn't independently
+/// self-mirrored.
 DecodedMesh applyRenderMirrorCorrection(DecodedMesh mesh) {
   Float32List negateZ(Float32List src) {
     final out = Float32List(src.length);
