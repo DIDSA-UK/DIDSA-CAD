@@ -239,4 +239,34 @@ void main() {
     );
     expect(wrongResult.converged, isFalse, reason: 'a genuinely wrong value must not be waved through');
   });
+
+  test(
+      'residual-verified convergence respects horizontal/vertical DistanceConstraint orientation, '
+      'not plain Euclidean distance - bug fix found while investigating a Circle drag/collapse '
+      'report: a Circle\'s own cardinal-point axis pins are always exactly this shape '
+      '(orientation horizontal/vertical, distance 0.0), so getting this wrong could both reject a '
+      'genuinely satisfied axis pin and, worse, wave through a collapsed/degenerate solve whose '
+      'Points happen to also be Euclidean-close', () {
+    // Two duplicate horizontal-distance constraints on the same pair force
+    // a redundant (non-clean resultCode) solve with nothing else present -
+    // isolates the residual check itself, since neither Tangent nor
+    // EqualRadius is present to trigger the older, narrower override.
+    final points = {'a': (0.0, 0.0), 'b': (5.0, 100.0)};
+    final constraints = <ConstraintDto>[
+      const DistanceConstraintDto(id: 'h1', pointAId: 'a', pointBId: 'b', distance: 5.0, orientation: 'horizontal'),
+      const DistanceConstraintDto(id: 'h2', pointAId: 'a', pointBId: 'b', distance: 5.0, orientation: 'horizontal'),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => throw UnimplementedError('no Lines in this fixture'),
+    );
+
+    expect(result.resultCode, isNot(0), reason: 'sanity check: py-slvs itself must not cleanly certify this');
+    expect(result.converged, isTrue,
+        reason: 'the horizontal separation (5) is exactly satisfied - only the *Euclidean* distance '
+            '(~100.1, since the Points are 100 apart in Y) would wrongly look unsatisfied');
+  });
 }

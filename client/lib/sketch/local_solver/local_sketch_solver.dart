@@ -127,8 +127,25 @@ bool _residualVerifiedConvergence({
   for (final c in constraints) {
     if (c is DistanceConstraintDto) {
       if (c.provisional) continue;
-      final actual = _dist(resolvePoint(c.pointAId), resolvePoint(c.pointBId));
-      if ((actual - c.distance).abs() > tolerance) return false;
+      final pointA = resolvePoint(c.pointAId);
+      final pointB = resolvePoint(c.pointBId);
+      // Bug fix: mirrors solver.py's _residual_verified_convergence fix -
+      // a "horizontal"/"vertical" DistanceConstraint pins only the X or Y
+      // separation (the free axis left unchecked), not plain Euclidean
+      // distance. Found via a Circle's own cardinal-point axis pins
+      // (always horizontal/vertical, distance 0.0) - checking Euclidean
+      // distance here could both reject an actually-satisfied projected
+      // constraint and, worse, accept a genuinely collapsed/degenerate
+      // solve whose Points happen to also be Euclidean-close.
+      final double actual;
+      if (c.orientation == 'horizontal') {
+        actual = (pointB.$1 - pointA.$1).abs();
+      } else if (c.orientation == 'vertical') {
+        actual = (pointB.$2 - pointA.$2).abs();
+      } else {
+        actual = _dist(pointA, pointB);
+      }
+      if ((actual - c.distance.abs()).abs() > tolerance) return false;
     } else if (c is EqualLengthConstraintDto) {
       final (s1, e1) = lineEndpoints(c.line1Id);
       final (s2, e2) = lineEndpoints(c.line2Id);

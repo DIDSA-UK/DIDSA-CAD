@@ -143,8 +143,29 @@ def _residual_verified_convergence(sketch: Sketch) -> bool:
         if isinstance(constraint, DistanceConstraint):
             if constraint.provisional:
                 continue  # Skipped by the solve itself - nothing to verify.
-            actual = _distance(points[constraint.point_a_id], points[constraint.point_b_id])
-            if abs(actual - constraint.distance) > tolerance:
+            point_a = points[constraint.point_a_id]
+            point_b = points[constraint.point_b_id]
+            # Bug fix: a "horizontal"/"vertical" DistanceConstraint pins
+            # only the X or Y separation, leaving the other axis free (see
+            # that class's own doc comment) - checking plain Euclidean
+            # distance against it here was wrong on two counts: it could
+            # reject an actually-satisfied projected constraint whose two
+            # Points are far apart on the free axis (a false negative), and
+            # - the concrete bug that surfaced this, found while
+            # investigating a Circle's own cardinal-point axis pins (always
+            # `orientation="vertical"`/`"horizontal"`, `distance=0.0`) -
+            # it could just as easily accept a genuinely broken solve
+            # whose Points happen to have also collapsed together on the
+            # free axis, since a coincident pair trivially reads as
+            # "Euclidean distance 0" regardless of orientation (a false
+            # positive).
+            if constraint.orientation == "horizontal":
+                actual = abs(point_b.x - point_a.x)
+            elif constraint.orientation == "vertical":
+                actual = abs(point_b.y - point_a.y)
+            else:
+                actual = _distance(point_a, point_b)
+            if abs(actual - abs(constraint.distance)) > tolerance:
                 return False
         elif isinstance(constraint, EqualLengthConstraint):
             len1 = _distance(points[constraint.line1_start_id], points[constraint.line1_end_id])

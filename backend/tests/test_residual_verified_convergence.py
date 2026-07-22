@@ -14,8 +14,9 @@ negative case (it doesn't just rubber-stamp a genuinely wrong value)."""
 
 import math
 
+from app.sketch.constraints import DistanceConstraint
 from app.sketch.models import Plane, Sketch
-from app.sketch.solver import solve_sketch
+from app.sketch.solver import _residual_verified_convergence, solve_sketch
 
 
 def test_polygon_across_flats_with_the_correct_value_converges():
@@ -65,3 +66,34 @@ def test_polygon_across_flats_is_not_polygon_specific_slot_style_redundancy_stil
     result = solve_sketch(sketch)
 
     assert result.converged
+
+
+def test_residual_check_respects_horizontal_orientation_not_plain_euclidean_distance():
+    """Bug fix, found while investigating a Circle drag/collapse report: a
+    "horizontal"/"vertical" DistanceConstraint pins only the X or Y
+    separation, leaving the other axis free (see that class's own doc
+    comment) - a Circle's own cardinal-point axis pins are always exactly
+    this shape (orientation="horizontal"/"vertical", distance=0.0). The
+    residual check used to compare plain Euclidean distance against the
+    target value regardless of orientation, which would have incorrectly
+    rejected this - the two Points are 100 units apart in Y, so Euclidean
+    distance is ~100.1, nowhere near the target of 5 - even though the
+    *horizontal* separation the constraint actually cares about is exactly
+    5, genuinely satisfied."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(5.0, 100.0)
+    horizontal = DistanceConstraint(id="h", point_a_id=a.id, point_b_id=b.id, distance=5.0, orientation="horizontal")
+    sketch.constraints[horizontal.id] = horizontal
+
+    assert _residual_verified_convergence(sketch) is True
+
+
+def test_residual_check_still_rejects_a_genuinely_wrong_horizontal_distance():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(5.0, 100.0)
+    horizontal = DistanceConstraint(id="h", point_a_id=a.id, point_b_id=b.id, distance=50.0, orientation="horizontal")
+    sketch.constraints[horizontal.id] = horizontal
+
+    assert _residual_verified_convergence(sketch) is False

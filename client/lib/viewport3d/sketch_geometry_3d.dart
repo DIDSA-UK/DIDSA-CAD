@@ -536,8 +536,10 @@ const double sketchLineWidth = 1.5;
 /// Sketch's own drawn points. On-device feedback ("Points should be
 /// visible with a diameter slightly larger than the sketch line width"):
 /// derived from [sketchLineWidth] rather than a bare constant now, mirroring
-/// `sketch_canvas.dart`'s own `_pointRadius` fix - same ~1.3x ratio.
-const double sketchPointMarkerWidth = sketchLineWidth * 1.3;
+/// `sketch_canvas.dart`'s own `_pointRadius` fix. Bug fix: the first pass
+/// (1.3x) turned out too subtle on-device ("I still can't see any points") -
+/// bumped to the same ~2.2x ratio that fix settled on.
+const double sketchPointMarkerWidth = sketchLineWidth * 2.2;
 
 /// P23 (2D-sketcher feature parity): green, mirrors `sketch_canvas.dart`'s
 /// own `_fullyConstrainedColor` (`0xFF2E7D32`) - an entity whose defining

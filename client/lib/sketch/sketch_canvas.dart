@@ -2068,12 +2068,15 @@ class _SketchPainter extends CustomPainter {
   /// - see [SketchController.minTapHitRadiusPixels]/[SketchController.pointHitRadiusMultiplier]).
   // On-device feedback ("Points should be visible with a diameter slightly
   // larger than the sketch line width"): a plain Point's own diameter
-  // (2 * _pointRadius) is now derived from _lineStrokeWidth rather than a
-  // bare constant, so the two stay in the intended relationship if either
-  // is tuned again later. The emphasis/selected/snapping states keep the
-  // exact same multiples of the base radius this file already had (1.5x/
-  // 1.67x/2.33x) - still visually distinct while shrinking together.
-  static const double _pointRadius = _lineStrokeWidth * 0.65; // diameter ~1.3x the line width
+  // (2 * _pointRadius) is derived from _lineStrokeWidth rather than a bare
+  // constant, so the two stay in the intended relationship if either is
+  // tuned again later. Bug fix: the first pass at this (0.65x, diameter
+  // ~1.3x the line width) turned out too subtle on-device ("I still can't
+  // see any points") - bumped to a still-modest but clearly legible margin.
+  // The emphasis/selected/snapping states keep the exact same multiples of
+  // the base radius this file already had (1.5x/1.67x/2.33x) - still
+  // visually distinct while scaling together.
+  static const double _pointRadius = _lineStrokeWidth * 1.1; // diameter ~2.2x the line width
   static const double _pointRadiusEmphasis = _pointRadius * 1.5; // chain-start/circle-center/hover
   static const double _pointRadiusSelected = _pointRadius * (5.0 / 3.0);
   static const double _pointRadiusSnapping = _pointRadius * (7.0 / 3.0); // chain-start snap-to-close
