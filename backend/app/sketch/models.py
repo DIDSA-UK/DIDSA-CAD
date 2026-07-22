@@ -2243,6 +2243,45 @@ class Sketch:
             self.constraints.pop(rectangle.midpoint_constraint_id, None)
         return self._prune_orphaned_points(candidates)
 
+    def collapse_polygon(self, polygon_id: str) -> None:
+        """Removes *only* the Polygon bookkeeping record - none of its own
+        Points/Lines/Constraints are touched. On-device feedback ("if an
+        entity from a rectangle, slot, polygon is deleted it should
+        collapse into lines and constraints"): the atomic-entity wrapper
+        (see the Polygon class's own docstring) exists purely to let a
+        vertex drag be recognized as one and to create everything in a
+        single call - it was never meant to make the underlying geometry
+        any less freely editable than plain Lines/Points always are.
+        Deleting one of a Polygon's own edges/vertices directly should
+        degrade it into ordinary, independently editable Lines/
+        Constraints, the same as it would have been before Polygon became
+        a real entity at all - not cascade the *rest* of the shape away
+        with it (see `delete_polygon` for the "delete every one of its own
+        pieces too" behaviour this is deliberately not). Called by the
+        router whenever one of a Polygon's own Lines/vertex Points is
+        deleted directly - see `app.sketch.router`'s own delete_line/
+        delete_point endpoints."""
+        polygon = self.entities.get(polygon_id)
+        if not isinstance(polygon, Polygon):
+            raise KeyError(polygon_id)
+        del self.entities[polygon_id]
+
+    def collapse_slot(self, slot_id: str) -> None:
+        """[collapse_polygon]'s counterpart for Slot - see that method's own
+        doc comment for the full reasoning."""
+        slot = self.entities.get(slot_id)
+        if not isinstance(slot, Slot):
+            raise KeyError(slot_id)
+        del self.entities[slot_id]
+
+    def collapse_rectangle(self, rectangle_id: str) -> None:
+        """[collapse_polygon]'s counterpart for Rectangle - see that
+        method's own doc comment for the full reasoning."""
+        rectangle = self.entities.get(rectangle_id)
+        if not isinstance(rectangle, Rectangle):
+            raise KeyError(rectangle_id)
+        del self.entities[rectangle_id]
+
     def delete_spline(self, spline_id: str) -> list[str]:
         """Remove a Spline and every `SplineTangentConstraint` `add_spline`
         created alongside it - same "internal implementation detail"

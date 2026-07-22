@@ -153,6 +153,73 @@ def test_point_deletion_is_blocked_while_referenced_by_a_polygon():
         sketch.delete_point(polygon.vertex_point_ids[3])  # a freshly-created-by-add_polygon vertex too
 
 
+def test_collapse_polygon_removes_only_the_bookkeeping_record():
+    """On-device feedback ("if an entity from a rectangle, slot, polygon
+    is deleted it should collapse into lines and constraints"):
+    collapse_polygon must leave every one of the Polygon's own Points/
+    Lines/Constraints completely untouched - unlike delete_polygon, which
+    cascades all of them away."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 5)
+    entities_before = set(sketch.entities) - {polygon.id}
+    constraints_before = set(sketch.constraints)
+    points_before = set(sketch.points)
+
+    sketch.collapse_polygon(polygon.id)
+
+    assert polygon.id not in sketch.entities
+    assert set(sketch.entities) == entities_before
+    assert set(sketch.constraints) == constraints_before
+    assert set(sketch.points) == points_before
+
+
+def test_collapse_polygon_removes_the_polygon_specific_point_deletion_blocker():
+    """The actual bug this exists to fix ("Point is still referenced by
+    polygon ..."): once the Polygon record itself is collapsed, its own
+    centre Point is no longer blocked *by it specifically* - checked
+    directly against `_point_deletion_blocker`'s own return value (rather
+    than a full end-to-end delete_point call).
+
+    Uses `center_point_id`, not a vertex: every vertex is also a real
+    edge Line's endpoint, and `_point_deletion_blocker` checks Line
+    references before Polygon ones, so a vertex's message would say
+    "line" regardless of whether the Polygon record still exists. The
+    centre Point is referenced by nothing but the Polygon entity itself
+    in the entity scan (its ties to the radius/equal-radius constraints
+    are Constraint references, checked only after every entity type), so
+    it's the one point where "polygon" being in the blocker message
+    actually depends on the Polygon record still existing."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 5)
+
+    blocker = sketch._point_deletion_blocker(polygon.center_point_id)
+    assert blocker is not None
+    assert "polygon" in blocker
+
+    sketch.collapse_polygon(polygon.id)
+
+    blocker_after = sketch._point_deletion_blocker(polygon.center_point_id)
+    # Still blocked - the radius/equal-radius Constraints tying it to
+    # each vertex - but no longer by the (now-gone) Polygon record.
+    assert blocker_after is not None
+    assert "polygon" not in blocker_after
+    # Everything the Polygon used to own survives untouched.
+    for line_id in polygon.line_ids:
+        assert line_id in sketch.entities
+    for vertex_id in polygon.vertex_point_ids:
+        assert vertex_id in sketch.points
+
+
+def test_collapse_polygon_rejects_an_unknown_id():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    with pytest.raises(KeyError):
+        sketch.collapse_polygon("does-not-exist")
+
+
 def test_polygon_native_format_round_trip_preserves_every_field():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
@@ -289,3 +356,26 @@ def test_delete_polygon_over_the_api():
     # its own origin Point independent of anything this test does.
     points_after = client.get(f"/sketch/sketches/{sketch['id']}/points").json()
     assert len(points_after) == len(points_before) + 4
+
+
+def test_collapse_polygon_over_the_api_leaves_its_own_lines_and_vertices_in_place():
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    first_vertex = _create_point(sketch["id"], 10.0, 0.0)
+    polygon = client.post(
+        f"/sketch/sketches/{sketch['id']}/polygons",
+        json={"center_point_id": center["id"], "first_vertex_point_id": first_vertex["id"], "sides": 5},
+    ).json()
+
+    response = client.post(f"/sketch/sketches/{sketch['id']}/polygons/{polygon['id']}/collapse")
+
+    assert response.status_code == 204
+    assert client.get(f"/sketch/sketches/{sketch['id']}/polygons/{polygon['id']}").status_code == 404
+    assert client.get(f"/sketch/sketches/{sketch['id']}/lines/{polygon['line_ids'][0]}").status_code == 200
+    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{polygon['vertex_point_ids'][1]}").status_code == 200
+
+
+def test_collapse_polygon_not_found_over_the_api():
+    sketch = _create_sketch()
+    response = client.post(f"/sketch/sketches/{sketch['id']}/polygons/does-not-exist/collapse")
+    assert response.status_code == 404

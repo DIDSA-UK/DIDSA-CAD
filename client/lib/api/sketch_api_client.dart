@@ -2004,6 +2004,39 @@ class SketchApiClient {
             .toList(),
       );
 
+  /// On-device feedback ("cascadeing deletion needs more finesse. if an
+  /// entity from a rectangle, slot, polygon is deleted it should collapse
+  /// into lines and constraints"): discards only the Polygon/Slot/
+  /// Rectangle bookkeeping record itself - its own Lines/Arcs/Points/
+  /// Constraints all keep existing as ordinary standalone geometry.
+  /// Unlike [deletePolygon]/[deleteSlot]/[deleteRectangle] (which cascade-
+  /// delete everything the wrapper owns), this is the right call once one
+  /// of the shape's own pieces has already been deleted directly and the
+  /// wrapper record is now meaningless bookkeeping.
+  Future<void> collapsePolygon(String sketchId, String polygonId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/polygons/$polygonId/collapse'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> collapseSlot(String sketchId, String slotId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/slots/$slotId/collapse'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> collapseRectangle(String sketchId, String rectangleId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/rectangles/$rectangleId/collapse'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
   Future<List<String>> deleteSpline(String sketchId, String splineId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/splines/$splineId'),

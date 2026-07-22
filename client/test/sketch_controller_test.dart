@@ -256,6 +256,16 @@ class _FakeBackend {
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
+    // On-device feedback ("cascadeing deletion needs more finesse..."):
+    // discards only the wrapper bookkeeping record - its own Lines/Arcs/
+    // Points/Constraints are left untouched, mirroring the real backend's
+    // `Sketch.collapse_polygon`/`collapse_slot`/`collapse_rectangle`.
+    final polygonCollapseMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/([^/]+)/collapse$').firstMatch(path);
+    if (polygonCollapseMatch != null && request.method == 'POST') {
+      polygons.remove(polygonCollapseMatch.group(1));
+      return http.Response('', 204);
+    }
+
     final polygonPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/(.+)$').firstMatch(path);
     if (polygonPatchMatch != null && request.method == 'PATCH') {
       final polygon = polygons[polygonPatchMatch.group(1)];
@@ -287,6 +297,12 @@ class _FakeBackend {
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
+    final slotCollapseMatch = RegExp(r'^/sketch/sketches/[^/]+/slots/([^/]+)/collapse$').firstMatch(path);
+    if (slotCollapseMatch != null && request.method == 'POST') {
+      slots.remove(slotCollapseMatch.group(1));
+      return http.Response('', 204);
+    }
+
     final slotPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/slots/(.+)$').firstMatch(path);
     if (slotPatchMatch != null && request.method == 'PATCH') {
       final slot = slots[slotPatchMatch.group(1)];
@@ -313,6 +329,13 @@ class _FakeBackend {
         }
       }
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final rectangleCollapseMatch =
+        RegExp(r'^/sketch/sketches/[^/]+/rectangles/([^/]+)/collapse$').firstMatch(path);
+    if (rectangleCollapseMatch != null && request.method == 'POST') {
+      rectangles.remove(rectangleCollapseMatch.group(1));
+      return http.Response('', 204);
     }
 
     final rectanglePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/rectangles/(.+)$').firstMatch(path);
@@ -3929,8 +3952,10 @@ void main() {
   group('On-device feedback: deleting a Point/Line that belongs to a Slot/Rectangle no longer leaves '
       'the owning entity behind, still referencing it server-side ("some points are not deleting '
       'because they are part of a slot but the slot has been deleted")', () {
-    test('computeDeleteCascade cascades a selected Slot corner Point up to the whole Slot, and '
-        'dedups its own Arcs/Lines out of the direct arcs/lines cascade', () async {
+    test('computeDeleteCascade routes a *partial* hit (one Slot corner Point) to collapsedSlots, not '
+        'slots, and leaves its own directly-touched Arc/Line in the ordinary arcs/lines cascade '
+        'undeduped - only the pieces actually selected/pulled in are slated for deletion, everything '
+        'else the Slot owns must survive', () async {
       controller.selectDrawTool(SketchTool.slot);
       await controller.handleCanvasTap(0, 0);
       await controller.handleCanvasTap(20, 0);
@@ -3940,20 +3965,26 @@ void main() {
 
       final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: slot.aPointId)]);
 
-      expect(cascade.slots, {slot.id});
-      // Deduped out - delete_slot cascades these server-side, so they must
-      // not also appear in the generic arcs/lines cascade (a double-delete
-      // would 404).
-      expect(cascade.arcs, isNot(contains(slot.arc1Id)));
+      expect(cascade.slots, isEmpty);
+      expect(cascade.collapsedSlots, {slot.id});
+      // aPointId is arc1's own start Point and line2's own end Point - both
+      // pulled in and left in the ordinary cascade, not deduped away.
+      expect(cascade.arcs, contains(slot.arc1Id));
+      expect(cascade.lines, contains(slot.line2Id));
+      // Nothing else the Slot owns was touched by this selection - must NOT
+      // be swept in too.
       expect(cascade.arcs, isNot(contains(slot.arc2Id)));
       expect(cascade.lines, isNot(contains(slot.centerlineId)));
       expect(cascade.lines, isNot(contains(slot.line1Id)));
-      expect(cascade.lines, isNot(contains(slot.line2Id)));
     });
 
-    test('deleting a single Slot corner Point succeeds with no error and removes the whole Slot - '
-        'previously 400ed with "Point is still referenced by slot ..." because nothing ever deleted '
-        'the Slot entity itself', () async {
+    test('deleting a single Slot corner Point succeeds with no error, collapses just the Slot '
+        'bookkeeping record, and leaves the rest of the Slot\'s own geometry (its other Arc, other '
+        'Lines, other corners) exactly as it was - on-device feedback ("a previous fix went against a '
+        'design requirement... cascadeing deletion needs more finesse. if an entity from a rectangle, '
+        'slot, polygon is deleted it should collapse into lines and constraints"). Previously this '
+        '400ed outright ("Point is still referenced by slot ..."), then a later (now-reverted) fix '
+        'cascade-deleted the *whole* Slot instead of just the one Point - both wrong.', () async {
       controller.selectDrawTool(SketchTool.slot);
       await controller.handleCanvasTap(0, 0);
       await controller.handleCanvasTap(20, 0);
@@ -3966,50 +3997,149 @@ void main() {
       await controller.deleteSelected();
 
       expect(controller.errorMessage, isNull);
+      // The wrapper bookkeeping is gone - it no longer means anything once
+      // one of its own pieces went away directly.
       expect(controller.slots, isEmpty);
       expect(controller.points.containsKey(aId), isFalse);
-      // The Slot's own Arcs/Lines are gone too, not just locally invisible -
-      // a stale local entry here would previously mis-render/mis-hover as
-      // if the Slot's own construction points (see the group above) were
-      // still reachable.
+      // Only what actually referenced aPointId (arc1, line2) is gone with
+      // it - everything else the Slot used to own survives untouched.
       expect(controller.arcs.containsKey(slot.arc1Id), isFalse);
-      expect(controller.arcs.containsKey(slot.arc2Id), isFalse);
-      expect(controller.lines.containsKey(slot.centerlineId), isFalse);
-      expect(controller.lines.containsKey(slot.line1Id), isFalse);
       expect(controller.lines.containsKey(slot.line2Id), isFalse);
+      expect(controller.arcs.containsKey(slot.arc2Id), isTrue);
+      expect(controller.lines.containsKey(slot.centerlineId), isTrue);
+      expect(controller.lines.containsKey(slot.line1Id), isTrue);
+      expect(controller.points.containsKey(slot.bPointId), isTrue);
+      expect(controller.points.containsKey(slot.cPointId), isTrue);
+      expect(controller.points.containsKey(slot.dPointId), isTrue);
     });
 
-    test('deleting a single Rectangle corner Point succeeds with no error and removes the whole '
-        'Rectangle', () async {
+    test('deleting a single Polygon edge Line collapses just the Polygon bookkeeping record - the '
+        'other N-1 edges and every vertex survive untouched', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(30, 0); // center
+      await controller.handleCanvasTap(40, 0); // first vertex
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final deletedLineId = polygon.lineIds[0];
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: deletedLineId));
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.polygons, isEmpty);
+      expect(controller.lines.containsKey(deletedLineId), isFalse);
+      for (final lineId in polygon.lineIds.skip(1)) {
+        expect(controller.lines.containsKey(lineId), isTrue);
+      }
+      for (final vertexId in polygon.vertexPointIds) {
+        expect(controller.points.containsKey(vertexId), isTrue);
+      }
+      expect(controller.points.containsKey(polygon.centerPointId), isTrue);
+    });
+
+    test('deleting a single Rectangle edge Line (the exact on-device repro: "if I create a rectangle '
+        'and I delete one line the whole rectangle gets deleted") collapses just the Rectangle '
+        'bookkeeping record - the other 3 edges, both diagonals, and all 4 corners survive untouched',
+        () async {
       controller.selectDrawTool(SketchTool.rectangle);
       controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
       await controller.handleCanvasTap(2, 2);
       await controller.handleCanvasTap(10, 8);
       controller.exitToSelectMode();
       final rectangle = controller.rectangles.values.single;
-      final cornerId = rectangle.cornerPointIds[0];
+      final deletedLineId = rectangle.lineIds[0];
 
-      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: cornerId));
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: deletedLineId));
       await controller.deleteSelected();
 
       expect(controller.errorMessage, isNull);
       expect(controller.rectangles, isEmpty);
-      expect(controller.points.containsKey(cornerId), isFalse);
-      for (final lineId in rectangle.lineIds) {
-        expect(controller.lines.containsKey(lineId), isFalse);
+      expect(controller.lines.containsKey(deletedLineId), isFalse);
+      for (final lineId in rectangle.lineIds.skip(1)) {
+        expect(controller.lines.containsKey(lineId), isTrue);
+      }
+      final diagonalLineId = rectangle.diagonalLineId;
+      if (diagonalLineId != null) expect(controller.lines.containsKey(diagonalLineId), isTrue);
+      final diagonal2LineId = rectangle.diagonal2LineId;
+      if (diagonal2LineId != null) expect(controller.lines.containsKey(diagonal2LineId), isTrue);
+      for (final cornerId in rectangle.cornerPointIds) {
+        expect(controller.points.containsKey(cornerId), isTrue);
       }
     });
 
-    test('undoing a cascaded Slot delete recreates the Slot with a new id, its own radius intact',
+    test('undoing a single-Line delete that collapsed a Rectangle restores that one Line generically '
+        '- the Rectangle wrapper itself is not resurrected (there is no backend primitive to reattach '
+        'a wrapper to already-existing geometry), but nothing is lost or duplicated: the same corners '
+        'and every other edge/diagonal were never touched in the first place', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      final deletedLineId = rectangle.lineIds[0];
+      final startId = controller.lines[deletedLineId]!.startPointId;
+      final endId = controller.lines[deletedLineId]!.endPointId;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: deletedLineId));
+      await controller.deleteSelected();
+      expect(controller.rectangles, isEmpty);
+      expect(controller.lines.containsKey(deletedLineId), isFalse);
+
+      await controller.undo();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.rectangles, isEmpty); // wrapper stays gone - documented trade-off.
+      final restoredLine = controller.lines.values.singleWhere(
+        (l) =>
+            (l.startPointId == startId && l.endPointId == endId) ||
+            (l.startPointId == endId && l.endPointId == startId),
+      );
+      expect(restoredLine, isNotNull);
+      // No duplicate lines were created between these two corners.
+      expect(
+        controller.lines.values.where(
+          (l) =>
+              (l.startPointId == startId && l.endPointId == endId) ||
+              (l.startPointId == endId && l.endPointId == startId),
+        ),
+        hasLength(1),
+      );
+    });
+
+    test('undoing a fully-consumed Slot delete (every one of its own Points selected, e.g. Select '
+        'All) still recreates the whole Slot with a new id, its own radius intact - the original, '
+        'well-tested add_slot-based undo path, unaffected by the partial-delete/collapse fix above',
         () async {
       controller.selectDrawTool(SketchTool.slot);
-      await controller.handleCanvasTap(0, 0);
-      await controller.handleCanvasTap(20, 0);
-      await controller.handleCanvasTap(10, 5); // radius 5
+      // Off the origin (0,0) deliberately - a tap there would snap/reuse
+      // the sketch's own origin Point instead of creating a fresh centre1
+      // Point, and the origin is always excluded from a Point selection
+      // (see computeDeleteCascade's own selection switch), which would
+      // make this selection wrongly look partial (5 of 6 own Points, not
+      // 6 of 6) rather than the "every one of its own Points" case this
+      // test means to exercise.
+      await controller.handleCanvasTap(30, 0);
+      await controller.handleCanvasTap(50, 0);
+      await controller.handleCanvasTap(40, 5); // radius 5
       controller.exitToSelectMode();
       final slot = controller.slots.values.single;
 
-      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: slot.aPointId));
+      for (final id in [
+        slot.center1PointId,
+        slot.center2PointId,
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+      ]) {
+        controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: id));
+      }
+      final cascade = controller.computeDeleteCascade(controller.selectionSet);
+      expect(cascade.slots, {slot.id});
+      expect(cascade.collapsedSlots, isEmpty);
+
       await controller.deleteSelected();
       expect(controller.slots, isEmpty);
 
@@ -6747,13 +6877,16 @@ void main() {
       expect(controller.currentGhostValue(linearGhost), closeTo(30.0, 1e-6));
     });
 
-    test('deleting one of a Slot\'s own straight Lines cascades the whole Slot away (see '
-        'computeDeleteCascade\'s own Slot block), leaving no Arc-apex snap target behind', () async {
+    test('deleting one of a Slot\'s own straight Lines collapses just the Slot bookkeeping record '
+        '(see computeDeleteCascade\'s own Slot block) - it no longer cascades the rest of the Slot\'s '
+        'own geometry away with it, only leaving no Arc-apex snap target behind since the Slot is no '
+        'longer intact', () async {
       controller.selectDrawTool(SketchTool.slot);
       await controller.handleCanvasTap(0, 0);
       await controller.handleCanvasTap(20, 0);
       await controller.handleCanvasTap(10, 5); // radius 5
       controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
       final arc1 = controller.arcs.values.first;
       final line1 = controller.lines.values.firstWhere(
         (line) => !line.construction && (line.startPointId == arc1.endPointId || line.endPointId == arc1.endPointId),
@@ -6763,6 +6896,14 @@ void main() {
 
       expect(controller.slots, isEmpty);
       expect(controller.errorMessage, isNull);
+      expect(controller.lines.containsKey(line1.id), isFalse);
+      // The rest of the Slot's own geometry survives - only the wrapper
+      // record and the one directly-deleted Line are gone.
+      expect(controller.arcs.containsKey(slot.arc1Id), isTrue);
+      expect(controller.arcs.containsKey(slot.arc2Id), isTrue);
+      expect(controller.lines.containsKey(slot.centerlineId), isTrue);
+      final survivingSideId = slot.line1Id == line1.id ? slot.line2Id : slot.line1Id;
+      expect(controller.lines.containsKey(survivingSideId), isTrue);
       controller.cursorX = -5;
       controller.cursorY = 0;
       expect(controller.hoveredLineMidpoint, isNull);

@@ -5351,6 +5351,9 @@ class SketchController extends ChangeNotifier {
     Set<String> polygons,
     Set<String> slots,
     Set<String> rectangles,
+    Set<String> collapsedPolygons,
+    Set<String> collapsedSlots,
+    Set<String> collapsedRectangles,
     Set<String> splines,
     Set<String> texts,
     Set<String> constraints
@@ -5363,6 +5366,23 @@ class SketchController extends ChangeNotifier {
     final polygonIds = <String>{};
     final slotIds = <String>{};
     final rectangleIds = <String>{};
+    // On-device feedback ("cascadeing deletion needs more finesse. if an
+    // entity from a rectangle, slot, polygon is deleted it should collapse
+    // into lines and constraints"): a wrapper whose own Points/Lines/Arcs
+    // are only *partially* covered by this selection goes here instead of
+    // [polygonIds]/[slotIds]/[rectangleIds] - its own surviving pieces are
+    // never touched, only the (now-meaningless) wrapper bookkeeping record
+    // is discarded (see [deleteSelected]'s own `collapsePolygon`/
+    // `collapseSlot`/`collapseRectangle` calls). A wrapper only lands in
+    // [polygonIds]/[slotIds]/[rectangleIds] proper when the selection
+    // already independently accounts for *every* one of its own pieces
+    // (e.g. Select All, or selecting the whole shape by hand) - nothing
+    // survives it either way, so that case keeps the original cascade-
+    // delete-everything behaviour (and its own well-tested `add_polygon`/
+    // `add_slot`/`add_rectangle`-based undo).
+    final collapsedPolygonIds = <String>{};
+    final collapsedSlotIds = <String>{};
+    final collapsedRectangleIds = <String>{};
     final splineIds = <String>{};
     final textIds = <String>{};
     final constraintIds = <String>{};
@@ -5436,16 +5456,24 @@ class SketchController extends ChangeNotifier {
       // Same reasoning as the Ellipse block above - a Polygon's own edge
       // Lines/vertex Points are real, independently selectable/deletable
       // geometry, so cascade UP to the Polygon from either direction.
-      if (pointIds.contains(polygon.centerPointId) ||
-          polygon.vertexPointIds.any(pointIds.contains) ||
-          polygon.lineIds.any(lineIds.contains)) {
+      final ownPointIds = {polygon.centerPointId, ...polygon.vertexPointIds};
+      final ownLineIds = polygon.lineIds.toSet();
+      final touchedPoints = ownPointIds.where(pointIds.contains).length;
+      final touchedLines = ownLineIds.where(lineIds.contains).length;
+      if (touchedPoints == 0 && touchedLines == 0) continue;
+      if (touchedPoints == ownPointIds.length && touchedLines == ownLineIds.length) {
         polygonIds.add(polygon.id);
+      } else {
+        collapsedPolygonIds.add(polygon.id);
       }
     }
     // The backend's own Sketch.delete_polygon already deletes every one of
     // its edge Lines as part of deleting the Polygon itself - same
     // "already-gone Line" concern the Ellipse block above avoids for its
-    // own 2 axis Lines, generalized to all `sides` of them here.
+    // own 2 axis Lines, generalized to all `sides` of them here. Only for
+    // [polygonIds] (every own piece already independently selected) - a
+    // [collapsedPolygonIds] entry leaves its surviving Lines exactly where
+    // they already are in [lineIds], to be deleted (or not) individually.
     for (final polygonId in polygonIds) {
       final polygon = polygons[polygonId];
       if (polygon == null) continue;
@@ -5464,24 +5492,33 @@ class SketchController extends ChangeNotifier {
       // stayed behind, still referencing those same Points server-side,
       // permanently blocking their deletion afterward
       // (Sketch._point_deletion_blocker).
-      if (pointIds.contains(slot.center1PointId) ||
-          pointIds.contains(slot.center2PointId) ||
-          pointIds.contains(slot.aPointId) ||
-          pointIds.contains(slot.bPointId) ||
-          pointIds.contains(slot.cPointId) ||
-          pointIds.contains(slot.dPointId) ||
-          lineIds.contains(slot.centerlineId) ||
-          lineIds.contains(slot.line1Id) ||
-          lineIds.contains(slot.line2Id) ||
-          arcIds.contains(slot.arc1Id) ||
-          arcIds.contains(slot.arc2Id)) {
+      final ownPointIds = {
+        slot.center1PointId,
+        slot.center2PointId,
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+      };
+      final ownLineIds = {slot.centerlineId, slot.line1Id, slot.line2Id};
+      final ownArcIds = {slot.arc1Id, slot.arc2Id};
+      final touchedPoints = ownPointIds.where(pointIds.contains).length;
+      final touchedLines = ownLineIds.where(lineIds.contains).length;
+      final touchedArcs = ownArcIds.where(arcIds.contains).length;
+      if (touchedPoints == 0 && touchedLines == 0 && touchedArcs == 0) continue;
+      if (touchedPoints == ownPointIds.length &&
+          touchedLines == ownLineIds.length &&
+          touchedArcs == ownArcIds.length) {
         slotIds.add(slot.id);
+      } else {
+        collapsedSlotIds.add(slot.id);
       }
     }
     // The backend's own Sketch.delete_slot already deletes the centreline,
     // both end-cap Arcs, and both straight Lines as part of deleting the
     // Slot itself - same "already-gone" concern the Ellipse/Polygon blocks
-    // above avoid for their own owned Lines.
+    // above avoid for their own owned Lines. Only for [slotIds] - see the
+    // Polygon block above for why [collapsedSlotIds] is excluded.
     for (final slotId in slotIds) {
       final slot = slots[slotId];
       if (slot == null) continue;
@@ -5496,17 +5533,26 @@ class SketchController extends ChangeNotifier {
       final centerId = rectangle.centerPointId;
       final diagonalLineId = rectangle.diagonalLineId;
       final diagonal2LineId = rectangle.diagonal2LineId;
-      if (rectangle.cornerPointIds.any(pointIds.contains) ||
-          (centerId != null && pointIds.contains(centerId)) ||
-          rectangle.lineIds.any(lineIds.contains) ||
-          (diagonalLineId != null && lineIds.contains(diagonalLineId)) ||
-          (diagonal2LineId != null && lineIds.contains(diagonal2LineId))) {
+      final ownPointIds = {...rectangle.cornerPointIds, if (centerId != null) centerId};
+      final ownLineIds = {
+        ...rectangle.lineIds,
+        if (diagonalLineId != null) diagonalLineId,
+        if (diagonal2LineId != null) diagonal2LineId,
+      };
+      final touchedPoints = ownPointIds.where(pointIds.contains).length;
+      final touchedLines = ownLineIds.where(lineIds.contains).length;
+      if (touchedPoints == 0 && touchedLines == 0) continue;
+      if (touchedPoints == ownPointIds.length && touchedLines == ownLineIds.length) {
         rectangleIds.add(rectangle.id);
+      } else {
+        collapsedRectangleIds.add(rectangle.id);
       }
     }
     // The backend's own Sketch.delete_rectangle already deletes all 4 edge
     // Lines and both diagonal construction Lines as part of deleting the
-    // Rectangle itself - same "already-gone" concern as above.
+    // Rectangle itself - same "already-gone" concern as above. Only for
+    // [rectangleIds] - see the Polygon block above for why
+    // [collapsedRectangleIds] is excluded.
     for (final rectangleId in rectangleIds) {
       final rectangle = rectangles[rectangleId];
       if (rectangle == null) continue;
@@ -5543,6 +5589,9 @@ class SketchController extends ChangeNotifier {
       polygons: polygonIds,
       slots: slotIds,
       rectangles: rectangleIds,
+      collapsedPolygons: collapsedPolygonIds,
+      collapsedSlots: collapsedSlotIds,
+      collapsedRectangles: collapsedRectangleIds,
       splines: splineIds,
       texts: textIds,
       constraints: constraintIds
@@ -5884,6 +5933,23 @@ class SketchController extends ChangeNotifier {
   /// (e.g. a Constraint the client doesn't track locally) surfaces via
   /// [errorMessage], same as any other API failure, and entities already
   /// deleted before the failure stay removed.
+  ///
+  /// On-device feedback ("a previous fix went against a design requirement.
+  /// Now if I create a rectangle and I delete one line the whole rectangle
+  /// gets deleted. cascadeing deletion needs more finesse. if an entity
+  /// from a rectangle, slot, polygon is deleted it should collapse into
+  /// lines and constraints"): a Polygon/Slot/Rectangle whose selection only
+  /// covers *some* of its own Points/Lines/Arcs is never cascade-deleted
+  /// wholesale anymore - only its own now-meaningless wrapper bookkeeping
+  /// record is discarded (`collapsePolygon`/`collapseSlot`/
+  /// `collapseRectangle`), and every one of its surviving pieces stays
+  /// exactly as it was. The old cascade-delete-everything behaviour (via
+  /// `deletePolygon`/`deleteSlot`/`deleteRectangle`) still applies, but only
+  /// once the selection already independently accounts for the *entire*
+  /// shape (e.g. Select All, or hand-selecting every one of its pieces) -
+  /// see [computeDeleteCascade]'s own doc comment on
+  /// `collapsedPolygons`/`collapsedSlots`/`collapsedRectangles` for the
+  /// exact split.
   Future<void> deleteSelected() async {
     if (_selectionSet.isEmpty || _busy || _sketchId == null) return;
     final cascade = computeDeleteCascade(_selectionSet);
@@ -5907,7 +5973,13 @@ class SketchController extends ChangeNotifier {
     // server-side cascade already removes) happened to empty [toDelete]
     // out entirely, even though the shape itself still had a real,
     // non-empty cascade to run.
-    if (toDelete.isEmpty && cascade.polygons.isEmpty && cascade.slots.isEmpty && cascade.rectangles.isEmpty) {
+    if (toDelete.isEmpty &&
+        cascade.polygons.isEmpty &&
+        cascade.slots.isEmpty &&
+        cascade.rectangles.isEmpty &&
+        cascade.collapsedPolygons.isEmpty &&
+        cascade.collapsedSlots.isEmpty &&
+        cascade.collapsedRectangles.isEmpty) {
       return;
     }
 
@@ -6119,6 +6191,46 @@ class SketchController extends ChangeNotifier {
       }
       if (cascade.rectangles.isNotEmpty) {
         await _refreshConstraints();
+      }
+
+      // On-device feedback ("cascadeing deletion needs more finesse. if an
+      // entity from a rectangle, slot, polygon is deleted it should
+      // collapse into lines and constraints"): a wrapper that only had
+      // *some* of its own Points/Lines/Arcs directly deleted this batch
+      // (computeDeleteCascade's [collapsedPolygons]/[collapsedSlots]/
+      // [collapsedRectangles], as opposed to [cascade.polygons]/[slots]/
+      // [rectangles] above, whose selection already independently covered
+      // every one of a wrapper's own pieces) must NOT cascade-delete the
+      // rest - those survive untouched, already scheduled for deletion (or
+      // not) individually via the ordinary shapesToDelete/pointsToDelete
+      // loops below exactly like any other standalone Line/Arc/Point.
+      // Collapsing here (before those loops) only discards the now-
+      // meaningless wrapper bookkeeping record itself, early enough that a
+      // Point blocked solely by that record (Sketch._point_deletion_
+      // blocker) is unblocked in time for its own delete_point call
+      // further below. No pruned points to fold in - unlike delete_
+      // polygon/delete_slot/delete_rectangle, collapse never deletes
+      // anything besides the wrapper record.
+      //
+      // Undo does not restore the wrapper record itself here (see
+      // deleteSelected's own doc comment for why - there is no backend
+      // primitive to reattach a Polygon/Slot/Rectangle wrapper to already-
+      // existing geometry) - the surviving/deleted Points/Lines/Arcs and
+      // Constraints undo normally, generically, exactly as if this had
+      // never been part of a shape; only the "this is a smart Rectangle/
+      // Slot/Polygon for corner-drag purposes" bookkeeping is not brought
+      // back.
+      for (final id in cascade.collapsedPolygons) {
+        await _api.collapsePolygon(_sketchId!, id);
+        polygons.remove(id);
+      }
+      for (final id in cascade.collapsedSlots) {
+        await _api.collapseSlot(_sketchId!, id);
+        slots.remove(id);
+      }
+      for (final id in cascade.collapsedRectangles) {
+        await _api.collapseRectangle(_sketchId!, id);
+        rectangles.remove(id);
       }
 
       for (final current in [...constraintsToDelete, ...shapesToDelete]) {

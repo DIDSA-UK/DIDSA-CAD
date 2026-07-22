@@ -153,6 +153,82 @@ def test_point_deletion_is_blocked_while_referenced_by_a_slot():
         sketch.delete_point(slot.c_point_id)
 
 
+def test_collapse_slot_removes_only_the_bookkeeping_record():
+    """On-device feedback ("if an entity from a rectangle, slot, polygon
+    is deleted it should collapse into lines and constraints"):
+    collapse_slot must leave every one of the Slot's own Points/Lines/
+    Arcs/Constraints completely untouched - unlike delete_slot, which
+    cascades all of them away."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    center2 = sketch.add_point(20.0, 0.0)
+    slot = sketch.add_slot(center1.id, center2.id, 5.0)
+    entities_before = set(sketch.entities) - {slot.id}
+    constraints_before = set(sketch.constraints)
+    points_before = set(sketch.points)
+
+    sketch.collapse_slot(slot.id)
+
+    assert slot.id not in sketch.entities
+    assert set(sketch.entities) == entities_before
+    assert set(sketch.constraints) == constraints_before
+    assert set(sketch.points) == points_before
+
+
+def test_collapse_slot_leaves_its_own_arcs_and_lines_in_place():
+    """The actual bug this exists to fix: collapsing a Slot must discard
+    only the Slot bookkeeping record, never the Arcs/Lines it owns -
+    those keep existing as ordinary standalone geometry."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    center2 = sketch.add_point(20.0, 0.0)
+    slot = sketch.add_slot(center1.id, center2.id, 5.0)
+
+    sketch.collapse_slot(slot.id)
+
+    assert slot.id not in sketch.entities
+    for entity_id in (slot.arc1_id, slot.arc2_id, slot.centerline_id, slot.line1_id, slot.line2_id):
+        assert entity_id in sketch.entities
+
+
+def test_collapse_slot_removes_the_slot_specific_point_deletion_blocker():
+    """`_point_deletion_blocker`'s own entity scan checks Line/Arc
+    references before Slot ones, so a Slot corner Point's message says
+    "line"/"arc" regardless of whether the Slot record still exists -
+    every corner is always also a real Arc endpoint *and* a real Line
+    endpoint by construction. To actually exercise "no longer blocked by
+    the Slot record specifically", first remove those two real
+    geometric references (arc1, line2 - both touch `a_point_id`), which
+    isolates the Slot's own remaining claim on the Point."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    center2 = sketch.add_point(20.0, 0.0)
+    slot = sketch.add_slot(center1.id, center2.id, 5.0)
+
+    sketch.delete_arc(slot.arc1_id)
+    sketch.delete_line(slot.line2_id)
+
+    blocker = sketch._point_deletion_blocker(slot.a_point_id)
+    assert blocker is not None
+    assert "slot" in blocker
+
+    sketch.collapse_slot(slot.id)
+
+    blocker_after = sketch._point_deletion_blocker(slot.a_point_id)
+    # A dangling tangent Constraint (never cleaned up by deleting arc1/
+    # line2 directly - orthogonal to this test) still blocks it, but no
+    # longer the (now-gone) Slot record.
+    assert blocker_after is not None
+    assert "slot" not in blocker_after
+    assert slot.a_point_id in sketch.points
+
+
+def test_collapse_slot_rejects_an_unknown_id():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    with pytest.raises(KeyError):
+        sketch.collapse_slot("does-not-exist")
+
+
 def test_slot_native_format_round_trip_preserves_every_field():
     sketch = Sketch(id="s", plane=Plane.XY)
     center1 = sketch.add_point(0.0, 0.0)
@@ -273,3 +349,27 @@ def test_delete_slot_over_the_api():
     assert response.status_code == 200
 
     assert client.get(f"/sketch/sketches/{sketch['id']}/slots/{slot['id']}").status_code == 404
+
+
+def test_collapse_slot_over_the_api_leaves_its_own_lines_and_arcs_in_place():
+    sketch = _create_sketch()
+    center1 = _create_point(sketch["id"], 0.0, 0.0)
+    center2 = _create_point(sketch["id"], 20.0, 0.0)
+    slot = client.post(
+        f"/sketch/sketches/{sketch['id']}/slots",
+        json={"center1_point_id": center1["id"], "center2_point_id": center2["id"], "radius": 5.0},
+    ).json()
+
+    response = client.post(f"/sketch/sketches/{sketch['id']}/slots/{slot['id']}/collapse")
+
+    assert response.status_code == 204
+    assert client.get(f"/sketch/sketches/{sketch['id']}/slots/{slot['id']}").status_code == 404
+    assert client.get(f"/sketch/sketches/{sketch['id']}/arcs/{slot['arc1_id']}").status_code == 200
+    assert client.get(f"/sketch/sketches/{sketch['id']}/lines/{slot['line1_id']}").status_code == 200
+    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{slot['a_point_id']}").status_code == 200
+
+
+def test_collapse_slot_not_found_over_the_api():
+    sketch = _create_sketch()
+    response = client.post(f"/sketch/sketches/{sketch['id']}/slots/does-not-exist/collapse")
+    assert response.status_code == 404

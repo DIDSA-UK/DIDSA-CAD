@@ -140,6 +140,76 @@ def test_point_deletion_is_blocked_while_referenced_by_a_rectangle():
         sketch.delete_point(rectangle.center_point_id)
 
 
+def test_collapse_rectangle_removes_only_the_bookkeeping_record():
+    """On-device feedback ("if an entity from a rectangle, slot, polygon
+    is deleted it should collapse into lines and constraints"):
+    collapse_rectangle must leave every one of the Rectangle's own
+    Points/Lines/Constraints completely untouched - unlike
+    delete_rectangle, which cascades all of them away."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    corner_ids = _make_corners(sketch)
+    rectangle = sketch.add_rectangle(corner_ids)
+    entities_before = set(sketch.entities) - {rectangle.id}
+    constraints_before = set(sketch.constraints)
+    points_before = set(sketch.points)
+
+    sketch.collapse_rectangle(rectangle.id)
+
+    assert rectangle.id not in sketch.entities
+    assert set(sketch.entities) == entities_before
+    assert set(sketch.constraints) == constraints_before
+    assert set(sketch.points) == points_before
+
+
+def test_collapse_rectangle_removes_the_rectangle_specific_point_deletion_blocker():
+    """The actual bug this exists to fix ("Point is still referenced by
+    rectangle ..."): once the Rectangle record itself is collapsed, its
+    own centre Point is no longer blocked *by it specifically* - checked
+    directly against `_point_deletion_blocker`'s own return value (rather
+    than a full end-to-end delete_point call).
+
+    Uses the Rectangle's `center_point_id`, not a corner: a corner is
+    also a real edge Line's endpoint, and `_point_deletion_blocker` checks
+    Line references before Rectangle ones, so a corner's message would
+    say "line" regardless of whether the Rectangle record is still
+    around - it would never actually exercise this bug. The centre Point
+    is referenced by nothing but the Rectangle entity itself (its tie to
+    the diagonal is a Constraint, checked only after every entity type),
+    so it's the one point where "rectangle" being in the blocker message
+    actually depends on the Rectangle record still existing.
+    """
+    sketch = Sketch(id="s", plane=Plane.XY)
+    corner_ids = _make_corners(sketch)
+    rectangle = sketch.add_rectangle(corner_ids)
+    assert rectangle.center_point_id is not None
+
+    blocker = sketch._point_deletion_blocker(rectangle.center_point_id)
+    assert blocker is not None
+    assert "rectangle" in blocker
+
+    sketch.collapse_rectangle(rectangle.id)
+
+    blocker_after = sketch._point_deletion_blocker(rectangle.center_point_id)
+    # Still blocked - the AtMidpoint constraint tying it to the (still
+    # intact) diagonal Line - but no longer by the (now-gone) Rectangle
+    # record.
+    assert blocker_after is not None
+    assert "rectangle" not in blocker_after
+    # Everything the Rectangle used to own survives untouched.
+    for line_id in rectangle.line_ids:
+        assert line_id in sketch.entities
+    assert rectangle.diagonal_line_id in sketch.entities
+    assert rectangle.diagonal2_line_id in sketch.entities
+    for corner_id in corner_ids:
+        assert corner_id in sketch.points
+
+
+def test_collapse_rectangle_rejects_an_unknown_id():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    with pytest.raises(KeyError):
+        sketch.collapse_rectangle("does-not-exist")
+
+
 def test_rectangle_native_format_round_trip_preserves_every_field():
     sketch = Sketch(id="s", plane=Plane.XY)
     corner_ids = _make_corners(sketch)
@@ -282,3 +352,25 @@ def test_delete_rectangle_over_the_api():
     assert rectangle["center_point_id"] in response.json()["pruned_point_ids"]
     get_response = client.get(f"/sketch/sketches/{sketch['id']}/rectangles/{rectangle['id']}")
     assert get_response.status_code == 404
+
+
+def test_collapse_rectangle_over_the_api_leaves_its_own_lines_and_corners_in_place():
+    sketch = _create_sketch()
+    corner_ids = _create_corners(sketch["id"])
+    rectangle = client.post(
+        f"/sketch/sketches/{sketch['id']}/rectangles",
+        json={"corner_point_ids": corner_ids},
+    ).json()
+
+    response = client.post(f"/sketch/sketches/{sketch['id']}/rectangles/{rectangle['id']}/collapse")
+
+    assert response.status_code == 204
+    assert client.get(f"/sketch/sketches/{sketch['id']}/rectangles/{rectangle['id']}").status_code == 404
+    assert client.get(f"/sketch/sketches/{sketch['id']}/lines/{rectangle['line_ids'][0]}").status_code == 200
+    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{corner_ids[0]}").status_code == 200
+
+
+def test_collapse_rectangle_not_found_over_the_api():
+    sketch = _create_sketch()
+    response = client.post(f"/sketch/sketches/{sketch['id']}/rectangles/does-not-exist/collapse")
+    assert response.status_code == 404

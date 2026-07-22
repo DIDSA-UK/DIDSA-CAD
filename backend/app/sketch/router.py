@@ -1016,6 +1016,20 @@ def delete_polygon(sketch_id: str, polygon_id: str) -> DeleteEntityResponse:
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
+@router.post("/sketches/{sketch_id}/polygons/{polygon_id}/collapse", status_code=204)
+def collapse_polygon(sketch_id: str, polygon_id: str) -> None:
+    """On-device feedback ("if an entity from a rectangle, slot, polygon
+    is deleted it should collapse into lines and constraints"): removes
+    only the Polygon bookkeeping record, leaving its own Lines/Points/
+    Constraints exactly as they are - see Sketch.collapse_polygon's own
+    docstring. Called by the client whenever one of a Polygon's own Lines/
+    vertex Points is deleted directly, in place of the full cascading
+    delete_polygon above."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_polygon_or_404(sketch, polygon_id)
+    sketch.collapse_polygon(polygon_id)
+
+
 @router.post("/sketches/{sketch_id}/slots", response_model=SlotResponse, status_code=201)
 def create_slot(sketch_id: str, payload: SlotCreate) -> SlotResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -1062,6 +1076,15 @@ def delete_slot(sketch_id: str, slot_id: str) -> DeleteEntityResponse:
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
+@router.post("/sketches/{sketch_id}/slots/{slot_id}/collapse", status_code=204)
+def collapse_slot(sketch_id: str, slot_id: str) -> None:
+    """[collapse_polygon]'s counterpart for Slot - see that endpoint's own
+    doc comment."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_slot_or_404(sketch, slot_id)
+    sketch.collapse_slot(slot_id)
+
+
 @router.post("/sketches/{sketch_id}/rectangles", response_model=RectangleResponse, status_code=201)
 def create_rectangle(sketch_id: str, payload: RectangleCreate) -> RectangleResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -1105,6 +1128,15 @@ def delete_rectangle(sketch_id: str, rectangle_id: str) -> DeleteEntityResponse:
     _get_rectangle_or_404(sketch, rectangle_id)
     pruned_point_ids = sketch.delete_rectangle(rectangle_id)
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
+@router.post("/sketches/{sketch_id}/rectangles/{rectangle_id}/collapse", status_code=204)
+def collapse_rectangle(sketch_id: str, rectangle_id: str) -> None:
+    """[collapse_polygon]'s counterpart for Rectangle - see that endpoint's
+    own doc comment."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_rectangle_or_404(sketch, rectangle_id)
+    sketch.collapse_rectangle(rectangle_id)
 
 
 @router.post("/sketches/{sketch_id}/splines", response_model=SplineResponse, status_code=201)
