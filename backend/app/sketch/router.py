@@ -29,6 +29,7 @@ from app.sketch.models import (
     NoIntersectionFoundError,
     Point,
     Polygon,
+    Rectangle,
     Sketch,
     Slot,
     Spline,
@@ -99,6 +100,9 @@ from app.sketch.schemas import (
     PolygonUpdate,
     ProfileDetectionResponse,
     ProfileResponse,
+    RectangleCreate,
+    RectangleResponse,
+    RectangleUpdate,
     SketchCreate,
     SketchOrientationUpdate,
     SketchResponse,
@@ -177,6 +181,13 @@ def _get_slot_or_404(sketch: Sketch, slot_id: str) -> Slot:
     entity = sketch.entities.get(slot_id)
     if not isinstance(entity, Slot):
         raise HTTPException(status_code=404, detail="Slot not found")
+    return entity
+
+
+def _get_rectangle_or_404(sketch: Sketch, rectangle_id: str) -> Rectangle:
+    entity = sketch.entities.get(rectangle_id)
+    if not isinstance(entity, Rectangle):
+        raise HTTPException(status_code=404, detail="Rectangle not found")
     return entity
 
 
@@ -282,6 +293,19 @@ def _slot_response(sketch: Sketch, slot: Slot) -> SlotResponse:
         d_point_id=slot.d_point_id,
         radius=slot.radius(sketch.points),
         construction=slot.construction,
+    )
+
+
+def _rectangle_response(rectangle: Rectangle) -> RectangleResponse:
+    return RectangleResponse(
+        id=rectangle.id,
+        corner_point_ids=rectangle.corner_point_ids,
+        line_ids=rectangle.line_ids,
+        axis_aligned=rectangle.axis_aligned,
+        center_point_id=rectangle.center_point_id,
+        diagonal_line_id=rectangle.diagonal_line_id,
+        diagonal2_line_id=rectangle.diagonal2_line_id,
+        construction=rectangle.construction,
     )
 
 
@@ -1035,6 +1059,51 @@ def delete_slot(sketch_id: str, slot_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_slot_or_404(sketch, slot_id)
     pruned_point_ids = sketch.delete_slot(slot_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
+@router.post("/sketches/{sketch_id}/rectangles", response_model=RectangleResponse, status_code=201)
+def create_rectangle(sketch_id: str, payload: RectangleCreate) -> RectangleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        rectangle = sketch.add_rectangle(
+            payload.corner_point_ids,
+            axis_aligned=payload.axis_aligned,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _rectangle_response(rectangle)
+
+
+@router.get("/sketches/{sketch_id}/rectangles", response_model=list[RectangleResponse])
+def list_rectangles(sketch_id: str) -> list[RectangleResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_rectangle_response(rectangle) for rectangle in sketch.rectangles()]
+
+
+@router.get("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=RectangleResponse)
+def get_rectangle(sketch_id: str, rectangle_id: str) -> RectangleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _rectangle_response(_get_rectangle_or_404(sketch, rectangle_id))
+
+
+@router.patch("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=RectangleResponse)
+def update_rectangle(sketch_id: str, rectangle_id: str, payload: RectangleUpdate) -> RectangleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    rectangle = _get_rectangle_or_404(sketch, rectangle_id)
+    if payload.construction is not None:
+        rectangle.construction = payload.construction
+    return _rectangle_response(rectangle)
+
+
+@router.delete("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=DeleteEntityResponse)
+def delete_rectangle(sketch_id: str, rectangle_id: str) -> DeleteEntityResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_rectangle_or_404(sketch, rectangle_id)
+    pruned_point_ids = sketch.delete_rectangle(rectangle_id)
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 

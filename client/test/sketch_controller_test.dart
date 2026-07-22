@@ -45,6 +45,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> ellipses = {};
   final Map<String, Map<String, dynamic>> polygons = {};
   final Map<String, Map<String, dynamic>> slots = {};
+  final Map<String, Map<String, dynamic>> rectangles = {};
   final Map<String, Map<String, dynamic>> splines = {};
   final Map<String, Map<String, dynamic>> texts = {};
   final Map<String, Map<String, dynamic>> sketches = {};
@@ -294,6 +295,34 @@ class _FakeBackend {
         slot['construction'] = body['construction'] as bool;
       }
       return _json(slot, 200);
+    }
+
+    final rectangleDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/rectangles/(.+)$').firstMatch(path);
+    if (rectangleDeleteMatch != null && request.method == 'DELETE') {
+      final rectangle = rectangles.remove(rectangleDeleteMatch.group(1));
+      if (rectangle != null) {
+        for (final lineId in (rectangle['line_ids'] as List).cast<String>()) {
+          lines.remove(lineId);
+        }
+        final diagonalLineId = rectangle['diagonal_line_id'] as String?;
+        if (diagonalLineId != null) lines.remove(diagonalLineId);
+        final diagonal2LineId = rectangle['diagonal2_line_id'] as String?;
+        if (diagonal2LineId != null) lines.remove(diagonal2LineId);
+        for (final constraintId in (rectangle['_constraint_ids'] as List).cast<String>()) {
+          constraints.remove(constraintId);
+        }
+      }
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final rectanglePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/rectangles/(.+)$').firstMatch(path);
+    if (rectanglePatchMatch != null && request.method == 'PATCH') {
+      final rectangle = rectangles[rectanglePatchMatch.group(1)];
+      if (rectangle == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        rectangle['construction'] = body['construction'] as bool;
+      }
+      return _json(rectangle, 200);
     }
 
     final splineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
@@ -1343,6 +1372,124 @@ class _FakeBackend {
       return _jsonList(slots.values.toList(), 200);
     }
 
+    final rectanglesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/rectangles$').hasMatch(path);
+    if (rectanglesCollectionMatch && request.method == 'POST') {
+      final id = _newId('rectangle');
+      final cornerIds = (body['corner_point_ids'] as List).cast<String>();
+      final axisAligned = body['axis_aligned'] as bool? ?? true;
+      // Mirrors the real backend's Sketch.add_rectangle exactly - see that
+      // method's own doc comment for the fixed corner0->1->2->3->0 edge
+      // order and the axis-aligned-vs-free constraint chains.
+      final lineIds = <String>[];
+      for (var i = 0; i < 4; i++) {
+        final lineId = _newId('line');
+        lines[lineId] = {
+          'id': lineId,
+          'start_point_id': cornerIds[i],
+          'end_point_id': cornerIds[(i + 1) % 4],
+          'length': 1.0,
+          'construction': false,
+        };
+        lineIds.add(lineId);
+      }
+
+      final constraintIds = <String>[];
+      String? centerPointId;
+      String? diagonalLineId;
+      String? diagonal2LineId;
+      if (axisAligned) {
+        for (final lineId in [lineIds[0], lineIds[2]]) {
+          final line = lines[lineId]!;
+          final cid = _newId('constraint');
+          constraints[cid] = {
+            'id': cid,
+            'type': 'horizontal',
+            'line_id': lineId,
+            'point_a_id': line['start_point_id'],
+            'point_b_id': line['end_point_id'],
+          };
+          constraintIds.add(cid);
+        }
+        for (final lineId in [lineIds[1], lineIds[3]]) {
+          final line = lines[lineId]!;
+          final cid = _newId('constraint');
+          constraints[cid] = {
+            'id': cid,
+            'type': 'vertical',
+            'line_id': lineId,
+            'point_a_id': line['start_point_id'],
+            'point_b_id': line['end_point_id'],
+          };
+          constraintIds.add(cid);
+        }
+        diagonalLineId = _newId('line');
+        lines[diagonalLineId] = {
+          'id': diagonalLineId,
+          'start_point_id': cornerIds[0],
+          'end_point_id': cornerIds[2],
+          'length': 1.0,
+          'construction': true,
+        };
+        diagonal2LineId = _newId('line');
+        lines[diagonal2LineId] = {
+          'id': diagonal2LineId,
+          'start_point_id': cornerIds[1],
+          'end_point_id': cornerIds[3],
+          'length': 1.0,
+          'construction': true,
+        };
+        final corner0 = points[cornerIds[0]]!;
+        final corner1 = points[cornerIds[1]]!;
+        final corner2 = points[cornerIds[2]]!;
+        final corner3 = points[cornerIds[3]]!;
+        final centerX = ((corner0['x'] as num).toDouble() +
+                (corner1['x'] as num).toDouble() +
+                (corner2['x'] as num).toDouble() +
+                (corner3['x'] as num).toDouble()) /
+            4;
+        final centerY = ((corner0['y'] as num).toDouble() +
+                (corner1['y'] as num).toDouble() +
+                (corner2['y'] as num).toDouble() +
+                (corner3['y'] as num).toDouble()) /
+            4;
+        centerPointId = _newId('point');
+        points[centerPointId] = {'id': centerPointId, 'x': centerX, 'y': centerY};
+        final midCid = _newId('constraint');
+        constraints[midCid] = {
+          'id': midCid,
+          'type': 'at_midpoint',
+          'point_id': centerPointId,
+          'line_id': diagonalLineId,
+        };
+        constraintIds.add(midCid);
+      } else {
+        for (final pair in [(lineIds[0], lineIds[1]), (lineIds[1], lineIds[2]), (lineIds[2], lineIds[3])]) {
+          final cid = _newId('constraint');
+          constraints[cid] = {'id': cid, 'type': 'perpendicular', 'line1_id': pair.$1, 'line2_id': pair.$2};
+          constraintIds.add(cid);
+        }
+      }
+
+      final rectangle = {
+        'id': id,
+        'corner_point_ids': cornerIds,
+        'line_ids': lineIds,
+        'axis_aligned': axisAligned,
+        'center_point_id': centerPointId,
+        'diagonal_line_id': diagonalLineId,
+        'diagonal2_line_id': diagonal2LineId,
+        'construction': body['construction'] as bool? ?? false,
+        // Not part of the real API response - kept only so this fake's own
+        // DELETE handler knows which Constraints to cascade.
+        '_constraint_ids': constraintIds,
+      };
+      rectangles[id] = rectangle;
+      return _json(rectangle, 201);
+    }
+    if (rectanglesCollectionMatch && request.method == 'GET') {
+      return _jsonList(rectangles.values.toList(), 200);
+    }
+
     final splinesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/splines$').hasMatch(path);
     if (splinesCollectionMatch && request.method == 'POST') {
       final id = _newId('spline');
@@ -2030,6 +2177,112 @@ void main() {
     // (B2) that runs through it (the other diagonal connects the opposite
     // corner pair).
     expect(cornerLines.length, 3);
+  });
+
+  group('Rectangle closed-form drag (parity follow-up: extends the same solver-free drag pattern '
+      'already shipped for Polygon/Slot/Circle/Arc/Ellipse to the newly-promoted Rectangle entity - '
+      'unlike those, a Rectangle has no provisional-radius collapse risk (its H/V constraints are '
+      'always real, never provisional), but the same "drag a corner and let a formula place the rest" '
+      'approach still eliminates the solver from the hot drag path entirely)', () {
+    test('dragging the centre translates every corner by the same delta, with zero solver/network '
+        'calls', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      final cornersBefore = [for (final id in rectangle.cornerPointIds) controller.points[id]!];
+
+      backend.requestLog.clear();
+      final centerId = rectangle.centerPointId!;
+      final center0 = controller.points[centerId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(centerId), isTrue);
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      for (var i = 0; i < 4; i++) {
+        final after = controller.points[rectangle.cornerPointIds[i]]!;
+        expect(after.x, closeTo(cornersBefore[i].x + 5, 1e-9));
+        expect(after.y, closeTo(cornersBefore[i].y + 5, 1e-9));
+      }
+    });
+
+    test('dragging a corner keeps the opposite corner fixed and recomputes the other two to stay '
+        'axis-aligned - the exact formula the Rectangle\'s own Horizontal/Vertical constraint chain '
+        'enforces, evaluated directly instead of via a solve', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      // Corners are (2,2), (10,2), (10,8), (2,8) in that cycle order - see
+      // the "Two Corner rectangle" test above. Corner 0 is dragged below;
+      // corner 2 (opposite) is its fixed anchor.
+      final corner0Id = rectangle.cornerPointIds[0];
+      final corner1Id = rectangle.cornerPointIds[1];
+      final corner2Id = rectangle.cornerPointIds[2];
+      final corner3Id = rectangle.cornerPointIds[3];
+      expect(controller.points[corner0Id]!.x, closeTo(2, 1e-9));
+      expect(controller.points[corner0Id]!.y, closeTo(2, 1e-9));
+      expect(controller.points[corner2Id]!.x, closeTo(10, 1e-9));
+      expect(controller.points[corner2Id]!.y, closeTo(8, 1e-9));
+
+      backend.requestLog.clear();
+      controller.cursorX = 2;
+      controller.cursorY = 2;
+      expect(controller.beginPointDrag(corner0Id), isTrue);
+      await controller.updatePointDrag(0, 0);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      expect(controller.points[corner0Id]!.x, closeTo(0, 1e-9));
+      expect(controller.points[corner0Id]!.y, closeTo(0, 1e-9));
+      // Opposite corner (2) never moved.
+      expect(controller.points[corner2Id]!.x, closeTo(10, 1e-9));
+      expect(controller.points[corner2Id]!.y, closeTo(8, 1e-9));
+      // Corner 1 shares Y with the dragged corner, X with the fixed anchor.
+      expect(controller.points[corner1Id]!.x, closeTo(10, 1e-9));
+      expect(controller.points[corner1Id]!.y, closeTo(0, 1e-9));
+      // Corner 3 shares X with the dragged corner, Y with the fixed anchor.
+      expect(controller.points[corner3Id]!.x, closeTo(0, 1e-9));
+      expect(controller.points[corner3Id]!.y, closeTo(8, 1e-9));
+      // The centre must track the new true centre too.
+      final center = controller.points[rectangle.centerPointId!]!;
+      expect(center.x, closeTo(5, 1e-9));
+      expect(center.y, closeTo(4, 1e-9));
+    });
+
+    test('once the centre Point is gone (no longer intact), dragging a corner falls back to the '
+        'ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      // Direct local removal (see the analogous Ellipse fallback test's own
+      // doc comment) - exactly what [_intactRectangleForPoint]'s live
+      // points-map check reads, with no other side effects.
+      controller.points.remove(rectangle.centerPointId);
+      final corner1Before = controller.points[rectangle.cornerPointIds[1]]!;
+
+      final corner0Id = rectangle.cornerPointIds[0];
+      final corner0 = controller.points[corner0Id]!;
+      controller.cursorX = corner0.x;
+      controller.cursorY = corner0.y;
+      expect(controller.beginPointDrag(corner0Id), isTrue);
+      await controller.updatePointDrag(0, 0);
+
+      // The closed-form path (which would have moved it instantly, per the
+      // test above) didn't run - corner 1 never moved.
+      final corner1After = controller.points[rectangle.cornerPointIds[1]]!;
+      expect(corner1After.x, closeTo(corner1Before.x, 1e-9));
+      expect(corner1After.y, closeTo(corner1Before.y, 1e-9));
+    });
   });
 
   test('snapCandidatePointId is null outside draw mode and when nothing is nearby', () {

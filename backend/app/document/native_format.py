@@ -69,6 +69,7 @@ from app.sketch.models import (
     Plane,
     Point,
     Polygon,
+    Rectangle,
     Sketch,
     SketchEntity,
     SketchEntityRef,
@@ -211,6 +212,20 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "equal_radius_constraint_ids": entity.equal_radius_constraint_ids,
             "tangent_constraint_ids": entity.tangent_constraint_ids,
         }
+    if isinstance(entity, Rectangle):
+        return {
+            "type": "rectangle",
+            "id": entity.id,
+            "construction": entity.construction,
+            "corner_point_ids": entity.corner_point_ids,
+            "line_ids": entity.line_ids,
+            "axis_aligned": entity.axis_aligned,
+            "axis_constraint_ids": entity.axis_constraint_ids,
+            "center_point_id": entity.center_point_id,
+            "diagonal_line_id": entity.diagonal_line_id,
+            "diagonal2_line_id": entity.diagonal2_line_id,
+            "midpoint_constraint_id": entity.midpoint_constraint_id,
+        }
     if isinstance(entity, Spline):
         return {
             "type": "spline",
@@ -311,6 +326,19 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             radius_constraint_id=_require(data, "radius_constraint_id"),
             equal_radius_constraint_ids=list(_require(data, "equal_radius_constraint_ids")),
             tangent_constraint_ids=list(_require(data, "tangent_constraint_ids")),
+        )
+    if entity_type == "rectangle":
+        return Rectangle(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            corner_point_ids=list(_require(data, "corner_point_ids")),
+            line_ids=list(_require(data, "line_ids")),
+            axis_aligned=_require(data, "axis_aligned"),
+            axis_constraint_ids=list(_require(data, "axis_constraint_ids")),
+            center_point_id=data.get("center_point_id"),
+            diagonal_line_id=data.get("diagonal_line_id"),
+            diagonal2_line_id=data.get("diagonal2_line_id"),
+            midpoint_constraint_id=data.get("midpoint_constraint_id"),
         )
     if entity_type == "spline":
         return Spline(

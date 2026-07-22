@@ -480,6 +480,39 @@ class SlotDto {
       );
 }
 
+class RectangleDto {
+  final String id;
+  final List<String> cornerPointIds;
+  final List<String> lineIds;
+  final bool axisAligned;
+  final String? centerPointId;
+  final String? diagonalLineId;
+  final String? diagonal2LineId;
+  final bool construction;
+
+  RectangleDto({
+    required this.id,
+    required this.cornerPointIds,
+    required this.lineIds,
+    required this.axisAligned,
+    this.centerPointId,
+    this.diagonalLineId,
+    this.diagonal2LineId,
+    this.construction = false,
+  });
+
+  factory RectangleDto.fromJson(Map<String, dynamic> json) => RectangleDto(
+        id: json['id'] as String,
+        cornerPointIds: (json['corner_point_ids'] as List).cast<String>(),
+        lineIds: (json['line_ids'] as List).cast<String>(),
+        axisAligned: json['axis_aligned'] as bool,
+        centerPointId: json['center_point_id'] as String?,
+        diagonalLineId: json['diagonal_line_id'] as String?,
+        diagonal2LineId: json['diagonal2_line_id'] as String?,
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
 class SplineDto {
   final String id;
   final List<String> throughPointIds;
@@ -1370,6 +1403,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<RectangleDto>> listRectangles(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/rectangles'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => RectangleDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<List<SplineDto>> listSplines(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/splines'), headers: _headers),
         (body) => (body as List)
@@ -1562,6 +1602,32 @@ class SketchApiClient {
               }),
             ),
         (body) => SlotDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `Sketch.add_rectangle` creates all 4 edge Lines and the whole axis/
+  /// midpoint constraint chain atomically from 4 already-resolved corner
+  /// Points, returning it all in the response. Bug fix: replaces the old
+  /// client-orchestrated up-to-10-call sequence (create each edge Line,
+  /// each H/V or Perpendicular constraint, the diagonal, the centre Point,
+  /// the AtMidpoint constraint, one at a time) - same "used to be a
+  /// client-only shortcut" fix `createSlot`/`createPolygon` already got.
+  Future<RectangleDto> createRectangle(
+    String sketchId,
+    List<String> cornerPointIds, {
+    bool axisAligned = true,
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/rectangles'),
+              headers: _headers,
+              body: jsonEncode({
+                'corner_point_ids': cornerPointIds,
+                'axis_aligned': axisAligned,
+                'construction': construction,
+              }),
+            ),
+        (body) => RectangleDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Always creates from through-points that already exist (mirrors how
@@ -1921,6 +1987,16 @@ class SketchApiClient {
   Future<List<String>> deleteSlot(String sketchId, String slotId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/slots/$slotId'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
+      );
+
+  Future<List<String>> deleteRectangle(String sketchId, String rectangleId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/rectangles/$rectangleId'),
               headers: _headers,
             ),
         (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)

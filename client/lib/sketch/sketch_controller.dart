@@ -155,6 +155,42 @@ class SketchSlotView {
   });
 }
 
+/// Client-side mirror of the backend's `Rectangle` entity (see that
+/// class's own docstring) - real, persisted geometry now, not a client-
+/// only shortcut composed from up to 10 sequential API calls (see the old
+/// `SketchController._buildRectangle`'s own doc comment, which this
+/// replaces). Lets a corner drag be reliably recognized as belonging to a
+/// Rectangle (see [SketchController._intactRectangleForPoint]) the same
+/// way [SketchPolygonView]/[SketchSlotView] already let a vertex/corner
+/// drag be recognized as belonging to a Polygon/Slot.
+///
+/// Unlike Polygon/Slot/Circle/Arc/Ellipse, a Rectangle is not
+/// independently tap-selectable (no `SelectionKind.rectangle`) - only its
+/// own corner Points/edge Lines are, same as Polygon/Slot always were
+/// before/after their own promotion to a real entity. This is purely a
+/// bookkeeping/atomicity + closed-form-drag construct.
+class SketchRectangleView {
+  final String id;
+  final List<String> cornerPointIds;
+  final List<String> lineIds;
+  final bool axisAligned;
+  final String? centerPointId;
+  final String? diagonalLineId;
+  final String? diagonal2LineId;
+  final bool construction;
+
+  const SketchRectangleView({
+    required this.id,
+    required this.cornerPointIds,
+    required this.lineIds,
+    required this.axisAligned,
+    this.centerPointId,
+    this.diagonalLineId,
+    this.diagonal2LineId,
+    this.construction = false,
+  });
+}
+
 class SketchEllipseView {
   final String id;
   final String centerPointId;
@@ -1171,6 +1207,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchEllipseView> ellipses = {};
   final Map<String, SketchPolygonView> polygons = {};
   final Map<String, SketchSlotView> slots = {};
+  final Map<String, SketchRectangleView> rectangles = {};
   final Map<String, SketchSplineView> splines = {};
   final Map<String, SketchTextView> texts = {};
 
@@ -3754,6 +3791,96 @@ class SketchController extends ChangeNotifier {
     };
   }
 
+  /// The still-intact, axis-aligned Rectangle [pointId] is a corner or
+  /// centre of, or null - same "every Point/Line it was built from still
+  /// present, live-checked" contract as [_intactCircleForPoint]/
+  /// [_intactEllipseForPoint]. Deliberately excludes a free/rotated
+  /// Rectangle (the three-point tool's own `axisAligned: false` result,
+  /// which has no centre Point at all): dragging its own Perpendicular-
+  /// constrained corners has none of Circle/Arc/Ellipse's provisional-
+  /// radius collapse risk, so the general solver path already handles it
+  /// fine - only the axis-aligned H/V chain gets this closed-form
+  /// treatment.
+  SketchRectangleView? _intactRectangleForPoint(String pointId) {
+    for (final rectangle in rectangles.values) {
+      if (!rectangle.axisAligned) continue;
+      final isMember = rectangle.cornerPointIds.contains(pointId) || pointId == rectangle.centerPointId;
+      if (!isMember) continue;
+      final centerId = rectangle.centerPointId;
+      final diagonalLineId = rectangle.diagonalLineId;
+      final intact = rectangle.cornerPointIds.every(points.containsKey) &&
+          centerId != null &&
+          points.containsKey(centerId) &&
+          rectangle.lineIds.every(lines.containsKey) &&
+          diagonalLineId != null &&
+          lines.containsKey(diagonalLineId);
+      return intact ? rectangle : null;
+    }
+    return null;
+  }
+
+  /// [_closedFormPolygonVertices]/[_closedFormCircleGeometry]'s
+  /// counterpart for an axis-aligned Rectangle. Dragging the centre
+  /// translates every corner by the same delta (width/height untouched).
+  /// Dragging any corner keeps the *opposite* corner fixed as an anchor
+  /// and recomputes the other two - each shares exactly one axis (X or Y)
+  /// with the dragged corner and the other with the fixed anchor, exactly
+  /// what the rectangle's own Horizontal/Vertical constraint chain
+  /// enforces (see the backend's `Rectangle`/`add_rectangle` docstrings) -
+  /// a formula, not something a constraint solve needs to find.
+  Map<String, (double, double)>? _closedFormRectangleGeometry(
+    SketchRectangleView rectangle,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    final corners = rectangle.cornerPointIds;
+    final centerId = rectangle.centerPointId;
+    if (draggedPointId == centerId) {
+      final center = points[centerId]!;
+      final dx = targetX - center.x;
+      final dy = targetY - center.y;
+      final result = <String, (double, double)>{centerId!: (targetX, targetY)};
+      for (final id in corners) {
+        final p = points[id];
+        if (p != null) result[id] = (p.x + dx, p.y + dy);
+      }
+      return result;
+    }
+
+    final index = corners.indexOf(draggedPointId);
+    if (index == -1) return null;
+    final oppositeIndex = (index + 2) % 4;
+    final plusIndex = (index + 1) % 4;
+    final minusIndex = (index + 3) % 4;
+    final anchor = points[corners[oppositeIndex]];
+    if (anchor == null) return null;
+
+    // Each adjacent corner shares an axis with the dragged corner and the
+    // other with the fixed opposite anchor - which axis goes which way
+    // alternates with the corner's own position in the cycle (see
+    // add_rectangle's fixed corner0->1->2->3->0 edge order).
+    final (double, double) plusPos;
+    final (double, double) minusPos;
+    if (index.isEven) {
+      plusPos = (anchor.x, targetY);
+      minusPos = (targetX, anchor.y);
+    } else {
+      plusPos = (targetX, anchor.y);
+      minusPos = (anchor.x, targetY);
+    }
+
+    final result = <String, (double, double)>{
+      corners[index]: (targetX, targetY),
+      corners[plusIndex]: plusPos,
+      corners[minusIndex]: minusPos,
+    };
+    if (centerId != null) {
+      result[centerId] = ((targetX + anchor.x) / 2, (targetY + anchor.y) / 2);
+    }
+    return result;
+  }
+
   /// Shared apply/sync for [_closedFormPolygonVertices]/
   /// [_closedFormSlotGeometry]'s output - used identically by a live drag
   /// frame (mid-drag: local only, no network - see [updatePointDrag]) and
@@ -3800,10 +3927,23 @@ class SketchController extends ChangeNotifier {
     SketchCircleView? circle,
     SketchArcView? arc,
     SketchEllipseView? ellipse,
+    SketchRectangleView? rectangle,
     String draggedPointId,
     double targetX,
     double targetY,
   ) async {
+    if (rectangle != null) {
+      // Unlike every other closed-form shape here, a Rectangle has no
+      // auto-created, independently-editable dimension of its own (see
+      // the backend `Rectangle`/`add_rectangle` docstrings - its H/V/
+      // Perpendicular/AtMidpoint constraints are all structural, not user
+      // dimensions) - so settling one is just applying/syncing the new
+      // positions, no constraint-value update step needed afterward.
+      final positions = _closedFormRectangleGeometry(rectangle, draggedPointId, targetX, targetY);
+      if (positions == null) return;
+      await _applyClosedFormPositions(positions, sync: true);
+      return;
+    }
     if (ellipse != null) {
       // Ellipse has two independent radius dimensions (major/minor), unlike
       // every other closed-form shape here's single one - settled
@@ -3910,7 +4050,8 @@ class SketchController extends ChangeNotifier {
         _intactSlotForPoint(pointId) == null &&
         _intactCircleForPoint(pointId) == null &&
         _intactArcForPoint(pointId) == null &&
-        _intactEllipseForPoint(pointId) == null) {
+        _intactEllipseForPoint(pointId) == null &&
+        _intactRectangleForPoint(pointId) == null) {
       // Phase 3 (3.2): a Point in an over-constrained cluster already has a
       // redundant/conflicting Constraint pinning it - dragging it wouldn't
       // move it anywhere the solver would actually let it stay, so refuse
@@ -4019,11 +4160,19 @@ class SketchController extends ChangeNotifier {
     final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
         ? _intactEllipseForPoint(pointId)
         : null;
+    final intactRectangle = intactPolygon == null &&
+            intactSlot == null &&
+            intactCircle == null &&
+            intactArc == null &&
+            intactEllipse == null
+        ? _intactRectangleForPoint(pointId)
+        : null;
     if (intactPolygon != null ||
         intactSlot != null ||
         intactCircle != null ||
         intactArc != null ||
-        intactEllipse != null) {
+        intactEllipse != null ||
+        intactRectangle != null) {
       final Map<String, (double, double)>? positions;
       if (intactPolygon != null) {
         positions = _closedFormPolygonVertices(intactPolygon, pointId, newX, newY);
@@ -4033,8 +4182,10 @@ class SketchController extends ChangeNotifier {
         positions = _closedFormCircleGeometry(intactCircle, pointId, newX, newY);
       } else if (intactArc != null) {
         positions = _closedFormArcGeometry(intactArc, pointId, newX, newY);
+      } else if (intactEllipse != null) {
+        positions = _closedFormEllipseGeometry(intactEllipse, pointId, newX, newY);
       } else {
-        positions = _closedFormEllipseGeometry(intactEllipse!, pointId, newX, newY);
+        positions = _closedFormRectangleGeometry(intactRectangle!, pointId, newX, newY);
       }
       if (positions != null) {
         unawaited(_applyClosedFormPositions(positions, sync: false));
@@ -4347,11 +4498,19 @@ class SketchController extends ChangeNotifier {
     final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
         ? _intactEllipseForPoint(pointId)
         : null;
+    final intactRectangle = intactPolygon == null &&
+            intactSlot == null &&
+            intactCircle == null &&
+            intactArc == null &&
+            intactEllipse == null
+        ? _intactRectangleForPoint(pointId)
+        : null;
     if (intactPolygon != null ||
         intactSlot != null ||
         intactCircle != null ||
         intactArc != null ||
-        intactEllipse != null) {
+        intactEllipse != null ||
+        intactRectangle != null) {
       await _runGuarded(() async {
         await _settleClosedFormShapeDrag(
           intactPolygon,
@@ -4359,13 +4518,14 @@ class SketchController extends ChangeNotifier {
           intactCircle,
           intactArc,
           intactEllipse,
+          intactRectangle,
           pointId,
           droppedPoint.x,
           droppedPoint.y,
         );
         _pushUndo(() async {
-          await _settleClosedFormShapeDrag(
-              intactPolygon, intactSlot, intactCircle, intactArc, intactEllipse, pointId, originX, originY);
+          await _settleClosedFormShapeDrag(intactPolygon, intactSlot, intactCircle, intactArc, intactEllipse,
+              intactRectangle, pointId, originX, originY);
         });
         await _solveAndTrackDof();
       });
@@ -8305,6 +8465,18 @@ class SketchController extends ChangeNotifier {
         construction: slot.construction,
       );
     }
+    for (final rectangle in await _api.listRectangles(sketchId)) {
+      rectangles[rectangle.id] = SketchRectangleView(
+        id: rectangle.id,
+        cornerPointIds: rectangle.cornerPointIds,
+        lineIds: rectangle.lineIds,
+        axisAligned: rectangle.axisAligned,
+        centerPointId: rectangle.centerPointId,
+        diagonalLineId: rectangle.diagonalLineId,
+        diagonal2LineId: rectangle.diagonal2LineId,
+        construction: rectangle.construction,
+      );
+    }
     for (final spline in await _api.listSplines(sketchId)) {
       splines[spline.id] = SketchSplineView(
         id: spline.id,
@@ -9503,6 +9675,16 @@ class SketchController extends ChangeNotifier {
   /// rather than just being harmlessly ignored. Skipped for the 3-point
   /// method: an arbitrary-angle rectangle has no axis-aligned "center"
   /// concept this item is scoped to.
+  /// `Sketch.add_rectangle` creates all 4 edge Lines, both diagonal
+  /// construction Lines and the centre Point (axis-aligned only), and the
+  /// whole axis/midpoint constraint chain atomically, server-side -
+  /// replaces the old up-to-10-sequential-call version (create each Line,
+  /// each H/V or Perpendicular constraint, each diagonal, the centre
+  /// Point, the AtMidpoint constraint, one at a time), the same "used to
+  /// be a client-only shortcut" fix `_clickSlotTool`'s own promotion
+  /// already got - see the Rectangle class's own docstring (backend) and
+  /// [SketchRectangleView]'s own doc comment for what this creates and
+  /// why it's no longer independently tap-selectable.
   Future<void> _buildRectangle({
     String? corner0Id,
     String? corner1Id,
@@ -9516,116 +9698,59 @@ class SketchController extends ChangeNotifier {
     final p1 = corner1Id ?? await _pointIdAt(corner1.$1, corner1.$2);
     final p2 = await _pointIdAt(corner2.$1, corner2.$2);
     final p3 = await _pointIdAt(corner3.$1, corner3.$2);
+    final cornerIds = [p0, p1, p2, p3];
 
-    final line1 = await _api.createLine(_sketchId!, p0, p1);
-    lines[line1.id] = SketchLineView(
-      id: line1.id,
-      startPointId: line1.startPointId,
-      endPointId: line1.endPointId,
-      construction: line1.construction,
+    final rectangle = await _api.createRectangle(_sketchId!, cornerIds, axisAligned: axisAligned);
+    rectangles[rectangle.id] = SketchRectangleView(
+      id: rectangle.id,
+      cornerPointIds: rectangle.cornerPointIds,
+      lineIds: rectangle.lineIds,
+      axisAligned: rectangle.axisAligned,
+      centerPointId: rectangle.centerPointId,
+      diagonalLineId: rectangle.diagonalLineId,
+      diagonal2LineId: rectangle.diagonal2LineId,
+      construction: rectangle.construction,
     );
-    _pushUndo(() async {
-      await _api.deleteLine(_sketchId!, line1.id);
-      lines.remove(line1.id);
-    });
-    final line2 = await _api.createLine(_sketchId!, p1, p2);
-    lines[line2.id] = SketchLineView(
-      id: line2.id,
-      startPointId: line2.startPointId,
-      endPointId: line2.endPointId,
-      construction: line2.construction,
-    );
-    _pushUndo(() async {
-      await _api.deleteLine(_sketchId!, line2.id);
-      lines.remove(line2.id);
-    });
-    final line3 = await _api.createLine(_sketchId!, p2, p3);
-    lines[line3.id] = SketchLineView(
-      id: line3.id,
-      startPointId: line3.startPointId,
-      endPointId: line3.endPointId,
-      construction: line3.construction,
-    );
-    _pushUndo(() async {
-      await _api.deleteLine(_sketchId!, line3.id);
-      lines.remove(line3.id);
-    });
-    final line4 = await _api.createLine(_sketchId!, p3, p0);
-    lines[line4.id] = SketchLineView(
-      id: line4.id,
-      startPointId: line4.startPointId,
-      endPointId: line4.endPointId,
-      construction: line4.construction,
-    );
-    _pushUndo(() async {
-      await _api.deleteLine(_sketchId!, line4.id);
-      lines.remove(line4.id);
-    });
-
-    if (axisAligned) {
-      final horiz1 = await _api.createHorizontalConstraint(_sketchId!, line1.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, horiz1.id));
-      final vert1 = await _api.createVerticalConstraint(_sketchId!, line2.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, vert1.id));
-      final horiz2 = await _api.createHorizontalConstraint(_sketchId!, line3.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, horiz2.id));
-      final vert2 = await _api.createVerticalConstraint(_sketchId!, line4.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, vert2.id));
-
-      final diagonal1 = await _api.createLine(_sketchId!, p0, p2, construction: true);
-      lines[diagonal1.id] = SketchLineView(
-        id: diagonal1.id,
-        startPointId: diagonal1.startPointId,
-        endPointId: diagonal1.endPointId,
-        construction: diagonal1.construction,
+    // The 4 edge Lines' own start/end pairing is add_rectangle's own
+    // fixed, documented order (corner0->corner1->corner2->corner3->
+    // corner0) - already known locally, no extra fetch needed.
+    for (var i = 0; i < 4; i++) {
+      lines[rectangle.lineIds[i]] = SketchLineView(
+        id: rectangle.lineIds[i],
+        startPointId: cornerIds[i],
+        endPointId: cornerIds[(i + 1) % 4],
       );
-      _pushUndo(() async {
-        await _api.deleteLine(_sketchId!, diagonal1.id);
-        lines.remove(diagonal1.id);
-      });
-      final diagonal2 = await _api.createLine(_sketchId!, p1, p3, construction: true);
-      lines[diagonal2.id] = SketchLineView(
-        id: diagonal2.id,
-        startPointId: diagonal2.startPointId,
-        endPointId: diagonal2.endPointId,
-        construction: diagonal2.construction,
-      );
-      _pushUndo(() async {
-        await _api.deleteLine(_sketchId!, diagonal2.id);
-        lines.remove(diagonal2.id);
-      });
+    }
+    final diagonalLineId = rectangle.diagonalLineId;
+    if (diagonalLineId != null) {
+      lines[diagonalLineId] = SketchLineView(id: diagonalLineId, startPointId: p0, endPointId: p2, construction: true);
+    }
+    final diagonal2LineId = rectangle.diagonal2LineId;
+    if (diagonal2LineId != null) {
+      lines[diagonal2LineId] =
+          SketchLineView(id: diagonal2LineId, startPointId: p1, endPointId: p3, construction: true);
+    }
 
-      final centerX = (corner0.$1 + corner1.$1 + corner2.$1 + corner3.$1) / 4;
-      final centerY = (corner0.$2 + corner1.$2 + corner2.$2 + corner3.$2) / 4;
-      final centerPoint = await _api.createPoint(_sketchId!, centerX, centerY);
-      points[centerPoint.id] = SketchPointView(id: centerPoint.id, x: centerPoint.x, y: centerPoint.y);
-      _pushUndo(() async {
-        await _api.deletePoint(_sketchId!, centerPoint.id);
-        points.remove(centerPoint.id);
-      });
-      await _autoCoincideIfNear(centerPoint.id, centerX, centerY);
+    _pushUndo(() async {
+      await _api.deleteRectangle(_sketchId!, rectangle.id);
+      rectangles.remove(rectangle.id);
+      for (final lineId in rectangle.lineIds) {
+        lines.remove(lineId);
+      }
+      if (diagonalLineId != null) lines.remove(diagonalLineId);
+      if (diagonal2LineId != null) lines.remove(diagonal2LineId);
+      final centerId = rectangle.centerPointId;
+      if (centerId != null) points.remove(centerId);
+    });
 
-      // Bug-fix round 2: only one AtMidpoint constraint, not two. Both
-      // diagonals share the same true midpoint once the H/V constraints
-      // above hold (that's what makes it a rectangle), so a second
-      // AtMidpoint pinning the same center Point to diagonal2 is
-      // mathematically redundant, not just harmlessly so - verified
-      // against the real py-slvs wheel that it makes the whole solve fail
-      // to converge outright (a singular system), and py-slvs reports
-      // `dof == 0` in that failure state, which made an under-constrained
-      // rectangle (nothing pins its width/height/position) show as
-      // "fully constrained". One AtMidpoint constraint alone already keeps
-      // the center Point tracking the rectangle's true center correctly as
-      // it's resized/moved - diagonal2 stays purely a construction visual.
-      final mid1 = await _api.createAtMidpointConstraint(_sketchId!, centerPoint.id, diagonal1.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, mid1.id));
-    } else {
-      final perp1 = await _api.createPerpendicularConstraint(_sketchId!, line1.id, line2.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp1.id));
-      final perp2 = await _api.createPerpendicularConstraint(_sketchId!, line2.id, line3.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp2.id));
-      final perp3 = await _api.createPerpendicularConstraint(_sketchId!, line3.id, line4.id);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, perp3.id));
+    // The centre Point (axis-aligned only) is freshly created server-side
+    // and isn't locally known yet, same as Slot's own corners/Ellipse's
+    // own minor-axis Point.
+    final centerId = rectangle.centerPointId;
+    if (centerId != null) {
+      final center = await _api.getPoint(_sketchId!, centerId);
+      points[center.id] = SketchPointView(id: center.id, x: center.x, y: center.y);
+      await _autoCoincideIfNear(center.id, center.x, center.y);
     }
 
     await _solveAndTrackDof();

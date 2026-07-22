@@ -474,6 +474,67 @@ class Slot(SketchEntity):
 
 
 @dataclass
+class Rectangle(SketchEntity):
+    """A rectangle defined by four corner Points (`corner_point_ids`, in
+    order, connected in a cycle by `line_ids`) - real, independently
+    addressable Points/Lines, same as every other atomic-entity shape here
+    (Polygon/Slot/Ellipse).
+
+    Mirrors Polygon/Slot's own "used to be a client-only shortcut, now
+    atomic" fix (see those classes' own docstrings): previously composed
+    client-side across up to 10 sequential API calls
+    (`SketchController._buildRectangle`) with nothing server-side to
+    identify "these 4 Points + 4 Lines + N Constraints form one Rectangle"
+    later - the same gap Polygon/Slot had before their own promotion, and
+    for the same reason (reliably reinterpreting a corner drag as a resize
+    instead of an unconstrained 2D point move).
+
+    Two distinct constraint chains, matching the two ways the client's
+    Rectangle tool can build one (`add_rectangle`'s own `axis_aligned`
+    flag - see that method's doc comment):
+    - Axis-aligned (two-corner/centre-corner tools): each edge Line pinned
+      Horizontal or Vertical in turn (`axis_constraint_ids`), plus both
+      diagonal construction Lines (`diagonal_line_id`/`diagonal2_line_id`,
+      corner0->corner2 and corner1->corner3 respectively - both drawn, for
+      the familiar "X" through the centre) and an AtMidpointConstraint
+      (`midpoint_constraint_id`) pinning a real centre Point
+      (`center_point_id`) to just the first diagonal - mirrors Ellipse's
+      own "one AtMidpoint is enough, a second would be redundant"
+      reasoning: both diagonals share the same true midpoint once the H/V
+      constraints above hold, so a second AtMidpoint pinning centre to
+      `diagonal2_line_id` too is mathematically redundant in a way that
+      makes py-slvs fail to converge outright, not just harmlessly so -
+      `diagonal2_line_id` stays purely a construction visual.
+    - Free (three-point tool): no centre Point or diagonals at all
+      (`center_point_id`/`diagonal_line_id`/`diagonal2_line_id`/
+      `midpoint_constraint_id` all `None`) - each consecutive edge pair
+      pinned Perpendicular instead (also `axis_constraint_ids`, reused for
+      either chain since a caller only ever needs to delete them
+      generically), which is rotation-free but still keeps the result
+      rectangular.
+
+    Does NOT override `endpoint_point_ids()` - unlike Circle/Ellipse/Slot,
+    a Rectangle's own edges are ordinary real Lines forming a closed loop,
+    already correctly picked up by `profile.py`'s generic Line-chain walk
+    with no dedicated whole-entity profile function needed.
+    """
+
+    id: str
+    corner_point_ids: list[str]
+    line_ids: list[str]
+    axis_aligned: bool
+    axis_constraint_ids: list[str]
+    center_point_id: str | None = None
+    diagonal_line_id: str | None = None
+    diagonal2_line_id: str | None = None
+    midpoint_constraint_id: str | None = None
+
+    @property
+    def type(self) -> str:
+        return "rectangle"
+
+
+@dataclass
 class Spline(SketchEntity):
     """An open, piecewise-cubic curve through 2+ real, independently
     addressable "through-points" (`through_point_ids`) - the Points a user
@@ -606,6 +667,7 @@ class SketchEntityType(str, Enum):
     ELLIPSE = "ellipse"
     POLYGON = "polygon"
     SLOT = "slot"
+    RECTANGLE = "rectangle"
     SPLINE = "spline"
     TEXT = "text"
 
@@ -1299,6 +1361,103 @@ class Sketch:
 
     def slots(self) -> list[Slot]:
         return [entity for entity in self.entities.values() if isinstance(entity, Slot)]
+
+    def add_rectangle(
+        self,
+        corner_point_ids: list[str],
+        *,
+        axis_aligned: bool = True,
+        construction: bool = False,
+    ) -> Rectangle:
+        """Add a Rectangle from four existing corner Points, in order
+        (`corner0 -> corner1 -> corner2 -> corner3 -> corner0`) - the
+        client always resolves/places all four itself first (the same
+        snap-to-existing-point logic every other tool's own taps already
+        use - see `SketchController._pointIdAt`), exactly as it always has
+        for the Rectangle tool's own corner taps, so there's no coordinate
+        math to duplicate server-side: this only wires up the 4 edge Lines
+        and the constraint chain that makes them stay rectangular.
+
+        [axis_aligned] selects which chain (see the Rectangle class's own
+        docstring): `True` (the two-corner/centre-corner tools) pins each
+        edge Horizontal/Vertical in turn and adds a real centre Point tied
+        to one diagonal via a single AtMidpointConstraint; `False` (the
+        three-point tool, which can produce a rotated result) pins each
+        consecutive edge pair Perpendicular instead, with no centre Point
+        at all.
+        """
+        if len(corner_point_ids) != 4:
+            raise ValueError("A rectangle needs exactly 4 corner Points")
+        if len(set(corner_point_ids)) != 4:
+            raise ValueError("A rectangle's 4 corner Points must all be distinct")
+        for point_id in corner_point_ids:
+            if point_id not in self.points:
+                raise KeyError(point_id)
+
+        p0, p1, p2, p3 = corner_point_ids
+        line0 = self.add_line(p0, p1)
+        line1 = self.add_line(p1, p2)
+        line2 = self.add_line(p2, p3)
+        line3 = self.add_line(p3, p0)
+        line_ids = [line0.id, line1.id, line2.id, line3.id]
+
+        center_point_id: str | None = None
+        diagonal_line_id: str | None = None
+        diagonal2_line_id: str | None = None
+        midpoint_constraint_id: str | None = None
+        if axis_aligned:
+            axis_constraint_ids = [
+                self.add_horizontal_constraint(line0.id).id,
+                self.add_vertical_constraint(line1.id).id,
+                self.add_horizontal_constraint(line2.id).id,
+                self.add_vertical_constraint(line3.id).id,
+            ]
+            diagonal = self.add_line(p0, p2, construction=True)
+            diagonal_line_id = diagonal.id
+            diagonal2 = self.add_line(p1, p3, construction=True)
+            diagonal2_line_id = diagonal2.id
+            corner0 = self.points[p0]
+            corner1 = self.points[p1]
+            corner2 = self.points[p2]
+            corner3 = self.points[p3]
+            center = self.add_point(
+                (corner0.x + corner1.x + corner2.x + corner3.x) / 4,
+                (corner0.y + corner1.y + corner2.y + corner3.y) / 4,
+            )
+            center_point_id = center.id
+            # Bug-fix round 2 (see SketchController._buildRectangle's own
+            # doc comment): only one AtMidpoint constraint, not two - both
+            # diagonals share the same true midpoint once the H/V
+            # constraints above hold, so a second one pinning the same
+            # centre Point to the *other* diagonal is mathematically
+            # redundant in a way that makes py-slvs fail to converge
+            # outright, not just harmlessly so - diagonal2 stays purely a
+            # construction visual, same as the client always drew it.
+            midpoint_constraint_id = self.add_at_midpoint_constraint(center.id, diagonal.id).id
+        else:
+            axis_constraint_ids = [
+                self.add_perpendicular_constraint(line0.id, line1.id).id,
+                self.add_perpendicular_constraint(line1.id, line2.id).id,
+                self.add_perpendicular_constraint(line2.id, line3.id).id,
+            ]
+
+        rectangle = Rectangle(
+            id=str(uuid.uuid4()),
+            corner_point_ids=list(corner_point_ids),
+            line_ids=line_ids,
+            axis_aligned=axis_aligned,
+            axis_constraint_ids=axis_constraint_ids,
+            center_point_id=center_point_id,
+            diagonal_line_id=diagonal_line_id,
+            diagonal2_line_id=diagonal2_line_id,
+            midpoint_constraint_id=midpoint_constraint_id,
+            construction=construction,
+        )
+        self.entities[rectangle.id] = rectangle
+        return rectangle
+
+    def rectangles(self) -> list[Rectangle]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Rectangle)]
 
     def add_spline(self, through_point_ids: list[str], *, construction: bool = False) -> Spline:
         """Add a Spline through 2+ existing Points, creating 2 control-
@@ -2053,6 +2212,37 @@ class Sketch:
             self.constraints.pop(constraint_id, None)
         return self._prune_orphaned_points(candidates)
 
+    def delete_rectangle(self, rectangle_id: str) -> list[str]:
+        """Remove a Rectangle and everything `add_rectangle` always creates
+        alongside it - all 4 edge Lines, the diagonal construction Line
+        (axis-aligned only), and every constraint in its axis/midpoint
+        chain - same "internal implementation detail" exception
+        `delete_polygon`/`delete_slot`/etc. already make for their own
+        radius constraint(s). Every corner and centre Point is pruned
+        automatically if nothing else still needs it - see
+        `_prune_orphaned_points`. Returns the ids of any Points actually
+        removed."""
+        rectangle = self.entities.get(rectangle_id)
+        if not isinstance(rectangle, Rectangle):
+            raise KeyError(rectangle_id)
+        candidates = self._entity_defining_point_ids(rectangle)
+        del self.entities[rectangle_id]
+        # `.pop(id, None)` rather than `del`, matching `delete_slot`'s own
+        # reasoning: a Rectangle's own Line can also be deleted directly (a
+        # trim, or a direct `DELETE /lines/{id}`), so it may already be
+        # gone by the time this runs - a silent no-op here, not a KeyError.
+        for line_id in rectangle.line_ids:
+            self.entities.pop(line_id, None)
+        if rectangle.diagonal_line_id is not None:
+            self.entities.pop(rectangle.diagonal_line_id, None)
+        if rectangle.diagonal2_line_id is not None:
+            self.entities.pop(rectangle.diagonal2_line_id, None)
+        for constraint_id in rectangle.axis_constraint_ids:
+            self.constraints.pop(constraint_id, None)
+        if rectangle.midpoint_constraint_id is not None:
+            self.constraints.pop(rectangle.midpoint_constraint_id, None)
+        return self._prune_orphaned_points(candidates)
+
     def delete_spline(self, spline_id: str) -> list[str]:
         """Remove a Spline and every `SplineTangentConstraint` `add_spline`
         created alongside it - same "internal implementation detail"
@@ -2469,6 +2659,11 @@ class Sketch:
                 entity.d_point_id,
             ):
                 return f"Point is still referenced by slot {entity.id}"
+            if isinstance(entity, Rectangle) and point_id in (
+                *entity.corner_point_ids,
+                *((entity.center_point_id,) if entity.center_point_id else ()),
+            ):
+                return f"Point is still referenced by rectangle {entity.id}"
             if isinstance(entity, Spline) and (
                 point_id in entity.through_point_ids or point_id in entity.control_point_ids
             ):
@@ -2519,6 +2714,11 @@ class Sketch:
                 entity.b_point_id,
                 entity.c_point_id,
                 entity.d_point_id,
+            )
+        if isinstance(entity, Rectangle):
+            return (
+                *entity.corner_point_ids,
+                *((entity.center_point_id,) if entity.center_point_id else ()),
             )
         if isinstance(entity, Spline):
             return (*entity.through_point_ids, *entity.control_point_ids)

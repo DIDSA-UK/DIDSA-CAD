@@ -507,6 +507,41 @@ class SlotUpdate(BaseModel):
     construction: bool | None = None
 
 
+class RectangleCreate(BaseModel):
+    """Create a Rectangle from four existing corner Points, in order
+    (corner0 -> corner1 -> corner2 -> corner3 -> corner0) - see the
+    backend's `app.sketch.models.Sketch.add_rectangle` docstring for what
+    this creates. Unlike Arc/Ellipse/Slot there is no "computed point"
+    alternative for any corner - the client always resolves/places all
+    four as real Points first, exactly as it always has for the Rectangle
+    tool's own corner taps."""
+
+    corner_point_ids: list[str] = Field(min_length=4, max_length=4)
+    axis_aligned: bool = True
+    construction: bool = False
+
+
+class RectangleResponse(BaseModel):
+    type: Literal["rectangle"] = "rectangle"
+    id: str
+    corner_point_ids: list[str]
+    line_ids: list[str]
+    axis_aligned: bool
+    center_point_id: str | None = None
+    diagonal_line_id: str | None = None
+    diagonal2_line_id: str | None = None
+    construction: bool = False
+
+
+class RectangleUpdate(BaseModel):
+    """Update a rectangle's construction flag - mirrors PolygonUpdate/
+    SlotUpdate. There is no corner-position field here either: a
+    rectangle's geometry is driven by its own Points/Lines/constraints
+    (see Sketch.add_rectangle), not edited directly."""
+
+    construction: bool | None = None
+
+
 class SplineCreate(BaseModel):
     """Create a spline through 2+ existing Points, in order - see the
     backend's `app.sketch.models.Spline` docstring for what this creates
