@@ -164,37 +164,36 @@ void main() {
       expectAxis(vm.Vector3(0, 0, 1), expectedZReading);
     }
 
-    // The right/up (x/y) components of each reading below are unchanged
-    // from before 2026-07-22's camera fix (orientationFacingBasis was
-    // specifically re-derived to keep producing the same renderRight/
-    // renderUp) - only each reading's `out`/towards-camera (z) component
-    // flips sign, since the camera now genuinely sits on the opposite
-    // physical side of the plane (see orientationFacingBasis's own doc
-    // comment).
-    test('XY: flip=true, rotation=1', () {
+    // 2026-07-22, re-calibrated a second time against a fresh on-device
+    // reading (post-render-fix) rather than kept as the previous round's
+    // "same picture as before, different (flip, rotation) to reach it"
+    // restoration - see _defaultPendingOrientationFor's own doc comment for
+    // the exact captured readings and how each (flip, rotation) pair below
+    // was matched to them.
+    test('XY: flip=false, rotation=0', () {
       expectTriadReadout(
-        orientationFacingPlane(ReferencePlaneKind.xy, flip: true, rotationQuarterTurns: 1),
-        expectedXReading: vm.Vector3(0, 1, 0),
-        expectedYReading: vm.Vector3(1, 0, 0),
-        expectedZReading: vm.Vector3(0, 0, -1),
-      );
-    });
-
-    test('XZ: flip=true, rotation=0', () {
-      expectTriadReadout(
-        orientationFacingPlane(ReferencePlaneKind.xz, flip: true, rotationQuarterTurns: 0),
+        orientationFacingPlane(ReferencePlaneKind.xy, flip: false, rotationQuarterTurns: 0),
         expectedXReading: vm.Vector3(1, 0, 0),
-        expectedYReading: vm.Vector3(0, 0, -1),
-        expectedZReading: vm.Vector3(0, 1, 0),
+        expectedYReading: vm.Vector3(0, 1, 0),
+        expectedZReading: vm.Vector3(0, 0, 1),
       );
     });
 
-    test('YZ: flip=false, rotation=0 (unchanged - already an exact match)', () {
+    test('XZ: flip=false, rotation=2', () {
       expectTriadReadout(
-        orientationFacingPlane(ReferencePlaneKind.yz, flip: false, rotationQuarterTurns: 0),
+        orientationFacingPlane(ReferencePlaneKind.xz, flip: false, rotationQuarterTurns: 2),
+        expectedXReading: vm.Vector3(1, 0, 0),
+        expectedYReading: vm.Vector3(0, 0, 1),
+        expectedZReading: vm.Vector3(0, -1, 0),
+      );
+    });
+
+    test('YZ: flip=false, rotation=3', () {
+      expectTriadReadout(
+        orientationFacingPlane(ReferencePlaneKind.yz, flip: false, rotationQuarterTurns: 3),
         expectedXReading: vm.Vector3(0, 0, 1),
-        expectedYReading: vm.Vector3(1, 0, 0),
-        expectedZReading: vm.Vector3(0, 1, 0),
+        expectedYReading: vm.Vector3(0, 1, 0),
+        expectedZReading: vm.Vector3(-1, 0, 0),
       );
     });
   });

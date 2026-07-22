@@ -2702,20 +2702,29 @@ class _PartScreenState extends State<PartScreen> {
   /// On-device feedback: the default (flip, rotationQuarterTurns) offered
   /// for a brand new fixed-plane Sketch's own orientation-confirm step - a
   /// custom (Feature-anchored) plane has no "which fixed plane" concept to
-  /// key off, so it always gets the identity `(false, 0)`. Computed via a
-  /// full calibration round (every flip x rotation combination, checked
-  /// programmatically against three independently on-device-captured
-  /// targets, one per fixed plane, *after* fixing `orientationFacingBasis`'s
-  /// own left-handed-basis bug - see that function's own doc comment for the
-  /// full story) rather than guessed: YZ needed no change at all
-  /// (`false, 0` was already an exact match); XY and XZ both needed a
-  /// genuinely different orientation than any single `flip` toggle alone
-  /// could reach, which is exactly why guessing only `flip` kept moving the
-  /// target on every previous round.
+  /// key off, so it always gets the identity `(false, 0)`.
+  ///
+  /// **2026-07-22, re-calibrated against the now-fixed renderer
+  /// (`FixedPerspectiveCamera` - see `orthographic_camera.dart`'s
+  /// `correctedLookAt`)**: a fresh on-device reading from the debug camera-
+  /// orientation overlay for each plane's own first-offered orientation,
+  /// matched by hand-computing `SketchPlaneBasis.withOrientation`'s exact
+  /// flip-then-rotate formula (`nextX = yAxis, nextY = -xAxis` per quarter
+  /// turn - `sketch_geometry_3d.dart`) for all 8 combinations per plane and
+  /// finding the one whose resulting `(xAxis, yAxis)` matches the reading -
+  /// not guessed, and not assumed to be the same combination the previous
+  /// (pre-render-fix) calibration round found, since `orientationFacingBasis`
+  /// changing which physical side of the plane the camera sits on (see its
+  /// own doc comment) means the *visually* matching flip/rotation for a
+  /// given plane can genuinely differ from before, independent of whichever
+  /// aesthetic corner was chosen:
+  /// - XY: `right=(1,0,0) up=(0,1,0) out=(0,0,1)` -> identity, `(false, 0)`.
+  /// - XZ: `right=(1,0,0) up=(0,0,-1) out=(0,1,0)` -> `(false, 2)`.
+  /// - YZ: `right=(0,0,-1) up=(0,1,0) out=(1,0,0)` -> `(false, 3)`.
   (bool, int) _defaultPendingOrientationFor(ReferencePlaneKind? fixedPlane) => switch (fixedPlane) {
-        ReferencePlaneKind.xy => (true, 1),
-        ReferencePlaneKind.xz => (true, 0),
-        ReferencePlaneKind.yz => (false, 0),
+        ReferencePlaneKind.xy => (false, 0),
+        ReferencePlaneKind.xz => (false, 2),
+        ReferencePlaneKind.yz => (false, 3),
         null => (false, 0),
       };
 

@@ -2928,6 +2928,29 @@ Read directly as `right=(0.71, -0.00, -0.71)`/`up=(-0.41, 0.82, -0.41)` (each co
 
 Verified: `flutter analyze` clean; full client suite 884/885 (same one pre-existing GPU-sandbox flake, unrelated - a couple of new tests appear to have landed from a separate session running in parallel).
 
+## 2026-07-22 — Per-plane sketch-orientation defaults re-calibrated against fresh on-device readings
+
+Follow-up to the entry above - the user separately captured fresh debug-overlay readings for each fixed plane's own first-offered sketch orientation (post the render fix), rather than trusting the previous round's "same picture as before" restoration of `orientationFacingBasis`'s external contract:
+
+```
+ZX (XZ): X: right=1.00 up=0.00 out=0.00 | Y: right=0.00 up=0.00 out=1.00 | Z: right=0.00 up=-1.00 out=0.00
+YX (XY): X: right=1.00 up=0.00 out=0.00 | Y: right=0.00 up=1.00 out=0.00 | Z: right=0.00 up=0.00 out=1.00
+YZ:      X: right=0.00 up=0.00 out=1.00 | Y: right=0.00 up=1.00 out=0.00 | Z: right=-1.00 up=0.00 out=0.00
+```
+
+Each reading was matched to a `(flip, rotationQuarterTurns)` pair by hand-computing `SketchPlaneBasis.withOrientation`'s exact formula (`sketch_geometry_3d.dart`: flip negates `xAxis` first, then each quarter turn maps `xAxis -> yAxis`, `yAxis -> -xAxis`) for all 8 combinations per plane, not guessed - each plane had exactly one matching combination:
+- XY: `(false, 0)` (was `(true, 1)`)
+- XZ: `(false, 2)` (was `(true, 0)`)
+- YZ: `(false, 3)` (was `(false, 0)`)
+
+All three genuinely changed from the previous round, confirming the earlier "no code change needed, `orientationFacingBasis`'s contract is unchanged" answer was correct as far as it went but incomplete: that contract preservation only guarantees the *same* `(flip, rotation)` pair renders the *same* way as before - it says nothing about whether that pair is still the one the user actually wants to see by default, which is a separate, purely aesthetic question only a fresh on-device capture can answer.
+
+**Fix**: `part_screen.dart`'s `_defaultPendingOrientationFor` updated to the three new pairs. `orientation_facing_plane_test.dart`'s "the three per-plane defaults match their own independently-captured on-device targets" group updated to the new `(flip, rotation)` inputs and the exact captured readings.
+
+**Animations checked, not just the resting orientations**: `PartViewport._animateOrientationTo` (the shared slerp-tween machinery `animateToPlane`/`animateToIsometric`/`animateToBasis` all use) is generic quaternion interpolation with its own already-fixed "double-cover" hemisphere correction (forces `to` onto the same hemisphere as `from` before slerping, so the camera always takes the short way around) - this has no dependency on which specific orientation is being animated *to*, only that it's a valid unit quaternion, which both `orientationFacingBasis` and `_isometricOrientation` still produce. No code change needed there; confirmed by inspection rather than assumed, since there's no dedicated test for this GPU/widget-level mechanism to run.
+
+Verified: `flutter analyze` clean; `orientation_facing_plane_test.dart` 30/30 passing meaningfully (matching the hand-derivation, not tautologically). Full suite not re-run here - three pre-existing failures observed at the time (`adoptSketch`/`isCardinalAxisConstraint` in `sketch_controller_test.dart`) traced to a separate session's concurrent, uncommitted work on `sketch_controller.dart`/backend sketch files (confirmed via `git status`/`git diff` - `part_screen.dart`'s own diff contains only this session's change, no overlap), not this fix - left untouched, not this session's to resolve.
+
 ## 2026-07-22 — Sketch drag/solve rebuilt on closed-form geometry for Polygon/Slot; general solver hardened as the fallback
 
 Separate session, following up on live on-device reports that dragging a Slot still flipped a tangent to the wrong branch and dragging a raw (undimensioned) Polygon still reported "over constrained," despite three reactive guards shipped earlier the same week (anchor-drift, magnitude blow-up, EqualLength/EqualRadius residual, Arc chord-side - see the two entries above this one in the archive covering that pass). Asked to research the actual cause rather than patch further.
