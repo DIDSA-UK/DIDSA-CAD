@@ -263,6 +263,22 @@ class SketchGeometry3D {
   /// can be), so this only ever contains entries from those five id lists.
   final Set<String> constructionIds;
 
+  /// On-device feedback (bug fix: a Circle's own outline vanishing
+  /// entirely - fill still showing - whenever its centre Point was hidden
+  /// by the hover-reveal feature): [points]/[pointIds] must stay the
+  /// *complete* set every entity here resolves its own defining Points
+  /// against (`sketchGeometry3DFrom`'s own `pointsById` lookups silently
+  /// `continue`, dropping the whole entity, the moment one of its Points
+  /// is missing) - so "hide this Point's marker until hover-revealed" can
+  /// never be implemented by omitting it from that list, unlike
+  /// `sketch_canvas.dart`'s own equivalent (which only ever gates its
+  /// *drawing* loop, never touches the underlying Point map other
+  /// entities resolve against). This is the 3D-embedded counterpart of
+  /// that same gate instead: [buildSketchGeometryNode] skips creating a
+  /// marker primitive for any id in here, while every entity referencing
+  /// it still resolves normally.
+  final Set<String> hiddenPointIds;
+
   const SketchGeometry3D({
     required this.lineSegments,
     required this.lineIds,
@@ -277,6 +293,7 @@ class SketchGeometry3D {
     this.splinePolylines = const [],
     this.splineIds = const [],
     this.constructionIds = const <String>{},
+    this.hiddenPointIds = const <String>{},
   });
 
   static const empty = SketchGeometry3D(
@@ -339,7 +356,8 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
       listEquals(a.ellipseIds, b.ellipseIds) &&
       nestedListEquals(a.splinePolylines, b.splinePolylines) &&
       listEquals(a.splineIds, b.splineIds) &&
-      setEquals(a.constructionIds, b.constructionIds);
+      setEquals(a.constructionIds, b.constructionIds) &&
+      setEquals(a.hiddenPointIds, b.hiddenPointIds);
 }
 
 /// Builds [SketchGeometry3D] from a Sketch's raw DTOs - resolving each
@@ -366,6 +384,7 @@ SketchGeometry3D sketchGeometry3DFrom({
   List<ArcDto> arcs = const [],
   List<EllipseDto> ellipses = const [],
   List<SplineDto> splines = const [],
+  Set<String> hiddenPointIds = const <String>{},
 }) {
   final pointsById = {for (final p in points) p.id: p};
   final constructionIds = <String>{};
@@ -504,6 +523,7 @@ SketchGeometry3D sketchGeometry3DFrom({
     splinePolylines: splinePolylines,
     splineIds: splineIds,
     constructionIds: constructionIds,
+    hiddenPointIds: hiddenPointIds,
   );
 }
 
@@ -535,11 +555,18 @@ const double sketchLineWidth = 1.5;
 /// which weren't part of this feedback and shouldn't shrink alongside a
 /// Sketch's own drawn points. On-device feedback ("Points should be
 /// visible with a diameter slightly larger than the sketch line width"):
-/// derived from [sketchLineWidth] rather than a bare constant now, mirroring
-/// `sketch_canvas.dart`'s own `_pointRadius` fix. Bug fix: the first pass
-/// (1.3x) turned out too subtle on-device ("I still can't see any points") -
-/// bumped to the same ~2.2x ratio that fix settled on.
-const double sketchPointMarkerWidth = sketchLineWidth * 2.2;
+/// derived from [sketchLineWidth] rather than a bare constant at first,
+/// mirroring `sketch_canvas.dart`'s own `_pointRadius` fix - but that whole
+/// approach kept being reported invisible on-device (1.3x, then 2.2x, both
+/// "still can't see any points"), even though every *other* GPU-rendered
+/// marker in this file/[kVertexMarkerWidth] using the same
+/// [vertexMarkerSegments] "near-zero segment + round cap" trick at a
+/// bigger, non-derived width (7-9, see [sketchIndicatorAnchorWidth]/
+/// [sketchIndicatorSnapWidth]/[kVertexMarkerWidth]) reads fine - so this is
+/// a real size floor for that trick on-device, not something that scales
+/// sensibly off [sketchLineWidth]. Matches those working widths instead of
+/// deriving from a value that's never been the actual constraint.
+const double sketchPointMarkerWidth = 9.0;
 
 /// P23 (2D-sketcher feature parity): green, mirrors `sketch_canvas.dart`'s
 /// own `_fullyConstrainedColor` (`0xFF2E7D32`) - an entity whose defining
@@ -731,15 +758,16 @@ Node buildSketchGeometryNode(
     for (var i = 0; i < geometry.splinePolylines.length; i++)
       ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
     for (var i = 0; i < geometry.points.length; i++)
-      for (final segment in vertexMarkerSegments([geometry.points[i]]))
-        MeshPrimitive(
-          PolylineGeometry(
-            [segment.$1, segment.$2],
-            width: sketchPointMarkerWidth,
-            cap: PolylineCap.round,
+      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]))
+        for (final segment in vertexMarkerSegments([geometry.points[i]]))
+          MeshPrimitive(
+            PolylineGeometry(
+              [segment.$1, segment.$2],
+              width: sketchPointMarkerWidth,
+              cap: PolylineCap.round,
+            ),
+            materialFor(geometry.pointIds[i]),
           ),
-          materialFor(geometry.pointIds[i]),
-        ),
   ];
 
   return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));

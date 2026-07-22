@@ -38,13 +38,30 @@ import 'sketcher_preferences.dart';
 /// that don't carry the `length`/`radius` fields those DTOs do (the backend
 /// computes those; the live client-side views don't store them), so they're
 /// recomputed here via plain distance formulas.
+///
+/// Bug fix (on-device feedback: a Circle's own outline vanishing entirely -
+/// fill still showing - as soon as its centre Point was hidden by the
+/// hover-reveal feature): this always returns *every* Point now, full
+/// fidelity - see [hiddenPointIdsFrom] for the "hide this marker until
+/// hover-revealed" concern, kept entirely separate. This function used to
+/// filter shape-center Points out of the list it returns, which also
+/// starved [sketchGeometry3DFrom]'s own `pointsById` lookups for every
+/// Circle whose centre was hidden (it silently drops the whole entity the
+/// moment one of its own Points is missing) - a Point being hidden from
+/// view must never mean an *entity* built from it goes missing too.
+List<PointDto> _pointDtosFrom(SketchController controller) => [
+      for (final p in controller.points.values) PointDto(id: p.id, x: p.x, y: p.y),
+    ];
+
 /// On-device feedback: a Circle's/Polygon's own centre Point used to be
-/// converted (and so rendered) unconditionally, every frame - now excluded
-/// unless hover-revealed (`SketchController.revealedShapeCenterPointId`),
-/// selected, actively grabbed, or the live in-progress anchor of that same
-/// draw tool, mirroring `sketch_canvas.dart`'s own equivalent gate exactly
-/// (see `revealedShapeCenterPointId`'s own doc comment for why).
-List<PointDto> _pointDtosFrom(SketchController controller) {
+/// rendered unconditionally, every frame - now hidden unless hover-revealed
+/// (`SketchController.revealedShapeCenterPointId`), selected, actively
+/// grabbed, or the live in-progress anchor of that same draw tool, mirroring
+/// `sketch_canvas.dart`'s own equivalent gate exactly (see
+/// `revealedShapeCenterPointId`'s own doc comment for why). Feeds
+/// [SketchGeometry3D.hiddenPointIds] (see that field's own doc comment for
+/// why this is *not* done by omitting Points from [_pointDtosFrom] instead).
+Set<String> _hiddenPointIdsFrom(SketchController controller) {
   final shapeCenterIds = <String>{
     for (final circle in controller.circles.values) circle.centerPointId,
     for (final polygon in controller.polygons.values) polygon.centerPointId,
@@ -56,15 +73,10 @@ List<PointDto> _pointDtosFrom(SketchController controller) {
   bool isInProgressAnchor(String id) =>
       (controller.circleInProgress && id == controller.circleCenterPointId) ||
       (controller.polygonInProgress && id == controller.polygonCenterPointId);
-  return [
-    for (final p in controller.points.values)
-      if (!shapeCenterIds.contains(p.id) ||
-          p.id == revealedId ||
-          isSelected(p.id) ||
-          controller.draggingPointId == p.id ||
-          isInProgressAnchor(p.id))
-        PointDto(id: p.id, x: p.x, y: p.y),
-  ];
+  return {
+    for (final id in shapeCenterIds)
+      if (id != revealedId && !isSelected(id) && controller.draggingPointId != id && !isInProgressAnchor(id)) id,
+  };
 }
 
 double _sketchPointDistance(SketchPointView a, SketchPointView b) {
@@ -1810,6 +1822,7 @@ class _SketchScreenState extends State<SketchScreen> {
       arcs: _arcDtosFrom(_controller),
       ellipses: _ellipseDtosFrom(_controller),
       splines: _splineDtosFrom(_controller),
+      hiddenPointIds: _hiddenPointIdsFrom(_controller),
     );
     final key = _controller.sketchId ?? 'active-sketch';
     // On-device feedback: other sketches share the Body hide/show toggle
