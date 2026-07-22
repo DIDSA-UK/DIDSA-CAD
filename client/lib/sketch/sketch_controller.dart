@@ -5349,6 +5349,8 @@ class SketchController extends ChangeNotifier {
     Set<String> arcs,
     Set<String> ellipses,
     Set<String> polygons,
+    Set<String> slots,
+    Set<String> rectangles,
     Set<String> splines,
     Set<String> texts,
     Set<String> constraints
@@ -5359,6 +5361,8 @@ class SketchController extends ChangeNotifier {
     final arcIds = <String>{};
     final ellipseIds = <String>{};
     final polygonIds = <String>{};
+    final slotIds = <String>{};
+    final rectangleIds = <String>{};
     final splineIds = <String>{};
     final textIds = <String>{};
     final constraintIds = <String>{};
@@ -5449,6 +5453,71 @@ class SketchController extends ChangeNotifier {
         lineIds.remove(lineId);
       }
     }
+    for (final slot in slots.values) {
+      // On-device feedback ("some points are not deleting because they are
+      // part of a slot but the slot has been deleted"): same reasoning as
+      // the Ellipse/Polygon blocks above - a Slot's own corner/centre
+      // Points and its own Arcs/Lines are real, independently selectable/
+      // deletable geometry, so cascade UP to the Slot from any direction.
+      // Missing here before now meant deleting a Slot's own Arc/Line (or a
+      // Point pulling one in) never deleted the Slot entity itself - it
+      // stayed behind, still referencing those same Points server-side,
+      // permanently blocking their deletion afterward
+      // (Sketch._point_deletion_blocker).
+      if (pointIds.contains(slot.center1PointId) ||
+          pointIds.contains(slot.center2PointId) ||
+          pointIds.contains(slot.aPointId) ||
+          pointIds.contains(slot.bPointId) ||
+          pointIds.contains(slot.cPointId) ||
+          pointIds.contains(slot.dPointId) ||
+          lineIds.contains(slot.centerlineId) ||
+          lineIds.contains(slot.line1Id) ||
+          lineIds.contains(slot.line2Id) ||
+          arcIds.contains(slot.arc1Id) ||
+          arcIds.contains(slot.arc2Id)) {
+        slotIds.add(slot.id);
+      }
+    }
+    // The backend's own Sketch.delete_slot already deletes the centreline,
+    // both end-cap Arcs, and both straight Lines as part of deleting the
+    // Slot itself - same "already-gone" concern the Ellipse/Polygon blocks
+    // above avoid for their own owned Lines.
+    for (final slotId in slotIds) {
+      final slot = slots[slotId];
+      if (slot == null) continue;
+      lineIds.remove(slot.centerlineId);
+      lineIds.remove(slot.line1Id);
+      lineIds.remove(slot.line2Id);
+      arcIds.remove(slot.arc1Id);
+      arcIds.remove(slot.arc2Id);
+    }
+    for (final rectangle in rectangles.values) {
+      // Same reasoning as the Slot block above.
+      final centerId = rectangle.centerPointId;
+      final diagonalLineId = rectangle.diagonalLineId;
+      final diagonal2LineId = rectangle.diagonal2LineId;
+      if (rectangle.cornerPointIds.any(pointIds.contains) ||
+          (centerId != null && pointIds.contains(centerId)) ||
+          rectangle.lineIds.any(lineIds.contains) ||
+          (diagonalLineId != null && lineIds.contains(diagonalLineId)) ||
+          (diagonal2LineId != null && lineIds.contains(diagonal2LineId))) {
+        rectangleIds.add(rectangle.id);
+      }
+    }
+    // The backend's own Sketch.delete_rectangle already deletes all 4 edge
+    // Lines and both diagonal construction Lines as part of deleting the
+    // Rectangle itself - same "already-gone" concern as above.
+    for (final rectangleId in rectangleIds) {
+      final rectangle = rectangles[rectangleId];
+      if (rectangle == null) continue;
+      for (final lineId in rectangle.lineIds) {
+        lineIds.remove(lineId);
+      }
+      final diagonalLineId = rectangle.diagonalLineId;
+      if (diagonalLineId != null) lineIds.remove(diagonalLineId);
+      final diagonal2LineId = rectangle.diagonal2LineId;
+      if (diagonal2LineId != null) lineIds.remove(diagonal2LineId);
+    }
     for (final spline in splines.values) {
       if ([...spline.throughPointIds, ...spline.controlPointIds].any(pointIds.contains)) {
         splineIds.add(spline.id);
@@ -5472,6 +5541,8 @@ class SketchController extends ChangeNotifier {
       arcs: arcIds,
       ellipses: ellipseIds,
       polygons: polygonIds,
+      slots: slotIds,
+      rectangles: rectangleIds,
       splines: splineIds,
       texts: textIds,
       constraints: constraintIds
@@ -5826,7 +5897,19 @@ class SketchController extends ChangeNotifier {
       for (final id in cascade.texts) SketchSelection(kind: SelectionKind.text, id: id),
       for (final id in cascade.constraints) SketchSelection(kind: SelectionKind.constraint, id: id),
     ];
-    if (toDelete.isEmpty) return;
+    // Bug fix (on-device feedback: "some points are not deleting because
+    // they are part of a slot but the slot has been deleted"): Polygon/
+    // Slot/Rectangle have no SelectionKind, so they never appear in
+    // [toDelete] itself - checking only [toDelete] here meant selecting a
+    // single owned Line/Point of an otherwise-untouched shape silently
+    // no-opped the *whole* delete whenever computeDeleteCascade's own
+    // dedup (avoiding a double-delete of a Line the owning shape's own
+    // server-side cascade already removes) happened to empty [toDelete]
+    // out entirely, even though the shape itself still had a real,
+    // non-empty cascade to run.
+    if (toDelete.isEmpty && cascade.polygons.isEmpty && cascade.slots.isEmpty && cascade.rectangles.isEmpty) {
+      return;
+    }
 
     // Stage 19b item 4: captured before anything is actually removed, so
     // the undo entry pushed below has the data needed to recreate each one
@@ -5840,10 +5923,25 @@ class SketchController extends ChangeNotifier {
     final capturedSplines = <SketchSplineView>[];
     final capturedTexts = <SketchTextView>[];
     final capturedConstraints = <ConstraintDto>[];
-    // Polygon has no SelectionKind (see the comment on cascade.polygons'
-    // own deletion loop below), so it's captured separately here rather
-    // than inside the toDelete switch below.
+    // Polygon/Slot/Rectangle have no SelectionKind (see the comment on
+    // cascade.polygons' own deletion loop below), so they're captured
+    // separately here rather than inside the toDelete switch below.
     final capturedPolygons = [for (final id in cascade.polygons) polygons[id]].whereType<SketchPolygonView>().toList();
+    // A Slot's own radius isn't a field on SketchSlotView (unlike Polygon's
+    // `sides`/Ellipse's `minorRadius`) - captured alongside it here, from
+    // the still-live center1/a Points, since add_slot's own create call
+    // needs it back as a plain double.
+    final capturedSlots = <(SketchSlotView, double)>[];
+    for (final id in cascade.slots) {
+      final slot = slots[id];
+      final center = slot == null ? null : points[slot.center1PointId];
+      final rim = slot == null ? null : points[slot.aPointId];
+      if (slot != null && center != null && rim != null) {
+        capturedSlots.add((slot, math.sqrt(math.pow(rim.x - center.x, 2) + math.pow(rim.y - center.y, 2))));
+      }
+    }
+    final capturedRectangles =
+        [for (final id in cascade.rectangles) rectangles[id]].whereType<SketchRectangleView>().toList();
     for (final current in toDelete) {
       switch (current.kind) {
         case SelectionKind.line:
@@ -5931,6 +6029,55 @@ class SketchController extends ChangeNotifier {
       if (cascade.polygons.isNotEmpty) {
         await _refreshConstraints();
       }
+      // Slot/Rectangle have no SelectionKind either - same reasoning and
+      // same "delete server-side, then re-sync constraints" pattern as the
+      // Polygon block above. On-device feedback ("some points are not
+      // deleting because they are part of a slot but the slot has been
+      // deleted"): before this cascade.slots/cascade.rectangles existed at
+      // all, deleting a Slot's/Rectangle's own Arc/Line (or a Point pulling
+      // one in) never deleted the owning entity itself - it stayed behind
+      // server-side, still referencing those same Points, permanently
+      // blocking their deletion afterward.
+      for (final id in cascade.slots) {
+        final slot = slots[id];
+        await _api.deleteSlot(_sketchId!, id);
+        slots.remove(id);
+        // The generic shapesToDelete loop below never sees these ids -
+        // computeDeleteCascade already dedup'd them out of cascade.lines/
+        // cascade.arcs (delete_slot cascades them server-side) - so they'd
+        // otherwise linger as stale entries in the local lines/arcs maps
+        // even though the backend has already dropped them, exactly
+        // mirroring _clickSlotTool's own creation-undo cleanup.
+        if (slot != null) {
+          for (final entityId in [slot.centerlineId, slot.arc1Id, slot.arc2Id]) {
+            arcs.remove(entityId);
+            lines.remove(entityId);
+          }
+          lines.remove(slot.line1Id);
+          lines.remove(slot.line2Id);
+        }
+      }
+      if (cascade.slots.isNotEmpty) {
+        await _refreshConstraints();
+      }
+      for (final id in cascade.rectangles) {
+        final rectangle = rectangles[id];
+        await _api.deleteRectangle(_sketchId!, id);
+        rectangles.remove(id);
+        // Same reasoning as the Slot block above.
+        if (rectangle != null) {
+          for (final lineId in rectangle.lineIds) {
+            lines.remove(lineId);
+          }
+          final diagonalLineId = rectangle.diagonalLineId;
+          if (diagonalLineId != null) lines.remove(diagonalLineId);
+          final diagonal2LineId = rectangle.diagonal2LineId;
+          if (diagonal2LineId != null) lines.remove(diagonal2LineId);
+        }
+      }
+      if (cascade.rectangles.isNotEmpty) {
+        await _refreshConstraints();
+      }
       // On-device feedback ("when deleting lines, curves, trimming I end
       // up with floating, redundant points"): every shape-delete call
       // below now also auto-prunes whichever of its own defining Points
@@ -6014,6 +6161,8 @@ class SketchController extends ChangeNotifier {
             capturedArcs,
             capturedEllipses,
             capturedPolygons,
+            capturedSlots,
+            capturedRectangles,
             capturedSplines,
             capturedTexts,
             capturedConstraints,
@@ -6048,6 +6197,8 @@ class SketchController extends ChangeNotifier {
     List<SketchArcView> capturedArcs,
     List<SketchEllipseView> capturedEllipses,
     List<SketchPolygonView> capturedPolygons,
+    List<(SketchSlotView, double)> capturedSlots,
+    List<SketchRectangleView> capturedRectangles,
     List<SketchSplineView> capturedSplines,
     List<SketchTextView> capturedTexts,
     List<ConstraintDto> capturedConstraints,
@@ -6185,6 +6336,103 @@ class SketchController extends ChangeNotifier {
       // minor/negative-tip Points above.
       for (final id in created.vertexPointIds.skip(1)) {
         final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
+    }
+    for (final (slot, radius) in capturedSlots) {
+      final created = await _api.createSlot(
+        _sketchId!,
+        idMap[slot.center1PointId] ?? slot.center1PointId,
+        idMap[slot.center2PointId] ?? slot.center2PointId,
+        radius,
+        construction: slot.construction,
+      );
+      idMap[slot.id] = created.id;
+      slots[created.id] = SketchSlotView(
+        id: created.id,
+        center1PointId: created.center1PointId,
+        center2PointId: created.center2PointId,
+        centerlineId: created.centerlineId,
+        arc1Id: created.arc1Id,
+        arc2Id: created.arc2Id,
+        line1Id: created.line1Id,
+        line2Id: created.line2Id,
+        aPointId: created.aPointId,
+        bPointId: created.bPointId,
+        cPointId: created.cPointId,
+        dPointId: created.dPointId,
+        construction: created.construction,
+      );
+      lines[created.centerlineId] = SketchLineView(
+        id: created.centerlineId,
+        startPointId: created.center1PointId,
+        endPointId: created.center2PointId,
+        construction: true,
+      );
+      arcs[created.arc1Id] = SketchArcView(
+        id: created.arc1Id,
+        centerPointId: created.center1PointId,
+        startPointId: created.aPointId,
+        endPointId: created.bPointId,
+      );
+      arcs[created.arc2Id] = SketchArcView(
+        id: created.arc2Id,
+        centerPointId: created.center2PointId,
+        startPointId: created.cPointId,
+        endPointId: created.dPointId,
+      );
+      lines[created.line1Id] =
+          SketchLineView(id: created.line1Id, startPointId: created.bPointId, endPointId: created.cPointId);
+      lines[created.line2Id] =
+          SketchLineView(id: created.line2Id, startPointId: created.dPointId, endPointId: created.aPointId);
+      // The 4 corners are freshly created server-side by add_slot and
+      // aren't locally known yet, same as Polygon's own extra vertices.
+      for (final id in [created.aPointId, created.bPointId, created.cPointId, created.dPointId]) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
+    }
+    for (final rectangle in capturedRectangles) {
+      final cornerIds = [for (final id in rectangle.cornerPointIds) idMap[id] ?? id];
+      final created = await _api.createRectangle(
+        _sketchId!,
+        cornerIds,
+        axisAligned: rectangle.axisAligned,
+        construction: rectangle.construction,
+      );
+      idMap[rectangle.id] = created.id;
+      rectangles[created.id] = SketchRectangleView(
+        id: created.id,
+        cornerPointIds: created.cornerPointIds,
+        lineIds: created.lineIds,
+        axisAligned: created.axisAligned,
+        centerPointId: created.centerPointId,
+        diagonalLineId: created.diagonalLineId,
+        diagonal2LineId: created.diagonal2LineId,
+        construction: created.construction,
+      );
+      for (var i = 0; i < 4; i++) {
+        lines[created.lineIds[i]] = SketchLineView(
+          id: created.lineIds[i],
+          startPointId: cornerIds[i],
+          endPointId: cornerIds[(i + 1) % 4],
+        );
+      }
+      final diagonalLineId = created.diagonalLineId;
+      if (diagonalLineId != null) {
+        lines[diagonalLineId] =
+            SketchLineView(id: diagonalLineId, startPointId: cornerIds[0], endPointId: cornerIds[2], construction: true);
+      }
+      final diagonal2LineId = created.diagonal2LineId;
+      if (diagonal2LineId != null) {
+        lines[diagonal2LineId] =
+            SketchLineView(id: diagonal2LineId, startPointId: cornerIds[1], endPointId: cornerIds[3], construction: true);
+      }
+      // The centre Point (axis-aligned only) is freshly created server-side
+      // and isn't locally known yet, same as Slot's own corners above.
+      final centerId = created.centerPointId;
+      if (centerId != null) {
+        final point = await _api.getPoint(_sketchId!, centerId);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
     }
