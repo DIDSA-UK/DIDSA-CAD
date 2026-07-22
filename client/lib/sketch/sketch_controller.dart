@@ -3888,7 +3888,29 @@ class SketchController extends ChangeNotifier {
   /// [sync] gates the network half so the hot per-frame path stays purely
   /// local/synchronous.
   Future<void> _applyClosedFormPositions(Map<String, (double, double)> positions, {required bool sync}) async {
+    // On-device feedback ("cannot move the sketch origin point" appearing
+    // after dragging some *other*, unrelated entity): a shape's own
+    // defining Points are often snapped onto the sketch origin (drawing a
+    // Rectangle/Circle/etc. starting exactly at (0, 0) is the common case,
+    // not an edge case) - none of the [_closedFormXGeometry] formulas know
+    // that one of their own inputs happens to be the one Point in the
+    // Sketch that can never move (see the backend's own `update_point`,
+    // which 400s on it unconditionally), so a drag of a *different* Point
+    // on the same shape could still compute a "moved" position for the
+    // origin and try to PATCH it. Dropping it here - the single choke
+    // point every closed-form shape's output already funnels through -
+    // guards every shape at once rather than teaching each formula
+    // individually. The rest of the shape still updates to the dragged
+    // Point's target as if the origin had moved with it (a real, if minor,
+    // live-drag inconsistency), but [endPointDrag]'s own drop-time
+    // `_solveAndTrackDof()` re-solves through the general path right after,
+    // which already keeps a grounded Point fixed correctly (see the
+    // Slot-starting-at-origin fix earlier this session) - so the shape
+    // self-corrects the instant the drag ends, and the origin is never
+    // asked to move at all.
+    final originId = _originPointId;
     for (final entry in positions.entries) {
+      if (entry.key == originId) continue;
       final (x, y) = entry.value;
       points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
     }
@@ -3903,6 +3925,7 @@ class SketchController extends ChangeNotifier {
     // against. Syncing every point here first makes that final solve a
     // small settle instead.
     for (final entry in positions.entries) {
+      if (entry.key == originId) continue;
       final (x, y) = entry.value;
       await _api.updatePoint(_sketchId!, entry.key, x, y);
     }
@@ -4033,6 +4056,13 @@ class SketchController extends ChangeNotifier {
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
+    // Defence in depth alongside [_applyClosedFormPositions]'s own origin
+    // guard: the backend's own `update_point` unconditionally 400s on the
+    // sketch origin (see `selectedPointDeleteBlockedReason`'s own analogous
+    // delete-side guard) - refusing the grab here as well means every drag
+    // path, not just the closed-form one, is protected even if some future
+    // caller reaches this directly with the origin's own id.
+    if (pointId == _originPointId) return false;
     // A Polygon/Slot vertex drag is reinterpreted as a closed-form geometry
     // edit (see [updatePointDrag]'s own doc comment) whenever the shape is
     // still intact, whether or not its one real radius dimension has been

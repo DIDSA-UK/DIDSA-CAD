@@ -3720,9 +3720,12 @@ void main() {
     test('dragging the centre translates start and end by the same delta, radius and sweep unchanged, '
         'with zero solver/network calls', () async {
       controller.selectDrawTool(SketchTool.arc);
-      await controller.handleCanvasTap(0, 0); // center
-      await controller.handleCanvasTap(5, 0); // start, radius 5
-      await controller.handleCanvasTap(0, 100); // end, lands at (0, 5)
+      // Off the origin on purpose - the origin itself can never be dragged
+      // (see beginPointDrag's own origin guard), and this test drags the
+      // centre.
+      await controller.handleCanvasTap(20, 20); // center
+      await controller.handleCanvasTap(25, 20); // start, radius 5
+      await controller.handleCanvasTap(20, 120); // end, lands at (20, 25)
       controller.exitToSelectMode();
       final arc = controller.arcs.values.single;
       final startBefore = controller.points[arc.startPointId]!;
@@ -3733,7 +3736,7 @@ void main() {
       controller.cursorX = center0.x;
       controller.cursorY = center0.y;
       expect(controller.beginPointDrag(arc.centerPointId), isTrue);
-      await controller.updatePointDrag(10, 10); // centre moves (10, 10)
+      await controller.updatePointDrag(center0.x + 10, center0.y + 10); // centre moves (10, 10)
 
       expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
           reason: 'the closed-form path never needs to solve anything');
@@ -3776,17 +3779,21 @@ void main() {
     test('once the end Point is deleted (no longer intact), dragging the centre falls back to the '
         'ordinary drag path instead of the closed-form one', () async {
       controller.selectDrawTool(SketchTool.arc);
-      await controller.handleCanvasTap(0, 0);
-      await controller.handleCanvasTap(5, 0);
-      await controller.handleCanvasTap(0, 100);
+      // Off the origin on purpose - see the test above's own doc comment.
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(25, 20);
+      await controller.handleCanvasTap(20, 120);
       controller.exitToSelectMode();
       final arc = controller.arcs.values.single;
       controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: arc.endPointId));
       await controller.deleteSelected();
       final startBefore = controller.points[arc.startPointId]!;
 
+      final center0 = controller.points[arc.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
       expect(controller.beginPointDrag(arc.centerPointId), isTrue);
-      await controller.updatePointDrag(25, 25);
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5);
 
       // The closed-form path (which would have translated it instantly, per
       // the test above) didn't run - start never moved.
@@ -4235,9 +4242,12 @@ void main() {
     test('dragging the centre translates every axis Point by the same delta, both radii and the '
         'rotation unchanged, with zero solver/network calls', () async {
       controller.selectDrawTool(SketchTool.ellipse);
-      await controller.handleCanvasTap(0, 0); // center
-      await controller.handleCanvasTap(10, 0); // major point - radius 10
-      await controller.handleCanvasTap(5, 4); // minor radius 4
+      // Off the origin on purpose - the origin itself can never be dragged
+      // (see beginPointDrag's own origin guard), and this test drags the
+      // centre.
+      await controller.handleCanvasTap(20, 20); // center
+      await controller.handleCanvasTap(30, 20); // major point - radius 10
+      await controller.handleCanvasTap(25, 24); // minor radius 4
       controller.exitToSelectMode();
       final ellipse = controller.ellipses.values.single;
       final majorBefore = controller.points[ellipse.majorPointId]!;
@@ -4250,7 +4260,7 @@ void main() {
       controller.cursorX = center0.x;
       controller.cursorY = center0.y;
       expect(controller.beginPointDrag(ellipse.centerPointId), isTrue);
-      await controller.updatePointDrag(5, 5); // centre moves (5, 5)
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5); // centre moves (5, 5)
 
       expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
           reason: 'the closed-form path never needs to solve anything');
@@ -6918,13 +6928,25 @@ void main() {
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.exitToSelectMode();
-    final pointId = controller.lines.values.last.startPointId;
+    // The line's start Point snapped onto the origin ((0, 0) is always
+    // within snap radius of it) - use the *end* Point instead, since the
+    // origin itself can never be dragged (see beginPointDrag's own origin
+    // guard, added on-device feedback: "cannot move the sketch origin
+    // point" appearing after dragging something that was never the
+    // origin - the backend's own update_point 400s on it unconditionally).
+    final pointId = controller.lines.values.last.endPointId;
 
     expect(controller.beginPointDrag('does-not-exist'), isFalse);
     expect(controller.draggingPointId, isNull);
 
     expect(controller.beginPointDrag(pointId), isTrue);
     expect(controller.draggingPointId, pointId);
+  });
+
+  test('beginPointDrag refuses to grab the sketch origin Point directly - the backend\'s own '
+      'update_point 400s on it unconditionally', () async {
+    expect(controller.beginPointDrag(controller.originPointId!), isFalse);
+    expect(controller.draggingPointId, isNull);
   });
 
   test('beginPointDrag only records local drag state - no HTTP call, no Point movement', () async {
@@ -6934,10 +6956,13 @@ void main() {
     // _dragOriginCursorX/Y vs _dragOriginPointX/Y) rather than ever PATCHing
     // the touch-down position - otherwise the Point visibly jumps to the
     // touch position before any drag motion happens.
+    // Away from (0, 0) on purpose - a tap there snaps onto the Sketch's own
+    // origin Point, which can never be dragged (see beginPointDrag's own
+    // origin guard).
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
     backend.dof = 1;
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(15, 0);
     controller.finishChain();
     controller.exitToSelectMode();
     final pointId = controller.lines.values.last.startPointId;
@@ -6952,24 +6977,25 @@ void main() {
   });
 
   test('updatePointDrag PATCHes the dragged Point, offset from the touch by where the drag started', () async {
+    // Away from (0, 0) on purpose - see the test above's own doc comment.
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
     backend.dof = 1;
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(15, 0);
     controller.finishChain();
     controller.exitToSelectMode();
     final pointId = controller.lines.values.last.startPointId;
     // The chain's last tap left the controller's persistent cursor at
-    // (10, 0); this Point (the line's start) sits at (0, 0). beginPointDrag
+    // (15, 0); this Point (the line's start) sits at (5, 0). beginPointDrag
     // records that 10-unit offset, so updatePointDrag must apply moves
     // relative to it rather than snapping the Point to the raw touch
     // position - see beginPointDrag's doc comment.
     controller.beginPointDrag(pointId);
 
     backend.dof = 7; // would surface in isUnderConstrained if a solve ran
-    await controller.updatePointDrag(12, 34);
+    await controller.updatePointDrag(17, 34);
 
-    expect(controller.points[pointId]!.x, 2); // 0 + (12 - 10)
+    expect(controller.points[pointId]!.x, 7); // 5 + (17 - 15)
     expect(controller.points[pointId]!.y, 34); // 0 + (34 - 0)
     expect(controller.isUnderConstrained, isTrue); // unchanged: still the dof=1 from the line's solve
     expect(controller.errorMessage, isNull);
@@ -7182,20 +7208,24 @@ void main() {
 
   test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 0); // snaps onto the origin
     backend.dof = 1;
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.exitToSelectMode();
-    final pointId = controller.lines.values.last.startPointId;
+    // Dragging the *end* Point, not the start - the start snapped onto the
+    // origin, which can never be dragged (see beginPointDrag's own origin
+    // guard), and the grounding check below needs the origin to stay part
+    // of this Line.
+    final pointId = controller.lines.values.last.endPointId;
     controller.beginPointDrag(pointId);
-    await controller.updatePointDrag(12, 34); // lands at (2, 34) - see the test above
+    await controller.updatePointDrag(12, 34); // lands at (12, 34): 10 + (12 - 10), 0 + (34 - 0)
 
     backend.dof = 0; // simulates the drop settling the sketch fully
     await controller.endPointDrag();
 
     expect(controller.draggingPointId, isNull);
-    expect(controller.points[pointId]!.x, 2);
+    expect(controller.points[pointId]!.x, 12);
     expect(controller.points[pointId]!.y, 34);
     expect(controller.errorMessage, isNull);
 
@@ -7728,12 +7758,16 @@ void main() {
 
     backend.converged = false;
     backend.solverReportedFailedConstraintIds = [constraintId];
-    // Any further mutation re-solves and refreshes the tracked result -
-    // dragging the line's start Point (itself unrelated to the fake
-    // failure) is a convenient way to trigger one without adding new
-    // geometry.
-    controller.beginPointDrag(line.startPointId);
-    await controller.updatePointDrag(0, 0);
+    // Any further mutation re-solves and refreshes the tracked result - a
+    // no-op drag of the line's end Point (itself unrelated to the fake
+    // failure - and not the start, which snapped onto the origin and can
+    // never be dragged, see beginPointDrag's own origin guard) is a
+    // convenient way to trigger one without adding new geometry.
+    final endBefore = controller.points[line.endPointId]!;
+    controller.cursorX = endBefore.x;
+    controller.cursorY = endBefore.y;
+    controller.beginPointDrag(line.endPointId);
+    await controller.updatePointDrag(endBefore.x, endBefore.y);
     await controller.endPointDrag();
 
     expect(controller.isUnderConstrained, isTrue);
