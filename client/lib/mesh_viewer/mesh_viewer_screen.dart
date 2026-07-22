@@ -89,21 +89,36 @@ class _DecodeRequest {
   return (mesh, mesh.sourceTriangleCount);
 }
 
-/// Runs [applyUpAxis], the app-wide [applyRenderMirrorCorrection], then
-/// [applyMirror] off the main isolate via [compute] too - a
-/// photogrammetry-scale mesh can still have millions of vertices even after
-/// decimation, and this needs to re-run every time the View menu's "Up
+/// Runs [applyUpAxis] then [applyMirror] off the main isolate via [compute] -
+/// a photogrammetry-scale mesh can still have millions of vertices even
+/// after decimation, and this needs to re-run every time the View menu's "Up
 /// axis"/"Mirror" toggles change (not just once at load), so it can't assume
-/// it's cheap enough for the main thread. All three corrections are combined
-/// into one isolate hop (rather than separate [compute] calls) to avoid
-/// copying the whole position/normal arrays repeatedly for a single toggle
-/// change. Takes a record (rather than each function's own positional
-/// parameters) since [compute] only passes a single argument to its isolate
-/// entry point.
-DecodedMesh _applyCorrectionsIsolate((DecodedMesh, MeshUpAxis, bool) args) => applyMirror(
-      applyRenderMirrorCorrection(applyUpAxis(args.$1, args.$2)),
-      args.$3,
-    );
+/// it's cheap enough for the main thread. Both corrections are combined into
+/// one isolate hop (rather than separate [compute] calls) to avoid copying
+/// the whole position/normal arrays repeatedly for a single toggle change.
+/// Takes a record (rather than each function's own positional parameters)
+/// since [compute] only passes a single argument to its isolate entry point.
+///
+/// **2026-07-22**: no longer runs [applyRenderMirrorCorrection] - on-device
+/// feedback (a model rendering mirrored in the Mesh Viewer specifically,
+/// right after the Part Modeller's own root-cause camera fix landed) traced
+/// straight to this. `applyRenderMirrorCorrection` was built on the same
+/// diagnosis `viewport3d/mesh_geometry.dart`'s `renderMirrorCorrectedMesh`
+/// was - since disproven and reverted there (see `docs/status.md`'s
+/// "the real root cause found" entry): the actual bug was a confirmed,
+/// genuine mirror in `flutter_scene`'s own `PerspectiveCamera` view-matrix
+/// construction, shared by every viewport in this app, `OrbitCamera`
+/// included - fixed once at its root (`FixedPerspectiveCamera`), not by
+/// negating any mesh's own data. Running this extra, now-unneeded world-Z
+/// negation on top of the now-fixed camera reintroduced exactly the mirror
+/// it used to (coincidentally, for whichever camera pose the original
+/// diagnosis happened to test at) cancel out. [applyUpAxis]/[applyMirror]
+/// are untouched - both were independently validated against real file
+/// bytes and a ground-truth Python-rendered comparison, entirely outside
+/// this app's own camera/GPU pipeline, so neither was ever entangled with
+/// the camera bug.
+DecodedMesh _applyCorrectionsIsolate((DecodedMesh, MeshUpAxis, bool) args) =>
+    applyMirror(applyUpAxis(args.$1, args.$2), args.$3);
 
 /// Runs the actual [MeshExportFormat.stl]/[MeshExportFormat.glb] byte
 /// encoding off the main isolate via [compute] - `encodeMeshAsStl`/
