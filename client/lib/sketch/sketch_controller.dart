@@ -3279,6 +3279,35 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  /// [_polygonRadiusConstraint]'s counterpart for Ellipse's major axis -
+  /// identified the same way, by its two endpoint Points (center, major).
+  /// Unlike every other closed-form shape here, an Ellipse has *two*
+  /// independent radius dimensions (see [SketchEllipseView]/the backend's
+  /// `Ellipse` docstring) - this and [_ellipseMinorRadiusConstraint] are
+  /// each looked up and settled separately in [_settleClosedFormShapeDrag].
+  DistanceConstraintDto? _ellipseMajorRadiusConstraint(SketchEllipseView ellipse) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == ellipse.centerPointId &&
+          constraint.pointBId == ellipse.majorPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
+  /// [_ellipseMajorRadiusConstraint]'s counterpart for the minor axis.
+  DistanceConstraintDto? _ellipseMinorRadiusConstraint(SketchEllipseView ellipse) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == ellipse.centerPointId &&
+          constraint.pointBId == ellipse.minorPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// The still-*intact* Polygon [pointId] is a vertex of, or null.
   /// "Intact" - every Line this Polygon's own [SketchApiClient.createPolygon]
   /// call created is still present, unmodified - is what actually licenses
@@ -3611,6 +3640,120 @@ class SketchController extends ChangeNotifier {
     };
   }
 
+  /// The still-intact Ellipse [pointId] belongs to (as centre, or one of the
+  /// 4 major/minor axis tip Points), or null - same "every Point/Line it was
+  /// built from still present, live-checked" contract as
+  /// [_intactCircleForPoint]/[_intactArcForPoint].
+  SketchEllipseView? _intactEllipseForPoint(String pointId) {
+    for (final ellipse in ellipses.values) {
+      final isMember = pointId == ellipse.centerPointId ||
+          pointId == ellipse.majorPointId ||
+          pointId == ellipse.majorPointNegId ||
+          pointId == ellipse.minorPointId ||
+          pointId == ellipse.minorPointNegId;
+      if (!isMember) continue;
+      final intact = points.containsKey(ellipse.centerPointId) &&
+          points.containsKey(ellipse.majorPointId) &&
+          points.containsKey(ellipse.majorPointNegId) &&
+          points.containsKey(ellipse.minorPointId) &&
+          points.containsKey(ellipse.minorPointNegId) &&
+          lines.containsKey(ellipse.majorAxisLineId) &&
+          lines.containsKey(ellipse.minorAxisLineId);
+      return intact ? ellipse : null;
+    }
+    return null;
+  }
+
+  /// [_closedFormCircleGeometry]/[_closedFormArcGeometry]'s counterpart for
+  /// Ellipse - same on-device bug/fix (both of an Ellipse's own radius
+  /// `DistanceConstraint`s start `provisional`, see the backend `Ellipse`
+  /// docstring), same fix.
+  ///
+  /// Unlike Circle, an Ellipse's minor axis isn't locked to a fixed global
+  /// angle - it's locked *perpendicular to the major axis* (a real,
+  /// permanent `PerpendicularConstraint` between the two axis Lines, not
+  /// provisional), which itself rotates freely with the major axis. So:
+  /// dragging the centre translates every Point by the same delta (both
+  /// radii and the rotation untouched); dragging a major-axis tip (positive
+  /// or negative - either redefines the same axis, reflected through
+  /// centre) sets a new major radius *and* rotation directly from the drag
+  /// target, carrying the current minor radius along at its old magnitude,
+  /// rotated to match; dragging a minor-axis tip can only move *along* that
+  /// perpendicular axis (its direction is not a free DOF, only its
+  /// magnitude is - mirroring exactly how [_closedFormCircleGeometry]
+  /// projects a cardinal Point's drag onto its own fixed axis), so the drag
+  /// target is projected onto the current perpendicular direction first.
+  /// Every non-dragged tip's own negative counterpart is always the plain
+  /// reflection of its positive tip through centre (the real
+  /// `AtMidpointConstraint` this mirrors).
+  Map<String, (double, double)>? _closedFormEllipseGeometry(
+    SketchEllipseView ellipse,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    final centerPoint = points[ellipse.centerPointId];
+    final majorPoint = points[ellipse.majorPointId];
+    final minorPoint = points[ellipse.minorPointId];
+    if (centerPoint == null || majorPoint == null || minorPoint == null) return null;
+
+    if (draggedPointId == ellipse.centerPointId) {
+      final dx = targetX - centerPoint.x;
+      final dy = targetY - centerPoint.y;
+      final result = <String, (double, double)>{ellipse.centerPointId: (targetX, targetY)};
+      for (final id in [ellipse.majorPointId, ellipse.majorPointNegId, ellipse.minorPointId, ellipse.minorPointNegId]) {
+        final p = points[id];
+        if (p != null) result[id] = (p.x + dx, p.y + dy);
+      }
+      return result;
+    }
+
+    final cx = centerPoint.x;
+    final cy = centerPoint.y;
+    double majorAngle;
+    double majorRadius;
+    double minorRadius;
+
+    if (draggedPointId == ellipse.majorPointId || draggedPointId == ellipse.majorPointNegId) {
+      // Either major tip redefines the whole axis - a drag on the negative
+      // tip points the *positive* direction the opposite way from the
+      // target.
+      final sign = draggedPointId == ellipse.majorPointNegId ? -1.0 : 1.0;
+      final dx = sign * (targetX - cx);
+      final dy = sign * (targetY - cy);
+      majorRadius = math.sqrt(dx * dx + dy * dy);
+      if (majorRadius < 1e-9) return null;
+      majorAngle = math.atan2(dy, dx);
+      final minorDx = minorPoint.x - cx;
+      final minorDy = minorPoint.y - cy;
+      minorRadius = math.sqrt(minorDx * minorDx + minorDy * minorDy);
+    } else if (draggedPointId == ellipse.minorPointId || draggedPointId == ellipse.minorPointNegId) {
+      final majorDx = majorPoint.x - cx;
+      final majorDy = majorPoint.y - cy;
+      majorRadius = math.sqrt(majorDx * majorDx + majorDy * majorDy);
+      if (majorRadius < 1e-9) return null;
+      majorAngle = math.atan2(majorDy, majorDx);
+      final perpAngle = majorAngle + math.pi / 2;
+      final perpDirX = math.cos(perpAngle);
+      final perpDirY = math.sin(perpAngle);
+      final sign = draggedPointId == ellipse.minorPointNegId ? -1.0 : 1.0;
+      final dx = sign * (targetX - cx);
+      final dy = sign * (targetY - cy);
+      minorRadius = (dx * perpDirX + dy * perpDirY).abs();
+    } else {
+      return null;
+    }
+    if (minorRadius < 1e-9) return null;
+
+    final minorAngle = majorAngle + math.pi / 2;
+    return {
+      ellipse.majorPointId: (cx + majorRadius * math.cos(majorAngle), cy + majorRadius * math.sin(majorAngle)),
+      ellipse.majorPointNegId: (cx - majorRadius * math.cos(majorAngle), cy - majorRadius * math.sin(majorAngle)),
+      ellipse.minorPointId: (cx + minorRadius * math.cos(minorAngle), cy + minorRadius * math.sin(minorAngle)),
+      ellipse.minorPointNegId: (cx - minorRadius * math.cos(minorAngle), cy - minorRadius * math.sin(minorAngle)),
+    };
+  }
+
   /// Shared apply/sync for [_closedFormPolygonVertices]/
   /// [_closedFormSlotGeometry]'s output - used identically by a live drag
   /// frame (mid-drag: local only, no network - see [updatePointDrag]) and
@@ -3656,10 +3799,41 @@ class SketchController extends ChangeNotifier {
     SketchSlotView? slot,
     SketchCircleView? circle,
     SketchArcView? arc,
+    SketchEllipseView? ellipse,
     String draggedPointId,
     double targetX,
     double targetY,
   ) async {
+    if (ellipse != null) {
+      // Ellipse has two independent radius dimensions (major/minor), unlike
+      // every other closed-form shape here's single one - settled
+      // separately below rather than through the generic centerId/rimId
+      // single-constraint path.
+      final positions = _closedFormEllipseGeometry(ellipse, draggedPointId, targetX, targetY);
+      if (positions == null) return;
+      await _applyClosedFormPositions(positions, sync: true);
+
+      final center = points[ellipse.centerPointId];
+      if (center == null) return;
+      final majorConstraint = _ellipseMajorRadiusConstraint(ellipse);
+      if (majorConstraint != null && !majorConstraint.provisional) {
+        final major = points[ellipse.majorPointId];
+        if (major != null) {
+          final newMajor = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+          await _api.updateConstraintValue(_sketchId!, majorConstraint.id, newMajor);
+        }
+      }
+      final minorConstraint = _ellipseMinorRadiusConstraint(ellipse);
+      if (minorConstraint != null && !minorConstraint.provisional) {
+        final minor = points[ellipse.minorPointId];
+        if (minor != null) {
+          final newMinor = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+          await _api.updateConstraintValue(_sketchId!, minorConstraint.id, newMinor);
+        }
+      }
+      return;
+    }
+
     final Map<String, (double, double)>? positions;
     final DistanceConstraintDto? radiusConstraint;
     final String centerId;
@@ -3735,7 +3909,8 @@ class SketchController extends ChangeNotifier {
     if (_intactPolygonForVertex(pointId) == null &&
         _intactSlotForPoint(pointId) == null &&
         _intactCircleForPoint(pointId) == null &&
-        _intactArcForPoint(pointId) == null) {
+        _intactArcForPoint(pointId) == null &&
+        _intactEllipseForPoint(pointId) == null) {
       // Phase 3 (3.2): a Point in an over-constrained cluster already has a
       // redundant/conflicting Constraint pinning it - dragging it wouldn't
       // move it anywhere the solver would actually let it stay, so refuse
@@ -3841,7 +4016,14 @@ class SketchController extends ChangeNotifier {
     final intactCircle = intactPolygon == null && intactSlot == null ? _intactCircleForPoint(pointId) : null;
     final intactArc =
         intactPolygon == null && intactSlot == null && intactCircle == null ? _intactArcForPoint(pointId) : null;
-    if (intactPolygon != null || intactSlot != null || intactCircle != null || intactArc != null) {
+    final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
+        ? _intactEllipseForPoint(pointId)
+        : null;
+    if (intactPolygon != null ||
+        intactSlot != null ||
+        intactCircle != null ||
+        intactArc != null ||
+        intactEllipse != null) {
       final Map<String, (double, double)>? positions;
       if (intactPolygon != null) {
         positions = _closedFormPolygonVertices(intactPolygon, pointId, newX, newY);
@@ -3849,8 +4031,10 @@ class SketchController extends ChangeNotifier {
         positions = _closedFormSlotGeometry(intactSlot, pointId, newX, newY);
       } else if (intactCircle != null) {
         positions = _closedFormCircleGeometry(intactCircle, pointId, newX, newY);
+      } else if (intactArc != null) {
+        positions = _closedFormArcGeometry(intactArc, pointId, newX, newY);
       } else {
-        positions = _closedFormArcGeometry(intactArc!, pointId, newX, newY);
+        positions = _closedFormEllipseGeometry(intactEllipse!, pointId, newX, newY);
       }
       if (positions != null) {
         unawaited(_applyClosedFormPositions(positions, sync: false));
@@ -4160,20 +4344,28 @@ class SketchController extends ChangeNotifier {
     final intactCircle = intactPolygon == null && intactSlot == null ? _intactCircleForPoint(pointId) : null;
     final intactArc =
         intactPolygon == null && intactSlot == null && intactCircle == null ? _intactArcForPoint(pointId) : null;
-    if (intactPolygon != null || intactSlot != null || intactCircle != null || intactArc != null) {
+    final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
+        ? _intactEllipseForPoint(pointId)
+        : null;
+    if (intactPolygon != null ||
+        intactSlot != null ||
+        intactCircle != null ||
+        intactArc != null ||
+        intactEllipse != null) {
       await _runGuarded(() async {
         await _settleClosedFormShapeDrag(
           intactPolygon,
           intactSlot,
           intactCircle,
           intactArc,
+          intactEllipse,
           pointId,
           droppedPoint.x,
           droppedPoint.y,
         );
         _pushUndo(() async {
           await _settleClosedFormShapeDrag(
-              intactPolygon, intactSlot, intactCircle, intactArc, pointId, originX, originY);
+              intactPolygon, intactSlot, intactCircle, intactArc, intactEllipse, pointId, originX, originY);
         });
         await _solveAndTrackDof();
       });

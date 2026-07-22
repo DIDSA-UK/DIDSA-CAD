@@ -3977,6 +3977,142 @@ void main() {
     });
   });
 
+  group('Ellipse closed-form drag (same on-device bug/fix as Circle/Arc - both of an Ellipse\'s own '
+      'radius DistanceConstraints are provisional too, see the backend Ellipse docstring)', () {
+    test('dragging the centre translates every axis Point by the same delta, both radii and the '
+        'rotation unchanged, with zero solver/network calls', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(10, 0); // major point - radius 10
+      await controller.handleCanvasTap(5, 4); // minor radius 4
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+      final majorBefore = controller.points[ellipse.majorPointId]!;
+      final majorNegBefore = controller.points[ellipse.majorPointNegId]!;
+      final minorBefore = controller.points[ellipse.minorPointId]!;
+      final minorNegBefore = controller.points[ellipse.minorPointNegId]!;
+
+      backend.requestLog.clear();
+      final center0 = controller.points[ellipse.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(ellipse.centerPointId), isTrue);
+      await controller.updatePointDrag(5, 5); // centre moves (5, 5)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final majorAfter = controller.points[ellipse.majorPointId]!;
+      final majorNegAfter = controller.points[ellipse.majorPointNegId]!;
+      final minorAfter = controller.points[ellipse.minorPointId]!;
+      final minorNegAfter = controller.points[ellipse.minorPointNegId]!;
+      expect(majorAfter.x, closeTo(majorBefore.x + 5, 1e-9));
+      expect(majorAfter.y, closeTo(majorBefore.y + 5, 1e-9));
+      expect(majorNegAfter.x, closeTo(majorNegBefore.x + 5, 1e-9));
+      expect(majorNegAfter.y, closeTo(majorNegBefore.y + 5, 1e-9));
+      expect(minorAfter.x, closeTo(minorBefore.x + 5, 1e-9));
+      expect(minorAfter.y, closeTo(minorBefore.y + 5, 1e-9));
+      expect(minorNegAfter.x, closeTo(minorNegBefore.x + 5, 1e-9));
+      expect(minorNegAfter.y, closeTo(minorNegBefore.y + 5, 1e-9));
+    });
+
+    test('dragging the major-axis Point resizes and rotates the whole ellipse, carrying the minor '
+        'radius along at its old magnitude rather than recomputing it - the exact scenario that used '
+        'to collapse toward zero under the general solver path', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(10, 0); // major point, angle 0, radius 10
+      await controller.handleCanvasTap(5, 4); // minor radius 4
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+
+      backend.requestLog.clear();
+      final major0 = controller.points[ellipse.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipse.majorPointId), isTrue);
+      // Rotate the major axis to 90 degrees and stretch it to radius 20.
+      await controller.updatePointDrag(0, 20);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final major = controller.points[ellipse.majorPointId]!;
+      expect(major.x, closeTo(0, 1e-6));
+      expect(major.y, closeTo(20, 1e-6));
+      final majorNeg = controller.points[ellipse.majorPointNegId]!;
+      expect(majorNeg.x, closeTo(0, 1e-6));
+      expect(majorNeg.y, closeTo(-20, 1e-6));
+      // Minor axis rotates to stay perpendicular (now pointing along -X/+X)
+      // but keeps its own old radius (4), not the major's new one.
+      final minor = controller.points[ellipse.minorPointId]!;
+      final minorRadius = math.sqrt(math.pow(minor.x, 2) + math.pow(minor.y, 2));
+      expect(minorRadius, closeTo(4, 1e-6), reason: 'minor radius must track its own old value, not collapse');
+      expect(minor.y, closeTo(0, 1e-6), reason: 'minor axis must stay perpendicular to the new major axis');
+    });
+
+    test('dragging the minor-axis Point rescales only the minor radius, projected onto the '
+        'perpendicular axis - the major axis is untouched', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(10, 0); // major point, radius 10
+      await controller.handleCanvasTap(5, 4); // minor radius 4
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+
+      backend.requestLog.clear();
+      final minor0 = controller.points[ellipse.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipse.minorPointId), isTrue);
+      await controller.updatePointDrag(0, 9); // minor point dragged out to radius 9
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final minor = controller.points[ellipse.minorPointId]!;
+      expect(minor.x, closeTo(0, 1e-6));
+      expect(minor.y, closeTo(9, 1e-6));
+      final major = controller.points[ellipse.majorPointId]!;
+      expect(major.x, closeTo(10, 1e-6), reason: 'major axis must be untouched by a minor-axis drag');
+      expect(major.y, closeTo(0, 1e-6));
+    });
+
+    test('once the minor-axis negative Point is gone (no longer intact), dragging the centre '
+        'falls back to the ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      // Off the origin (unlike every other test in this group) - a
+      // grounded centre with real (non-provisional) AtMidpointConstraints
+      // still attached to it is a pre-existing rigidity-analysis quirk
+      // (unrelated to this change: the *general* path already can't drag
+      // such a centre even while the Ellipse is otherwise untouched) that
+      // would trip this test's own general-path fallback assertion below
+      // for a reason that has nothing to do with what this test verifies.
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20);
+      await controller.handleCanvasTap(25, 24);
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+      // Direct local removal rather than deleteSelected(): a real delete
+      // cascades the minor axis Line (and, in the fake backend, leaves its
+      // now-dangling AtMidpoint/Perpendicular constraints behind) - an
+      // unrelated fixture quirk that trips the *general* solver path's own
+      // over-constrained gating before this test's actual target
+      // ([_intactEllipseForPoint]'s live points-map check) ever gets
+      // exercised. Removing the Point directly from the local cache is
+      // exactly what that check reads, with no other side effects.
+      controller.points.remove(ellipse.minorPointNegId);
+      final majorBefore = controller.points[ellipse.majorPointId]!;
+
+      final center0 = controller.points[ellipse.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(ellipse.centerPointId), isTrue);
+      await controller.updatePointDrag(30, 30);
+
+      // The closed-form path (which would have translated it instantly, per
+      // the test above) didn't run - the major Point never moved.
+      final majorAfter = controller.points[ellipse.majorPointId]!;
+      expect(majorAfter.x, closeTo(majorBefore.x, 1e-9));
+      expect(majorAfter.y, closeTo(majorBefore.y, 1e-9));
+    });
+  });
+
   // --- Phase 6.2.5: Spline tool ---------------------------------------------
 
   test('activeDrawGhost previews nothing while no through-point has been placed yet', () async {
