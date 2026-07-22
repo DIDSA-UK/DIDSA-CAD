@@ -555,18 +555,15 @@ const double sketchLineWidth = 1.5;
 /// which weren't part of this feedback and shouldn't shrink alongside a
 /// Sketch's own drawn points. On-device feedback ("Points should be
 /// visible with a diameter slightly larger than the sketch line width"):
-/// derived from [sketchLineWidth] rather than a bare constant at first,
-/// mirroring `sketch_canvas.dart`'s own `_pointRadius` fix - but that whole
-/// approach kept being reported invisible on-device (1.3x, then 2.2x, both
-/// "still can't see any points"), even though every *other* GPU-rendered
-/// marker in this file/[kVertexMarkerWidth] using the same
-/// [vertexMarkerSegments] "near-zero segment + round cap" trick at a
-/// bigger, non-derived width (7-9, see [sketchIndicatorAnchorWidth]/
-/// [sketchIndicatorSnapWidth]/[kVertexMarkerWidth]) reads fine - so this is
-/// a real size floor for that trick on-device, not something that scales
-/// sensibly off [sketchLineWidth]. Matches those working widths instead of
-/// deriving from a value that's never been the actual constraint.
-const double sketchPointMarkerWidth = 9.0;
+/// derived from [sketchLineWidth] - earlier passes (1.3x, then 2.2x, then a
+/// bare 9.0 while root-causing a real *invisibility* bug, see
+/// [buildSketchGeometryNode]'s own doc comment on the round-cap culling fix)
+/// kept getting bumped chasing what turned out to be a separate,
+/// now-fixed rendering bug, not an actual sizing problem - once markers
+/// were genuinely rendering again, on-device feedback was that 9.0 read as
+/// oversized. Back to a line-width-derived ratio now that size is the only
+/// remaining variable.
+const double sketchPointMarkerWidth = sketchLineWidth * 1.5;
 
 /// P23 (2D-sketcher feature parity): green, mirrors `sketch_canvas.dart`'s
 /// own `_fullyConstrainedColor` (`0xFF2E7D32`) - an entity whose defining
