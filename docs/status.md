@@ -2912,6 +2912,22 @@ Same day. User reported two-finger drag panning also reversed left/right, asked 
 
 Verified: `flutter analyze` clean; full client suite 874/875 (same pre-existing flake, unrelated).
 
+## 2026-07-22 — Isometric default re-calibrated a second time against a fresh on-device reading
+
+Follow-up to the entry above. Rather than leave `_isometricOrientation` restored to its exact pre-investigation picture (the previous round's fix), the user captured a fresh reading from the now-trusted debug camera-orientation overlay and asked for the default view to match it exactly:
+
+```
+X: right=0.71 up=-0.41 out=0.58
+Y: right=-0.00 up=0.82 out=0.58
+Z: right=-0.71 up=-0.41 out=0.58
+```
+
+Read directly as `right=(0.71, -0.00, -0.71)`/`up=(-0.41, 0.82, -0.41)` (each column is one world axis's own right/up component) - verified orthonormal before touching any code (`right·up = 0`, both unit length), and confirmed self-consistent with `FixedPerspectiveCamera`'s own corrected formula (`right.cross(up)` comes out proportional to `(-1,-1,-1)`, matching the captured `out=(0.58,0.58,0.58)` reading) - proof the user captured this from the already-fixed build, not a stale one. Matched to exact vectors `(1, 0, -1)` and `(-1, 2, -1)` (both normalized) - still a true-isometric-magnitude corner (the same `sqrt(2/3)` "tall" component as the previous corner, just landing on a different axis), not a new/different kind of view.
+
+**Fix**: `_isometricOrientation` rebuilt directly from these two vectors (same `back = right.cross(up)`/`Quaternion.fromRotation(...).conjugated()` construction as before, just with new inputs - no re-derivation of the construction itself needed, since that part was already proven correct against the now-fixed renderer in the entry above). `orbit_camera_test.dart`'s "matches the on-screen triad exactly" test updated to this reading's own numbers directly (not re-derived from the old ones) - passes meaningfully, confirming the new default reproduces exactly what the user captured.
+
+Verified: `flutter analyze` clean; full client suite 884/885 (same one pre-existing GPU-sandbox flake, unrelated - a couple of new tests appear to have landed from a separate session running in parallel).
+
 ## 2026-07-22 — Sketch drag/solve rebuilt on closed-form geometry for Polygon/Slot; general solver hardened as the fallback
 
 Separate session, following up on live on-device reports that dragging a Slot still flipped a tangent to the wrong branch and dragging a raw (undimensioned) Polygon still reported "over constrained," despite three reactive guards shipped earlier the same week (anchor-drift, magnitude blow-up, EqualLength/EqualRadius residual, Arc chord-side - see the two entries above this one in the archive covering that pass). Asked to research the actual cause rather than patch further.

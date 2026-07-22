@@ -46,14 +46,15 @@ void main() {
   /// story (flutter_scene's own `PerspectiveCamera` had a confirmed,
   /// genuine left-right mirror baked into its view-matrix construction;
   /// `triad.dart`'s `triadAxes`, which this test reproduces, now uses the
-  /// corrected formula to match the corrected renderer). `OrbitCamera`'s own
-  /// `_isometricOrientation` was *also* corrected the same day (its `right`
-  /// vector negated - see that function's own doc comment) specifically so
-  /// the on-screen picture stays identical to before either fix - which is
-  /// exactly why the expected values below are unchanged from before this
-  /// whole investigation, not negated: the two fixes' effects on this
-  /// specific test cancel out by design, confirming both are correct
-  /// together (a real regression in either one alone would show up here).
+  /// corrected formula to match the corrected renderer).
+  ///
+  /// **Same day, re-calibrated a second time**: `_isometricOrientation`'s
+  /// own values were replaced with a fresh on-device reading captured
+  /// against the now-fixed renderer (see that function's own doc comment
+  /// for the exact captured text) rather than kept as a same-picture-as-
+  /// before restoration - the expected values below are that reading's own
+  /// right/up columns directly, not re-derived from the pre-investigation
+  /// numbers.
   test('the default/isometric orientation matches the on-screen triad exactly', () {
     final camera = OrbitCamera();
     final towardCamera = (camera.position - camera.target).normalized();
@@ -67,11 +68,11 @@ void main() {
     }
 
     // Values confirmed against the user's own on-device readout during the
-    // original calibration round (X/Y both read screen-right, Z reads pure
-    // screen-up).
-    expectAxis(vm.Vector3(1, 0, 0), 0.71, 0.41);
-    expectAxis(vm.Vector3(0, 1, 0), 0.71, -0.41);
-    expectAxis(vm.Vector3(0, 0, 1), 0.0, 0.82);
+    // 2026-07-22 re-calibration round (X: right=0.71 up=-0.41, Y:
+    // right=-0.00 up=0.82, Z: right=-0.71 up=-0.41).
+    expectAxis(vm.Vector3(1, 0, 0), 0.71, -0.41);
+    expectAxis(vm.Vector3(0, 1, 0), 0.0, 0.82);
+    expectAxis(vm.Vector3(0, 0, 1), -0.71, -0.41);
   });
 
   test('orbitByScreenDelta moves the camera position when dragging right', () {

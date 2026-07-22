@@ -147,47 +147,33 @@ class OrbitCamera {
         _defaultTarget = target ?? vm.Vector3.zero(),
         orientation = _defaultOrientation();
 
-  /// On-device feedback + two numeric calibration rounds (a temporary debug
-  /// readout in `part_viewport.dart`, cross-checked against the on-screen
-  /// triad rather than eyeballed): the true isometric corner view - world
-  /// X+/Y+ both read as screen-right (their shared `right` component is
-  /// positive), Z+ reads as pure screen-up. Built from the desired
-  /// [right]/[up] world-space vectors directly (not composed axis-angle
-  /// rotations - the `pitch * yaw` structure this replaced can only ever
-  /// produce an `up` with a zero world-X component, since yaw leaves the
-  /// local-up axis untouched and pitch alone can't introduce that; it's
-  /// structurally incapable of reaching this specific corner).
-  ///
-  /// **2026-07-22**: [right] negated (`(1, 1, 0)`, was `(-1, -1, 0)`) - not a
-  /// re-calibration, a mechanical correction for [FixedPerspectiveCamera]'s
-  /// own fix (see `orthographic_camera.dart`'s `correctedLookAt`). Unlike
-  /// [orientationFacingBasis], this function has no compensating logic at
-  /// all - it builds a raw quaternion directly from hardcoded world vectors,
-  /// so the same on-screen picture needs a different quaternion once the
-  /// renderer's own right/forward relationship changes. Hand-derived (not
-  /// guessed) via the same vector algebra as [orientationFacingBasis]'s own
-  /// fix: with the old renderer, `renderRight = up.cross(forward)` reduced -
-  /// through this constructor's `back = right.cross(up)`, `forward =
-  /// -orientation.rotated(localBack) = -back` - to `renderRight = -right`
-  /// (this variable, negated) via `up.cross(-back) = -(up.cross(right.cross(up)))
-  /// = -right` (vector triple product, `up`⊥`right` by construction); with
-  /// the new renderer, `renderRight = forward.cross(up) = (-back).cross(up)`
-  /// reduces to `+right` instead (`back.cross(up) = -right` by the matching
-  /// identity) - an exact sign flip on `renderRight` alone, `renderUp`
-  /// provably unchanged either way (`right.cross(forward)` reduces to `up`
-  /// under both orderings, since the `up`-component of the triple product's
-  /// other term vanishes by the same perpendicularity). Negating [right]
-  /// exactly cancels that flip, reproducing the identical on-screen corner
-  /// as before this whole investigation - confirmed by the fact that
-  /// `orbit_camera_test.dart`'s own "matches the on-screen triad exactly"
-  /// values are back to their original (pre-2026-07-22) numbers once both
-  /// this fix and the test's own updated triad formula are in place
-  /// together.
+  /// **2026-07-22, re-calibrated against the now-fixed renderer**: a fresh
+  /// on-device reading from the (now-trusted, post-[FixedPerspectiveCamera])
+  /// debug camera-orientation overlay -
+  /// ```
+  /// X: right=0.71 up=-0.41 out=0.58
+  /// Y: right=-0.00 up=0.82 out=0.58
+  /// Z: right=-0.71 up=-0.41 out=0.58
+  /// ```
+  /// - read directly as [right]=`(0.71, -0.00, -0.71)` and
+  /// [up]=`(-0.41, 0.82, -0.41)` (column i = world axis i's own `right`/`up`
+  /// component), matched to the nearest exact unit vectors: `(1, 0, -1)` and
+  /// `(-1, 2, -1)`, both normalized (`0.7071`/`0.4082`/`0.8165` all round to
+  /// the captured `0.71`/`0.41`/`0.82`) - still a true-isometric-magnitude
+  /// corner (the same `sqrt(2/3)` "tall" component the previous corner had,
+  /// just on a different axis), confirmed orthonormal by construction
+  /// (`right·up = 0`, both unit length) rather than assumed. `back` is
+  /// still `right.cross(up)`, and this construction (see below) still
+  /// satisfies `renderRight == right`/`renderUp == up` directly under
+  /// [FixedPerspectiveCamera]'s corrected `forward.cross(up)` order - the
+  /// exact same relationship the previous round's negation-derivation
+  /// established, re-verified for this new pair of vectors rather than
+  /// re-assumed (`(1,0,-1).cross((-1,2,-1)) = (2, 2, 2)`, i.e. `forward =
+  /// -back` comes out proportional to `(-1,-1,-1)`, matching the captured
+  /// `out=(0.58, 0.58, 0.58)` reading exactly).
   static vm.Quaternion _isometricOrientation() {
-    final right = vm.Vector3(1, 1, 0).normalized();
-    const elevation = 0.6154797086703873; // asin(1 / sqrt(3)), true isometric
-    final diagonal = math.sin(elevation) / math.sqrt2;
-    final up = vm.Vector3(diagonal, -diagonal, math.cos(elevation));
+    final right = vm.Vector3(1, 0, -1).normalized();
+    final up = vm.Vector3(-1, 2, -1).normalized();
     final back = right.cross(up);
     // vector_math's own Quaternion.rotate() computes `conjugate(this) * v *
     // this`, not the more commonly assumed `this * v * conjugate(this)` -
