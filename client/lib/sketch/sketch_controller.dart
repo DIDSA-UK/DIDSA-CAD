@@ -3235,6 +3235,20 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  /// [_polygonRadiusConstraint]'s counterpart for Circle - identified the
+  /// same way, by its two endpoint Points (centre, radius Point), since
+  /// [SketchCircleView] itself doesn't carry the constraint id either.
+  DistanceConstraintDto? _circleRadiusConstraint(SketchCircleView circle) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == circle.centerPointId &&
+          constraint.pointBId == circle.radiusPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// [_polygonRadiusConstraint]'s counterpart for Slot - identified the same
   /// way, by its two endpoint Points (center1, a), since [SketchSlotView]
   /// itself doesn't carry the constraint id either.
@@ -3243,6 +3257,22 @@ class SketchController extends ChangeNotifier {
       if (constraint is DistanceConstraintDto &&
           constraint.pointAId == slot.center1PointId &&
           constraint.pointBId == slot.aPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
+  /// [_polygonRadiusConstraint]'s counterpart for Arc - identified the same
+  /// way, by its two endpoint Points (center, start): see [SketchArcView]/
+  /// the backend's `Arc` docstring - `radius_constraint_id` always pins
+  /// center-to-start specifically, the end Point tracks it via a separate
+  /// `EqualRadiusConstraint` rather than its own independent Distance.
+  DistanceConstraintDto? _arcRadiusConstraint(SketchArcView arc) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == arc.centerPointId &&
+          constraint.pointBId == arc.startPointId) {
         return constraint;
       }
     }
@@ -3392,6 +3422,195 @@ class SketchController extends ChangeNotifier {
     };
   }
 
+  /// The still-intact Circle [pointId] belongs to (as centre, radius
+  /// Point, or one of its 4 cardinal Points), or null - same "every Point/
+  /// Line/Arc it was built from still present, live-checked" contract as
+  /// [_intactPolygonForVertex]/[_intactSlotForPoint].
+  SketchCircleView? _intactCircleForPoint(String pointId) {
+    for (final circle in circles.values) {
+      final isMember = pointId == circle.centerPointId ||
+          pointId == circle.radiusPointId ||
+          circle.cardinalPointIds.contains(pointId);
+      if (!isMember) continue;
+      final intact = points.containsKey(circle.centerPointId) &&
+          points.containsKey(circle.radiusPointId) &&
+          circle.cardinalPointIds.every(points.containsKey);
+      return intact ? circle : null;
+    }
+    return null;
+  }
+
+  /// [_closedFormPolygonVertices]/[_closedFormSlotGeometry]'s counterpart
+  /// for Circle - on-device feedback ("when dragging a circle it jumps
+  /// around... struggling with the solve"): root-caused directly - a
+  /// freshly-drawn Circle's own radius `DistanceConstraint` is `provisional`
+  /// (skipped by the solver) until the user confirms one, so dragging its
+  /// centre through the general path left the radius a genuinely free
+  /// variable with nothing pinning it, and a real reproduction against the
+  /// solver showed it can collapse toward zero in a single drag step - not
+  /// just a rough/jumpy feel, an actual correctness bug.
+  ///
+  /// Closed-form instead: dragging the centre translates every Point by the
+  /// same delta, radius untouched. Dragging any other Point derives a new
+  /// radius (the 4 cardinal Points are structurally locked to their own
+  /// global axis - see the backend's `Circle`/`_add_cardinal_points`
+  /// docstrings - so a drag target is projected onto that axis first,
+  /// rather than trusting a slightly-off-axis raw touch position) and
+  /// recomputes every cardinal Point directly from the fixed N/E/S/W
+  /// angles at that radius; [radiusPointId] - when it's a genuinely
+  /// separate, arbitrary-angle Point rather than doubling as north (the
+  /// centre-point circle tool's own mode) - keeps whatever angle from
+  /// centre it already had, just rescaled.
+  Map<String, (double, double)>? _closedFormCircleGeometry(
+    SketchCircleView circle,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    final centerPoint = points[circle.centerPointId];
+    if (centerPoint == null) return null;
+
+    if (draggedPointId == circle.centerPointId) {
+      final dx = targetX - centerPoint.x;
+      final dy = targetY - centerPoint.y;
+      final result = <String, (double, double)>{circle.centerPointId: (targetX, targetY)};
+      final radiusPoint = points[circle.radiusPointId];
+      if (radiusPoint != null) result[circle.radiusPointId] = (radiusPoint.x + dx, radiusPoint.y + dy);
+      for (final id in circle.cardinalPointIds) {
+        final p = points[id];
+        if (p != null) result[id] = (p.x + dx, p.y + dy);
+      }
+      return result;
+    }
+
+    final cx = centerPoint.x;
+    final cy = centerPoint.y;
+    // [north, east, south, west] - matches Circle.cardinal_point_ids' own
+    // fixed order and angles (_CARDINAL_ANGLES) exactly.
+    const cardinalAngles = [math.pi / 2, 0.0, 3 * math.pi / 2, math.pi];
+
+    double newRadius;
+    final cardinalIndex = circle.cardinalPointIds.indexOf(draggedPointId);
+    if (cardinalIndex != -1) {
+      // Cardinal Points are structurally locked to their own axis (north/
+      // south vertical, east/west horizontal) - project the raw drag
+      // target onto it rather than trusting a slightly-off-axis touch.
+      final isVertical = cardinalIndex == 0 || cardinalIndex == 2; // north/south
+      newRadius = (isVertical ? (targetY - cy) : (targetX - cx)).abs();
+    } else if (draggedPointId == circle.radiusPointId) {
+      newRadius = math.sqrt(math.pow(targetX - cx, 2) + math.pow(targetY - cy, 2));
+    } else {
+      return null;
+    }
+    if (newRadius < 1e-9) return null;
+
+    final result = <String, (double, double)>{};
+    for (var i = 0; i < circle.cardinalPointIds.length; i++) {
+      final id = circle.cardinalPointIds[i];
+      final angle = cardinalAngles[i];
+      result[id] = (cx + newRadius * math.cos(angle), cy + newRadius * math.sin(angle));
+    }
+    if (!circle.cardinalPointIds.contains(circle.radiusPointId)) {
+      if (draggedPointId == circle.radiusPointId) {
+        result[circle.radiusPointId] = (targetX, targetY);
+      } else {
+        final radiusPoint = points[circle.radiusPointId];
+        if (radiusPoint == null) return null;
+        final oldDx = radiusPoint.x - cx;
+        final oldDy = radiusPoint.y - cy;
+        final oldDist = math.sqrt(oldDx * oldDx + oldDy * oldDy);
+        result[circle.radiusPointId] = oldDist < 1e-9
+            ? (cx + newRadius, cy)
+            : (cx + newRadius * oldDx / oldDist, cy + newRadius * oldDy / oldDist);
+      }
+    }
+    return result;
+  }
+
+  /// The still-intact Arc [pointId] belongs to (as centre, start, or end
+  /// Point), or null - same "every Point it was built from still present,
+  /// live-checked" contract as [_intactPolygonForVertex]/[_intactCircleForPoint].
+  /// An Arc that's part of an intact Slot is always caught by
+  /// [_intactSlotForPoint] first at every call site below (checked ahead of
+  /// this one, same ordering as [_intactCircleForPoint]), so this only ever
+  /// fires for a standalone Arc.
+  SketchArcView? _intactArcForPoint(String pointId) {
+    for (final arc in arcs.values) {
+      final isMember = pointId == arc.centerPointId || pointId == arc.startPointId || pointId == arc.endPointId;
+      if (!isMember) continue;
+      final intact = points.containsKey(arc.centerPointId) &&
+          points.containsKey(arc.startPointId) &&
+          points.containsKey(arc.endPointId);
+      return intact ? arc : null;
+    }
+    return null;
+  }
+
+  /// [_closedFormCircleGeometry]'s counterpart for Arc - same on-device bug
+  /// ("jumps around... struggling with the solve"), same root cause (the
+  /// backend's `Arc.radius_constraint_id` starts `provisional`, same as
+  /// Circle's - see that class's own docstring), same fix.
+  ///
+  /// Unlike Circle's cardinal Points, an Arc's start/end angles are each an
+  /// independent, user-chosen degree of freedom (the sweep), not a fixed
+  /// global-axis position - so dragging the centre translates both by the
+  /// same delta (radius and both angles untouched), while dragging either
+  /// start or end derives a new radius from the drag target directly and
+  /// rescales *only* the other endpoint's distance from centre, preserving
+  /// that other endpoint's own current angle exactly rather than recomputing
+  /// it via any formula - mirroring exactly how [_closedFormCircleGeometry]
+  /// already treats a Circle's own non-cardinal `radiusPointId`.
+  Map<String, (double, double)>? _closedFormArcGeometry(
+    SketchArcView arc,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    final centerPoint = points[arc.centerPointId];
+    final startPoint = points[arc.startPointId];
+    final endPoint = points[arc.endPointId];
+    if (centerPoint == null || startPoint == null || endPoint == null) return null;
+
+    if (draggedPointId == arc.centerPointId) {
+      final dx = targetX - centerPoint.x;
+      final dy = targetY - centerPoint.y;
+      return {
+        arc.centerPointId: (targetX, targetY),
+        arc.startPointId: (startPoint.x + dx, startPoint.y + dy),
+        arc.endPointId: (endPoint.x + dx, endPoint.y + dy),
+      };
+    }
+
+    final cx = centerPoint.x;
+    final cy = centerPoint.y;
+    final newRadius = math.sqrt(math.pow(targetX - cx, 2) + math.pow(targetY - cy, 2));
+    if (newRadius < 1e-9) return null;
+
+    final String otherId;
+    final SketchPointView otherPoint;
+    if (draggedPointId == arc.startPointId) {
+      otherId = arc.endPointId;
+      otherPoint = endPoint;
+    } else if (draggedPointId == arc.endPointId) {
+      otherId = arc.startPointId;
+      otherPoint = startPoint;
+    } else {
+      return null;
+    }
+
+    final oldDx = otherPoint.x - cx;
+    final oldDy = otherPoint.y - cy;
+    final oldDist = math.sqrt(oldDx * oldDx + oldDy * oldDy);
+    final (otherX, otherY) = oldDist < 1e-9
+        ? (cx + newRadius, cy)
+        : (cx + newRadius * oldDx / oldDist, cy + newRadius * oldDy / oldDist);
+
+    return {
+      draggedPointId: (targetX, targetY),
+      otherId: (otherX, otherY),
+    };
+  }
+
   /// Shared apply/sync for [_closedFormPolygonVertices]/
   /// [_closedFormSlotGeometry]'s output - used identically by a live drag
   /// frame (mid-drag: local only, no network - see [updatePointDrag]) and
@@ -3419,12 +3638,12 @@ class SketchController extends ChangeNotifier {
     }
   }
 
-  /// [endPointDrag]'s drop-time settle for an intact Polygon/Slot drag -
-  /// exactly one of [polygon]/[slot] is non-null. Recomputes the whole
-  /// shape closed-form at `(targetX, targetY)` and syncs it to the backend
-  /// (via [_applyClosedFormPositions]), then - only if this shape's one
-  /// real radius dimension is already confirmed (Task #94: a drag against
-  /// an existing dimension edits that dimension, not just the raw
+  /// [endPointDrag]'s drop-time settle for an intact closed-form-shape drag
+  /// - exactly one of [polygon]/[slot]/[circle] is non-null. Recomputes the
+  /// whole shape closed-form at `(targetX, targetY)` and syncs it to the
+  /// backend (via [_applyClosedFormPositions]), then - only if this shape's
+  /// one real radius dimension is already confirmed (Task #94: a drag
+  /// against an existing dimension edits that dimension, not just the raw
   /// geometry) - updates that Constraint's own value too, so its displayed
   /// number and undo semantics stay consistent with the geometry. Reused
   /// identically for both the actual drop (`target` = where the user let
@@ -3435,20 +3654,41 @@ class SketchController extends ChangeNotifier {
   Future<void> _settleClosedFormShapeDrag(
     SketchPolygonView? polygon,
     SketchSlotView? slot,
+    SketchCircleView? circle,
+    SketchArcView? arc,
     String draggedPointId,
     double targetX,
     double targetY,
   ) async {
-    final positions = polygon != null
-        ? _closedFormPolygonVertices(polygon, draggedPointId, targetX, targetY)
-        : _closedFormSlotGeometry(slot!, draggedPointId, targetX, targetY);
+    final Map<String, (double, double)>? positions;
+    final DistanceConstraintDto? radiusConstraint;
+    final String centerId;
+    final String rimId;
+    if (polygon != null) {
+      positions = _closedFormPolygonVertices(polygon, draggedPointId, targetX, targetY);
+      radiusConstraint = _polygonRadiusConstraint(polygon);
+      centerId = polygon.centerPointId;
+      rimId = polygon.vertexPointIds[0];
+    } else if (slot != null) {
+      positions = _closedFormSlotGeometry(slot, draggedPointId, targetX, targetY);
+      radiusConstraint = _slotRadiusConstraint(slot);
+      centerId = slot.center1PointId;
+      rimId = slot.aPointId;
+    } else if (circle != null) {
+      positions = _closedFormCircleGeometry(circle, draggedPointId, targetX, targetY);
+      radiusConstraint = _circleRadiusConstraint(circle);
+      centerId = circle.centerPointId;
+      rimId = circle.radiusPointId;
+    } else {
+      positions = _closedFormArcGeometry(arc!, draggedPointId, targetX, targetY);
+      radiusConstraint = _arcRadiusConstraint(arc);
+      centerId = arc.centerPointId;
+      rimId = arc.startPointId;
+    }
     if (positions == null) return;
     await _applyClosedFormPositions(positions, sync: true);
 
-    final radiusConstraint = polygon != null ? _polygonRadiusConstraint(polygon) : _slotRadiusConstraint(slot!);
     if (radiusConstraint == null || radiusConstraint.provisional) return;
-    final centerId = polygon != null ? polygon.centerPointId : slot!.center1PointId;
-    final rimId = polygon != null ? polygon.vertexPointIds[0] : slot!.aPointId;
     // Read back from [points] (just written by [_applyClosedFormPositions]
     // above), not [positions] directly - a Polygon vertex drag's own
     // [_closedFormPolygonVertices] output never includes the centre (it
@@ -3492,7 +3732,10 @@ class SketchController extends ChangeNotifier {
     // chain could still trip [isPointForcedOverConstrained] and refuse the
     // grab outright, before a drag ever got the chance to reach
     // [updatePointDrag]'s own (already-correct) closed-form path at all.
-    if (_intactPolygonForVertex(pointId) == null && _intactSlotForPoint(pointId) == null) {
+    if (_intactPolygonForVertex(pointId) == null &&
+        _intactSlotForPoint(pointId) == null &&
+        _intactCircleForPoint(pointId) == null &&
+        _intactArcForPoint(pointId) == null) {
       // Phase 3 (3.2): a Point in an over-constrained cluster already has a
       // redundant/conflicting Constraint pinning it - dragging it wouldn't
       // move it anywhere the solver would actually let it stay, so refuse
@@ -3595,10 +3838,20 @@ class SketchController extends ChangeNotifier {
     // for the *general* path this bypasses).
     final intactPolygon = _intactPolygonForVertex(pointId);
     final intactSlot = intactPolygon == null ? _intactSlotForPoint(pointId) : null;
-    if (intactPolygon != null || intactSlot != null) {
-      final positions = intactPolygon != null
-          ? _closedFormPolygonVertices(intactPolygon, pointId, newX, newY)
-          : _closedFormSlotGeometry(intactSlot!, pointId, newX, newY);
+    final intactCircle = intactPolygon == null && intactSlot == null ? _intactCircleForPoint(pointId) : null;
+    final intactArc =
+        intactPolygon == null && intactSlot == null && intactCircle == null ? _intactArcForPoint(pointId) : null;
+    if (intactPolygon != null || intactSlot != null || intactCircle != null || intactArc != null) {
+      final Map<String, (double, double)>? positions;
+      if (intactPolygon != null) {
+        positions = _closedFormPolygonVertices(intactPolygon, pointId, newX, newY);
+      } else if (intactSlot != null) {
+        positions = _closedFormSlotGeometry(intactSlot, pointId, newX, newY);
+      } else if (intactCircle != null) {
+        positions = _closedFormCircleGeometry(intactCircle, pointId, newX, newY);
+      } else {
+        positions = _closedFormArcGeometry(intactArc!, pointId, newX, newY);
+      }
       if (positions != null) {
         unawaited(_applyClosedFormPositions(positions, sync: false));
       }
@@ -3904,11 +4157,23 @@ class SketchController extends ChangeNotifier {
     // reintroduce a wrong root either.
     final intactPolygon = _intactPolygonForVertex(pointId);
     final intactSlot = intactPolygon == null ? _intactSlotForPoint(pointId) : null;
-    if (intactPolygon != null || intactSlot != null) {
+    final intactCircle = intactPolygon == null && intactSlot == null ? _intactCircleForPoint(pointId) : null;
+    final intactArc =
+        intactPolygon == null && intactSlot == null && intactCircle == null ? _intactArcForPoint(pointId) : null;
+    if (intactPolygon != null || intactSlot != null || intactCircle != null || intactArc != null) {
       await _runGuarded(() async {
-        await _settleClosedFormShapeDrag(intactPolygon, intactSlot, pointId, droppedPoint.x, droppedPoint.y);
+        await _settleClosedFormShapeDrag(
+          intactPolygon,
+          intactSlot,
+          intactCircle,
+          intactArc,
+          pointId,
+          droppedPoint.x,
+          droppedPoint.y,
+        );
         _pushUndo(() async {
-          await _settleClosedFormShapeDrag(intactPolygon, intactSlot, pointId, originX, originY);
+          await _settleClosedFormShapeDrag(
+              intactPolygon, intactSlot, intactCircle, intactArc, pointId, originX, originY);
         });
         await _solveAndTrackDof();
       });

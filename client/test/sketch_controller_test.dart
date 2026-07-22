@@ -902,19 +902,39 @@ class _FakeBackend {
       var radiusPointId = body['radius_point_id'] as String?;
       final requestedRadius = (body['radius'] as num?)?.toDouble() ?? 1.0;
       final cardinalPointIds = <String>[];
+      final center = points[body['center_point_id'] as String]!;
+      final centerX = (center['x'] as num).toDouble();
+      final centerY = (center['y'] as num).toDouble();
       if (radiusPointId == null) {
         // Centre-point circle tool's own mode (bare radius, no
         // radius_point_id/angle) - mirrors the real backend's
         // Sketch.add_circle: the new Point becomes the circle's own north
         // cardinal point directly.
-        final center = points[body['center_point_id'] as String]!;
         radiusPointId = _newId('point');
         points[radiusPointId] = {
           'id': radiusPointId,
-          'x': (center['x'] as num).toDouble(),
-          'y': (center['y'] as num).toDouble() + requestedRadius,
+          'x': centerX,
+          'y': centerY + requestedRadius,
         };
         cardinalPointIds.add(radiusPointId);
+      }
+      // Mirrors the real backend's _add_cardinal_points: North/East/South/
+      // West always exist regardless of creation mode - North is either the
+      // bare-radius Point above or created below alongside the rest.
+      final cardinalOffsets = <String, (double, double)>{
+        'north': (centerX, centerY + requestedRadius),
+        'east': (centerX + requestedRadius, centerY),
+        'south': (centerX, centerY - requestedRadius),
+        'west': (centerX - requestedRadius, centerY),
+      };
+      final remaining = cardinalPointIds.isEmpty
+          ? ['north', 'east', 'south', 'west']
+          : ['east', 'south', 'west'];
+      for (final key in remaining) {
+        final newId = _newId('point');
+        final offset = cardinalOffsets[key]!;
+        points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+        cardinalPointIds.add(newId);
       }
       final circle = {
         'id': id,
@@ -1785,7 +1805,9 @@ void main() {
 
     await controller.handleCanvasTap(5, 0);
 
-    expect(controller.points.length, 2);
+    // Origin/centre (shared, since (0, 0) snaps onto the origin) + all four
+    // North/East/South/West cardinal Points (see Sketch._add_cardinal_points).
+    expect(controller.points.length, 5);
     expect(controller.circles.length, 1);
     final circle = controller.circles.values.first;
     expect(circle.centerPointId, centerId);
@@ -1805,9 +1827,9 @@ void main() {
     expect(radiusConstraint.provisional, isTrue);
 
     controller.enterDimensionMode();
-    // On the boundary but not on the north cardinal point itself (see
-    // SketchController._clickCircleTool's own doc comment).
-    await controller.handleCanvasTap(5, 0);
+    // On the boundary but off every cardinal axis (see
+    // Sketch._add_cardinal_points).
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
     await controller.confirmGhostValue('radius', 5.0);
 
     final confirmed = controller.constraints[radiusConstraint.id] as DistanceConstraintDto;
@@ -3350,6 +3372,177 @@ void main() {
     expect(cPointAfter.y, closeTo(cPointBefore.y, 1e-9));
   });
 
+  group('Circle closed-form drag (on-device feedback: "when dragging a circle it jumps around '
+      'instead of moving smoothly. I think it\'s struggling with the solve" - reproduced directly '
+      'against the real solver: a freshly-drawn Circle\'s radius DistanceConstraint is provisional, '
+      'so nothing pins it during a general-path drag and the radius can collapse toward zero in a '
+      'single step. Closed-form eliminates the solver from this drag entirely, the same fix already '
+      'shipped for Polygon/Slot)', () {
+    test('dragging the centre translates every cardinal Point by the same delta, radius unchanged, '
+        'with zero solver/network calls', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20); // centre
+      await controller.handleCanvasTap(30, 20); // radius 10 (always placed north regardless of tap angle)
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+      final eastBefore = controller.points[circle.cardinalPointIds[1]]!;
+
+      backend.requestLog.clear();
+      // Origin cursor set to the centre's own current position first, so
+      // updatePointDrag's (x, y) argument below lands the centre at exactly
+      // that absolute sketch-space position.
+      final centre0 = controller.points[circle.centerPointId]!;
+      controller.cursorX = centre0.x;
+      controller.cursorY = centre0.y;
+      expect(controller.beginPointDrag(circle.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 25); // centre moves (5, 5)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      final eastAfter = controller.points[circle.cardinalPointIds[1]]!;
+      expect(northAfter.x, closeTo(northBefore.x + 5, 1e-9));
+      expect(northAfter.y, closeTo(northBefore.y + 5, 1e-9));
+      expect(eastAfter.x, closeTo(eastBefore.x + 5, 1e-9));
+      expect(eastAfter.y, closeTo(eastBefore.y + 5, 1e-9));
+    });
+
+    test('dragging the radius Point (north) resizes every other cardinal Point too - the exact '
+        'scenario that used to collapse toward zero under the general solver path', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20); // centre
+      await controller.handleCanvasTap(30, 20); // radius 10
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      expect(circle.radiusPointId, circle.cardinalPointIds.first, reason: 'sanity check: this tool always places the radius point north');
+
+      backend.requestLog.clear();
+      // Origin cursor set to north's own current position first, so
+      // updatePointDrag's (x, y) argument below lands north at exactly that
+      // absolute sketch-space position.
+      final north0 = controller.points[circle.radiusPointId]!;
+      controller.cursorX = north0.x;
+      controller.cursorY = north0.y;
+      expect(controller.beginPointDrag(circle.radiusPointId), isTrue);
+      await controller.updatePointDrag(20, 45); // north dragged out to radius 25
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final north = controller.points[circle.radiusPointId]!;
+      expect(north.x, closeTo(20, 1e-6));
+      expect(north.y, closeTo(45, 1e-6));
+      for (final id in circle.cardinalPointIds.skip(1)) {
+        final p = controller.points[id]!;
+        final radius = math.sqrt(math.pow(p.x - 20, 2) + math.pow(p.y - 20, 2));
+        expect(radius, closeTo(25, 1e-6), reason: 'every cardinal Point must track the new radius exactly, not collapse');
+      }
+    });
+
+    test('once a cardinal Point is individually deleted (no longer intact), dragging the centre '
+        'falls back to the ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20);
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final eastId = circle.cardinalPointIds[1];
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: eastId));
+      await controller.deleteSelected();
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+
+      expect(controller.beginPointDrag(circle.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 25);
+
+      // The closed-form path (which would have translated it instantly, per
+      // the test above) didn't run - north never moved.
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      expect(northAfter.x, closeTo(northBefore.x, 1e-9));
+      expect(northAfter.y, closeTo(northBefore.y, 1e-9));
+    });
+  });
+
+  group('Arc closed-form drag (same on-device bug/fix as Circle - see that group\'s own doc comment - '
+      'an Arc\'s own radius DistanceConstraint is provisional too, so the general solver path left it '
+      'genuinely free during a drag)', () {
+    test('dragging the centre translates start and end by the same delta, radius and sweep unchanged, '
+        'with zero solver/network calls', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(5, 0); // start, radius 5
+      await controller.handleCanvasTap(0, 100); // end, lands at (0, 5)
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+      final startBefore = controller.points[arc.startPointId]!;
+      final endBefore = controller.points[arc.endPointId]!;
+
+      backend.requestLog.clear();
+      final center0 = controller.points[arc.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(arc.centerPointId), isTrue);
+      await controller.updatePointDrag(10, 10); // centre moves (10, 10)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final startAfter = controller.points[arc.startPointId]!;
+      final endAfter = controller.points[arc.endPointId]!;
+      expect(startAfter.x, closeTo(startBefore.x + 10, 1e-9));
+      expect(startAfter.y, closeTo(startBefore.y + 10, 1e-9));
+      expect(endAfter.x, closeTo(endBefore.x + 10, 1e-9));
+      expect(endAfter.y, closeTo(endBefore.y + 10, 1e-9));
+    });
+
+    test('dragging the start Point resizes the radius and rescales the end Point, preserving the '
+        'end Point\'s own angle from centre exactly rather than recomputing it - the exact scenario '
+        'that used to collapse toward zero under the general solver path', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(5, 0); // start, radius 5
+      await controller.handleCanvasTap(0, 100); // end, lands at (0, 5) - 90 degrees from start
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+
+      backend.requestLog.clear();
+      final start0 = controller.points[arc.startPointId]!;
+      controller.cursorX = start0.x;
+      controller.cursorY = start0.y;
+      expect(controller.beginPointDrag(arc.startPointId), isTrue);
+      await controller.updatePointDrag(25, 0); // start dragged out to radius 25
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final start = controller.points[arc.startPointId]!;
+      expect(start.x, closeTo(25, 1e-6));
+      expect(start.y, closeTo(0, 1e-6));
+      final end = controller.points[arc.endPointId]!;
+      final endRadius = math.sqrt(math.pow(end.x, 2) + math.pow(end.y, 2));
+      expect(endRadius, closeTo(25, 1e-6), reason: 'end Point must track the new radius exactly, not collapse');
+      final endAngle = math.atan2(end.y, end.x);
+      expect(endAngle, closeTo(math.pi / 2, 1e-6), reason: 'end Point\'s own angle from centre must be preserved');
+    });
+
+    test('once the end Point is deleted (no longer intact), dragging the centre falls back to the '
+        'ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      await controller.handleCanvasTap(0, 100);
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: arc.endPointId));
+      await controller.deleteSelected();
+      final startBefore = controller.points[arc.startPointId]!;
+
+      expect(controller.beginPointDrag(arc.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 25);
+
+      // The closed-form path (which would have translated it instantly, per
+      // the test above) didn't run - start never moved.
+      final startAfter = controller.points[arc.startPointId]!;
+      expect(startAfter.x, closeTo(startBefore.x, 1e-9));
+      expect(startAfter.y, closeTo(startBefore.y, 1e-9));
+    });
+  });
+
   test(
       'dragging a Slot corner reflows the rest of the shape sanely, even when the Slot was drawn '
       'starting at the sketch origin (on-device feedback: "dragging constrained entities is still '
@@ -4193,13 +4386,12 @@ void main() {
     controller.exitToSelectMode();
     final circleId = controller.circles.keys.first;
 
-    // On the circle's edge (radius 5, centered on the origin) but not near
-    // either of its two real Points - the centre, or the north cardinal
-    // point the radius tap now creates (see SketchController._clickCircleTool's
-    // own doc comment: the second tap only ever measures a distance, so
-    // (5, 0) itself - east - is empty space, unlike north at (0, 5).
-    controller.cursorX = 5;
-    controller.cursorY = 0;
+    // On the circle's edge (radius 5, centered on the origin) but off every
+    // cardinal axis - every Circle gets all four North/East/South/West
+    // Points (see Sketch._add_cardinal_points), so a diagonal spot is the
+    // only genuinely empty-space point on the boundary.
+    controller.cursorX = 5 * math.cos(math.pi / 4);
+    controller.cursorY = 5 * math.sin(math.pi / 4);
 
     final hovered = controller.hoveredEntity();
     expect(hovered, isNotNull);
@@ -5422,11 +5614,10 @@ void main() {
     await controller.handleCanvasTap(10, 0); // radius point -> radius 10
     controller.enterDimensionMode();
 
-    // On the boundary but not on the north cardinal point the radius tap
-    // now creates (see SketchController._clickCircleTool's own doc comment
-    // - the second tap only ever measures a distance, so east (10, 0) is
-    // empty space, unlike north at (0, 10)).
-    await controller.handleCanvasTap(10, 0);
+    // On the boundary but off every cardinal axis - every Circle gets all
+    // four North/East/South/West Points (see Sketch._add_cardinal_points),
+    // so a diagonal spot is the only genuinely empty-space point on it.
+    await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
 
     expect(controller.ghosts.map((g) => g.key).toSet(), {'radius', 'diameter'});
 
@@ -5444,7 +5635,8 @@ void main() {
     await controller.handleCanvasTap(0, 0); // center
     await controller.handleCanvasTap(10, 0); // radius point -> radius 10
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(10, 0); // on the circle's edge
+    // Off every cardinal axis - see Sketch._add_cardinal_points.
+    await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
 
     await controller.confirmGhostValue('diameter', 40.0);
 
@@ -5454,7 +5646,7 @@ void main() {
     // Re-picking the same circle and confirming the radius ghost this time
     // must flip the same (now-existing) constraint's display mode back.
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
     await controller.confirmGhostValue('radius', 20.0);
 
     expect(controller.showsDiameterFor(constraint.id), isFalse);
@@ -6030,7 +6222,10 @@ void main() {
       final circle = controller.circles.values.single;
       expect(controller.revealedShapeCenterPointId, isNull);
 
-      controller.moveCursorToSketchPoint(5, 0); // on the circle's own curve
+      // On the circle's own curve, off every cardinal axis (see
+      // Sketch._add_cardinal_points) - a cardinal Point itself would hover
+      // as a Point, not the circle's edge.
+      controller.moveCursorToSketchPoint(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
 
       expect(controller.revealedShapeCenterPointId, circle.centerPointId);
     });
@@ -6074,7 +6269,9 @@ void main() {
         controller.exitToSelectMode();
         final circle = controller.circles.values.single;
 
-        controller.moveCursorToSketchPoint(5, 0);
+        // Off every cardinal axis (see Sketch._add_cardinal_points) - a
+        // cardinal Point itself would hover as a Point, not the curve.
+        controller.moveCursorToSketchPoint(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
         expect(controller.revealedShapeCenterPointId, circle.centerPointId);
 
         controller.moveCursorToSketchPoint(100, 100); // off the shape
@@ -6084,7 +6281,7 @@ void main() {
         async.elapse(const Duration(seconds: 2));
         expect(controller.revealedShapeCenterPointId, circle.centerPointId, reason: 'not 3 seconds yet');
 
-        controller.moveCursorToSketchPoint(5, 0); // back on the circle before the hide fires
+        controller.moveCursorToSketchPoint(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // back on the circle before the hide fires
         async.elapse(const Duration(seconds: 2)); // 4s total since first leaving, but re-hovered at 2s
         expect(controller.revealedShapeCenterPointId, circle.centerPointId,
             reason: 'a re-hover before the hide fires must cancel it, not just delay it');
@@ -6704,10 +6901,11 @@ void main() {
     await controller.handleCanvasTap(23, 0);
     controller.exitToSelectMode();
 
-    // East of each circle, not the north cardinal point the radius tap
-    // creates (see SketchController._clickCircleTool's own doc comment).
-    await controller.handleCanvasTap(5, 0); // first circle's edge
-    await controller.handleCanvasTap(23, 0); // second circle's edge
+    // Off every cardinal axis of each circle - every Circle gets all four
+    // North/East/South/West Points (see Sketch._add_cardinal_points), so a
+    // diagonal spot is the only genuinely empty-space point on the edge.
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // first circle's edge
+    await controller.handleCanvasTap(20 + 3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4)); // second circle's edge
 
     expect(controller.selectionSet.length, 2);
     for (final type in ConstraintOptionType.values) {
@@ -6726,7 +6924,9 @@ void main() {
     controller.finishChain();
     controller.exitToSelectMode();
 
-    await controller.handleCanvasTap(5, 0); // the circle's edge, not its north cardinal point
+    // Off every cardinal axis - every Circle gets all four North/East/
+    // South/West Points (see Sketch._add_cardinal_points).
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // the circle's edge
     await controller.handleCanvasTap(25, 10.1); // the line, away from its midpoint
 
     expect(controller.selectionSet.length, 2);
