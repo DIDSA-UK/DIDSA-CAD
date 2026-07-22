@@ -4023,6 +4023,55 @@ void main() {
       final radius = math.sqrt(math.pow(a.x - center1.x, 2) + math.pow(a.y - center1.y, 2));
       expect(radius, closeTo(5, 1e-6));
     });
+
+    test('Select All then Delete on a Slot does not 404 on a corner Point the Slot\'s own cascade '
+        'already pruned - on-device feedback: "Server returned 404: Point not found" after Select '
+        'All then Delete on a Slot. Root cause: delete_slot prunes its own now-orphaned corner '
+        'Points server-side, exactly like every other shape-delete already does, but the Slot/'
+        'Rectangle/Polygon loops were the only ones not feeding that back into the "already gone, '
+        'do not delete it again" tracking every other shape-delete loop relies on - Select All '
+        'always puts every Point directly in the selection too, so the later explicit per-Point '
+        'delete retried one the Slot loop had already removed', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+
+      // Select All: every Point directly in the selection, exactly as
+      // sketch_ribbon.dart's own Select All does - not just the one that
+      // happens to trigger the Slot's own cascade.
+      for (final id in [
+        slot.center1PointId,
+        slot.center2PointId,
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+      ]) {
+        controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: id));
+      }
+      // Mirrors the real backend's delete_slot: its own corner Points are
+      // pruned as part of deleting the Slot itself (nothing else
+      // references them), reported back the same way delete_line/
+      // delete_circle/etc. already do.
+      backend.prunedPointIdsOnNextDelete = [
+        slot.center1PointId,
+        slot.center2PointId,
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+      ];
+
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.slots, isEmpty);
+      expect(controller.points.containsKey(slot.aPointId), isFalse);
+      backend.prunedPointIdsOnNextDelete = const [];
+    });
   });
 
   // --- Phase 6.2.4: Ellipse tool ------------------------------------------

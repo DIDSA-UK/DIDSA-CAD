@@ -5999,6 +5999,48 @@ class SketchController extends ChangeNotifier {
             s.kind == SelectionKind.text,
       );
       final pointsToDelete = toDelete.where((s) => s.kind == SelectionKind.point);
+      // On-device feedback ("when deleting lines, curves, trimming I end
+      // up with floating, redundant points"): every shape-delete call
+      // below now also auto-prunes whichever of its own defining Points
+      // nothing else references anymore (`Sketch._prune_orphaned_points`)
+      // - `autoPrunedPointIds` tracks every id reported that way across
+      // this whole batch, so (a) `pointsToDelete`'s own explicit deletes
+      // further below can skip any id a shape-delete already removed
+      // server-side (calling `DELETE .../points/{id}` on an id that's
+      // already gone would 404 and abort the whole cascade), and (b) each
+      // one's pre-delete view gets folded into `capturedPoints` for undo,
+      // exactly like every other Point this cascade explicitly deletes -
+      // `computeDeleteCascade` can't have known about these ahead of time,
+      // since whether a given Point becomes orphaned is a property of the
+      // *result* of deleting its owning shape(s), not of the selection.
+      // Declared before the Polygon/Slot/Rectangle loops below (not just
+      // shapesToDelete's own loop further down) - bug fix (on-device
+      // feedback: "Server returned 404: Point not found" after Select All
+      // then Delete on a Slot): those loops' own delete_polygon/delete_
+      // slot/delete_rectangle calls prune orphaned corner/centre Points
+      // server-side too, exactly like delete_line/delete_circle/etc.
+      // already did - Select All puts every one of those same Points
+      // directly in pointsToDelete as well, and without feeding their
+      // pruned ids through here too, the explicit per-Point delete below
+      // would blindly retry one the shape's own cascade had already
+      // removed.
+      final autoPrunedPointIds = <String>{};
+      final alreadyCapturedPointIds = capturedPoints.map((p) => p.id).toSet();
+      void applyPrunedPoints(List<String> prunedPointIds) {
+        for (final pointId in prunedPointIds) {
+          // A point already directly in the selection (so already
+          // captured, pre-delete, by the loop above this one) must not be
+          // captured a second time here - it would otherwise be recreated
+          // twice on undo.
+          if (!alreadyCapturedPointIds.contains(pointId)) {
+            final point = points[pointId];
+            if (point != null) capturedPoints.add(point);
+          }
+          points.remove(pointId);
+          autoPrunedPointIds.add(pointId);
+        }
+      }
+
       // Polygon isn't independently tap-selectable (no SelectionKind.polygon
       // - only its own vertex Points/edge Lines are, same as it always was
       // before it became a real entity), so it isn't routed through the
@@ -6011,7 +6053,7 @@ class SketchController extends ChangeNotifier {
       // the local cache afterward, same as every other entity's own
       // internal constraints already rely on.
       for (final id in cascade.polygons) {
-        await _api.deletePolygon(_sketchId!, id);
+        applyPrunedPoints(await _api.deletePolygon(_sketchId!, id));
         polygons.remove(id);
       }
       // Bug fix (on-device feedback: "select all > delete doesn't work on
@@ -6040,7 +6082,7 @@ class SketchController extends ChangeNotifier {
       // blocking their deletion afterward.
       for (final id in cascade.slots) {
         final slot = slots[id];
-        await _api.deleteSlot(_sketchId!, id);
+        applyPrunedPoints(await _api.deleteSlot(_sketchId!, id));
         slots.remove(id);
         // The generic shapesToDelete loop below never sees these ids -
         // computeDeleteCascade already dedup'd them out of cascade.lines/
@@ -6062,7 +6104,7 @@ class SketchController extends ChangeNotifier {
       }
       for (final id in cascade.rectangles) {
         final rectangle = rectangles[id];
-        await _api.deleteRectangle(_sketchId!, id);
+        applyPrunedPoints(await _api.deleteRectangle(_sketchId!, id));
         rectangles.remove(id);
         // Same reasoning as the Slot block above.
         if (rectangle != null) {
@@ -6077,36 +6119,6 @@ class SketchController extends ChangeNotifier {
       }
       if (cascade.rectangles.isNotEmpty) {
         await _refreshConstraints();
-      }
-      // On-device feedback ("when deleting lines, curves, trimming I end
-      // up with floating, redundant points"): every shape-delete call
-      // below now also auto-prunes whichever of its own defining Points
-      // nothing else references anymore (`Sketch._prune_orphaned_points`)
-      // - `autoPrunedPointIds` tracks every id reported that way across
-      // this whole batch, so (a) `pointsToDelete`'s own explicit deletes
-      // just below can skip any id a shape-delete already removed
-      // server-side (calling `DELETE .../points/{id}` on an id that's
-      // already gone would 404 and abort the whole cascade), and (b) each
-      // one's pre-delete view gets folded into `capturedPoints` for undo,
-      // exactly like every other Point this cascade explicitly deletes -
-      // `computeDeleteCascade` can't have known about these ahead of time,
-      // since whether a given Point becomes orphaned is a property of the
-      // *result* of deleting its owning shape(s), not of the selection.
-      final autoPrunedPointIds = <String>{};
-      final alreadyCapturedPointIds = capturedPoints.map((p) => p.id).toSet();
-      void applyPrunedPoints(List<String> prunedPointIds) {
-        for (final pointId in prunedPointIds) {
-          // A point already directly in the selection (so already
-          // captured, pre-delete, by the loop above this one) must not be
-          // captured a second time here - it would otherwise be recreated
-          // twice on undo.
-          if (!alreadyCapturedPointIds.contains(pointId)) {
-            final point = points[pointId];
-            if (point != null) capturedPoints.add(point);
-          }
-          points.remove(pointId);
-          autoPrunedPointIds.add(pointId);
-        }
       }
 
       for (final current in [...constraintsToDelete, ...shapesToDelete]) {
