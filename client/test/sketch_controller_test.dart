@@ -43,6 +43,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> ellipses = {};
   final Map<String, Map<String, dynamic>> polygons = {};
+  final Map<String, Map<String, dynamic>> slots = {};
   final Map<String, Map<String, dynamic>> splines = {};
   final Map<String, Map<String, dynamic>> texts = {};
   final Map<String, Map<String, dynamic>> sketches = {};
@@ -263,6 +264,37 @@ class _FakeBackend {
       return _json(polygon, 200);
     }
 
+    final slotDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/slots/(.+)$').firstMatch(path);
+    if (slotDeleteMatch != null && request.method == 'DELETE') {
+      final slot = slots.remove(slotDeleteMatch.group(1));
+      if (slot != null) {
+        for (final entityId in [
+          slot['centerline_id'],
+          slot['arc1_id'],
+          slot['arc2_id'],
+          slot['line1_id'],
+          slot['line2_id'],
+        ]) {
+          lines.remove(entityId);
+          arcs.remove(entityId);
+        }
+        for (final constraintId in (slot['_constraint_ids'] as List).cast<String>()) {
+          constraints.remove(constraintId);
+        }
+      }
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final slotPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/slots/(.+)$').firstMatch(path);
+    if (slotPatchMatch != null && request.method == 'PATCH') {
+      final slot = slots[slotPatchMatch.group(1)];
+      if (slot == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        slot['construction'] = body['construction'] as bool;
+      }
+      return _json(slot, 200);
+    }
+
     final splineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
     if (splineDeleteMatch != null && request.method == 'DELETE') {
       splines.remove(splineDeleteMatch.group(1));
@@ -326,35 +358,59 @@ class _FakeBackend {
       if (constraint['type'] == 'angle') {
         constraint['angle_degrees'] = value;
       } else {
-        final oldDistance = (constraint['distance'] as num).toDouble();
         constraint['distance'] = value;
         // Mirrors the real backend: any explicit value PATCH confirms the
         // constraint, clearing `provisional` (see update_constraint_value).
         constraint['provisional'] = false;
-        // Task #94: a Polygon's own circumradius DistanceConstraint (center
-        // to vertex 0) is the *only* thing pinning the shape's absolute
-        // size - equal-length/equal-radius/angle alone only fix its shape,
-        // not its scale - so resizing it uniformly scales every vertex
-        // about the center, same as a real solve would settle to. Good
-        // enough to exercise the client's own vertex-drag-as-circumradius-
-        // edit logic against real, moved geometry rather than just a
-        // stored constraint value.
-        if (oldDistance > 1e-9) {
-          for (final polygon in polygons.values) {
-            final vertexPointIds = (polygon['vertex_point_ids'] as List).cast<String>();
-            if (polygon['center_point_id'] == constraint['point_a_id'] &&
-                vertexPointIds.first == constraint['point_b_id']) {
-              final center = points[polygon['center_point_id']]!;
-              final cx = (center['x'] as num).toDouble();
-              final cy = (center['y'] as num).toDouble();
-              final scale = value / oldDistance;
-              for (final vertexId in vertexPointIds) {
-                final vertex = points[vertexId]!;
-                vertex['x'] = cx + ((vertex['x'] as num).toDouble() - cx) * scale;
-                vertex['y'] = cy + ((vertex['y'] as num).toDouble() - cy) * scale;
-              }
-              break;
-            }
+        // Task #94: a Polygon/Slot's own circumradius DistanceConstraint
+        // (centre to vertex 0 / centre1 to corner a) is the *only* thing
+        // pinning the shape's absolute size - equal-length/equal-radius/
+        // angle/tangent alone only fix its shape, not its scale - so
+        // resizing it uniformly scales every vertex/corner about the
+        // centre, same as a real solve would settle to. Good enough to
+        // exercise the client's own vertex-drag-as-dimension-edit logic
+        // against real, moved geometry rather than just a stored
+        // constraint value. Scaled from each vertex's own *current* actual
+        // distance from centre, not the constraint's old stored value -
+        // the sketcher rebuild's closed-form drag path already PATCHes
+        // every point to its correct final position directly, *before*
+        // this PATCH fires (see SketchController._settleClosedFormShapeDrag),
+        // so scaling from the old stored value here would double-apply the
+        // resize on top of already-correct geometry.
+        double distance(Map<String, dynamic> a, Map<String, dynamic> b) => math.sqrt(
+              math.pow((b['x'] as num).toDouble() - (a['x'] as num).toDouble(), 2) +
+                  math.pow((b['y'] as num).toDouble() - (a['y'] as num).toDouble(), 2),
+            );
+        void scaleAbout(Map<String, dynamic> center, Iterable<String> vertexIds, double currentRadius) {
+          if (currentRadius <= 1e-9) return;
+          final cx = (center['x'] as num).toDouble();
+          final cy = (center['y'] as num).toDouble();
+          final scale = value / currentRadius;
+          for (final vertexId in vertexIds) {
+            final vertex = points[vertexId]!;
+            vertex['x'] = cx + ((vertex['x'] as num).toDouble() - cx) * scale;
+            vertex['y'] = cy + ((vertex['y'] as num).toDouble() - cy) * scale;
+          }
+        }
+
+        for (final polygon in polygons.values) {
+          final vertexPointIds = (polygon['vertex_point_ids'] as List).cast<String>();
+          if (polygon['center_point_id'] == constraint['point_a_id'] &&
+              vertexPointIds.first == constraint['point_b_id']) {
+            final center = points[polygon['center_point_id']]!;
+            scaleAbout(center, vertexPointIds, distance(center, points[vertexPointIds.first]!));
+            break;
+          }
+        }
+        for (final slot in slots.values) {
+          if (slot['center1_point_id'] == constraint['point_a_id'] && slot['a_point_id'] == constraint['point_b_id']) {
+            final center1 = points[slot['center1_point_id'] as String]!;
+            final center2 = points[slot['center2_point_id'] as String]!;
+            final aId = slot['a_point_id'] as String;
+            final currentRadius = distance(center1, points[aId]!);
+            scaleAbout(center1, [slot['a_point_id'], slot['b_point_id']].cast<String>(), currentRadius);
+            scaleAbout(center2, [slot['c_point_id'], slot['d_point_id']].cast<String>(), currentRadius);
+            break;
           }
         }
       }
@@ -1132,6 +1188,138 @@ class _FakeBackend {
     }
     if (polygonsCollectionMatch && request.method == 'GET') {
       return _jsonList(polygons.values.toList(), 200);
+    }
+
+    final slotsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/slots$').hasMatch(path);
+    if (slotsCollectionMatch && request.method == 'POST') {
+      final id = _newId('slot');
+      final center1Id = body['center1_point_id'] as String;
+      final center2Id = body['center2_point_id'] as String;
+      final radius = (body['radius'] as num).toDouble();
+      final c1 = points[center1Id]!;
+      final c2 = points[center2Id]!;
+      final c1x = (c1['x'] as num).toDouble(), c1y = (c1['y'] as num).toDouble();
+      final c2x = (c2['x'] as num).toDouble(), c2y = (c2['y'] as num).toDouble();
+      final dx = c2x - c1x, dy = c2y - c1y;
+      final length = math.sqrt(dx * dx + dy * dy);
+      final dirX = dx / length, dirY = dy / length;
+      final normalX = -dirY, normalY = dirX;
+      // Mirrors the real backend's Sketch.add_slot exactly - see that
+      // method's own doc comment for the corner-pairing geometry.
+      String newPointAt(double x, double y) {
+        final pid = _newId('point');
+        points[pid] = {'id': pid, 'x': x, 'y': y};
+        return pid;
+      }
+
+      final aId = newPointAt(c1x + normalX * radius, c1y + normalY * radius);
+      final bId = newPointAt(c1x - normalX * radius, c1y - normalY * radius);
+      final cId = newPointAt(c2x - normalX * radius, c2y - normalY * radius);
+      final dId = newPointAt(c2x + normalX * radius, c2y + normalY * radius);
+
+      final centerlineId = _newId('line');
+      lines[centerlineId] = {
+        'id': centerlineId,
+        'start_point_id': center1Id,
+        'end_point_id': center2Id,
+        'length': length,
+        'construction': true,
+      };
+
+      final constraintIds = <String>[];
+      String newArc(String centerId, String startId, String endId) {
+        final arcId = _newId('arc');
+        arcs[arcId] = {
+          'id': arcId,
+          'center_point_id': centerId,
+          'start_point_id': startId,
+          'end_point_id': endId,
+          'radius': radius,
+          'construction': false,
+        };
+        final radiusConstraintId = _newId('constraint');
+        constraints[radiusConstraintId] = {
+          'id': radiusConstraintId,
+          'point_a_id': centerId,
+          'point_b_id': startId,
+          'distance': radius,
+          'provisional': true,
+        };
+        arcs[arcId]!['_radius_constraint_id'] = radiusConstraintId;
+        final endConstraintId = _newId('constraint');
+        constraints[endConstraintId] = {
+          'id': endConstraintId,
+          'type': 'equal_radius',
+          'center1_point_id': centerId,
+          'radius1_point_id': startId,
+          'center2_point_id': centerId,
+          'radius2_point_id': endId,
+        };
+        constraintIds.add(endConstraintId);
+        return arcId;
+      }
+
+      final arc1Id = newArc(center1Id, aId, bId);
+      final line1Id = _newId('line');
+      lines[line1Id] = {'id': line1Id, 'start_point_id': bId, 'end_point_id': cId, 'length': 1.0, 'construction': false};
+      final arc2Id = newArc(center2Id, cId, dId);
+      final line2Id = _newId('line');
+      lines[line2Id] = {'id': line2Id, 'start_point_id': dId, 'end_point_id': aId, 'length': 1.0, 'construction': false};
+
+      // arc2's own provisional radius DistanceConstraint is replaced with
+      // ties back to arc1's, same as the real backend.
+      final arc2RadiusConstraintId = arcs[arc2Id]!.remove('_radius_constraint_id') as String;
+      constraints.remove(arc2RadiusConstraintId);
+      final radiusConstraintId = arcs[arc1Id]!.remove('_radius_constraint_id') as String;
+      for (final radiusPointId in [cId, dId]) {
+        final equalRadiusId = _newId('constraint');
+        constraints[equalRadiusId] = {
+          'id': equalRadiusId,
+          'type': 'equal_radius',
+          'center1_point_id': center1Id,
+          'radius1_point_id': aId,
+          'center2_point_id': center2Id,
+          'radius2_point_id': radiusPointId,
+        };
+        constraintIds.add(equalRadiusId);
+      }
+      for (final entry in [(arc1Id, line1Id), (arc1Id, line2Id), (arc2Id, line1Id), (arc2Id, line2Id)]) {
+        final tangentId = _newId('constraint');
+        constraints[tangentId] = {
+          'id': tangentId,
+          'type': 'tangent',
+          'center_point_id': entry.$1 == arc1Id ? center1Id : center2Id,
+          'radius_point_id': entry.$1 == arc1Id ? aId : cId,
+          'line_id': entry.$2,
+        };
+        constraintIds.add(tangentId);
+      }
+      constraintIds.add(radiusConstraintId);
+
+      final slot = {
+        'id': id,
+        'center1_point_id': center1Id,
+        'center2_point_id': center2Id,
+        'centerline_id': centerlineId,
+        'arc1_id': arc1Id,
+        'arc2_id': arc2Id,
+        'line1_id': line1Id,
+        'line2_id': line2Id,
+        'a_point_id': aId,
+        'b_point_id': bId,
+        'c_point_id': cId,
+        'd_point_id': dId,
+        'radius': radius,
+        'construction': body['construction'] as bool? ?? false,
+        // Not part of the real API response - kept only so this fake's own
+        // DELETE handler knows which Constraints to cascade.
+        '_constraint_ids': constraintIds,
+      };
+      slots[id] = slot;
+      return _json(slot, 201);
+    }
+    if (slotsCollectionMatch && request.method == 'GET') {
+      return _jsonList(slots.values.toList(), 200);
     }
 
     final splinesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/splines$').hasMatch(path);
@@ -3091,6 +3279,188 @@ void main() {
     expect(line1.endPointId, arc2.startPointId);
     expect(line2.startPointId, arc2.endPointId);
     expect(line2.endPointId, arc1.startPointId);
+  });
+
+  test(
+      'dragging an intact Slot corner recomputes every other corner instantly via the closed-form '
+      'path - no constraint solve involved at all (sketcher rebuild: "the most robust method for '
+      'defining these shapes" - a formula has exactly one answer, so there is no wrong root for a '
+      'solver to find in the first place). Confirmed by the complete absence of any /solve call '
+      'during the drag itself, not just by the end result looking right', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(10, 5); // radius 5
+    controller.exitToSelectMode();
+    final arc1 = controller.arcs.values.first;
+    final arc2 = controller.arcs.values.last;
+    final aId = arc1.startPointId;
+    final cIdBefore = arc2.startPointId;
+    final cPointBefore = controller.points[cIdBefore]!;
+
+    backend.requestLog.clear();
+    expect(controller.beginPointDrag(aId), isTrue);
+    await controller.updatePointDrag(2, 8); // (0,5) dragged to (2,8) - a bigger radius
+
+    expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+        reason: 'the closed-form path never needs to solve anything');
+    // Every corner recomputed instantly, in the very same call - not just
+    // the touched one.
+    final cPointAfter = controller.points[cIdBefore]!;
+    expect(cPointAfter.y, isNot(closeTo(cPointBefore.y, 1e-9)));
+    final newRadius = math.sqrt(math.pow(controller.points[aId]!.x - 0, 2) + math.pow(controller.points[aId]!.y, 2));
+    final cRadius = math.sqrt(
+      math.pow(cPointAfter.x - 20, 2) + math.pow(cPointAfter.y, 2),
+    );
+    expect(cRadius, closeTo(newRadius, 1e-6));
+  });
+
+  test(
+      'once a Slot has been trimmed (one of its own Lines individually deleted), dragging its '
+      'remaining corners falls back to the ordinary drag path instead of the closed-form one - '
+      'the shape is no longer intact, so the formula that assumed it still had all its own pieces '
+      'no longer applies. Confirmed by the sibling corner staying put instead of being instantly '
+      'recomputed, which only the closed-form path ever does synchronously', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(10, 5); // radius 5
+    controller.exitToSelectMode();
+    final arc1 = controller.arcs.values.first;
+    final arc2 = controller.arcs.values.last;
+    final aId = arc1.startPointId;
+    final cId = arc2.startPointId;
+
+    final line1 = controller.lines.values.firstWhere(
+      (line) => !line.construction && (line.startPointId == arc1.endPointId || line.endPointId == arc1.endPointId),
+    );
+    controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: line1.id));
+    await controller.deleteSelected();
+    final cPointBefore = controller.points[cId]!;
+
+    expect(controller.beginPointDrag(aId), isTrue);
+    await controller.updatePointDrag(2, 8);
+
+    // The sibling corner never moved - the closed-form path (which would
+    // have recomputed it instantly, same as the test above) didn't run,
+    // because the Slot is no longer intact.
+    final cPointAfter = controller.points[cId]!;
+    expect(cPointAfter.x, closeTo(cPointBefore.x, 1e-9));
+    expect(cPointAfter.y, closeTo(cPointBefore.y, 1e-9));
+  });
+
+  test(
+      'dragging a Slot corner reflows the rest of the shape sanely, even when the Slot was drawn '
+      'starting at the sketch origin (on-device feedback: "dragging constrained entities is still '
+      'horrible... one of the tangent constraints found the wrong solution" - the local solver pins '
+      'both the dragged Point *and* the sketch origin into the fixed group every drag-solve; when '
+      'the Slot\'s own first center happens to be the origin Point (this test\'s (0, 0) first tap '
+      'snaps onto it, same as any real drag started on the visible crosshair), that\'s two fixed '
+      'Points on one redundant Tangent+EqualRadius web instead of one, which a diagnostic probe '
+      'reproducing this exact fixture found could converge (resultCode 5) to a wildly wrong root - '
+      'a non-anchor Point landing thousands of units away - without the anchor-drift check above '
+      'ever seeing it, since the anchors themselves land exactly where pinned)', () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    localController.selectDrawTool(SketchTool.slot);
+    await localController.handleCanvasTap(0, 0); // snaps onto the sketch origin Point
+    await localController.handleCanvasTap(20, 0);
+    await localController.handleCanvasTap(10, 5); // radius 5
+    localController.exitToSelectMode();
+
+    final arc1 = localController.arcs.values.first; // centered at the origin
+    final arc2 = localController.arcs.values.last; // centered at (20, 0)
+    expect(localController.points[arc1.centerPointId]!.x, closeTo(0, 1e-9));
+    expect(localController.points[arc1.centerPointId]!.y, closeTo(0, 1e-9));
+    final aId = arc1.startPointId;
+
+    final grabbed = localController.beginPointDrag(aId);
+    expect(grabbed, isTrue);
+    // Gentle incremental drag - the same shape the diagnostic probe used to
+    // reproduce the blow-up, expressed as raw cursor positions (the drag
+    // started with the cursor at (10, 5), 'a' at (0, 5) - see
+    // updatePointDrag's own doc comment for the offset math).
+    for (final cursor in [(10.0, 6.0), (8.0, 8.0), (6.0, 10.0), (4.0, 12.0), (2.0, 14.0)]) {
+      await localController.updatePointDrag(cursor.$1, cursor.$2);
+    }
+
+    // The whole point of the fix: no other Point may land somewhere wildly
+    // far from the Slot's own actual size (a ~20x10 shape), whether that
+    // came from a (correctly-guarded-against) local blow-up or a sane
+    // fallback - a difference of thousands of units is never a legitimate
+    // reflow of a 5-unit drag.
+    for (final id in [arc1.centerPointId, arc1.endPointId, arc2.centerPointId, arc2.startPointId, arc2.endPointId]) {
+      final p = localController.points[id]!;
+      expect(p.x.abs() < 500 && p.y.abs() < 500, isTrue,
+          reason: 'Point $id blew up to (${p.x}, ${p.y})');
+    }
+  });
+
+  test(
+      'dragging a Polygon vertex through many small steps never lets its EqualLength chain drift '
+      'out of tolerance (on-device feedback, round 2: a raw, zero-user-dimension hexagon dragged '
+      'into a shape with a visibly short sliver edge - a real EqualLength violation the anchor-drift '
+      'and blow-up guards above cannot see, since a Polygon drag never moves anything far or flips '
+      'an Arc side. Root-caused via a diagnostic probe reusing this exact 6-side EqualLength + '
+      'EqualRadius + AngleConstraint fixture: many small incremental re-seeded local solves in a '
+      'row - an ordinary long finger-drag, not any single big jump - compound real, geometry-visible '
+      'drift in this redundant constraint chain even while every individual step reports converged)',
+      () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    localController.selectDrawTool(SketchTool.polygon);
+    localController.setPolygonSides(6);
+    await localController.handleCanvasTap(0, 0); // centre snaps onto the sketch origin Point
+    await localController.handleCanvasTap(10, 0); // first vertex - radius 10
+    localController.exitToSelectMode();
+
+    final polygon = localController.polygons.values.single;
+    final v0Id = polygon.vertexPointIds.first;
+    final grabbed = localController.beginPointDrag(v0Id);
+    expect(grabbed, isTrue);
+
+    // The same wobbling-circle drag path the diagnostic probe used to
+    // reproduce the drift - many tiny re-seeded steps, not one big jump.
+    // The drag started with the cursor at (10, 0), v0 also at (10, 0), so
+    // updatePointDrag's own origin-offset math (see its doc comment)
+    // collapses to "cursor position == target position" here.
+    for (var i = 1; i <= 200; i++) {
+      final angle = 2 * math.pi * i / 200 * 3; // 3 full loops
+      final radius = 10.0 + 3.0 * math.sin(i * 0.37); // wobble the radius too
+      await localController.updatePointDrag(radius * math.cos(angle), radius * math.sin(angle));
+    }
+
+    double length(String lineId) {
+      final line = localController.lines[lineId]!;
+      final a = localController.points[line.startPointId]!;
+      final b = localController.points[line.endPointId]!;
+      return math.sqrt(math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2));
+    }
+
+    final lengths = polygon.lineIds.map(length).toList();
+    final maxLength = lengths.reduce(math.max);
+    final minLength = lengths.reduce(math.min);
+    expect(maxLength - minLength, lessThan(1e-2), reason: 'EqualLength chain drifted: $lengths');
   });
 
   // --- Phase 6.2.4: Ellipse tool ------------------------------------------

@@ -429,6 +429,57 @@ class PolygonDto {
       );
 }
 
+class SlotDto {
+  final String id;
+  final String center1PointId;
+  final String center2PointId;
+  final String centerlineId;
+  final String arc1Id;
+  final String arc2Id;
+  final String line1Id;
+  final String line2Id;
+  final String aPointId;
+  final String bPointId;
+  final String cPointId;
+  final String dPointId;
+  final double radius;
+  final bool construction;
+
+  SlotDto({
+    required this.id,
+    required this.center1PointId,
+    required this.center2PointId,
+    required this.centerlineId,
+    required this.arc1Id,
+    required this.arc2Id,
+    required this.line1Id,
+    required this.line2Id,
+    required this.aPointId,
+    required this.bPointId,
+    required this.cPointId,
+    required this.dPointId,
+    required this.radius,
+    this.construction = false,
+  });
+
+  factory SlotDto.fromJson(Map<String, dynamic> json) => SlotDto(
+        id: json['id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
+        centerlineId: json['centerline_id'] as String,
+        arc1Id: json['arc1_id'] as String,
+        arc2Id: json['arc2_id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+        aPointId: json['a_point_id'] as String,
+        bPointId: json['b_point_id'] as String,
+        cPointId: json['c_point_id'] as String,
+        dPointId: json['d_point_id'] as String,
+        radius: (json['radius'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
 class SplineDto {
   final String id;
   final List<String> throughPointIds;
@@ -1312,6 +1363,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<SlotDto>> listSlots(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/slots'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => SlotDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<List<SplineDto>> listSplines(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/splines'), headers: _headers),
         (body) => (body as List)
@@ -1474,6 +1532,36 @@ class SketchApiClient {
               }),
             ),
         (body) => PolygonDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from two existing centre Points and a radius (mirrors
+  /// how the client creates Circle/Arc/Ellipse/Polygon) - server-side,
+  /// `Sketch.add_slot` creates both end-cap Arcs, both straight Lines, the
+  /// construction centreline, and the whole radius/equal-radius/tangent
+  /// constraint chain atomically, returning it all in the response. Bug
+  /// fix: replaces the old client-orchestrated ~8-call sequence (create
+  /// each corner Point, each Line/Arc, each constraint one at a time) -
+  /// same "used to be a client-only shortcut" fix `createPolygon` already
+  /// got.
+  Future<SlotDto> createSlot(
+    String sketchId,
+    String center1PointId,
+    String center2PointId,
+    double radius, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/slots'),
+              headers: _headers,
+              body: jsonEncode({
+                'center1_point_id': center1PointId,
+                'center2_point_id': center2PointId,
+                'radius': radius,
+                'construction': construction,
+              }),
+            ),
+        (body) => SlotDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Always creates from through-points that already exist (mirrors how
@@ -1823,6 +1911,16 @@ class SketchApiClient {
   Future<List<String>> deletePolygon(String sketchId, String polygonId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/polygons/$polygonId'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
+      );
+
+  Future<List<String>> deleteSlot(String sketchId, String slotId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/slots/$slotId'),
               headers: _headers,
             ),
         (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)

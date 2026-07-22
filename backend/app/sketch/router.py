@@ -30,6 +30,7 @@ from app.sketch.models import (
     Point,
     Polygon,
     Sketch,
+    Slot,
     Spline,
     TextEntity,
 )
@@ -102,6 +103,9 @@ from app.sketch.schemas import (
     SketchOrientationUpdate,
     SketchResponse,
     SketchStateResponse,
+    SlotCreate,
+    SlotResponse,
+    SlotUpdate,
     SolveRequest,
     SolveResultResponse,
     SplineCreate,
@@ -166,6 +170,13 @@ def _get_polygon_or_404(sketch: Sketch, polygon_id: str) -> Polygon:
     entity = sketch.entities.get(polygon_id)
     if not isinstance(entity, Polygon):
         raise HTTPException(status_code=404, detail="Polygon not found")
+    return entity
+
+
+def _get_slot_or_404(sketch: Sketch, slot_id: str) -> Slot:
+    entity = sketch.entities.get(slot_id)
+    if not isinstance(entity, Slot):
+        raise HTTPException(status_code=404, detail="Slot not found")
     return entity
 
 
@@ -252,6 +263,25 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         radius=polygon.radius(sketch.points),
         sides=polygon.sides,
         construction=polygon.construction,
+    )
+
+
+def _slot_response(sketch: Sketch, slot: Slot) -> SlotResponse:
+    return SlotResponse(
+        id=slot.id,
+        center1_point_id=slot.center1_point_id,
+        center2_point_id=slot.center2_point_id,
+        centerline_id=slot.centerline_id,
+        arc1_id=slot.arc1_id,
+        arc2_id=slot.arc2_id,
+        line1_id=slot.line1_id,
+        line2_id=slot.line2_id,
+        a_point_id=slot.a_point_id,
+        b_point_id=slot.b_point_id,
+        c_point_id=slot.c_point_id,
+        d_point_id=slot.d_point_id,
+        radius=slot.radius(sketch.points),
+        construction=slot.construction,
     )
 
 
@@ -959,6 +989,52 @@ def delete_polygon(sketch_id: str, polygon_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_polygon_or_404(sketch, polygon_id)
     pruned_point_ids = sketch.delete_polygon(polygon_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
+@router.post("/sketches/{sketch_id}/slots", response_model=SlotResponse, status_code=201)
+def create_slot(sketch_id: str, payload: SlotCreate) -> SlotResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        slot = sketch.add_slot(
+            payload.center1_point_id,
+            payload.center2_point_id,
+            payload.radius,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _slot_response(sketch, slot)
+
+
+@router.get("/sketches/{sketch_id}/slots", response_model=list[SlotResponse])
+def list_slots(sketch_id: str) -> list[SlotResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_slot_response(sketch, slot) for slot in sketch.slots()]
+
+
+@router.get("/sketches/{sketch_id}/slots/{slot_id}", response_model=SlotResponse)
+def get_slot(sketch_id: str, slot_id: str) -> SlotResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _slot_response(sketch, _get_slot_or_404(sketch, slot_id))
+
+
+@router.patch("/sketches/{sketch_id}/slots/{slot_id}", response_model=SlotResponse)
+def update_slot(sketch_id: str, slot_id: str, payload: SlotUpdate) -> SlotResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    slot = _get_slot_or_404(sketch, slot_id)
+    if payload.construction is not None:
+        slot.construction = payload.construction
+    return _slot_response(sketch, slot)
+
+
+@router.delete("/sketches/{sketch_id}/slots/{slot_id}", response_model=DeleteEntityResponse)
+def delete_slot(sketch_id: str, slot_id: str) -> DeleteEntityResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_slot_or_404(sketch, slot_id)
+    pruned_point_ids = sketch.delete_slot(slot_id)
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 

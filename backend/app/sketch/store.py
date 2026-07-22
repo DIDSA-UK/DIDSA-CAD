@@ -13,6 +13,7 @@ from app.sketch.models import (
     Sketch,
     SketchEntityRef,
     SketchEntityType,
+    Slot,
     Spline,
     TextEntity,
 )
@@ -23,6 +24,7 @@ _ENTITY_TYPE_BY_REF: dict[SketchEntityType, type] = {
     SketchEntityType.ARC: Arc,
     SketchEntityType.ELLIPSE: Ellipse,
     SketchEntityType.POLYGON: Polygon,
+    SketchEntityType.SLOT: Slot,
     SketchEntityType.SPLINE: Spline,
     SketchEntityType.TEXT: TextEntity,
 }

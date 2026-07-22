@@ -411,6 +411,69 @@ class Polygon(SketchEntity):
 
 
 @dataclass
+class Slot(SketchEntity):
+    """A slot (stadium) shape: two semicircular end caps (`arc1_id`/
+    `arc2_id`, centred on `center1_point_id`/`center2_point_id`) joined by
+    two straight sides (`line1_id`/`line2_id`) plus a construction
+    centreline (`centerline_id`) between the two centres.
+
+    Mirrors `Polygon`'s own "used to be a client-only shortcut, now atomic"
+    fix (see that class's docstring): previously composed client-side
+    across ~8 sequential API calls (`SketchController._clickSlotTool`) with
+    nothing server-side to identify "these 2 Arcs + 2 Lines + N Constraints
+    form one Slot" later - the same gap Polygon had before `add_polygon`
+    existed, and for the same reason (reliably reinterpreting a corner
+    drag as a width edit instead of an unconstrained 2D point move).
+
+    `a_point_id`/`b_point_id` are arc1's own start/end Points, `c_point_id`/
+    `d_point_id` arc2's - paired so line1 runs b->c and line2 runs d->a,
+    each an exact mirror of `SketchController._slotCorners`'s own geometry
+    (see that method's doc comment for why this exact pairing keeps both
+    Arcs bulging away from the other centre).
+
+    arc1's own radius DistanceConstraint (`radius_constraint_id`) is the
+    Slot's one real, independently-editable radius dimension - arc2's own
+    equivalent is deleted and replaced by two EqualRadiusConstraint ties
+    back to arc1 instead (`equal_radius_constraint_ids`, which also
+    includes each Arc's own internal start<->end tie from `add_arc`) - a
+    single shared radius across both end caps, not two independent ones.
+    The 4 TangentConstraints (`tangent_constraint_ids`, one per Arc/Line
+    pair) pin both caps flush against both sides; the last 2 are
+    mathematically implied by the first 2 plus the EqualRadius ties, which
+    is why solving this treats that redundancy as still converged (see
+    solver.py's own comment on result_code 4/5).
+
+    Does NOT override `endpoint_point_ids()` (same reasoning as Polygon):
+    always its own standalone closed profile.
+    """
+
+    id: str
+    center1_point_id: str
+    center2_point_id: str
+    centerline_id: str
+    arc1_id: str
+    arc2_id: str
+    line1_id: str
+    line2_id: str
+    a_point_id: str
+    b_point_id: str
+    c_point_id: str
+    d_point_id: str
+    radius_constraint_id: str
+    equal_radius_constraint_ids: list[str]
+    tangent_constraint_ids: list[str]
+
+    @property
+    def type(self) -> str:
+        return "slot"
+
+    def radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center1_point_id]
+        a = points[self.a_point_id]
+        return math.hypot(a.x - center.x, a.y - center.y)
+
+
+@dataclass
 class Spline(SketchEntity):
     """An open, piecewise-cubic curve through 2+ real, independently
     addressable "through-points" (`through_point_ids`) - the Points a user
@@ -542,6 +605,7 @@ class SketchEntityType(str, Enum):
     ARC = "arc"
     ELLIPSE = "ellipse"
     POLYGON = "polygon"
+    SLOT = "slot"
     SPLINE = "spline"
     TEXT = "text"
 
@@ -1148,6 +1212,93 @@ class Sketch:
 
     def polygons(self) -> list[Polygon]:
         return [entity for entity in self.entities.values() if isinstance(entity, Polygon)]
+
+    def add_slot(
+        self,
+        center1_point_id: str,
+        center2_point_id: str,
+        radius: float,
+        *,
+        construction: bool = False,
+    ) -> Slot:
+        """Add a Slot from two existing centre Points and a radius (the
+        perpendicular distance from the centreline to each straight side -
+        also each end cap's own Arc radius) - together fixing the whole
+        shape, same as `add_polygon`'s center+first-vertex pair. Mirrors
+        `SketchController._clickSlotTool`'s own construction exactly (see
+        `_slotCorners`'s doc comment for the corner-pairing geometry and
+        the Slot class docstring for the constraint chain) - this just
+        does it atomically, server-side, instead of across ~8 client-
+        orchestrated calls.
+
+        See the Slot class docstring for what the constraint chain does
+        and why."""
+        center1 = self.points[center1_point_id]
+        center2 = self.points[center2_point_id]
+        dx = center2.x - center1.x
+        dy = center2.y - center1.y
+        length = math.hypot(dx, dy)
+        if length == 0:
+            raise ValueError("A slot's centreline cannot have zero length")
+        if radius <= 0:
+            raise ValueError("A slot's radius must be positive")
+        dir_x, dir_y = dx / length, dy / length
+        normal_x, normal_y = -dir_y, dir_x
+
+        a = self.add_point(center1.x + normal_x * radius, center1.y + normal_y * radius)
+        b = self.add_point(center1.x - normal_x * radius, center1.y - normal_y * radius)
+        c = self.add_point(center2.x - normal_x * radius, center2.y - normal_y * radius)
+        d = self.add_point(center2.x + normal_x * radius, center2.y + normal_y * radius)
+
+        centerline = self.add_line(center1_point_id, center2_point_id, construction=True)
+        arc1 = self.add_arc(center1_point_id, a.id, b.id)
+        line1 = self.add_line(b.id, c.id)
+        arc2 = self.add_arc(center2_point_id, c.id, d.id)
+        line2 = self.add_line(d.id, a.id)
+
+        # A Slot should carry a single editable radius dimension, not one
+        # per end-cap Arc - arc2's own provisional radius DistanceConstraint
+        # (from its own add_arc call) is replaced by two EqualRadiusConstraint
+        # ties back to arc1's; arc1's own two constraints stay untouched and
+        # remain the one visible/editable dimension (see the Slot class
+        # docstring).
+        self.constraints.pop(arc2.radius_constraint_id, None)
+        equal_radius_constraint_ids = [
+            self.add_equal_radius_constraint(arc1.id, arc2.id, radius2_point_id=point_id).id
+            for point_id in (c.id, d.id)
+        ]
+        tangent_constraint_ids = [
+            self.add_tangent_constraint(arc.id, line.id).id
+            for arc, line in ((arc1, line1), (arc1, line2), (arc2, line1), (arc2, line2))
+        ]
+
+        slot = Slot(
+            id=str(uuid.uuid4()),
+            center1_point_id=center1_point_id,
+            center2_point_id=center2_point_id,
+            centerline_id=centerline.id,
+            arc1_id=arc1.id,
+            arc2_id=arc2.id,
+            line1_id=line1.id,
+            line2_id=line2.id,
+            a_point_id=a.id,
+            b_point_id=b.id,
+            c_point_id=c.id,
+            d_point_id=d.id,
+            radius_constraint_id=arc1.radius_constraint_id,
+            equal_radius_constraint_ids=[
+                arc1.end_radius_constraint_id,
+                arc2.end_radius_constraint_id,
+                *equal_radius_constraint_ids,
+            ],
+            tangent_constraint_ids=tangent_constraint_ids,
+            construction=construction,
+        )
+        self.entities[slot.id] = slot
+        return slot
+
+    def slots(self) -> list[Slot]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Slot)]
 
     def add_spline(self, through_point_ids: list[str], *, construction: bool = False) -> Spline:
         """Add a Spline through 2+ existing Points, creating 2 control-
@@ -1875,6 +2026,33 @@ class Sketch:
             self.constraints.pop(constraint_id, None)
         return self._prune_orphaned_points(candidates)
 
+    def delete_slot(self, slot_id: str) -> list[str]:
+        """Remove a Slot and everything `add_slot` always creates alongside
+        it - both end-cap Arcs, both straight Lines, the construction
+        centreline, and every constraint in its radius/equal-radius/tangent
+        chain - same "internal implementation detail" exception
+        `delete_polygon`/`delete_circle`/etc. already make for their own
+        radius constraint(s). Every centre and corner Point is pruned
+        automatically if nothing else still needs it - see
+        `_prune_orphaned_points`. Returns the ids of any Points actually
+        removed."""
+        slot = self.entities.get(slot_id)
+        if not isinstance(slot, Slot):
+            raise KeyError(slot_id)
+        candidates = self._entity_defining_point_ids(slot)
+        del self.entities[slot_id]
+        # `.pop(id, None)` rather than `del`, matching `delete_polygon`'s own
+        # reasoning: a Slot's own Arc/Line can also be deleted directly (a
+        # trim, or a direct `DELETE /lines/{id}`/`/arcs/{id}`), so it may
+        # already be gone by the time this runs - a silent no-op here, not
+        # a KeyError.
+        for entity_id in (slot.centerline_id, slot.arc1_id, slot.arc2_id, slot.line1_id, slot.line2_id):
+            self.entities.pop(entity_id, None)
+        self.constraints.pop(slot.radius_constraint_id, None)
+        for constraint_id in (*slot.equal_radius_constraint_ids, *slot.tangent_constraint_ids):
+            self.constraints.pop(constraint_id, None)
+        return self._prune_orphaned_points(candidates)
+
     def delete_spline(self, spline_id: str) -> list[str]:
         """Remove a Spline and every `SplineTangentConstraint` `add_spline`
         created alongside it - same "internal implementation detail"
@@ -2282,6 +2460,15 @@ class Sketch:
                 *entity.vertex_point_ids,
             ):
                 return f"Point is still referenced by polygon {entity.id}"
+            if isinstance(entity, Slot) and point_id in (
+                entity.center1_point_id,
+                entity.center2_point_id,
+                entity.a_point_id,
+                entity.b_point_id,
+                entity.c_point_id,
+                entity.d_point_id,
+            ):
+                return f"Point is still referenced by slot {entity.id}"
             if isinstance(entity, Spline) and (
                 point_id in entity.through_point_ids or point_id in entity.control_point_ids
             ):
@@ -2324,6 +2511,15 @@ class Sketch:
             )
         if isinstance(entity, Polygon):
             return (entity.center_point_id, *entity.vertex_point_ids)
+        if isinstance(entity, Slot):
+            return (
+                entity.center1_point_id,
+                entity.center2_point_id,
+                entity.a_point_id,
+                entity.b_point_id,
+                entity.c_point_id,
+                entity.d_point_id,
+            )
         if isinstance(entity, Spline):
             return (*entity.through_point_ids, *entity.control_point_ids)
         if isinstance(entity, TextEntity):

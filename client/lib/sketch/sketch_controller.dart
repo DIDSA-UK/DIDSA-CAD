@@ -116,6 +116,45 @@ class SketchPolygonView {
   });
 }
 
+/// Client-side mirror of the backend's `Slot` entity (see that class's own
+/// docstring) - real, persisted geometry now, not a client-only shortcut
+/// composed from ~8 sequential API calls (see the old `_clickSlotTool`'s
+/// own doc comment, which this replaces). Lets a corner drag be reliably
+/// recognized as belonging to a Slot (see [SketchController.
+/// _intactSlotForPoint]) the same way [SketchPolygonView] already lets a
+/// vertex drag be recognized as belonging to a Polygon.
+class SketchSlotView {
+  final String id;
+  final String center1PointId;
+  final String center2PointId;
+  final String centerlineId;
+  final String arc1Id;
+  final String arc2Id;
+  final String line1Id;
+  final String line2Id;
+  final String aPointId;
+  final String bPointId;
+  final String cPointId;
+  final String dPointId;
+  final bool construction;
+
+  const SketchSlotView({
+    required this.id,
+    required this.center1PointId,
+    required this.center2PointId,
+    required this.centerlineId,
+    required this.arc1Id,
+    required this.arc2Id,
+    required this.line1Id,
+    required this.line2Id,
+    required this.aPointId,
+    required this.bPointId,
+    required this.cPointId,
+    required this.dPointId,
+    this.construction = false,
+  });
+}
+
 class SketchEllipseView {
   final String id;
   final String centerPointId;
@@ -1131,6 +1170,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchArcView> arcs = {};
   final Map<String, SketchEllipseView> ellipses = {};
   final Map<String, SketchPolygonView> polygons = {};
+  final Map<String, SketchSlotView> slots = {};
   final Map<String, SketchSplineView> splines = {};
   final Map<String, SketchTextView> texts = {};
 
@@ -2938,6 +2978,23 @@ class SketchController extends ChangeNotifier {
   double? _dragOriginPointX;
   double? _dragOriginPointY;
 
+  /// Every Point id [_trySolveDuringDragLocally] has reflowed locally since
+  /// the current drag began (cleared by [beginPointDrag]/[beginLineDrag]) -
+  /// closes the dominant bug behind "dragging still looks broken after the
+  /// drop even though the guards caught it mid-drag": a successful local
+  /// solve only ever updates the client's own [points] map, never PATCHes
+  /// the backend (that's deliberate - no network round trip on the hot
+  /// per-frame path), so without this the backend's own stored positions
+  /// for every point *except* the one actually dragged sit frozen at their
+  /// pre-drag values for the whole drag. [endPointDrag]'s final solve
+  /// would then hand the backend a single, discontinuous jump ("everything
+  /// at rest" straight to "the dropped shape") - exactly the condition a
+  /// Newton solver has no protection against (see this session's own
+  /// solver-drag-findings write-up). Synced back to the backend right
+  /// before that final solve instead, so it settles from an already-
+  /// correct seed rather than blindly re-deriving it.
+  final Set<String> _dragReflowedPointIds = {};
+
   /// Bug fix: dragging used to move only the dragged Point (an unconstrained
   /// PATCH) and never re-solve until the drag ended - one big single-step
   /// re-solve, anchored at wherever the cursor was finally dropped. For a
@@ -2992,20 +3049,230 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// The confirmed (no longer provisional) circumradius `DistanceConstraint`
-  /// for the Polygon [pointId] is a vertex of, or null if [pointId] isn't a
-  /// Polygon vertex at all, or its Polygon's radius is still provisional -
-  /// see [updatePointDrag]'s own doc comment for why only the *confirmed*
-  /// case is reinterpreted as a dimension edit; a still-provisional radius
-  /// already resizes correctly under an ordinary raw drag (it removes zero
-  /// DOF), so bypassing the ordinary drag gating/behaviour for it would be
-  /// both unnecessary and (per the bug this fixes) actively harmful.
-  DistanceConstraintDto? _confirmedPolygonRadiusConstraint(String pointId) {
+  /// [_polygonRadiusConstraint]'s counterpart for Slot - identified the same
+  /// way, by its two endpoint Points (center1, a), since [SketchSlotView]
+  /// itself doesn't carry the constraint id either.
+  DistanceConstraintDto? _slotRadiusConstraint(SketchSlotView slot) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == slot.center1PointId &&
+          constraint.pointBId == slot.aPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
+  /// The still-*intact* Polygon [pointId] is a vertex of, or null.
+  /// "Intact" - every Line this Polygon's own [SketchApiClient.createPolygon]
+  /// call created is still present, unmodified - is what actually licenses
+  /// [_closedFormPolygonVertices]'s no-solver drag path below: the moment a
+  /// trim or an individual Line/Point delete breaks that (checked live
+  /// against [lines]/[points], not a stored flag, so it's picked up
+  /// automatically with no extra bookkeeping anywhere else in the app),
+  /// this returns null and dragging silently falls back to the ordinary,
+  /// general constraint-solver path - correct for what's left, since it's
+  /// no longer a rigid regular shape. [_polygonForVertex] (this method's
+  /// own, looser, longstanding vertex-membership-only check) is still used
+  /// unchanged by the *confirmed-dimension-edit* reinterpretation below -
+  /// this is a separate, additional check on top of it.
+  SketchPolygonView? _intactPolygonForVertex(String pointId) {
     final polygon = _polygonForVertex(pointId);
     if (polygon == null) return null;
-    final radiusConstraint = _polygonRadiusConstraint(polygon);
-    if (radiusConstraint == null || radiusConstraint.provisional) return null;
-    return radiusConstraint;
+    if (!points.containsKey(polygon.centerPointId)) return null;
+    for (final vertexId in polygon.vertexPointIds) {
+      if (!points.containsKey(vertexId)) return null;
+    }
+    for (final lineId in polygon.lineIds) {
+      if (!lines.containsKey(lineId)) return null;
+    }
+    return polygon;
+  }
+
+  /// [_intactPolygonForVertex]'s counterpart for Slot - true "intact"ness
+  /// (every Point/Line/Arc [SketchApiClient.createSlot] created, still
+  /// present unmodified) rather than [SketchSlotView]'s bare existence,
+  /// same reasoning and the same "falls back to the general solver path
+  /// the instant this is no longer true" contract.
+  SketchSlotView? _intactSlotForPoint(String pointId) {
+    for (final slot in slots.values) {
+      final isMember = pointId == slot.center1PointId ||
+          pointId == slot.center2PointId ||
+          pointId == slot.aPointId ||
+          pointId == slot.bPointId ||
+          pointId == slot.cPointId ||
+          pointId == slot.dPointId;
+      if (!isMember) continue;
+      final intact = points.containsKey(slot.center1PointId) &&
+          points.containsKey(slot.center2PointId) &&
+          points.containsKey(slot.aPointId) &&
+          points.containsKey(slot.bPointId) &&
+          points.containsKey(slot.cPointId) &&
+          points.containsKey(slot.dPointId) &&
+          lines.containsKey(slot.centerlineId) &&
+          lines.containsKey(slot.line1Id) &&
+          lines.containsKey(slot.line2Id) &&
+          arcs.containsKey(slot.arc1Id) &&
+          arcs.containsKey(slot.arc2Id);
+      return intact ? slot : null;
+    }
+    return null;
+  }
+
+  /// Every vertex of an intact regular [polygon], recomputed directly from
+  /// its own centre + [draggedVertexId]'s new position (`(targetX,
+  /// targetY)`) - the exact closed-form formula `add_polygon` itself uses
+  /// (`center + radius * (cos/sin(baseAngle + 2*pi*i/sides))`), evaluated
+  /// directly instead of via an iterative constraint solve. A formula has
+  /// exactly one answer - there is no "wrong root" for this to find, unlike
+  /// [_trySolveDuringDragLocally]'s general path. Null only if [target]
+  /// coincides with the centre (degenerate/zero radius) or [draggedVertexId]
+  /// genuinely isn't one of [polygon]'s own vertices.
+  Map<String, (double, double)>? _closedFormPolygonVertices(
+    SketchPolygonView polygon,
+    String draggedVertexId,
+    double targetX,
+    double targetY,
+  ) {
+    final center = points[polygon.centerPointId];
+    if (center == null) return null;
+    final index = polygon.vertexPointIds.indexOf(draggedVertexId);
+    if (index == -1) return null;
+    final dx = targetX - center.x;
+    final dy = targetY - center.y;
+    final radius = math.sqrt(dx * dx + dy * dy);
+    if (radius < 1e-9) return null;
+    final baseAngle = math.atan2(dy, dx) - 2 * math.pi * index / polygon.sides;
+    final result = <String, (double, double)>{};
+    for (var i = 0; i < polygon.vertexPointIds.length; i++) {
+      final angle = baseAngle + 2 * math.pi * i / polygon.sides;
+      result[polygon.vertexPointIds[i]] = (center.x + radius * math.cos(angle), center.y + radius * math.sin(angle));
+    }
+    return result;
+  }
+
+  /// [_closedFormPolygonVertices]'s counterpart for Slot - every corner (and
+  /// both centres) of an intact [slot], recomputed directly via
+  /// [_slotCorners]'s own formula from [draggedPointId]'s new position
+  /// (`(targetX, targetY)`). Dragging a corner (a/b/c/d) keeps both centres
+  /// fixed and re-derives the radius as the perpendicular distance from the
+  /// target to the (fixed) centreline - the same math [_clickSlotTool]'s own
+  /// tap-3 already uses to place a Slot in the first place. Dragging a
+  /// centre keeps the *other* centre and the Slot's current radius fixed,
+  /// moving only the dragged one. Null for a degenerate result (zero
+  /// centreline length or zero radius) or if [draggedPointId] genuinely
+  /// isn't part of [slot].
+  Map<String, (double, double)>? _closedFormSlotGeometry(
+    SketchSlotView slot,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    final c1Point = points[slot.center1PointId];
+    final c2Point = points[slot.center2PointId];
+    final aPoint = points[slot.aPointId];
+    if (c1Point == null || c2Point == null || aPoint == null) return null;
+
+    (double, double) c1 = (c1Point.x, c1Point.y);
+    (double, double) c2 = (c2Point.x, c2Point.y);
+    double radius;
+    if (draggedPointId == slot.center1PointId) {
+      c1 = (targetX, targetY);
+      radius = math.sqrt(math.pow(aPoint.x - c1Point.x, 2) + math.pow(aPoint.y - c1Point.y, 2));
+    } else if (draggedPointId == slot.center2PointId) {
+      c2 = (targetX, targetY);
+      radius = math.sqrt(math.pow(aPoint.x - c1Point.x, 2) + math.pow(aPoint.y - c1Point.y, 2));
+    } else if (draggedPointId == slot.aPointId ||
+        draggedPointId == slot.bPointId ||
+        draggedPointId == slot.cPointId ||
+        draggedPointId == slot.dPointId) {
+      final distance = _perpendicularDistanceToLine(targetX, targetY, c1.$1, c1.$2, c2.$1, c2.$2);
+      if (distance == null) return null;
+      radius = distance;
+    } else {
+      return null;
+    }
+    if (radius < 1e-9) return null;
+
+    final corners = _slotCorners(c1.$1, c1.$2, c2.$1, c2.$2, radius);
+    if (corners == null) return null;
+    return {
+      slot.center1PointId: c1,
+      slot.center2PointId: c2,
+      slot.aPointId: corners.a,
+      slot.bPointId: corners.b,
+      slot.cPointId: corners.c,
+      slot.dPointId: corners.d,
+    };
+  }
+
+  /// Shared apply/sync for [_closedFormPolygonVertices]/
+  /// [_closedFormSlotGeometry]'s output - used identically by a live drag
+  /// frame (mid-drag: local only, no network - see [updatePointDrag]) and
+  /// by [endPointDrag]'s own drop-time settle (network sync + re-solve).
+  /// [sync] gates the network half so the hot per-frame path stays purely
+  /// local/synchronous.
+  Future<void> _applyClosedFormPositions(Map<String, (double, double)> positions, {required bool sync}) async {
+    for (final entry in positions.entries) {
+      final (x, y) = entry.value;
+      points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
+    }
+    notifyListeners();
+    if (!sync) return;
+    // Sketcher restructure follow-up ("the backend never sees the drag,
+    // only the drop"): mid-drag closed-form frames never PATCH the server
+    // (by design - see [updatePointDrag]'s own doc comment), so without
+    // this, [endPointDrag]'s final solve would hand the backend a single
+    // blind jump from "everything at rest" straight to the dropped
+    // position - exactly the discontinuity a solver has no protection
+    // against. Syncing every point here first makes that final solve a
+    // small settle instead.
+    for (final entry in positions.entries) {
+      final (x, y) = entry.value;
+      await _api.updatePoint(_sketchId!, entry.key, x, y);
+    }
+  }
+
+  /// [endPointDrag]'s drop-time settle for an intact Polygon/Slot drag -
+  /// exactly one of [polygon]/[slot] is non-null. Recomputes the whole
+  /// shape closed-form at `(targetX, targetY)` and syncs it to the backend
+  /// (via [_applyClosedFormPositions]), then - only if this shape's one
+  /// real radius dimension is already confirmed (Task #94: a drag against
+  /// an existing dimension edits that dimension, not just the raw
+  /// geometry) - updates that Constraint's own value too, so its displayed
+  /// number and undo semantics stay consistent with the geometry. Reused
+  /// identically for both the actual drop (`target` = where the user let
+  /// go) and undo (`target` = where the drag started) - undo is simply
+  /// "drag back to the original position" through the same closed-form
+  /// path, never the general solver, so it can't reintroduce a wrong root
+  /// either.
+  Future<void> _settleClosedFormShapeDrag(
+    SketchPolygonView? polygon,
+    SketchSlotView? slot,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) async {
+    final positions = polygon != null
+        ? _closedFormPolygonVertices(polygon, draggedPointId, targetX, targetY)
+        : _closedFormSlotGeometry(slot!, draggedPointId, targetX, targetY);
+    if (positions == null) return;
+    await _applyClosedFormPositions(positions, sync: true);
+
+    final radiusConstraint = polygon != null ? _polygonRadiusConstraint(polygon) : _slotRadiusConstraint(slot!);
+    if (radiusConstraint == null || radiusConstraint.provisional) return;
+    final centerId = polygon != null ? polygon.centerPointId : slot!.center1PointId;
+    final rimId = polygon != null ? polygon.vertexPointIds[0] : slot!.aPointId;
+    // Read back from [points] (just written by [_applyClosedFormPositions]
+    // above), not [positions] directly - a Polygon vertex drag's own
+    // [_closedFormPolygonVertices] output never includes the centre (it
+    // doesn't move), so looking it up in [positions] would always miss and
+    // silently skip this whole dimension-value update.
+    final center = points[centerId];
+    final rim = points[rimId];
+    if (center == null || rim == null) return;
+    final newRadius = math.sqrt(math.pow(rim.x - center.x, 2) + math.pow(rim.y - center.y, 2));
+    await _api.updateConstraintValue(_sketchId!, radiusConstraint.id, newRadius);
   }
 
   /// Starts a live drag of [pointId] (new work package item 8) - false (and
@@ -3026,16 +3293,20 @@ class SketchController extends ChangeNotifier {
   bool beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
-    // A Polygon vertex drag against an already-confirmed circumradius
-    // dimension is reinterpreted as editing that dimension (see
-    // [updatePointDrag]'s own doc comment), not a free geometric move - the
-    // over/fully-constrained gating below exists to refuse drags that have
-    // nowhere to go, which doesn't apply to changing a dimension's target
-    // value (same as any other confirmed dimension, e.g. [confirmGhostValue],
-    // never checks isFullyConstrained either). A still-provisional radius
-    // isn't a dimension yet, so it goes through the ordinary gating below
-    // like any other free Point.
-    if (_confirmedPolygonRadiusConstraint(pointId) == null) {
+    // A Polygon/Slot vertex drag is reinterpreted as a closed-form geometry
+    // edit (see [updatePointDrag]'s own doc comment) whenever the shape is
+    // still intact, whether or not its one real radius dimension has been
+    // confirmed yet - the over/fully-constrained gating below exists to
+    // refuse drags that have nowhere to go under the *general* constraint
+    // solver, which doesn't apply here: a formula always has somewhere to
+    // go. On-device feedback ("polygons still fail over constrained when
+    // they have no just applied dimensions or constraints"): the old check
+    // here only exempted the *confirmed* case, so a raw/provisional
+    // Polygon's own legitimately-redundant EqualLength/EqualRadius/Angle
+    // chain could still trip [isPointForcedOverConstrained] and refuse the
+    // grab outright, before a drag ever got the chance to reach
+    // [updatePointDrag]'s own (already-correct) closed-form path at all.
+    if (_intactPolygonForVertex(pointId) == null && _intactSlotForPoint(pointId) == null) {
       // Phase 3 (3.2): a Point in an over-constrained cluster already has a
       // redundant/conflicting Constraint pinning it - dragging it wouldn't
       // move it anywhere the solver would actually let it stay, so refuse
@@ -3057,6 +3328,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginPointX = point.x;
     _dragOriginPointY = point.y;
     _lastDragSolveAt = null;
+    _dragReflowedPointIds.clear();
     notifyListeners();
     return true;
   }
@@ -3087,25 +3359,21 @@ class SketchController extends ChangeNotifier {
   /// are accepted silently, same tradeoff as every other unsequenced PATCH
   /// in this file.
   ///
-  /// Task #94 (deferred item): dragging a Polygon vertex is reinterpreted
-  /// as editing its circumradius dimension rather than moving the vertex
-  /// freely, but ONLY once its own real circumradius `DistanceConstraint`
-  /// is already confirmed (no longer provisional - see `DistanceConstraint.
-  /// provisional`'s own doc comment) - a confirmed constraint actively
-  /// resists a raw point PATCH exactly like any other confirmed dimension
-  /// would, so a plain drag would just fight it back to the old size
-  /// instead of resizing the shape. Bug fix: while still provisional (the
-  /// common case - most Polygons are never explicitly dimensioned), the
-  /// constraint already removes zero DOF, so an ordinary raw drag already
-  /// resizes it correctly on its own; routing it through
-  /// [_maybeUpdatePolygonRadiusDuringDrag] regardless used to *confirm* the
-  /// constraint on every single drag (`update_constraint_value`'s own
-  /// documented side effect), silently turning a "let me nudge this to look
-  /// right" gesture into a real, DOF-removing size dimension the user never
-  /// asked to set - which then over-constrains the sketch the moment they
-  /// add a second, explicit dimension (e.g. an across-flats
-  /// `LineDistanceConstraint` between two opposite edges) on top of it.
-  /// See [_maybeUpdatePolygonRadiusDuringDrag].
+  /// Task #94 / sketcher rebuild: dragging a Polygon/Slot vertex is
+  /// reinterpreted as a closed-form geometry edit rather than a free Point
+  /// move - see the branch below and [_closedFormPolygonVertices]/
+  /// [_closedFormSlotGeometry]'s own doc comments. Originally this only
+  /// applied once the shape's one real radius `DistanceConstraint` was
+  /// already confirmed (a still-provisional one, the common case, already
+  /// resized correctly under an ordinary raw drag on its own, so routing it
+  /// through the same dimension-edit path regardless used to *confirm* the
+  /// constraint on every single drag - a "let me nudge this to look right"
+  /// gesture silently turning into a real, DOF-removing dimension the user
+  /// never asked to set). The closed-form path fixes that distinction at
+  /// its actual root instead: it only ever touches the confirmed dimension
+  /// *value* when one already exists (see [_settleClosedFormShapeDrag]),
+  /// so it's safe to apply unconditionally to every intact Polygon/Slot
+  /// drag, confirmed or not.
   Future<void> updatePointDrag(double x, double y) async {
     final pointId = _draggingPointId;
     final originCursorX = _dragOriginCursorX;
@@ -3123,19 +3391,31 @@ class SketchController extends ChangeNotifier {
     final newX = originPointX + (x - originCursorX);
     final newY = originPointY + (y - originCursorY);
 
-    final radiusConstraint = _confirmedPolygonRadiusConstraint(pointId);
-    if (radiusConstraint != null) {
-      final polygon = _polygonForVertex(pointId)!;
-      final center = points[polygon.centerPointId];
-      if (center == null) return;
-      final newRadius = math.sqrt(math.pow(newX - center.x, 2) + math.pow(newY - center.y, 2));
-      if (newRadius < 1e-9) return;
-      // Speculative local move for immediate 1:1 cursor tracking, same as
-      // the raw-PATCH case below - the throttled radius update then pulls
-      // every vertex (including this one) onto the actual resized circle.
-      points[pointId] = SketchPointView(id: pointId, x: newX, y: newY);
-      notifyListeners();
-      _maybeUpdatePolygonRadiusDuringDrag(radiusConstraint.id, newRadius, () => _draggingPointId == pointId);
+    // Closed-form path (sketcher rebuild: "the most robust method for
+    // defining these shapes"): an intact Polygon/Slot's own vertex/corner
+    // positions are an exact formula, not something a constraint solve
+    // needs to find - see [_closedFormPolygonVertices]/
+    // [_closedFormSlotGeometry]'s own doc comments for why that eliminates
+    // the "wrong root" class of bug entirely for these two shapes, rather
+    // than reacting to it after the fact. Supersedes the old confirmed-
+    // radius-only special case ([_confirmedPolygonRadiusConstraint] is
+    // still used, unchanged, by [endPointDrag]'s own dimension-vs-plain-
+    // point-move distinction below) - this covers a still-provisional
+    // Polygon/Slot too, which is the actual on-device-reported case ("zero
+    // user added dimensions, just a raw dragged hexagon"). Purely local -
+    // no network call, no FFI solver call - so every frame of the drag is
+    // instant and there is nothing here for a fast/long drag to outrun (see
+    // [_trySolveDuringDragLocally]'s own doc comment for why that matters
+    // for the *general* path this bypasses).
+    final intactPolygon = _intactPolygonForVertex(pointId);
+    final intactSlot = intactPolygon == null ? _intactSlotForPoint(pointId) : null;
+    if (intactPolygon != null || intactSlot != null) {
+      final positions = intactPolygon != null
+          ? _closedFormPolygonVertices(intactPolygon, pointId, newX, newY)
+          : _closedFormSlotGeometry(intactSlot!, pointId, newX, newY);
+      if (positions != null) {
+        unawaited(_applyClosedFormPositions(positions, sync: false));
+      }
       return;
     }
 
@@ -3233,10 +3513,126 @@ class SketchController extends ChangeNotifier {
           return false;
         }
       }
+      // Blow-up guard (on-device feedback: dragging a Slot corner produced a
+      // visibly broken shape - a cusp where a smooth tangent arc should be).
+      // Root cause: [originPointId] pins the sketch origin into the fixed
+      // group on every drag-solve *in addition to* [anchorPointIds] - if the
+      // user started the Slot at the origin (its own center Point snapped
+      // onto the origin Point, a natural place to start drawing), every
+      // drag-solve has *two* simultaneously fixed Points on the same
+      // redundant Tangent+EqualRadius web, not one. That's a materially
+      // different, more ill-conditioned problem than this method was proven
+      // against (see the anchor-drift check above): confirmed via a
+      // diagnostic probe reproducing this exact fixture that the solver can
+      // still report converged/resultCode 5 while a non-anchor Point (e.g.
+      // the opposite arc's own center) lands thousands of units from where
+      // it started - a real root of the system, just a wildly wrong one,
+      // and one the anchor-drift check above can't see since it only
+      // examines the anchors themselves, which are (correctly) exactly
+      // where they should be. Bounds every other solved Point against a
+      // generous multiple of the sketch's own pre-solve size instead of
+      // trying to fix the underlying multi-root ambiguity itself - same
+      // "never partially applied" contract as the anchor-drift check.
+      double minX = double.infinity, minY = double.infinity;
+      double maxX = -double.infinity, maxY = -double.infinity;
+      for (final (x, y) in pointXY.values) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      final diagonal = math.sqrt(math.pow(maxX - minX, 2) + math.pow(maxY - minY, 2));
+      final blowupThreshold = math.max(diagonal * 10, 100.0);
+      for (final entry in result.solvedPoints.entries) {
+        if (anchorSet.contains(entry.key)) continue;
+        final seed = pointXY[entry.key];
+        if (seed == null) continue;
+        final (sx, sy) = entry.value;
+        final (px, py) = seed;
+        if ((sx - px).abs() > blowupThreshold || (sy - py).abs() > blowupThreshold) {
+          return false;
+        }
+      }
+      // Arc-branch guard (on-device feedback, round 2 - "still terrible"
+      // after the blow-up guard above): a Tangent constraint can converge
+      // to the *other*, nearby-but-wrong side of an Arc without moving
+      // anything far enough to trip the blow-up check above - a wrong
+      // branch isn't necessarily a far-away one. An Arc's centre always
+      // sits on the perpendicular bisector of its own start-end chord, on
+      // exactly one of two sides; that side flipping between one solve and
+      // the next - not the centre drifting far, just landing on the other
+      // side of the chord it was already close to - is what
+      // sketch_geometry_3d.dart's CCW-from-start-to-end arc rendering (and
+      // sketch_canvas.dart's matching one) draws as a cusp/wedge instead of
+      // a smooth curve, since it trusts whichever side the solver leaves
+      // the centre on with no memory of which side it used to be on.
+      // Rejects rather than accepting whichever branch Newton's method
+      // happened to land in - same "never partially applied" contract as
+      // the checks above. Near-zero (the chord and centre briefly
+      // collinear - an exact semicircle, or the genuinely ambiguous
+      // instant a legitimate slow flip passes through) is deliberately not
+      // treated as a flip in either direction, so a real, gradual
+      // reorientation across many small drag steps still works.
+      double chordSide(
+        (double, double) center,
+        (double, double) start,
+        (double, double) end,
+      ) =>
+          (end.$1 - start.$1) * (center.$2 - start.$2) - (end.$2 - start.$2) * (center.$1 - start.$1);
+      const chordSideEpsilon = 1e-6;
+      for (final arc in arcs.values) {
+        final beforeCenter = pointXY[arc.centerPointId];
+        final beforeStart = pointXY[arc.startPointId];
+        final beforeEnd = pointXY[arc.endPointId];
+        if (beforeCenter == null || beforeStart == null || beforeEnd == null) continue;
+        final afterCenter = result.solvedPoints[arc.centerPointId] ?? beforeCenter;
+        final afterStart = result.solvedPoints[arc.startPointId] ?? beforeStart;
+        final afterEnd = result.solvedPoints[arc.endPointId] ?? beforeEnd;
+        final beforeSide = chordSide(beforeCenter, beforeStart, beforeEnd);
+        final afterSide = chordSide(afterCenter, afterStart, afterEnd);
+        if (beforeSide.abs() < chordSideEpsilon || afterSide.abs() < chordSideEpsilon) continue;
+        if ((beforeSide > 0) != (afterSide > 0)) {
+          return false;
+        }
+      }
+      // Constraint-residual guard (on-device feedback, round 2: a raw,
+      // zero-user-dimension regular Polygon dragged into a shape with two
+      // adjacent vertices pulled into a near-degenerate sliver - a real,
+      // direct violation of its own EqualLength/EqualRadius/confirmed-
+      // Distance constraints, not merely a "different but valid" branch
+      // the checks above can catch, yet still reported as converged).
+      // Recomputes each such constraint's own residual directly from the
+      // solved points rather than trusting the solver's own verdict -
+      // cheap, and catches exactly the "technically converged, visibly
+      // wrong" class of result these on-device reports keep describing.
+      (double, double) solvedOf(String id) => result.solvedPoints[id] ?? pointXY[id]!;
+      double distOf(String a, String b) {
+        final (ax, ay) = solvedOf(a);
+        final (bx, by) = solvedOf(b);
+        return math.sqrt(math.pow(bx - ax, 2) + math.pow(by - ay, 2));
+      }
+      final residualTolerance = math.max(diagonal * 0.02, 1e-4);
+      for (final c in constraints.values) {
+        if (c is EqualLengthConstraintDto) {
+          final ends1 = lineEndpoints[c.line1Id];
+          final ends2 = lineEndpoints[c.line2Id];
+          if (ends1 == null || ends2 == null) continue;
+          if ((distOf(ends1.$1, ends1.$2) - distOf(ends2.$1, ends2.$2)).abs() > residualTolerance) {
+            return false;
+          }
+        } else if (c is EqualRadiusConstraintDto) {
+          final r1 = distOf(c.center1PointId, c.radius1PointId);
+          final r2 = distOf(c.center2PointId, c.radius2PointId);
+          if ((r1 - r2).abs() > residualTolerance) return false;
+        } else if (c is DistanceConstraintDto && !c.provisional) {
+          if ((distOf(c.pointAId, c.pointBId) - c.distance).abs() > residualTolerance) return false;
+        }
+      }
       for (final entry in result.solvedPoints.entries) {
         if (anchorSet.contains(entry.key)) continue;
         final (x, y) = entry.value;
         points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
+        _dragReflowedPointIds.add(entry.key);
       }
       notifyListeners();
       return true;
@@ -3291,60 +3687,17 @@ class SketchController extends ChangeNotifier {
     }
   }
 
-  /// [_maybeSolveDuringDrag]'s counterpart for a Polygon-vertex drag (see
-  /// [updatePointDrag]'s own doc comment) - throttled/dropped-not-queued the
-  /// same way, sharing [_dragSolveInFlight]/[_lastDragSolveAt] with the
-  /// regular drag path so the two can never both be in flight at once (a
-  /// drag is always either a Polygon-vertex radius edit or a plain point
-  /// move, never both).
-  void _maybeUpdatePolygonRadiusDuringDrag(String constraintId, double radius, bool Function() isStillActive) {
-    if (_dragSolveInFlight) return;
-    final now = DateTime.now();
-    if (_lastDragSolveAt != null && now.difference(_lastDragSolveAt!) < _dragSolveThrottle) return;
-    _lastDragSolveAt = now;
-    _dragSolveInFlight = true;
-    unawaited(_updatePolygonRadiusDuringDrag(constraintId, radius, isStillActive));
-  }
-
-  /// Unlike [_solveDuringDrag] (which keeps the dragged Point(s) themselves
-  /// exactly under the touch and only reflows every *other* Point), every
-  /// vertex here - including the dragged one - takes whatever position the
-  /// resize actually solved to: this is a dimension edit, not a free move,
-  /// so the vertex belongs wherever the newly-sized circle actually put it,
-  /// not wherever the cursor happens to be.
-  Future<void> _updatePolygonRadiusDuringDrag(
-    String constraintId,
-    double radius,
-    bool Function() isStillActive,
-  ) async {
-    try {
-      await _api.updateConstraintValue(_sketchId!, constraintId, radius);
-      if (!isStillActive()) return;
-      final fresh = await _api.listPoints(_sketchId!);
-      if (!isStillActive()) return;
-      for (final p in fresh) {
-        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
-      }
-      notifyListeners();
-    } on ApiException catch (_) {
-      // Best-effort, same tradeoff as [_solveDuringDrag].
-    } finally {
-      _dragSolveInFlight = false;
-    }
-  }
-
   /// Ends the current Point drag (if any) and re-solves from the dropped
   /// position, same backend-is-truth refresh as every other mutation - any
   /// remaining constraints (e.g. a Line this Point anchors staying the
   /// right length) settle here rather than during the drag itself.
   ///
-  /// Task #94 (deferred item): a Polygon-vertex drag against an already-
-  /// confirmed circumradius dimension (see [updatePointDrag]'s own doc
-  /// comment for why only the confirmed case is reinterpreted) ends by
-  /// confirming that dimension at the dropped radius, instead of pinning
-  /// the dropped position directly - undo restores the dimension's old
-  /// value, not the vertex's old (x, y), same pattern [confirmGhostValue]
-  /// already uses for every other confirmed dimension.
+  /// Task #94 / sketcher rebuild: an intact Polygon/Slot drag against an
+  /// already-confirmed radius dimension (see [updatePointDrag]'s own doc
+  /// comment) ends by also confirming that dimension at the dropped
+  /// radius, alongside the closed-form geometry settle both cases share -
+  /// same pattern [confirmGhostValue] already uses for every other
+  /// confirmed dimension.
   Future<void> endPointDrag() async {
     final pointId = _draggingPointId;
     if (pointId == null) return;
@@ -3357,19 +3710,20 @@ class SketchController extends ChangeNotifier {
     _dragOriginPointX = null;
     _dragOriginPointY = null;
 
-    final radiusConstraint = _confirmedPolygonRadiusConstraint(pointId);
-    if (radiusConstraint != null) {
-      final polygon = _polygonForVertex(pointId)!;
-      final center = points[polygon.centerPointId];
+    // Closed-form settle (see [updatePointDrag]'s own doc comment for why):
+    // supersedes the old confirmed-radius-only special case below it -
+    // covers a still-provisional Polygon/Slot too. Both the drop itself and
+    // undo go through the exact same [_settleClosedFormShapeDrag] path,
+    // just targeting the dropped vs. the original position, so undo can't
+    // reintroduce a wrong root either.
+    final intactPolygon = _intactPolygonForVertex(pointId);
+    final intactSlot = intactPolygon == null ? _intactSlotForPoint(pointId) : null;
+    if (intactPolygon != null || intactSlot != null) {
       await _runGuarded(() async {
-        if (center != null) {
-          final newRadius = math.sqrt(math.pow(droppedPoint.x - center.x, 2) + math.pow(droppedPoint.y - center.y, 2));
-          if (newRadius >= 1e-9) {
-            final oldRadius = radiusConstraint.distance;
-            await _api.updateConstraintValue(_sketchId!, radiusConstraint.id, newRadius);
-            _pushUndo(() async => _api.updateConstraintValue(_sketchId!, radiusConstraint.id, oldRadius));
-          }
-        }
+        await _settleClosedFormShapeDrag(intactPolygon, intactSlot, pointId, droppedPoint.x, droppedPoint.y);
+        _pushUndo(() async {
+          await _settleClosedFormShapeDrag(intactPolygon, intactSlot, pointId, originX, originY);
+        });
         await _solveAndTrackDof();
       });
       return;
@@ -3388,6 +3742,17 @@ class SketchController extends ChangeNotifier {
       // at (before any solve moves it), same convention as every other
       // proximity-snap check in this file.
       await _autoCoincideIfNear(pointId, droppedPoint.x, droppedPoint.y);
+      // Solver-drag-findings fix: sync every Point a mid-drag local solve
+      // reflowed (see [_dragReflowedPointIds]'s own doc comment) before the
+      // final solve below - otherwise the backend's own stored positions
+      // for all of them sit frozen at their pre-drag values for the whole
+      // drag, and this call hands it a single, discontinuous jump instead
+      // of a small settle from an already-correct seed.
+      for (final id in _dragReflowedPointIds) {
+        final p = points[id];
+        if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
+      }
+      _dragReflowedPointIds.clear();
       // Anchored so the just-dropped Point stays exactly where the user put
       // it and the rest of the Sketch settles around it, instead of every
       // Point (including this one) being equally free to move - Phase 2 of
@@ -3439,6 +3804,13 @@ class SketchController extends ChangeNotifier {
     if (_polygonForVertex(line.startPointId) != null) {
       return beginPointDrag(line.startPointId);
     }
+    // Same redirect, same reasoning, for a Slot's own straight side (line1/
+    // line2) - each endpoint belongs to a different end-cap Arc's own
+    // Tangent/EqualRadius web, so a rigid-body chord translation fights
+    // that the same way a Polygon edge's would.
+    if (_intactSlotForPoint(line.startPointId) != null) {
+      return beginPointDrag(line.startPointId);
+    }
     // Phase 3 (3.2): mirrors [beginPointDrag]'s over-constrained refusal,
     // checked against both endpoints since either one being implicated is
     // enough to make the drag pointless.
@@ -3458,6 +3830,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginLineEndX = end.x;
     _dragOriginLineEndY = end.y;
     _lastDragSolveAt = null;
+    _dragReflowedPointIds.clear();
     notifyListeners();
     return true;
   }
@@ -3556,6 +3929,12 @@ class SketchController extends ChangeNotifier {
       if (droppedEnd != null) {
         await _autoCoincideIfNear(line.endPointId, droppedEnd.x, droppedEnd.y);
       }
+      // Solver-drag-findings fix - mirrors [endPointDrag]'s own sync step.
+      for (final id in _dragReflowedPointIds) {
+        final p = points[id];
+        if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
+      }
+      _dragReflowedPointIds.clear();
       // Both endpoints anchored - mirrors [endPointDrag]'s reasoning, applied
       // to the whole dropped Line rather than a single Point.
       await _solveAndTrackDof(anchorPointIds: [line.startPointId, line.endPointId]);
@@ -7200,6 +7579,23 @@ class SketchController extends ChangeNotifier {
         construction: polygon.construction,
       );
     }
+    for (final slot in await _api.listSlots(sketchId)) {
+      slots[slot.id] = SketchSlotView(
+        id: slot.id,
+        center1PointId: slot.center1PointId,
+        center2PointId: slot.center2PointId,
+        centerlineId: slot.centerlineId,
+        arc1Id: slot.arc1Id,
+        arc2Id: slot.arc2Id,
+        line1Id: slot.line1Id,
+        line2Id: slot.line2Id,
+        aPointId: slot.aPointId,
+        bPointId: slot.bPointId,
+        cPointId: slot.cPointId,
+        dPointId: slot.dPointId,
+        construction: slot.construction,
+      );
+    }
     for (final spline in await _api.listSplines(sketchId)) {
       splines[spline.id] = SketchSplineView(
         id: spline.id,
@@ -7863,21 +8259,15 @@ class SketchController extends ChangeNotifier {
   /// Point, second tap places its end Point (fixing length and
   /// orientation), third tap sets the width via its perpendicular
   /// distance from the centerline and immediately completes the shape -
-  /// self-terminating, like Arc. Builds two Arcs (auto-creating their own
-  /// radius DistanceConstraint pairs server-side, see the backend's
-  /// `Sketch.add_arc`) and two Lines connecting them into one closed loop
-  /// (see [_slotCorners]'s doc comment for the a/b/c/d pairing).
-  ///
-  /// Bug-fix-shaped limitation, accepted for v1: the two Arcs' radii are
-  /// independently constrained (each internally circular, same as any
-  /// standalone Arc), not tied to each other - there's no existing
-  /// constraint primitive for "these two point-pair distances stay equal"
-  /// short of adding real spoke Line entities purely to hang an
-  /// EqualLengthConstraint off of them, which felt like real complexity
-  /// for a v1 tool. Dragging one end of a placed Slot can therefore make
-  /// its two caps different radii; the shape is still exactly correct as
-  /// placed. Same class of pragmatic simplification as Polygon's own
-  /// equal-length-only (not equal-angle) regularity.
+  /// self-terminating, like Arc/Polygon. Both end-cap Arcs, both straight
+  /// Lines, the construction centreline, and the whole radius/equal-
+  /// radius/tangent constraint chain (see the backend's `Sketch.add_slot`
+  /// docstring for the constraint reasoning) are created atomically by a
+  /// single [SketchApiClient.createSlot] call - a real, persisted Slot
+  /// entity, not the old ~8-call client orchestration this replaces (see
+  /// [SketchSlotView]'s own doc comment for why that mattered - primarily,
+  /// letting a corner drag be reliably recognized as belonging to a Slot
+  /// for [_intactSlotForPoint]'s closed-form drag path).
   Future<void> _clickSlotTool() async {
     if (_slotCenter1PointId == null) {
       _selectionSet.clear();
@@ -7901,141 +8291,65 @@ class SketchController extends ChangeNotifier {
       final c1 = points[c1Id]!;
       final c2 = points[c2Id]!;
       final radius = _perpendicularDistanceToLine(cursorX, cursorY, c1.x, c1.y, c2.x, c2.y);
-      final corners = radius == null ? null : _slotCorners(c1.x, c1.y, c2.x, c2.y, radius);
-      if (corners == null) {
+      if (radius == null || radius < 1e-9) {
         errorMessage = 'Cannot place a slot with a zero-length centerline or zero width';
         _slotCenter1PointId = null;
         _slotCenter2PointId = null;
         return;
       }
 
-      final aId = await _pointIdAt(corners.a.$1, corners.a.$2, excludeId: c1Id);
-      final bId = await _pointIdAt(corners.b.$1, corners.b.$2, excludeId: c1Id);
-      final cId = await _pointIdAt(corners.c.$1, corners.c.$2, excludeId: c2Id);
-      final dId = await _pointIdAt(corners.d.$1, corners.d.$2, excludeId: c2Id);
-
-      // Feedback round: a visible construction line between the two centres,
-      // like every other CAD package's Slot tool - purely a visual/reference
-      // aid, carries no constraint of its own.
-      final centerline = await _api.createLine(_sketchId!, c1Id, c2Id, construction: true);
-      lines[centerline.id] = SketchLineView(
-        id: centerline.id,
-        startPointId: centerline.startPointId,
-        endPointId: centerline.endPointId,
-        construction: centerline.construction,
+      final slot = await _api.createSlot(_sketchId!, c1Id, c2Id, radius);
+      slots[slot.id] = SketchSlotView(
+        id: slot.id,
+        center1PointId: slot.center1PointId,
+        center2PointId: slot.center2PointId,
+        centerlineId: slot.centerlineId,
+        arc1Id: slot.arc1Id,
+        arc2Id: slot.arc2Id,
+        line1Id: slot.line1Id,
+        line2Id: slot.line2Id,
+        aPointId: slot.aPointId,
+        bPointId: slot.bPointId,
+        cPointId: slot.cPointId,
+        dPointId: slot.dPointId,
+        construction: slot.construction,
       );
-      _pushUndo(() async {
-        await _api.deleteLine(_sketchId!, centerline.id);
-        lines.remove(centerline.id);
-      });
-
-      final arc1 = await _api.createArc(_sketchId!, c1Id, aId, bId);
-      arcs[arc1.id] = SketchArcView(
-        id: arc1.id,
-        centerPointId: arc1.centerPointId,
-        startPointId: arc1.startPointId,
-        endPointId: arc1.endPointId,
-        construction: arc1.construction,
+      lines[slot.centerlineId] = SketchLineView(
+        id: slot.centerlineId,
+        startPointId: c1Id,
+        endPointId: c2Id,
+        construction: true,
       );
-      _pushUndo(() async {
-        await _api.deleteArc(_sketchId!, arc1.id);
-        arcs.remove(arc1.id);
-      });
-
-      final line1 = await _api.createLine(_sketchId!, bId, cId);
-      lines[line1.id] = SketchLineView(
-        id: line1.id,
-        startPointId: line1.startPointId,
-        endPointId: line1.endPointId,
-        construction: line1.construction,
+      arcs[slot.arc1Id] = SketchArcView(
+        id: slot.arc1Id,
+        centerPointId: c1Id,
+        startPointId: slot.aPointId,
+        endPointId: slot.bPointId,
       );
-      _pushUndo(() async {
-        await _api.deleteLine(_sketchId!, line1.id);
-        lines.remove(line1.id);
-      });
-
-      final arc2 = await _api.createArc(_sketchId!, c2Id, cId, dId);
-      arcs[arc2.id] = SketchArcView(
-        id: arc2.id,
-        centerPointId: arc2.centerPointId,
-        startPointId: arc2.startPointId,
-        endPointId: arc2.endPointId,
-        construction: arc2.construction,
+      arcs[slot.arc2Id] = SketchArcView(
+        id: slot.arc2Id,
+        centerPointId: c2Id,
+        startPointId: slot.cPointId,
+        endPointId: slot.dPointId,
       );
-      _pushUndo(() async {
-        await _api.deleteArc(_sketchId!, arc2.id);
-        arcs.remove(arc2.id);
-      });
-
-      final line2 = await _api.createLine(_sketchId!, dId, aId);
-      lines[line2.id] = SketchLineView(
-        id: line2.id,
-        startPointId: line2.startPointId,
-        endPointId: line2.endPointId,
-        construction: line2.construction,
-      );
-      _pushUndo(() async {
-        await _api.deleteLine(_sketchId!, line2.id);
-        lines.remove(line2.id);
-      });
-
-      // Feedback round: a Slot should carry a single editable radius
-      // dimension, not one per end-cap arc. arc2's own two auto-created
-      // radius DistanceConstraints (see Sketch.add_arc) are replaced with
-      // EqualRadiusConstraints tying arc2's radius back to arc1's - arc1's
-      // own two constraints stay untouched and remain the one visible/
-      // editable dimension (mirrors a plain Arc's existing two-constraint
-      // circularity, just shared across both end caps).
-      await _refreshConstraints();
-      final arc2Radius = _findDistanceConstraint(c2Id, cId);
-      final arc2EndRadius = _findDistanceConstraint(c2Id, dId);
-      if (arc2Radius != null) {
-        await _api.deleteConstraint(_sketchId!, arc2Radius.id);
-        _pushUndo(() async {
-          await _api.createDistanceConstraint(
-            _sketchId!,
-            c2Id,
-            cId,
-            arc2Radius.distance,
-            provisional: arc2Radius.provisional,
-          );
-        });
+      lines[slot.line1Id] = SketchLineView(id: slot.line1Id, startPointId: slot.bPointId, endPointId: slot.cPointId);
+      lines[slot.line2Id] = SketchLineView(id: slot.line2Id, startPointId: slot.dPointId, endPointId: slot.aPointId);
+      // The 4 corners are freshly created server-side by add_slot and
+      // aren't locally known yet, same as Polygon's own extra vertices.
+      for (final id in [slot.aPointId, slot.bPointId, slot.cPointId, slot.dPointId]) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
-      if (arc2EndRadius != null) {
-        await _api.deleteConstraint(_sketchId!, arc2EndRadius.id);
-        _pushUndo(() async {
-          await _api.createDistanceConstraint(
-            _sketchId!,
-            c2Id,
-            dId,
-            arc2EndRadius.distance,
-            provisional: arc2EndRadius.provisional,
-          );
-        });
-      }
-
-      for (final radiusPointId in [cId, dId]) {
-        final equalRadius = await _api.createEqualRadiusConstraint(
-          _sketchId!,
-          arc1.id,
-          arc2.id,
-          radius2PointId: radiusPointId,
-        );
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, equalRadius.id));
-      }
-
-      // Feedback round: real Tangent constraints (not a hand-placed guess)
-      // pin both arcs flush against both connecting lines - see backend
-      // TangentConstraint's doc comment for why this needs no native
-      // arc-of-circle solver entity. All 4 (one per arc/line pair) are
-      // required for a geometrically valid closed slot; the last 2 are
-      // mathematically implied by the first 2 plus the EqualRadius ties
-      // above, which is why solve_sketch treats that redundancy as still
-      // converged (see solver.py's own comment on result_code 4/5).
-      for (final (arc, line) in [(arc1, line1), (arc1, line2), (arc2, line1), (arc2, line2)]) {
-        final tangent = await _api.createTangentConstraint(_sketchId!, arc.id, line.id);
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, tangent.id));
-      }
+      _pushUndo(() async {
+        await _api.deleteSlot(_sketchId!, slot.id);
+        slots.remove(slot.id);
+        for (final id in [slot.centerlineId, slot.arc1Id, slot.arc2Id]) {
+          arcs.remove(id);
+          lines.remove(id);
+        }
+        lines.remove(slot.line1Id);
+        lines.remove(slot.line2Id);
+      });
 
       // Same rule as a completed Circle/Arc/Polygon: one finished entity = one solve call.
       await _solveAndTrackDof();

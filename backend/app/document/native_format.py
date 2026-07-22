@@ -73,6 +73,7 @@ from app.sketch.models import (
     SketchEntity,
     SketchEntityRef,
     SketchEntityType,
+    Slot,
     Spline,
     TextEntity,
 )
@@ -190,6 +191,26 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "angle_constraint_ids": entity.angle_constraint_ids,
             "sides": entity.sides,
         }
+    if isinstance(entity, Slot):
+        return {
+            "type": "slot",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center1_point_id": entity.center1_point_id,
+            "center2_point_id": entity.center2_point_id,
+            "centerline_id": entity.centerline_id,
+            "arc1_id": entity.arc1_id,
+            "arc2_id": entity.arc2_id,
+            "line1_id": entity.line1_id,
+            "line2_id": entity.line2_id,
+            "a_point_id": entity.a_point_id,
+            "b_point_id": entity.b_point_id,
+            "c_point_id": entity.c_point_id,
+            "d_point_id": entity.d_point_id,
+            "radius_constraint_id": entity.radius_constraint_id,
+            "equal_radius_constraint_ids": entity.equal_radius_constraint_ids,
+            "tangent_constraint_ids": entity.tangent_constraint_ids,
+        }
     if isinstance(entity, Spline):
         return {
             "type": "spline",
@@ -271,6 +292,25 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             equal_length_constraint_ids=list(_require(data, "equal_length_constraint_ids")),
             angle_constraint_ids=list(_require(data, "angle_constraint_ids")),
             sides=_require(data, "sides"),
+        )
+    if entity_type == "slot":
+        return Slot(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center1_point_id=_require(data, "center1_point_id"),
+            center2_point_id=_require(data, "center2_point_id"),
+            centerline_id=_require(data, "centerline_id"),
+            arc1_id=_require(data, "arc1_id"),
+            arc2_id=_require(data, "arc2_id"),
+            line1_id=_require(data, "line1_id"),
+            line2_id=_require(data, "line2_id"),
+            a_point_id=_require(data, "a_point_id"),
+            b_point_id=_require(data, "b_point_id"),
+            c_point_id=_require(data, "c_point_id"),
+            d_point_id=_require(data, "d_point_id"),
+            radius_constraint_id=_require(data, "radius_constraint_id"),
+            equal_radius_constraint_ids=list(_require(data, "equal_radius_constraint_ids")),
+            tangent_constraint_ids=list(_require(data, "tangent_constraint_ids")),
         )
     if entity_type == "spline":
         return Spline(

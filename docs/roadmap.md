@@ -72,9 +72,39 @@ entries) - with one real gap confirmed by a direct code audit:
   every draw tool, Dimensions, Trim/Extend, and drag mode all already work
   embedded in the 3D viewport; only the Text tool is deliberately excluded) -
   see `docs/status.md`'s 2026-07-17 P1-P10+ entries, which an earlier
-  research pass in this same session missed. Still genuinely not started:
-  Phase 3 (Slot's real backend entity, queued next) and Phase 4 (scoped/
-  partial re-solve).
+  research pass in this same session missed. Phase 3 (Slot's real backend
+  entity) shipped in the 2026-07-22 session below - Phase 4 (scoped/partial
+  re-solve) is still genuinely not started.
+- **Drag/solve rebuilt on closed-form geometry for Polygon/Slot** (2026-07-22
+  session, see `docs/status.md`) - the redundant-constraint-chain approach
+  above (Phase 1's FFI solver) is no longer how these two shapes drag at
+  all; a formula has exactly one answer, so it eliminates the wrong-root
+  class of bug for them entirely rather than reactively guarding against
+  it. Real follow-ups from that pass, not silently dropped:
+  - **Bisection/sub-step retry** for the *general* solver path (arbitrary
+    hand-built constraint combinations, and a Polygon/Slot's own remnants
+    once trimmed) - when a direct local solve fails a guard, retry via
+    halving sub-steps between the last known-good position and the target
+    instead of falling straight through to the throttled network path.
+  - **Port `solver.py`'s `_fix_circle_cardinal_point_signs`** (detect a
+    discrete mirror-flip root, correct it with a direct reflection through
+    the known-good axis instead of rejecting outright) to the client's
+    local solver, where it's confirmed not yet present - and extend the
+    same detect-then-reflect shape to the general path's own Arc chord-side
+    branch-flip guard, so a caught flip self-heals instead of just
+    stalling.
+  - **Ghost-preview drag** (decouple live rendering from the authoritative
+    solve - a cheap kinematic preview every frame, one real solve at drop)
+    for the general path specifically. No longer needed for Polygon/Slot
+    (the closed-form path already removes the "wrong root flashing
+    mid-drag" risk for those), so this is now polish, not a live-bug fix.
+  - **Slot's own delete-cascade-with-undo** (multi-select delete cleanly
+    removing a whole intact Slot, not leaving a dangling backend entity if
+    only its Lines/Arcs happened to be in the selection) - `Polygon` needed
+    this exact same follow-up fix after its own entity first landed
+    ("select all > delete doesn't work on polygons, says constraint not
+    found" - see `docs/status.md`); Slot hasn't gotten the equivalent pass
+    yet.
 - **Sketch dimension rendering/hit-testing has two independent
   implementations** (`sketch_canvas.dart` for the flat 2D canvas,
   `sketch_constraint_overlay.dart` for the 3D-embedded sketcher) that can

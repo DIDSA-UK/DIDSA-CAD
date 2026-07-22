@@ -467,6 +467,46 @@ class PolygonUpdate(BaseModel):
     construction: bool | None = None
 
 
+class SlotCreate(BaseModel):
+    """Create a Slot from two existing centre Points and a radius - see the
+    backend's `app.sketch.models.Sketch.add_slot` docstring for what this
+    creates. Unlike Arc/Ellipse there is no "computed point" alternative
+    for either centre - the client always places/snaps both as real Points
+    first, exactly as it always has for the Slot tool's own first two
+    taps."""
+
+    center1_point_id: str
+    center2_point_id: str
+    radius: float = Field(gt=0)
+    construction: bool = False
+
+
+class SlotResponse(BaseModel):
+    type: Literal["slot"] = "slot"
+    id: str
+    center1_point_id: str
+    center2_point_id: str
+    centerline_id: str
+    arc1_id: str
+    arc2_id: str
+    line1_id: str
+    line2_id: str
+    a_point_id: str
+    b_point_id: str
+    c_point_id: str
+    d_point_id: str
+    radius: float
+    construction: bool = False
+
+
+class SlotUpdate(BaseModel):
+    """Update a slot's construction flag - mirrors PolygonUpdate. There is
+    no radius field here either: a slot's radius is driven by its own
+    DistanceConstraint (see Sketch.add_slot), not edited directly."""
+
+    construction: bool | None = None
+
+
 class SplineCreate(BaseModel):
     """Create a spline through 2+ existing Points, in order - see the
     backend's `app.sketch.models.Spline` docstring for what this creates
