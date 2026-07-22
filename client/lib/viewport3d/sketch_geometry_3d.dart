@@ -561,9 +561,9 @@ const double sketchLineWidth = 1.5;
 /// kept getting bumped chasing what turned out to be a separate,
 /// now-fixed rendering bug, not an actual sizing problem - once markers
 /// were genuinely rendering again, on-device feedback was that 9.0 read as
-/// oversized. Back to a line-width-derived ratio now that size is the only
-/// remaining variable.
-const double sketchPointMarkerWidth = sketchLineWidth * 1.5;
+/// oversized, then settled at 1.5x; later on-device feedback asked for
+/// markers 3x line thickness instead.
+const double sketchPointMarkerWidth = sketchLineWidth * 3.0;
 
 /// P23 (2D-sketcher feature parity): green, mirrors `sketch_canvas.dart`'s
 /// own `_fullyConstrainedColor` (`0xFF2E7D32`) - an entity whose defining
