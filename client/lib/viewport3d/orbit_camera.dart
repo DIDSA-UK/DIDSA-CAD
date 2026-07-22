@@ -294,12 +294,20 @@ class OrbitCamera {
   /// Drag-to-pan: moves [target] (and so the whole view) in the camera's own
   /// screen-relative right/up plane, so the point under the cursor at drag
   /// start tracks the cursor - the same "grab and drag the scene" feel as
-  /// [SketchViewport.panByScreenDelta], just projected into 3D. Only the
-  /// horizontal term is negated relative to the vertical one - confirmed on
-  /// a real device that left/right pan was inverted but up/down wasn't.
+  /// [SketchViewport.panByScreenDelta], just projected into 3D.
+  ///
+  /// **2026-07-22**: horizontal term's sign flipped (`-_right`, was
+  /// `+_right`; vertical `+_up` untouched) - the same class of fix as
+  /// [orbitByScreenDelta]'s own (see its doc comment): `_right`/`_up` are
+  /// [OrbitCamera]'s own local-frame getters, unrelated to and unchanged by
+  /// [FixedPerspectiveCamera]'s render fix, so a two-finger pan that was
+  /// hand-tuned by feel against the *old*, mirrored renderer now visibly
+  /// drags the scene the opposite way horizontally for the same finger
+  /// movement - on-device feedback confirmed only left/right felt backwards,
+  /// consistent with the render fix only mirroring the horizontal axis.
   void panByScreenDelta(double dxPixels, double dyPixels) {
     final scale = panSensitivityPerDistance * distance;
-    target = target + _right * (dxPixels * scale) + _up * (dyPixels * scale);
+    target = target - _right * (dxPixels * scale) + _up * (dyPixels * scale);
   }
 
   void zoomByFactor(double scaleFactor) {
