@@ -533,8 +533,11 @@ const double sketchLineWidth = 1.5;
 /// constant also sizes Selection mode's own selected-vertex highlight
 /// markers ([buildVertexMarkersNode] call sites in `part_viewport.dart`),
 /// which weren't part of this feedback and shouldn't shrink alongside a
-/// Sketch's own drawn points.
-const double sketchPointMarkerWidth = 4.5;
+/// Sketch's own drawn points. On-device feedback ("Points should be
+/// visible with a diameter slightly larger than the sketch line width"):
+/// derived from [sketchLineWidth] rather than a bare constant now, mirroring
+/// `sketch_canvas.dart`'s own `_pointRadius` fix - same ~1.3x ratio.
+const double sketchPointMarkerWidth = sketchLineWidth * 1.3;
 
 /// P23 (2D-sketcher feature parity): green, mirrors `sketch_canvas.dart`'s
 /// own `_fullyConstrainedColor` (`0xFF2E7D32`) - an entity whose defining

@@ -358,15 +358,23 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     _lastTick = elapsed;
     if (size == null || dt <= 0 || dt > 0.25) return;
     if (_activeTouches.length >= 2) return;
-    // Bug-fix round: while something's grabbed via drag mode, the cursor is
-    // hidden (see _SketchPainter's isCursorVisible check) but its screen
-    // position doesn't stop existing - if it happens to sit near an edge
-    // from an earlier move, this ambient RTS-style edge-pan kept firing
-    // every tick regardless, silently scrolling the view out from under a
-    // drag the user never asked to pan during. Every other pan/gesture path
-    // in this file already gates on isEntityGrabbed; this automatic,
-    // no-explicit-gesture one is the one that was missing it.
-    if (widget.controller.isEntityGrabbed) return;
+    // On-device feedback ("RTS style panning is no longer working... when
+    // using drag/drop this restricts where I can move entities as the
+    // invisible cursor gets stuck at the edge"): an earlier "bug fix round"
+    // added a blanket `if (isEntityGrabbed) return` here, reasoning that
+    // while something's grabbed via drag mode, the cursor is hidden (see
+    // _SketchPainter's isCursorVisible check) but its screen position
+    // doesn't stop existing - so a *stale* position sitting near an edge
+    // from an earlier move could keep firing edge-pan every tick,
+    // scrolling the view out from under a drag the user never asked to pan
+    // during. That reasoning is already fully covered by the idle-
+    // threshold check right below (a stale position, by definition, hasn't
+    // moved recently, so it already fails that check and never fires) -
+    // the isEntityGrabbed gate was strictly redundant for the stale case
+    // it was meant to fix, and wrongly also blocked the *legitimate* case:
+    // actively dragging an entity toward the edge, where the cursor *is*
+    // moving every tick and edge-pan is exactly what should let the drag
+    // keep going past the current viewport bounds.
     final lastMove = _lastCursorMoveTime;
     if (lastMove == null || DateTime.now().difference(lastMove) >= _edgePanIdleThreshold) return;
 
@@ -2058,10 +2066,17 @@ class _SketchPainter extends CustomPainter {
   /// felt oversized generally, independent of the touch hit-radius (which
   /// stays deliberately more generous than the visual size for touchability
   /// - see [SketchController.minTapHitRadiusPixels]/[SketchController.pointHitRadiusMultiplier]).
-  static const double _pointRadius = 3.0; // was 4
-  static const double _pointRadiusEmphasis = 4.5; // was 6 (chain-start/circle-center/hover)
-  static const double _pointRadiusSelected = 5.0; // was 7
-  static const double _pointRadiusSnapping = 7.0; // was 11 (chain-start snap-to-close)
+  // On-device feedback ("Points should be visible with a diameter slightly
+  // larger than the sketch line width"): a plain Point's own diameter
+  // (2 * _pointRadius) is now derived from _lineStrokeWidth rather than a
+  // bare constant, so the two stay in the intended relationship if either
+  // is tuned again later. The emphasis/selected/snapping states keep the
+  // exact same multiples of the base radius this file already had (1.5x/
+  // 1.67x/2.33x) - still visually distinct while shrinking together.
+  static const double _pointRadius = _lineStrokeWidth * 0.65; // diameter ~1.3x the line width
+  static const double _pointRadiusEmphasis = _pointRadius * 1.5; // chain-start/circle-center/hover
+  static const double _pointRadiusSelected = _pointRadius * (5.0 / 3.0);
+  static const double _pointRadiusSnapping = _pointRadius * (7.0 / 3.0); // chain-start snap-to-close
   static const double _lineStrokeWidth = 1.8; // was 2, then 1.5 (on-device feedback: "increase line thickness for sketch lines slightly")
   static const double _lineStrokeWidthEmphasis = 2.7; // was 3, then 2.25 (selected/hover) - same 1.5x ratio to _lineStrokeWidth
   static const double _originHalfSize = 5.0; // was 7
