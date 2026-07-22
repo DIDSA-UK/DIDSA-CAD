@@ -475,9 +475,17 @@ Node buildMeshEdgesNode(
   double width = kEdgeStrokeWidth,
   PolylineCap cap = PolylineCap.butt,
 }) {
+  // On-device feedback ("points are not visible"): a round cap's own
+  // triangle-fan disk (see [vertexMarkerSegments]'s doc comment) reads as
+  // back-facing under this renderer's default counter-clockwise-front
+  // convention (Material.bind's own doc comment) and gets silently culled
+  // regardless of width - see [buildSketchGeometryNode]'s own doc comment
+  // for the full story. `doubleSided` is only honored for opaque
+  // materials (also that doc comment), which this already is.
   final material = UnlitMaterial()
     ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = color;
+    ..baseColorFactor = color
+    ..doubleSided = true;
 
   final primitives = <MeshPrimitive>[
     for (final segment in segments)

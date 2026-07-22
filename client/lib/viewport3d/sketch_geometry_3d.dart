@@ -725,9 +725,23 @@ Node buildSketchGeometryNode(
   Map<String, vm.Vector4>? entityColors,
 }) {
   vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
+  // On-device feedback ("points are not visible"): a Point marker's own
+  // round-cap disk (see vertexMarkerSegments' doc comment for why a Point
+  // renders as one) comes from PolylineGeometry's fan-triangulated cap,
+  // whose winding - unlike the ordinary line-strip triangles every other
+  // primitive here uses - reads as back-facing under this renderer's
+  // default counter-clockwise-front convention (Material.bind's own doc
+  // comment) and was being silently culled regardless of marker width, no
+  // matter how many times that width got bumped. `doubleSided` is only
+  // honored for opaque materials (also that same doc comment) - true here
+  // for all of them, so this fixes the Point markers without needing to
+  // reverse-engineer/patch the third-party disk-winding math itself, at no
+  // cost to the Line/Circle/etc. outlines also built from this material
+  // (thin geometry with no real "back" to hide either way).
   UnlitMaterial materialFor(String id) => UnlitMaterial()
     ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = colorFor(id);
+    ..baseColorFactor = colorFor(id)
+    ..doubleSided = true;
 
   // P26: [id]'s outline as one or more [MeshPrimitive]s - a single solid
   // polyline normally, or a run of short dash primitives (all sharing the
@@ -1325,8 +1339,20 @@ Node? buildDrawIndicatorsNode(List<DrawIndicatorMarker> markers) {
         MeshPrimitive(
           PolylineGeometry([segment.$1, segment.$2], width: marker.width, cap: PolylineCap.round),
           UnlitMaterial()
-            ..alphaMode = AlphaMode.blend
-            ..baseColorFactor = marker.color,
+            // On-device feedback ("the invisible cursor being naughty in the
+            // background" - the in-progress draw anchor/snap/candidate dots
+            // this Node renders): same round-cap culling bug as
+            // [buildSketchGeometryNode]'s own Point markers (see that
+            // function's own doc comment) - `doubleSided` is only honored
+            // for opaque materials, so switching out of AlphaMode.blend is
+            // required here too, same trade-off `buildMeshEdgesNode`'s own
+            // doc comment already accepted (a partial-alpha colour, e.g.
+            // [sketchIndicatorCandidateColor]'s 0.9, renders fully solid
+            // instead of its intended slight translucency) - an actually-
+            // visible solid dot beats a correctly-translucent invisible one.
+            ..alphaMode = AlphaMode.opaque
+            ..baseColorFactor = marker.color
+            ..doubleSided = true,
         ),
   ];
   return Node(name: 'sketch-draw-indicators', mesh: Mesh.primitives(primitives: primitives));
