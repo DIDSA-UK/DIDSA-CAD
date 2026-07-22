@@ -53,6 +53,141 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     EqualRadiusConstraint,
 )
 
+# Constraint types `_residual_verified_convergence` (below) knows how to
+# check directly from solved Point positions - a closed allowlist, same
+# conservative shape as `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` above (only
+# trusted when *every* Constraint in the Sketch is one of these; falls
+# through to ordinary non-convergence reporting otherwise, rather than
+# silently ignoring a Constraint type it doesn't know how to verify).
+_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
+    DistanceConstraint,
+    EqualLengthConstraint,
+    EqualRadiusConstraint,
+    AngleConstraint,
+    TangentConstraint,
+    LineDistanceConstraint,
+)
+
+_RESIDUAL_TOLERANCE = 1e-4
+
+
+def _distance(a: Point, b: Point) -> float:
+    return math.hypot(b.x - a.x, b.y - a.y)
+
+
+def _point_line_distance(point: Point, line_start: Point, line_end: Point) -> float:
+    """Perpendicular distance from `point` to the infinite line through
+    `line_start`/`line_end`."""
+    dx = line_end.x - line_start.x
+    dy = line_end.y - line_start.y
+    length = math.hypot(dx, dy)
+    if length < 1e-12:
+        return _distance(point, line_start)
+    cross = (point.x - line_start.x) * dy - (point.y - line_start.y) * dx
+    return abs(cross) / length
+
+
+def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
+    """Unsigned angle (0-180) between two Lines' direction vectors -
+    deliberately unsigned since verifying an already-supposedly-satisfied
+    redundant AngleConstraint only needs to confirm the *magnitude* matches,
+    not reproduce py-slvs's own internal signed convention (which depends on
+    solver-internal parameterization this residual check has no access to)."""
+    dir1 = (line1_end.x - line1_start.x, line1_end.y - line1_start.y)
+    dir2 = (line2_end.x - line2_start.x, line2_end.y - line2_start.y)
+    len1 = math.hypot(*dir1)
+    len2 = math.hypot(*dir2)
+    if len1 < 1e-12 or len2 < 1e-12:
+        return 0.0
+    dot = (dir1[0] * dir2[0] + dir1[1] * dir2[1]) / (len1 * len2)
+    return math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+
+
+def _residual_verified_convergence(sketch: Sketch) -> bool:
+    """A solve that didn't cleanly report `converged` can still have landed
+    on a genuinely valid, self-consistent set of Point positions - py-slvs's
+    own `result_code` cannot always tell "every Constraint is actually
+    satisfied, just redundantly so in a way this build's rank-deficiency
+    handling doesn't cleanly certify" apart from a real conflict (confirmed
+    directly: a Polygon's own already-redundant EqualLength/EqualRadius/
+    Angle chain plus one further genuinely-implied Constraint on top - e.g.
+    an "across flats" LineDistanceConstraint between two opposite edges -
+    and a *deliberately wrong* value on that same Constraint both produce
+    the identical `result_code=1`; the existing narrow `result_code in (4,
+    5)` override above only ever catches a *single* layer of redundancy, not
+    two stacked). Rather than trust the code, this recomputes every
+    Constraint's own residual directly from the just-solved Point positions
+    (already written back to `sketch.points` by the time this runs) - if
+    every one is satisfied within tolerance, the positions are a real
+    solution regardless of what `result_code` says, so it's safe to report
+    `converged`. Returns False immediately (no partial trust) if any
+    Constraint isn't one of `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` - same
+    "never guess about a type it can't verify" conservatism
+    `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` already uses.
+    """
+    constraints = list(sketch.constraints.values())
+    if not constraints or not all(isinstance(c, _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES) for c in constraints):
+        return False
+
+    points = sketch.points
+    # Scale tolerance to the Sketch's own size, same idea already proven in
+    # the client's local-solver drag guards (sketch_controller.dart's
+    # _trySolveDuringDragLocally) - an absolute tolerance would be either
+    # too loose for a tiny sketch or too tight for a large one.
+    xs = [p.x for p in points.values()]
+    ys = [p.y for p in points.values()]
+    diagonal = math.hypot((max(xs) - min(xs)) if xs else 0.0, (max(ys) - min(ys)) if ys else 0.0)
+    tolerance = max(diagonal * _RESIDUAL_TOLERANCE, 1e-6)
+
+    for constraint in constraints:
+        if isinstance(constraint, DistanceConstraint):
+            if constraint.provisional:
+                continue  # Skipped by the solve itself - nothing to verify.
+            actual = _distance(points[constraint.point_a_id], points[constraint.point_b_id])
+            if abs(actual - constraint.distance) > tolerance:
+                return False
+        elif isinstance(constraint, EqualLengthConstraint):
+            len1 = _distance(points[constraint.line1_start_id], points[constraint.line1_end_id])
+            len2 = _distance(points[constraint.line2_start_id], points[constraint.line2_end_id])
+            if abs(len1 - len2) > tolerance:
+                return False
+        elif isinstance(constraint, EqualRadiusConstraint):
+            r1 = _distance(points[constraint.center1_point_id], points[constraint.radius1_point_id])
+            r2 = _distance(points[constraint.center2_point_id], points[constraint.radius2_point_id])
+            if abs(r1 - r2) > tolerance:
+                return False
+        elif isinstance(constraint, AngleConstraint):
+            actual_degrees = _angle_between_degrees(
+                points[constraint.line1_start_id],
+                points[constraint.line1_end_id],
+                points[constraint.line2_start_id],
+                points[constraint.line2_end_id],
+            )
+            target_degrees = abs(constraint.angle_degrees) % 360
+            target_degrees = min(target_degrees, 360 - target_degrees)
+            if abs(actual_degrees - target_degrees) > 1e-2:
+                return False
+        elif isinstance(constraint, TangentConstraint):
+            radius = _distance(points[constraint.center_point_id], points[constraint.radius_point_id])
+            actual_distance = _point_line_distance(
+                points[constraint.center_point_id],
+                points[constraint.line_start_id],
+                points[constraint.line_end_id],
+            )
+            if abs(actual_distance - radius) > tolerance:
+                return False
+        elif isinstance(constraint, LineDistanceConstraint):
+            actual_distance = _point_line_distance(
+                points[constraint.line2_start_id],
+                points[constraint.line1_start_id],
+                points[constraint.line1_end_id],
+            )
+            if abs(actual_distance - constraint.distance) > tolerance:
+                return False
+
+    return True
+
+
 # Group 1 holds the fixed workplane (origin + normal); group 2 holds every
 # Point/Constraint being solved. There is no need for finer-grained groups
 # at this stage - the whole Sketch is solved as one batch.
@@ -522,6 +657,21 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
 
     result_code = system.solve(group=_SOLVE_GROUP, reportFailed=True)
     converged = result_code == 0
+
+    # Point positions are written back *before* either redundancy override
+    # below (both the narrow one and the residual-based one) rather than
+    # after, the same "best effort even when it doesn't fully converge"
+    # behaviour this function has always had - `_residual_verified_
+    # convergence` needs the just-solved positions in `sketch.points` to
+    # check against.
+    for point_id in builder.solved_point_ids():
+        handle = builder.handle_for_point(point_id)
+        u_param = system.getEntityParam(handle, 0)
+        v_param = system.getEntityParam(handle, 1)
+        point = sketch.points[point_id]
+        point.x = system.getParam(u_param).val
+        point.y = system.getParam(v_param).val
+
     if (
         not converged
         and result_code in (4, 5)
@@ -556,6 +706,15 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         # blanket override would have silently reintroduced.
         converged = True
 
+    if not converged and _residual_verified_convergence(sketch):
+        # Stacked redundancy (e.g. a Polygon's own already-redundant
+        # EqualLength/EqualRadius/Angle chain plus a further genuinely-
+        # implied Constraint on top, like an "across flats" LineDistance
+        # between two opposite edges) - see `_residual_verified_
+        # convergence`'s own doc comment for why `result_code` alone can't
+        # tell this apart from a real conflict here.
+        converged = True
+
     # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via
     # Tangent/EqualRadius, arc1's own radius DistanceConstraint still
     # `provisional` - see that flag's own doc comment) showed as fully
@@ -584,14 +743,6 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         dof = max(system.Dof, 1)
     else:
         dof = system.Dof
-
-    for point_id in builder.solved_point_ids():
-        handle = builder.handle_for_point(point_id)
-        u_param = system.getEntityParam(handle, 0)
-        v_param = system.getEntityParam(handle, 1)
-        point = sketch.points[point_id]
-        point.x = system.getParam(u_param).val
-        point.y = system.getParam(v_param).val
 
     solver_reported_failed_constraint_ids = [
         constraint_id_by_handle[handle]

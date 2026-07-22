@@ -3,6 +3,7 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -5915,6 +5916,184 @@ void main() {
     final lineDistanceConstraints = controller.constraints.values.whereType<LineDistanceConstraintDto>();
     expect(lineDistanceConstraints.length, 1);
     expect(lineDistanceConstraints.single.distance, 9.0);
+  });
+
+  test(
+      'dimensioning a Slot\'s two parallel straight sides shows a lineDistance ghost, not a '
+      'mismatched point-to-point one (on-device feedback: "I experienced an issue adding a '
+      'dimension between the two parallel lines in a slot. it offered dimensions between the '
+      'midpoint of one line and the end point of another" - _resolveSelectableAt resolves each '
+      'tap independently: a tap near a Line\'s middle materializes its midpoint into a real '
+      'Point, a tap nearer a Line\'s own end (here, shared with the adjacent Arc) resolves to '
+      'that endpoint Point directly - both come back as SelectionKind.point, so the dispatch '
+      'used to fall through to an ordinary point distance instead of the correct parallel-Line '
+      'one)', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(10, 5); // radius 5
+    controller.exitToSelectMode();
+    // line1 runs b=(0,-5) -> c=(20,-5); line2 runs d=(20,5) -> a=(0,5) - see
+    // _slotCorners' own doc comment for this exact pairing.
+    final line1 = controller.lines.values.firstWhere(
+      (line) => !line.construction && controller.points[line.startPointId]!.y < 0,
+    );
+    final line2 = controller.lines.values.firstWhere(
+      (line) => !line.construction && controller.points[line.startPointId]!.y > 0,
+    );
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(10, -5); // line1's exact midpoint - materializes a Point
+    // line2's own start Point (shared with an Arc) - a real endpoint, not a midpoint.
+    final line2Start = controller.points[line2.startPointId]!;
+    await controller.handleCanvasTap(line2Start.x, line2Start.y);
+
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'lineDistance'});
+    final ghost = controller.ghosts.single;
+    expect(ghost.kind, GhostKind.lineDistance);
+    expect({ghost.lineAId, ghost.lineBId}, {line1.id, line2.id});
+    expect(controller.currentGhostValue(ghost), closeTo(10.0, 1e-9));
+  });
+
+  group('Slot construction points (arc apex + centreline midpoint), hover/select-only visible '
+      '(on-device feedback: "some points need to be available and visible for the user to use to '
+      'constrain: mid point of slot, midpoints of slot radii... These should respect hover '
+      'highlight and be visible when selected but should remain unseen otherwise")', () {
+    test('hoveredLineMidpoint reveals an intact Slot\'s Arc apex when the cursor is near it, and '
+        'stays null when it is not', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+
+      // arc1's apex is directly opposite the two straight sides, on the
+      // extended centreline: centre1 - radius along the c1->c2 direction.
+      controller.cursorX = -5;
+      controller.cursorY = 0;
+      expect(controller.hoveredLineMidpoint, isNotNull);
+      expect(controller.hoveredLineMidpoint!.$1, closeTo(-5, 1e-9));
+      expect(controller.hoveredLineMidpoint!.$2, closeTo(0, 1e-9));
+
+      controller.cursorX = 100;
+      controller.cursorY = 100;
+      expect(controller.hoveredLineMidpoint, isNull);
+    });
+
+    test('tapping near an intact Slot\'s Arc apex in dimension mode materializes a real Point '
+        'there, usable like any other dimension pick', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final pointCountBefore = controller.points.length;
+      controller.enterDimensionMode();
+
+      await controller.handleCanvasTap(-5, 0); // arc1's apex
+      await controller.handleCanvasTap(25, 0); // arc2's apex
+
+      expect(controller.points.length, pointCountBefore + 2);
+      expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+      final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
+      expect(controller.currentGhostValue(linearGhost), closeTo(30.0, 1e-6));
+    });
+
+    test('a trimmed Slot (no longer intact) offers no Arc-apex snap target', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final arc1 = controller.arcs.values.first;
+      final line1 = controller.lines.values.firstWhere(
+        (line) => !line.construction && (line.startPointId == arc1.endPointId || line.endPointId == arc1.endPointId),
+      );
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: line1.id));
+      await controller.deleteSelected();
+
+      controller.cursorX = -5;
+      controller.cursorY = 0;
+      expect(controller.hoveredLineMidpoint, isNull);
+    });
+  });
+
+  group('Circle/Polygon centre hover-reveal with a 3-second delayed hide (on-device feedback: '
+      '"when I hover over any part of a polygon or circle the midpoint should show as a centre '
+      'mark and it should hide 3 seconds after the cursor is no longer hovering over part of that '
+      'shape. This allows the user to see it, select it without it being otherwise distracting")', () {
+    test('hovering a Circle\'s curve reveals its centre Point', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      expect(controller.revealedShapeCenterPointId, isNull);
+
+      controller.moveCursorToSketchPoint(5, 0); // on the circle's own curve
+
+      expect(controller.revealedShapeCenterPointId, circle.centerPointId);
+    });
+
+    test('hovering a Polygon\'s own edge reveals its centre Point', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(6);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final line = controller.lines[polygon.lineIds.first]!;
+      final start = controller.points[line.startPointId]!;
+      final end = controller.points[line.endPointId]!;
+
+      controller.moveCursorToSketchPoint((start.x + end.x) / 2, (start.y + end.y) / 2);
+
+      expect(controller.revealedShapeCenterPointId, polygon.centerPointId);
+    });
+
+    test('hovering something unrelated never reveals a centre', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      controller.exitToSelectMode();
+
+      controller.moveCursorToSketchPoint(100, 100);
+
+      expect(controller.revealedShapeCenterPointId, isNull);
+    });
+
+    test('moving off the shape does not hide the centre immediately, hides it only after 3 '
+        'seconds, and a re-hover before then cancels the pending hide', () {
+      fakeAsync((async) {
+        controller
+          ..selectDrawTool(SketchTool.circle)
+          ..handleCanvasTap(0, 0);
+        async.flushMicrotasks();
+        controller.handleCanvasTap(5, 0);
+        async.flushMicrotasks();
+        controller.exitToSelectMode();
+        final circle = controller.circles.values.single;
+
+        controller.moveCursorToSketchPoint(5, 0);
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId);
+
+        controller.moveCursorToSketchPoint(100, 100); // off the shape
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId,
+            reason: 'must not hide the instant the cursor leaves');
+
+        async.elapse(const Duration(seconds: 2));
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId, reason: 'not 3 seconds yet');
+
+        controller.moveCursorToSketchPoint(5, 0); // back on the circle before the hide fires
+        async.elapse(const Duration(seconds: 2)); // 4s total since first leaving, but re-hovered at 2s
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId,
+            reason: 'a re-hover before the hide fires must cancel it, not just delay it');
+
+        controller.moveCursorToSketchPoint(100, 100);
+        async.elapse(const Duration(seconds: 3, milliseconds: 1));
+        expect(controller.revealedShapeCenterPointId, isNull);
+      });
+    });
   });
 
   test(

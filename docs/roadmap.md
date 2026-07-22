@@ -105,6 +105,26 @@ entries) - with one real gap confirmed by a direct code audit:
     ("select all > delete doesn't work on polygons, says constraint not
     found" - see `docs/status.md`); Slot hasn't gotten the equivalent pass
     yet.
+  - **A Slot's arc-apex construction Points (2026-07-22 follow-up, see
+    `docs/status.md`) don't auto-update on drag/resize** - deliberately
+    unconstrained (no existing solver primitive expresses "stays
+    diametrically opposite this Arc's own chord"), so once materialized
+    they go stale if the Slot is later dragged/resized, unlike the
+    centreline midpoint (which stays live via a real `AtMidpointConstraint`).
+    Acceptable for v1 (a reference point the user places when needed, not
+    something dragged independently), but worth a real fix - most likely by
+    teaching the closed-form drag rebuild's own `_closedFormSlotGeometry` to
+    also re-sync any materialized apex Points it finds, the same way it
+    already re-syncs a/b/c/d.
+  - **Residual-based redundancy verification** (`_residual_verified_
+    convergence`/`_residualVerifiedConvergence`, 2026-07-22) only covers
+    Distance/EqualLength/EqualRadius/Angle/Tangent/LineDistanceConstraint -
+    a closed allowlist, deliberately (falls through to ordinary failure
+    reporting rather than guess for any other type present). If a future
+    on-device report surfaces the same "doubly-redundant but consistent"
+    symptom involving a Parallel/Perpendicular/Coincident/Collinear/
+    PointLineDistance/SplineTangent Constraint, that's the function to
+    extend, following the exact same per-type residual-formula pattern.
 - **Sketch dimension rendering/hit-testing has two independent
   implementations** (`sketch_canvas.dart` for the flat 2D canvas,
   `sketch_constraint_overlay.dart` for the 3D-embedded sketcher) that can

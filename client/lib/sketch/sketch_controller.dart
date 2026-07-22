@@ -2671,6 +2671,86 @@ class SketchController extends ChangeNotifier {
     return _entityAt(cursorX, cursorY, radius, includeOrigin: true);
   }
 
+  Timer? _centerRevealHideTimer;
+  String? _revealedShapeCenterPointId;
+
+  /// The Circle/Polygon centre Point currently revealed by hover - null
+  /// (hidden) otherwise. On-device feedback: "when I hover over any part
+  /// of a polygon or circle the midpoint should show as a centre mark and
+  /// it should hide 3 seconds after the cursor is no longer hovering over
+  /// part of that shape. This allows the user to see it, select it without
+  /// it being otherwise distracting" - both centre Points used to be
+  /// rendered unconditionally, every frame, with no gating at all
+  /// (`sketch_canvas.dart`'s/`sketch_geometry_3d.dart`'s own per-point draw
+  /// loops draw every entry in [points] - callers add `id ==
+  /// revealedShapeCenterPointId` as one more condition alongside their
+  /// existing selection check, not a new drawing path). See
+  /// [_updateShapeCenterReveal] for how this gets set.
+  String? get revealedShapeCenterPointId => _revealedShapeCenterPointId;
+
+  /// Called from every cursor-movement entry point ([moveCursorAbsoluteScreen]/
+  /// [moveCursorRelative]/[moveCursorToSketchPoint] - the same "runs on
+  /// every cursor move" placement [_trackArcSweep] already has, covering
+  /// both the 2D canvas and the 3D-embedded view identically since
+  /// [SketchController] is shared by both). Hovering any part of a Circle
+  /// (its own curve) or Polygon (any of its own Lines) reveals that
+  /// shape's own centre Point immediately, cancelling any pending hide;
+  /// moving off it starts (or leaves running, if already started) a 3-
+  /// second [Timer] that clears the reveal when it fires - reset-on-re-
+  /// hover, the same cancel/reschedule idiom the debounce Timers elsewhere
+  /// in this codebase already use (e.g. `part_screen.dart`'s
+  /// `_extrudeDebounce`), just repurposed to hide instead of fire-once.
+  void _updateShapeCenterReveal() {
+    final hovered = hoveredEntity();
+    String? centerPointId;
+    if (hovered != null && hovered.kind == SelectionKind.circle) {
+      centerPointId = circles[hovered.id]?.centerPointId;
+    } else if (hovered != null && hovered.kind == SelectionKind.point) {
+      // The centre Point itself is hidden by default (see
+      // revealedShapeCenterPointId's own doc comment), but hit-testing
+      // doesn't care about render visibility - a cursor landing exactly on
+      // an already-hidden centre still resolves as a direct Point hover,
+      // and must reveal it the same as hovering the shape's own curve/
+      // edges would.
+      for (final circle in circles.values) {
+        if (circle.centerPointId == hovered.id) {
+          centerPointId = hovered.id;
+          break;
+        }
+      }
+      if (centerPointId == null) {
+        for (final polygon in polygons.values) {
+          if (polygon.centerPointId == hovered.id) {
+            centerPointId = hovered.id;
+            break;
+          }
+        }
+      }
+    } else if (hovered != null && hovered.kind == SelectionKind.line) {
+      for (final polygon in polygons.values) {
+        if (polygon.lineIds.contains(hovered.id)) {
+          centerPointId = polygon.centerPointId;
+          break;
+        }
+      }
+    }
+
+    if (centerPointId != null) {
+      _centerRevealHideTimer?.cancel();
+      _centerRevealHideTimer = null;
+      _revealedShapeCenterPointId = centerPointId;
+      return;
+    }
+
+    if (_revealedShapeCenterPointId != null && _centerRevealHideTimer == null) {
+      _centerRevealHideTimer = Timer(const Duration(seconds: 3), () {
+        _centerRevealHideTimer = null;
+        _revealedShapeCenterPointId = null;
+        notifyListeners();
+      });
+    }
+  }
+
   /// The id of the existing Line whose midpoint is nearest the given
   /// location and within [radius], or null if none qualifies - the
   /// lookup behind making "Line midpoints usable when constraining or
@@ -2696,19 +2776,16 @@ class SketchController extends ChangeNotifier {
     return bestId;
   }
 
-  /// The cursor-hovered Line's current midpoint, in sketch-space, or null
-  /// if none is within [snapRadius] - drives the canvas's midpoint snap
-  /// marker (new work package item 5's discoverability for an otherwise
-  /// invisible snap target), reusing [_nearestLineMidpointId]'s own lookup
-  /// so the marker and the actual snap behavior never disagree.
+  /// The cursor-hovered construction-only snap target's current position,
+  /// in sketch-space, or null if none is within [snapRadius] - drives the
+  /// canvas's midpoint snap marker (new work package item 5's
+  /// discoverability for an otherwise invisible snap target). On-device
+  /// feedback: covers an intact Slot's own Arc apexes too now
+  /// ([_nearestConstructionSnapAt]), not just a Line's midpoint - same
+  /// marker, so it and the actual snap behaviour ([_resolveSelectableAt])
+  /// never disagree.
   (double, double)? get hoveredLineMidpoint {
-    final lineId = _nearestLineMidpointId(cursorX, cursorY, snapRadius);
-    if (lineId == null) return null;
-    final line = lines[lineId]!;
-    final start = points[line.startPointId];
-    final end = points[line.endPointId];
-    if (start == null || end == null) return null;
-    return ((start.x + end.x) / 2, (start.y + end.y) / 2);
+    return _nearestConstructionSnapAt(cursorX, cursorY, snapRadius)?.position;
   }
 
   /// Creates (or reuses, if one was already materialized at this exact
@@ -2744,6 +2821,115 @@ class SketchController extends ChangeNotifier {
     _pushUndo(() async => _api.deleteConstraint(_sketchId!, midpointConstraint.id));
 
     return created.id;
+  }
+
+  /// The apex ("far tip") of an intact [slot]'s [isArc1] end-cap Arc - the
+  /// point directly opposite the two straight sides, on the extended
+  /// centreline at the Slot's own radius beyond that Arc's own centre (on-
+  /// device feedback, confirmed with the user: "the midpoint of the arc at
+  /// either end of the slot... also the end points of the construction
+  /// line" - the centreline, extended). Same closed-form math as
+  /// [_closedFormSlotGeometry]'s own corner recompute, just evaluated at
+  /// the diametrically-opposite angle instead of at a/b/c/d. Null for a
+  /// degenerate Slot (zero-length centreline or missing Points).
+  (double, double)? _slotArcApex(SketchSlotView slot, {required bool isArc1}) {
+    final c1 = points[slot.center1PointId];
+    final c2 = points[slot.center2PointId];
+    final a = points[slot.aPointId];
+    if (c1 == null || c2 == null || a == null) return null;
+    final dx = c2.x - c1.x;
+    final dy = c2.y - c1.y;
+    final length = math.sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) return null;
+    final dirX = dx / length;
+    final dirY = dy / length;
+    final radius = math.sqrt(math.pow(a.x - c1.x, 2) + math.pow(a.y - c1.y, 2));
+    return isArc1 ? (c1.x - dirX * radius, c1.y - dirY * radius) : (c2.x + dirX * radius, c2.y + dirY * radius);
+  }
+
+  /// The still-intact Slot (and which of its two Arcs) whose apex sits
+  /// nearest [x]/[y] within [radius], or null - [_nearestLineMidpointId]'s
+  /// own shape, applied to [_slotArcApex] instead of a Line's midpoint.
+  (SketchSlotView, bool)? _nearestSlotArcApex(double x, double y, double radius) {
+    (SketchSlotView, bool)? best;
+    var bestDistSq = double.infinity;
+    for (final slot in slots.values) {
+      if (_intactSlotForPoint(slot.center1PointId) == null) continue;
+      for (final isArc1 in [true, false]) {
+        final apex = _slotArcApex(slot, isArc1: isArc1);
+        if (apex == null) continue;
+        final dx = x - apex.$1;
+        final dy = y - apex.$2;
+        final distSq = dx * dx + dy * dy;
+        if (distSq <= radius * radius && distSq < bestDistSq) {
+          bestDistSq = distSq;
+          best = (slot, isArc1);
+        }
+      }
+    }
+    return best;
+  }
+
+  /// [_materializeMidpoint]'s counterpart for a Slot Arc's apex - a plain
+  /// reference Point, reused if one already sits exactly there (same
+  /// coincidence check). Deliberately unconstrained (no live-tracking
+  /// constraint, unlike a Line midpoint's `AtMidpointConstraint`): the
+  /// apex's own position is fully determined by the Slot's centres/radius,
+  /// which already have their own closed-form drag recompute
+  /// ([_closedFormSlotGeometry]) - there's no existing solver primitive for
+  /// "stays diametrically opposite this Arc's own chord" to hang a second,
+  /// redundant constraint off of, and this Point is a reference target for
+  /// the user's own further dimensioning, not something meant to be
+  /// dragged independently.
+  Future<String> _materializeSlotArcApex(SketchSlotView slot, {required bool isArc1}) async {
+    final apex = _slotArcApex(slot, isArc1: isArc1)!;
+    for (final existing in points.values) {
+      final dx = existing.x - apex.$1;
+      final dy = existing.y - apex.$2;
+      if (dx * dx + dy * dy <= 1e-9) return existing.id;
+    }
+    final created = await _api.createPoint(_sketchId!, apex.$1, apex.$2);
+    points[created.id] = SketchPointView(id: created.id, x: created.x, y: created.y);
+    _pushUndo(() async {
+      await _api.deletePoint(_sketchId!, created.id);
+      points.remove(created.id);
+    });
+    return created.id;
+  }
+
+  /// The single lookup+materialize entry point every tap-to-place/tap-to-
+  /// pick path goes through for a construction-only snap target not yet
+  /// backed by a real Point - a Line's midpoint ([_nearestLineMidpointId]/
+  /// [_materializeMidpoint]) or an intact Slot's own Arc apex
+  /// ([_nearestSlotArcApex]/[_materializeSlotArcApex]). Returns the target's
+  /// current position (for a hover indicator, see [hoveredConstructionSnapPoint])
+  /// alongside a callback that materializes it into a real Point on demand -
+  /// callers that only need the position (rendering) never call it; callers
+  /// that need a Point id (picking/placing) do.
+  ({(double, double) position, Future<String> Function() materialize})? _nearestConstructionSnapAt(
+    double x,
+    double y,
+    double radius,
+  ) {
+    final lineId = _nearestLineMidpointId(x, y, radius);
+    if (lineId != null) {
+      final line = lines[lineId]!;
+      final start = points[line.startPointId]!;
+      final end = points[line.endPointId]!;
+      return (
+        position: ((start.x + end.x) / 2, (start.y + end.y) / 2),
+        materialize: () => _materializeMidpoint(lineId),
+      );
+    }
+    final apexTarget = _nearestSlotArcApex(x, y, radius);
+    if (apexTarget != null) {
+      final (slot, isArc1) = apexTarget;
+      final position = _slotArcApex(slot, isArc1: isArc1);
+      if (position != null) {
+        return (position: position, materialize: () => _materializeSlotArcApex(slot, isArc1: isArc1));
+      }
+    }
+    return null;
   }
 
   /// The id of an existing Point within [snapRadius] of [x]/[y] (closest
@@ -2798,9 +2984,9 @@ class SketchController extends ChangeNotifier {
   Future<SketchSelection?> _resolveSelectableAt(double radius) async {
     final direct = _entityAt(cursorX, cursorY, radius, includeOrigin: true);
     if (direct != null && direct.kind == SelectionKind.point) return direct;
-    final midpointLineId = _nearestLineMidpointId(cursorX, cursorY, snapRadius);
-    if (midpointLineId != null) {
-      final pointId = await _materializeMidpoint(midpointLineId);
+    final snap = _nearestConstructionSnapAt(cursorX, cursorY, snapRadius);
+    if (snap != null) {
+      final pointId = await snap.materialize();
       return SketchSelection(kind: SelectionKind.point, id: pointId);
     }
     return direct;
@@ -6953,6 +7139,67 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Every Line [pointId] is "on" - its own endpoint, or sitting exactly at
+  /// its current midpoint (a materialized-midpoint Point - see
+  /// [_materializeMidpoint] - always lands exactly on the midpoint it was
+  /// created from, so an exact-coincidence check is enough, no snap
+  /// tolerance needed). Used by [_parallelLinePairForPoints] below to
+  /// recover "the user tapped two points that are really about two Lines"
+  /// intent from a pair of already-resolved Point picks.
+  List<String> _linesForDimensionPoint(String pointId) {
+    final point = points[pointId];
+    if (point == null) return const [];
+    final result = <String>[];
+    for (final line in lines.values) {
+      if (line.startPointId == pointId || line.endPointId == pointId) {
+        result.add(line.id);
+        continue;
+      }
+      final start = points[line.startPointId];
+      final end = points[line.endPointId];
+      if (start == null || end == null) continue;
+      final dx = point.x - (start.x + end.x) / 2;
+      final dy = point.y - (start.y + end.y) / 2;
+      if (dx * dx + dy * dy <= 1e-9) result.add(line.id);
+    }
+    return result;
+  }
+
+  /// On-device feedback ("adding a dimension between the two parallel lines
+  /// in a Slot... offered a dimension between the midpoint of one line and
+  /// the end point of another"): [_resolveSelectableAt] resolves each tap
+  /// independently - a tap near a Line's middle materializes its midpoint
+  /// into a real Point, a tap nearer a Line's own end resolves to that
+  /// endpoint Point directly - so two taps meant as "the distance between
+  /// these two Lines" can both come back as plain [SelectionKind.point]
+  /// picks, losing that intent and falling through to an ordinary point-to-
+  /// point distance instead of the correct parallel-Line one. If both
+  /// picked Points are each "on" some Line (via [_linesForDimensionPoint])
+  /// and there's a pair of *different, parallel* Lines between the two
+  /// candidate sets, this recovers the real intent - [_rebuildDimensionGhosts]
+  /// routes to [_buildLinePairGhosts] with that pair instead of
+  /// [_buildPointDistanceGhosts]. Returns null (no change in behaviour) if
+  /// no such pair exists - an ordinary two-Point pick with no Line
+  /// involvement at all, or two Points on the same Line, still gets a plain
+  /// point distance.
+  (String, String)? _parallelLinePairForPoints(String pointAId, String pointBId) {
+    final linesA = _linesForDimensionPoint(pointAId);
+    if (linesA.isEmpty) return null;
+    final linesB = _linesForDimensionPoint(pointBId);
+    if (linesB.isEmpty) return null;
+    for (final lineAId in linesA) {
+      final lineA = lines[lineAId];
+      if (lineA == null) continue;
+      for (final lineBId in linesB) {
+        if (lineBId == lineAId) continue;
+        final lineB = lines[lineBId];
+        if (lineB == null) continue;
+        if (_linesAreParallel(lineA, lineB)) return (lineAId, lineBId);
+      }
+    }
+    return null;
+  }
+
   /// Dispatches [_dimensionSelection]'s current shape onto a ghost set, per
   /// the new work package's combination table: one Line -> length; one
   /// Circle or Arc -> radius+diameter; two Points, or a Point+Line
@@ -7027,6 +7274,11 @@ class SketchController extends ChangeNotifier {
       final kinds = {a.kind, b.kind};
 
       if (kinds.length == 1 && kinds.single == SelectionKind.point) {
+        final linePair = _parallelLinePairForPoints(a.id, b.id);
+        if (linePair != null) {
+          _buildLinePairGhosts(linePair.$1, linePair.$2);
+          return;
+        }
         _buildPointDistanceGhosts(a.id, b.id);
         return;
       }
@@ -7716,6 +7968,7 @@ class SketchController extends ChangeNotifier {
     cursorX += dxPixels * scale;
     cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
     _trackArcSweep();
+    _updateShapeCenterReveal();
     notifyListeners();
   }
 
@@ -7729,6 +7982,7 @@ class SketchController extends ChangeNotifier {
     cursorX = coord.x;
     cursorY = coord.y;
     _trackArcSweep();
+    _updateShapeCenterReveal();
     notifyListeners();
   }
 
@@ -7743,6 +7997,7 @@ class SketchController extends ChangeNotifier {
     cursorX = sketchX;
     cursorY = sketchY;
     _trackArcSweep();
+    _updateShapeCenterReveal();
     notifyListeners();
   }
 
@@ -9716,6 +9971,7 @@ class SketchController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _centerRevealHideTimer?.cancel();
     _api.close();
     super.dispose();
   }

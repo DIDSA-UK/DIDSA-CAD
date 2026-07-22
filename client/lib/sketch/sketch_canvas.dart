@@ -3721,6 +3721,15 @@ class _SketchPainter extends CustomPainter {
     final ellipseCenterId = controller.ellipseCenterPointId;
     final ellipseMajorId = controller.ellipseMajorPointId;
     final splineThroughIds = controller.splineInProgress ? controller.splineThroughPointIds : const <String>[];
+    // On-device feedback: a Circle's/Polygon's own centre Point used to be
+    // drawn unconditionally, every frame - now hidden unless hover-revealed
+    // (SketchController.revealedShapeCenterPointId) or selected, to avoid
+    // clutter (see that getter's own doc comment).
+    final shapeCenterIds = <String>{
+      for (final circle in controller.circles.values) circle.centerPointId,
+      for (final polygon in controller.polygons.values) polygon.centerPointId,
+    };
+    final revealedShapeCenterId = controller.revealedShapeCenterPointId;
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
@@ -3735,6 +3744,14 @@ class _SketchPainter extends CustomPainter {
       final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
+      if (shapeCenterIds.contains(point.id) &&
+          !isCircleCenter &&
+          !isPolygonCenter &&
+          point.id != revealedShapeCenterId &&
+          !pointIsSelected &&
+          !pointIsGrabbed) {
+        continue;
+      }
       final screenPos = transform.sketchToScreen(point.x, point.y);
       Color color = _unconstrainedColor;
       double radius = _pointRadius;

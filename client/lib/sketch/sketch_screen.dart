@@ -38,9 +38,34 @@ import 'sketcher_preferences.dart';
 /// that don't carry the `length`/`radius` fields those DTOs do (the backend
 /// computes those; the live client-side views don't store them), so they're
 /// recomputed here via plain distance formulas.
-List<PointDto> _pointDtosFrom(SketchController controller) => [
-      for (final p in controller.points.values) PointDto(id: p.id, x: p.x, y: p.y),
-    ];
+/// On-device feedback: a Circle's/Polygon's own centre Point used to be
+/// converted (and so rendered) unconditionally, every frame - now excluded
+/// unless hover-revealed (`SketchController.revealedShapeCenterPointId`),
+/// selected, actively grabbed, or the live in-progress anchor of that same
+/// draw tool, mirroring `sketch_canvas.dart`'s own equivalent gate exactly
+/// (see `revealedShapeCenterPointId`'s own doc comment for why).
+List<PointDto> _pointDtosFrom(SketchController controller) {
+  final shapeCenterIds = <String>{
+    for (final circle in controller.circles.values) circle.centerPointId,
+    for (final polygon in controller.polygons.values) polygon.centerPointId,
+  };
+  final revealedId = controller.revealedShapeCenterPointId;
+  bool isSelected(String id) =>
+      controller.selectionSet.any((s) => s.kind == SelectionKind.point && s.id == id) ||
+      controller.dimensionSelection.any((s) => s.kind == SelectionKind.point && s.id == id);
+  bool isInProgressAnchor(String id) =>
+      (controller.circleInProgress && id == controller.circleCenterPointId) ||
+      (controller.polygonInProgress && id == controller.polygonCenterPointId);
+  return [
+    for (final p in controller.points.values)
+      if (!shapeCenterIds.contains(p.id) ||
+          p.id == revealedId ||
+          isSelected(p.id) ||
+          controller.draggingPointId == p.id ||
+          isInProgressAnchor(p.id))
+        PointDto(id: p.id, x: p.x, y: p.y),
+  ];
+}
 
 double _sketchPointDistance(SketchPointView a, SketchPointView b) {
   final dx = b.x - a.x;
