@@ -3213,6 +3213,16 @@ void main() {
     expect(controller.chainFirstPointId, isNot(controller.originPointId));
     expect(controller.points.length, 2); // the origin, plus a new Point coincident with it
     expect(controller.errorMessage, isNull);
+    // Bug fix: the new Point is created exactly on the origin ((0, 0), not
+    // the raw (0.1, 0.1) tap it snapped from) - see
+    // SketchController._createPointCoincidentWithExisting's own doc
+    // comment for why leaving it merely *near* the origin (a small
+    // solve away from actually satisfying its own fresh
+    // CoincidentConstraint) reliably collapsed a freshly-placed Polygon
+    // to a single point.
+    final newPoint = controller.points[controller.chainFirstPointId]!;
+    expect(newPoint.x, 0);
+    expect(newPoint.y, 0);
   });
 
   test(

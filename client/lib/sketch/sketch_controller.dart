@@ -10489,7 +10489,7 @@ class SketchController extends ChangeNotifier {
       // this method's own doc comment), the fix applies uniformly across
       // all of them.
       if (existing == _originPointId) {
-        return _createPointCoincidentWithExisting(x, y, existing);
+        return _createPointCoincidentWithExisting(existing);
       }
       return existing;
     }
@@ -10506,13 +10506,35 @@ class SketchController extends ChangeNotifier {
     return point.id;
   }
 
-  /// Creates a new Point at ([x], [y]) and links it to [targetId] with a
-  /// CoincidentConstraint, rather than reusing [targetId]'s own id directly
-  /// - see [_pointIdAt]'s own doc comment for why this matters for the
-  /// origin. Mirrors [_autoCoincideIfNear]'s own create-then-constrain
-  /// pattern.
-  Future<String> _createPointCoincidentWithExisting(double x, double y, String targetId) async {
-    final point = await _api.createPoint(_sketchId!, x, y);
+  /// Creates a new Point exactly at [targetId]'s own current position and
+  /// links it to [targetId] with a CoincidentConstraint, rather than
+  /// reusing [targetId]'s own id directly - see [_pointIdAt]'s own doc
+  /// comment for why this matters for the origin. Mirrors
+  /// [_autoCoincideIfNear]'s own create-then-constrain pattern.
+  ///
+  /// Bug fix: this used to create the new Point at the raw tapped
+  /// position - within [snapRadius] of [targetId], but not necessarily
+  /// exactly on it - leaving the fresh CoincidentConstraint one small solve away
+  /// from satisfied instead of already satisfied. Harmless for most
+  /// entities, but for a Polygon specifically that first post-placement
+  /// solve (see `_clickPolygonTool`'s own trailing `_solveAndTrackDof`)
+  /// pulls the just-created centre Point that small extra distance while
+  /// its own circumradius is still only a *provisional* (solver-skipped -
+  /// see `DistanceConstraint.provisional`) DistanceConstraint away from
+  /// the redundant EqualRadius/EqualLength/AngleConstraint chain `add_
+  /// polygon` builds - confirmed directly against the real solver: nudging
+  /// that already-fragile, scale-free chain's centre Point during the same
+  /// solve as an unrelated CoincidentConstraint reliably lands it in the
+  /// degenerate all-vertices-at-centre solution instead of the intended
+  /// one, i.e. exactly the on-device "polygon collapses to a single
+  /// invisible point" report - reproduced with every vertex within 1e-7 of
+  /// the origin. Creating the Point already exactly on [targetId] removes
+  /// the nudge entirely (the constraint starts satisfied, zero residual,
+  /// nothing for the solver to resolve), fixing the collapse at its root
+  /// rather than special-casing Polygon.
+  Future<String> _createPointCoincidentWithExisting(String targetId) async {
+    final target = points[targetId]!;
+    final point = await _api.createPoint(_sketchId!, target.x, target.y);
     points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
     _pushUndo(() async {
       await _api.deletePoint(_sketchId!, point.id);
