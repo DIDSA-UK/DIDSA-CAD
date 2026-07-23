@@ -158,8 +158,8 @@ void main() {
 
     final items = controller.dimensionGhostOverlayItems();
     expect(items, hasLength(1));
-    expect(items.single, isA<ConstraintLabelItem>());
-    expect((items.single as ConstraintLabelItem).text, '?');
+    expect(items.single, isA<ConstraintAngleDimensionItem>());
+    expect((items.single as ConstraintAngleDimensionItem).text, '?');
   });
 
   test('two parallel Lines produce a single lineDistance ghost item with "?" text', () async {

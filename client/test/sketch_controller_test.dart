@@ -2752,6 +2752,103 @@ void main() {
     expect(controller.linearOffsetDistanceFor(constraintId), 3.5);
   });
 
+  test(
+      'bug fix (on-device feedback: "radius and diameter dimensions are locked a set distance '
+      'from the arc or circle - I should be able to move them anywhere"): setRadialLegLength '
+      'flows through constraintOverlayItems as sketchLocalLegLength for a confirmed radial '
+      'DistanceConstraint, camera-independent unlike labelOffset', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+    await controller.confirmGhostValue('radius', 5.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintRadialDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalLegLength, isNull);
+    expect(controller.radialLegLengthFor(constraintId), isNull);
+
+    controller.setRadialLegLength(constraintId, 12.0);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintRadialDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalLegLength, 12.0);
+    expect(controller.radialLegLengthFor(constraintId), 12.0);
+  });
+
+  test(
+      'bug fix (on-device feedback: "dimensions should match technical drawing conventions"): '
+      'setAngleArcRadius flows through constraintOverlayItems as sketchLocalArcRadius for a '
+      'confirmed AngleConstraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // horizontal line, away from its own midpoint
+    await controller.handleCanvasTap(0.1, 8); // vertical line, away from its own midpoint
+    await controller.confirmGhostValue('angle', 90.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is AngleConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalArcRadius, isNull);
+    expect(controller.angleArcRadiusFor(constraintId), isNull);
+
+    controller.setAngleArcRadius(constraintId, 2.5);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalArcRadius, 2.5);
+    expect(controller.angleArcRadiusFor(constraintId), 2.5);
+  });
+
+  test(
+      'bug fix (on-device feedback: "when zooming in and out, the dimensions should not move '
+      'relative to the geometry"): labelOffsetForZoom rescales a raw screen-pixel offset recorded '
+      'at one pixelsPerUnit back to the same effective sketch-local vector at a different one',
+      () {
+    controller.beginLabelDrag('c0');
+    controller.updateLabelDrag(const Offset(20, 0), 10.0); // 2.0 sketch units at 10 px/unit
+    controller.endLabelDrag();
+
+    expect(controller.labelOffsetFor('c0'), const Offset(20, 0));
+    // Same pixelsPerUnit it was recorded at - unchanged.
+    expect(controller.labelOffsetForZoom('c0', 10.0), const Offset(20, 0));
+    // Zoomed in 2x since the drag - the same 2.0 sketch-unit offset is now
+    // 40px, not still 20px (the pre-fix bug: it used to stay a fixed 20px
+    // regardless of zoom, silently drifting relative to the geometry).
+    expect(controller.labelOffsetForZoom('c0', 20.0), const Offset(40, 0));
+    // Zoomed out 4x - correspondingly smaller.
+    expect(controller.labelOffsetForZoom('c0', 2.5), const Offset(5, 0));
+  });
+
+  test(
+      'labelOffsetForZoom falls back to the raw, unscaled offset when there is no recorded zoom '
+      'reference yet (e.g. a label offset written before this fix shipped, or via the embedded 3D '
+      'viewport\'s own fallback drag path, which passes no pixelsPerUnit)', () {
+    controller.beginLabelDrag('c0');
+    controller.updateLabelDrag(const Offset(15, 5)); // no pixelsPerUnit passed
+    controller.endLabelDrag();
+
+    expect(controller.labelOffsetForZoom('c0', 999.0), const Offset(15, 5));
+  });
+
   test('updateLabelDrag sums successive deltas onto the offset', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
@@ -6662,6 +6759,67 @@ void main() {
     expect(controller.constraints[constraintId], isA<DistanceConstraintDto>());
     expect((controller.constraints[constraintId] as DistanceConstraintDto).distance, 50.0);
     expect(controller.selectionSet, isEmpty);
+  });
+
+  test(
+      'bug fix (on-device feedback: "before this work any dimension could be edited... this has '
+      'been lost on certain dimension types"): selectedConstraintValue exposes an Angle '
+      'constraint\'s value, and updateSelectedConstraintValue PATCHes it', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.1, 8);
+    await controller.confirmGhostValue('angle', 90.0);
+    controller.exitToSelectMode();
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is AngleConstraintDto).key;
+    controller.selectConstraint(constraintId);
+
+    expect(controller.selectedConstraintValue, 90.0);
+    expect(controller.selectedConstraintHasValue, isTrue);
+    expect(controller.selectedConstraintIsAngle, isTrue);
+
+    await controller.updateSelectedConstraintValue(60.0);
+
+    expect(controller.errorMessage, isNull);
+    expect((controller.constraints[constraintId] as AngleConstraintDto).angleDegrees, 60.0);
+    expect(controller.selectionSet, isEmpty);
+  });
+
+  test(
+      'bug fix (on-device feedback: "this has been lost on certain dimension types"): '
+      'selectedConstraintValue exposes a LineDistance constraint\'s value (this getter never '
+      'covered it, a pre-existing gap now closed)', () {
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 0, y: 3);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 5, y: 3);
+    controller.lines['l1'] = const SketchLineView(id: 'l1', startPointId: 'p2', endPointId: 'p3');
+    controller.constraints['c0'] =
+        const LineDistanceConstraintDto(id: 'c0', line1Id: 'l0', line2Id: 'l1', distance: 3.0);
+    controller.selectConstraint('c0');
+
+    expect(controller.selectedConstraintValue, 3.0);
+    expect(controller.selectedConstraintHasValue, isTrue);
+    expect(controller.selectedConstraintIsAngle, isFalse);
+  });
+
+  test(
+      'bug fix (on-device feedback: "this has been lost on certain dimension types"): '
+      'selectedConstraintValue exposes a PointLineDistance constraint\'s value (this getter never '
+      'covered it, and the backend 422d any attempt to PATCH it - both gaps now closed)', () {
+    controller.points['pt'] = const SketchPointView(id: 'pt', x: 2, y: 3);
+    controller.constraints['c0'] =
+        const PointLineDistanceConstraintDto(id: 'c0', pointId: 'pt', lineId: 'l0', distance: 3.0);
+    controller.selectConstraint('c0');
+
+    expect(controller.selectedConstraintValue, 3.0);
+    expect(controller.selectedConstraintHasValue, isTrue);
+    expect(controller.selectedConstraintIsAngle, isFalse);
   });
 
   test(

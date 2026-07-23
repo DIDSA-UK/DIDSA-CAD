@@ -6,6 +6,7 @@ import 'package:flutter_scene/scene.dart' show Camera;
 import '../sketch/sketch_controller.dart'
     show
         ConstraintOverlayItem,
+        ConstraintAngleDimensionItem,
         ConstraintLabelItem,
         ConstraintLineDistanceDimensionItem,
         ConstraintLinearDimensionItem,
@@ -66,7 +67,7 @@ const Color _selectedColor = Colors.purple;
 const Color _dimensionLineColor = Colors.black;
 const Color _constraintBadgeColor = Color(0xFFF5A623);
 const double _dimensionFontSize = 9.5;
-const double _dimensionStrokeWidth = 1.125;
+const double _dimensionStrokeWidth = 1.35; // matches sketch_canvas.dart's _lineStrokeWidth(1.8) * 0.75
 const double _extensionLineGap = 4.0;
 const double _extensionLineOvershoot = 3.0;
 const double _arrowheadLength = 8.0;
@@ -75,6 +76,7 @@ const double _defaultDimensionOffset = 18.0;
 const double _minDimensionOffsetMagnitude = 6.0;
 const double _radialLegLength = 24.0;
 const double _diameterSymbolScale = 1.35;
+const double _defaultAngleArcRadius = 32.0;
 
 /// [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees]'s own rotation
 /// - shared by [_ConstraintOverlayPainter._paintRadialDimension] and
@@ -237,6 +239,76 @@ double? radialDimensionAngleDegrees({
   return (centerScreen, rimScreen, perpScreen);
 }
 
+/// The implied vertex where [item]'s two Lines' own infinite extensions
+/// intersect, plus each Line's outward unit ray from that vertex (pointing
+/// toward whichever endpoint that Line's own drawn segment occupies, so the
+/// arc/extension lines anchor to the real segments regardless of whether the
+/// vertex sits on, before, or beyond either one). Pure sketch-local
+/// geometry, no camera/projection involved - exposed (like
+/// [projectRadialDimensionBasis]) so [PartViewport]'s own angle label-drag
+/// handling can resolve the vertex without duplicating this intersection
+/// math.
+///
+/// `AngleConstraint` (backend/app/sketch/constraints.py) has no vertex field
+/// of its own - the two Lines need not share an endpoint - so the standard
+/// technical-drawing approach is used: extend both Lines to their own
+/// infinite intersection. Returns null when the two Lines are (near-)
+/// parallel, a degenerate case with no well-defined single vertex
+/// (effectively a 0deg/180deg angle) - callers fall back to a plain
+/// floating label, no arc/extension lines.
+((double, double) vertex, (double, double) ray1, (double, double) ray2)? angleDimensionVertexAndRays(
+  ConstraintAngleDimensionItem item,
+) {
+  final p1 = item.line1Start, p2 = item.line1End;
+  final p3 = item.line2Start, p4 = item.line2End;
+  final d1x = p2.$1 - p1.$1, d1y = p2.$2 - p1.$2;
+  final d2x = p4.$1 - p3.$1, d2y = p4.$2 - p3.$2;
+  final denom = d1x * d2y - d1y * d2x;
+  if (denom.abs() < 1e-9) return null;
+  final t = ((p3.$1 - p1.$1) * d2y - (p3.$2 - p1.$2) * d2x) / denom;
+  final vertex = (p1.$1 + t * d1x, p1.$2 + t * d1y);
+
+  (double, double) outwardRay(double dx, double dy, (double, double) a, (double, double) b) {
+    final len = math.sqrt(dx * dx + dy * dy);
+    if (len < 1e-9) return (1.0, 0.0);
+    final ux = dx / len, uy = dy / len;
+    final midX = (a.$1 + b.$1) / 2 - vertex.$1;
+    final midY = (a.$2 + b.$2) / 2 - vertex.$2;
+    final dot = ux * midX + uy * midY;
+    return dot >= 0 ? (ux, uy) : (-ux, -uy);
+  }
+
+  return (vertex, outwardRay(d1x, d1y, p1, p2), outwardRay(d2x, d2y, p3, p4));
+}
+
+/// Screen-space vertex/arc-endpoint points for [item] - shared by
+/// [_ConstraintOverlayPainter._paintAngleDimension] and
+/// [constraintOverlayItemLabelCenter] so they can never drift apart. Mirrors
+/// [_paintRadialDimension]'s own "local pixels-per-sketch-unit" technique,
+/// once per ray, since there's no single such scalar in a perspective 3D
+/// view.
+(Offset vertexScreen, Offset arcPoint1, Offset arcPoint2)? _angleArcScreenPoints(
+  Offset? Function((double, double)) project,
+  ConstraintAngleDimensionItem item,
+) {
+  final vertexAndRays = angleDimensionVertexAndRays(item);
+  if (vertexAndRays == null) return null;
+  final (vertex, ray1, ray2) = vertexAndRays;
+  final vertexScreen = project(vertex);
+  final unit1Screen = project((vertex.$1 + ray1.$1, vertex.$2 + ray1.$2));
+  final unit2Screen = project((vertex.$1 + ray2.$1, vertex.$2 + ray2.$2));
+  if (vertexScreen == null || unit1Screen == null || unit2Screen == null) return null;
+  final pxPerUnit1 = (unit1Screen - vertexScreen).distance;
+  final pxPerUnit2 = (unit2Screen - vertexScreen).distance;
+  if (pxPerUnit1 < 1e-6 || pxPerUnit2 < 1e-6) return null;
+  final arcRadiusPixels = item.sketchLocalArcRadius != null
+      ? item.sketchLocalArcRadius! * ((pxPerUnit1 + pxPerUnit2) / 2)
+      : _defaultAngleArcRadius;
+  final dir1 = (unit1Screen - vertexScreen) / pxPerUnit1;
+  final dir2 = (unit2Screen - vertexScreen) / pxPerUnit2;
+  return (vertexScreen, vertexScreen + dir1 * arcRadiusPixels, vertexScreen + dir2 * arcRadiusPixels);
+}
+
 class _ConstraintOverlayPainter extends CustomPainter {
   final Camera camera;
   final Size viewportSize;
@@ -261,6 +333,8 @@ class _ConstraintOverlayPainter extends CustomPainter {
           _paintLineDistanceDimension(canvas, it, color);
         case ConstraintRadialDimensionItem it:
           _paintRadialDimension(canvas, it, color);
+        case ConstraintAngleDimensionItem it:
+          _paintAngleDimension(canvas, it, color);
       }
     }
   }
@@ -304,32 +378,13 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final Offset p2;
     switch (item.orientation) {
       case 'vertical':
-        const normal = Offset(1, 0);
-        final offsetX = math.max(aScreen.dx, bScreen.dx) +
-            _resolveDimensionOffsetMagnitude(
-              normal: normal,
-              labelOffset: item.labelOffset,
-              sketchLocalOffsetDistance: item.sketchLocalOffsetDistance,
-              sketchReferenceLength: sketchLength,
-              screenReferenceLength: screenLength,
-            );
-        p1 = Offset(offsetX, aScreen.dy);
-        p2 = Offset(offsetX, bScreen.dy);
       case 'horizontal':
-        const normal = Offset(0, 1);
-        final offsetY = math.max(aScreen.dy, bScreen.dy) +
-            _resolveDimensionOffsetMagnitude(
-              normal: normal,
-              labelOffset: item.labelOffset,
-              sketchLocalOffsetDistance: item.sketchLocalOffsetDistance,
-              sketchReferenceLength: sketchLength,
-              screenReferenceLength: screenLength,
-            );
-        p1 = Offset(aScreen.dx, offsetY);
-        p2 = Offset(bScreen.dx, offsetY);
+        final endpoints = _axisLockedDimensionEndpoints(camera, viewportSize, basis, item);
+        if (endpoints == null) return;
+        (p1, p2) = endpoints;
       default:
         if (screenLength < 1e-6) return;
-        final normal = _canonicalPerpendicular(screenDelta);
+        final normal = canonicalPerpendicular(screenDelta);
         final offsetVec = normal *
             _resolveDimensionOffsetMagnitude(
               normal: normal,
@@ -435,7 +490,14 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final defaultLength = defaultDelta.distance;
     final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
 
-    final labelCenter = centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + item.labelOffset;
+    // Bug fix (on-device feedback: "radius and diameter dimensions are
+    // locked a set distance from the arc or circle"): [item.sketchLocalLegLength]
+    // (a sketch-unit distance, camera-independent) wins once the user has
+    // dragged the label's own distance from the circle; falls back to the
+    // old fixed on-screen leg length only before that first drag.
+    final legPixels =
+        item.sketchLocalLegLength != null ? item.sketchLocalLegLength! * pixelsPerUnit : _radialLegLength;
+    final labelCenter = centerScreen + defaultDirection * (radiusPixels + legPixels) + item.labelOffset;
     final desiredDelta = labelCenter - centerScreen;
     final desiredDirection =
         desiredDelta.distance < 1e-6 ? defaultDirection : desiredDelta / desiredDelta.distance;
@@ -476,6 +538,86 @@ class _ConstraintOverlayPainter extends CustomPainter {
       _drawArrowhead(canvas, touchScreen, -direction, color);
     }
     _drawDimensionLabel(canvas, labelCenter, item.text, color, plainBlackText: true);
+  }
+
+  /// Bug fix (on-device feedback: "dimensions should match technical
+  /// drawing conventions" - an angle dimension used to be a plain floating
+  /// text chip, no arc/witness lines at all): an ISO 129/ASME Y14.5-style
+  /// arc between [item]'s two Lines' own rays from their implied vertex
+  /// (see [angleDimensionVertexAndRays]'s own doc comment), with extension
+  /// lines from each Line's own farther endpoint out to the arc and
+  /// tangent arrowheads at each end - the same "local pixels-per-sketch-
+  /// unit" technique [_paintRadialDimension] already uses, since there's no
+  /// single such scalar in a perspective 3D view.
+  void _paintAngleDimension(Canvas canvas, ConstraintAngleDimensionItem item, Color color) {
+    final vertexAndRays = angleDimensionVertexAndRays(item);
+    if (vertexAndRays == null) {
+      // Degenerate/near-parallel fallback: old plain-chip look, no
+      // arc/extension lines, rather than crashing or disappearing.
+      final mid1 = ((item.line1Start.$1 + item.line1End.$1) / 2, (item.line1Start.$2 + item.line1End.$2) / 2);
+      final mid2 = ((item.line2Start.$1 + item.line2End.$1) / 2, (item.line2Start.$2 + item.line2End.$2) / 2);
+      final a = _project(mid1);
+      final b = _project(mid2);
+      if (a == null || b == null) return;
+      _drawDimensionLabel(canvas, (a + b) / 2 + item.labelOffset, item.text, color, plainBlackText: true);
+      return;
+    }
+    final (vertex, ray1, ray2) = vertexAndRays;
+    final arcPoints = _angleArcScreenPoints(_project, item);
+    if (arcPoints == null) return;
+    final (vertexScreen, arcPoint1, arcPoint2) = arcPoints;
+    final radiusPixels = (arcPoint1 - vertexScreen).distance;
+    if (radiusPixels < 1e-6) return;
+    final dir1 = (arcPoint1 - vertexScreen) / radiusPixels;
+    final dir2 = (arcPoint2 - vertexScreen) / radiusPixels;
+
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth;
+    // Note: Paint() defaults to PaintingStyle.fill - drawArc with a
+    // fill-style paint fills the pie wedge, not a stroked arc. Every other
+    // dimension paint in this file gets away with the default because none
+    // of them call drawArc, only drawLine/drawPath(closed triangle) - this
+    // is the first call site that needs the style set explicitly.
+    final arcPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth
+      ..style = PaintingStyle.stroke;
+
+    (double, double) farEndpoint((double, double) a, (double, double) b, (double, double) ray) {
+      final da = (a.$1 - vertex.$1) * ray.$1 + (a.$2 - vertex.$2) * ray.$2;
+      final db = (b.$1 - vertex.$1) * ray.$1 + (b.$2 - vertex.$2) * ray.$2;
+      return da >= db ? a : b;
+    }
+
+    final far1Screen = _project(farEndpoint(item.line1Start, item.line1End, ray1));
+    final far2Screen = _project(farEndpoint(item.line2Start, item.line2End, ray2));
+    if (far1Screen != null) _drawExtensionLine(canvas, far1Screen, arcPoint1, dimPaint);
+    if (far2Screen != null) _drawExtensionLine(canvas, far2Screen, arcPoint2, dimPaint);
+
+    final startAngle = math.atan2(dir1.dy, dir1.dx);
+    var sweep = math.atan2(dir2.dy, dir2.dx) - startAngle;
+    while (sweep <= -math.pi) {
+      sweep += 2 * math.pi;
+    }
+    while (sweep > math.pi) {
+      sweep -= 2 * math.pi;
+    }
+    canvas.drawArc(Rect.fromCircle(center: vertexScreen, radius: radiusPixels), startAngle, sweep, false, arcPaint);
+
+    final sweepSign = sweep.isNegative ? -1.0 : 1.0;
+    _drawArrowhead(canvas, arcPoint1, Offset(dir1.dy, -dir1.dx) * sweepSign, color);
+    _drawArrowhead(canvas, arcPoint2, Offset(-dir2.dy, dir2.dx) * sweepSign, color);
+
+    // The chord between the two arc endpoints stands in for the arc's own
+    // tangent/midpoint in [_dimensionLabelPlacement]'s along/leader-
+    // threshold heuristic - a close approximation for any non-reflex angle
+    // span, and reuses the exact existing inline-vs-leader placement logic.
+    final placement = _dimensionLabelPlacement(arcPoint1, arcPoint2, item.labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, item.text, color, plainBlackText: true);
   }
 
   void _drawExtensionLine(Canvas canvas, Offset from, Offset to, Paint paint) {
@@ -554,6 +696,72 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
   return raw;
 }
 
+/// Screen-space dimension-line endpoints for a `'vertical'`/`'horizontal'`-
+/// oriented [ConstraintLinearDimensionItem]. Shared by
+/// [_ConstraintOverlayPainter._paintLinearDimension] and
+/// [constraintOverlayItemLabelCenter] so they can never drift apart.
+///
+/// Bug fix (on-device feedback: "vertical dimension can't be dragged left/
+/// right, up/down is inverted"): the previous approach hardcoded a *screen*
+/// axis (`Offset(1,0)`/`Offset(0,1)`, copied verbatim from the flat 2D
+/// canvas file, where sketch-local axes and screen axes are always
+/// identical). In this 3D orbit view they are not - under camera orbit a
+/// sketch-vertical dimension's offset direction should tilt with the sketch
+/// plane like every other rendered entity does, and [PartViewport]'s own
+/// drag handler could never agree on a sign with a hardcoded screen axis
+/// either. Fixed by doing the whole axis-locked offset entirely in
+/// sketch-local coordinates - `sketchOffsetCoord` is a real sketch-unit
+/// coordinate, not a scaled screen-space magnitude - and projecting to
+/// screen only at the very end, mirroring the sketch-local-first discipline
+/// [_paintRadialDimension]/[_paintLineDistanceDimension] already use.
+(Offset p1, Offset p2)? _axisLockedDimensionEndpoints(
+  Camera camera,
+  Size viewportSize,
+  SketchPlaneBasis basis,
+  ConstraintLinearDimensionItem item,
+) {
+  Offset? project((double, double) sketchXY) =>
+      worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+
+  final bool vertical = item.orientation == 'vertical';
+  double axisOf((double, double) p) => vertical ? p.$1 : p.$2;
+
+  double resolvedOffset;
+  if (item.sketchLocalOffsetDistance != null) {
+    resolvedOffset = item.sketchLocalOffsetDistance!;
+  } else {
+    // Pre-drag default: no sketch-unit offset has ever been stored, so fall
+    // back to the old screen-space heuristic for *magnitude* only, applied
+    // along the *projected* sketch-axis direction (not a hardcoded screen
+    // axis) so even the undragged default tracks camera orbit.
+    final aScreen = project(item.pointA);
+    final bScreen = project(item.pointB);
+    final axisStepScreen = project((
+      item.pointA.$1 + (vertical ? 1.0 : 0.0),
+      item.pointA.$2 + (vertical ? 0.0 : 1.0),
+    ));
+    if (aScreen == null || bScreen == null || axisStepScreen == null) return null;
+    var screenNormal = axisStepScreen - aScreen;
+    final screenNormalLength = screenNormal.distance;
+    if (screenNormalLength < 1e-6) return null;
+    screenNormal = screenNormal / screenNormalLength;
+    final sketchDx = item.pointB.$1 - item.pointA.$1;
+    final sketchDy = item.pointB.$2 - item.pointA.$2;
+    final sketchLength = math.sqrt(sketchDx * sketchDx + sketchDy * sketchDy);
+    final screenLength = (bScreen - aScreen).distance;
+    final ratio = sketchLength > 1e-9 && screenLength > 1e-9 ? sketchLength / screenLength : (1 / screenNormalLength);
+    resolvedOffset = _dimensionOffsetDistance(screenNormal, item.labelOffset) * ratio;
+  }
+
+  final sketchOffsetCoord = math.max(axisOf(item.pointA), axisOf(item.pointB)) + resolvedOffset;
+  final p1Sketch = vertical ? (sketchOffsetCoord, item.pointA.$2) : (item.pointA.$1, sketchOffsetCoord);
+  final p2Sketch = vertical ? (sketchOffsetCoord, item.pointB.$2) : (item.pointB.$1, sketchOffsetCoord);
+  final p1 = project(p1Sketch);
+  final p2 = project(p2Sketch);
+  if (p1 == null || p2 == null) return null;
+  return (p1, p2);
+}
+
 /// A unit vector perpendicular to [delta], canonicalized to a fixed
 /// screen-relative sign regardless of [delta]'s own direction - mirrors
 /// `sketch_canvas.dart`'s identical fix/doc comment for the flat 2D canvas
@@ -568,7 +776,7 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
 /// identical drag gesture in the visually opposite direction from their
 /// siblings. This was fixed in the flat 2D canvas; this is the 3D-embedded
 /// sketcher's own copy of the same bug, found and fixed in the same pass.
-Offset _canonicalPerpendicular(Offset delta) {
+Offset canonicalPerpendicular(Offset delta) {
   final length = delta.distance;
   if (length < 1e-6) return const Offset(0, -1);
   var normal = Offset(-delta.dy, delta.dx) / length;
@@ -671,7 +879,7 @@ Offset? constraintOverlayItemLabelCenter(
       final bScreen = project(it.pointB);
       if (aScreen == null || bScreen == null) return null;
       // Calls the exact same [_resolveDimensionOffsetMagnitude]/
-      // [_canonicalPerpendicular]/[_dimensionLabelPlacement] helpers
+      // [canonicalPerpendicular]/[_dimensionLabelPlacement] helpers
       // [_ConstraintOverlayPainter._paintLinearDimension] does, so this can
       // never drift from where the dimension is actually drawn - fixes two
       // bugs at once: the order-dependent normal sign in the diagonal case,
@@ -689,32 +897,13 @@ Offset? constraintOverlayItemLabelCenter(
       final Offset p2;
       switch (it.orientation) {
         case 'vertical':
-          const normal = Offset(1, 0);
-          final offsetX = math.max(aScreen.dx, bScreen.dx) +
-              _resolveDimensionOffsetMagnitude(
-                normal: normal,
-                labelOffset: it.labelOffset,
-                sketchLocalOffsetDistance: it.sketchLocalOffsetDistance,
-                sketchReferenceLength: sketchLength,
-                screenReferenceLength: screenLength,
-              );
-          p1 = Offset(offsetX, aScreen.dy);
-          p2 = Offset(offsetX, bScreen.dy);
         case 'horizontal':
-          const normal = Offset(0, 1);
-          final offsetY = math.max(aScreen.dy, bScreen.dy) +
-              _resolveDimensionOffsetMagnitude(
-                normal: normal,
-                labelOffset: it.labelOffset,
-                sketchLocalOffsetDistance: it.sketchLocalOffsetDistance,
-                sketchReferenceLength: sketchLength,
-                screenReferenceLength: screenLength,
-              );
-          p1 = Offset(aScreen.dx, offsetY);
-          p2 = Offset(bScreen.dx, offsetY);
+          final endpoints = _axisLockedDimensionEndpoints(camera, viewportSize, basis, it);
+          if (endpoints == null) return null;
+          (p1, p2) = endpoints;
         default:
           if (screenLength < 1e-6) return null;
-          final normal = _canonicalPerpendicular(screenDelta);
+          final normal = canonicalPerpendicular(screenDelta);
           final offsetVec = normal *
               _resolveDimensionOffsetMagnitude(
                 normal: normal,
@@ -772,7 +961,23 @@ Offset? constraintOverlayItemLabelCenter(
       final defaultDelta = defaultScreen == null ? (rimScreen - centerScreen) : defaultScreen - centerScreen;
       final defaultLength = defaultDelta.distance;
       final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
-      return centerScreen + defaultDirection * (radiusPixels + _radialLegLength) + it.labelOffset;
+      final legPixels = it.sketchLocalLegLength != null ? it.sketchLocalLegLength! * pixelsPerUnit : _radialLegLength;
+      return centerScreen + defaultDirection * (radiusPixels + legPixels) + it.labelOffset;
+
+    case ConstraintAngleDimensionItem it:
+      final vertexAndRays = angleDimensionVertexAndRays(it);
+      if (vertexAndRays == null) {
+        final mid1 = ((it.line1Start.$1 + it.line1End.$1) / 2, (it.line1Start.$2 + it.line1End.$2) / 2);
+        final mid2 = ((it.line2Start.$1 + it.line2End.$1) / 2, (it.line2Start.$2 + it.line2End.$2) / 2);
+        final a = project(mid1);
+        final b = project(mid2);
+        if (a == null || b == null) return null;
+        return (a + b) / 2 + it.labelOffset;
+      }
+      final arcPoints = _angleArcScreenPoints(project, it);
+      if (arcPoints == null) return null;
+      final (_, arcPoint1, arcPoint2) = arcPoints;
+      return _dimensionLabelPlacement(arcPoint1, arcPoint2, it.labelOffset).labelCenter;
   }
 }
 

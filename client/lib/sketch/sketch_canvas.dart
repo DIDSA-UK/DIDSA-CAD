@@ -436,7 +436,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     final controller = widget.controller;
     if (!controller.isEntityGrabbed) return;
     if (controller.draggingLabelId != null) {
-      controller.updateLabelDrag(event.delta);
+      controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
       return;
     }
     final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
@@ -692,7 +692,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       if (widget.controller.isEntityGrabbed) {
         if (widget.controller.draggingLabelId != null) {
-          widget.controller.updateLabelDrag(event.delta);
+          widget.controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
         } else {
           widget.controller.updateGrabbedPosition(widget.controller.cursorX, widget.controller.cursorY);
         }
@@ -1712,10 +1712,39 @@ Offset? _constraintLabelCenter(
       // never hit-testable either. See
       // SketchController.isImplicitPolygonEdgeTie's own doc comment.
       if (controller.isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) return null;
-      final midpoint1 = _lineMidpointScreenFor(controller, transform, c.line1Id);
-      final midpoint2 = _lineMidpointScreenFor(controller, transform, c.line2Id);
-      if (midpoint1 == null || midpoint2 == null) return null;
-      return (midpoint1 + midpoint2) / 2 + labelOffset;
+      // Calls the exact same intersection/arc-radius math
+      // [_SketchPainter._paintAngleDimension] does, so this can never drift
+      // from where the dimension is actually drawn.
+      final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final midB = _lineMidpointScreenFor(controller, transform, c.line2Id);
+      if (midA == null || midB == null) return null;
+      final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+      final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+      final intersection = endpointsA != null && endpointsB != null
+          ? _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2)
+          : null;
+      final refDistance = (midB - midA).distance;
+      final intersectionTooFar = intersection != null &&
+          refDistance > 1e-6 &&
+          ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
+              (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance);
+      if (intersection == null || intersectionTooFar) {
+        return (midA + midB) / 2 + labelOffset;
+      }
+      final directionA = midA - intersection;
+      final directionB = midB - intersection;
+      if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+        return (midA + midB) / 2 + labelOffset;
+      }
+      final dir1 = directionA / directionA.distance;
+      final dir2 = directionB / directionB.distance;
+      final bisector = dir1 + dir2;
+      final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
+      final restingCenter = intersection + bisectorDirection * _angleGhostArcRadiusPixels + labelOffset;
+      final radius = math.max((restingCenter - intersection).distance, _minDimensionOffsetMagnitude);
+      final arcPoint1 = intersection + dir1 * radius;
+      final arcPoint2 = intersection + dir2 * radius;
+      return _dimensionLabelPlacement(arcPoint1, arcPoint2, labelOffset).labelCenter;
     case LineDistanceConstraintDto c:
       // Calls the exact same [_dimensionOffsetDistance]/
       // [_dimensionLabelPlacement] helpers
@@ -1762,11 +1791,35 @@ Offset? _constraintLabelCenter(
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case PointLineDistanceConstraintDto c:
+      // Calls the exact same perpendicular-foot/extension-line layout
+      // [_SketchPainter._paintPointLineDistanceDimension] does.
       final point = controller.points[c.pointId];
-      final lineMid = _lineMidpointScreenFor(controller, transform, c.lineId);
-      if (point == null || lineMid == null) return null;
+      final line = controller.lines[c.lineId];
+      if (point == null || line == null) return null;
+      final lineStart = controller.points[line.startPointId];
+      final lineEnd = controller.points[line.endPointId];
+      if (lineStart == null || lineEnd == null) return null;
       final pointScreen = transform.sketchToScreen(point.x, point.y);
-      return (pointScreen + lineMid) / 2 + labelOffset;
+      final lineStartScreen = transform.sketchToScreen(lineStart.x, lineStart.y);
+      final lineEndScreen = transform.sketchToScreen(lineEnd.x, lineEnd.y);
+      final lineDx = lineEndScreen.dx - lineStartScreen.dx;
+      final lineDy = lineEndScreen.dy - lineStartScreen.dy;
+      final lineLenSq = lineDx * lineDx + lineDy * lineDy;
+      final Offset footScreen;
+      if (lineLenSq < 1e-9) {
+        footScreen = lineStartScreen;
+      } else {
+        final t = ((pointScreen.dx - lineStartScreen.dx) * lineDx + (pointScreen.dy - lineStartScreen.dy) * lineDy) /
+            lineLenSq;
+        footScreen = Offset(lineStartScreen.dx + t * lineDx, lineStartScreen.dy + t * lineDy);
+      }
+      final delta = footScreen - pointScreen;
+      if (delta.distance < 1e-6) return pointScreen + labelOffset;
+      final normal = _canonicalPerpendicular(delta);
+      final offsetVec = normal * _dimensionOffsetDistance(normal, labelOffset);
+      final p1 = pointScreen + offsetVec;
+      final p2 = footScreen + offsetVec;
+      return _dimensionLabelPlacement(p1, p2, labelOffset).labelCenter;
     default:
       return null;
   }
@@ -1788,7 +1841,7 @@ String? dimensionLabelAt(
   double radius,
 ) {
   for (final entry in controller.constraints.entries) {
-    final labelOffset = controller.labelOffsetFor(entry.key);
+    final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
     final actual = _constraintLabelCenter(controller, transform, entry.value, labelOffset);
     if (actual == null) continue;
     if ((canvasPos - actual).distance <= radius) {
@@ -2231,7 +2284,7 @@ class _SketchPainter extends CustomPainter {
       // badges no longer share one unselected color.
       final dimensionColor = isSelected ? _selectedColor : _dimensionLineColor;
       final badgeColor = isSelected ? _selectedColor : _constraintBadgeColor;
-      final labelOffset = controller.labelOffsetFor(entry.key);
+      final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
       switch (entry.value) {
         case DistanceConstraintDto c:
           // Cardinal-point axis constraints are pure solver plumbing (see
@@ -2692,20 +2745,103 @@ class _SketchPainter extends CustomPainter {
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
-  /// Angle dimension: deliberately a numeric-only label rather than a
-  /// literal arc sweep - the two constrained Lines have no shared vertex in
-  /// general, so there's no single well-defined arc to draw. Placed at the
-  /// midpoint between each Line's own midpoint, which stays stable and
-  /// roughly "between" the two Lines regardless of their actual layout.
+  /// Angle dimension: an ISO 129/ASME Y14.5-style arc between the two
+  /// constrained Lines' own rays from their implied vertex - the two Lines
+  /// need not share an endpoint, so the vertex is the intersection of their
+  /// own infinite extensions ([_lineIntersectionScreen], the same
+  /// intersection [_layoutGhost]'s own angle-ghost preview already
+  /// computes), with witness (extension) lines out to the arc and tangent
+  /// arrowheads at each end.
+  ///
+  /// Bug fix (on-device feedback: "dimensions should match technical
+  /// drawing conventions" - this used to be a plain floating text chip, no
+  /// arc/extension lines at all): [labelOffset] now determines the arc's
+  /// own radius from the vertex (the full 2D vector, not just its
+  /// horizontal component - mirrors [_radialDimensionGeometry]'s own "the
+  /// entire drag is honoured" fix for the analogous "arbitrary direction,
+  /// only distance-from-a-centre-point matters" problem) rather than just
+  /// nudging a fixed floating chip. Falls back to the old plain-chip look
+  /// for the same degenerate/near-parallel/implausibly-far-vertex cases
+  /// [_layoutGhost]'s own angle preview already guards against.
   void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset) {
-    final midpoint1 = _lineMidpointScreen(c.line1Id);
-    final midpoint2 = _lineMidpointScreen(c.line2Id);
-    if (midpoint1 == null || midpoint2 == null) return;
-    final midpoint = (midpoint1 + midpoint2) / 2;
-    // On-device feedback: dropped the leading '∠' glyph - the trailing '°'
-    // already unambiguously marks this as an angle, and the extra symbol
-    // read as redundant clutter.
-    _drawDimensionLabel(canvas, midpoint + labelOffset, '${c.angleDegrees.toStringAsFixed(1)}°', color, plainBlackText: true);
+    final text = '${c.angleDegrees.toStringAsFixed(1)}°';
+    final midA = _lineMidpointScreen(c.line1Id);
+    final midB = _lineMidpointScreen(c.line2Id);
+    if (midA == null || midB == null) return;
+
+    final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+    final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+    final intersection = endpointsA != null && endpointsB != null
+        ? _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2)
+        : null;
+    final refDistance = (midB - midA).distance;
+    final intersectionTooFar = intersection != null &&
+        refDistance > 1e-6 &&
+        ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
+            (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance);
+
+    if (intersection == null || intersectionTooFar) {
+      final midpoint = (midA + midB) / 2;
+      _drawDimensionLabel(canvas, midpoint + labelOffset, text, color, plainBlackText: true);
+      return;
+    }
+    final directionA = midA - intersection;
+    final directionB = midB - intersection;
+    if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+      final midpoint = (midA + midB) / 2;
+      _drawDimensionLabel(canvas, midpoint + labelOffset, text, color, plainBlackText: true);
+      return;
+    }
+    final dir1 = directionA / directionA.distance;
+    final dir2 = directionB / directionB.distance;
+
+    final bisector = dir1 + dir2;
+    final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
+    final restingCenter = intersection + bisectorDirection * _angleGhostArcRadiusPixels + labelOffset;
+    final radius = math.max((restingCenter - intersection).distance, _minDimensionOffsetMagnitude);
+
+    final arcPoint1 = intersection + dir1 * radius;
+    final arcPoint2 = intersection + dir2 * radius;
+
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth;
+    // Paint() defaults to PaintingStyle.fill - drawArc with a fill-style
+    // paint fills the pie wedge, not a stroked arc - the only call site in
+    // this file that needs the style set explicitly.
+    final arcPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth
+      ..style = PaintingStyle.stroke;
+
+    Offset farEndpoint(Offset a, Offset b, Offset dir) {
+      final da = (a - intersection).dx * dir.dx + (a - intersection).dy * dir.dy;
+      final db = (b - intersection).dx * dir.dx + (b - intersection).dy * dir.dy;
+      return da >= db ? a : b;
+    }
+
+    if (endpointsA != null) {
+      _drawExtensionLine(canvas, farEndpoint(endpointsA.$1, endpointsA.$2, dir1), arcPoint1, dimPaint);
+    }
+    if (endpointsB != null) {
+      _drawExtensionLine(canvas, farEndpoint(endpointsB.$1, endpointsB.$2, dir2), arcPoint2, dimPaint);
+    }
+
+    final startAngle = math.atan2(dir1.dy, dir1.dx);
+    var sweep = math.atan2(dir2.dy, dir2.dx) - startAngle;
+    if (sweep > math.pi) sweep -= 2 * math.pi;
+    if (sweep <= -math.pi) sweep += 2 * math.pi;
+    canvas.drawArc(Rect.fromCircle(center: intersection, radius: radius), startAngle, sweep, false, arcPaint);
+
+    final sweepSign = sweep.isNegative ? -1.0 : 1.0;
+    _drawArrowhead(canvas, arcPoint1, Offset(dir1.dy, -dir1.dx) * sweepSign, color);
+    _drawArrowhead(canvas, arcPoint2, Offset(-dir2.dy, dir2.dx) * sweepSign, color);
+
+    final placement = _dimensionLabelPlacement(arcPoint1, arcPoint2, labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, text, color, plainBlackText: true);
   }
 
   /// Generic two-Line glyph (Stage 23e): a small text chip at the midpoint
@@ -2728,9 +2864,16 @@ class _SketchPainter extends CustomPainter {
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
-  /// Point-to-Line distance dimension (Stage 23e, [PointLineDistanceConstraintDto]):
-  /// anchored between the Point and the Line's own midpoint, with the same
-  /// numeric-label convention as [_paintDistanceDimension].
+  /// Point-to-Line distance dimension ([PointLineDistanceConstraintDto]):
+  /// geometrically just a linear dimension between the Point and its own
+  /// perpendicular foot on the Line's *infinite* extension (not clamped to
+  /// the drawn segment - the constraint itself measures onto the infinite
+  /// extension) - reuses [_paintDistanceDimension]'s own extension-line/
+  /// arrowhead/leader layout exactly.
+  ///
+  /// Bug fix (on-device feedback: "dimensions should match technical
+  /// drawing conventions" - this used to be a plain floating text chip, no
+  /// extension lines at all).
   void _paintPointLineDistanceDimension(
     Canvas canvas,
     PointLineDistanceConstraintDto c,
@@ -2738,11 +2881,50 @@ class _SketchPainter extends CustomPainter {
     Offset labelOffset,
   ) {
     final point = controller.points[c.pointId];
-    final lineMid = _lineMidpointScreen(c.lineId);
-    if (point == null || lineMid == null) return;
+    final line = controller.lines[c.lineId];
+    if (point == null || line == null) return;
+    final lineStart = controller.points[line.startPointId];
+    final lineEnd = controller.points[line.endPointId];
+    if (lineStart == null || lineEnd == null) return;
     final pointScreen = transform.sketchToScreen(point.x, point.y);
-    final midpoint = (pointScreen + lineMid) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    final lineStartScreen = transform.sketchToScreen(lineStart.x, lineStart.y);
+    final lineEndScreen = transform.sketchToScreen(lineEnd.x, lineEnd.y);
+    final lineDx = lineEndScreen.dx - lineStartScreen.dx;
+    final lineDy = lineEndScreen.dy - lineStartScreen.dy;
+    final lineLenSq = lineDx * lineDx + lineDy * lineDy;
+    final Offset footScreen;
+    if (lineLenSq < 1e-9) {
+      footScreen = lineStartScreen;
+    } else {
+      final t = ((pointScreen.dx - lineStartScreen.dx) * lineDx + (pointScreen.dy - lineStartScreen.dy) * lineDy) /
+          lineLenSq;
+      footScreen = Offset(lineStartScreen.dx + t * lineDx, lineStartScreen.dy + t * lineDy);
+    }
+
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth;
+
+    final delta = footScreen - pointScreen;
+    if (delta.distance < 1e-6) {
+      _drawDimensionLabel(canvas, pointScreen + labelOffset, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+      return;
+    }
+    final normal = _canonicalPerpendicular(delta);
+    final offsetVec = normal * _dimensionOffsetDistance(normal, labelOffset);
+    final p1 = pointScreen + offsetVec;
+    final p2 = footScreen + offsetVec;
+
+    _drawExtensionLine(canvas, pointScreen, p1, dimPaint);
+    _drawExtensionLine(canvas, footScreen, p2, dimPaint);
+    canvas.drawLine(p1, p2, dimPaint);
+    _drawDimensionArrows(canvas, p1, p2, color);
+
+    final placement = _dimensionLabelPlacement(p1, p2, labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, c.distance.toStringAsFixed(2), color, plainBlackText: true);
   }
 
   Offset? _lineMidpointScreen(String lineId) {

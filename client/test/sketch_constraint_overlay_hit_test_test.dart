@@ -173,6 +173,158 @@ void main() {
     expect(offsetIn, greaterThan(1.0)); // sanity: not degenerately zero either way
   });
 
+  test(
+      'constraintOverlayItemLabelCenter resolves a vertical-oriented ConstraintLinearDimensionItem '
+      'the same way regardless of which constrained Point is stored as A vs B - on-device feedback '
+      '("vertical dimension can\'t be dragged left/right, up/down is inverted")', () {
+    const forward = ConstraintLinearDimensionItem(
+      constraintId: 'forward',
+      selected: false,
+      pointA: (0.0, 0.0),
+      pointB: (0.0, 10.0),
+      orientation: 'vertical',
+      text: '10.00',
+      labelOffset: Offset.zero,
+      sketchLocalOffsetDistance: 2.0,
+    );
+    const backward = ConstraintLinearDimensionItem(
+      constraintId: 'backward',
+      selected: false,
+      pointA: (0.0, 10.0),
+      pointB: (0.0, 0.0),
+      orientation: 'vertical',
+      text: '10.00',
+      labelOffset: Offset.zero,
+      sketchLocalOffsetDistance: 2.0,
+    );
+    final forwardCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, forward)!;
+    final backwardCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, backward)!;
+    expect(forwardCenter.dx, closeTo(backwardCenter.dx, 1e-6));
+    expect(forwardCenter.dy, closeTo(backwardCenter.dy, 1e-6));
+  });
+
+  test(
+      'a vertical-oriented ConstraintLinearDimensionItem\'s dimension line sits at a larger '
+      'sketch-local X the larger sketchLocalOffsetDistance is (bug fix: it used to be pinned at a '
+      'fixed screen-space X regardless of the stored distance)', () {
+    const near = ConstraintLinearDimensionItem(
+      constraintId: 'near',
+      selected: false,
+      pointA: (0.0, 0.0),
+      pointB: (0.0, 10.0),
+      orientation: 'vertical',
+      text: '10.00',
+      labelOffset: Offset.zero,
+      sketchLocalOffsetDistance: 1.0,
+    );
+    const far = ConstraintLinearDimensionItem(
+      constraintId: 'far',
+      selected: false,
+      pointA: (0.0, 0.0),
+      pointB: (0.0, 10.0),
+      orientation: 'vertical',
+      text: '10.00',
+      labelOffset: Offset.zero,
+      sketchLocalOffsetDistance: 5.0,
+    );
+    final nearCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, near)!;
+    final farCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, far)!;
+    expect(farCenter.dx, greaterThan(nearCenter.dx));
+    expect(farCenter.dy, closeTo(nearCenter.dy, 1e-6));
+  });
+
+  test(
+      'angleDimensionVertexAndRays solves the two Lines\' own infinite-extension intersection even '
+      'when they don\'t share an endpoint', () {
+    const item = ConstraintAngleDimensionItem(
+      constraintId: 'a',
+      selected: false,
+      line1Start: (0.0, 0.0),
+      line1End: (10.0, 0.0),
+      line2Start: (5.0, 5.0),
+      line2End: (5.0, -5.0),
+      text: '90.0°',
+      labelOffset: Offset.zero,
+    );
+    final result = angleDimensionVertexAndRays(item)!;
+    expect(result.$1.$1, closeTo(5.0, 1e-9));
+    expect(result.$1.$2, closeTo(0.0, 1e-9));
+  });
+
+  test('angleDimensionVertexAndRays solves a shared-endpoint vertex directly', () {
+    const item = ConstraintAngleDimensionItem(
+      constraintId: 'a',
+      selected: false,
+      line1Start: (0.0, 0.0),
+      line1End: (10.0, 0.0),
+      line2Start: (0.0, 0.0),
+      line2End: (0.0, 10.0),
+      text: '90.0°',
+      labelOffset: Offset.zero,
+    );
+    final result = angleDimensionVertexAndRays(item)!;
+    expect(result.$1.$1, closeTo(0.0, 1e-9));
+    expect(result.$1.$2, closeTo(0.0, 1e-9));
+  });
+
+  test('angleDimensionVertexAndRays returns null for (near-)parallel Lines - a degenerate case with '
+      'no single well-defined vertex', () {
+    const item = ConstraintAngleDimensionItem(
+      constraintId: 'a',
+      selected: false,
+      line1Start: (0.0, 0.0),
+      line1End: (10.0, 0.0),
+      line2Start: (0.0, 5.0),
+      line2End: (10.0, 5.0),
+      text: '0.0°',
+      labelOffset: Offset.zero,
+    );
+    expect(angleDimensionVertexAndRays(item), isNull);
+  });
+
+  test(
+      'constraintOverlayItemLabelCenter resolves a ConstraintAngleDimensionItem near the arc '
+      'between its two Lines\' rays, and falls back to the old plain-chip midpoint for the '
+      'degenerate (near-parallel) case', () {
+    const item = ConstraintAngleDimensionItem(
+      constraintId: 'a',
+      selected: false,
+      line1Start: (0.0, 0.0),
+      line1End: (10.0, 0.0),
+      line2Start: (0.0, 0.0),
+      line2End: (0.0, 10.0),
+      text: '90.0°',
+      labelOffset: Offset.zero,
+    );
+    expect(constraintOverlayItemLabelCenter(camera, viewportSize, basis, item), isNotNull);
+
+    const parallelItem = ConstraintAngleDimensionItem(
+      constraintId: 'p',
+      selected: false,
+      line1Start: (0.0, 0.0),
+      line1End: (10.0, 0.0),
+      line2Start: (0.0, 5.0),
+      line2End: (10.0, 5.0),
+      text: '0.0°',
+      labelOffset: Offset.zero,
+    );
+    // No vertex to arc around - falls back to the two Lines' own midpoint
+    // average, same as the pre-fix plain-chip behavior.
+    final fallbackCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, parallelItem)!;
+    const midpointItem = ConstraintLabelItem(
+      constraintId: 'mid',
+      selected: false,
+      anchorA: (5.0, 0.0),
+      anchorB: (5.0, 5.0),
+      text: '',
+      labelOffset: Offset.zero,
+      plainBlackText: false,
+    );
+    final expectedCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, midpointItem)!;
+    expect(fallbackCenter.dx, closeTo(expectedCenter.dx, 1e-6));
+    expect(fallbackCenter.dy, closeTo(expectedCenter.dy, 1e-6));
+  });
+
   test('constraintOverlayItemAt picks the nearer of two overlapping-ish items (reverse/topmost order)', () {
     const near = ConstraintLabelItem(
       constraintId: 'near',

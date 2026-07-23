@@ -1096,7 +1096,10 @@ class _SketchScreenState extends State<SketchScreen> {
         onConstraintLabelDragDelta: _controller.updateLabelDrag,
         draggingConstraintLabelId: _controller.draggingLabelId,
         onRadialLabelAngleDragged: _handleEmbeddedRadialLabelAngleDragged,
+        onRadialLabelDistanceDragged: _handleEmbeddedRadialLabelDistanceDragged,
         onLinearLabelOffsetDragged: _handleEmbeddedLinearLabelOffsetDragged,
+        onLineDistanceLabelOffsetDragged: _handleEmbeddedLineDistanceLabelOffsetDragged,
+        onAngleLabelRadiusDragged: _handleEmbeddedAngleLabelRadiusDragged,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
@@ -1333,11 +1336,26 @@ class _SketchScreenState extends State<SketchScreen> {
   /// unchanged. Not awaited here (matches `_dispatchTap`'s own
   /// fire-and-forget convention) - [SketchController] is a [ChangeNotifier]
   /// and drives its own UI updates once the call resolves.
-  void _handleEmbeddedSketchTap(vm.Vector3 worldPoint) {
+  void _handleEmbeddedSketchTap(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
     final basis = _effectiveOrbitBasis;
     if (basis == null) return;
     final (x, y) = worldPointToSketch(basis, worldPoint);
-    unawaited(_controller.handleCanvasTap(x, y));
+    // Bug fix (on-device feedback: "the hit radius for selecting an entity
+    // should match the hit radius for dynamic highlight - it occurred when
+    // selecting entities after starting the dimension tool"): this used to
+    // call [SketchController.handleCanvasTap] with no radius at all, which
+    // silently falls back to that method's own tiny, un-zoom-scaled
+    // [SketchController.snapRadius] - completely different from (and
+    // usually much smaller than) the properly screen-scaled radius the
+    // mesh-hover-driven "dynamic highlight" the user sees while aiming
+    // actually uses, so a tap could visibly miss whatever was just
+    // highlighted. [localPixelsPerUnit] (resolved by [PartViewport] itself,
+    // the one place with the camera/viewport context needed - see
+    // [PartViewport.onDrawCursorCommit]'s own doc comment) converts through
+    // the exact same [SketchController.hitRadiusForPixelsPerUnit] the flat
+    // 2D canvas's own tap dispatch already uses.
+    final hitRadius = localPixelsPerUnit == null ? null : _controller.hitRadiusForPixelsPerUnit(localPixelsPerUnit);
+    unawaited(_controller.handleCanvasTap(x, y, hitRadius));
   }
 
   /// P24 (2D-sketcher feature parity): true while Select mode's drag-mode
@@ -1386,9 +1404,9 @@ class _SketchScreenState extends State<SketchScreen> {
   /// (place-geometry/select-toggle) whenever drag mode isn't active - the
   /// same "drag-mode branch checked first, ordinary tap handling otherwise"
   /// priority `_handleDragModeTap`'s own doc comment describes.
-  void _handleEmbeddedDrawOrDragCommit(vm.Vector3 worldPoint) {
+  void _handleEmbeddedDrawOrDragCommit(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
     if (!_dragModeActiveInOrbitView) {
-      _handleEmbeddedSketchTap(worldPoint);
+      _handleEmbeddedSketchTap(worldPoint, localPixelsPerUnit);
       return;
     }
     final basis = _effectiveOrbitBasis;
@@ -1398,7 +1416,13 @@ class _SketchScreenState extends State<SketchScreen> {
       return;
     }
     final (x, y) = worldPointToSketch(basis, worldPoint);
-    final target = _controller.dragGrabTargetAt(x, y, SketchController.snapRadius);
+    // Bug fix (on-device feedback: "the hit radius for selecting an entity
+    // should match the hit radius for dynamic highlight") - same fix as
+    // [_handleEmbeddedSketchTap]'s own doc comment, for grabbing an entity
+    // to drag it rather than tapping to select it.
+    final grabRadius =
+        localPixelsPerUnit == null ? SketchController.snapRadius : _controller.hitRadiusForPixelsPerUnit(localPixelsPerUnit);
+    final target = _controller.dragGrabTargetAt(x, y, grabRadius);
     if (target == null) return;
     switch (target.kind) {
       case SelectionKind.point:
@@ -1531,6 +1555,37 @@ class _SketchScreenState extends State<SketchScreen> {
     final id = _controller.draggingLabelId;
     if (id == null) return;
     _controller.setLinearOffsetDistance(id, distance);
+  }
+
+  /// Bug fix (on-device feedback: "radius and diameter dimensions are
+  /// locked a set distance from the arc or circle"): [PartViewport.
+  /// onRadialLabelDistanceDragged]'s handler -
+  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
+  /// [SketchController.setRadialLegLength].
+  void _handleEmbeddedRadialLabelDistanceDragged(double legLength) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setRadialLegLength(id, legLength);
+  }
+
+  /// [PartViewport.onLineDistanceLabelOffsetDragged]'s handler - a
+  /// Line-to-Line distance dimension reuses the exact same
+  /// [SketchController.setLinearOffsetDistance] map/setter a point-to-point
+  /// linear dimension does (see [ConstraintLineDistanceDimensionItem.
+  /// sketchLocalOffsetDistance]'s own doc comment).
+  void _handleEmbeddedLineDistanceLabelOffsetDragged(double distance) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setLinearOffsetDistance(id, distance);
+  }
+
+  /// [PartViewport.onAngleLabelRadiusDragged]'s handler -
+  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
+  /// [SketchController.setAngleArcRadius].
+  void _handleEmbeddedAngleLabelRadiusDragged(double radius) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setAngleArcRadius(id, radius);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates

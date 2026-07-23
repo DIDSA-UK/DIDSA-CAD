@@ -473,6 +473,23 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
   ///   the need for.
   final double defaultAngleOffsetDegrees;
 
+  /// The leader's own sketch-unit distance beyond the circle's rim - see
+  /// [SketchController.radialLegLengthFor]'s own doc comment.
+  ///
+  /// Bug fix (on-device feedback: "radius and diameter dimensions are
+  /// locked a set distance from the arc or circle - I should be able to
+  /// move them anywhere"): the P44f fix above made the leader's *angle*
+  /// camera-independent but never gave the user any way to change how far
+  /// out the label sits - every radial item's distance from the circle was
+  /// a hardcoded screen-pixel constant (`_radialLegLength`,
+  /// sketch_constraint_overlay.dart), so the label could only ever be
+  /// rotated around the circle, never pushed closer or further. Null until
+  /// the user has dragged this dimension's distance at least once, in which
+  /// case the renderer prefers this (scaled by the same local
+  /// pixels-per-sketch-unit ratio [_paintRadialDimension] already computes)
+  /// over the old hardcoded constant.
+  final double? sketchLocalLegLength;
+
   const ConstraintRadialDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -483,6 +500,7 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
     required this.text,
     required this.labelOffset,
     this.defaultAngleOffsetDegrees = 0.0,
+    this.sketchLocalLegLength,
   });
 
   @override
@@ -496,11 +514,78 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
       other.isDiameter == isDiameter &&
       other.text == text &&
       other.labelOffset == labelOffset &&
-      other.defaultAngleOffsetDegrees == defaultAngleOffsetDegrees;
+      other.defaultAngleOffsetDegrees == defaultAngleOffsetDegrees &&
+      other.sketchLocalLegLength == sketchLocalLegLength;
+
+  @override
+  int get hashCode => Object.hash(constraintId, selected, center, rim, radius, isDiameter, text, labelOffset,
+      defaultAngleOffsetDegrees, sketchLocalLegLength);
+}
+
+/// An angle dimension between two Lines.
+///
+/// Bug fix (on-device feedback: "dimensions should match technical drawing
+/// conventions" - an angle dimension used to be a plain floating text chip,
+/// no arc/witness lines at all): carries both Lines' own raw endpoints
+/// (not a precomputed vertex), mirroring [ConstraintLineDistanceDimensionItem]'s
+/// own "store raw geometry, re-derive derived points at paint/drag time"
+/// convention - `AngleConstraint` (backend/app/sketch/constraints.py) has no
+/// vertex field of its own, since the two Lines need not share an endpoint;
+/// the implied vertex (where their own infinite extensions intersect) is
+/// solved fresh by `angleDimensionVertexAndRays`
+/// (sketch_constraint_overlay.dart) rather than cached here.
+class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
+  final (double, double) line1Start;
+  final (double, double) line1End;
+  final (double, double) line2Start;
+  final (double, double) line2End;
+  final String text;
+  final Offset labelOffset;
+
+  /// The arc's own sketch-unit radius (distance from the implied vertex) -
+  /// see [SketchController.angleArcRadiusFor]'s own doc comment. Unlike
+  /// [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees], this is a
+  /// *distance*, not an angle: what the user actually drags for an angle
+  /// dimension is how far out the arc sits, not a rotation.
+  final double? sketchLocalArcRadius;
+
+  const ConstraintAngleDimensionItem({
+    required super.constraintId,
+    required super.selected,
+    required this.line1Start,
+    required this.line1End,
+    required this.line2Start,
+    required this.line2End,
+    required this.text,
+    required this.labelOffset,
+    this.sketchLocalArcRadius,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ConstraintAngleDimensionItem &&
+      other.constraintId == constraintId &&
+      other.selected == selected &&
+      other.line1Start == line1Start &&
+      other.line1End == line1End &&
+      other.line2Start == line2Start &&
+      other.line2End == line2End &&
+      other.text == text &&
+      other.labelOffset == labelOffset &&
+      other.sketchLocalArcRadius == sketchLocalArcRadius;
 
   @override
   int get hashCode => Object.hash(
-      constraintId, selected, center, rim, radius, isDiameter, text, labelOffset, defaultAngleOffsetDegrees);
+        constraintId,
+        selected,
+        line1Start,
+        line1End,
+        line2Start,
+        line2End,
+        text,
+        labelOffset,
+        sketchLocalArcRadius,
+      );
 }
 
 class SketchTextContourOffsets {
@@ -4836,6 +4921,36 @@ class SketchController extends ChangeNotifier {
   /// the label actually is, not just its un-offset default anchor.
   Offset labelOffsetFor(String constraintId) => _labelOffsets[constraintId] ?? Offset.zero;
 
+  /// The flat 2D canvas's own `ViewTransform.pixelsPerUnit` active the last
+  /// time [constraintId]'s [_labelOffsets] entry was written via
+  /// [updateLabelDrag] - paired 1:1 with that map, read by
+  /// [labelOffsetForZoom] to rescale a raw screen-pixel offset recorded at
+  /// one zoom level back into the same *sketch-local* vector at whatever
+  /// zoom level it's read back at.
+  ///
+  /// Bug fix (on-device feedback: "when zooming in and out, the dimensions
+  /// should not move relative to the geometry"): [_labelOffsets] itself
+  /// deliberately stays raw screen pixels (unchanged - see that field's own
+  /// doc comment, and the embedded 3D viewport's own consumers of
+  /// [labelOffsetFor] via [constraintOverlayItems]/[dimensionGhostOverlayItems],
+  /// which have no single global "pixels per unit" to rescale by anyway and
+  /// already solve this problem per-dimension-kind via their own
+  /// `sketchLocalOffsetDistance`/`sketchLocalLegLength`/`sketchLocalArcRadius`
+  /// fields) - only the flat 2D canvas, which *does* have one global,
+  /// always-available zoom factor, gets this correction.
+  final Map<String, double> _labelOffsetZoomReference = {};
+
+  /// [labelOffsetFor]'s own zoom-corrected sibling for the flat 2D canvas -
+  /// see [_labelOffsetZoomReference]'s own doc comment. Falls back to the
+  /// raw, unscaled offset when [constraintId] has no recorded zoom
+  /// reference yet (never dragged, or dragged before this fix shipped).
+  Offset labelOffsetForZoom(String constraintId, double currentPixelsPerUnit) {
+    final raw = labelOffsetFor(constraintId);
+    final reference = _labelOffsetZoomReference[constraintId];
+    if (reference == null || reference < 1e-9) return raw;
+    return raw * (currentPixelsPerUnit / reference);
+  }
+
   /// P44f bug fix (on-device feedback: "the arrow should remain at the
   /// same angular position when orbiting" - still slid after the earlier
   /// ellipse-projection fix, reported specifically against a radial
@@ -4870,6 +4985,48 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// [_radialAngleOffsets]' own sibling for a radial dimension's *distance*
+  /// from the circle, in sketch units.
+  ///
+  /// Bug fix (on-device feedback: "radius and diameter dimensions are
+  /// locked a set distance from the arc or circle - I should be able to
+  /// move them anywhere"): the P44f angle fix above never had a distance
+  /// equivalent - every radial item's distance from the circle was a
+  /// hardcoded screen-pixel constant, so only the leader's angle was ever
+  /// draggable. A sketch-unit distance is camera-independent by
+  /// construction, same reasoning as every other offset map on this class.
+  final Map<String, double> _radialLegLengths = {};
+
+  /// [constraintId]'s user-chosen distance from the circle (see
+  /// [_radialLegLengths]' own doc comment), or null if never dragged -
+  /// callers fall back to the old fixed on-screen leg length.
+  double? radialLegLengthFor(String constraintId) => _radialLegLengths[constraintId];
+
+  /// Sets [constraintId]'s own distance from the circle. Same
+  /// "always an absolute value, resolved fresh from the live cursor each
+  /// drag-move frame, never an accumulated delta" contract as
+  /// [setRadialAngleOffset]/[setLinearOffsetDistance].
+  void setRadialLegLength(String constraintId, double legLength) {
+    _radialLegLengths[constraintId] = legLength;
+    notifyListeners();
+  }
+
+  /// An angle dimension's own arc radius, in sketch units - see
+  /// [ConstraintAngleDimensionItem.sketchLocalArcRadius]'s own doc comment.
+  final Map<String, double> _angleArcRadii = {};
+
+  /// [constraintId]'s user-chosen arc radius (see [_angleArcRadii]' own doc
+  /// comment), or null if never dragged - callers fall back to a small
+  /// default arc radius.
+  double? angleArcRadiusFor(String constraintId) => _angleArcRadii[constraintId];
+
+  /// Sets [constraintId]'s own arc radius. Same "always an absolute value"
+  /// contract as [setRadialAngleOffset]/[setLinearOffsetDistance].
+  void setAngleArcRadius(String constraintId, double radius) {
+    _angleArcRadii[constraintId] = radius;
+    notifyListeners();
+  }
+
   /// On-device feedback ("when orbiting, linear dimensions slide along the
   /// line. they should stay in the same place on the line. similar to what
   /// we did with circle dimensions earlier") - [_radialAngleOffsets]'
@@ -4888,13 +5045,15 @@ class SketchController extends ChangeNotifier {
   /// carry - a screen-space quantity that would go stale the moment the
   /// camera moves.
   ///
-  /// Scope note: only the general (non-axis-locked) case - a `null`
-  /// `DistanceConstraintDto.orientation` - goes through this; 'vertical'/
-  /// 'horizontal' dimensions still lay out along a fixed *screen* axis in
-  /// the 3D view (a separate, pre-existing camera-relative-ness in their
-  /// own offset *direction*, not just magnitude - out of scope for this
-  /// fix, which only addresses the reported "slides along the line"
-  /// symptom for the general case).
+  /// Covers every `DistanceConstraintDto.orientation` value. For the
+  /// general (`null`) case this is a perpendicular magnitude, applied along
+  /// the live screen-projected canonical normal each frame (see
+  /// `sketch_constraint_overlay.dart`'s `canonicalPerpendicular`). For
+  /// `'vertical'`/`'horizontal'` it's a direct sketch-unit coordinate
+  /// offset along the locked axis (see `_axisLockedDimensionEndpoints`'s
+  /// own doc comment - fixed on-device feedback: "vertical dimension can't
+  /// be dragged left/right, up/down is inverted", the axis-locked case's
+  /// own sibling to this map's original "slides along the line" fix).
   final Map<String, double> _linearOffsetDistances = {};
 
   /// [constraintId]'s user-chosen perpendicular offset distance (see
@@ -4955,15 +5114,22 @@ class SketchController extends ChangeNotifier {
   }
 
   /// Live-updates the dragged label's offset by [canvasDelta] (screen
-  /// pixels, same convention as a raw [PointerMoveEvent.delta] - never
-  /// converted through a [ViewTransform], since the offset itself lives in
-  /// screen space so a label stays a fixed number of pixels from its
-  /// anchor regardless of zoom). Accumulates onto whatever offset the
-  /// label already had, so repeated calls during one drag sum correctly.
-  void updateLabelDrag(Offset canvasDelta) {
+  /// pixels, same convention as a raw [PointerMoveEvent.delta]).
+  /// Accumulates onto whatever offset the label already had, so repeated
+  /// calls during one drag sum correctly.
+  ///
+  /// [pixelsPerUnit] is the flat 2D canvas's own current
+  /// `ViewTransform.pixelsPerUnit`, recorded alongside the offset for
+  /// [labelOffsetForZoom] to later rescale by (see
+  /// [_labelOffsetZoomReference]'s own doc comment) - left null by the
+  /// embedded 3D viewport's own fallback call site (glyphs/unhandled
+  /// dimension kinds, via `onConstraintLabelDragDelta`), which has no
+  /// single global zoom factor and doesn't use [labelOffsetForZoom].
+  void updateLabelDrag(Offset canvasDelta, [double? pixelsPerUnit]) {
     final id = _draggingLabelId;
     if (id == null) return;
     _labelOffsets[id] = labelOffsetFor(id) + canvasDelta;
+    if (pixelsPerUnit != null) _labelOffsetZoomReference[id] = pixelsPerUnit;
     notifyListeners();
   }
 
@@ -6668,10 +6834,21 @@ class SketchController extends ChangeNotifier {
   }
 
   /// The currently selected single Constraint's editable numeric value
-  /// (Distance's `distance` or Angle's `angle_degrees`), or null if the
-  /// selection isn't exactly one Constraint, or that Constraint has no
-  /// value (Vertical/Horizontal) - drives the ribbon's change-value editor
-  /// (new work package item 3).
+  /// (Distance's `distance`, Angle's `angle_degrees`, or a Line/Point-Line
+  /// distance's own `distance`), or null if the selection isn't exactly one
+  /// Constraint, or that Constraint has no value (Vertical/Horizontal) -
+  /// drives the ribbon's change-value editor (new work package item 3).
+  ///
+  /// Bug fix (on-device feedback: "before this work any dimension could be
+  /// edited... this has been lost on certain dimension types"): confirmed
+  /// pre-existing (this getter never covered `LineDistanceConstraintDto`/
+  /// `PointLineDistanceConstraintDto` even before this session's rendering
+  /// work), not a regression - just far more noticeable now that both
+  /// dimension kinds render as real, prominent extension-line dimensions
+  /// instead of a barely-visible floating chip. The backend's own PATCH
+  /// endpoint (`update_constraint_value`) already supported
+  /// `LineDistanceConstraint`; `PointLineDistanceConstraint` needed a
+  /// matching backend fix too (see that endpoint's own updated switch).
   double? get selectedConstraintValue {
     if (_selectionSet.length != 1 || _selectionSet.first.kind != SelectionKind.constraint) {
       return null;
@@ -6679,6 +6856,8 @@ class SketchController extends ChangeNotifier {
     final constraint = constraints[_selectionSet.first.id];
     if (constraint is DistanceConstraintDto) return constraint.distance;
     if (constraint is AngleConstraintDto) return constraint.angleDegrees;
+    if (constraint is LineDistanceConstraintDto) return constraint.distance;
+    if (constraint is PointLineDistanceConstraintDto) return constraint.distance;
     return null;
   }
 
@@ -10615,6 +10794,7 @@ class SketchController extends ChangeNotifier {
               // now).
               labelOffset: Offset.zero,
               defaultAngleOffsetDegrees: radialAngleOffsetFor(entry.key) ?? 0.0,
+              sketchLocalLegLength: radialLegLengthFor(entry.key),
             ));
             break;
           }
@@ -10651,16 +10831,27 @@ class SketchController extends ChangeNotifier {
           if (labelItem != null) items.add(labelItem);
         case AngleConstraintDto c:
           if (isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) break;
-          final labelItem = _lineMidpointPairLabel(
-            c.line1Id,
-            c.line2Id,
-            '${c.angleDegrees.toStringAsFixed(1)}°',
-            entry.key,
-            isSelected,
-            labelOffset,
-            plainBlackText: true,
-          );
-          if (labelItem != null) items.add(labelItem);
+          final angleLine1 = lines[c.line1Id];
+          final angleLine2 = lines[c.line2Id];
+          if (angleLine1 == null || angleLine2 == null) break;
+          final angleLine1Start = points[angleLine1.startPointId];
+          final angleLine1End = points[angleLine1.endPointId];
+          final angleLine2Start = points[angleLine2.startPointId];
+          final angleLine2End = points[angleLine2.endPointId];
+          if (angleLine1Start == null || angleLine1End == null || angleLine2Start == null || angleLine2End == null) {
+            break;
+          }
+          items.add(ConstraintAngleDimensionItem(
+            constraintId: entry.key,
+            selected: isSelected,
+            line1Start: (angleLine1Start.x, angleLine1Start.y),
+            line1End: (angleLine1End.x, angleLine1End.y),
+            line2Start: (angleLine2Start.x, angleLine2Start.y),
+            line2End: (angleLine2End.x, angleLine2End.y),
+            text: '${c.angleDegrees.toStringAsFixed(1)}°',
+            labelOffset: labelOffset,
+            sketchLocalArcRadius: angleArcRadiusFor(entry.key),
+          ));
         case LineDistanceConstraintDto c:
           final line1 = lines[c.line1Id];
           final line2 = lines[c.line2Id];
@@ -10707,15 +10898,36 @@ class SketchController extends ChangeNotifier {
           final lineStart = points[line.startPointId];
           final lineEnd = points[line.endPointId];
           if (lineStart == null || lineEnd == null) break;
-          final lineMid = ((lineStart.x + lineEnd.x) / 2, (lineStart.y + lineEnd.y) / 2);
-          items.add(ConstraintLabelItem(
+          // Bug fix (on-device feedback: "dimensions should match technical
+          // drawing conventions" - a point-to-line distance dimension used
+          // to be a plain floating chip, no extension lines at all):
+          // geometrically this is just a linear dimension between the
+          // Point and its own perpendicular foot on the Line's *infinite*
+          // extension (not clamped to the drawn segment - the constraint
+          // itself measures onto the infinite extension) - reusing
+          // [ConstraintLinearDimensionItem] gets full extension-line/
+          // arrowhead/leader rendering and camera-independent drag for
+          // free, since that item type's paint/drag path is already
+          // complete end-to-end.
+          final lineDx = lineEnd.x - lineStart.x;
+          final lineDy = lineEnd.y - lineStart.y;
+          final lineLenSq = lineDx * lineDx + lineDy * lineDy;
+          final (double, double) foot;
+          if (lineLenSq < 1e-12) {
+            foot = (lineStart.x, lineStart.y);
+          } else {
+            final t = ((point.x - lineStart.x) * lineDx + (point.y - lineStart.y) * lineDy) / lineLenSq;
+            foot = (lineStart.x + t * lineDx, lineStart.y + t * lineDy);
+          }
+          items.add(ConstraintLinearDimensionItem(
             constraintId: entry.key,
             selected: isSelected,
-            anchorA: (point.x, point.y),
-            anchorB: lineMid,
+            pointA: (point.x, point.y),
+            pointB: foot,
+            orientation: null,
             text: c.distance.toStringAsFixed(2),
             labelOffset: labelOffset,
-            plainBlackText: true,
+            sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
           ));
         default:
           break;
@@ -10809,6 +11021,7 @@ class SketchController extends ChangeNotifier {
             text: isDiameter ? '⌀?' : 'R?',
             labelOffset: Offset.zero,
             defaultAngleOffsetDegrees: defaultAngleOffsetDegrees,
+            sketchLocalLegLength: radialLegLengthFor(ghost.key),
           ));
         case GhostKind.lineDistance:
           final lineA = lines[ghost.lineAId];
@@ -10831,17 +11044,26 @@ class SketchController extends ChangeNotifier {
             sketchLocalOffsetDistance: linearOffsetDistanceFor(ghost.key),
           ));
         case GhostKind.angle:
-          final mid1 = _lineMidpointXY(ghost.lineAId ?? '');
-          final mid2 = _lineMidpointXY(ghost.lineBId ?? '');
-          if (mid1 == null || mid2 == null) continue;
-          items.add(ConstraintLabelItem(
+          final angleLineA = lines[ghost.lineAId];
+          final angleLineB = lines[ghost.lineBId];
+          if (angleLineA == null || angleLineB == null) continue;
+          final angleLine1Start = points[angleLineA.startPointId];
+          final angleLine1End = points[angleLineA.endPointId];
+          final angleLine2Start = points[angleLineB.startPointId];
+          final angleLine2End = points[angleLineB.endPointId];
+          if (angleLine1Start == null || angleLine1End == null || angleLine2Start == null || angleLine2End == null) {
+            continue;
+          }
+          items.add(ConstraintAngleDimensionItem(
             constraintId: ghost.key,
             selected: isActive,
-            anchorA: mid1,
-            anchorB: mid2,
+            line1Start: (angleLine1Start.x, angleLine1Start.y),
+            line1End: (angleLine1End.x, angleLine1End.y),
+            line2Start: (angleLine2Start.x, angleLine2Start.y),
+            line2End: (angleLine2End.x, angleLine2End.y),
             text: '?',
             labelOffset: labelOffset,
-            plainBlackText: true,
+            sketchLocalArcRadius: angleArcRadiusFor(ghost.key),
           ));
       }
     }

@@ -1287,6 +1287,36 @@ def test_update_constraint_value_preserves_horizontal_orientation():
     assert updated["distance"] == 25.0
 
 
+def test_update_constraint_value_on_a_point_line_distance_constraint():
+    """Bug fix (on-device feedback: "before this work any dimension could be
+    edited... this has been lost on certain dimension types"): a
+    PointLineDistanceConstraint used to fall through update_constraint_value's
+    switch straight to a 422 ("constraints have no numeric value to update"),
+    the only constraint kind with a real numeric value that couldn't be
+    PATCHed at all - DistanceConstraint and LineDistanceConstraint were
+    already handled, matching the client's own selectedConstraintValue gap
+    (see that getter's own doc comment)."""
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    p = _create_point(sketch["id"], 5.0, 5.0)
+    line = _create_line(sketch["id"], a["id"], b["id"])
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"type": "point_line_distance", "point_id": p["id"], "line_id": line["id"], "distance": 5.0},
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}",
+        json={"value": 8.0},
+    )
+
+    assert response.status_code == 200
+    constraints = client.get(f"/sketch/sketches/{sketch['id']}/constraints").json()
+    updated = next(c for c in constraints if c["id"] == constraint["id"])
+    assert updated["distance"] == 8.0
+
+
 def test_update_constraint_value_keeps_the_free_point_on_the_same_side():
     """On-device feedback: confirming a new dimension value sometimes
     flipped the free Point to the opposite side of the anchor Point

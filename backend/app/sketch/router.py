@@ -1425,6 +1425,8 @@ def update_constraint_value(
         constraint.provisional = False
     elif isinstance(constraint, LineDistanceConstraint):
         constraint.distance = payload.value
+    elif isinstance(constraint, PointLineDistanceConstraint):
+        constraint.distance = payload.value
     elif isinstance(constraint, AngleConstraint):
         constraint.angle_degrees = payload.value
     else:
