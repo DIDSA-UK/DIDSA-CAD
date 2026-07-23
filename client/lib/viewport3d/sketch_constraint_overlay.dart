@@ -431,7 +431,29 @@ class _ConstraintOverlayPainter extends CustomPainter {
     // On-device feedback ("dimensions should be movable anywhere, leaders
     // and extension lines should work as expected") - see
     // [_dimensionLabelPlacement]'s own doc comment.
-    final placement = _dimensionLabelPlacement(p1, p2, item.labelOffset);
+    //
+    // Bug fix (on-device feedback: "the linear dimension only moves
+    // left/right" - it should also slide along its own line, matching the
+    // 2D flat canvas, which already supports this unconditionally since it
+    // has no camera-drift problem to work around): [item.sketchLocalAlongOffset]
+    // (camera-independent, sketch-local) wins once the user has dragged the
+    // label along the line at least once - same "resolve a fresh local
+    // pixels-per-unit ratio every frame" technique as
+    // [_resolveDimensionOffsetMagnitude], just applied to the along-line
+    // direction instead of the perpendicular one. [p1]/[p2]'s own current
+    // screen separation already *is* that direction, for either branch
+    // above - the axis-locked reconstruction and the general offset both
+    // preserve the true point-to-point line, just translated - so the
+    // sketch-unit reference length only needs to vary by orientation.
+    final dimScreenLength = (p2 - p1).distance;
+    final dimSketchLength = switch (item.orientation) {
+      'vertical' => (item.pointB.$2 - item.pointA.$2).abs(),
+      'horizontal' => (item.pointB.$1 - item.pointA.$1).abs(),
+      _ => sketchLength,
+    };
+    final placement = item.sketchLocalAlongOffset != null && dimSketchLength > 1e-9
+        ? _dimensionLabelPlacementAlong(p1, p2, item.sketchLocalAlongOffset! * (dimScreenLength / dimSketchLength))
+        : _dimensionLabelPlacement(p1, p2, item.labelOffset);
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
@@ -648,7 +670,25 @@ class _ConstraintOverlayPainter extends CustomPainter {
     // tangent/midpoint in [_dimensionLabelPlacement]'s along/leader-
     // threshold heuristic - a close approximation for any non-reflex angle
     // span, and reuses the exact existing inline-vs-leader placement logic.
-    final placement = _dimensionLabelPlacement(arcPoint1, arcPoint2, item.labelOffset);
+    //
+    // Bug fix (same class as [ConstraintLinearDimensionItem.
+    // sketchLocalAlongOffset]'s own doc comment - "the dimension only moves
+    // left/right/one way"): [item.sketchLocalAlongOffset] (camera-
+    // independent, sketch-local) wins once the user has dragged the label
+    // off the chord's midpoint at least once. [radiusPixels]/
+    // [item.sketchLocalArcRadius] stands in for the local pixels-per-
+    // sketch-unit ratio near the vertex (a length scales with the same
+    // local projection factor regardless of its direction), mirroring
+    // every other dimension kind's own "known reference length's
+    // sketch-vs-screen ratio" technique - only meaningful once the radius
+    // itself has been dragged at least once (before that there's no
+    // sketch-unit reference for the screen-only default radius to scale
+    // against), same "falls back to the old behaviour pre-drag" contract
+    // every other dimension kind already has.
+    final placement = item.sketchLocalAlongOffset != null && (item.sketchLocalArcRadius ?? 0) > 1e-9
+        ? _dimensionLabelPlacementAlong(
+            arcPoint1, arcPoint2, item.sketchLocalAlongOffset! * (radiusPixels / item.sketchLocalArcRadius!))
+        : _dimensionLabelPlacement(arcPoint1, arcPoint2, item.labelOffset);
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
@@ -974,7 +1014,19 @@ Offset? constraintOverlayItemLabelCenter(
           p1 = aScreen + offsetVec;
           p2 = bScreen + offsetVec;
       }
-      return _dimensionLabelPlacement(p1, p2, it.labelOffset).labelCenter;
+      // Mirrors [_ConstraintOverlayPainter._paintLinearDimension]'s own
+      // [sketchLocalAlongOffset] handling exactly - see that method's own
+      // doc comment.
+      final dimScreenLength = (p2 - p1).distance;
+      final dimSketchLength = switch (it.orientation) {
+        'vertical' => (it.pointB.$2 - it.pointA.$2).abs(),
+        'horizontal' => (it.pointB.$1 - it.pointA.$1).abs(),
+        _ => sketchLength,
+      };
+      return (it.sketchLocalAlongOffset != null && dimSketchLength > 1e-9
+              ? _dimensionLabelPlacementAlong(p1, p2, it.sketchLocalAlongOffset! * (dimScreenLength / dimSketchLength))
+              : _dimensionLabelPlacement(p1, p2, it.labelOffset))
+          .labelCenter;
 
     case ConstraintLineDistanceDimensionItem it:
       final line1Start = project(it.line1Start);
@@ -1041,8 +1093,16 @@ Offset? constraintOverlayItemLabelCenter(
       }
       final arcPoints = _angleArcScreenPoints(project, it);
       if (arcPoints == null) return null;
-      final (_, arcPoint1, arcPoint2) = arcPoints;
-      return _dimensionLabelPlacement(arcPoint1, arcPoint2, it.labelOffset).labelCenter;
+      final (vertexScreen, arcPoint1, arcPoint2) = arcPoints;
+      // Mirrors [_ConstraintOverlayPainter._paintAngleDimension]'s own
+      // [sketchLocalAlongOffset] handling exactly - see that method's own
+      // doc comment.
+      final radiusPixels = (arcPoint1 - vertexScreen).distance;
+      return (it.sketchLocalAlongOffset != null && (it.sketchLocalArcRadius ?? 0) > 1e-9
+              ? _dimensionLabelPlacementAlong(
+                  arcPoint1, arcPoint2, it.sketchLocalAlongOffset! * (radiusPixels / it.sketchLocalArcRadius!))
+              : _dimensionLabelPlacement(arcPoint1, arcPoint2, it.labelOffset))
+          .labelCenter;
   }
 }
 

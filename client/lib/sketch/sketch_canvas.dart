@@ -148,6 +148,12 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// still at the edge.
   Size? _lastSize;
 
+  /// Last [SketchController.autoFitRequestToken] seen by [_maybeAutoFit] -
+  /// compared against on every controller notification so a re-fit only
+  /// fires the moment that token actually changes, not on every unrelated
+  /// notification (a plain solve, a hover, ...).
+  int? _lastAutoFitToken;
+
   /// How close (logical pixels) the cursor must sit to a canvas edge to
   /// trigger panning, and how fast (screen pixels/second) panning ramps up
   /// to at the very edge - both arbitrary, tuned for a comfortable RTS-style
@@ -260,14 +266,34 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     _longPressPopOpacity = Tween<double>(begin: 0.6, end: 0.0).animate(
       CurvedAnimation(parent: _longPressPopController, curve: Curves.easeOut),
     );
+    _lastAutoFitToken = widget.controller.autoFitRequestToken;
+    widget.controller.addListener(_maybeAutoFit);
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_maybeAutoFit);
     _edgePanTicker.dispose();
     _longPressPopController.dispose();
     _longPressTimer?.cancel();
     super.dispose();
+  }
+
+  /// Watches [SketchController.autoFitRequestToken] - bumped whenever
+  /// confirming a dimension value just re-scaled the whole sketch (see that
+  /// field's own doc comment) - and re-fits the view the same way tapping
+  /// the "Zoom to fit" button does, so a sketch that just grew or shrank
+  /// dramatically doesn't stay stuck at its old pan/zoom, showing one
+  /// corner of a now-much-larger drawing or a speck in the middle of a
+  /// now-much-smaller one. A no-op on every other controller notification
+  /// (a plain solve, a hover, ...), which is most of them.
+  void _maybeAutoFit() {
+    final token = widget.controller.autoFitRequestToken;
+    if (token == _lastAutoFitToken) return;
+    _lastAutoFitToken = token;
+    final size = _lastSize;
+    if (size == null) return;
+    setState(() => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size));
   }
 
   /// Stage 23g: starts the long-press timer when [downScreen] (the

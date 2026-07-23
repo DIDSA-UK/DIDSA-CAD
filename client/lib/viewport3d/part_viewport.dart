@@ -357,6 +357,17 @@ class PartViewport extends StatefulWidget {
   /// [SketchController.setLinearOffsetDistance].
   final void Function(double distance)? onLinearLabelOffsetDragged;
 
+  /// Bug fix (on-device feedback: "the linear dimension only moves
+  /// left/right" - it should also slide along its own line, matching the
+  /// 2D flat canvas): [onLinearLabelOffsetDragged]'s own sibling for the
+  /// label's position *along the dimension line itself* (the axis
+  /// [onLinearLabelOffsetDragged] doesn't cover) - fires alongside it
+  /// whenever [draggingConstraintLabelId] resolves to a
+  /// [ConstraintLinearDimensionItem], for the caller to persist via
+  /// [SketchController.setLinearAlongOffset]. Mirrors
+  /// [onLineDistanceLabelAlongDragged]'s exact contract.
+  final void Function(double along)? onLinearLabelAlongDragged;
+
   /// [onLinearLabelOffsetDragged]'s exact sibling for a
   /// [ConstraintLineDistanceDimensionItem] (a Line-to-Line perpendicular
   /// distance) - previously missing entirely, so this dimension kind fell
@@ -383,6 +394,14 @@ class PartViewport extends StatefulWidget {
   /// sketch-unit arc radius (distance from the implied vertex), for the
   /// caller to persist via [SketchController.setAngleArcRadius].
   final void Function(double radius)? onAngleLabelRadiusDragged;
+
+  /// [onAngleLabelRadiusDragged]'s own sibling for the label's position
+  /// *along the arc's chord* (the axis [onAngleLabelRadiusDragged] doesn't
+  /// cover) - fires alongside it whenever [draggingConstraintLabelId]
+  /// resolves to a [ConstraintAngleDimensionItem], for the caller to
+  /// persist via [SketchController.setAngleAlongOffset]. Same bug class as
+  /// [onLinearLabelAlongDragged].
+  final void Function(double along)? onAngleLabelAlongDragged;
 
   /// P44b bug fix (on-device feedback: "when I click a ghost dimension to
   /// set its value, nothing happens"): the [constraintOverlayItems] entry
@@ -679,9 +698,11 @@ class PartViewport extends StatefulWidget {
     this.onRadialLabelAngleDragged,
     this.onRadialLabelDistanceDragged,
     this.onLinearLabelOffsetDragged,
+    this.onLinearLabelAlongDragged,
     this.onLineDistanceLabelOffsetDragged,
     this.onLineDistanceLabelAlongDragged,
     this.onAngleLabelRadiusDragged,
+    this.onAngleLabelAlongDragged,
     this.activeConstraintOverlayItemId,
     this.activeConstraintOverlayItemBuilder,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
@@ -2508,6 +2529,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 ? math.max(linearItem.pointA.$1, linearItem.pointB.$1)
                 : math.max(linearItem.pointA.$2, linearItem.pointB.$2);
             widget.onLinearLabelOffsetDragged?.call(cursorAxis - reference);
+            // Bug fix (on-device feedback: "the linear dimension only moves
+            // left/right" on a vertical dimension): the along-axis is the
+            // locked orientation's own opposite axis (vertical's own line
+            // runs in Y, so "along" is Y; horizontal's runs in X, so
+            // "along" is X) - fires alongside the offset above every frame,
+            // same "both resolved from one cursor position" pattern
+            // [onLineDistanceLabelOffsetDragged]/[onLineDistanceLabelAlongDragged]
+            // already established.
+            final alongAxis = vertical ? cursorY : cursorX;
+            final alongReference = vertical
+                ? (linearItem.pointA.$2 + linearItem.pointB.$2) / 2
+                : (linearItem.pointA.$1 + linearItem.pointB.$1) / 2;
+            widget.onLinearLabelAlongDragged?.call(alongAxis - alongReference);
             return;
           }
         } else {
@@ -2534,6 +2568,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               final cursorDelta = cursor - aScreen;
               final screenMagnitude = cursorDelta.dx * normal.dx + cursorDelta.dy * normal.dy;
               widget.onLinearLabelOffsetDragged?.call(screenMagnitude * ratio);
+              // Bug fix (same class as the axis-locked branch above): the
+              // along-direction is the line's own tangent (perpendicular to
+              // [normal]), projected from the dimension line's own midpoint
+              // anchor - the midpoint of aScreen/bScreen, since [normal]'s
+              // own offset is purely perpendicular and doesn't shift it
+              // along the tangent.
+              final tangent = screenDelta / screenLength;
+              final anchorScreen = (aScreen + bScreen) / 2;
+              final anchorDelta = cursor - anchorScreen;
+              final alongScreenMagnitude = anchorDelta.dx * tangent.dx + anchorDelta.dy * tangent.dy;
+              widget.onLinearLabelAlongDragged?.call(alongScreenMagnitude * ratio);
               return;
             }
           }
@@ -2614,7 +2659,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (angleItem != null && basis != null && cursor != null) {
         final vertexAndRays = angleDimensionVertexAndRays(angleItem);
         if (vertexAndRays != null) {
-          final (vertex, _, _) = vertexAndRays;
+          final (vertex, ray1, ray2) = vertexAndRays;
           final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
           final hit = hitTestSketchPlane(ray, basis);
           if (hit != null) {
@@ -2624,6 +2669,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             final radius = math.sqrt(dx * dx + dy * dy);
             if (radius > 1e-6) {
               widget.onAngleLabelRadiusDragged?.call(radius);
+              // Bug fix (same class as the linear-dimension along fix
+              // above): the along-the-chord direction, entirely in
+              // sketch-local space, is the two rays' own difference (both
+              // unit vectors from [vertex] - the sketch-space arc endpoints
+              // are `vertex + radius*ray1`/`vertex + radius*ray2`, so their
+              // chord direction is exactly `ray2 - ray1` regardless of
+              // radius) - fires alongside the radius callback above every
+              // frame, from this same resolved cursor position, same
+              // "both resolved together" pattern as the linear/line-
+              // distance branches.
+              final alongDx = ray2.$1 - ray1.$1;
+              final alongDy = ray2.$2 - ray1.$2;
+              final alongLen = math.sqrt(alongDx * alongDx + alongDy * alongDy);
+              if (alongLen > 1e-9) {
+                final ux = alongDx / alongLen;
+                final uy = alongDy / alongLen;
+                final chordMidX = vertex.$1 + radius * (ray1.$1 + ray2.$1) / 2;
+                final chordMidY = vertex.$2 + radius * (ray1.$2 + ray2.$2) / 2;
+                final along = (cursorX - chordMidX) * ux + (cursorY - chordMidY) * uy;
+                widget.onAngleLabelAlongDragged?.call(along);
+              }
               return;
             }
           }

@@ -1353,6 +1353,144 @@ def test_update_constraint_value_keeps_the_free_point_on_the_same_side():
     assert solved_b["x"] == pytest.approx(10.0, abs=1e-3)
 
 
+# --- First-dimension whole-sketch scaling -----------------------------------
+#
+# On-device feedback: a sketch's Points are drawn at whatever arbitrary
+# freehand size the user's mouse happened to produce, with no real-world
+# scale behind them until the first dimension is confirmed. Dimensioning
+# just one edge used to leave every *other* edge at its old freehand size -
+# a 20m warehouse wall dimensioned on a sketch drawn at ~2x1 "units" would
+# snap that one wall to 20000mm while the perpendicular wall stayed at
+# ~1 unit, comically mismatched. `_scale_sketch_for_first_dimension`
+# (router.py) fixes this: the *first* length-defining dimension in a sketch
+# (see `_is_length_dimension`) scales every Point uniformly about the
+# dimension's own fixed point, so the whole drawing grows/shrinks together.
+
+
+def test_first_dimension_created_from_scratch_scales_the_whole_sketch():
+    """Mirrors the on-device warehouse-floor-plan report: a freehand
+    ~2x1-unit rectangle, dimensioned on its long edge via a brand-new
+    DistanceConstraint (POST, not PATCH - there is no pre-existing
+    dimension to edit yet, same as a freshly-drawn Rectangle's edges)."""
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 2.0, 0.0)
+    c = _create_point(sketch["id"], 2.0, 1.0)
+    d = _create_point(sketch["id"], 0.0, 1.0)
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 20000.0},
+    )
+    assert response.status_code == 201
+
+    points = {p["id"]: p for p in client.get(f"/sketch/sketches/{sketch['id']}/points").json()}
+    assert points[a["id"]]["x"] == pytest.approx(0.0)
+    assert points[a["id"]]["y"] == pytest.approx(0.0)
+    assert points[b["id"]]["x"] == pytest.approx(20000.0)
+    # The short edge was never itself dimensioned - it must still scale
+    # proportionally (1.0 -> 10000.0, same ratio as the dimensioned edge),
+    # not stay at its original freehand size.
+    assert points[c["id"]]["x"] == pytest.approx(20000.0)
+    assert points[c["id"]]["y"] == pytest.approx(10000.0)
+    assert points[d["id"]]["y"] == pytest.approx(10000.0)
+
+
+def test_first_dimension_confirmed_via_patch_scales_the_whole_sketch():
+    """Same scenario, but the dimension already exists (e.g. an auto-created
+    provisional radius/size constraint, or a re-edit of a just-created one)
+    and is confirmed via PATCH `update_constraint_value` instead of POST."""
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 2.0, 0.0)
+    c = _create_point(sketch["id"], 2.0, 1.0)
+
+    constraint = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 2.0},
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{constraint['id']}",
+        json={"value": 20000.0},
+    )
+    assert response.status_code == 200
+
+    points = {p["id"]: p for p in client.get(f"/sketch/sketches/{sketch['id']}/points").json()}
+    assert points[b["id"]]["x"] == pytest.approx(20000.0)
+    assert points[c["id"]]["x"] == pytest.approx(20000.0)
+    assert points[c["id"]]["y"] == pytest.approx(10000.0)
+
+
+def test_second_dimension_does_not_rescale_the_already_established_sketch():
+    """Once a sketch already has one real dimension, a second one must NOT
+    trigger another whole-sketch rescale - only ordinary single-point
+    reseed/solve, same as every mainstream CAD tool once a sketch's scale
+    is established."""
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 2.0, 0.0)
+    c = _create_point(sketch["id"], 2.0, 1.0)
+
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 20000.0},
+    )
+    points_after_first = {p["id"]: p for p in client.get(f"/sketch/sketches/{sketch['id']}/points").json()}
+    assert points_after_first[c["id"]]["x"] == pytest.approx(20000.0)
+    assert points_after_first[c["id"]]["y"] == pytest.approx(10000.0)
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": b["id"], "point_b_id": c["id"], "distance": 3000.0},
+    )
+    assert response.status_code == 201
+
+    points = {p["id"]: p for p in client.get(f"/sketch/sketches/{sketch['id']}/points").json()}
+    # The already-established sketch (scaled once by the first dimension)
+    # must be undisturbed by the second dimension's own creation - no
+    # second whole-sketch rescale. Creating a constraint alone never moves
+    # points either way (only a PATCH/reseed or an explicit solve does), so
+    # every Point's position here must be exactly what it was right after
+    # the first dimension landed.
+    assert points[a["id"]]["x"] == pytest.approx(0.0)
+    assert points[b["id"]]["x"] == pytest.approx(20000.0)
+    assert points[c["id"]]["x"] == pytest.approx(20000.0)
+    assert points[c["id"]]["y"] == pytest.approx(10000.0)
+
+
+def test_ellipse_style_provisional_sibling_dimension_stays_in_sync_after_first_scale():
+    """An Ellipse's minor-axis DistanceConstraint being confirmed as the
+    sketch's first real dimension must scale the still-provisional
+    major-axis DistanceConstraint's own recorded value along with the Point
+    that just moved under it - otherwise the major axis silently goes
+    stale (reports its old, pre-scale length) the next time it's read."""
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    major = _create_point(sketch["id"], 9.0, 0.0)
+    ellipse = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses",
+        json={"center_point_id": center["id"], "major_point_id": major["id"], "minor_radius": 3.0},
+    ).json()
+    minor_constraint_id = _minor_constraint_id(sketch["id"], ellipse["id"])
+    major_constraint_id = next(
+        c["id"]
+        for c in client.get(f"/sketch/sketches/{sketch['id']}/constraints").json()
+        if c["type"] == "distance" and c["id"] != minor_constraint_id and center["id"] in (c["point_a_id"], c["point_b_id"])
+    )
+
+    client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{minor_constraint_id}",
+        json={"value": 5.0},
+    )
+
+    constraints = {c["id"]: c for c in client.get(f"/sketch/sketches/{sketch['id']}/constraints").json()}
+    # 9.0 * (5.0 / 3.0) = 15.0 - scaled by the same factor as the minor axis.
+    assert constraints[major_constraint_id]["distance"] == pytest.approx(15.0)
+    updated_ellipse = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}").json()
+    assert updated_ellipse["major_radius"] == pytest.approx(15.0)
+
+
 # --- Prompt B item B5: solve response DOF ---------------------------------
 
 

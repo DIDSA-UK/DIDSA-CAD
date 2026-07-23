@@ -13,18 +13,24 @@ class SketchViewport {
   static const double basePixelsPerUnit = 20;
   static const double maxZoom = 10;
 
-  /// Stage 23b: the maximum zoom-out level must always leave at least this
-  /// many mm visible on both axes, regardless of screen size or sketch
-  /// content - so the minimum zoom is derived from the canvas size (see
-  /// [minZoomFor]) rather than a fixed constant, which only guaranteed a
-  /// screen-size-dependent (and on a small canvas, much smaller) extent.
+  /// Stage 23b: the maximum *manual* zoom-out level (scroll-wheel/pinch, via
+  /// [applyAnchoredZoomPan]) must always leave at least this many mm visible
+  /// on both axes, regardless of screen size or sketch content - so the
+  /// minimum zoom is derived from the canvas size (see [minZoomFor]) rather
+  /// than a fixed constant, which only guaranteed a screen-size-dependent
+  /// (and on a small canvas, much smaller) extent. This floor exists so a
+  /// sparse/empty sketch can't be scrolled out into meaningless empty space
+  /// - it deliberately does NOT apply to [zoomToFit], which must always be
+  /// able to show the full extent of whatever geometry actually exists, no
+  /// matter how large (a multi-metre floor plan included).
   static const double minVisibleExtentMm = 1000;
 
   double zoom = 1;
   Offset panOffset = Offset.zero;
 
-  /// The most you're allowed to zoom out for a canvas of [size]: whichever
-  /// axis is shorter still shows at least [minVisibleExtentMm].
+  /// The most you're allowed to *manually* zoom out for a canvas of [size]:
+  /// whichever axis is shorter still shows at least [minVisibleExtentMm].
+  /// Not used by [zoomToFit] - see [minVisibleExtentMm]'s own doc comment.
   double minZoomFor(Size size) {
     final shorterSide = math.min(size.width, size.height);
     return shorterSide / (basePixelsPerUnit * minVisibleExtentMm);
@@ -76,6 +82,12 @@ class SketchViewport {
   /// [padding] margin (a fraction of the bounding box's own size added on
   /// each side - the default 0.125 is ~12.5% per side). Falls back to
   /// [reset] when there's no geometry (a null or zero-area box) to fit.
+  ///
+  /// Only clamped against [maxZoom] (so a tiny sketch doesn't zoom in past
+  /// what's useful) - deliberately NOT clamped against [minZoomFor], which
+  /// exists solely to bound *manual* zoom-out on sparse content (see
+  /// [minVisibleExtentMm]'s doc comment). A fit must always be able to show
+  /// the whole of whatever was actually drawn, however large.
   void zoomToFit(Rect? boundingBox, Size size, {double padding = 0.125}) {
     if (boundingBox == null || (boundingBox.width == 0 && boundingBox.height == 0)) {
       reset();
@@ -91,7 +103,7 @@ class SketchViewport {
     ];
     final fitPixelsPerUnit = scaleCandidates.reduce(math.min);
 
-    zoom = (fitPixelsPerUnit / basePixelsPerUnit).clamp(minZoomFor(size), maxZoom);
+    zoom = math.min(fitPixelsPerUnit / basePixelsPerUnit, maxZoom);
 
     final newPixelsPerUnit = basePixelsPerUnit * zoom;
     final center = boundingBox.center;

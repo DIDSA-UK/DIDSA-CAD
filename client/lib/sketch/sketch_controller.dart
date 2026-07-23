@@ -342,6 +342,20 @@ class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
   /// do not.
   final double? sketchLocalOffsetDistance;
 
+  /// This dimension's own position along the dimension line itself (not the
+  /// perpendicular offset, which [sketchLocalOffsetDistance] already covers)
+  /// - [ConstraintLineDistanceDimensionItem.sketchLocalAlongOffset]'s exact
+  /// sibling for this item type. Bug fix (on-device feedback: "the linear
+  /// dimension only moves left/right" on a vertical dimension - it should
+  /// also be able to slide up/down along its own line, matching the 2D flat
+  /// canvas, which already supports this via its own unrestricted
+  /// [labelOffset] since it has no camera to go stale against): null until
+  /// the user has dragged the label along the line at least once, in which
+  /// case the renderer prefers this over [labelOffset]'s raw-pixel dot
+  /// product (never actually reachable via this view's own drag handling,
+  /// same reasoning as [ConstraintLineDistanceDimensionItem]'s own field).
+  final double? sketchLocalAlongOffset;
+
   const ConstraintLinearDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -351,6 +365,7 @@ class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
     required this.text,
     required this.labelOffset,
     this.sketchLocalOffsetDistance,
+    this.sketchLocalAlongOffset,
   });
 
   @override
@@ -363,11 +378,12 @@ class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
       other.orientation == orientation &&
       other.text == text &&
       other.labelOffset == labelOffset &&
-      other.sketchLocalOffsetDistance == sketchLocalOffsetDistance;
+      other.sketchLocalOffsetDistance == sketchLocalOffsetDistance &&
+      other.sketchLocalAlongOffset == sketchLocalAlongOffset;
 
   @override
-  int get hashCode =>
-      Object.hash(constraintId, selected, pointA, pointB, orientation, text, labelOffset, sketchLocalOffsetDistance);
+  int get hashCode => Object.hash(constraintId, selected, pointA, pointB, orientation, text, labelOffset,
+      sketchLocalOffsetDistance, sketchLocalAlongOffset);
 }
 
 /// A Line-to-Line perpendicular-distance dimension - mirrors
@@ -581,6 +597,14 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
   /// dimension is how far out the arc sits, not a rotation.
   final double? sketchLocalArcRadius;
 
+  /// The label's own position along the arc's chord (not the arc's radius,
+  /// which [sketchLocalArcRadius] already covers) - [ConstraintLineDistance
+  /// DimensionItem.sketchLocalAlongOffset]'s sibling for an angle dimension.
+  /// Bug fix (same class as [ConstraintLinearDimensionItem.
+  /// sketchLocalAlongOffset]'s own doc comment): null until the user has
+  /// dragged the label off the chord's midpoint at least once.
+  final double? sketchLocalAlongOffset;
+
   const ConstraintAngleDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -591,6 +615,7 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
     required this.text,
     required this.labelOffset,
     this.sketchLocalArcRadius,
+    this.sketchLocalAlongOffset,
   });
 
   @override
@@ -604,7 +629,8 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
       other.line2End == line2End &&
       other.text == text &&
       other.labelOffset == labelOffset &&
-      other.sketchLocalArcRadius == sketchLocalArcRadius;
+      other.sketchLocalArcRadius == sketchLocalArcRadius &&
+      other.sketchLocalAlongOffset == sketchLocalAlongOffset;
 
   @override
   int get hashCode => Object.hash(
@@ -617,6 +643,7 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
         text,
         labelOffset,
         sketchLocalArcRadius,
+        sketchLocalAlongOffset,
       );
 }
 
@@ -1422,6 +1449,39 @@ class SketchController extends ChangeNotifier {
   /// dimension-ghost confirm flow consults it (via [_findDistanceConstraint])
   /// to decide whether to PATCH an existing value or POST a new Constraint.
   final Map<String, ConstraintDto> constraints = {};
+
+  /// Mirrors the backend's own `_is_length_dimension` (see
+  /// `backend/app/sketch/router.py`) - true for a Constraint that pins a
+  /// real-world *size*, as opposed to a purely geometric relationship
+  /// (Parallel, Coincident, ...) or an Angle (fixes proportions, never
+  /// absolute scale). A provisional [DistanceConstraintDto] (a shape tool's
+  /// own placement rigidity, not a user-confirmed dimension - see that
+  /// field's own doc comment) doesn't count.
+  bool _isLengthDimension(ConstraintDto c) {
+    if (c is DistanceConstraintDto) return !c.provisional;
+    return c is LineDistanceConstraintDto || c is PointLineDistanceConstraintDto;
+  }
+
+  /// True when no *other* length-defining dimension (see
+  /// [_isLengthDimension]) exists in this sketch yet - i.e. confirming
+  /// [excludeId] (pass `''` for a not-yet-created Constraint) as a real
+  /// value is about to be the sketch's first one, which the backend
+  /// responds to by scaling every Point in the sketch to match (see
+  /// `_scale_sketch_for_first_dimension` server-side) rather than moving
+  /// just the one dimension's own free point. Drives [autoFitRequestToken].
+  bool _isFirstDimension(String excludeId) =>
+      !constraints.values.any((c) => c.id != excludeId && _isLengthDimension(c));
+
+  /// Bumped whenever confirming a dimension value just re-scaled the whole
+  /// sketch (see [_isFirstDimension]) - [SketchCanvas] watches this to
+  /// auto-trigger its own [SketchViewport.zoomToFit] the same way tapping
+  /// the "Zoom to fit" button does, so the view catches up with geometry
+  /// that just changed size dramatically instead of leaving most of it out
+  /// of frame. [SketchCanvas.onViewportChanged]'s existing sync to the 3D
+  /// backdrop (`PartViewportState.syncToSketchViewport`) then carries this
+  /// through to the 3D "Orbit View" camera automatically, with no separate
+  /// 3D-specific handling needed here.
+  int autoFitRequestToken = 0;
 
   /// Prompt B item B4: the id of the Point most recently auto-linked to an
   /// existing Point by a [CoincidentConstraint] (see [_clickPointTool]), or
@@ -3100,20 +3160,37 @@ class SketchController extends ChangeNotifier {
   /// nearby existing Point (new work package item 2), not just the origin
   /// (which is itself just another entry in [points], so this subsumes the
   /// old [isHoveringOrigin]-driven behaviour automatically).
+  ///
+  /// Bug fix (found while adding the "never reuse the origin's own id"
+  /// fix to [_pointIdAt]): the origin never wins a tie against a real,
+  /// non-origin Point that's also in range - a Point already decoupled
+  /// from the origin via a CoincidentConstraint sits at the *exact same*
+  /// location as the origin itself, so without this a second tap there
+  /// would find the origin as "nearest" (inserted first, so it wins ties)
+  /// and spawn yet another new coincident Point instead of reconnecting to
+  /// the one already there - an unbounded pile-up under repeated taps.
+  /// Any in-range non-origin Point is preferred outright, even over a
+  /// numerically-closer origin.
   String? _existingPointIdNear(double x, double y, {String? excludeId}) {
     String? bestId;
     var bestDistSq = double.infinity;
+    String? originCandidateId;
     for (final point in points.values) {
       if (point.id == excludeId) continue;
       final dx = x - point.x;
       final dy = y - point.y;
       final distSq = dx * dx + dy * dy;
-      if (distSq <= snapRadius * snapRadius && distSq < bestDistSq) {
+      if (distSq > snapRadius * snapRadius) continue;
+      if (point.id == _originPointId) {
+        originCandidateId = point.id;
+        continue;
+      }
+      if (distSq < bestDistSq) {
         bestDistSq = distSq;
         bestId = point.id;
       }
     }
-    return bestId;
+    return bestId ?? originCandidateId;
   }
 
   /// Stage 15 item 4: the existing Point (if any) that the cursor is
@@ -4682,6 +4759,14 @@ class SketchController extends ChangeNotifier {
           await _settleClosedFormShapeDrag(intactPolygon, intactSlot, intactCircle, intactArc, intactEllipse,
               intactRectangle, pointId, originX, originY);
         });
+        // Same fix as the plain-Point drag branch below (Prompt B item B4,
+        // and its own follow-up: "no entity should be able to use the
+        // origin point as one of its points") - previously only a
+        // standalone dragged Point got auto-coincided onto whatever it was
+        // dropped near, so dragging e.g. a Circle's centre or a Rectangle's
+        // corner exactly onto the origin silently left it an unconstrained
+        // coincidence (true only until the next solve moved something).
+        await _autoCoincideIfNear(pointId, droppedPoint.x, droppedPoint.y);
         await _solveAndTrackDof();
       });
       return;
@@ -5128,6 +5213,43 @@ class SketchController extends ChangeNotifier {
   /// handling calls this.
   void setLinearOffsetDistance(String constraintId, double distance) {
     _linearOffsetDistances[constraintId] = distance;
+    notifyListeners();
+  }
+
+  /// A point-to-point linear dimension's own position along the dimension
+  /// line itself (not the perpendicular offset, which
+  /// [_linearOffsetDistances] already covers) - [_lineDistanceAlongOffsets]'
+  /// exact sibling for this dimension kind. See
+  /// [ConstraintLinearDimensionItem.sketchLocalAlongOffset]'s own doc
+  /// comment for the bug this fixes.
+  final Map<String, double> _linearAlongOffsets = {};
+
+  /// [constraintId]'s user-chosen position along the dimension line (see
+  /// [_linearAlongOffsets]' own doc comment), or null if never dragged.
+  double? linearAlongOffsetFor(String constraintId) => _linearAlongOffsets[constraintId];
+
+  /// Sets [constraintId]'s own position along the dimension line. Same
+  /// "always an absolute value" contract as [setLinearOffsetDistance].
+  void setLinearAlongOffset(String constraintId, double along) {
+    _linearAlongOffsets[constraintId] = along;
+    notifyListeners();
+  }
+
+  /// An angle dimension's own label position along the arc's chord (not the
+  /// arc's radius, which [_angleArcRadii] already covers) -
+  /// [_lineDistanceAlongOffsets]' sibling for this dimension kind. See
+  /// [ConstraintAngleDimensionItem.sketchLocalAlongOffset]'s own doc
+  /// comment.
+  final Map<String, double> _angleAlongOffsets = {};
+
+  /// [constraintId]'s user-chosen position along the arc's chord (see
+  /// [_angleAlongOffsets]' own doc comment), or null if never dragged.
+  double? angleAlongOffsetFor(String constraintId) => _angleAlongOffsets[constraintId];
+
+  /// Sets [constraintId]'s own position along the arc's chord. Same "always
+  /// an absolute value" contract as [setLinearOffsetDistance].
+  void setAngleAlongOffset(String constraintId, double along) {
+    _angleAlongOffsets[constraintId] = along;
     notifyListeners();
   }
 
@@ -7002,6 +7124,10 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       final existing = _findDistanceConstraint(pointAId, pointBId);
+      // See [autoFitRequestToken]'s own doc comment - must be read *before*
+      // the mutation below, since confirming this value is what would make
+      // it no longer "first".
+      final isFirstDimension = _isFirstDimension(existing?.id ?? '');
       if (existing != null) {
         final oldValue = existing.distance;
         await _api.updateConstraintValue(_sketchId!, existing.id, value);
@@ -7020,6 +7146,7 @@ class SketchController extends ChangeNotifier {
       // some later, unrelated mutation forced a fresh one - or the sketch
       // was closed and reopened, which does a full re-adopt.
       await _solveAndTrackDof();
+      if (isFirstDimension) autoFitRequestToken++;
     });
   }
 
@@ -7033,6 +7160,11 @@ class SketchController extends ChangeNotifier {
     if (current.kind != SelectionKind.constraint) return;
 
     final oldValue = selectedConstraintValue;
+    // See [autoFitRequestToken]'s own doc comment - only a DistanceConstraint
+    // triggers the backend's whole-sketch scale (LineDistance/PointLine
+    // Distance/Angle never do, regardless of [_isFirstDimension]), and must
+    // be read before the mutation below changes what "first" means.
+    final isFirstDimension = constraints[current.id] is DistanceConstraintDto && _isFirstDimension(current.id);
     await _runGuarded(() async {
       await _api.updateConstraintValue(_sketchId!, current.id, value);
       if (oldValue != null) {
@@ -7046,6 +7178,7 @@ class SketchController extends ChangeNotifier {
       // reasoning (update_constraint_value already re-solves server-side;
       // this client-side cache just never picked it up).
       await _solveAndTrackDof();
+      if (isFirstDimension) autoFitRequestToken++;
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -8905,6 +9038,12 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       final existing = _findDistanceConstraint(pointAId, pointBId, orientation: orientation);
+      // See [autoFitRequestToken]'s own doc comment - must be read before
+      // any mutation below, since confirming this value is what would make
+      // it no longer "first" (a mismatched-orientation replace below
+      // deletes and recreates a constraint, but never a *length* one, so
+      // it can't itself change this read's answer).
+      final isFirstDimension = _isFirstDimension(existing?.id ?? '');
       final String constraintId;
       if (existing != null) {
         constraintId = existing.id;
@@ -8963,6 +9102,7 @@ class SketchController extends ChangeNotifier {
       // way [setLineLength]/[updateSelectedConstraintValue]'s matching
       // fixes describe.
       await _solveAndTrackDof();
+      if (isFirstDimension) autoFitRequestToken++;
       _ghosts = [];
       _dimensionSelection.clear();
       _activeGhostKey = null;
@@ -10332,7 +10472,27 @@ class SketchController extends ChangeNotifier {
   /// current position.
   Future<String> _pointIdAt(double x, double y, {String? excludeId}) async {
     final existing = _existingPointIdNear(x, y, excludeId: excludeId);
-    if (existing != null) return existing;
+    if (existing != null) {
+      // Bug fix (on-device feedback: "no entity should be able to use the
+      // origin point as one of its points - there should be a new point
+      // with a coincidence constraint created when a point is dropped on
+      // the origin, otherwise the user can't decouple the entity from the
+      // origin"): every other existing Point is still safe to reuse
+      // directly here (two Lines sharing a real vertex is correct CAD
+      // topology, not something to avoid), but the origin is different -
+      // it's a fixed, undeletable anchor, so directly reusing its id would
+      // permanently weld the new entity's own anchor point to it with no
+      // constraint to later delete. Land on a new, distinct Point instead,
+      // tied to the origin by an ordinary CoincidentConstraint (same
+      // mechanism [_autoCoincideIfNear] already uses for derived points) -
+      // since every tap-to-place tool funnels through this one method (see
+      // this method's own doc comment), the fix applies uniformly across
+      // all of them.
+      if (existing == _originPointId) {
+        return _createPointCoincidentWithExisting(x, y, existing);
+      }
+      return existing;
+    }
     final midpointLineId = _nearestLineMidpointId(x, y, snapRadius);
     if (midpointLineId != null) {
       return await _materializeMidpoint(midpointLineId);
@@ -10343,6 +10503,24 @@ class SketchController extends ChangeNotifier {
       await _api.deletePoint(_sketchId!, point.id);
       points.remove(point.id);
     });
+    return point.id;
+  }
+
+  /// Creates a new Point at ([x], [y]) and links it to [targetId] with a
+  /// CoincidentConstraint, rather than reusing [targetId]'s own id directly
+  /// - see [_pointIdAt]'s own doc comment for why this matters for the
+  /// origin. Mirrors [_autoCoincideIfNear]'s own create-then-constrain
+  /// pattern.
+  Future<String> _createPointCoincidentWithExisting(double x, double y, String targetId) async {
+    final point = await _api.createPoint(_sketchId!, x, y);
+    points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+    _pushUndo(() async {
+      await _api.deletePoint(_sketchId!, point.id);
+      points.remove(point.id);
+    });
+    final constraint = await _api.createCoincidentConstraint(_sketchId!, point.id, targetId);
+    _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+    _autoCoincidentIndicatorPointId = point.id;
     return point.id;
   }
 
@@ -10948,6 +11126,7 @@ class SketchController extends ChangeNotifier {
             text: displayValue.toStringAsFixed(2),
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
+            sketchLocalAlongOffset: linearAlongOffsetFor(entry.key),
           ));
         case VerticalConstraintDto c:
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'V', entry.key, isSelected, labelOffset);
@@ -10977,6 +11156,7 @@ class SketchController extends ChangeNotifier {
             text: '${c.angleDegrees.toStringAsFixed(1)}°',
             labelOffset: labelOffset,
             sketchLocalArcRadius: angleArcRadiusFor(entry.key),
+            sketchLocalAlongOffset: angleAlongOffsetFor(entry.key),
           ));
         case LineDistanceConstraintDto c:
           final line1 = lines[c.line1Id];
@@ -11056,6 +11236,7 @@ class SketchController extends ChangeNotifier {
             text: c.distance.toStringAsFixed(2),
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
+            sketchLocalAlongOffset: linearAlongOffsetFor(entry.key),
           ));
         default:
           break;
@@ -11105,6 +11286,7 @@ class SketchController extends ChangeNotifier {
             text: '?',
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(ghost.key),
+            sketchLocalAlongOffset: linearAlongOffsetFor(ghost.key),
           ));
         case GhostKind.radius:
         case GhostKind.diameter:
@@ -11193,6 +11375,7 @@ class SketchController extends ChangeNotifier {
             text: '?',
             labelOffset: labelOffset,
             sketchLocalArcRadius: angleArcRadiusFor(ghost.key),
+            sketchLocalAlongOffset: angleAlongOffsetFor(ghost.key),
           ));
       }
     }

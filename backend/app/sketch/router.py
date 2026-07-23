@@ -1300,6 +1300,21 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
                 payload.orientation,
                 provisional=payload.provisional,
             )
+            # A brand-new, real (non-provisional) dimension on an edge that
+            # was never dimensioned before (as opposed to `update_constraint_
+            # value` PATCHing an *existing* one) goes through this path
+            # instead - e.g. the very first time a freshly-drawn Rectangle's
+            # edge is dimensioned, there is no pre-existing DistanceConstraint
+            # to PATCH, `create_distance_constraint` makes a new one outright.
+            # Same "first dimension in the sketch" rule applies: see
+            # `_scale_sketch_for_first_dimension`'s own doc comment.
+            if not payload.provisional:
+                has_other_dimension = any(
+                    cid != constraint.id and _is_length_dimension(other)
+                    for cid, other in sketch.constraints.items()
+                )
+                if not has_other_dimension:
+                    _scale_sketch_for_first_dimension(sketch, constraint, payload.distance)
         elif isinstance(payload, VerticalConstraintCreate):
             constraint = sketch.add_vertical_constraint(payload.line_id)
         elif isinstance(payload, HorizontalConstraintCreate):
@@ -1363,6 +1378,103 @@ def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     del sketch.constraints[constraint_id]
 
 
+def _is_length_dimension(constraint: Constraint) -> bool:
+    """True for a Constraint that pins a real-world *size* - as opposed to a
+    purely geometric relationship (Parallel, Coincident, ...) or an angle
+    (which fixes a shape's proportions but never its absolute scale). Used
+    to decide whether a DistanceConstraint about to be confirmed is the
+    sketch's *first* size reference (see `_scale_sketch_for_first_
+    dimension`) - a provisional DistanceConstraint doesn't count (see that
+    class's own doc comment: it's a shape tool's own placement rigidity,
+    not a user-confirmed dimension)."""
+    if isinstance(constraint, DistanceConstraint):
+        return not constraint.provisional
+    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint))
+
+
+def _scale_sketch_for_first_dimension(
+    sketch: Sketch, constraint: DistanceConstraint, new_distance: float
+) -> None:
+    """Called instead of `_reseed_distance_constraint_free_point` whenever
+    `constraint` is (about to become) the only length-defining dimension in
+    the sketch (see `_is_length_dimension`) - every Point in it was drawn at
+    an arbitrary freehand size with no real-world scale behind it yet.
+    Moving just `point_b` to the new value (the ordinary reseed) would leave
+    every other, still-freehand, entity at its old size: one edge snapping
+    to its real dimension while the rest of the sketch stays comically tiny
+    or huge next to it. Instead this scales every Point in the sketch
+    uniformly about `point_a` (which stays fixed) by `new_distance /
+    <current measured value along this constraint's own orientation>`, so
+    the whole drawing grows or shrinks together and keeps looking
+    proportionally the same it did on screen - the sketch-space equivalent
+    of "this edge is 4m, so the rest of what I drew must be to the same
+    scale" rather than "this one edge is 4m and everything else is still
+    whatever size my mouse happened to draw it at".
+
+    Every other constraint's own recorded distance (see the loop below) and
+    every Text entity's font `size` are scaled by the same factor, so
+    nothing sharing this sketch is left referring to its pre-scale size.
+
+    Falls back to the ordinary single-point reseed when either endpoint is
+    a Point this function must not move: one tracking an external
+    reference (`sketch.external_references` - pinned to a Body vertex/edge,
+    refreshed from OCCT, not freehand-editable) or the sketch origin. There
+    is no "whole freehand sketch" scale to establish against a dimension
+    anchored to something outside the sketch's own control.
+
+    A no-op (same as the reseed it replaces) when the current measured
+    value is exactly zero - no direction/ratio to scale by in that
+    degenerate case.
+    """
+    point_a = sketch.points.get(constraint.point_a_id)
+    point_b = sketch.points.get(constraint.point_b_id)
+    if point_a is None or point_b is None:
+        return
+
+    fixed_ids = set(sketch.external_references)
+    if sketch.origin_point_id is not None:
+        fixed_ids.add(sketch.origin_point_id)
+    if constraint.point_a_id in fixed_ids or constraint.point_b_id in fixed_ids:
+        _reseed_distance_constraint_free_point(sketch, constraint, new_distance)
+        return
+
+    dx = point_b.x - point_a.x
+    dy = point_b.y - point_a.y
+    if constraint.orientation == "horizontal":
+        current_distance = abs(dx)
+    elif constraint.orientation == "vertical":
+        current_distance = abs(dy)
+    else:
+        current_distance = math.hypot(dx, dy)
+    if current_distance == 0:
+        return
+
+    scale = new_distance / current_distance
+    anchor_x, anchor_y = point_a.x, point_a.y
+    for point_id, point in sketch.points.items():
+        if point_id in fixed_ids:
+            continue
+        point.x = anchor_x + (point.x - anchor_x) * scale
+        point.y = anchor_y + (point.y - anchor_y) * scale
+
+    # Every *other* dimension's own recorded value (confirmed or still-
+    # provisional - e.g. an Ellipse's un-confirmed major-axis constraint
+    # while its minor axis is the one being confirmed here) must scale by
+    # the same factor, or it goes stale relative to the geometry that just
+    # moved under it: uniform scaling about a shared anchor changes every
+    # pairwise distance by exactly `scale`, so this is exact, not an
+    # approximation.
+    for other in sketch.constraints.values():
+        if other is constraint:
+            continue
+        if isinstance(other, (DistanceConstraint, LineDistanceConstraint, PointLineDistanceConstraint)):
+            other.distance *= scale
+
+    for entity in sketch.entities.values():
+        if isinstance(entity, TextEntity):
+            entity.size *= scale
+
+
 def _reseed_distance_constraint_free_point(
     sketch: Sketch, constraint: DistanceConstraint, new_distance: float
 ) -> None:
@@ -1420,7 +1532,13 @@ def update_constraint_value(
     sketch = _get_sketch_or_404(sketch_id)
     constraint = _get_constraint_or_404(sketch, constraint_id)
     if isinstance(constraint, DistanceConstraint):
-        _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
+        has_other_dimension = any(
+            cid != constraint_id and _is_length_dimension(other) for cid, other in sketch.constraints.items()
+        )
+        if has_other_dimension:
+            _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
+        else:
+            _scale_sketch_for_first_dimension(sketch, constraint, payload.value)
         constraint.distance = payload.value
         # Any explicit value PATCH is the user confirming a size (this is
         # the same endpoint the ghost-confirm flow already calls) - clears

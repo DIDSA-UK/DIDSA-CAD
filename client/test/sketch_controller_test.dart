@@ -1943,7 +1943,9 @@ void main() {
 
     await controller.handleCanvasTap(5, 0);
 
-    expect(controller.points.length, 2);
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the end Point.
+    expect(controller.points.length, 3);
     expect(controller.lines.length, 1);
     expect(controller.lines.values.first.startPointId, firstPointId);
     expect(controller.currentChainStartPointId, isNot(firstPointId));
@@ -1961,7 +1963,9 @@ void main() {
     expect(controller.lines.length, 2);
     final secondLine = controller.lines.values.last;
     expect(secondLine.startPointId, secondPointId);
-    expect(controller.points.length, 3);
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the other two.
+    expect(controller.points.length, 4);
   });
 
   test('tapping back near the chain start closes the loop using its real point id', () async {
@@ -1982,7 +1986,12 @@ void main() {
     expect(controller.lines.length, 3);
     expect(controller.lines.values.last.endPointId, startId);
     expect(controller.chainInProgress, isFalse);
-    expect(controller.points.length, 3); // no new coincident point created
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the other two -
+    // the closing tap itself still creates no *additional* Point (it
+    // reuses [startId] directly via [_chainFirstPointId], bypassing
+    // [_pointIdAt] entirely).
+    expect(controller.points.length, 4);
   });
 
   test('finishChain ends the chain without closing a loop', () async {
@@ -1993,7 +2002,9 @@ void main() {
     controller.finishChain();
 
     expect(controller.chainInProgress, isFalse);
-    expect(controller.points.length, 1);
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment).
+    expect(controller.points.length, 2);
     expect(controller.lines.length, 0);
   });
 
@@ -2028,9 +2039,11 @@ void main() {
 
     await controller.handleCanvasTap(5, 0);
 
-    // Origin/centre (shared, since (0, 0) snaps onto the origin) + all four
-    // North/East/South/West cardinal Points (see Sketch._add_cardinal_points).
-    expect(controller.points.length, 5);
+    // Bug fix: the origin, plus a new centre Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment - no longer shared
+    // directly with the origin's own id), plus all four North/East/South/
+    // West cardinal Points (see Sketch._add_cardinal_points).
+    expect(controller.points.length, 6);
     expect(controller.circles.length, 1);
     final circle = controller.circles.values.first;
     expect(circle.centerPointId, centerId);
@@ -2533,8 +2546,10 @@ void main() {
     final end = controller.points[arc.endPointId]!;
     expect(end.x, closeTo(0, 1e-9));
     expect(end.y, closeTo(5, 1e-9));
-    // Two independent radius DistanceConstraints: center-start, center-end.
-    expect(controller.constraints.length, 2);
+    // Two independent radius DistanceConstraints: center-start, center-end,
+    // plus the CoincidentConstraint tying the new centre Point to the
+    // origin (see SketchController._pointIdAt's own doc comment).
+    expect(controller.constraints.length, 3);
   });
 
   test('on-device feedback: a small clockwise cursor sweep after placing the start Point creates a '
@@ -2806,6 +2821,38 @@ void main() {
   });
 
   test(
+      'bug fix (on-device feedback: "the linear dimension only moves left/right"): '
+      'setLinearAlongOffset flows through constraintOverlayItems as sketchLocalAlongOffset for a '
+      'confirmed DistanceConstraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintLinearDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalAlongOffset, isNull);
+    expect(controller.linearAlongOffsetFor(constraintId), isNull);
+
+    controller.setLinearAlongOffset(constraintId, 4.0);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintLinearDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalAlongOffset, 4.0);
+    expect(controller.linearAlongOffsetFor(constraintId), 4.0);
+  });
+
+  test(
       'bug fix (on-device feedback: "radius and diameter dimensions are locked a set distance '
       'from the arc or circle - I should be able to move them anywhere"): setRadialLegLength '
       'flows through constraintOverlayItems as sketchLocalLegLength for a confirmed radial '
@@ -2869,6 +2916,41 @@ void main() {
         .singleWhere((i) => i.constraintId == constraintId);
     expect(afterItem.sketchLocalArcRadius, 2.5);
     expect(controller.angleArcRadiusFor(constraintId), 2.5);
+  });
+
+  test(
+      'bug fix (same class as linear dimension\'s own along-offset fix): setAngleAlongOffset '
+      'flows through constraintOverlayItems as sketchLocalAlongOffset for a confirmed '
+      'AngleConstraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // horizontal line, away from its own midpoint
+    await controller.handleCanvasTap(0.1, 8); // vertical line, away from its own midpoint
+    await controller.confirmGhostValue('angle', 90.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is AngleConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalAlongOffset, isNull);
+    expect(controller.angleAlongOffsetFor(constraintId), isNull);
+
+    controller.setAngleAlongOffset(constraintId, 1.5);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalAlongOffset, 1.5);
+    expect(controller.angleAlongOffsetFor(constraintId), 1.5);
   });
 
   test(
@@ -2983,7 +3065,14 @@ void main() {
 
     expect(controller.closedProfileFills, hasLength(1));
     expect(controller.closedProfileFills.single.pointIds, hasLength(3));
-    expect(controller.closedProfileFills.single.pointIds.toSet(), controller.points.keys.toSet());
+    // Bug fix: the origin itself is no longer one of the loop's own Points
+    // (see SketchController._pointIdAt's own doc comment) - it sits
+    // alongside the loop, merely coincident with one of its vertices, so
+    // it's excluded from this comparison.
+    expect(
+      controller.closedProfileFills.single.pointIds.toSet(),
+      controller.points.keys.where((id) => id != controller.originPointId).toSet(),
+    );
   });
 
   test(
@@ -3111,21 +3200,29 @@ void main() {
     expect(controller.plane, 'XY');
   });
 
-  test('tapping within the snap radius of the origin lands exactly on its real point id', () async {
+  test(
+      'bug fix (on-device feedback: "no entity should be able to use the origin point as one of '
+      'its points - there should be a new point with a coincidence constraint created when a '
+      'point is dropped on the origin, otherwise the user can\'t decouple the entity from the '
+      'origin"): tapping within the snap radius of the origin creates a new, distinct Point tied '
+      'to it by a CoincidentConstraint, not a direct reuse of the origin\'s own id', () async {
     controller.selectDrawTool(SketchTool.line);
 
     await controller.handleCanvasTap(0.1, 0.1);
 
-    expect(controller.chainFirstPointId, controller.originPointId);
-    expect(controller.points.length, 1); // reused the origin - no new coincident point
+    expect(controller.chainFirstPointId, isNot(controller.originPointId));
+    expect(controller.points.length, 2); // the origin, plus a new Point coincident with it
     expect(controller.errorMessage, isNull);
   });
 
-  test('a line cannot snap both ends onto the origin - the second tap still places a new point', () async {
+  test(
+      'a line placed with both taps within the origin\'s snap radius gets two distinct, '
+      'newly-created Points, each individually coincident with the origin - never the origin\'s '
+      'own id, and never each other\'s (same fix as above)', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0); // chain starts at the origin
+    await controller.handleCanvasTap(0, 0);
     final startId = controller.chainFirstPointId;
-    expect(startId, controller.originPointId);
+    expect(startId, isNot(controller.originPointId));
 
     // Still hovering the origin for the second tap of the same segment.
     await controller.handleCanvasTap(0, 0);
@@ -3133,8 +3230,33 @@ void main() {
     expect(controller.lines.length, 1);
     final line = controller.lines.values.first;
     expect(line.startPointId, startId);
-    expect(line.endPointId, isNot(startId)); // excluded - falls back to a new Point
+    expect(line.endPointId, isNot(startId));
+    expect(line.endPointId, isNot(controller.originPointId));
     expect(controller.errorMessage, isNull);
+  });
+
+  test(
+      'bug fix: placing a Circle centred on the origin creates a new, distinct centre Point tied '
+      'to the origin by a real CoincidentConstraint (rolled out via _pointIdAt to every '
+      'tap-to-place tool, not just the standalone Point tool)', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0.1, 0.1); // within snap radius of the origin
+    final centerId = controller.circleCenterPointId;
+    expect(centerId, isNot(controller.originPointId));
+
+    await controller.handleCanvasTap(5, 0);
+
+    final circle = controller.circles.values.single;
+    expect(circle.centerPointId, centerId);
+    final coincidentToOrigin = controller.constraints.values
+        .whereType<CoincidentConstraintDto>()
+        .where((c) => c.pointAId == controller.originPointId || c.pointBId == controller.originPointId)
+        .toList();
+    expect(coincidentToOrigin, hasLength(1));
+    expect(
+      {coincidentToOrigin.single.pointAId, coincidentToOrigin.single.pointBId},
+      {centerId, controller.originPointId},
+    );
   });
 
   test('a circle cannot be completed with a zero radius - tapping back on the centre is rejected', () async {
@@ -3146,7 +3268,10 @@ void main() {
     // back to some other nearby Point the way a Line's second tap does.
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0); // center snaps to the origin
-    expect(controller.circleCenterPointId, controller.originPointId);
+    // Bug fix (on-device feedback: "no entity should be able to use the
+    // origin point as one of its points"): a new, distinct centre Point
+    // coincident with the origin now, not the origin's own id directly.
+    expect(controller.circleCenterPointId, isNot(controller.originPointId));
 
     // Still hovering the origin for the radius tap.
     await controller.handleCanvasTap(0, 0);
@@ -3337,9 +3462,11 @@ void main() {
     expect(controller.errorMessage, isNull);
     expect(controller.polygonInProgress, isFalse);
     expect(controller.lines.length, 5);
+    // Bug fix: the origin, plus a new centre Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the 5 vertices.
     expect(
       controller.points.length,
-      1 /* origin/center */ + 5,
+      2 /* origin + centre */ + 5,
     );
     expect(controller.constraints.values.whereType<EqualLengthConstraintDto>().length, 4);
     final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>().toList();
@@ -4490,8 +4617,10 @@ void main() {
         {ellipse.minorPointNegId, ellipse.minorPointId});
     // Major-axis DistanceConstraint, minor-axis DistanceConstraint, 2
     // AtMidpointConstraints (center pinned to each axis Line's midpoint),
-    // and the PerpendicularConstraint tying the two axis Lines together.
-    expect(controller.constraints.length, 5);
+    // the PerpendicularConstraint tying the two axis Lines together, and
+    // the CoincidentConstraint tying the new centre Point to the origin
+    // (see SketchController._pointIdAt's own doc comment).
+    expect(controller.constraints.length, 6);
   });
 
   test('tapping an Ellipse in select mode, away from its defining Points, recognizes SelectionKind.ellipse',
@@ -4566,9 +4695,11 @@ void main() {
     ) as DistanceConstraintDto;
     expect(minorConstraint.distance, closeTo(7.0, 1e-9));
     // Major-axis DistanceConstraint, minor-axis DistanceConstraint, 2
-    // AtMidpointConstraints, and the PerpendicularConstraint tying the two
-    // axis Lines together.
-    expect(controller.constraints.length, 5);
+    // AtMidpointConstraints, the PerpendicularConstraint tying the two axis
+    // Lines together, and the CoincidentConstraint tying the new centre
+    // Point to the origin (see SketchController._pointIdAt's own doc
+    // comment).
+    expect(controller.constraints.length, 6);
   });
 
   test('computeDeleteCascade for a directly-selected Ellipse reports just the Ellipse - its own '
@@ -6827,7 +6958,12 @@ void main() {
     controller.selectDrawTool(SketchTool.point);
     await controller.handleCanvasTap(5.1, 0.1); // within snapRadius of the line's midpoint (5, 0)
 
-    expect(controller.points.length, 3); // origin + 2 line endpoints + midpoint, no extra
+    // Bug fix (on-device feedback: "no entity should be able to use the
+    // origin point as one of its points"): the Line's own start Point is
+    // now a new Point coincident with the origin, not the origin's own id
+    // directly - origin + line's own start Point + line's end Point +
+    // midpoint, no extra.
+    expect(controller.points.length, 4);
   });
 
   // --- New work package items 3 & 4: constraint selection/delete/edit -------
@@ -6840,7 +6976,11 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(4, 4); // selects the line, away from its midpoint
     await controller.applyConstraintOption(ConstraintOptionType.vertical);
-    final constraintId = controller.constraints.keys.single;
+    // Bug fix: the Line's own start Point at (0, 0) also creates a
+    // CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment), so `constraints.keys`
+    // now has 2 entries - filter to the actual Vertical one.
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key;
 
     controller.selectConstraint(constraintId);
 
@@ -6857,12 +6997,16 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(4, 4);
     await controller.applyConstraintOption(ConstraintOptionType.vertical);
-    final constraintId = controller.constraints.keys.single;
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key;
     controller.selectConstraint(constraintId);
 
     await controller.deleteSelected();
 
-    expect(controller.constraints, isEmpty);
+    // Bug fix: the origin-coincidence CoincidentConstraint (see
+    // SketchController._pointIdAt's own doc comment) is untouched by
+    // deleting the unrelated Vertical constraint, so this is no longer
+    // empty - it's down to just that one.
+    expect(controller.constraints.values, [isA<CoincidentConstraintDto>()]);
     expect(controller.selectionSet, isEmpty);
     expect(controller.errorMessage, isNull);
   });
@@ -6875,7 +7019,9 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(4, 4);
     await controller.applyConstraintOption(ConstraintOptionType.vertical);
-    controller.selectConstraint(controller.constraints.keys.single);
+    controller.selectConstraint(
+      controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key,
+    );
 
     expect(controller.selectedConstraintValue, isNull);
     expect(controller.selectedConstraintHasValue, isFalse);
@@ -6896,7 +7042,11 @@ void main() {
     await controller.handleCanvasTap(8, 2.4); // on the line, away from its midpoint
     await controller.confirmGhostValue('length', 25.0);
     controller.exitToSelectMode();
-    final constraintId = controller.constraints.keys.single;
+    // Bug fix: the Line's own start Point at (0, 0) also creates a
+    // CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment) - filter to the
+    // actual Distance one.
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
     controller.selectConstraint(constraintId);
 
     expect(controller.selectedConstraintValue, 25.0);
@@ -6984,7 +7134,11 @@ void main() {
     await controller.handleCanvasTap(8, 2.4);
     await controller.confirmGhostValue('length', 25.0);
     controller.exitToSelectMode();
-    final constraintId = controller.constraints.keys.single;
+    // Bug fix: the Line's own start Point at (0, 0) also creates a
+    // CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment) - filter to the
+    // actual Distance one.
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
     controller.selectConstraint(constraintId);
 
     backend.dof = 3; // would surface in isUnderConstrained only if a fresh solve ran
@@ -8019,17 +8173,25 @@ void main() {
     expect({created.pointAId, created.pointBId}, {controller.originPointId, pointB});
   });
 
-  test('dragTargetPointIdAt never offers the origin as a drag target, even under-constrained',
-      () async {
+  test('dragTargetPointIdAt never offers the origin\'s own real point as a drag target, even '
+      'under-constrained', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
+    await controller.handleCanvasTap(0, 0); // chain start
+    final startId = controller.chainFirstPointId;
     backend.dof = 1;
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.exitToSelectMode();
 
     expect(controller.isUnderConstrained, isTrue);
-    expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
+    // Bug fix (on-device feedback: "no entity should be able to use the
+    // origin point as one of its points"): the chain's own start Point is
+    // now a new, distinct Point coincident with the origin (see
+    // SketchController._pointIdAt's own doc comment), not the origin's own
+    // id - so it *is* now a legitimate drag target (that's the whole point
+    // of decoupling it), unlike the origin's own real point, which never is.
+    expect(controller.dragTargetPointIdAt(0, 0, 1), startId);
+    expect(controller.dragTargetPointIdAt(0, 0, 1), isNot(controller.originPointId));
   });
 
   test('addParallelConstraint creates a ParallelConstraint between the two selected Lines and '
@@ -8144,10 +8306,16 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(8, 0.1); // two Lines, not two Points
     await controller.handleCanvasTap(8, 5.8);
+    // Bug fix: the first Line's own start Point at (0, 0) already created
+    // one real CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment) - the no-op below
+    // must add no more than that.
+    final coincidentCountBefore = controller.constraints.values.whereType<CoincidentConstraintDto>().length;
+    expect(coincidentCountBefore, 1);
 
     await controller.addCoincidentConstraint();
 
-    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>().length, coincidentCountBefore);
     expect(controller.selectionSet.length, 2); // left untouched by the no-op
   });
 
@@ -8409,33 +8577,49 @@ void main() {
     expect(controller.isFullyConstrained, isFalse); // no geometry yet.
 
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
-    // Phase 6.1: off-axis (not (10, 0)) so placement doesn't auto-add a
+    // Away from the origin, deliberately not snapped to it (same pattern as
+    // "a fully constrained and grounded Point..." below) - a bare Line
+    // creates no Constraint of its own (see dof_analysis.dart), so this
+    // test's whole premise (nothing grounded until an explicit Constraint
+    // reaches the origin) needs a start Point that isn't auto-coincided
+    // with the origin just by being placed near it (see
+    // SketchController._pointIdAt's own doc comment for that fix).
+    await controller.handleCanvasTap(20, 0);
+    // Phase 6.1: off-axis (not (30, 0)) so placement doesn't auto-add a
     // Constraint of its own - this test's whole premise is that a bare
     // Line creates none until the explicit VerticalConstraint below.
-    await controller.handleCanvasTap(10, 3);
+    await controller.handleCanvasTap(30, 3);
     controller.finishChain();
+    final line = controller.lines.values.single;
+    final startId = line.startPointId;
     controller.exitToSelectMode();
 
-    // Backend confirms dof<=0, but no Constraint ties the Line's far
-    // endpoint back to the origin - a Line by itself creates no
-    // Constraint (see dof_analysis.dart), so even though its *other*
-    // endpoint happens to literally be the origin Point, the far one is
-    // not grounded, and this must not read as fully constrained.
+    // Backend confirms dof<=0, but no Constraint ties the Line back to the
+    // origin at all yet, so this must not read as fully constrained.
     backend.dof = 0;
     controller.selectDrawTool(SketchTool.point);
-    await controller.handleCanvasTap(20, 20); // any mutation re-solves; unrelated standalone Point.
+    await controller.handleCanvasTap(50, 50); // any mutation re-solves; unrelated standalone Point.
     expect(controller.isUnderConstrained, isTrue);
     expect(controller.isFullyConstrained, isFalse);
 
-    // Ground it: a Vertical Constraint on the Line unions its two
-    // endpoints - one of which is the origin itself - into one cluster.
+    // Ground it: a real CoincidentConstraint ties the Line's start Point to
+    // the origin.
     controller.exitToSelectMode();
-    await controller.handleCanvasTap(8, 2.4); // the line, away from its midpoint
+    await controller.handleCanvasTap(0, 0); // the origin
+    expect(controller.selection!.id, controller.originPointId);
+    await controller.handleCanvasTap(20, 0); // adds the Line's start Point to the selection
+    await controller.addCoincidentConstraint();
+
+    // A Vertical Constraint on the Line unions its two endpoints - one of
+    // which is now grounded via the CoincidentConstraint above - into one
+    // cluster.
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(25, 1.5); // the line, away from its midpoint
     await controller.addVerticalConstraint();
 
     expect(controller.isUnderConstrained, isFalse);
     expect(controller.isFullyConstrained, isTrue);
+    expect(startId, isNot(controller.originPointId));
   });
 
   test('a fully constrained and grounded Point refuses to be dragged even while an unrelated '

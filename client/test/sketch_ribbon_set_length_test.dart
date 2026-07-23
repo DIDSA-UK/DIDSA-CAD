@@ -71,12 +71,28 @@ class _FakeBackend {
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
     if (constraintsCollectionMatch && request.method == 'POST') {
       final id = _newId('constraint');
-      final constraint = {
-        'id': id,
-        'point_a_id': body['point_a_id'],
-        'point_b_id': body['point_b_id'],
-        'distance': (body['distance'] as num).toDouble(),
-      };
+      // Bug fix (on-device feedback: "no entity should be able to use the
+      // origin point as one of its points"): placing a Line starting at
+      // the origin now also creates a real CoincidentConstraint (see
+      // SketchController._pointIdAt's own doc comment), which carries no
+      // 'distance' field - this fake needs to dispatch on body['type']
+      // now, not assume every constraint POST is a Distance one.
+      final Map<String, dynamic> constraint;
+      if (body['type'] == 'coincident') {
+        constraint = {
+          'id': id,
+          'type': 'coincident',
+          'point_a_id': body['point_a_id'],
+          'point_b_id': body['point_b_id'],
+        };
+      } else {
+        constraint = {
+          'id': id,
+          'point_a_id': body['point_a_id'],
+          'point_b_id': body['point_b_id'],
+          'distance': (body['distance'] as num).toDouble(),
+        };
+      }
       constraints[id] = constraint;
       return _json(constraint, 201);
     }
@@ -187,7 +203,16 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.byType(AlertDialog), findsNothing);
-      expect(backend.constraints.values.single['distance'], 25.00);
+      // Bug fix (on-device feedback: "no entity should be able to use the
+      // origin point as one of its points"): the Line's own start Point at
+      // (0, 0) now also creates a real CoincidentConstraint tying it to the
+      // origin (see SketchController._pointIdAt's own doc comment), so
+      // backend.constraints has 2 entries now, not 1 - filter to the actual
+      // distance one.
+      expect(
+        backend.constraints.values.singleWhere((c) => c['type'] != 'coincident')['distance'],
+        25.00,
+      );
     },
   );
 }

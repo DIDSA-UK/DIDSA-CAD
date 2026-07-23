@@ -73,19 +73,34 @@ class _FakeBackend {
 
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
     if (constraintsCollectionMatch && request.method == 'POST') {
-      // Phase 3 bug-fix round: only Vertical is implemented - enough to
-      // ground a Line's two endpoints into one cluster (see
-      // _controllerWithALineAfterASolve), which is all this file's
-      // padlock tests need.
+      // Phase 3 bug-fix round: only Vertical was originally implemented -
+      // enough to ground a Line's two endpoints into one cluster (see
+      // _controllerWithALineAfterASolve), which was all this file's
+      // padlock tests needed. Bug fix (on-device feedback: "no entity
+      // should be able to use the origin point as one of its points"):
+      // placing a Line starting at the origin now also creates a real
+      // CoincidentConstraint (see SketchController._pointIdAt's own doc
+      // comment) - this fake needs to actually dispatch on body['type']
+      // now, not just always stub a Vertical response.
       final id = _newId('constraint');
-      final line = lines[body['line_id']];
-      final constraint = {
-        'id': id,
-        'type': 'vertical',
-        'line_id': body['line_id'],
-        'point_a_id': line?['start_point_id'],
-        'point_b_id': line?['end_point_id'],
-      };
+      final Map<String, dynamic> constraint;
+      if (body['type'] == 'coincident') {
+        constraint = {
+          'id': id,
+          'type': 'coincident',
+          'point_a_id': body['point_a_id'],
+          'point_b_id': body['point_b_id'],
+        };
+      } else {
+        final line = lines[body['line_id']];
+        constraint = {
+          'id': id,
+          'type': 'vertical',
+          'line_id': body['line_id'],
+          'point_a_id': line?['start_point_id'],
+          'point_b_id': line?['end_point_id'],
+        };
+      }
       constraints[id] = constraint;
       return _json(constraint, 201);
     }

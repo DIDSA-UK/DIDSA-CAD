@@ -1098,9 +1098,11 @@ class _SketchScreenState extends State<SketchScreen> {
         onRadialLabelAngleDragged: _handleEmbeddedRadialLabelAngleDragged,
         onRadialLabelDistanceDragged: _handleEmbeddedRadialLabelDistanceDragged,
         onLinearLabelOffsetDragged: _handleEmbeddedLinearLabelOffsetDragged,
+        onLinearLabelAlongDragged: _handleEmbeddedLinearLabelAlongDragged,
         onLineDistanceLabelOffsetDragged: _handleEmbeddedLineDistanceLabelOffsetDragged,
         onLineDistanceLabelAlongDragged: _handleEmbeddedLineDistanceLabelAlongDragged,
         onAngleLabelRadiusDragged: _handleEmbeddedAngleLabelRadiusDragged,
+        onAngleLabelAlongDragged: _handleEmbeddedAngleLabelAlongDragged,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
@@ -1558,6 +1560,16 @@ class _SketchScreenState extends State<SketchScreen> {
     _controller.setLinearOffsetDistance(id, distance);
   }
 
+  /// Bug fix (on-device feedback: "the linear dimension only moves
+  /// left/right"): [PartViewport.onLinearLabelAlongDragged]'s handler -
+  /// [_handleEmbeddedLinearLabelOffsetDragged]'s own sibling for
+  /// [SketchController.setLinearAlongOffset].
+  void _handleEmbeddedLinearLabelAlongDragged(double along) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setLinearAlongOffset(id, along);
+  }
+
   /// Bug fix (on-device feedback: "radius and diameter dimensions are
   /// locked a set distance from the arc or circle"): [PartViewport.
   /// onRadialLabelDistanceDragged]'s handler -
@@ -1598,6 +1610,15 @@ class _SketchScreenState extends State<SketchScreen> {
     final id = _controller.draggingLabelId;
     if (id == null) return;
     _controller.setAngleArcRadius(id, radius);
+  }
+
+  /// [PartViewport.onAngleLabelAlongDragged]'s handler -
+  /// [_handleEmbeddedAngleLabelRadiusDragged]'s own sibling for
+  /// [SketchController.setAngleAlongOffset].
+  void _handleEmbeddedAngleLabelAlongDragged(double along) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setAngleAlongOffset(id, along);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates
