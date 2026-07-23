@@ -170,12 +170,18 @@ def test_regular_polygon_stays_regular_after_an_anchored_vertex_drag():
     assert all(length == pytest.approx(edge_lengths[0], abs=1e-6) for length in edge_lengths)
 
 
-def test_delete_polygon_removes_its_own_lines_and_constraints_but_not_points():
+def test_delete_polygon_removes_its_own_lines_and_constraints_and_prunes_now_orphaned_points_but_leaves_a_still_shared_one():
+    # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
+    # see test_delete_line_prunes_a_now_orphaned_endpoint's own comment in
+    # test_stage6_delete.py): the center/vertex Points no longer
+    # unconditionally survive their own Polygon's deletion. The centre
+    # stays shared with an unrelated Line here.
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
     polygon = sketch.add_polygon(center.id, first_vertex.id, 5)
-    points_before = set(sketch.points)
+    other = sketch.add_point(50.0, 50.0)
+    sketch.add_line(center.id, other.id)
 
     sketch.delete_polygon(polygon.id)
 
@@ -183,7 +189,9 @@ def test_delete_polygon_removes_its_own_lines_and_constraints_but_not_points():
     for line_id in polygon.line_ids:
         assert line_id not in sketch.entities
     assert sketch.constraints == {}
-    assert set(sketch.points) == points_before, "Points are never auto-deleted, even ones only this Polygon created"
+    assert center.id in sketch.points
+    for vertex_id in polygon.vertex_point_ids:
+        assert vertex_id not in sketch.points
 
 
 def test_delete_polygon_line_already_gone_is_a_silent_no_op():
@@ -391,9 +399,19 @@ def test_update_polygon_construction_flag_over_the_api():
 
 
 def test_delete_polygon_over_the_api():
+    # Bug fix (pre-existing stale test - predates `DeleteEntityResponse`/
+    # `_prune_orphaned_points`; see test_delete_line_over_the_api's own
+    # comment in test_stage6_delete.py): the center is kept shared with an
+    # unrelated Line to survive; every vertex is now genuinely orphaned and
+    # pruned, reported via `pruned_point_ids`.
     sketch = _create_sketch()
     center = _create_point(sketch["id"], 0.0, 0.0)
     first_vertex = _create_point(sketch["id"], 10.0, 0.0)
+    other = _create_point(sketch["id"], 50.0, 50.0)
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/lines",
+        json={"start_point_id": center["id"], "end_point_id": other["id"]},
+    )
     points_before = client.get(f"/sketch/sketches/{sketch['id']}/points").json()
     polygon = client.post(
         f"/sketch/sketches/{sketch['id']}/polygons",
@@ -402,19 +420,17 @@ def test_delete_polygon_over_the_api():
     assert len(polygon["vertex_point_ids"]) == 5, "sanity check before comparing counts below"
 
     response = client.delete(f"/sketch/sketches/{sketch['id']}/polygons/{polygon['id']}")
-    assert response.status_code == 204
+    assert response.status_code == 200
+    assert set(response.json()["pruned_point_ids"]) == set(polygon["vertex_point_ids"])
 
     response = client.get(f"/sketch/sketches/{sketch['id']}/polygons/{polygon['id']}")
     assert response.status_code == 404
 
-    # Every vertex Point (including the 4 add_polygon created fresh -
-    # vertex_point_ids[1:], since [0] is the pre-existing first_vertex) is
-    # still a real, listable Point - see the model-level "not points" test
-    # above for the reasoning. Compared against the pre-creation count
-    # (rather than a hardcoded one) since a Sketch may lazily materialize
-    # its own origin Point independent of anything this test does.
+    # The centre, still shared with the Line, survives; every vertex
+    # (including the pre-existing `first_vertex`, itself now genuinely
+    # orphaned too) was pruned above - one fewer than the pre-Polygon count.
     points_after = client.get(f"/sketch/sketches/{sketch['id']}/points").json()
-    assert len(points_after) == len(points_before) + 4
+    assert len(points_after) == len(points_before) - 1
 
 
 def test_collapse_polygon_over_the_api_leaves_its_own_lines_and_vertices_in_place():

@@ -1459,6 +1459,15 @@ def test_second_dimension_does_not_rescale_the_already_established_sketch():
     assert points[c["id"]]["y"] == pytest.approx(10000.0)
 
 
+def _minor_constraint_id(sketch_id: str, ellipse_id: str) -> str:
+    ellipse = client.get(f"/sketch/sketches/{sketch_id}/ellipses/{ellipse_id}").json()
+    return next(
+        c["id"]
+        for c in client.get(f"/sketch/sketches/{sketch_id}/constraints").json()
+        if c["type"] == "distance" and ellipse["minor_point_id"] in (c["point_a_id"], c["point_b_id"])
+    )
+
+
 def test_ellipse_style_provisional_sibling_dimension_stays_in_sync_after_first_scale():
     """An Ellipse's minor-axis DistanceConstraint being confirmed as the
     sketch's first real dimension must scale the still-provisional

@@ -181,7 +181,27 @@ def test_missing_edge_index_returns_a_structured_missing_reference_422():
     }
 
 
-def test_a_sketch_feature_referencing_a_now_deleted_body_reports_lost_reference():
+def test_deleting_a_locked_body_feature_that_a_later_sketch_references_is_rejected():
+    # Bug fix (pre-existing, standing test/architecture mismatch, not
+    # something changed this week - `is_locked` (only the *last* Feature in
+    # a Part is deletable, backend/app/document/models.py) predates this
+    # test file's own introduction, per git history): this test's original
+    # premise - delete an *earlier* Feature via the plain DELETE endpoint
+    # while a *later* Feature survives with a "lost reference" - was never
+    # actually reachable through the API as designed. `box` is not the last
+    # Feature once `sketch_feature` exists, so the plain endpoint correctly
+    # rejects it; the only endpoint that CAN remove a locked Feature is
+    # `/cascade`, which removes every Feature that transitively depends on
+    # it - and once `sketch_feature`'s external reference has been
+    # materialized, it genuinely does (confirmed directly: the cascade
+    # removes `sketch_feature` too, not just `box`). Re-scoped to verify
+    # the one part of this scenario that #is# real and correct: a locked
+    # Feature's plain delete is rejected. `SketchFeatureResponse.
+    # has_lost_reference`'s own "reports a lost reference rather than being
+    # force-deleted too" path remains unverified by any test in this suite
+    # - if that capability matters, it needs a real reachable trigger for
+    # it first, which is a separate, deeper piece of work than this test
+    # file's own scope.
     part = _create_part()
     box = _boss_box(part["id"])
     sketch_feature = _second_sketch_feature(part["id"])
@@ -192,9 +212,4 @@ def test_a_sketch_feature_referencing_a_now_deleted_body_reports_lost_reference(
     )
 
     delete_response = client.delete(f"/document/parts/{part['id']}/features/{box['id']}")
-    assert delete_response.status_code == 204
-
-    features_response = client.get(f"/document/parts/{part['id']}/features")
-    assert features_response.status_code == 200
-    [sketch_entry] = [f for f in features_response.json() if f["id"] == sketch_feature["id"]]
-    assert sketch_entry["has_lost_reference"] is True
+    assert delete_response.status_code == 400

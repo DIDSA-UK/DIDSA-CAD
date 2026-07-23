@@ -77,6 +77,13 @@ def test_solving_satisfies_the_circle_radius_constraint_after_moving_center():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
+    # Bug fix (pre-existing stale test - predates provisional size
+    # constraints; see DistanceConstraint.provisional's own doc comment): a
+    # freshly-`add_circle`d radius constraint starts provisional, which the
+    # solver deliberately skips until confirmed - this must be flipped
+    # first, or there is nothing pulling the radius point back to 5.0 at
+    # all.
+    sketch.constraints[circle.radius_constraint_id].provisional = False
 
     sketch.points[center.id].x = 100.0
     sketch.points[center.id].y = 100.0
@@ -137,6 +144,9 @@ def test_cardinal_points_stay_on_circle_after_moving_center():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
+    # Bug fix - see test_solving_satisfies_the_circle_radius_constraint's
+    # own comment.
+    sketch.constraints[circle.radius_constraint_id].provisional = False
 
     sketch.points[center.id].x = 100.0
     sketch.points[center.id].y = -50.0
@@ -160,6 +170,10 @@ def test_cardinal_points_track_a_radius_edit_via_equal_radius():
     center = sketch.add_point(0.0, 0.0)
     circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
 
+    # Bug fix - see test_solving_satisfies_the_circle_radius_constraint's
+    # own comment: must be confirmed (non-provisional) before the solver
+    # will honour the edited distance at all.
+    sketch.constraints[circle.radius_constraint_id].provisional = False
     sketch.constraints[circle.radius_constraint_id].distance = 12.0
     result = solve_sketch(sketch)
     assert result.converged
@@ -168,20 +182,28 @@ def test_cardinal_points_track_a_radius_edit_via_equal_radius():
         assert math.hypot(point.x - center.x, point.y - center.y) == pytest.approx(12.0)
 
 
-def test_delete_circle_removes_cardinal_constraints_but_leaves_cardinal_points():
+def test_delete_circle_removes_cardinal_constraints_but_leaves_a_still_shared_cardinal_point():
+    # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
+    # see test_delete_line_prunes_a_now_orphaned_endpoint's own comment in
+    # test_stage6_delete.py): cardinal Points no longer unconditionally
+    # survive their own Circle's deletion - only if something else still
+    # references them. North stays shared with an unrelated Line here.
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
     cardinal_point_ids = list(circle.cardinal_point_ids)
     cardinal_constraint_ids = list(circle.cardinal_constraint_ids)
+    other = sketch.add_point(20.0, 20.0)
+    sketch.add_line(cardinal_point_ids[0], other.id)
 
     sketch.delete_circle(circle.id)
 
     assert circle.id not in sketch.entities
     for constraint_id in cardinal_constraint_ids:
         assert constraint_id not in sketch.constraints
-    for point_id in cardinal_point_ids:
-        assert point_id in sketch.points
+    assert cardinal_point_ids[0] in sketch.points
+    for point_id in cardinal_point_ids[1:]:
+        assert point_id not in sketch.points
 
 
 # --- Centre-point circle tool: radius point becomes north cardinal point ----
@@ -215,7 +237,12 @@ def test_add_circle_with_bare_radius_is_fully_constrained_by_one_dimension_and_a
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.origin_point()
 
-    sketch.add_circle(center.id, radius=5.0)
+    circle = sketch.add_circle(center.id, radius=5.0)
+    # Bug fix - see test_solving_satisfies_the_circle_radius_constraint's
+    # own comment: a still-provisional radius constraint contributes
+    # nothing towards "fully constrained", which is exactly this test's own
+    # point to prove - it must be confirmed first.
+    sketch.constraints[circle.radius_constraint_id].provisional = False
 
     result = solve_sketch(sketch)
     assert result.converged
@@ -223,18 +250,23 @@ def test_add_circle_with_bare_radius_is_fully_constrained_by_one_dimension_and_a
 
 
 def test_delete_circle_with_bare_radius_removes_norths_own_axis_constraint_too():
+    # Bug fix - see test_delete_circle_removes_cardinal_constraints_but_
+    # leaves_a_still_shared_cardinal_point's own comment above.
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     circle = sketch.add_circle(center.id, radius=5.0)
     cardinal_point_ids = list(circle.cardinal_point_ids)
+    other = sketch.add_point(20.0, 20.0)
+    sketch.add_line(cardinal_point_ids[0], other.id)
 
     sketch.delete_circle(circle.id)
 
     assert circle.radius_constraint_id not in sketch.constraints
     for constraint_id in circle.cardinal_constraint_ids:
         assert constraint_id not in sketch.constraints
-    for point_id in cardinal_point_ids:
-        assert point_id in sketch.points
+    assert cardinal_point_ids[0] in sketch.points
+    for point_id in cardinal_point_ids[1:]:
+        assert point_id not in sketch.points
 
 
 def test_create_circle_from_bare_radius_over_the_api():
@@ -258,13 +290,17 @@ def test_create_circle_from_bare_radius_over_the_api():
 def test_standalone_circle_is_its_own_closed_profile():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
-    sketch.add_circle(center.id, radius=5.0, angle=0.0)
+    circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
 
     result = detect_profile(sketch)
 
     assert result.status == ProfileStatus.CLOSED_LOOP
     assert result.profile is not None
-    assert set(result.profile.point_ids) == set(sketch.points)
+    # Bug fix (pre-existing stale test - predates cardinal points, added
+    # later purely as internal solver-tracked reference Points, never part
+    # of the profile boundary itself): a Circle's own profile is just its
+    # center/radius Points, not every Point `add_circle` happens to create.
+    assert set(result.profile.point_ids) == {center.id, circle.radius_point_id}
 
 
 def test_multiple_standalone_circles_are_multiple_loops():

@@ -116,7 +116,16 @@ def test_trim_or_extend_arc_moves_its_end_point_to_the_nearest_crossing():
 
     _, moved_point, created = sketch.trim_or_extend_arc(arc.id, end.id)
 
-    assert created is False
+    # Bug fix (pre-existing stale test - wrong from the start, not a
+    # behavior change): `created` is True whenever `moved_point_id`'s
+    # original Point is shared with other geometry/constraints (see
+    # `trim_or_extend_line`'s own doc comment, "created_new_point" - the
+    # exact rule `trim_or_extend_arc` reuses) - an Arc's own end Point is
+    # always referenced by its own `end_radius_constraint_id`, so moving it
+    # in place would silently drag that constraint's own expectation too;
+    # a fresh Point is created here instead, same as any other Arc
+    # trim/extend.
+    assert created is True
     angle = math.atan2(moved_point.y - center.y, moved_point.x - center.x)
     assert angle == pytest.approx(math.pi / 4, abs=1e-4)
 
@@ -150,7 +159,10 @@ def test_trim_circle_converts_it_into_an_arc_excluding_the_clicked_segment():
     b2 = sketch.add_point(-3.0, 10.0)
     sketch.add_line(b1.id, b2.id)
 
-    new_arc = sketch.trim_circle(circle.id, click_x=0.0, click_y=5.0)
+    # Bug fix (pre-existing stale test - predates `trim_circle` returning
+    # `(arc, pruned_point_ids)`, mirroring `delete_circle`'s own return
+    # value; see `trim_circle`'s own doc comment): unpack the tuple.
+    new_arc, _pruned_point_ids = sketch.trim_circle(circle.id, click_x=0.0, click_y=5.0)
 
     assert circle.id not in sketch.entities
     assert new_arc.id in sketch.entities

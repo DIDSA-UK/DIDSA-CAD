@@ -56,9 +56,26 @@ def test_add_text_rejects_unknown_anchor_point():
         sketch.add_text("Hi", "Open Sans", 10.0, "missing-point")
 
 
-def test_delete_text_removes_entity_leaves_anchor_point():
+def test_delete_text_removes_entity_and_prunes_now_orphaned_anchor_point():
+    # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
+    # see test_delete_line_prunes_a_now_orphaned_endpoint's own comment in
+    # test_stage6_delete.py): the anchor Point no longer unconditionally
+    # survives the Text's own deletion.
     sketch = Sketch(id="s", plane=Plane.XY)
     anchor = sketch.add_point(0.0, 0.0)
+    text = sketch.add_text("Hi", "Open Sans", 10.0, anchor.id)
+
+    sketch.delete_text(text.id)
+
+    assert text.id not in sketch.entities
+    assert anchor.id not in sketch.points
+
+
+def test_delete_text_leaves_an_anchor_point_still_shared_with_something_else():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    anchor = sketch.add_point(0.0, 0.0)
+    other = sketch.add_point(20.0, 20.0)
+    sketch.add_line(anchor.id, other.id)
     text = sketch.add_text("Hi", "Open Sans", 10.0, anchor.id)
 
     sketch.delete_text(text.id)
@@ -290,10 +307,14 @@ def test_delete_text_over_the_api():
 
     response = client.delete(f"/sketch/sketches/{sketch['id']}/texts/{created['id']}")
 
-    assert response.status_code == 204
+    # Bug fix (pre-existing stale test - predates `DeleteEntityResponse`/
+    # `_prune_orphaned_points`; see test_delete_line_over_the_api's own
+    # comment in test_stage6_delete.py): a 200 + `pruned_point_ids` now,
+    # and the anchor Point - genuinely orphaned here - is one of them.
+    assert response.status_code == 200
+    assert response.json()["pruned_point_ids"] == [anchor["id"]]
     assert client.get(f"/sketch/sketches/{sketch['id']}/texts/{created['id']}").status_code == 404
-    # Its anchor Point is untouched.
-    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{anchor['id']}").status_code == 200
+    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{anchor['id']}").status_code == 404
 
 
 def test_text_preview_endpoint_returns_one_contour_per_glyph():
