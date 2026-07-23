@@ -1243,6 +1243,57 @@ class _FakeBackend {
         };
         constraintIds.add(angleId);
       }
+      String? circumscribedCircleId;
+      String? inscribedCircleId;
+      // Mirrors the real backend's Sketch.add_polygon own reference_circles
+      // option (on-device feedback: "the 2 construction circles should be
+      // drawn and visible to the user to dimension and use in the
+      // sketch") - a minimal stand-in for the full circle-creation POST
+      // handler above (same shape: cardinal points + a provisional radius
+      // DistanceConstraint), just inlined rather than reused since that's
+      // structured as its own HTTP handler.
+      Map<String, dynamic> makeReferenceCircle(String radiusPointId, double circleRadius) {
+        final circleId = _newId('circle');
+        final cardinalPointIds = <String>[];
+        final cardinalOffsets = <String, (double, double)>{
+          'north': (cx, cy + circleRadius),
+          'east': (cx + circleRadius, cy),
+          'south': (cx, cy - circleRadius),
+          'west': (cx - circleRadius, cy),
+        };
+        for (final key in ['north', 'east', 'south', 'west']) {
+          final newId = _newId('point');
+          final offset = cardinalOffsets[key]!;
+          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+          cardinalPointIds.add(newId);
+        }
+        circles[circleId] = {
+          'id': circleId,
+          'center_point_id': body['center_point_id'],
+          'radius_point_id': radiusPointId,
+          'radius': circleRadius,
+          'construction': true,
+          'cardinal_point_ids': cardinalPointIds,
+        };
+        final constraintId = _newId('constraint');
+        constraints[constraintId] = {
+          'id': constraintId,
+          'point_a_id': body['center_point_id'],
+          'point_b_id': radiusPointId,
+          'distance': circleRadius,
+          'provisional': true,
+        };
+        return circles[circleId]!;
+      }
+
+      if (body['reference_circles'] == true) {
+        circumscribedCircleId = makeReferenceCircle(vertexPointIds[0], radius)['id'] as String;
+        final inradius = radius * math.cos(math.pi / sides);
+        final inscribedRadiusPointId = _newId('point');
+        points[inscribedRadiusPointId] = {'id': inscribedRadiusPointId, 'x': cx + inradius, 'y': cy};
+        inscribedCircleId = makeReferenceCircle(inscribedRadiusPointId, inradius)['id'] as String;
+      }
+
       final polygon = {
         'id': id,
         'center_point_id': body['center_point_id'],
@@ -1251,6 +1302,8 @@ class _FakeBackend {
         'radius': radius,
         'sides': sides,
         'construction': body['construction'] as bool? ?? false,
+        'circumscribed_circle_id': circumscribedCircleId,
+        'inscribed_circle_id': inscribedCircleId,
         // Not part of the real API response - kept only so this fake's own
         // DELETE handler above knows which Constraints to cascade, mirroring
         // the real backend's Sketch.delete_polygon.
@@ -3500,19 +3553,20 @@ void main() {
     );
   });
 
-  test('togglePolygonGuideCircles flips showPolygonGuideCircles, reflected in the next ghost preview',
-      () async {
-    expect(controller.showPolygonGuideCircles, isTrue);
+  test(
+      'togglePolygonReferenceCircles flips createPolygonReferenceCircles, reflected in the next '
+      'ghost preview', () async {
+    expect(controller.createPolygonReferenceCircles, isFalse);
     controller.selectDrawTool(SketchTool.polygon);
     await controller.handleCanvasTap(0, 0);
     controller.cursorX = 5;
     controller.cursorY = 0;
-    expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isTrue);
-
-    controller.togglePolygonGuideCircles();
-
-    expect(controller.showPolygonGuideCircles, isFalse);
     expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isFalse);
+
+    controller.togglePolygonReferenceCircles();
+
+    expect(controller.createPolygonReferenceCircles, isTrue);
+    expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isTrue);
   });
 
   test(
@@ -3533,6 +3587,65 @@ void main() {
     await controller.undo();
 
     expect(controller.polygons, isEmpty);
+  });
+
+  test(
+      'bug fix (on-device feedback: "the 2 construction circles should be drawn and visible to the '
+      'user to dimension and use in the sketch - at the moment they are not shown after placing '
+      'the polygon"): with createPolygonReferenceCircles toggled on, placing a Polygon also '
+      'creates two real, selectable Circles in controller.circles, and undo removes them too',
+      () async {
+    expect(controller.createPolygonReferenceCircles, isFalse, reason: 'off by default');
+    controller.togglePolygonReferenceCircles();
+    expect(controller.circles, isEmpty);
+
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+
+    final polygon = controller.polygons.values.single;
+    expect(polygon.circumscribedCircleId, isNotNull);
+    expect(polygon.inscribedCircleId, isNotNull);
+    expect(controller.circles.keys, containsAll([polygon.circumscribedCircleId, polygon.inscribedCircleId]));
+
+    final circumscribed = controller.circles[polygon.circumscribedCircleId]!;
+    expect(circumscribed.centerPointId, polygon.centerPointId);
+    expect(circumscribed.radiusPointId, polygon.vertexPointIds[0]);
+    // Every cardinal Point must have actually been fetched into
+    // controller.points, not just referenced by id.
+    for (final id in circumscribed.cardinalPointIds) {
+      expect(controller.points.containsKey(id), isTrue);
+    }
+
+    final inscribed = controller.circles[polygon.inscribedCircleId]!;
+    expect(inscribed.centerPointId, polygon.centerPointId);
+    final inscribedRadiusPoint = controller.points[inscribed.radiusPointId];
+    expect(inscribedRadiusPoint, isNotNull);
+    final center = controller.points[polygon.centerPointId]!;
+    final actualInradius = math.sqrt(
+      math.pow(inscribedRadiusPoint!.x - center.x, 2) + math.pow(inscribedRadiusPoint.y - center.y, 2),
+    );
+    expect(actualInradius, closeTo(10.0 * math.cos(math.pi / 6), 1e-6));
+
+    await controller.undo();
+
+    expect(controller.circles.keys, isNot(containsAll([polygon.circumscribedCircleId, polygon.inscribedCircleId])));
+  });
+
+  test(
+      'createPolygonReferenceCircles off (the default) creates a Polygon with no reference '
+      'circles at all', () async {
+    expect(controller.createPolygonReferenceCircles, isFalse);
+
+    controller.selectDrawTool(SketchTool.polygon);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+
+    final polygon = controller.polygons.values.single;
+    expect(polygon.circumscribedCircleId, isNull);
+    expect(polygon.inscribedCircleId, isNull);
+    expect(controller.circles, isEmpty);
   });
 
   test('a placed polygon drops out of controller.polygons once one of its Points is deleted',

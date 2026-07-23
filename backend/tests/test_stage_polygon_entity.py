@@ -76,6 +76,65 @@ def test_add_polygon_rejects_first_vertex_coincident_with_center():
         sketch.add_polygon(center.id, center.id, 5)
 
 
+def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles():
+    """On-device feedback ("when the toggle in the polygon tool is on, the
+    2 construction circles should be drawn and visible to the user to
+    dimension and use in the sketch - at the moment they are not shown
+    after placing the polygon"): `reference_circles=True` must create two
+    real, independently addressable Circles - a circumscribed one sharing
+    the Polygon's own center/first-vertex Points directly, and an inscribed
+    one at the exact mathematical inradius, tangent to the first edge."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+
+    assert polygon.circumscribed_circle_id is not None
+    assert polygon.inscribed_circle_id is not None
+    assert polygon.inscribed_tangent_constraint_id is not None
+
+    circumscribed = sketch.entities[polygon.circumscribed_circle_id]
+    assert circumscribed.center_point_id == center.id
+    assert circumscribed.radius_point_id == first_vertex.id
+
+    inscribed = sketch.entities[polygon.inscribed_circle_id]
+    assert inscribed.center_point_id == center.id
+    inradius_point = sketch.points[inscribed.radius_point_id]
+    actual_inradius = math.hypot(inradius_point.x - center.x, inradius_point.y - center.y)
+    assert actual_inradius == pytest.approx(10.0 * math.cos(math.pi / 6))
+
+    assert polygon.inscribed_tangent_constraint_id in sketch.constraints
+
+
+def test_add_polygon_without_reference_circles_creates_neither():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6)
+
+    assert polygon.circumscribed_circle_id is None
+    assert polygon.inscribed_circle_id is None
+    assert polygon.inscribed_tangent_constraint_id is None
+
+
+def test_delete_polygon_with_reference_circles_cleans_up_both_circles_and_the_tangent_constraint():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    circumscribed_id = polygon.circumscribed_circle_id
+    inscribed_id = polygon.inscribed_circle_id
+    tangent_id = polygon.inscribed_tangent_constraint_id
+
+    sketch.delete_polygon(polygon.id)
+
+    assert circumscribed_id not in sketch.entities
+    assert inscribed_id not in sketch.entities
+    assert tangent_id not in sketch.constraints
+
+
 def test_regular_polygon_stays_regular_after_an_anchored_vertex_drag():
     """The actual bug this entity exists to let the client fix correctly
     (see the Polygon class docstring): a real on-canvas drag of one vertex,

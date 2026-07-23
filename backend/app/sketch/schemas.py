@@ -445,6 +445,10 @@ class PolygonCreate(BaseModel):
     first_vertex_point_id: str
     sides: int = Field(ge=3)
     construction: bool = False
+    # On-device feedback ("the 2 construction circles should be drawn and
+    # visible to the user to dimension and use in the sketch") - see
+    # `Sketch.add_polygon`'s own `reference_circles` doc comment.
+    reference_circles: bool = False
 
 
 class PolygonResponse(BaseModel):
@@ -456,6 +460,8 @@ class PolygonResponse(BaseModel):
     radius: float
     sides: int
     construction: bool = False
+    circumscribed_circle_id: str | None = None
+    inscribed_circle_id: str | None = None
 
 
 class PolygonUpdate(BaseModel):

@@ -1099,6 +1099,7 @@ class _SketchScreenState extends State<SketchScreen> {
         onRadialLabelDistanceDragged: _handleEmbeddedRadialLabelDistanceDragged,
         onLinearLabelOffsetDragged: _handleEmbeddedLinearLabelOffsetDragged,
         onLineDistanceLabelOffsetDragged: _handleEmbeddedLineDistanceLabelOffsetDragged,
+        onLineDistanceLabelAlongDragged: _handleEmbeddedLineDistanceLabelAlongDragged,
         onAngleLabelRadiusDragged: _handleEmbeddedAngleLabelRadiusDragged,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
@@ -1577,6 +1578,17 @@ class _SketchScreenState extends State<SketchScreen> {
     final id = _controller.draggingLabelId;
     if (id == null) return;
     _controller.setLinearOffsetDistance(id, distance);
+  }
+
+  /// Bug fix (on-device feedback: "the dimension...is restricted in
+  /// movement. it moves left right. it can't be moved up down"):
+  /// [PartViewport.onLineDistanceLabelAlongDragged]'s handler -
+  /// [_handleEmbeddedLineDistanceLabelOffsetDragged]'s own sibling for
+  /// [SketchController.setLineDistanceAlongOffset].
+  void _handleEmbeddedLineDistanceLabelAlongDragged(double along) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setLineDistanceAlongOffset(id, along);
   }
 
   /// [PartViewport.onAngleLabelRadiusDragged]'s handler -

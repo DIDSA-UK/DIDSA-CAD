@@ -95,8 +95,8 @@ class SketchArcView {
 /// no backend entity of its own (see the old `PlacedPolygon`'s doc comment,
 /// which this replaces) - a real, persisted, single-atomic-call entity now
 /// backs it, the same as Arc/Ellipse, letting [SketchController.
-/// showPolygonGuideCircles] survive a fresh sketch reload (not just the
-/// same session) and letting a vertex drag be reliably recognized as one
+/// createPolygonReferenceCircles] survive a fresh sketch reload (not just
+/// the same session) and letting a vertex drag be reliably recognized as one
 /// (see [beginPointDrag]).
 class SketchPolygonView {
   final String id;
@@ -106,6 +106,15 @@ class SketchPolygonView {
   final int sides;
   final bool construction;
 
+  /// On-device feedback ("the 2 construction circles should be drawn and
+  /// visible to the user to dimension and use in the sketch") - null
+  /// unless this Polygon was placed with
+  /// [SketchController.createPolygonReferenceCircles] on (see that
+  /// getter's own doc comment). Real ids into [SketchController.circles],
+  /// not just a paint-only preview.
+  final String? circumscribedCircleId;
+  final String? inscribedCircleId;
+
   const SketchPolygonView({
     required this.id,
     required this.centerPointId,
@@ -113,6 +122,8 @@ class SketchPolygonView {
     required this.lineIds,
     required this.sides,
     this.construction = false,
+    this.circumscribedCircleId,
+    this.inscribedCircleId,
   });
 }
 
@@ -385,6 +396,24 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
   /// [labelOffset] path.
   final double? sketchLocalOffsetDistance;
 
+  /// Bug fix (on-device feedback: "the dimension...is restricted in
+  /// movement. it moves left right. it can't be moved up down"): the
+  /// dimension line's own perpendicular offset from the two Lines
+  /// ([sketchLocalOffsetDistance]) only ever moved the label *along the two
+  /// Lines' own shared direction* (e.g. left/right for two horizontal
+  /// Lines) - the label's position *along the dimension line itself* (e.g.
+  /// up/down, between/beyond the two Lines) fell back to
+  /// [_dimensionLabelPlacement]'s raw-pixel [labelOffset] dot product,
+  /// which - like every other camera-independent dimension kind's own
+  /// "along" component in the 3D viewport - is never actually written by
+  /// this view's own drag handling (only the specialised camera-independent
+  /// siblings are), so it was permanently stuck wherever it started. A
+  /// sketch-unit distance along the dimension line's own perpendicular
+  /// direction (positive means the label sits beyond `midB`, i.e. further
+  /// from Line 1 than Line 2), camera-independent by the same construction
+  /// as [sketchLocalOffsetDistance].
+  final double? sketchLocalAlongOffset;
+
   const ConstraintLineDistanceDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -395,6 +424,7 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
     required this.text,
     required this.labelOffset,
     this.sketchLocalOffsetDistance,
+    this.sketchLocalAlongOffset,
   });
 
   @override
@@ -408,7 +438,8 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
       other.line2End == line2End &&
       other.text == text &&
       other.labelOffset == labelOffset &&
-      other.sketchLocalOffsetDistance == sketchLocalOffsetDistance;
+      other.sketchLocalOffsetDistance == sketchLocalOffsetDistance &&
+      other.sketchLocalAlongOffset == sketchLocalAlongOffset;
 
   @override
   int get hashCode => Object.hash(
@@ -421,6 +452,7 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
         text,
         labelOffset,
         sketchLocalOffsetDistance,
+        sketchLocalAlongOffset,
       );
 }
 
@@ -757,7 +789,7 @@ class PolygonGhost extends DrawGhost {
 
   /// Feedback round: whether to also preview the circumscribed/inscribed
   /// guide circles every vertex/edge-midpoint lands on - see
-  /// [SketchController.showPolygonGuideCircles]'s own doc comment.
+  /// [SketchController.createPolygonReferenceCircles]'s own doc comment.
   final bool showGuideCircles;
 
   const PolygonGhost({
@@ -1747,25 +1779,33 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  bool _showPolygonGuideCircles = true;
+  // Defaults to off (unlike the old preview-only toggle it replaces,
+  // which defaulted on): creating real solver-tracked geometry is a
+  // bigger, more consequential action than a harmless dashed preview, so
+  // it shouldn't happen unless the user actually asks for it.
+  bool _createPolygonReferenceCircles = false;
 
-  /// Feedback round: while defining a Polygon, [_polygonDrawGhost] can
-  /// additionally preview the circumscribed circle (through every vertex)
-  /// and the inscribed circle (through every edge's midpoint) every real
-  /// regular polygon's vertices/midpoints always land on - background
-  /// construction-line guides only, toggleable, exactly as requested; not
-  /// persisted *geometry* (the placed Polygon is locked onto these same two
-  /// circles by its own real solver constraints regardless of whether this
-  /// preview is shown - see [_clickPolygonTool]'s own doc comment). This
-  /// same flag also gates [_SketchPainter]'s rendering of both guide
-  /// circles for every already-placed Polygon in [polygons] (a real,
-  /// persisted field - see [SketchPolygonView]'s own doc comment - declared
-  /// alongside [arcs]/[ellipses] above), not just the in-progress ghost -
-  /// Fix #7's own "toggle after placement" request.
-  bool get showPolygonGuideCircles => _showPolygonGuideCircles;
+  /// On-device feedback ("when the toggle in the polygon tool is on, the 2
+  /// construction circles should be drawn and visible to the user to
+  /// dimension and use in the sketch - at the moment they are not shown
+  /// after placing the polygon. it should be renamed as appropriately"):
+  /// this used to only gate a dashed, paint-only preview overlay
+  /// (recomputed live from the Polygon's own vertex Points, never a real
+  /// entity) that vanished the instant the Polygon was actually placed -
+  /// renamed from `showPolygonGuideCircles`/`togglePolygonGuideCircles` to
+  /// reflect what it now does: when true, [_clickPolygonTool] asks the
+  /// backend to create two real, independently addressable, solver-tracked
+  /// Circles (`add_polygon`'s own `reference_circles` - see that method's
+  /// doc comment) alongside the Polygon, selectable/dimensionable/
+  /// deletable exactly like any other Circle. While defining a Polygon,
+  /// [_polygonDrawGhost] still additionally previews both circles as
+  /// dashed construction-line guides ahead of placement (background only,
+  /// not itself persisted) - this flag drives that preview too, via
+  /// [PolygonGhost.showGuideCircles].
+  bool get createPolygonReferenceCircles => _createPolygonReferenceCircles;
 
-  void togglePolygonGuideCircles() {
-    _showPolygonGuideCircles = !_showPolygonGuideCircles;
+  void togglePolygonReferenceCircles() {
+    _createPolygonReferenceCircles = !_createPolygonReferenceCircles;
     notifyListeners();
   }
 
@@ -2358,7 +2398,7 @@ class SketchController extends ChangeNotifier {
       centerX: center.x,
       centerY: center.y,
       vertices: _polygonVertices(center.x, center.y, cursorX, cursorY, _polygonSides),
-      showGuideCircles: _showPolygonGuideCircles,
+      showGuideCircles: _createPolygonReferenceCircles,
     );
   }
 
@@ -5024,6 +5064,25 @@ class SketchController extends ChangeNotifier {
   /// contract as [setRadialAngleOffset]/[setLinearOffsetDistance].
   void setAngleArcRadius(String constraintId, double radius) {
     _angleArcRadii[constraintId] = radius;
+    notifyListeners();
+  }
+
+  /// A Line-to-Line distance dimension's own position along the dimension
+  /// line itself (not the line-to-line perpendicular offset, which
+  /// [_linearOffsetDistances] already covers for this dimension kind too) -
+  /// see [ConstraintLineDistanceDimensionItem.sketchLocalAlongOffset]'s own
+  /// doc comment for the bug this fixes.
+  final Map<String, double> _lineDistanceAlongOffsets = {};
+
+  /// [constraintId]'s user-chosen position along the dimension line (see
+  /// [_lineDistanceAlongOffsets]' own doc comment), or null if never
+  /// dragged - callers fall back to the raw-pixel [labelOffsetFor] default.
+  double? lineDistanceAlongOffsetFor(String constraintId) => _lineDistanceAlongOffsets[constraintId];
+
+  /// Sets [constraintId]'s own position along the dimension line. Same
+  /// "always an absolute value" contract as [setLinearOffsetDistance].
+  void setLineDistanceAlongOffset(String constraintId, double along) {
+    _lineDistanceAlongOffsets[constraintId] = along;
     notifyListeners();
   }
 
@@ -9703,7 +9762,13 @@ class SketchController extends ChangeNotifier {
 
       final firstVertexId = await _pointIdAt(cursorX, cursorY, excludeId: centerId);
 
-      final polygon = await _api.createPolygon(_sketchId!, centerId, firstVertexId, _polygonSides);
+      final polygon = await _api.createPolygon(
+        _sketchId!,
+        centerId,
+        firstVertexId,
+        _polygonSides,
+        referenceCircles: _createPolygonReferenceCircles,
+      );
       polygons[polygon.id] = SketchPolygonView(
         id: polygon.id,
         centerPointId: polygon.centerPointId,
@@ -9711,6 +9776,8 @@ class SketchController extends ChangeNotifier {
         lineIds: polygon.lineIds,
         sides: polygon.sides,
         construction: polygon.construction,
+        circumscribedCircleId: polygon.circumscribedCircleId,
+        inscribedCircleId: polygon.inscribedCircleId,
       );
       for (var i = 0; i < polygon.lineIds.length; i++) {
         lines[polygon.lineIds[i]] = SketchLineView(
@@ -9729,11 +9796,45 @@ class SketchController extends ChangeNotifier {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
+      // On-device feedback ("the 2 construction circles should be drawn
+      // and visible to the user to dimension and use in the sketch"): no
+      // single-Circle GET exists, so both freshly-created reference
+      // Circles are picked out of a full `listCircles` fetch by id - the
+      // circumscribed one's own radius Point is always already known
+      // (it's `firstVertexId`, reused directly - see `add_polygon`'s own
+      // doc comment), but every cardinal Point on *either* Circle, and the
+      // inscribed one's own radius Point, are freshly created server-side
+      // and fetched the same way the extra vertex Points above are.
+      final createdCircleIds = <String>{
+        if (polygon.circumscribedCircleId != null) polygon.circumscribedCircleId!,
+        if (polygon.inscribedCircleId != null) polygon.inscribedCircleId!,
+      };
+      if (createdCircleIds.isNotEmpty) {
+        final allCircles = await _api.listCircles(_sketchId!);
+        for (final circle in allCircles) {
+          if (!createdCircleIds.contains(circle.id)) continue;
+          circles[circle.id] = SketchCircleView(
+            id: circle.id,
+            centerPointId: circle.centerPointId,
+            radiusPointId: circle.radiusPointId,
+            construction: circle.construction,
+            cardinalPointIds: circle.cardinalPointIds,
+          );
+          for (final pointId in [circle.radiusPointId, ...circle.cardinalPointIds]) {
+            if (points.containsKey(pointId)) continue;
+            final point = await _api.getPoint(_sketchId!, pointId);
+            points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+          }
+        }
+      }
       _pushUndo(() async {
         await _api.deletePolygon(_sketchId!, polygon.id);
         polygons.remove(polygon.id);
         for (final lineId in polygon.lineIds) {
           lines.remove(lineId);
+        }
+        for (final circleId in createdCircleIds) {
+          circles.remove(circleId);
         }
       });
 
@@ -10896,6 +10997,7 @@ class SketchController extends ChangeNotifier {
             text: c.distance.toStringAsFixed(2),
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
+            sketchLocalAlongOffset: lineDistanceAlongOffsetFor(entry.key),
           ));
         case CoincidentConstraintDto c:
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'Coinc.', entry.key, isSelected, labelOffset);
@@ -11068,6 +11170,7 @@ class SketchController extends ChangeNotifier {
             text: '?',
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(ghost.key),
+            sketchLocalAlongOffset: lineDistanceAlongOffsetFor(ghost.key),
           ));
         case GhostKind.angle:
           final angleLineA = lines[ghost.lineAId];

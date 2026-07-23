@@ -191,6 +191,9 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "equal_length_constraint_ids": entity.equal_length_constraint_ids,
             "angle_constraint_ids": entity.angle_constraint_ids,
             "sides": entity.sides,
+            "circumscribed_circle_id": entity.circumscribed_circle_id,
+            "inscribed_circle_id": entity.inscribed_circle_id,
+            "inscribed_tangent_constraint_id": entity.inscribed_tangent_constraint_id,
         }
     if isinstance(entity, Slot):
         return {
@@ -307,6 +310,9 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             equal_length_constraint_ids=list(_require(data, "equal_length_constraint_ids")),
             angle_constraint_ids=list(_require(data, "angle_constraint_ids")),
             sides=_require(data, "sides"),
+            circumscribed_circle_id=data.get("circumscribed_circle_id"),
+            inscribed_circle_id=data.get("inscribed_circle_id"),
+            inscribed_tangent_constraint_id=data.get("inscribed_tangent_constraint_id"),
         )
     if entity_type == "slot":
         return Slot(

@@ -59,6 +59,22 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
 # trusted when *every* Constraint in the Sketch is one of these; falls
 # through to ordinary non-convergence reporting otherwise, rather than
 # silently ignoring a Constraint type it doesn't know how to verify).
+#
+# Bug fix (on-device feedback: a Polygon's own edge, given a Horizontal
+# constraint, "doesn't fully solve and looks wrong" until an unrelated
+# later solve happens to converge cleanly; a further LineDistanceConstraint
+# on top then shows the whole Polygon as falsely over-constrained): a
+# Regular Polygon's own EqualLength/EqualRadius/Angle chain is already
+# redundant by construction, so stacking one further genuinely-implied
+# Constraint (Horizontal, or an "across flats" LineDistanceConstraint) on
+# top reliably produces py-slvs's own ambiguous `result_code=1` - the exact
+# case this residual-verification path exists to disambiguate. Horizontal/
+# VerticalConstraint were missing from this allowlist for no principled
+# reason (they're just as directly, cheaply residual-checkable as any other
+# entry here - see the two new branches below) - their mere *presence*
+# disqualified the whole Sketch from residual verification even though the
+# check loop never actually needed to understand them to correctly verify
+# every other Constraint sharing the Sketch with one.
 _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     DistanceConstraint,
     EqualLengthConstraint,
@@ -66,6 +82,8 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     AngleConstraint,
     TangentConstraint,
     LineDistanceConstraint,
+    HorizontalConstraint,
+    VerticalConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -103,7 +121,7 @@ def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Po
     return math.degrees(math.acos(max(-1.0, min(1.0, dot))))
 
 
-def _residual_verified_convergence(sketch: Sketch) -> bool:
+def _residual_verified_convergence(sketch: Sketch) -> bool | None:
     """A solve that didn't cleanly report `converged` can still have landed
     on a genuinely valid, self-consistent set of Point positions - py-slvs's
     own `result_code` cannot always tell "every Constraint is actually
@@ -120,14 +138,27 @@ def _residual_verified_convergence(sketch: Sketch) -> bool:
     (already written back to `sketch.points` by the time this runs) - if
     every one is satisfied within tolerance, the positions are a real
     solution regardless of what `result_code` says, so it's safe to report
-    `converged`. Returns False immediately (no partial trust) if any
-    Constraint isn't one of `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` - same
-    "never guess about a type it can't verify" conservatism
-    `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` already uses.
+    `converged`.
+
+    Returns `None` (not `False`) if any Constraint isn't one of
+    `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` - deliberately distinct from a
+    confident `False` ("checked every Constraint, at least one residual is
+    genuinely too large"). Bug fix: this used to conflate the two into a
+    single `bool`, and the caller's own narrow `result_code in (4, 5)`
+    fallback override (immediately below this function's own call site) ran
+    *unconditionally* whenever this function returned a falsy value - so a
+    confidently-`False` "no, this really isn't converged" (e.g. a Polygon
+    edge nowhere near horizontal despite a HorizontalConstraint on it) was
+    silently overridden back to `converged=True` by that older, weaker
+    check the moment the same Sketch also happened to contain an
+    EqualRadiusConstraint (true of every Polygon), same "never guess about
+    a type it can't verify" conservatism `_REDUNDANCY_SAFE_CONSTRAINT_TYPES`
+    already uses - only now the caller can tell "I don't know" apart from
+    "I checked, and no."
     """
     constraints = list(sketch.constraints.values())
     if not constraints or not all(isinstance(c, _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES) for c in constraints):
-        return False
+        return None
 
     points = sketch.points
     # Scale tolerance to the Sketch's own size, same idea already proven in
@@ -204,6 +235,16 @@ def _residual_verified_convergence(sketch: Sketch) -> bool:
                 points[constraint.line1_end_id],
             )
             if abs(actual_distance - constraint.distance) > tolerance:
+                return False
+        elif isinstance(constraint, HorizontalConstraint):
+            point_a = points[constraint.point_a_id]
+            point_b = points[constraint.point_b_id]
+            if abs(point_b.y - point_a.y) > tolerance:
+                return False
+        elif isinstance(constraint, VerticalConstraint):
+            point_a = points[constraint.point_a_id]
+            point_b = points[constraint.point_b_id]
+            if abs(point_b.x - point_a.x) > tolerance:
                 return False
 
     return True
@@ -693,8 +734,47 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         point.x = system.getParam(u_param).val
         point.y = system.getParam(v_param).val
 
+    # Bug fix (on-device feedback: a Polygon's own edge, given a Horizontal
+    # constraint plus a further "across flats" LineDistanceConstraint, was
+    # reported as over-constrained/not-fully-solved even though the
+    # geometry was genuinely consistent): this residual-verified check is
+    # now run *before* the narrower Slot-shaped override below, not after.
+    # `HorizontalConstraint`/`VerticalConstraint` are members of both
+    # `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` (below) and, as of this fix,
+    # `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` - so a Polygon's own
+    # EqualRadius chain plus a Horizontal constraint satisfied the older
+    # override's own trigger condition (`any(...EqualRadiusConstraint...)`)
+    # and got blindly trusted on `result_code in (4, 5)` alone, without ever
+    # actually checking whether the Horizontal constraint (or anything
+    # else) was satisfied - confirmed directly: a genuinely *unconverged*
+    # solve (a Polygon edge nowhere near horizontal) was accepted as
+    # `converged=True` purely because it shared a result_code with a
+    # real Slot. Running the stronger, numerically-verified check first
+    # whenever every Constraint type is one it actually understands closes
+    # that gap without weakening the older override's own already-narrow
+    # scope for the Sketches it's still needed for (whatever mix of
+    # `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` types the residual checker
+    # doesn't yet know how to verify).
+    # `residual_result` is deliberately tri-state (`True`/`False`/`None`,
+    # not a plain `bool`) - see `_residual_verified_convergence`'s own doc
+    # comment for the bug a plain `bool` caused here: the narrow override
+    # immediately below must only run when residual verification couldn't
+    # rule on this Sketch at all (`None`), never when it confidently ruled
+    # `False`.
+    residual_result = _residual_verified_convergence(sketch) if not converged else None
+    if residual_result is True:
+        # Stacked redundancy (e.g. a Polygon's own already-redundant
+        # EqualLength/EqualRadius/Angle chain plus a further genuinely-
+        # implied Constraint on top, like an "across flats" LineDistance
+        # between two opposite edges, or a Horizontal/Vertical constraint
+        # on one of its own edges) - see `_residual_verified_convergence`'s
+        # own doc comment for why `result_code` alone can't tell this apart
+        # from a real conflict here.
+        converged = True
+
     if (
         not converged
+        and residual_result is None
         and result_code in (4, 5)
         and any(isinstance(c, (TangentConstraint, EqualRadiusConstraint)) for c in sketch.constraints.values())
         and all(isinstance(c, _REDUNDANCY_SAFE_CONSTRAINT_TYPES) for c in sketch.constraints.values())
@@ -724,16 +804,12 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         # constrained shape (an HV-constrained rectangle whose width/
         # height/position are never actually pinned) that py-slvs
         # nonetheless reports as dof == 0 - a real false positive a
-        # blanket override would have silently reintroduced.
-        converged = True
-
-    if not converged and _residual_verified_convergence(sketch):
-        # Stacked redundancy (e.g. a Polygon's own already-redundant
-        # EqualLength/EqualRadius/Angle chain plus a further genuinely-
-        # implied Constraint on top, like an "across flats" LineDistance
-        # between two opposite edges) - see `_residual_verified_
-        # convergence`'s own doc comment for why `result_code` alone can't
-        # tell this apart from a real conflict here.
+        # blanket override would have silently reintroduced. Now only
+        # reached once the stronger residual-verified check above has
+        # already had - and passed up - its own chance to rule on the
+        # Sketch, so this is a documented fallback for constraint-type
+        # combinations that check doesn't understand, not the primary
+        # source of truth it used to be.
         converged = True
 
     # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via

@@ -408,6 +408,13 @@ class PolygonDto {
   final int sides;
   final bool construction;
 
+  /// On-device feedback ("the 2 construction circles should be drawn and
+  /// visible to the user to dimension and use in the sketch") - null
+  /// unless the polygon was created with `referenceCircles: true` (see
+  /// [SketchApiClient.createPolygon]'s own doc comment).
+  final String? circumscribedCircleId;
+  final String? inscribedCircleId;
+
   PolygonDto({
     required this.id,
     required this.centerPointId,
@@ -416,6 +423,8 @@ class PolygonDto {
     required this.radius,
     required this.sides,
     this.construction = false,
+    this.circumscribedCircleId,
+    this.inscribedCircleId,
   });
 
   factory PolygonDto.fromJson(Map<String, dynamic> json) => PolygonDto(
@@ -426,6 +435,8 @@ class PolygonDto {
         radius: (json['radius'] as num).toDouble(),
         sides: json['sides'] as int,
         construction: json['construction'] as bool? ?? false,
+        circumscribedCircleId: json['circumscribed_circle_id'] as String?,
+        inscribedCircleId: json['inscribed_circle_id'] as String?,
       );
 }
 
@@ -1559,6 +1570,7 @@ class SketchApiClient {
     String firstVertexPointId,
     int sides, {
     bool construction = false,
+    bool referenceCircles = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1569,6 +1581,7 @@ class SketchApiClient {
                 'first_vertex_point_id': firstVertexPointId,
                 'sides': sides,
                 'construction': construction,
+                'reference_circles': referenceCircles,
               }),
             ),
         (body) => PolygonDto.fromJson(body as Map<String, dynamic>),

@@ -485,7 +485,15 @@ class _ConstraintOverlayPainter extends CustomPainter {
     _drawExtensionLine(canvas, midB, p2, dimPaint);
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
-    final placement = _dimensionLabelPlacement(p1, p2, item.labelOffset);
+    // Bug fix (on-device feedback: "the dimension...moves left right, it
+    // can't be moved up down"): [item.sketchLocalAlongOffset] (a sketch-unit
+    // distance, camera-independent) wins once the user has dragged the
+    // label's own position along the dimension line; falls back to the old
+    // raw-pixel labelOffset dot product only before that first drag - see
+    // [_dimensionLabelPlacementAlong]'s own doc comment.
+    final placement = item.sketchLocalAlongOffset != null
+        ? _dimensionLabelPlacementAlong(p1, p2, item.sketchLocalAlongOffset! * (lengthA / sketchLengthA))
+        : _dimensionLabelPlacement(p1, p2, item.labelOffset);
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
@@ -833,12 +841,35 @@ const double _dimensionLeaderThreshold = 4.0;
   Offset p2,
   Offset labelOffset,
 ) {
+  final delta = p2 - p1;
+  final length = delta.distance;
+  if (length < 1e-6) return (labelCenter: (p1 + p2) / 2, leaderFrom: null);
+  final tangent = delta / length;
+  final along = labelOffset.dx * tangent.dx + labelOffset.dy * tangent.dy;
+  return _dimensionLabelPlacementAlong(p1, p2, along);
+}
+
+/// [_dimensionLabelPlacement]'s own sibling for a caller that has already
+/// resolved a camera-independent "along" scalar itself (screen pixels,
+/// same convention as [_dimensionLabelPlacement]'s own internal one) -
+/// see [ConstraintLineDistanceDimensionItem.sketchLocalAlongOffset]'s own
+/// doc comment for the bug this fixes ("the dimension...moves left right,
+/// it can't be moved up down"): [_dimensionLabelPlacement]'s raw
+/// [Offset] labelOffset dot-product is never actually reachable via this
+/// view's own drag handling for any camera-independent dimension kind, so
+/// a caller with its own resolved value bypasses that dot product
+/// entirely rather than trying to reverse-engineer a [labelOffset] that
+/// would produce it.
+({Offset labelCenter, Offset? leaderFrom}) _dimensionLabelPlacementAlong(
+  Offset p1,
+  Offset p2,
+  double along,
+) {
   final anchor = (p1 + p2) / 2;
   final delta = p2 - p1;
   final length = delta.distance;
   if (length < 1e-6) return (labelCenter: anchor, leaderFrom: null);
   final tangent = delta / length;
-  final along = labelOffset.dx * tangent.dx + labelOffset.dy * tangent.dy;
   if (along.abs() < _dimensionLeaderThreshold) return (labelCenter: anchor, leaderFrom: null);
   return (labelCenter: anchor + tangent * along, leaderFrom: anchor);
 }
@@ -971,7 +1002,13 @@ Offset? constraintOverlayItemLabelCenter(
             sketchReferenceLength: sketchLengthA,
             screenReferenceLength: lengthA,
           );
-      return _dimensionLabelPlacement(midA + offset, midB + offset, it.labelOffset).labelCenter;
+      final lineDistP1 = midA + offset;
+      final lineDistP2 = midB + offset;
+      return (it.sketchLocalAlongOffset != null
+              ? _dimensionLabelPlacementAlong(
+                  lineDistP1, lineDistP2, it.sketchLocalAlongOffset! * (lengthA / sketchLengthA))
+              : _dimensionLabelPlacement(lineDistP1, lineDistP2, it.labelOffset))
+          .labelCenter;
 
     case ConstraintRadialDimensionItem it:
       final centerScreen = project(it.center);

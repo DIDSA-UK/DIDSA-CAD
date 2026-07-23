@@ -274,6 +274,8 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         radius=polygon.radius(sketch.points),
         sides=polygon.sides,
         construction=polygon.construction,
+        circumscribed_circle_id=polygon.circumscribed_circle_id,
+        inscribed_circle_id=polygon.inscribed_circle_id,
     )
 
 
@@ -979,6 +981,7 @@ def create_polygon(sketch_id: str, payload: PolygonCreate) -> PolygonResponse:
             payload.first_vertex_point_id,
             payload.sides,
             construction=payload.construction,
+            reference_circles=payload.reference_circles,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc

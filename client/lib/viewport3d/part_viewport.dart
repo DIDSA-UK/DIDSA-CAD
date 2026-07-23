@@ -365,6 +365,16 @@ class PartViewport extends StatefulWidget {
   /// `sketchLocalOffsetDistance` field with nothing to feed it.
   final void Function(double distance)? onLineDistanceLabelOffsetDragged;
 
+  /// Bug fix (on-device feedback: "the dimension...is restricted in
+  /// movement. it moves left right. it can't be moved up down"):
+  /// [onLineDistanceLabelOffsetDragged]'s own sibling for the label's
+  /// position *along the dimension line itself* (the axis
+  /// [onLineDistanceLabelOffsetDragged] doesn't cover) - fires alongside it
+  /// whenever [draggingConstraintLabelId] resolves to a
+  /// [ConstraintLineDistanceDimensionItem], for the caller to persist via
+  /// [SketchController.setLineDistanceAlongOffset].
+  final void Function(double along)? onLineDistanceLabelAlongDragged;
+
   /// Bug fix (on-device feedback: "dimensions should match technical
   /// drawing conventions" - an angle dimension used to be a plain floating
   /// text chip with no way to place it): fires in place of
@@ -670,6 +680,7 @@ class PartViewport extends StatefulWidget {
     this.onRadialLabelDistanceDragged,
     this.onLinearLabelOffsetDragged,
     this.onLineDistanceLabelOffsetDragged,
+    this.onLineDistanceLabelAlongDragged,
     this.onAngleLabelRadiusDragged,
     this.activeConstraintOverlayItemId,
     this.activeConstraintOverlayItemBuilder,
@@ -2560,6 +2571,26 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             final midAy = (lineDistanceItem.line1Start.$2 + lineDistanceItem.line1End.$2) / 2;
             final distance = (cursorX - midAx) * alongX + (cursorY - midAy) * alongY;
             widget.onLineDistanceLabelOffsetDragged?.call(distance);
+            // Bug fix (on-device feedback: "the dimension...is restricted
+            // in movement. it moves left right. it can't be moved up
+            // down"): [distance] above only ever moves the label along the
+            // two Lines' own shared direction (left/right, for two
+            // horizontal Lines) - this mirrors
+            // [_ConstraintOverlayPainter._paintLineDistanceDimension]'s own
+            // `perpToA`/`midB` construction to also resolve the label's
+            // position along the dimension line itself (up/down, for the
+            // same two horizontal Lines), entirely in sketch-local space.
+            final perpX = -alongY;
+            final perpY = alongX;
+            final toLineBx = lineDistanceItem.line2Start.$1 - midAx;
+            final toLineBy = lineDistanceItem.line2Start.$2 - midAy;
+            final t = toLineBx * perpX + toLineBy * perpY;
+            final midBx = midAx + perpX * t;
+            final midBy = midAy + perpY * t;
+            final dimAnchorX = (midAx + midBx) / 2;
+            final dimAnchorY = (midAy + midBy) / 2;
+            final along = (cursorX - dimAnchorX) * perpX + (cursorY - dimAnchorY) * perpY;
+            widget.onLineDistanceLabelAlongDragged?.call(along);
             return;
           }
         }

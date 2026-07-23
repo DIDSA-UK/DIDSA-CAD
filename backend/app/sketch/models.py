@@ -399,6 +399,23 @@ class Polygon(SketchEntity):
     equal_length_constraint_ids: list[str]
     angle_constraint_ids: list[str]
     sides: int
+    # On-device feedback ("when the toggle in the polygon tool is on, the 2
+    # construction circles should be drawn and visible to the user to
+    # dimension and use in the sketch - at the moment they are not shown
+    # after placing the polygon"): the previous "guide circles" toggle only
+    # ever drew a dashed, paint-only overlay recomputed live from the
+    # Polygon's own vertex Points - never a real, addressable, solver-
+    # tracked Circle the user could select or dimension, and gone entirely
+    # the moment the tool's ghost/preview phase ended. `reference_circles`
+    # (see `Sketch.add_polygon`'s own doc comment) creates real Circles
+    # instead - both `None` for a Polygon placed with that option off.
+    circumscribed_circle_id: str | None = None
+    inscribed_circle_id: str | None = None
+    # The inscribed circle's own TangentConstraint against the first edge
+    # Line - not part of `Circle.cardinal_constraint_ids`, so `delete_circle`
+    # alone wouldn't clean it up; tracked here so `delete_polygon` can (see
+    # that method's own cleanup).
+    inscribed_tangent_constraint_id: str | None = None
 
     @property
     def type(self) -> str:
@@ -1188,6 +1205,7 @@ class Sketch:
         sides: int,
         *,
         construction: bool = False,
+        reference_circles: bool = False,
     ) -> Polygon:
         """Add a regular Polygon from an existing center Point and an
         existing first-vertex Point (together fixing the circumradius and
@@ -1199,6 +1217,18 @@ class Sketch:
         Point, mirroring Arc's own `end_angle` path - there is no existing-
         Point-sharing option for these, since a regular polygon's other
         vertices can only ever come from its own creation.
+
+        `reference_circles` (on-device feedback: "the 2 construction
+        circles should be drawn and visible to the user to dimension and
+        use in the sketch") additionally creates two real, ordinary
+        construction Circles via `add_circle` - a circumscribed one sharing
+        this Polygon's own center/first-vertex Points directly (so it
+        tracks the Polygon's own radius automatically, no extra constraint
+        needed), and an inscribed one at the mathematically exact inradius
+        (`circumradius * cos(pi / sides)`), tied to the first edge Line via
+        a real TangentConstraint so it stays correctly sized under drag
+        too. Both are ordinary Circles in every other respect - selectable,
+        dimensionable, deletable independently of the Polygon.
 
         See the Polygon class docstring for what the constraint chain does
         and why."""
@@ -1257,6 +1287,20 @@ class Sketch:
                 self.add_angle_constraint(line_ids[i], line_ids[i + 1], exterior_angle_degrees).id
             )
 
+        circumscribed_circle_id = None
+        inscribed_circle_id = None
+        inscribed_tangent_constraint_id = None
+        if reference_circles:
+            circumscribed_circle_id = self.add_circle(
+                center_point_id=center_point_id,
+                radius_point_id=first_vertex_point_id,
+                construction=True,
+            ).id
+            inradius = radius * math.cos(math.pi / sides)
+            inscribed = self.add_circle(center_point_id=center_point_id, radius=inradius, construction=True)
+            inscribed_tangent_constraint_id = self.add_tangent_constraint(inscribed.id, line_ids[0]).id
+            inscribed_circle_id = inscribed.id
+
         polygon = Polygon(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,
@@ -1268,6 +1312,9 @@ class Sketch:
             angle_constraint_ids=angle_constraint_ids,
             sides=sides,
             construction=construction,
+            circumscribed_circle_id=circumscribed_circle_id,
+            inscribed_circle_id=inscribed_circle_id,
+            inscribed_tangent_constraint_id=inscribed_tangent_constraint_id,
         )
         self.entities[polygon.id] = polygon
         return polygon
@@ -2183,7 +2230,24 @@ class Sketch:
             *polygon.angle_constraint_ids,
         ):
             self.constraints.pop(constraint_id, None)
-        return self._prune_orphaned_points(candidates)
+        # Reference circles (see `reference_circles`'s own doc comment on
+        # `add_polygon`) are this Polygon's own auxiliary construction
+        # geometry, same "delete every one of its own pieces too"
+        # reasoning as its edge Lines above - `delete_circle` alone cleans
+        # up each circle's own radius/cardinal constraints (and its own
+        # returned ids are already-pruned Points, kept separate from
+        # `candidates` below rather than fed back in for a second,
+        # redundant pruning pass); the inscribed circle's own
+        # TangentConstraint isn't part of that (see
+        # `Polygon.inscribed_tangent_constraint_id`'s own doc comment), so
+        # it's popped first, same `.pop(id, None)` "may already be gone"
+        # tolerance as everything else here.
+        self.constraints.pop(polygon.inscribed_tangent_constraint_id, None)
+        circle_pruned_point_ids: list[str] = []
+        for circle_id in (polygon.circumscribed_circle_id, polygon.inscribed_circle_id):
+            if circle_id is not None and circle_id in self.entities:
+                circle_pruned_point_ids.extend(self.delete_circle(circle_id))
+        return [*circle_pruned_point_ids, *self._prune_orphaned_points(candidates)]
 
     def delete_slot(self, slot_id: str) -> list[str]:
         """Remove a Slot and everything `add_slot` always creates alongside

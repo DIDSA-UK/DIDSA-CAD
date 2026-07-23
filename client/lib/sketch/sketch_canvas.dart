@@ -2976,10 +2976,17 @@ class _SketchPainter extends CustomPainter {
   /// (see the `PolygonGhost` case in [_paintActiveDrawGhost]) for every
   /// already-*placed* Polygon too, live off its current Point positions (so
   /// it tracks a drag, same as any other geometry), gated by the same
-  /// [SketchController.showPolygonGuideCircles] toggle - reads off
+  /// [SketchController.createPolygonReferenceCircles] toggle - reads off
   /// [SketchController.polygons], the real persisted-entity map.
+  ///
+  /// Skips any Polygon that already has real
+  /// [SketchPolygonView.circumscribedCircleId]/[SketchPolygonView.
+  /// inscribedCircleId] Circles (see those fields' own doc comment) - those
+  /// render through the ordinary Circle painter like any other Circle, so
+  /// drawing this dashed overlay on top too would just double up on the
+  /// exact same two circles.
   void _paintPolygonGuideCircles(Canvas canvas) {
-    if (!controller.showPolygonGuideCircles) return;
+    if (!controller.createPolygonReferenceCircles) return;
     final polygons = controller.polygons.values;
     if (polygons.isEmpty) return;
     final guidePaint = Paint()
@@ -2987,6 +2994,7 @@ class _SketchPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
     for (final polygon in polygons) {
+      if (polygon.circumscribedCircleId != null || polygon.inscribedCircleId != null) continue;
       final centerPoint = controller.points[polygon.centerPointId];
       if (centerPoint == null || polygon.vertexPointIds.length < 3) continue;
       final vertices = polygon.vertexPointIds.map((id) => controller.points[id]).toList();
