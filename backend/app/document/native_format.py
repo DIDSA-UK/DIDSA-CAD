@@ -214,6 +214,7 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "radius_constraint_id": entity.radius_constraint_id,
             "equal_radius_constraint_ids": entity.equal_radius_constraint_ids,
             "tangent_constraint_ids": entity.tangent_constraint_ids,
+            "parallel_constraint_ids": entity.parallel_constraint_ids,
         }
     if isinstance(entity, Rectangle):
         return {
@@ -332,6 +333,7 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             radius_constraint_id=_require(data, "radius_constraint_id"),
             equal_radius_constraint_ids=list(_require(data, "equal_radius_constraint_ids")),
             tangent_constraint_ids=list(_require(data, "tangent_constraint_ids")),
+            parallel_constraint_ids=list(_require(data, "parallel_constraint_ids")),
         )
     if entity_type == "rectangle":
         return Rectangle(

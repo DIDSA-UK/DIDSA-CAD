@@ -24,8 +24,10 @@ def test_add_slot_creates_the_full_constraint_chain_atomically():
     """2 Arcs, 2 straight Lines + 1 construction centreline, 1 real radius
     DistanceConstraint (arc1's own), 4 EqualRadiusConstraints (each Arc's
     own start<->end tie from add_arc, plus the 2 new cross-ties back to
-    arc1), 4 TangentConstraints (one per Arc/Line pair) - see the Slot
-    class docstring for why each family exists."""
+    arc1), 4 TangentConstraints (one per Arc/Line pair), 2 ParallelConstraints
+    (each straight side tied to the construction centreline, ruling out the
+    tangent chain's own spurious "near side" root) - see the Slot class
+    docstring for why each family exists."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center1 = sketch.add_point(0.0, 0.0)
     center2 = sketch.add_point(20.0, 0.0)
@@ -40,6 +42,7 @@ def test_add_slot_creates_the_full_constraint_chain_atomically():
     assert len({slot.a_point_id, slot.b_point_id, slot.c_point_id, slot.d_point_id}) == 4
     assert len(slot.equal_radius_constraint_ids) == 4
     assert len(slot.tangent_constraint_ids) == 4
+    assert len(slot.parallel_constraint_ids) == 2
     assert slot.radius_constraint_id in sketch.constraints
     # arc2's own provisional radius DistanceConstraint was deleted, not left dangling.
     arc2 = sketch.entities[slot.arc2_id]
@@ -111,6 +114,59 @@ def test_slot_stays_a_valid_closed_stadium_after_an_anchored_corner_drag():
     assert r2a == pytest.approx(r1, abs=1e-6)
     assert r2b == pytest.approx(r1, abs=1e-6)
     assert r2c == pytest.approx(r1, abs=1e-6)
+
+
+def test_slot_no_longer_solves_to_the_tangent_chain_s_wrong_root():
+    """On-device bug report: dimension one straight side, then drag a
+    corner - the solve landed on a self-intersecting shape with unequal
+    side lengths ("wrong root on a tangent"). Reproduces the actual root
+    the old 4-TangentConstraint-only chain would accept: line1 (b->c)
+    placed at the *internal* common tangent of the two end-cap Arcs
+    (crossing between them) instead of the intended *external* one -
+    b/c are still each exactly radius 5 from their own centre and the
+    line is still exactly tangent to both, so every EqualRadius/Tangent
+    constraint's own local condition is genuinely satisfied, just via the
+    wrong global root (confirmed against the pre-fix chain: it reports
+    `converged=True` with line1's own internal-tangent length, 20*sin(60deg)
+    = sqrt(300) =/= line2's 20, i.e. unequal sides - exactly the reported
+    bug). The 2 ParallelConstraints this fix adds (each straight side tied
+    to the construction centreline - see the Slot class docstring's own
+    bug-fix note) make that root geometrically impossible: an internal
+    tangent line is never parallel to the centreline, so dimensioning line1
+    at its own internal-tangent length now correctly fails to converge
+    rather than silently reporting a self-intersecting shape as solved."""
+    from app.sketch.solver import solve_sketch
+
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    center2 = sketch.add_point(20.0, 0.0)
+    slot = sketch.add_slot(center1.id, center2.id, 5.0)
+    sketch.constraints[slot.radius_constraint_id].provisional = False
+
+    # The internal tangent's own length, for radius 5 end caps 20 apart:
+    # sqrt(centreline^2 - (r1 + r2)^2) = sqrt(400 - 100) = sqrt(300).
+    internal_tangent_length = math.sqrt(300)
+    sketch.add_distance_constraint(slot.b_point_id, slot.c_point_id, internal_tangent_length, provisional=False)
+
+    # Seed line1's own endpoints at the internal tangent's real geometry
+    # (derived analytically - see this test's own docstring); line2 (d->a)
+    # stays at its normal, correct external-tangent position.
+    sketch.points[slot.b_point_id].x, sketch.points[slot.b_point_id].y = 2.5, 5 * math.sqrt(3) / 2
+    sketch.points[slot.c_point_id].x, sketch.points[slot.c_point_id].y = 17.5, -5 * math.sqrt(3) / 2
+    sketch.points[slot.a_point_id].x, sketch.points[slot.a_point_id].y = 0.0, 5.0
+    sketch.points[slot.d_point_id].x, sketch.points[slot.d_point_id].y = 20.0, 5.0
+
+    result = solve_sketch(sketch)
+
+    line1_length = _dist(sketch, slot.b_point_id, slot.c_point_id)
+    line2_length = _dist(sketch, slot.d_point_id, slot.a_point_id)
+    # The only acceptable outcomes: refuse to converge on this now-infeasible
+    # seed (the ParallelConstraints conflict with the dimensioned length), or
+    # converge to a real stadium with both sides equal - never both
+    # "converged" and self-intersecting/unequal, which is what the bug
+    # report actually hit.
+    if result.converged:
+        assert line2_length == pytest.approx(line1_length, abs=1e-4)
 
 
 def test_delete_slot_removes_its_own_entities_and_constraints():
