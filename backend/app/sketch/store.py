@@ -10,9 +10,11 @@ from app.sketch.models import (
     Point,
     Plane,
     Polygon,
+    Rectangle,
     Sketch,
     SketchEntityRef,
     SketchEntityType,
+    Slot,
     Spline,
     TextEntity,
 )
@@ -23,6 +25,8 @@ _ENTITY_TYPE_BY_REF: dict[SketchEntityType, type] = {
     SketchEntityType.ARC: Arc,
     SketchEntityType.ELLIPSE: Ellipse,
     SketchEntityType.POLYGON: Polygon,
+    SketchEntityType.SLOT: Slot,
+    SketchEntityType.RECTANGLE: Rectangle,
     SketchEntityType.SPLINE: Spline,
     SketchEntityType.TEXT: TextEntity,
 }
@@ -54,6 +58,20 @@ def replace_all_sketches(sketches: dict[str, Sketch]) -> None:
     rather than a merge with whatever was open before."""
     global _sketches
     _sketches = sketches
+
+
+def add_sketch(sketch: Sketch) -> None:
+    """Inserts an already-built `Sketch` into the store under its own
+    current id, overwriting any existing entry at that id.
+
+    The standalone "2D Drawing" tool's own sketch-import endpoint
+    (`app.sketch.router`) is the intended caller: the `Sketch` there was
+    just deserialized via `app.document.native_format.sketch_from_dict`
+    from a save file and given a fresh id first (to avoid colliding with
+    whatever's already in the store, unlike `import_native`'s own "full
+    replace" semantics via `replace_all_sketches`, which clears the store
+    first so collision is a non-issue there)."""
+    _sketches[sketch.id] = sketch
 
 
 def create_sketch(plane: Plane | None, *, flip: bool = False, rotation_quarter_turns: int = 0) -> Sketch:

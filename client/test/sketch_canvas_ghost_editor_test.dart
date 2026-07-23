@@ -74,12 +74,28 @@ class _FakeBackend {
     final constraintsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints$').hasMatch(path);
     if (constraintsCollectionMatch && request.method == 'POST') {
       final id = _newId('constraint');
-      final constraint = {
-        'id': id,
-        'point_a_id': body['point_a_id'],
-        'point_b_id': body['point_b_id'],
-        'distance': (body['distance'] as num).toDouble(),
-      };
+      // Bug fix (on-device feedback: "no entity should be able to use the
+      // origin point as one of its points"): placing a Line starting at
+      // the origin now also creates a real CoincidentConstraint (see
+      // SketchController._pointIdAt's own doc comment), which carries no
+      // 'distance' field - this fake needs to dispatch on body['type']
+      // now, not assume every constraint POST is a Distance one.
+      final Map<String, dynamic> constraint;
+      if (body['type'] == 'coincident') {
+        constraint = {
+          'id': id,
+          'type': 'coincident',
+          'point_a_id': body['point_a_id'],
+          'point_b_id': body['point_b_id'],
+        };
+      } else {
+        constraint = {
+          'id': id,
+          'point_a_id': body['point_a_id'],
+          'point_b_id': body['point_b_id'],
+          'distance': (body['distance'] as num).toDouble(),
+        };
+      }
       constraints[id] = constraint;
       return _json(constraint, 201);
     }

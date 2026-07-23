@@ -1117,22 +1117,30 @@ DecodedMesh applyUpAxis(DecodedMesh mesh, MeshUpAxis axis) {
 // App-wide rendering-pipeline mirror correction
 // ---------------------------------------------------------------------------
 
-/// Corrects the same confirmed rendering-pipeline bug documented on
-/// `viewport3d/mesh_geometry.dart`'s `renderMirrorCorrectedMesh`: proven (in
-/// Part Modeller, via a labeled reference STEP file at a known fixed camera
-/// pose, then independently confirmed by an import/export round-trip showing
-/// the stored geometry itself is untouched) to be a rendering-only issue, not
-/// a per-file data problem - see docs/status.md's own investigation notes.
+/// **Currently unused** (`mesh_viewer_screen.dart`'s `_applyCorrectionsIsolate`
+/// no longer calls this - see its own doc comment). Was built on the same
+/// diagnosis `viewport3d/mesh_geometry.dart`'s `renderMirrorCorrectedMesh`
+/// was (a labeled reference STEP file compared at a known fixed camera pose)
+/// - since disproven: the real bug was a genuine mirror baked into
+/// `flutter_scene`'s own `PerspectiveCamera` view-matrix construction,
+/// fixed once at its root (`OrbitCamera.cameraFor`'s `FixedPerspectiveCamera`
+/// - see `orthographic_camera.dart`'s `correctedLookAt`), not a per-mesh
+/// world-Z negation. Applying this on top of the now-fixed camera
+/// reintroduced a real mirror in the Mesh Viewer, confirmed on-device.
+/// Left defined (not deleted) since its own math is still correct in
+/// isolation, purely unneeded now the actual root cause is fixed elsewhere.
 ///
-/// Applied unconditionally, after [applyUpAxis] (so it operates on the app's
-/// own post-up-axis-correction Z, matching what Part Modeller calls Z) and
+/// Original rationale, still accurate for *what this function does*, just
+/// not *why it was needed*: applied unconditionally, after [applyUpAxis]
+/// (so it operated on the app's own post-up-axis-correction Z) and
 /// independently of the user-facing [applyMirror] toggle below, which keeps
-/// its original, distinct purpose: correcting a file that is *itself*
-/// genuinely mirrored in its own raw data (a real, separate, per-file
-/// problem this decoder has always had no reliable way to auto-detect).
-/// On-device confirmed: with this correction in place, [applyMirror] off is
-/// the normal, correct default for a file that isn't independently
-/// self-mirrored.
+/// its own distinct purpose: correcting a file that is *itself* genuinely
+/// mirrored in its own raw data (a real, separate, per-file problem this
+/// decoder has always had no reliable way to auto-detect) - unlike this
+/// function, [applyMirror]'s own calibration was independently verified
+/// against real file bytes via an out-of-band Python-rendered ground-truth
+/// comparison, entirely outside this app's camera/GPU pipeline, so it was
+/// never actually entangled with the camera bug this function existed for.
 DecodedMesh applyRenderMirrorCorrection(DecodedMesh mesh) {
   Float32List negateZ(Float32List src) {
     final out = Float32List(src.length);

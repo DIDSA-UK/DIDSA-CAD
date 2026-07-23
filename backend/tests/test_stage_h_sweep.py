@@ -101,8 +101,77 @@ def _create_profile_sketch_feature(part_id: str, *, size: float = 2.0) -> dict:
     return feature
 
 
-def _path_ref(sketch_id: str, line_id: str) -> dict:
-    return {"sketch_id": sketch_id, "entity_type": "line", "entity_id": line_id}
+def _path_ref(sketch_id: str, entity_id: str, entity_type: str = "line") -> dict:
+    return {"sketch_id": sketch_id, "entity_type": entity_type, "entity_id": entity_id}
+
+
+def _add_arc(sketch_id: str, center: dict, start: dict, end_angle: float) -> dict:
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/arcs",
+        json={"center_point_id": center["id"], "start_point_id": start["id"], "end_angle": end_angle},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def _add_ellipse(sketch_id: str, center: dict, *, major_radius: float, angle: float, minor_radius: float) -> dict:
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/ellipses",
+        json={
+            "center_point_id": center["id"],
+            "major_radius": major_radius,
+            "angle": angle,
+            "minor_radius": minor_radius,
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def _add_spline(sketch_id: str, through_point_ids: list[str]) -> dict:
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/splines", json={"through_point_ids": through_point_ids}
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def _create_arc_path_sketch_feature(part_id: str) -> tuple[dict, dict]:
+    """On-device feedback ("unable to select an arc as the sweep path"): a
+    single-segment Arc path on the XZ plane, a quarter circle starting at
+    the world origin (matching the Profile square's own (0, 0) corner,
+    same reasoning [_create_straight_path_sketch_feature] documents) and
+    sweeping to (10, 10) - center (0, 10), radius 10, from angle -pi/2
+    (the start Point, (0, 0)) to angle 0 (the new end Point, (10, 10))."""
+    feature = _create_sketch_feature(part_id, "XZ")
+    center = _add_point(feature["sketch_id"], 0.0, 10.0)
+    start = _add_point(feature["sketch_id"], 0.0, 0.0)
+    arc = _add_arc(feature["sketch_id"], center, start, end_angle=0.0)
+    return feature, arc
+
+
+def _create_ellipse_path_sketch_feature(part_id: str) -> tuple[dict, dict]:
+    """On-device feedback ("ellipses...should also be valid targets for
+    sweep paths"): a standalone (closed, unchained) Ellipse path on the XZ
+    plane - major axis along +x so its own major-axis Point (the ellipse's
+    natural OCCT parametrization start) sits at the world origin, same
+    "start where the Profile's own corner is" reasoning as every other
+    path fixture here."""
+    feature = _create_sketch_feature(part_id, "XZ")
+    center = _add_point(feature["sketch_id"], -5.0, 0.0)
+    ellipse = _add_ellipse(feature["sketch_id"], center, major_radius=5.0, angle=0.0, minor_radius=3.0)
+    return feature, ellipse
+
+
+def _create_spline_path_sketch_feature(part_id: str) -> tuple[dict, dict]:
+    """On-device feedback ("splines...should also be valid targets for
+    sweep paths"): the simplest possible Spline path - 2 through-points (a
+    single Bezier segment), starting at the world origin."""
+    feature = _create_sketch_feature(part_id, "XZ")
+    p0 = _add_point(feature["sketch_id"], 0.0, 0.0)
+    p1 = _add_point(feature["sketch_id"], 0.0, 10.0)
+    spline = _add_spline(feature["sketch_id"], [p0["id"], p1["id"]])
+    return feature, spline
 
 
 def _create_straight_path_sketch_feature(part_id: str, *, length: float = 10.0) -> tuple[dict, dict]:
@@ -245,6 +314,76 @@ def test_boss_sweep_of_an_annular_pipe_wall_profile_succeeds():
 
     mesh = _mesh(part["id"])
     assert len(mesh) == 1
+
+
+def test_boss_sweep_along_a_single_arc_segment_succeeds():
+    """On-device feedback ("unable to select an arc as the sweep path...
+    can select the arc but it doesn't allow confirming") - confirms the
+    fix all the way through: an Arc path_ref actually produces a real
+    swept body, not just that the client can now select one."""
+    part = _create_part()
+    profile = _create_profile_sketch_feature(part["id"])
+    path_feature, path_arc = _create_arc_path_sketch_feature(part["id"])
+
+    response = _create_sweep(
+        part["id"], profile["id"], [_path_ref(path_feature["sketch_id"], path_arc["id"], "arc")]
+    )
+    assert response.status_code == 201
+
+    mesh = _mesh(part["id"])
+    assert len(mesh) == 1
+
+
+def test_boss_sweep_along_a_standalone_ellipse_path_succeeds():
+    """On-device feedback ("ellipses...should also be valid targets for
+    sweep paths") - an Ellipse is always closed/standalone (see
+    `app.sketch.models.Ellipse`'s own doc comment), so it's the entire
+    path on its own, not one link in a chain."""
+    part = _create_part()
+    profile = _create_profile_sketch_feature(part["id"])
+    path_feature, path_ellipse = _create_ellipse_path_sketch_feature(part["id"])
+
+    response = _create_sweep(
+        part["id"], profile["id"], [_path_ref(path_feature["sketch_id"], path_ellipse["id"], "ellipse")]
+    )
+    assert response.status_code == 201
+
+    mesh = _mesh(part["id"])
+    assert len(mesh) == 1
+
+
+def test_boss_sweep_along_a_single_spline_segment_succeeds():
+    """On-device feedback ("splines...should also be valid targets for
+    sweep paths")."""
+    part = _create_part()
+    profile = _create_profile_sketch_feature(part["id"])
+    path_feature, path_spline = _create_spline_path_sketch_feature(part["id"])
+
+    response = _create_sweep(
+        part["id"], profile["id"], [_path_ref(path_feature["sketch_id"], path_spline["id"], "spline")]
+    )
+    assert response.status_code == 201
+
+    mesh = _mesh(part["id"])
+    assert len(mesh) == 1
+
+
+def test_an_ellipse_path_ref_mixed_with_a_line_is_rejected():
+    """An Ellipse has no endpoints to chain with anything else - mixing
+    one into a multi-segment path_refs list must be rejected, not silently
+    treated as if it had a start/end somewhere."""
+    part = _create_part()
+    profile = _create_profile_sketch_feature(part["id"])
+    ellipse_feature, path_ellipse = _create_ellipse_path_sketch_feature(part["id"])
+    line_feature, path_line = _create_straight_path_sketch_feature(part["id"])
+
+    path_refs = [
+        _path_ref(ellipse_feature["sketch_id"], path_ellipse["id"], "ellipse"),
+        _path_ref(line_feature["sketch_id"], path_line["id"]),
+    ]
+    response = _create_sweep(part["id"], profile["id"], path_refs)
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_path_ref"
 
 
 def test_path_segments_given_out_of_geometric_order_are_still_connected_correctly():

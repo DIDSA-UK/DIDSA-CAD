@@ -54,16 +54,112 @@ entries) - with one real gap confirmed by a direct code audit:
   as an aligning feature" ask) has no implementation anywhere - only
   the discrete flip/90°-rotate half of Phase 5 ever shipped. Not
   scoped in detail yet.
-- **A structural UX rethink is under consideration, not yet scoped or
-  decided.** On-device use still finds the drag/move experience too slow
-  and unpredictable for how central it is to sketching - see
-  `docs/sketcher-architecture-ux-scoping.md` (2026-07-15), a standalone
-  reference covering the full entity/constraint/solver architecture,
-  every tool's exact client/backend round-trip cost, the drag system in
-  full, and a menu of concrete options (client-side solving vs. backend-
-  authoritative, scoped/partial re-solves, giving Slot a real backend
-  entity, low-risk round-trip reductions) for a dedicated scoping
-  session. Nothing in it has been decided or started yet.
+- **The structural UX rethink was decided and is mostly shipped** -
+  `docs/sketcher-restructure-plan.md` (2026-07-16) adopted an in-process
+  FFI SolveSpace solver (`client/lib/sketch/local_solver/`) over the
+  client-side-reimplementation idea `docs/sketcher-architecture-ux-scoping.md`
+  (2026-07-15) had considered and rejected. `updatePointDrag`'s mid-drag
+  reflow already tries it before falling back to the network path;
+  `updateLineDrag` got the same treatment in `docs/status.md`'s 2026-07-21
+  session. **Open sub-item found along the way**: a Horizontal/Vertical
+  Constraint between two simultaneously-anchored Points, combined with any
+  other Constraint reaching from one of them to a free Point, can make the
+  native solver silently move an "anchored" Point - worked around with a
+  drift-detection fallback (see that entry), but not yet root-caused at the
+  FFI/SLVS level. **Correction to an earlier version of this entry**: Phase 2
+  (plane-embedded 3D sketching/Orbit View) is *not* still unstarted - direct
+  verification found it already shipped and essentially complete (nearly
+  every draw tool, Dimensions, Trim/Extend, and drag mode all already work
+  embedded in the 3D viewport; only the Text tool is deliberately excluded) -
+  see `docs/status.md`'s 2026-07-17 P1-P10+ entries, which an earlier
+  research pass in this same session missed. Phase 3 (Slot's real backend
+  entity) shipped in the 2026-07-22 session below - Phase 4 (scoped/partial
+  re-solve) is still genuinely not started.
+- **Drag/solve rebuilt on closed-form geometry for Polygon/Slot** (2026-07-22
+  session, see `docs/status.md`) - the redundant-constraint-chain approach
+  above (Phase 1's FFI solver) is no longer how these two shapes drag at
+  all; a formula has exactly one answer, so it eliminates the wrong-root
+  class of bug for them entirely rather than reactively guarding against
+  it. Real follow-ups from that pass, not silently dropped:
+  - **Bisection/sub-step retry** for the *general* solver path (arbitrary
+    hand-built constraint combinations, and a Polygon/Slot's own remnants
+    once trimmed) - when a direct local solve fails a guard, retry via
+    halving sub-steps between the last known-good position and the target
+    instead of falling straight through to the throttled network path.
+  - **Port `solver.py`'s `_fix_circle_cardinal_point_signs`** (detect a
+    discrete mirror-flip root, correct it with a direct reflection through
+    the known-good axis instead of rejecting outright) to the client's
+    local solver, where it's confirmed not yet present - and extend the
+    same detect-then-reflect shape to the general path's own Arc chord-side
+    branch-flip guard, so a caught flip self-heals instead of just
+    stalling.
+  - **Ghost-preview drag** (decouple live rendering from the authoritative
+    solve - a cheap kinematic preview every frame, one real solve at drop)
+    for the general path specifically. No longer needed for Polygon/Slot
+    (the closed-form path already removes the "wrong root flashing
+    mid-drag" risk for those), so this is now polish, not a live-bug fix.
+  - **Slot's own delete-cascade-with-undo** (multi-select delete cleanly
+    removing a whole intact Slot, not leaving a dangling backend entity if
+    only its Lines/Arcs happened to be in the selection) - `Polygon` needed
+    this exact same follow-up fix after its own entity first landed
+    ("select all > delete doesn't work on polygons, says constraint not
+    found" - see `docs/status.md`); Slot hasn't gotten the equivalent pass
+    yet.
+  - **A Slot's arc-apex construction Points (2026-07-22 follow-up, see
+    `docs/status.md`) don't auto-update on drag/resize** - deliberately
+    unconstrained (no existing solver primitive expresses "stays
+    diametrically opposite this Arc's own chord"), so once materialized
+    they go stale if the Slot is later dragged/resized, unlike the
+    centreline midpoint (which stays live via a real `AtMidpointConstraint`).
+    Acceptable for v1 (a reference point the user places when needed, not
+    something dragged independently), but worth a real fix - most likely by
+    teaching the closed-form drag rebuild's own `_closedFormSlotGeometry` to
+    also re-sync any materialized apex Points it finds, the same way it
+    already re-syncs a/b/c/d.
+  - **Residual-based redundancy verification** (`_residual_verified_
+    convergence`/`_residualVerifiedConvergence`, 2026-07-22) only covers
+    Distance/EqualLength/EqualRadius/Angle/Tangent/LineDistanceConstraint -
+    a closed allowlist, deliberately (falls through to ordinary failure
+    reporting rather than guess for any other type present). If a future
+    on-device report surfaces the same "doubly-redundant but consistent"
+    symptom involving a Parallel/Perpendicular/Coincident/Collinear/
+    PointLineDistance/SplineTangent Constraint, that's the function to
+    extend, following the exact same per-type residual-formula pattern.
+- **Sketch dimension rendering/hit-testing has two independent
+  implementations** (`sketch_canvas.dart` for the flat 2D canvas,
+  `sketch_constraint_overlay.dart` for the 3D-embedded sketcher) that can
+  drift out of sync - confirmed happened once already (the 2026-07-21
+  dimension-overhaul session only fixed the 2D canvas; the 3D-embedded one,
+  which is what `SketcherPreferences.defaultUse3DSketcher = true` actually
+  shows by default, had the same bugs independently, plus one of its own -
+  ported in the same day's follow-up session, see `docs/status.md`). Worth
+  a future pass to unify the two into one shared implementation rather than
+  two hand-kept-in-sync copies, if a third such divergence shows up.
+
+## Standalone "2D Drawing" tool follow-ups
+
+Thin v1 shipped 2026-07-21 (see `docs/status.md`): a bare, Part-free
+`SketchScreen` reachable from a new `ToolChooserScreen` (between Connect and
+the app's actual tools), with local file Save/Open via two new backend
+endpoints (`GET`/`POST /sketch/sketches/{id}/export`, `.../import`, reusing
+the Part-level native format's own `sketch_to_dict`/`sketch_from_dict`).
+Deliberately deferred, not yet scoped in detail:
+
+- **DXF export.** Genuinely greenfield - no `ezdxf` dependency yet, no
+  existing DXF import to mirror either (contrary to what
+  `docs/sketcher-overhaul-scope.md` Phase 8 implied was already scoped -
+  confirmed zero implementation exists). Realistic path: a Python `ezdxf`
+  writer directly against the Sketch model's own Points/Lines/Arcs/Circles/
+  Ellipses/Splines/Text. DWG is a dead end (proprietary format, no viable
+  open-source parser) - DXF-only.
+- **A "my drawings" list/browse feature.** No multi-document concept exists
+  anywhere in the backend today (not even for Parts) - the current
+  file-based Save/Open sidesteps needing one entirely. Would need either a
+  real multi-document backend store or a client-side recent-files list at
+  minimum.
+- **Drafting fundamentals**: no units/scale, no layers, no sheets/paper
+  size, no annotation beyond the existing Text entity - all absent, all
+  real scope for a genuine floor-plan/drafting tool, not yet designed.
 
 ## Convert Entities / Offset Entities follow-ups
 
@@ -90,6 +186,17 @@ deliberately unbuilt along the way, not yet scoped further:
 
 ## Other open items
 
+- **A sketch's origin point reportedly doesn't line up with the correct 3D
+  viewport origin.** User report (2026-07-21), investigated the same day -
+  every basis-resolution path audited (backend `basis_for_sketch`, client
+  `SketchPlaneBasis`, "New Sketch on Face") reads internally consistent, no
+  bug found via static reading. The design question this was paired with
+  has an answer: the origin is already a real, pinned backend Point, not a
+  good candidate for the Convert-Entities-style external-reference
+  mechanism (the world origin isn't a Body vertex to reference against).
+  Needs an on-device repro to make further progress - does it happen on a
+  fixed-plane Sketch, a custom-plane one, or specifically "New Sketch on
+  Face"? Immediately on entry, or only after orbiting the camera?
 - **Cast option for the main CAD viewport and the 3D mesh viewer.** User
   ask (2026-07-18): a proper in-app Cast button (matching YouTube/Netflix-
   style casting), not just Android's built-in screen-mirror toggle - lets

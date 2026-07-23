@@ -99,6 +99,12 @@ def test_solving_keeps_both_arc_ends_on_the_same_circle_after_moving_center():
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(5.0, 0.0)
     arc = sketch.add_arc(center.id, start.id, end_angle=math.pi / 2)
+    # Bug fix (pre-existing stale test - predates provisional size
+    # constraints; see DistanceConstraint.provisional's own doc comment): a
+    # freshly-`add_arc`d radius constraint starts provisional, which the
+    # solver deliberately skips until confirmed.
+    sketch.constraints[arc.radius_constraint_id].provisional = False
+    sketch.constraints[arc.end_radius_constraint_id].provisional = False
 
     sketch.points[center.id].x = 50.0
     sketch.points[center.id].y = -20.0
@@ -333,7 +339,10 @@ def test_delete_arc_over_the_api():
     ).json()
 
     response = client.delete(f"/sketch/sketches/{sketch['id']}/arcs/{arc['id']}")
-    assert response.status_code == 204
+    # Bug fix (pre-existing stale test - predates `DeleteEntityResponse`;
+    # see test_delete_line_over_the_api's own comment in
+    # test_stage6_delete.py).
+    assert response.status_code == 200
 
     response = client.get(f"/sketch/sketches/{sketch['id']}/arcs/{arc['id']}")
     assert response.status_code == 404

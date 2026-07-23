@@ -128,6 +128,27 @@ List<vm.Vector3> referencePlaneBorderPoints(double halfSize) => [
       vm.Vector3(-halfSize, 0, -halfSize),
     ];
 
+/// On-device feedback ("plane border lines don't render properly"):
+/// [referencePlaneBorderPoints] as a genuinely closed loop for
+/// `PolylineGeometry`, which never wraps around an open point list when
+/// computing each vertex's mitered width (its `_pointTangents` only
+/// averages `points[i-1]`/`points[i+1]`, so index 0 and the last index -
+/// physically the same shared corner here - each get a tangent from only
+/// one of their two real edges instead of one shared bisector). That
+/// mismatch produced a visible kink/gap at exactly that one corner, not
+/// the other three (which already get a real two-neighbor average).
+/// Padding with the loop's second-to-last point before it and its second
+/// point after it gives every real corner, including the seam, a genuine
+/// bisected tangent; the two extra segments this adds exactly retrace the
+/// loop's own first and last edges - harmless overdraw on an opaque,
+/// unlit material, not a visible artifact. Only used for the border
+/// geometry - [doubleSidedQuadBuffers] still reads the unpadded, exactly-
+/// 4-real-corners list directly.
+List<vm.Vector3> closedLoopBorderPoints(double halfSize) {
+  final loop = referencePlaneBorderPoints(halfSize);
+  return [loop[loop.length - 2], ...loop, loop[1]];
+}
+
 /// The pure vertex/index buffers for a double-sided [halfSize]-radius square,
 /// flat in the local XZ plane (Fix 2's fix for single-sided rendering).
 ///
@@ -212,7 +233,7 @@ Node buildReferencePlaneNode(ReferencePlaneKind plane, {bool selected = false}) 
     ..alphaMode = AlphaMode.opaque
     ..baseColorFactor = plane.borderColor;
   final borderGeometry = PolylineGeometry(
-    referencePlaneBorderPoints(_referencePlaneHalfSize),
+    closedLoopBorderPoints(_referencePlaneHalfSize),
     width: _referencePlaneBorderWidth,
   );
 

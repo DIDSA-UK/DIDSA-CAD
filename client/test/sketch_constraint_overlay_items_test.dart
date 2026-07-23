@@ -113,6 +113,74 @@ void main() {
     expect(item.line2End, (5.0, 3.0));
   });
 
+  test(
+      'an Angle constraint becomes a ConstraintAngleDimensionItem carrying both Lines\' own '
+      'endpoints (bug fix: this used to be a plain floating "N.N°" chip with no leader/extension '
+      'lines at all)', () {
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 0, y: 0);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 0, y: 5);
+    controller.lines['l1'] = const SketchLineView(id: 'l1', startPointId: 'p2', endPointId: 'p3');
+    controller.constraints['c0'] = const AngleConstraintDto(
+      id: 'c0',
+      line1Id: 'l0',
+      line2Id: 'l1',
+      angleDegrees: 90.0,
+    );
+
+    final items = controller.constraintOverlayItems();
+
+    expect(items, hasLength(1));
+    final item = items.single as ConstraintAngleDimensionItem;
+    expect(item.text, '90.0°');
+    expect(item.line1Start, (0.0, 0.0));
+    expect(item.line1End, (5.0, 0.0));
+    expect(item.line2Start, (0.0, 0.0));
+    expect(item.line2End, (0.0, 5.0));
+    expect(item.sketchLocalArcRadius, isNull);
+  });
+
+  test(
+      'a PointLineDistance constraint becomes a ConstraintLinearDimensionItem between the Point '
+      'and its own perpendicular foot on the Line - clamped-inside-the-segment case (bug fix: '
+      'this used to be a plain floating chip with no extension lines at all)', () {
+    controller.points['pt'] = const SketchPointView(id: 'pt', x: 2, y: 3);
+    controller.constraints['c0'] = const PointLineDistanceConstraintDto(
+      id: 'c0',
+      pointId: 'pt',
+      lineId: 'l0',
+      distance: 3.0,
+    );
+
+    final items = controller.constraintOverlayItems();
+
+    expect(items, hasLength(1));
+    final item = items.single as ConstraintLinearDimensionItem;
+    expect(item.text, '3.00');
+    expect(item.pointA, (2.0, 3.0));
+    expect(item.pointB.$1, closeTo(2.0, 1e-9));
+    expect(item.pointB.$2, closeTo(0.0, 1e-9));
+    expect(item.orientation, isNull);
+  });
+
+  test(
+      'a PointLineDistance constraint\'s perpendicular foot is NOT clamped to the drawn Line '
+      'segment - it measures onto the Line\'s own infinite extension, matching the constrained '
+      'value', () {
+    controller.points['pt'] = const SketchPointView(id: 'pt', x: 15, y: 3);
+    controller.constraints['c0'] = const PointLineDistanceConstraintDto(
+      id: 'c0',
+      pointId: 'pt',
+      lineId: 'l0', // l0 runs (0,0)-(5,0); its own foot for x=15 falls well beyond its own end
+      distance: 3.0,
+    );
+
+    final items = controller.constraintOverlayItems();
+
+    final item = items.single as ConstraintLinearDimensionItem;
+    expect(item.pointB.$1, closeTo(15.0, 1e-9));
+    expect(item.pointB.$2, closeTo(0.0, 1e-9));
+  });
+
   test('a missing referenced Point/Line is skipped rather than throwing', () {
     controller.constraints['c0'] =
         const VerticalConstraintDto(id: 'c0', lineId: 'ghost-line', pointAId: 'p0', pointBId: 'ghost-point');

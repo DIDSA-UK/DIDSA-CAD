@@ -1,13 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show BodyMeshDto;
-import '../api/sketch_api_client.dart' show ArcDto, CircleDto, EllipseDto, LineDto, PointDto, SplineDto;
+import '../api/sketch_api_client.dart'
+    show ApiException, ArcDto, CircleDto, EllipseDto, LineDto, PointDto, SketchDto, SplineDto;
 import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/reference_planes.dart';
@@ -34,9 +38,46 @@ import 'sketcher_preferences.dart';
 /// that don't carry the `length`/`radius` fields those DTOs do (the backend
 /// computes those; the live client-side views don't store them), so they're
 /// recomputed here via plain distance formulas.
+///
+/// Bug fix (on-device feedback: a Circle's own outline vanishing entirely -
+/// fill still showing - as soon as its centre Point was hidden by the
+/// hover-reveal feature): this always returns *every* Point now, full
+/// fidelity - see [hiddenPointIdsFrom] for the "hide this marker until
+/// hover-revealed" concern, kept entirely separate. This function used to
+/// filter shape-center Points out of the list it returns, which also
+/// starved [sketchGeometry3DFrom]'s own `pointsById` lookups for every
+/// Circle whose centre was hidden (it silently drops the whole entity the
+/// moment one of its own Points is missing) - a Point being hidden from
+/// view must never mean an *entity* built from it goes missing too.
 List<PointDto> _pointDtosFrom(SketchController controller) => [
       for (final p in controller.points.values) PointDto(id: p.id, x: p.x, y: p.y),
     ];
+
+/// On-device feedback: a Circle's/Polygon's own centre Point used to be
+/// rendered unconditionally, every frame - now hidden unless hover-revealed
+/// (`SketchController.revealedShapeCenterPointId`), selected, actively
+/// grabbed, or the live in-progress anchor of that same draw tool, mirroring
+/// `sketch_canvas.dart`'s own equivalent gate exactly (see
+/// `revealedShapeCenterPointId`'s own doc comment for why). Feeds
+/// [SketchGeometry3D.hiddenPointIds] (see that field's own doc comment for
+/// why this is *not* done by omitting Points from [_pointDtosFrom] instead).
+Set<String> _hiddenPointIdsFrom(SketchController controller) {
+  final shapeCenterIds = <String>{
+    for (final circle in controller.circles.values) circle.centerPointId,
+    for (final polygon in controller.polygons.values) polygon.centerPointId,
+  };
+  final revealedId = controller.revealedShapeCenterPointId;
+  bool isSelected(String id) =>
+      controller.selectionSet.any((s) => s.kind == SelectionKind.point && s.id == id) ||
+      controller.dimensionSelection.any((s) => s.kind == SelectionKind.point && s.id == id);
+  bool isInProgressAnchor(String id) =>
+      (controller.circleInProgress && id == controller.circleCenterPointId) ||
+      (controller.polygonInProgress && id == controller.polygonCenterPointId);
+  return {
+    for (final id in shapeCenterIds)
+      if (id != revealedId && !isSelected(id) && controller.draggingPointId != id && !isInProgressAnchor(id)) id,
+  };
+}
 
 double _sketchPointDistance(SketchPointView a, SketchPointView b) {
   final dx = b.x - a.x;
@@ -144,6 +185,17 @@ class SketchScreen extends StatefulWidget {
   /// a new one.
   final String? adoptSketchId;
 
+  /// The standalone "2D Drawing" tool (floor plans and other Part-free
+  /// drawings, reached from the app's own chooser screen rather than
+  /// [PartScreen]) - true here means two things: [_loadInitialOrbitViewPreference]
+  /// never auto-enters Orbit View regardless of [SketcherPreferences.
+  /// use3DSketcher] (that default is for in-Part sketching, not a flat
+  /// drafting tool with no Bodies/planes to show), and the hamburger menu
+  /// gains Save/Open entries for this Sketch's own local file, in place of
+  /// the Part-level native file format a Part-anchored Sketch relies on
+  /// instead (see [_saveStandaloneSketch]/[_openStandaloneSketch]).
+  final bool standalone;
+
   /// Stage 12 item 9: the existing solid's mesh edges, already projected
   /// onto this Sketch's plane by the caller ([PartScreen], which is the
   /// only place that has both the Part's mesh and the plane) - empty when
@@ -202,6 +254,18 @@ class SketchScreen extends StatefulWidget {
   /// basis from [_planeKind] in that case, same as before this existed.
   final SketchPlaneBasis? planeBasis;
 
+  /// On-device feedback ("previously created sketches are not visible while
+  /// orbiting, and should be - same as the Body hide/show button"): every
+  /// other Sketch's already-resolved 3D geometry ([PartScreen]'s own
+  /// `_visibleSketchGeometries`, which this Sketch's own entry is excluded
+  /// from by the caller), threaded in as a static snapshot the same way
+  /// [bodies] already is. Merged into [_embeddedSketchGeometries] and gated
+  /// by the same [_referenceBodyHidden] toggle bodies use - "one toggle,
+  /// give me a clear view of just the sketch I'm working on" now covers
+  /// sibling sketches too, not just bodies. Empty outside [PartScreen], same
+  /// as [bodies].
+  final Map<String, SketchGeometry3D> otherSketchGeometries;
+
   const SketchScreen({
     super.key,
     this.controller,
@@ -213,6 +277,8 @@ class SketchScreen extends StatefulWidget {
     this.documentPartId,
     this.sketchFeatureId,
     this.planeBasis,
+    this.otherSketchGeometries = const {},
+    this.standalone = false,
   });
 
   @override
@@ -332,7 +398,7 @@ class _SketchScreenState extends State<SketchScreen> {
     // [ViewPreferences.bgColourHex] reflects the real persisted value by
     // the time [_buildBaseLayer] first reads it.
     await Future.wait([SketcherPreferences.load(), ViewPreferences.load()]);
-    if (!mounted || _orbitViewActive) return;
+    if (!mounted || _orbitViewActive || widget.standalone) return;
     if (SketcherPreferences.use3DSketcher && _effectiveOrbitBasis != null) {
       _enterOrbitView();
     } else if (SketcherPreferences.use3DSketcher) {
@@ -523,10 +589,17 @@ class _SketchScreenState extends State<SketchScreen> {
                               ),
                             ),
                           ),
-                          if (widget.referenceGhostSegments.isNotEmpty) ...[
+                          if (widget.referenceGhostSegments.isNotEmpty || widget.otherSketchGeometries.isNotEmpty) ...[
                             const SizedBox(height: 8),
                             FloatingActionButton.small(
                               heroTag: 'reference-body-visibility-fab',
+                              // On-device feedback: this toggle now also
+                              // covers [widget.otherSketchGeometries] (see
+                              // its own doc comment) - kept the same
+                              // tooltip/icon pair rather than a third state,
+                              // since "reference body" already reads as
+                              // shorthand for "everything else in the model
+                              // shown for context" to anyone using it.
                               tooltip:
                                   _referenceBodyHidden ? 'Show Reference Body' : 'Hide Reference Body',
                               onPressed: () => setState(() => _referenceBodyHidden = !_referenceBodyHidden),
@@ -1023,7 +1096,13 @@ class _SketchScreenState extends State<SketchScreen> {
         onConstraintLabelDragDelta: _controller.updateLabelDrag,
         draggingConstraintLabelId: _controller.draggingLabelId,
         onRadialLabelAngleDragged: _handleEmbeddedRadialLabelAngleDragged,
+        onRadialLabelDistanceDragged: _handleEmbeddedRadialLabelDistanceDragged,
         onLinearLabelOffsetDragged: _handleEmbeddedLinearLabelOffsetDragged,
+        onLinearLabelAlongDragged: _handleEmbeddedLinearLabelAlongDragged,
+        onLineDistanceLabelOffsetDragged: _handleEmbeddedLineDistanceLabelOffsetDragged,
+        onLineDistanceLabelAlongDragged: _handleEmbeddedLineDistanceLabelAlongDragged,
+        onAngleLabelRadiusDragged: _handleEmbeddedAngleLabelRadiusDragged,
+        onAngleLabelAlongDragged: _handleEmbeddedAngleLabelAlongDragged,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
@@ -1260,11 +1339,26 @@ class _SketchScreenState extends State<SketchScreen> {
   /// unchanged. Not awaited here (matches `_dispatchTap`'s own
   /// fire-and-forget convention) - [SketchController] is a [ChangeNotifier]
   /// and drives its own UI updates once the call resolves.
-  void _handleEmbeddedSketchTap(vm.Vector3 worldPoint) {
+  void _handleEmbeddedSketchTap(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
     final basis = _effectiveOrbitBasis;
     if (basis == null) return;
     final (x, y) = worldPointToSketch(basis, worldPoint);
-    unawaited(_controller.handleCanvasTap(x, y));
+    // Bug fix (on-device feedback: "the hit radius for selecting an entity
+    // should match the hit radius for dynamic highlight - it occurred when
+    // selecting entities after starting the dimension tool"): this used to
+    // call [SketchController.handleCanvasTap] with no radius at all, which
+    // silently falls back to that method's own tiny, un-zoom-scaled
+    // [SketchController.snapRadius] - completely different from (and
+    // usually much smaller than) the properly screen-scaled radius the
+    // mesh-hover-driven "dynamic highlight" the user sees while aiming
+    // actually uses, so a tap could visibly miss whatever was just
+    // highlighted. [localPixelsPerUnit] (resolved by [PartViewport] itself,
+    // the one place with the camera/viewport context needed - see
+    // [PartViewport.onDrawCursorCommit]'s own doc comment) converts through
+    // the exact same [SketchController.hitRadiusForPixelsPerUnit] the flat
+    // 2D canvas's own tap dispatch already uses.
+    final hitRadius = localPixelsPerUnit == null ? null : _controller.hitRadiusForPixelsPerUnit(localPixelsPerUnit);
+    unawaited(_controller.handleCanvasTap(x, y, hitRadius));
   }
 
   /// P24 (2D-sketcher feature parity): true while Select mode's drag-mode
@@ -1313,9 +1407,9 @@ class _SketchScreenState extends State<SketchScreen> {
   /// (place-geometry/select-toggle) whenever drag mode isn't active - the
   /// same "drag-mode branch checked first, ordinary tap handling otherwise"
   /// priority `_handleDragModeTap`'s own doc comment describes.
-  void _handleEmbeddedDrawOrDragCommit(vm.Vector3 worldPoint) {
+  void _handleEmbeddedDrawOrDragCommit(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
     if (!_dragModeActiveInOrbitView) {
-      _handleEmbeddedSketchTap(worldPoint);
+      _handleEmbeddedSketchTap(worldPoint, localPixelsPerUnit);
       return;
     }
     final basis = _effectiveOrbitBasis;
@@ -1325,7 +1419,13 @@ class _SketchScreenState extends State<SketchScreen> {
       return;
     }
     final (x, y) = worldPointToSketch(basis, worldPoint);
-    final target = _controller.dragGrabTargetAt(x, y, SketchController.snapRadius);
+    // Bug fix (on-device feedback: "the hit radius for selecting an entity
+    // should match the hit radius for dynamic highlight") - same fix as
+    // [_handleEmbeddedSketchTap]'s own doc comment, for grabbing an entity
+    // to drag it rather than tapping to select it.
+    final grabRadius =
+        localPixelsPerUnit == null ? SketchController.snapRadius : _controller.hitRadiusForPixelsPerUnit(localPixelsPerUnit);
+    final target = _controller.dragGrabTargetAt(x, y, grabRadius);
     if (target == null) return;
     switch (target.kind) {
       case SelectionKind.point:
@@ -1458,6 +1558,67 @@ class _SketchScreenState extends State<SketchScreen> {
     final id = _controller.draggingLabelId;
     if (id == null) return;
     _controller.setLinearOffsetDistance(id, distance);
+  }
+
+  /// Bug fix (on-device feedback: "the linear dimension only moves
+  /// left/right"): [PartViewport.onLinearLabelAlongDragged]'s handler -
+  /// [_handleEmbeddedLinearLabelOffsetDragged]'s own sibling for
+  /// [SketchController.setLinearAlongOffset].
+  void _handleEmbeddedLinearLabelAlongDragged(double along) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setLinearAlongOffset(id, along);
+  }
+
+  /// Bug fix (on-device feedback: "radius and diameter dimensions are
+  /// locked a set distance from the arc or circle"): [PartViewport.
+  /// onRadialLabelDistanceDragged]'s handler -
+  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
+  /// [SketchController.setRadialLegLength].
+  void _handleEmbeddedRadialLabelDistanceDragged(double legLength) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setRadialLegLength(id, legLength);
+  }
+
+  /// [PartViewport.onLineDistanceLabelOffsetDragged]'s handler - a
+  /// Line-to-Line distance dimension reuses the exact same
+  /// [SketchController.setLinearOffsetDistance] map/setter a point-to-point
+  /// linear dimension does (see [ConstraintLineDistanceDimensionItem.
+  /// sketchLocalOffsetDistance]'s own doc comment).
+  void _handleEmbeddedLineDistanceLabelOffsetDragged(double distance) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setLinearOffsetDistance(id, distance);
+  }
+
+  /// Bug fix (on-device feedback: "the dimension...is restricted in
+  /// movement. it moves left right. it can't be moved up down"):
+  /// [PartViewport.onLineDistanceLabelAlongDragged]'s handler -
+  /// [_handleEmbeddedLineDistanceLabelOffsetDragged]'s own sibling for
+  /// [SketchController.setLineDistanceAlongOffset].
+  void _handleEmbeddedLineDistanceLabelAlongDragged(double along) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setLineDistanceAlongOffset(id, along);
+  }
+
+  /// [PartViewport.onAngleLabelRadiusDragged]'s handler -
+  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
+  /// [SketchController.setAngleArcRadius].
+  void _handleEmbeddedAngleLabelRadiusDragged(double radius) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setAngleArcRadius(id, radius);
+  }
+
+  /// [PartViewport.onAngleLabelAlongDragged]'s handler -
+  /// [_handleEmbeddedAngleLabelRadiusDragged]'s own sibling for
+  /// [SketchController.setAngleAlongOffset].
+  void _handleEmbeddedAngleLabelAlongDragged(double along) {
+    final id = _controller.draggingLabelId;
+    if (id == null) return;
+    _controller.setAngleAlongOffset(id, along);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates
@@ -1749,14 +1910,24 @@ class _SketchScreenState extends State<SketchScreen> {
       arcs: _arcDtosFrom(_controller),
       ellipses: _ellipseDtosFrom(_controller),
       splines: _splineDtosFrom(_controller),
+      hiddenPointIds: _hiddenPointIdsFrom(_controller),
     );
     final key = _controller.sketchId ?? 'active-sketch';
+    // On-device feedback: other sketches share the Body hide/show toggle
+    // (see [SketchScreen.otherSketchGeometries]'s own doc comment) - hidden
+    // exactly like [widget.bodies] is via `bodiesHidden` a few lines below.
+    final others = _referenceBodyHidden ? const <String, SketchGeometry3D>{} : widget.otherSketchGeometries;
     final cached = _cachedEmbeddedSketchGeometries;
     final cachedGeometry = cached[key];
-    if (cached.length == 1 && cachedGeometry != null && sketchGeometry3DEquals(geometry, cachedGeometry)) {
+    if (cached.length == others.length + 1 &&
+        cachedGeometry != null &&
+        sketchGeometry3DEquals(geometry, cachedGeometry) &&
+        others.entries.every(
+          (e) => cached.containsKey(e.key) && sketchGeometry3DEquals(cached[e.key]!, e.value),
+        )) {
       return cached;
     }
-    final fresh = {key: geometry};
+    final fresh = {key: geometry, ...others};
     _cachedEmbeddedSketchGeometries = fresh;
     return fresh;
   }
@@ -1836,11 +2007,26 @@ class _SketchScreenState extends State<SketchScreen> {
     bool pointOverConstrained(String pointId) =>
         overConstrainedCache.putIfAbsent(pointId, () => _controller.isPointForcedOverConstrained(pointId));
 
+    // On-device feedback ("lines in sketcher need to be darker - link their
+    // colour to the background colour"): [sketchLineColor] is a fixed
+    // light-gray constant, low-contrast against some background choices -
+    // same bug class the flat 2D canvas's `_unconstrainedColor` had, fixed
+    // the same way here: derived from the 3D viewport's own real,
+    // user-configurable background ([ViewPreferences.bgColourHex]) via the
+    // same light/dark threshold Flutter's `ThemeData` uses for
+    // on-primary-color text, rather than a fixed mid-tone that can wash out
+    // against either a light or dark background.
+    final embeddedBackground = colorFromHex(ViewPreferences.bgColourHex);
+    final embeddedUnconstrainedColor =
+        ThemeData.estimateBrightnessForColor(embeddedBackground) == Brightness.light
+            ? vm.Vector4(0, 0, 0, 1)
+            : vm.Vector4(1, 1, 1, 1);
+
     vm.Vector4 statusColor({required bool overConstrained, required bool construction, required bool fullyConstrained}) {
       if (overConstrained) return sketchOverConstrainedColor;
       if (construction) return sketchConstructionColor;
       if (fullyConstrained) return sketchFullyConstrainedColor;
-      return sketchLineColor;
+      return embeddedUnconstrainedColor;
     }
 
     for (final line in _controller.lines.values) {
@@ -1994,10 +2180,41 @@ class _SketchScreenState extends State<SketchScreen> {
       shrinkWrap: true,
       padding: EdgeInsets.zero,
       children: [
+        if (widget.standalone) _buildStandaloneFileMenu(context, density, titleStyle),
         if (_orbitViewActive)
           _build3DViewMenu(context, density, titleStyle, showBodyTransparency: true)
         else
           _build2DViewMenu(context, density, titleStyle),
+      ],
+    );
+  }
+
+  /// The standalone "2D Drawing" tool's own File section - Save/Open for
+  /// this Sketch's own local file, in place of the Part-level native file
+  /// format a Part-anchored Sketch relies on (`part_screen.dart`'s own File
+  /// menu) - see [SketchScreen.standalone]'s own doc comment.
+  Widget _buildStandaloneFileMenu(BuildContext context, VisualDensity density, TextStyle titleStyle) {
+    return ExpansionTile(
+      dense: true,
+      visualDensity: density,
+      leading: const Icon(Icons.folder_outlined, size: 20),
+      title: Text('File', style: titleStyle),
+      initiallyExpanded: true,
+      children: [
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.save_outlined, size: 20),
+          title: Text('Save', style: titleStyle),
+          onTap: _saveStandaloneSketch,
+        ),
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.folder_open_outlined, size: 20),
+          title: Text('Open', style: titleStyle),
+          onTap: _openStandaloneSketch,
+        ),
       ],
     );
   }
@@ -2175,6 +2392,76 @@ class _SketchScreenState extends State<SketchScreen> {
       ),
     );
     if (chosen != null) setState(() => _canvasColor = chosen);
+  }
+
+  /// The standalone "2D Drawing" tool's own Save - see [SketchScreen.
+  /// standalone]'s own doc comment for why a bare Sketch needs a local
+  /// file at all (it has no Part to be saved as part of, unlike every
+  /// other Sketch in this app). Mirrors `part_screen.dart`'s
+  /// `_exportAndSaveNativeFile` shape exactly (export -> JSON-encode ->
+  /// `FilePicker.platform.saveFile`), just calling `SketchApiClient.
+  /// exportSketch` instead of the Part-level native-file export.
+  String? _lastSavedSketchFileName;
+
+  Future<void> _saveStandaloneSketch() async {
+    setState(() => _menuOpen = false);
+    final sketchId = _controller.sketchId;
+    if (sketchId == null) return;
+    try {
+      final data = await _controller.api.exportSketch(sketchId);
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(data)));
+      final savedPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save Drawing',
+        fileName: _lastSavedSketchFileName ?? 'drawing.DIDSAsketch',
+        bytes: bytes,
+      );
+      if (savedPath != null) {
+        _lastSavedSketchFileName = savedPath.split('/').last;
+      }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: ${e.message}')));
+    }
+  }
+
+  /// [_saveStandaloneSketch]'s inverse - reads a local file the user picks
+  /// and imports it as a brand-new Sketch (`SketchApiClient.importSketch`,
+  /// always a fresh id server-side - see that method's own doc comment),
+  /// then pushes a fresh, standalone [SketchScreen] adopting it. Pushing a
+  /// new screen rather than reloading this one in place mirrors
+  /// `part_screen.dart`'s own `_openNativeFile`/`PartScreen.initialPartId`
+  /// precedent for the identical reason - a clean, fully-reset State for
+  /// the newly opened content, not a partially-reused one.
+  Future<void> _openStandaloneSketch() async {
+    setState(() => _menuOpen = false);
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final bytes = result.files.single.bytes;
+    if (bytes == null) return;
+
+    Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Not a valid drawing file')));
+      return;
+    }
+
+    SketchDto? imported;
+    try {
+      imported = await _controller.api.importSketch(decoded);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Open failed: ${e.message}')));
+      return;
+    }
+    if (!mounted) return;
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (context) => SketchScreen(adoptSketchId: imported!.id, standalone: true)),
+    );
   }
 }
 

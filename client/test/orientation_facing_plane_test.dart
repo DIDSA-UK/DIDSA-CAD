@@ -14,17 +14,24 @@ import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
 /// verified) checked [OrbitCamera]'s own `right`/`up`/`direction` getters
 /// (`orientation.rotated(localRight/localUp/localBack)`) against
 /// `SketchPlaneBasis.fixed(plane)` directly. That's the wrong ground truth:
-/// `flutter_scene`'s `PerspectiveCamera` never reads those getters - its own
-/// `_matrix4LookAt` (`packages/flutter_scene/lib/src/camera.dart` in the
-/// `bdero/flutter_scene` repo) independently re-derives the *actual* rendered
-/// right/up from `position`/`target`/`up` as `right = up.cross(forward)`,
-/// `up = forward.cross(right)` (`forward = (target - position).normalized()`).
-/// This test now replicates that exact formula (mirroring `triad.dart`'s
-/// `triadAxes`, which already uses the same `camera.up.cross(forward)` -
-/// correctly bypassing `OrbitCamera.right` for exactly this reason) and
+/// `flutter_scene`'s `PerspectiveCamera` never reads those getters - it
+/// independently re-derives the *actual* rendered right/up from
+/// `position`/`target`/`up`. This test replicates that exact formula and
 /// checks the result against `SketchPlaneBasis.fixed(plane)` instead - the
 /// only ground truth every other 3D-sketch-geometry consumer (rendered
 /// points/lines, hit-testing, the ghost outline) already agrees on.
+///
+/// **2026-07-22 update**: the render formula this test reproduces changed
+/// from `right = up.cross(forward)` (flutter_scene's own `PerspectiveCamera`
+/// convention, confirmed - by reading that package's actual source - to be a
+/// genuine, un-rotatable-away mirror bug) to `right = forward.cross(up)`
+/// (`[OrbitCamera.cameraFor]` now returns `FixedPerspectiveCamera`, which
+/// fixes this at its root - see `orthographic_camera.dart`'s
+/// `correctedLookAt`). `orientationFacingBasis` was updated to match (its
+/// own compensating negations, which existed solely to counteract the old
+/// bug, were removed) - so `renderRight`/`renderUp` below still land on
+/// `basis.xAxis`/`basis.yAxis` exactly as before, only `forward`'s sign (and
+/// so which physical side of the plane the camera sits on) changed.
 void main() {
   group('orientationFacingPlane renders the true right/up flutter_scene will show', () {
     final localUp = vm.Vector3(0, 1, 0);
@@ -34,18 +41,19 @@ void main() {
 
     for (final plane in ReferencePlaneKind.values) {
       test('${plane.name}: the camera actually renders right=xAxis, up=yAxis, '
-          'viewed through the plane towards +normal', () {
+          'viewed through the plane towards -normal', () {
         final orientation = orientationFacingPlane(plane);
         final basis = SketchPlaneBasis.fixed(plane);
 
         final direction = orientation.rotated(localBack);
         final up = orientation.rotated(localUp);
-        // Exactly flutter_scene's own `_matrix4LookAt`: forward = target -
-        // position (unit), right = up x forward, up re-orthogonalized as
-        // forward x right - not `OrbitCamera.up`/`.right` directly.
+        // Exactly FixedPerspectiveCamera's own correctedLookAt: forward =
+        // target - position (unit), right = forward x up, up
+        // re-orthogonalized as right x forward - not `OrbitCamera.up`/
+        // `.right` directly.
         final forward = -direction;
-        final renderRight = up.cross(forward).normalized();
-        final renderUp = forward.cross(renderRight).normalized();
+        final renderRight = forward.cross(up).normalized();
+        final renderUp = renderRight.cross(forward).normalized();
 
         expect(renderRight.x, closeTo(basis.xAxis.x, 1e-6));
         expect(renderRight.y, closeTo(basis.xAxis.y, 1e-6));
@@ -55,14 +63,13 @@ void main() {
         expect(renderUp.y, closeTo(basis.yAxis.y, 1e-6));
         expect(renderUp.z, closeTo(basis.yAxis.z, 1e-6));
 
-        // The camera views *through* the plane towards +normal (forward
-        // points from the camera into the scene) - so it physically sits on
-        // the -normal side. See `orientationFacingPlane`'s own doc comment
-        // for why this side (not +normal) is the one that renders correctly,
-        // given `flutter_scene`'s left-handed lookAt convention.
-        expect(forward.x, closeTo(basis.normal.x, 1e-6));
-        expect(forward.y, closeTo(basis.normal.y, 1e-6));
-        expect(forward.z, closeTo(basis.normal.z, 1e-6));
+        // The camera now views *from* the +normal side, back through
+        // -normal at the plane's front face - the intuitive side, unlike
+        // the pre-fix version's own "+normal, viewed from behind". See
+        // `orientationFacingBasis`'s own doc comment for the full derivation.
+        expect(forward.x, closeTo(-basis.normal.x, 1e-6));
+        expect(forward.y, closeTo(-basis.normal.y, 1e-6));
+        expect(forward.z, closeTo(-basis.normal.z, 1e-6));
       });
     }
   });
@@ -99,8 +106,8 @@ void main() {
             final direction = orientation.rotated(localBack);
             final up = orientation.rotated(localUp);
             final forward = -direction;
-            final renderRight = up.cross(forward).normalized();
-            final renderUp = forward.cross(renderRight).normalized();
+            final renderRight = forward.cross(up).normalized();
+            final renderUp = renderRight.cross(forward).normalized();
 
             expect((renderRight - basis.xAxis).length, closeTo(0, 1e-6));
             expect((renderUp - basis.yAxis).length, closeTo(0, 1e-6));
@@ -108,9 +115,12 @@ void main() {
             // The camera's own actual viewing direction must match the
             // basis's *real* handedness, not its raw (always-fixed,
             // flip-independent) normal - that's exactly the bug this test
-            // group exists to catch a regression of.
+            // group exists to catch a regression of. Negated (2026-07-22):
+            // the camera now views *from* the effectiveNormal side, back
+            // through -effectiveNormal - see orientationFacingBasis's own
+            // doc comment.
             final effectiveNormal = basis.xAxis.cross(basis.yAxis);
-            expect((forward - effectiveNormal).length, closeTo(0, 1e-6));
+            expect((forward + effectiveNormal).length, closeTo(0, 1e-6));
           });
         }
       }
@@ -122,6 +132,14 @@ void main() {
   /// readouts independently captured on-device for each - a direct
   /// regression guard for `part_screen.dart`'s own defaults, not just for
   /// `orientationFacingBasis` in the abstract.
+  ///
+  /// **2026-07-22**: `right`'s own formula updated to match the corrected
+  /// renderer (see this file's own top-of-file doc comment) - the expected
+  /// readouts below are deliberately *unchanged*, since `orientationFacingBasis`
+  /// was specifically re-derived to keep producing the identical
+  /// `renderRight`/`renderUp` result for the same basis (see its own doc
+  /// comment) - only its internal target-back/right values, not its
+  /// external on-screen contract, changed.
   group('the three per-plane defaults match their own independently-captured on-device targets', () {
     void expectTriadReadout(
       vm.Quaternion orientation, {
@@ -132,8 +150,8 @@ void main() {
       final camera = OrbitCamera()..orientation = orientation;
       final towardCamera = (camera.position - camera.target).normalized();
       final forward = -towardCamera;
-      final right = camera.up.cross(forward).normalized();
-      final up = forward.cross(right).normalized();
+      final right = forward.cross(camera.up).normalized();
+      final up = right.cross(forward).normalized();
 
       void expectAxis(vm.Vector3 axis, vm.Vector3 expected) {
         expect(axis.dot(right), closeTo(expected.x, 0.01));
@@ -146,30 +164,36 @@ void main() {
       expectAxis(vm.Vector3(0, 0, 1), expectedZReading);
     }
 
-    test('XY: flip=true, rotation=1', () {
+    // 2026-07-22, re-calibrated a second time against a fresh on-device
+    // reading (post-render-fix) rather than kept as the previous round's
+    // "same picture as before, different (flip, rotation) to reach it"
+    // restoration - see _defaultPendingOrientationFor's own doc comment for
+    // the exact captured readings and how each (flip, rotation) pair below
+    // was matched to them.
+    test('XY: flip=false, rotation=0', () {
       expectTriadReadout(
-        orientationFacingPlane(ReferencePlaneKind.xy, flip: true, rotationQuarterTurns: 1),
-        expectedXReading: vm.Vector3(0, 1, 0),
-        expectedYReading: vm.Vector3(1, 0, 0),
+        orientationFacingPlane(ReferencePlaneKind.xy, flip: false, rotationQuarterTurns: 0),
+        expectedXReading: vm.Vector3(1, 0, 0),
+        expectedYReading: vm.Vector3(0, 1, 0),
         expectedZReading: vm.Vector3(0, 0, 1),
       );
     });
 
-    test('XZ: flip=true, rotation=0', () {
+    test('XZ: flip=false, rotation=2', () {
       expectTriadReadout(
-        orientationFacingPlane(ReferencePlaneKind.xz, flip: true, rotationQuarterTurns: 0),
+        orientationFacingPlane(ReferencePlaneKind.xz, flip: false, rotationQuarterTurns: 2),
         expectedXReading: vm.Vector3(1, 0, 0),
         expectedYReading: vm.Vector3(0, 0, 1),
-        expectedZReading: vm.Vector3(0, 1, 0),
+        expectedZReading: vm.Vector3(0, -1, 0),
       );
     });
 
-    test('YZ: flip=false, rotation=0 (unchanged - already an exact match)', () {
+    test('YZ: flip=false, rotation=3', () {
       expectTriadReadout(
-        orientationFacingPlane(ReferencePlaneKind.yz, flip: false, rotationQuarterTurns: 0),
-        expectedXReading: vm.Vector3(0, 0, -1),
-        expectedYReading: vm.Vector3(1, 0, 0),
-        expectedZReading: vm.Vector3(0, 1, 0),
+        orientationFacingPlane(ReferencePlaneKind.yz, flip: false, rotationQuarterTurns: 3),
+        expectedXReading: vm.Vector3(0, 0, 1),
+        expectedYReading: vm.Vector3(0, 1, 0),
+        expectedZReading: vm.Vector3(-1, 0, 0),
       );
     });
   });

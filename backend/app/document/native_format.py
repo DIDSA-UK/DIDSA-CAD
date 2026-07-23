@@ -69,10 +69,12 @@ from app.sketch.models import (
     Plane,
     Point,
     Polygon,
+    Rectangle,
     Sketch,
     SketchEntity,
     SketchEntityRef,
     SketchEntityType,
+    Slot,
     Spline,
     TextEntity,
 )
@@ -189,6 +191,43 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "equal_length_constraint_ids": entity.equal_length_constraint_ids,
             "angle_constraint_ids": entity.angle_constraint_ids,
             "sides": entity.sides,
+            "circumscribed_circle_id": entity.circumscribed_circle_id,
+            "inscribed_circle_id": entity.inscribed_circle_id,
+            "inscribed_tangent_constraint_id": entity.inscribed_tangent_constraint_id,
+        }
+    if isinstance(entity, Slot):
+        return {
+            "type": "slot",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center1_point_id": entity.center1_point_id,
+            "center2_point_id": entity.center2_point_id,
+            "centerline_id": entity.centerline_id,
+            "arc1_id": entity.arc1_id,
+            "arc2_id": entity.arc2_id,
+            "line1_id": entity.line1_id,
+            "line2_id": entity.line2_id,
+            "a_point_id": entity.a_point_id,
+            "b_point_id": entity.b_point_id,
+            "c_point_id": entity.c_point_id,
+            "d_point_id": entity.d_point_id,
+            "radius_constraint_id": entity.radius_constraint_id,
+            "equal_radius_constraint_ids": entity.equal_radius_constraint_ids,
+            "tangent_constraint_ids": entity.tangent_constraint_ids,
+        }
+    if isinstance(entity, Rectangle):
+        return {
+            "type": "rectangle",
+            "id": entity.id,
+            "construction": entity.construction,
+            "corner_point_ids": entity.corner_point_ids,
+            "line_ids": entity.line_ids,
+            "axis_aligned": entity.axis_aligned,
+            "axis_constraint_ids": entity.axis_constraint_ids,
+            "center_point_id": entity.center_point_id,
+            "diagonal_line_id": entity.diagonal_line_id,
+            "diagonal2_line_id": entity.diagonal2_line_id,
+            "midpoint_constraint_id": entity.midpoint_constraint_id,
         }
     if isinstance(entity, Spline):
         return {
@@ -271,6 +310,41 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             equal_length_constraint_ids=list(_require(data, "equal_length_constraint_ids")),
             angle_constraint_ids=list(_require(data, "angle_constraint_ids")),
             sides=_require(data, "sides"),
+            circumscribed_circle_id=data.get("circumscribed_circle_id"),
+            inscribed_circle_id=data.get("inscribed_circle_id"),
+            inscribed_tangent_constraint_id=data.get("inscribed_tangent_constraint_id"),
+        )
+    if entity_type == "slot":
+        return Slot(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center1_point_id=_require(data, "center1_point_id"),
+            center2_point_id=_require(data, "center2_point_id"),
+            centerline_id=_require(data, "centerline_id"),
+            arc1_id=_require(data, "arc1_id"),
+            arc2_id=_require(data, "arc2_id"),
+            line1_id=_require(data, "line1_id"),
+            line2_id=_require(data, "line2_id"),
+            a_point_id=_require(data, "a_point_id"),
+            b_point_id=_require(data, "b_point_id"),
+            c_point_id=_require(data, "c_point_id"),
+            d_point_id=_require(data, "d_point_id"),
+            radius_constraint_id=_require(data, "radius_constraint_id"),
+            equal_radius_constraint_ids=list(_require(data, "equal_radius_constraint_ids")),
+            tangent_constraint_ids=list(_require(data, "tangent_constraint_ids")),
+        )
+    if entity_type == "rectangle":
+        return Rectangle(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            corner_point_ids=list(_require(data, "corner_point_ids")),
+            line_ids=list(_require(data, "line_ids")),
+            axis_aligned=_require(data, "axis_aligned"),
+            axis_constraint_ids=list(_require(data, "axis_constraint_ids")),
+            center_point_id=data.get("center_point_id"),
+            diagonal_line_id=data.get("diagonal_line_id"),
+            diagonal2_line_id=data.get("diagonal2_line_id"),
+            midpoint_constraint_id=data.get("midpoint_constraint_id"),
         )
     if entity_type == "spline":
         return Spline(
@@ -314,7 +388,17 @@ def _constraint_from_dict(data: dict) -> Constraint:
         raise NativeFormatError(f"Malformed {constraint_type!r} constraint: {exc}") from exc
 
 
-def _sketch_to_dict(sketch: Sketch) -> dict:
+def sketch_to_dict(sketch: Sketch) -> dict:
+    """A `Sketch`'s full state, serialized to a plain dict - the same shape
+    `export_native`'s own `"sketches"` array entries use.
+
+    Public (no leading underscore) since the standalone "2D Drawing" tool's
+    own bare-Sketch save/open endpoints (`app.sketch.router`) reuse this
+    verbatim rather than re-deriving a second serialization for the exact
+    same `Sketch` shape - a bare Sketch has no Part/Document context, so it
+    needed a save/open path independent of `export_native`/`import_native`'s
+    own Document-level format, but the underlying per-Sketch dict shape is
+    identical either way."""
     return {
         "id": sketch.id,
         "plane": sketch.plane.value if sketch.plane is not None else None,
@@ -333,7 +417,8 @@ def _sketch_to_dict(sketch: Sketch) -> dict:
     }
 
 
-def _sketch_from_dict(data: dict) -> Sketch:
+def sketch_from_dict(data: dict) -> Sketch:
+    """The inverse of [sketch_to_dict] - public for the same reason."""
     plane_value = data.get("plane")
     sketch = Sketch(id=_require(data, "id"), plane=Plane(plane_value) if plane_value is not None else None)
     sketch._origin_point_id = data.get("origin_point_id")
@@ -617,7 +702,7 @@ def export_native(document: Document, sketches: dict[str, Sketch]) -> dict:
             "parts": [_part_to_dict(part) for part in document.parts.values()],
         },
         "sketches": [
-            _sketch_to_dict(sketches[sketch_id])
+            sketch_to_dict(sketches[sketch_id])
             for sketch_id in sorted(referenced_sketch_ids)
             if sketch_id in sketches
         ],
@@ -640,7 +725,7 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
 
     sketches: dict[str, Sketch] = {}
     for sketch_data in data.get("sketches", []):
-        sketch = _sketch_from_dict(sketch_data)
+        sketch = sketch_from_dict(sketch_data)
         sketches[sketch.id] = sketch
 
     document_data = _require(data, "document")

@@ -898,7 +898,13 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
   void initState() {
     super.initState();
     _showsDiameter = _computeShowsDiameter();
-    _textController = TextEditingController(text: _formatValue(_displayValue()));
+    // On-device feedback ("the current dimension should be highlighted so
+    // the user can immediately type over it"): pre-selects the whole value
+    // rather than just prefilling it with the cursor at the end - same fix
+    // as `sketch_canvas.dart`'s `GhostValueEditor`.
+    final text = _formatValue(_displayValue());
+    _textController = TextEditingController(text: text)
+      ..selection = TextSelection(baseOffset: 0, extentOffset: text.length);
   }
 
   @override
@@ -907,7 +913,11 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
     final nowShowsDiameter = _computeShowsDiameter();
     if (nowShowsDiameter != _showsDiameter) {
       _showsDiameter = nowShowsDiameter;
-      _textController.text = _formatValue(_displayValue());
+      final text = _formatValue(_displayValue());
+      _textController.value = TextEditingValue(
+        text: text,
+        selection: TextSelection(baseOffset: 0, extentOffset: text.length),
+      );
     }
   }
 

@@ -184,6 +184,12 @@ def test_solving_keeps_the_minor_axis_perpendicular_after_dragging_the_major_poi
     center = sketch.add_point(0.0, 0.0)
     major = sketch.add_point(10.0, 0.0)
     ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=4.0)
+    # Bug fix (pre-existing stale test - predates provisional size
+    # constraints; see DistanceConstraint.provisional's own doc comment):
+    # both freshly-`add_ellipse`d axis constraints start provisional, which
+    # the solver deliberately skips until confirmed.
+    sketch.constraints[ellipse.major_constraint_id].provisional = False
+    sketch.constraints[ellipse.minor_constraint_id].provisional = False
 
     # Drag the major point to a new angle - roughly 30 degrees, not exactly
     # on the circle of radius 10, to also exercise the radius constraint
@@ -215,10 +221,18 @@ def test_ellipse_has_no_endpoints_like_circle():
 
 
 def test_delete_ellipse_removes_its_constraints_and_axis_lines():
+    # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
+    # see test_delete_line_prunes_a_now_orphaned_endpoint's own comment in
+    # test_stage6_delete.py): the centre/axis Points no longer
+    # unconditionally survive their own Ellipse's deletion - only if
+    # something else still references them. The centre stays shared with
+    # an unrelated Line here.
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(5.0, 0.0)
     ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
+    other = sketch.add_point(20.0, 20.0)
+    sketch.add_line(center.id, other.id)
     assert len(sketch.constraints) == 5
 
     sketch.delete_ellipse(ellipse.id)
@@ -226,9 +240,18 @@ def test_delete_ellipse_removes_its_constraints_and_axis_lines():
     assert ellipse.id not in sketch.entities
     assert ellipse.major_axis_line_id not in sketch.entities
     assert ellipse.minor_axis_line_id not in sketch.entities
-    assert sketch.constraints == {}
-    # The Points themselves are left untouched, same as delete_line/delete_circle.
+    # Only the Line's own VerticalConstraint (if any) could remain - none
+    # was added here, so every Ellipse-owned Constraint is gone.
+    assert ellipse.major_constraint_id not in sketch.constraints
+    assert ellipse.minor_constraint_id not in sketch.constraints
+    assert ellipse.major_midpoint_constraint_id not in sketch.constraints
+    assert ellipse.minor_midpoint_constraint_id not in sketch.constraints
+    assert ellipse.perpendicular_constraint_id not in sketch.constraints
+    # The centre, still shared with the Line, survives; the other axis
+    # Points are genuinely orphaned and pruned.
     assert center.id in sketch.points
+    assert ellipse.major_point_id not in sketch.points
+    assert ellipse.minor_point_id not in sketch.points
 
 
 def test_delete_ellipse_is_a_no_op_if_an_axis_line_was_already_deleted_directly():
@@ -236,10 +259,18 @@ def test_delete_ellipse_is_a_no_op_if_an_axis_line_was_already_deleted_directly(
     directly (its own DELETE has no notion of "still owned by an
     Ellipse"), so it may already be gone by the time delete_ellipse runs.
     That must not raise (see delete_ellipse's own comment)."""
+    # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
+    # see test_delete_ellipse_removes_its_constraints_and_axis_lines's own
+    # comment above): major/minor axis Points no longer unconditionally
+    # survive - both are kept shared with unrelated Lines here.
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     start = sketch.add_point(5.0, 0.0)
     ellipse = sketch.add_ellipse(center.id, start.id, minor_radius=2.0)
+    other_a = sketch.add_point(20.0, 20.0)
+    other_b = sketch.add_point(-20.0, -20.0)
+    sketch.add_line(ellipse.major_point_id, other_a.id)
+    sketch.add_line(ellipse.minor_point_id, other_b.id)
     sketch.delete_line(ellipse.major_axis_line_id)
 
     sketch.delete_ellipse(ellipse.id)
@@ -518,7 +549,10 @@ def test_delete_ellipse_over_the_api():
     ).json()
 
     response = client.delete(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}")
-    assert response.status_code == 204
+    # Bug fix (pre-existing stale test - predates `DeleteEntityResponse`;
+    # see test_delete_line_over_the_api's own comment in
+    # test_stage6_delete.py).
+    assert response.status_code == 200
 
     response = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}")
     assert response.status_code == 404

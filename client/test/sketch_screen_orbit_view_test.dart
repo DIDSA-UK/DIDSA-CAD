@@ -95,6 +95,50 @@ Future<void> _openInOrbitView(WidgetTester tester, SketchController controller) 
 
 void main() {
   testWidgets(
+      'a standalone SketchScreen (the "2D Drawing" tool) never enters Orbit View, even when '
+      'use3DSketcher is set - that default is for in-Part sketching, not a flat drafting tool '
+      'with no Bodies/planes of its own to show', (tester) async {
+    final controller = await _freshController();
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: true});
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, standalone: true)));
+    // Bounded settle, same reasoning as _openInOrbitView's own doc comment -
+    // long enough for _loadInitialOrbitViewPreference's async load to
+    // resolve if it were going to act, short of anything that would need
+    // PartViewport's own un-mockable GPU init to actually finish.
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(find.byType(PartViewport), findsNothing);
+  });
+
+  testWidgets(
+      'a standalone SketchScreen\'s hamburger menu offers Save/Open for this Sketch\'s own file, '
+      'unlike an ordinary (Part-anchored) SketchScreen, which has neither', (tester) async {
+    final controller = await _freshController();
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
+
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, standalone: true)));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Menu'));
+    await tester.pump();
+    expect(find.text('Save'), findsOneWidget);
+    expect(find.text('Open'), findsOneWidget);
+  });
+
+  testWidgets('an ordinary (Part-anchored) SketchScreen\'s hamburger menu has no Save/Open entries',
+      (tester) async {
+    final controller = await _freshController();
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
+
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Menu'));
+    await tester.pump();
+    expect(find.text('Save'), findsNothing);
+    expect(find.text('Open'), findsNothing);
+  });
+
+  testWidgets(
       'the orbit/cursor toggle FAB appears once Orbit View is active (driven by the '
       'use3DSketcher preference, not a live enter/exit tap), starting in cursor sub-mode and '
       'flipping PartViewport.selectionMode off when swapped to orbit sub-mode', (tester) async {

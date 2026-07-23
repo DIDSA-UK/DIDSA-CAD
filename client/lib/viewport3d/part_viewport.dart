@@ -9,13 +9,19 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import '../sketch/sketch_controller.dart'
-    show ConstraintOverlayItem, ConstraintLinearDimensionItem, ConstraintRadialDimensionItem;
+    show
+        ConstraintOverlayItem,
+        ConstraintAngleDimensionItem,
+        ConstraintLineDistanceDimensionItem,
+        ConstraintLinearDimensionItem,
+        ConstraintRadialDimensionItem;
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'scene_preferences.dart';
+import 'screen_projection.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_constraint_overlay.dart';
@@ -112,7 +118,13 @@ class PartViewport extends StatefulWidget {
   /// mutually exclusive with them - a Sketch's own embedded viewport passes
   /// `referencePlanesHidden: true` and no [createPlanes].
   final SketchPlaneBasis? sketchPlaneBasis;
-  final void Function(vm.Vector3 worldPoint)? onSketchPlaneTap;
+
+  /// Bug fix (on-device feedback: "the hit radius for selecting an entity
+  /// should match the hit radius for dynamic highlight") - [worldPoint]'s
+  /// own local screen-pixels-per-sketch-unit ratio, same convention and
+  /// same reasoning as [onDrawCursorCommit]'s own doc comment (this is that
+  /// callback's own sibling for the non-cursor tap path).
+  final void Function(vm.Vector3 worldPoint, double? localPixelsPerUnit)? onSketchPlaneTap;
 
   /// P16: mirrors [selectionMode]'s own cursor/hover/commit shape (see the
   /// "Stage 23 Items 2/3" section below), retargeted from entity-hover to a
@@ -138,7 +150,26 @@ class PartViewport extends StatefulWidget {
   /// cursor drag - same travel-threshold disambiguation [_commitSelection]
   /// already uses) commits while [drawCursorMode] is true and the cursor is
   /// currently resolving to a point on [sketchPlaneBasis].
-  final void Function(vm.Vector3 worldPoint)? onDrawCursorCommit;
+  ///
+  /// Bug fix (on-device feedback: "the hit radius for selecting an entity
+  /// should match the hit radius for dynamic highlight - it occurred when
+  /// selecting entities after starting the dimension tool"): [worldPoint]'s
+  /// own local screen-pixels-per-sketch-unit ratio (this State's own camera/
+  /// viewport, resolved via the same "project a synthetic point 1 sketch-
+  /// unit away, measure the screen distance" technique
+  /// `sketch_constraint_overlay.dart`'s dimension painters already use - no
+  /// single global ratio exists in a perspective 3D view), null if it fails
+  /// to resolve. The caller ([SketchScreen]'s own handler) had no way to
+  /// convert its own [SketchController.minTapHitRadiusPixels] into a
+  /// sketch-unit hit radius at all, so it was calling
+  /// [SketchController.handleCanvasTap] with no radius argument, silently
+  /// falling back to that method's own tiny, un-zoom-scaled
+  /// [SketchController.snapRadius] default - completely different from (and
+  /// almost always much smaller than) the properly screen-scaled radius the
+  /// mesh-hover-driven "dynamic highlight" the user sees while aiming
+  /// actually uses, so a tap could visibly miss whatever was just
+  /// highlighted.
+  final void Function(vm.Vector3 worldPoint, double? localPixelsPerUnit)? onDrawCursorCommit;
 
   /// P30: overrides the [drawCursorMode] crosshair's own hover colour
   /// (green by default) - [SketchScreen] passes red instead while
@@ -301,6 +332,16 @@ class PartViewport extends StatefulWidget {
   /// itself has), for the caller to persist directly, camera-independent.
   final void Function(double angleDegrees)? onRadialLabelAngleDragged;
 
+  /// Bug fix (on-device feedback: "radius and diameter dimensions are
+  /// locked a set distance from the arc or circle - I should be able to
+  /// move them anywhere"): [onRadialLabelAngleDragged]'s own sibling for a
+  /// radial dimension's *distance* from the circle - fires alongside it
+  /// whenever [draggingConstraintLabelId] resolves to a
+  /// [ConstraintRadialDimensionItem], with the resolved sketch-unit
+  /// distance beyond the circle's rim, for the caller to persist via
+  /// [SketchController.setRadialLegLength].
+  final void Function(double legLength)? onRadialLabelDistanceDragged;
+
   /// P52 bug fix (on-device feedback: "when orbiting, linear dimensions
   /// slide along the line. they should stay in the same place on the
   /// line"), [onRadialLabelAngleDragged]'s exact sibling for a
@@ -315,6 +356,52 @@ class PartViewport extends StatefulWidget {
   /// distance from the dimensioned line, for the caller to persist via
   /// [SketchController.setLinearOffsetDistance].
   final void Function(double distance)? onLinearLabelOffsetDragged;
+
+  /// Bug fix (on-device feedback: "the linear dimension only moves
+  /// left/right" - it should also slide along its own line, matching the
+  /// 2D flat canvas): [onLinearLabelOffsetDragged]'s own sibling for the
+  /// label's position *along the dimension line itself* (the axis
+  /// [onLinearLabelOffsetDragged] doesn't cover) - fires alongside it
+  /// whenever [draggingConstraintLabelId] resolves to a
+  /// [ConstraintLinearDimensionItem], for the caller to persist via
+  /// [SketchController.setLinearAlongOffset]. Mirrors
+  /// [onLineDistanceLabelAlongDragged]'s exact contract.
+  final void Function(double along)? onLinearLabelAlongDragged;
+
+  /// [onLinearLabelOffsetDragged]'s exact sibling for a
+  /// [ConstraintLineDistanceDimensionItem] (a Line-to-Line perpendicular
+  /// distance) - previously missing entirely, so this dimension kind fell
+  /// through to the raw-pixel [onConstraintLabelDragDelta] path and visibly
+  /// drifted on camera orbit despite already carrying a camera-independent
+  /// `sketchLocalOffsetDistance` field with nothing to feed it.
+  final void Function(double distance)? onLineDistanceLabelOffsetDragged;
+
+  /// Bug fix (on-device feedback: "the dimension...is restricted in
+  /// movement. it moves left right. it can't be moved up down"):
+  /// [onLineDistanceLabelOffsetDragged]'s own sibling for the label's
+  /// position *along the dimension line itself* (the axis
+  /// [onLineDistanceLabelOffsetDragged] doesn't cover) - fires alongside it
+  /// whenever [draggingConstraintLabelId] resolves to a
+  /// [ConstraintLineDistanceDimensionItem], for the caller to persist via
+  /// [SketchController.setLineDistanceAlongOffset].
+  final void Function(double along)? onLineDistanceLabelAlongDragged;
+
+  /// Bug fix (on-device feedback: "dimensions should match technical
+  /// drawing conventions" - an angle dimension used to be a plain floating
+  /// text chip with no way to place it): fires in place of
+  /// [onConstraintLabelDragDelta] whenever [draggingConstraintLabelId]
+  /// resolves to a [ConstraintAngleDimensionItem], with the resolved
+  /// sketch-unit arc radius (distance from the implied vertex), for the
+  /// caller to persist via [SketchController.setAngleArcRadius].
+  final void Function(double radius)? onAngleLabelRadiusDragged;
+
+  /// [onAngleLabelRadiusDragged]'s own sibling for the label's position
+  /// *along the arc's chord* (the axis [onAngleLabelRadiusDragged] doesn't
+  /// cover) - fires alongside it whenever [draggingConstraintLabelId]
+  /// resolves to a [ConstraintAngleDimensionItem], for the caller to
+  /// persist via [SketchController.setAngleAlongOffset]. Same bug class as
+  /// [onLinearLabelAlongDragged].
+  final void Function(double along)? onAngleLabelAlongDragged;
 
   /// P44b bug fix (on-device feedback: "when I click a ghost dimension to
   /// set its value, nothing happens"): the [constraintOverlayItems] entry
@@ -609,7 +696,13 @@ class PartViewport extends StatefulWidget {
     this.onConstraintLabelDragDelta,
     this.draggingConstraintLabelId,
     this.onRadialLabelAngleDragged,
+    this.onRadialLabelDistanceDragged,
     this.onLinearLabelOffsetDragged,
+    this.onLinearLabelAlongDragged,
+    this.onLineDistanceLabelOffsetDragged,
+    this.onLineDistanceLabelAlongDragged,
+    this.onAngleLabelRadiusDragged,
+    this.onAngleLabelAlongDragged,
     this.activeConstraintOverlayItemId,
     this.activeConstraintOverlayItemBuilder,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
@@ -1226,9 +1319,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // `body.mesh`), only the rendered geometry for this one Node swaps.
         final isPreviewOverlay =
             widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId;
-        final mesh = renderMirrorCorrectedMesh(
-          isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh,
-        );
+        // Deliberately *not* renderMirrorCorrectedMesh (on-device feedback,
+        // 2026-07-21 follow-up round): that correction was applied
+        // uniformly to every Body source, but a controlled on-device test
+        // (fresh Boss along +Z) showed hitTestBodies/boundsOfBodies - both
+        // still reading `body.mesh` raw, unmodified - land exactly where
+        // the user actually expected the body to be, while this
+        // render-only correction shifted the *visible* mesh to the
+        // opposite side, so a tap on the visible (wrong-side) geometry hit
+        // nothing and the real hit-test highlights appeared on the empty
+        // (correct-side) space instead. Since no on-device report ever
+        // flagged Extrude/Revolve/Sweep rendering mirrored before today,
+        // the original labeled-reference-file finding this correction was
+        // built from most likely implicates Import specifically, not every
+        // Body source uniformly - reverted here pending a properly
+        // source-scoped re-diagnosis (see mesh_geometry.dart's
+        // renderMirrorCorrectedMesh doc comment).
+        final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh;
         if (mesh.vertices.isEmpty) {
           // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
           // GPU device buffer sized off the vertex/index data - a
@@ -1344,11 +1451,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // See _syncMeshNode's identical substitution for why - keeps the
       // wireframe/shaded-with-edges overlay consistent with whichever mesh
       // (stable or preview) that Body's filled faces are actually showing.
-      final mesh = renderMirrorCorrectedMesh(
-        (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
-            ? widget.previewOverlayMesh!
-            : body.mesh,
-      );
+      // Deliberately not renderMirrorCorrectedMesh - see _syncMeshNode's
+      // identical reversion for why.
+      final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
+          ? widget.previewOverlayMesh!
+          : body.mesh;
       var segments = edgeSegmentsFromMesh(mesh);
       if (segments.isEmpty) continue;
       if (biased) {
@@ -1863,7 +1970,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             }
           }
         }
-        widget.onSketchPlaneTap?.call(sketchHit.$1);
+        widget.onSketchPlaneTap?.call(sketchHit.$1, _localPixelsPerSketchUnit(sketchHit.$1, sketchPlaneBasis));
         return;
       }
     }
@@ -2372,6 +2479,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             );
             if (angle != null) {
               widget.onRadialLabelAngleDragged?.call(angle);
+              // Bug fix (on-device feedback: "radius and diameter
+              // dimensions are locked a set distance from the arc or
+              // circle"): [onRadialLabelDistanceDragged]'s own doc comment
+              // covers why - resolved here since [radiusPixels]/
+              // [pixelsPerUnit] need the same live camera/projection the
+              // angle resolve above already has.
+              final rimSketchDx = radialItem.rim.$1 - radialItem.center.$1;
+              final rimSketchDy = radialItem.rim.$2 - radialItem.center.$2;
+              final rimSketchDistance = math.sqrt(rimSketchDx * rimSketchDx + rimSketchDy * rimSketchDy);
+              if (rimSketchDistance > 1e-9) {
+                final pixelsPerUnit = (rimScreen - centerScreen).distance / rimSketchDistance;
+                final radiusPixels = radialItem.radius * pixelsPerUnit;
+                final legPixels = desiredDelta.distance - radiusPixels;
+                widget.onRadialLabelDistanceDragged?.call(legPixels / pixelsPerUnit);
+              }
               return;
             }
           }
@@ -2379,11 +2501,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
       // P52 bug fix (on-device feedback: "when orbiting, linear dimensions
       // slide along the line") - [onLinearLabelOffsetDragged]'s own doc
-      // comment covers why; unlike radial's angle resolve above, this needs
-      // no screen-space math at all: the cursor's own sketch-plane raycast
-      // hit (already available via [hitTestSketchPlane]/[worldPointToSketch]
-      // in this same file) is directly a sketch-local point, so the
-      // perpendicular offset is a plain dot product away.
+      // comment covers why.
       ConstraintLinearDimensionItem? linearItem;
       for (final candidate in widget.constraintOverlayItems) {
         if (candidate.constraintId == widget.draggingConstraintLabelId &&
@@ -2393,19 +2511,187 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
       }
       if (linearItem != null && basis != null && cursor != null) {
+        // Bug fix (on-device feedback: "vertical dimension can't be dragged
+        // left/right, up/down is inverted"): an axis-locked orientation is
+        // handled entirely in sketch-local coordinates, matching
+        // [_axisLockedDimensionEndpoints]'s own reconstruction exactly (see
+        // that function's own doc comment) - no normal/dot-product needed,
+        // just the sketch-local cursor hit's own coordinate along the
+        // locked axis.
+        if (linearItem.orientation == 'vertical' || linearItem.orientation == 'horizontal') {
+          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final hit = hitTestSketchPlane(ray, basis);
+          if (hit != null) {
+            final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
+            final vertical = linearItem.orientation == 'vertical';
+            final cursorAxis = vertical ? cursorX : cursorY;
+            final reference = vertical
+                ? math.max(linearItem.pointA.$1, linearItem.pointB.$1)
+                : math.max(linearItem.pointA.$2, linearItem.pointB.$2);
+            widget.onLinearLabelOffsetDragged?.call(cursorAxis - reference);
+            // Bug fix (on-device feedback: "the linear dimension only moves
+            // left/right" on a vertical dimension): the along-axis is the
+            // locked orientation's own opposite axis (vertical's own line
+            // runs in Y, so "along" is Y; horizontal's runs in X, so
+            // "along" is X) - fires alongside the offset above every frame,
+            // same "both resolved from one cursor position" pattern
+            // [onLineDistanceLabelOffsetDragged]/[onLineDistanceLabelAlongDragged]
+            // already established.
+            final alongAxis = vertical ? cursorY : cursorX;
+            final alongReference = vertical
+                ? (linearItem.pointA.$2 + linearItem.pointB.$2) / 2
+                : (linearItem.pointA.$1 + linearItem.pointB.$1) / 2;
+            widget.onLinearLabelAlongDragged?.call(alongAxis - alongReference);
+            return;
+          }
+        } else {
+          // Bug fix (on-device feedback: same bug class as
+          // [canonicalPerpendicular]'s own doc comment, just never applied
+          // to this drag-side computation): mirrors
+          // [_ConstraintOverlayPainter._paintLinearDimension]'s `default:`
+          // branch exactly - the same screen-projected points, the same
+          // [canonicalPerpendicular] sign canonicalization - so drag-write
+          // and paint-read can never disagree on sign regardless of which
+          // constrained Point the backend happened to store as A vs B.
+          final camera = _camera.cameraFor(_viewportSize);
+          final aScreen = worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, linearItem.pointA.$1, linearItem.pointA.$2));
+          final bScreen = worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, linearItem.pointB.$1, linearItem.pointB.$2));
+          if (aScreen != null && bScreen != null) {
+            final screenDelta = bScreen - aScreen;
+            final screenLength = screenDelta.distance;
+            if (screenLength > 1e-6) {
+              final normal = canonicalPerpendicular(screenDelta);
+              final dx = linearItem.pointB.$1 - linearItem.pointA.$1;
+              final dy = linearItem.pointB.$2 - linearItem.pointA.$2;
+              final sketchLength = math.sqrt(dx * dx + dy * dy);
+              final ratio = sketchLength > 1e-9 ? sketchLength / screenLength : 1.0;
+              final cursorDelta = cursor - aScreen;
+              final screenMagnitude = cursorDelta.dx * normal.dx + cursorDelta.dy * normal.dy;
+              widget.onLinearLabelOffsetDragged?.call(screenMagnitude * ratio);
+              // Bug fix (same class as the axis-locked branch above): the
+              // along-direction is the line's own tangent (perpendicular to
+              // [normal]), projected from the dimension line's own midpoint
+              // anchor - the midpoint of aScreen/bScreen, since [normal]'s
+              // own offset is purely perpendicular and doesn't shift it
+              // along the tangent.
+              final tangent = screenDelta / screenLength;
+              final anchorScreen = (aScreen + bScreen) / 2;
+              final anchorDelta = cursor - anchorScreen;
+              final alongScreenMagnitude = anchorDelta.dx * tangent.dx + anchorDelta.dy * tangent.dy;
+              widget.onLinearLabelAlongDragged?.call(alongScreenMagnitude * ratio);
+              return;
+            }
+          }
+        }
+      }
+      // Bug fix (on-device feedback: same "locked/drifts on orbit" bug
+      // class as the radial/linear fixes above, just for a Line-to-Line
+      // distance dimension - this drag branch never existed at all, so the
+      // dimension fell through to the raw-pixel [onConstraintLabelDragDelta]
+      // path below despite [ConstraintLineDistanceDimensionItem] already
+      // carrying a working, camera-independent `sketchLocalOffsetDistance`
+      // field with nothing to feed it) - mirrors
+      // [_ConstraintOverlayPainter._paintLineDistanceDimension]'s own
+      // `alongA` direction exactly, entirely in sketch-local space.
+      ConstraintLineDistanceDimensionItem? lineDistanceItem;
+      for (final candidate in widget.constraintOverlayItems) {
+        if (candidate.constraintId == widget.draggingConstraintLabelId &&
+            candidate is ConstraintLineDistanceDimensionItem) {
+          lineDistanceItem = candidate;
+          break;
+        }
+      }
+      if (lineDistanceItem != null && basis != null && cursor != null) {
         final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
         final hit = hitTestSketchPlane(ray, basis);
         if (hit != null) {
           final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
-          final dx = linearItem.pointB.$1 - linearItem.pointA.$1;
-          final dy = linearItem.pointB.$2 - linearItem.pointA.$2;
-          final lineLength = math.sqrt(dx * dx + dy * dy);
-          if (lineLength > 1e-9) {
-            final normalX = -dy / lineLength;
-            final normalY = dx / lineLength;
-            final distance = (cursorX - linearItem.pointA.$1) * normalX + (cursorY - linearItem.pointA.$2) * normalY;
-            widget.onLinearLabelOffsetDragged?.call(distance);
+          final dx = lineDistanceItem.line1End.$1 - lineDistanceItem.line1Start.$1;
+          final dy = lineDistanceItem.line1End.$2 - lineDistanceItem.line1Start.$2;
+          final lengthA = math.sqrt(dx * dx + dy * dy);
+          if (lengthA > 1e-9) {
+            final alongX = dx / lengthA;
+            final alongY = dy / lengthA;
+            final midAx = (lineDistanceItem.line1Start.$1 + lineDistanceItem.line1End.$1) / 2;
+            final midAy = (lineDistanceItem.line1Start.$2 + lineDistanceItem.line1End.$2) / 2;
+            final distance = (cursorX - midAx) * alongX + (cursorY - midAy) * alongY;
+            widget.onLineDistanceLabelOffsetDragged?.call(distance);
+            // Bug fix (on-device feedback: "the dimension...is restricted
+            // in movement. it moves left right. it can't be moved up
+            // down"): [distance] above only ever moves the label along the
+            // two Lines' own shared direction (left/right, for two
+            // horizontal Lines) - this mirrors
+            // [_ConstraintOverlayPainter._paintLineDistanceDimension]'s own
+            // `perpToA`/`midB` construction to also resolve the label's
+            // position along the dimension line itself (up/down, for the
+            // same two horizontal Lines), entirely in sketch-local space.
+            final perpX = -alongY;
+            final perpY = alongX;
+            final toLineBx = lineDistanceItem.line2Start.$1 - midAx;
+            final toLineBy = lineDistanceItem.line2Start.$2 - midAy;
+            final t = toLineBx * perpX + toLineBy * perpY;
+            final midBx = midAx + perpX * t;
+            final midBy = midAy + perpY * t;
+            final dimAnchorX = (midAx + midBx) / 2;
+            final dimAnchorY = (midAy + midBy) / 2;
+            final along = (cursorX - dimAnchorX) * perpX + (cursorY - dimAnchorY) * perpY;
+            widget.onLineDistanceLabelAlongDragged?.call(along);
             return;
+          }
+        }
+      }
+      // Bug fix (on-device feedback: "dimensions should match technical
+      // drawing conventions" - an angle dimension used to be a plain
+      // floating chip with no way to place it): what the user actually
+      // drags for an angle dimension is the arc's own distance from the
+      // implied vertex (see [angleDimensionVertexAndRays]'s own doc
+      // comment), a plain sketch-unit distance - no screen-space normal
+      // needed, mirroring [onLinearLabelOffsetDragged]'s axis-locked branch
+      // above.
+      ConstraintAngleDimensionItem? angleItem;
+      for (final candidate in widget.constraintOverlayItems) {
+        if (candidate.constraintId == widget.draggingConstraintLabelId &&
+            candidate is ConstraintAngleDimensionItem) {
+          angleItem = candidate;
+          break;
+        }
+      }
+      if (angleItem != null && basis != null && cursor != null) {
+        final vertexAndRays = angleDimensionVertexAndRays(angleItem);
+        if (vertexAndRays != null) {
+          final (vertex, ray1, ray2) = vertexAndRays;
+          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final hit = hitTestSketchPlane(ray, basis);
+          if (hit != null) {
+            final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
+            final dx = cursorX - vertex.$1;
+            final dy = cursorY - vertex.$2;
+            final radius = math.sqrt(dx * dx + dy * dy);
+            if (radius > 1e-6) {
+              widget.onAngleLabelRadiusDragged?.call(radius);
+              // Bug fix (same class as the linear-dimension along fix
+              // above): the along-the-chord direction, entirely in
+              // sketch-local space, is the two rays' own difference (both
+              // unit vectors from [vertex] - the sketch-space arc endpoints
+              // are `vertex + radius*ray1`/`vertex + radius*ray2`, so their
+              // chord direction is exactly `ray2 - ray1` regardless of
+              // radius) - fires alongside the radius callback above every
+              // frame, from this same resolved cursor position, same
+              // "both resolved together" pattern as the linear/line-
+              // distance branches.
+              final alongDx = ray2.$1 - ray1.$1;
+              final alongDy = ray2.$2 - ray1.$2;
+              final alongLen = math.sqrt(alongDx * alongDx + alongDy * alongDy);
+              if (alongLen > 1e-9) {
+                final ux = alongDx / alongLen;
+                final uy = alongDy / alongLen;
+                final chordMidX = vertex.$1 + radius * (ray1.$1 + ray2.$1) / 2;
+                final chordMidY = vertex.$2 + radius * (ray1.$2 + ray2.$2) / 2;
+                final along = (cursorX - chordMidX) * ux + (cursorY - chordMidY) * uy;
+                widget.onAngleLabelAlongDragged?.call(along);
+              }
+              return;
+            }
           }
         }
       }
@@ -2515,7 +2801,30 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
       }
     }
-    widget.onDrawCursorCommit?.call(hit);
+    final commitBasis = widget.sketchPlaneBasis;
+    widget.onDrawCursorCommit?.call(hit, commitBasis == null ? null : _localPixelsPerSketchUnit(hit, commitBasis));
+  }
+
+  /// Bug fix (on-device feedback: "the hit radius for selecting an entity
+  /// should match the hit radius for dynamic highlight") - see
+  /// [PartViewport.onDrawCursorCommit]'s own doc comment for the bug this
+  /// closes. No single global screen-pixels-per-sketch-unit ratio exists in
+  /// a perspective 3D view (it varies with camera distance/angle) -
+  /// approximated locally by projecting a synthetic point 1 sketch-unit
+  /// away from [worldPoint] (assumed to already lie on [basis]'s own
+  /// sketch plane) and measuring the screen distance, the exact technique
+  /// `sketch_constraint_overlay.dart`'s dimension painters already use
+  /// (e.g. `_paintRadialDimension`). Returns null if either point fails to
+  /// project (behind the camera, degenerate).
+  double? _localPixelsPerSketchUnit(vm.Vector3 worldPoint, SketchPlaneBasis basis) {
+    final camera = _camera.cameraFor(_viewportSize);
+    final origin = worldToScreen(camera, _viewportSize, worldPoint);
+    if (origin == null) return null;
+    final (sketchX, sketchY) = worldPointToSketch(basis, worldPoint);
+    final stepWorld = sketchPointToWorld(basis, sketchX + 1.0, sketchY);
+    final step = worldToScreen(camera, _viewportSize, stepWorld);
+    if (step == null) return null;
+    return (step - origin).distance;
   }
 
   // ---- A3: recentre + auto-fit far clip ---------------------------------

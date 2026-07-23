@@ -13,6 +13,7 @@
 // `flutter test` can produce on its own.
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -156,5 +157,116 @@ void main() {
       expect(x, closeTo(expectedX, 1e-6), reason: '$id.x');
       expect(y, closeTo(expectedY, 1e-6), reason: '$id.y');
     }
+  });
+
+  test(
+      'residual-verified convergence: a Polygon\'s own already-redundant EqualLength/EqualRadius/'
+      'Angle chain plus a further genuinely-implied LineDistanceConstraint on top (an "across '
+      'flats" dimension) reports converged - mirrors the same scenario proven server-side in '
+      'solver.py, confirming resultCode alone (stays 1, never 4/5) can\'t tell "doubly-redundant '
+      'but consistent" from a real conflict, but _residualVerifiedConvergence can', () {
+    // A regular hexagon, radius 10, centred at the origin - center + first
+    // vertex (10, 0), the rest placed by the same formula add_polygon uses.
+    const sides = 6;
+    const radius = 10.0;
+    final points = <String, (double, double)>{'center': (0.0, 0.0)};
+    for (var i = 0; i < sides; i++) {
+      final angle = 2 * math.pi * i / sides;
+      points['v$i'] = (radius * math.cos(angle), radius * math.sin(angle));
+    }
+    final lines = <String, (String, String)>{
+      for (var i = 0; i < sides; i++) 'line$i': ('v$i', 'v${(i + 1) % sides}'),
+    };
+    final constraints = <ConstraintDto>[
+      const DistanceConstraintDto(id: 'radius', pointAId: 'center', pointBId: 'v0', distance: radius),
+      for (var i = 1; i < sides; i++)
+        EqualRadiusConstraintDto(
+          id: 'er$i',
+          center1PointId: 'center',
+          radius1PointId: 'v0',
+          center2PointId: 'center',
+          radius2PointId: 'v$i',
+        ),
+      for (var i = 1; i < sides; i++) ...[
+        EqualLengthConstraintDto(id: 'el$i', line1Id: 'line${i - 1}', line2Id: 'line$i'),
+        AngleConstraintDto(id: 'ang$i', line1Id: 'line${i - 1}', line2Id: 'line$i', angleDegrees: 360.0 / sides),
+      ],
+    ];
+
+    // Sanity: the polygon's own chain alone already relies on the
+    // redundant-but-solved override (a different one than the Tangent/
+    // EqualRadius-gated override above - this hits the residual check via
+    // the "not converged" branch too, since Angle/EqualLength chains aren't
+    // covered by that narrower override's own hasTangentOrEqualRadius gate
+    // unless EqualRadius is present, which it is here - either path is
+    // fine, only the end result matters for this test).
+    final baseline = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+    );
+    expect(baseline.converged, isTrue, reason: 'sanity check: the polygon alone must already solve');
+
+    // Across-flats distance for a regular hexagon of this radius: 2 * apothem.
+    final acrossFlats = 2 * radius * math.cos(math.pi / sides);
+    final withDimension = [
+      ...constraints,
+      LineDistanceConstraintDto(id: 'flats', line1Id: 'line0', line2Id: 'line3', distance: acrossFlats),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: withDimension,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+    );
+
+    expect(result.converged, isTrue, reason: 'residual-verified override should apply');
+    expect(result.resultCode, isNot(0), reason: 'py-slvs itself never cleanly certifies this - the override is what makes it converged');
+
+    // A deliberately wrong across-flats value must still be rejected - the
+    // override isn't a rubber stamp.
+    final withWrongDimension = [
+      ...constraints,
+      LineDistanceConstraintDto(id: 'flats', line1Id: 'line0', line2Id: 'line3', distance: acrossFlats + 5.0),
+    ];
+    final wrongResult = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: withWrongDimension,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+    );
+    expect(wrongResult.converged, isFalse, reason: 'a genuinely wrong value must not be waved through');
+  });
+
+  test(
+      'residual-verified convergence respects horizontal/vertical DistanceConstraint orientation, '
+      'not plain Euclidean distance - bug fix found while investigating a Circle drag/collapse '
+      'report: a Circle\'s own cardinal-point axis pins are always exactly this shape '
+      '(orientation horizontal/vertical, distance 0.0), so getting this wrong could both reject a '
+      'genuinely satisfied axis pin and, worse, wave through a collapsed/degenerate solve whose '
+      'Points happen to also be Euclidean-close', () {
+    // Two duplicate horizontal-distance constraints on the same pair force
+    // a redundant (non-clean resultCode) solve with nothing else present -
+    // isolates the residual check itself, since neither Tangent nor
+    // EqualRadius is present to trigger the older, narrower override.
+    final points = {'a': (0.0, 0.0), 'b': (5.0, 100.0)};
+    final constraints = <ConstraintDto>[
+      const DistanceConstraintDto(id: 'h1', pointAId: 'a', pointBId: 'b', distance: 5.0, orientation: 'horizontal'),
+      const DistanceConstraintDto(id: 'h2', pointAId: 'a', pointBId: 'b', distance: 5.0, orientation: 'horizontal'),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => throw UnimplementedError('no Lines in this fixture'),
+    );
+
+    expect(result.resultCode, isNot(0), reason: 'sanity check: py-slvs itself must not cleanly certify this');
+    expect(result.converged, isTrue,
+        reason: 'the horizontal separation (5) is exactly satisfied - only the *Euclidean* distance '
+            '(~100.1, since the Points are 100 apart in Y) would wrongly look unsatisfied');
   });
 }

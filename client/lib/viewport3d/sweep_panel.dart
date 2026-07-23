@@ -76,6 +76,15 @@ class _SweepPanelState extends State<SweepPanel> {
   void initState() {
     super.initState();
     _mode = widget.initialMode;
+    // On-device feedback ("a preview of the body should be shown after the
+    // user confirms the path selection... the preview currently only
+    // generates after the user clicks somewhere on the screen"): mirrors
+    // ExtrudePanel/RevolvePanel's own identical fix - onChanged was only
+    // ever wired to this panel's own SegmentedButton callback, never fired
+    // for the initial value this panel opens with.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onChanged(_mode);
+    });
   }
 
   /// Confirm is disabled for a Cut with nothing picked yet (mirrors

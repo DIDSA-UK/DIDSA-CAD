@@ -196,6 +196,31 @@ void main() {
       expect(geometry.isEmpty, isFalse);
     });
 
+    test(
+        'a Circle whose centre Point id is in hiddenPointIds still resolves fully - hiding a '
+        'marker must never starve the entity that Point defines (on-device feedback: a Circle\'s '
+        'own outline vanishing entirely, fill still showing, the moment its centre was hidden by '
+        'the hover-reveal feature - caused by the old version of this omitting hidden Points from '
+        'the list entirely, instead of passing the full set through hiddenPointIds)', () {
+      final circle = CircleDto(id: 'c1', centerPointId: 'p1', radiusPointId: 'p2', radius: 10);
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: points,
+        lines: const [],
+        circles: [circle],
+        hiddenPointIds: {'p1'},
+      );
+
+      expect(geometry.circlePolygons, hasLength(1), reason: 'the Circle must still resolve');
+      expect(geometry.circleIds, ['c1']);
+      // The hidden Point is still fully present in points/pointIds (only
+      // buildSketchGeometryNode, which skips marker primitives for
+      // hiddenPointIds, treats it differently) - not omitted.
+      expect(geometry.points, hasLength(points.length));
+      expect(geometry.pointIds, contains('p1'));
+      expect(geometry.hiddenPointIds, {'p1'});
+    });
+
     // Bug fix: Arc/Ellipse/Spline had no 3D representation at all before -
     // see sketchGeometry3DFrom's own doc comment.
     test('resolves an Arc into a world-space polyline sweeping CCW from start to end, with a parallel id', () {

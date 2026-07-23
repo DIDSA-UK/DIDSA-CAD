@@ -147,32 +147,33 @@ class OrbitCamera {
         _defaultTarget = target ?? vm.Vector3.zero(),
         orientation = _defaultOrientation();
 
-  /// On-device feedback + two numeric calibration rounds (a temporary debug
-  /// readout in `part_viewport.dart`, cross-checked against the on-screen
-  /// triad rather than eyeballed): the true isometric corner view - world
-  /// X+/Y+ both read as screen-right (their shared `right` component is
-  /// positive), Z+ reads as pure screen-up. Built from the desired
-  /// [right]/[up] world-space vectors directly (not composed axis-angle
-  /// rotations - the `pitch * yaw` structure this replaced can only ever
-  /// produce an `up` with a zero world-X component, since yaw leaves the
-  /// local-up axis untouched and pitch alone can't introduce that; it's
-  /// structurally incapable of reaching this specific corner). Confirmed
-  /// correct against the *triad's own* screen-right convention specifically,
-  /// not just self-consistency - `OrbitCamera.right`/`.up` themselves are
-  /// the camera's *own* local-frame vectors, not what the triad displays;
-  /// deriving `triadAxes`' formula algebraically found `triadRight =
-  /// -OrbitCamera.right` (`.up` is unaffected) - the very first Z-up attempt
-  /// this ultimately replaced verified only the former, which is exactly why
-  /// it looked mirrored on-device despite passing its own unit tests. The
-  /// second round landed the axis convention but the wrong azimuth (X+/Y+
-  /// reading screen-*left*, not right) - this round's [right]/[up] are the
-  /// exact negation of that round's own, a 180-degree yaw of it, matching a
-  /// second on-device capture precisely.
+  /// **2026-07-22, re-calibrated against the now-fixed renderer**: a fresh
+  /// on-device reading from the (now-trusted, post-[FixedPerspectiveCamera])
+  /// debug camera-orientation overlay -
+  /// ```
+  /// X: right=0.71 up=-0.41 out=0.58
+  /// Y: right=-0.00 up=0.82 out=0.58
+  /// Z: right=-0.71 up=-0.41 out=0.58
+  /// ```
+  /// - read directly as [right]=`(0.71, -0.00, -0.71)` and
+  /// [up]=`(-0.41, 0.82, -0.41)` (column i = world axis i's own `right`/`up`
+  /// component), matched to the nearest exact unit vectors: `(1, 0, -1)` and
+  /// `(-1, 2, -1)`, both normalized (`0.7071`/`0.4082`/`0.8165` all round to
+  /// the captured `0.71`/`0.41`/`0.82`) - still a true-isometric-magnitude
+  /// corner (the same `sqrt(2/3)` "tall" component the previous corner had,
+  /// just on a different axis), confirmed orthonormal by construction
+  /// (`right·up = 0`, both unit length) rather than assumed. `back` is
+  /// still `right.cross(up)`, and this construction (see below) still
+  /// satisfies `renderRight == right`/`renderUp == up` directly under
+  /// [FixedPerspectiveCamera]'s corrected `forward.cross(up)` order - the
+  /// exact same relationship the previous round's negation-derivation
+  /// established, re-verified for this new pair of vectors rather than
+  /// re-assumed (`(1,0,-1).cross((-1,2,-1)) = (2, 2, 2)`, i.e. `forward =
+  /// -back` comes out proportional to `(-1,-1,-1)`, matching the captured
+  /// `out=(0.58, 0.58, 0.58)` reading exactly).
   static vm.Quaternion _isometricOrientation() {
-    final right = vm.Vector3(-1, -1, 0).normalized();
-    const elevation = 0.6154797086703873; // asin(1 / sqrt(3)), true isometric
-    final diagonal = math.sin(elevation) / math.sqrt2;
-    final up = vm.Vector3(diagonal, -diagonal, math.cos(elevation));
+    final right = vm.Vector3(1, 0, -1).normalized();
+    final up = vm.Vector3(-1, 2, -1).normalized();
     final back = right.cross(up);
     // vector_math's own Quaternion.rotate() computes `conjugate(this) * v *
     // this`, not the more commonly assumed `this * v * conjugate(this)` -
@@ -220,7 +221,11 @@ class OrbitCamera {
   /// place that decision gets made.
   Camera cameraFor(Size size) {
     if (isPerspective) {
-      return PerspectiveCamera(
+      // FixedPerspectiveCamera, not flutter_scene's own PerspectiveCamera -
+      // see orthographic_camera.dart's correctedLookAt for why: that
+      // package's own view-matrix construction is a confirmed, genuine
+      // mirror (2026-07-22), not this class.
+      return FixedPerspectiveCamera(
         position: position,
         target: target,
         up: _up,
@@ -236,8 +241,8 @@ class OrbitCamera {
   /// signs were flipped to `+dyPixels`/`+dxPixels`. That fixed vertical
   /// (pitch) orbit, but horizontal (yaw) orbit was still backwards -
   /// swiping left rotated the model right and vice versa - so only the yaw
-  /// term is flipped again here, back to `-dxPixels`; the pitch term's
-  /// `+dyPixels` is untouched and confirmed correct on-device. Pitch is
+  /// term was flipped again, back to `-dxPixels`; the pitch term's
+  /// `+dyPixels` untouched and confirmed correct on-device. Pitch is
   /// applied about the camera's *current* right axis, and yaw about the
   /// camera's *current* up axis - both read fresh from [orientation] every
   /// call, so each always tilts/swings the view the way it's currently
@@ -253,21 +258,42 @@ class OrbitCamera {
   /// point of view, at any orientation - this is the standard
   /// trackball-style orbit. Composed as quaternions, with no clamping, so
   /// this never gets stuck.
+  ///
+  /// **2026-07-22**: yaw's sign flipped back to `+dxPixels` (pitch
+  /// untouched). This drag mapping was hand-tuned entirely by feel against
+  /// [FixedPerspectiveCamera]'s predecessor - flutter_scene's own, now-fixed
+  /// `PerspectiveCamera`, which had a confirmed left-right mirror baked into
+  /// its view matrix (see `orthographic_camera.dart`'s `correctedLookAt`).
+  /// [_right]/[_up]/[orientation]'s own math are all untouched by that fix
+  /// (only how a given orientation actually renders on screen changed), so
+  /// a horizontal swipe now visibly swings the model the opposite way it
+  /// used to for the exact same [orientation] change - on-device feedback
+  /// confirmed only horizontal orbit felt backwards post-fix, consistent
+  /// with the render fix only mirroring the horizontal axis, vertical
+  /// unaffected (see [FixedPerspectiveCamera]'s own doc comment).
   void orbitByScreenDelta(double dxPixels, double dyPixels) {
     final pitch = vm.Quaternion.axisAngle(_right, dyPixels * orbitSensitivity);
-    final yaw = vm.Quaternion.axisAngle(_up, -dxPixels * orbitSensitivity);
+    final yaw = vm.Quaternion.axisAngle(_up, dxPixels * orbitSensitivity);
     orientation = (orientation * pitch * yaw).normalized();
   }
 
   /// Drag-to-pan: moves [target] (and so the whole view) in the camera's own
   /// screen-relative right/up plane, so the point under the cursor at drag
   /// start tracks the cursor - the same "grab and drag the scene" feel as
-  /// [SketchViewport.panByScreenDelta], just projected into 3D. Only the
-  /// horizontal term is negated relative to the vertical one - confirmed on
-  /// a real device that left/right pan was inverted but up/down wasn't.
+  /// [SketchViewport.panByScreenDelta], just projected into 3D.
+  ///
+  /// **2026-07-22**: horizontal term's sign flipped (`-_right`, was
+  /// `+_right`; vertical `+_up` untouched) - the same class of fix as
+  /// [orbitByScreenDelta]'s own (see its doc comment): `_right`/`_up` are
+  /// [OrbitCamera]'s own local-frame getters, unrelated to and unchanged by
+  /// [FixedPerspectiveCamera]'s render fix, so a two-finger pan that was
+  /// hand-tuned by feel against the *old*, mirrored renderer now visibly
+  /// drags the scene the opposite way horizontally for the same finger
+  /// movement - on-device feedback confirmed only left/right felt backwards,
+  /// consistent with the render fix only mirroring the horizontal axis.
   void panByScreenDelta(double dxPixels, double dyPixels) {
     final scale = panSensitivityPerDistance * distance;
-    target = target + _right * (dxPixels * scale) + _up * (dyPixels * scale);
+    target = target - _right * (dxPixels * scale) + _up * (dyPixels * scale);
   }
 
   void zoomByFactor(double scaleFactor) {
@@ -353,65 +379,56 @@ class OrbitCamera {
 /// camera-animation-into-Sketch feature, Orbit View's entry pose, and the
 /// shaded-body-behind-canvas backdrop.
 ///
-/// On-device feedback (2026-07-10): re-opening a Sketch on an existing Body
-/// showed the shaded backdrop's own rendering mirrored left/right against
-/// its *own* ghost outline (the same body's edges, projected onto the plane
-/// via [SketchPlaneBasis] - a plain CPU dot-product, no camera involved).
-/// The previous version of this function (and `test/orientation_facing_plane_test.dart`,
-/// which it passed) verified [OrbitCamera]'s own `right`/`up`/`direction`
-/// getters (`orientation.rotated(_localRight/_localUp/_localBack)`) against
-/// `SketchPlaneBasis.fixed(plane)` directly - but `OrbitCamera.right` is not
-/// actually what gets rendered on screen. `flutter_scene`'s `PerspectiveCamera`
-/// (see its `_matrix4LookAt`, `packages/flutter_scene/lib/src/camera.dart` in
-/// the `bdero/flutter_scene` repo) independently re-derives its own render-time
-/// right as `up.cross(forward)` (`forward = (target - position).normalized()`,
-/// i.e. `-direction`) - it never reads `OrbitCamera.right` at all. `triad.dart`'s
-/// world compass already knew this and computes its own `right` the same way
-/// (`camera.up.cross(forward)`), which is exactly why the compass has always
-/// rendered correctly while this function's plane-facing views did not.
+/// **2026-07-22 update**: the render-time formula this function targets
+/// changed. It used to solve for `renderRight = up.cross(forward)`/
+/// `renderUp = forward.cross(right)` - `flutter_scene`'s own `PerspectiveCamera`
+/// convention, confirmed (by reading its actual source,
+/// `package:flutter_scene/src/camera.dart`'s `_matrix4LookAt`) to be a real,
+/// confirmed bug: `up.cross(forward)` is the wrong cross-product order for a
+/// right-handed view space (`up.cross(forward) = -(forward.cross(up))` for
+/// *any* up/forward - a general identity, not a one-off case), producing a
+/// genuine, un-rotatable mirror image for every camera built through it. See
+/// `orthographic_camera.dart`'s `correctedLookAt` for the full derivation and
+/// on-device confirmation (a labeled SolidWorks STEP import and a from-
+/// scratch DIDSA-CAD Boss both mirrored, independent of that bug, and
+/// unrelated to any world-space/backend data - `plane_geometry.py`'s sketch
+/// basis and the STEP import/export paths are all independently verified
+/// clean). [OrbitCamera.cameraFor] now returns [FixedPerspectiveCamera],
+/// which fixes this at its root (`renderRight = forward.cross(up)`) - so
+/// this function's own target formula moves with it, below.
 ///
-/// Given any right-handed local camera frame (`right x up = back`, true for
-/// *any* orientation, regardless of [vm.Quaternion.rotated]'s own quirk - see
-/// below), that render-time formula reduces to an exact identity:
-/// `renderRight = -OrbitCamera.right` and `renderUp = OrbitCamera.up`, for
-/// every orientation. So the previous test's assertion (`OrbitCamera.right ==
-/// basis.xAxis`) was guaranteeing the *opposite* of what actually renders.
+/// On-device feedback (2026-07-10, predates the above): re-opening a Sketch
+/// on an existing Body showed the shaded backdrop's own rendering mirrored
+/// left/right against its *own* ghost outline (the same body's edges,
+/// projected onto the plane via [SketchPlaneBasis] - a plain CPU dot-product,
+/// no camera involved) - the version of this function *before* that fix
+/// verified [OrbitCamera]'s own `right`/`up`/`direction` getters directly
+/// against `SketchPlaneBasis.fixed(plane)`, which isn't actually what
+/// renders (`OrbitCamera.right` is the camera's own local-frame vector, not
+/// flutter_scene's independently-rederived render-time right - `triad.dart`'s
+/// world compass already knew this, which is why the compass rendered
+/// correctly all along while this function's plane-facing views didn't).
+/// That fix targeted the true (then-buggy) render-time formula directly
+/// instead - correct methodology, now re-targeted at the *actual-correct*
+/// render-time formula per the update above, with the exact same "solve
+/// [vm.Quaternion.rotated]'s known `R(q^-1)` convention directly via a
+/// rotation matrix rather than hand-composed axis-angle quaternions" approach
+/// (see git history for the original, now-superseded derivation this one
+/// replaces).
 ///
-/// The fix targets the true render-time right/up directly. A camera with
-/// `renderRight = basis.xAxis` and `renderUp = basis.yAxis` necessarily views
-/// from the *opposite* side of the plane from before (`forward = renderRight
-/// x renderUp = basis.xAxis x basis.yAxis = +basis.normal`, i.e. the camera
-/// sits at `target - basis.normal * distance`, not `target + basis.normal *
-/// distance`) - provably, not just empirically: `SketchPlaneBasis` is always
-/// right-handed (`xAxis x yAxis = normal`, confirmed for all three planes by
-/// `test_stage_c3_plane_basis.py`'s `test_xz_basis_is_now_right_handed` and
-/// its neighbours in the backend, and true by construction on the client
-/// side too - see [SketchPlaneBasis.fixed]'s own values), while
-/// `flutter_scene`'s lookAt convention is left-handed (`right x up = forward`,
-/// not `-forward`) - the two conventions can only ever agree from one side.
-/// This flip is safe for the opaque shaded backdrop specifically: it isn't
-/// translucent, so it doesn't hit the `doubleSidedWinding`/back-face-culling
-/// quirk documented on `mesh_geometry.dart`'s `geometryFromMesh` (that quirk
-/// only fires for translucent materials), and ordinary per-triangle depth
-/// testing already handles being viewed from an arbitrary angle correctly
-/// for free-orbiting, so it handles this one too.
+/// A camera with `renderRight = basis.xAxis` and `renderUp = basis.yAxis`
+/// now (post-fix) views from the *[basis.normal]-side* of the plane (`forward
+/// = renderRight x renderUp = basis.xAxis x basis.yAxis = basis.normal`, so
+/// the camera physically sits at `target + basis.normal * distance`, looking
+/// back through -normal at the plane's front face - the intuitive side,
+/// unlike the pre-fix version's `target - basis.normal * distance`) -
+/// `SketchPlaneBasis` is always right-handed (`xAxis x yAxis = normal`,
+/// confirmed for all three planes by the backend's own
+/// `test_xz_basis_is_now_right_handed` and true by construction client-side
+/// too - see [SketchPlaneBasis.fixed]'s own values), and the camera's own
+/// [FixedPerspectiveCamera] view space now matches that same handedness, so
+/// the two agree directly rather than needing a compensating negation.
 ///
-/// Solved directly via a rotation matrix rather than hand-composed axis-angle
-/// quaternions (the previous approach, which needed two separate CI-driven
-/// correction rounds - composing quaternions by hand and predicting
-/// [vm.Quaternion.rotated]'s effect is exactly the "genuinely error-prone to
-/// verify by hand" trap the old doc comment already warned about). Given
-/// [vm.Quaternion.rotated] is confirmed (from `vector_math`'s own source) to
-/// compute `q.rotated(v) = R(q^-1) * v` - the conjugate/inverse of the
-/// textbook `v' = q*v*q^-1` - solving `R(q^-1) * localRight = -basis.xAxis`,
-/// `R(q^-1) * localUp = basis.yAxis`, `R(q^-1) * localBack = -basis.normal`
-/// (the *negative* signs on right/back are what makes `OrbitCamera`'s own
-/// getters land on the "wrong", but now provably-necessary-for-correct-render,
-/// side) means `R(q) = R(q^-1)^-1 = R(q^-1)^T` is the matrix whose columns are
-/// `(-xAxis.x, yAxis.x, -normal.x)`, `(-xAxis.y, yAxis.y, -normal.y)`,
-/// `(-xAxis.z, yAxis.z, -normal.z)` - built directly below and handed to
-/// [vm.Quaternion.fromRotation], with no multiplication/composition-order risk
-/// at all.
 /// Bug fix (on-device feedback: "the animation to sketch has dropped
 /// working and should account for user selected sketch orientation"):
 /// [flip]/[rotationQuarterTurns] default to the identity (matching every
@@ -457,13 +474,25 @@ vm.Quaternion orientationFacingPlane(
 /// blindly - a no-op for every already-correct (right-handed, unflipped)
 /// case, since `xAxis.cross(yAxis) == basis.normal` there by construction;
 /// only changes anything for a flipped (left-handed) basis, exactly the
-/// case that was broken. Verified against three independently-captured
-/// on-device targets (all three fixed planes, `orbit_camera_test.dart`).
+/// case that was broken.
+///
+/// **2026-07-22**: `targetRight`/`targetBack` no longer negate
+/// [basis.xAxis]/`effectiveNormal` - those negations existed solely to
+/// compensate for the render-time mirror described in this function's own
+/// doc comment above, now fixed at its actual root
+/// ([FixedPerspectiveCamera]) instead of here. Removing them keeps this
+/// function's own external contract identical (`renderRight` still equals
+/// `basis.xAxis`, `renderUp` still equals `basis.yAxis`, for every plane/
+/// flip/rotation) - only the internal target-back/right values (and which
+/// physical side of the plane the camera ends up on) changed; every caller
+/// of [orientationFacingPlane]/[orientationFacingBasis] should see the exact
+/// same on-screen result as before this update, just against a renderer
+/// that no longer needs correcting.
 vm.Quaternion orientationFacingBasis(SketchPlaneBasis basis) {
-  final targetRight = -basis.xAxis;
+  final targetRight = basis.xAxis;
   final targetUp = basis.yAxis;
   final effectiveNormal = basis.xAxis.cross(basis.yAxis);
-  final targetBack = -effectiveNormal;
+  final targetBack = effectiveNormal;
   final rotation = vm.Matrix3.columns(
     vm.Vector3(targetRight.x, targetUp.x, targetBack.x),
     vm.Vector3(targetRight.y, targetUp.y, targetBack.y),

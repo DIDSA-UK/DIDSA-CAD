@@ -445,6 +445,10 @@ class PolygonCreate(BaseModel):
     first_vertex_point_id: str
     sides: int = Field(ge=3)
     construction: bool = False
+    # On-device feedback ("the 2 construction circles should be drawn and
+    # visible to the user to dimension and use in the sketch") - see
+    # `Sketch.add_polygon`'s own `reference_circles` doc comment.
+    reference_circles: bool = False
 
 
 class PolygonResponse(BaseModel):
@@ -456,6 +460,8 @@ class PolygonResponse(BaseModel):
     radius: float
     sides: int
     construction: bool = False
+    circumscribed_circle_id: str | None = None
+    inscribed_circle_id: str | None = None
 
 
 class PolygonUpdate(BaseModel):
@@ -463,6 +469,81 @@ class PolygonUpdate(BaseModel):
     There is no radius field here either: a polygon's radius is driven by
     its own DistanceConstraint (see Sketch.add_polygon), not edited
     directly."""
+
+    construction: bool | None = None
+
+
+class SlotCreate(BaseModel):
+    """Create a Slot from two existing centre Points and a radius - see the
+    backend's `app.sketch.models.Sketch.add_slot` docstring for what this
+    creates. Unlike Arc/Ellipse there is no "computed point" alternative
+    for either centre - the client always places/snaps both as real Points
+    first, exactly as it always has for the Slot tool's own first two
+    taps."""
+
+    center1_point_id: str
+    center2_point_id: str
+    radius: float = Field(gt=0)
+    construction: bool = False
+
+
+class SlotResponse(BaseModel):
+    type: Literal["slot"] = "slot"
+    id: str
+    center1_point_id: str
+    center2_point_id: str
+    centerline_id: str
+    arc1_id: str
+    arc2_id: str
+    line1_id: str
+    line2_id: str
+    a_point_id: str
+    b_point_id: str
+    c_point_id: str
+    d_point_id: str
+    radius: float
+    construction: bool = False
+
+
+class SlotUpdate(BaseModel):
+    """Update a slot's construction flag - mirrors PolygonUpdate. There is
+    no radius field here either: a slot's radius is driven by its own
+    DistanceConstraint (see Sketch.add_slot), not edited directly."""
+
+    construction: bool | None = None
+
+
+class RectangleCreate(BaseModel):
+    """Create a Rectangle from four existing corner Points, in order
+    (corner0 -> corner1 -> corner2 -> corner3 -> corner0) - see the
+    backend's `app.sketch.models.Sketch.add_rectangle` docstring for what
+    this creates. Unlike Arc/Ellipse/Slot there is no "computed point"
+    alternative for any corner - the client always resolves/places all
+    four as real Points first, exactly as it always has for the Rectangle
+    tool's own corner taps."""
+
+    corner_point_ids: list[str] = Field(min_length=4, max_length=4)
+    axis_aligned: bool = True
+    construction: bool = False
+
+
+class RectangleResponse(BaseModel):
+    type: Literal["rectangle"] = "rectangle"
+    id: str
+    corner_point_ids: list[str]
+    line_ids: list[str]
+    axis_aligned: bool
+    center_point_id: str | None = None
+    diagonal_line_id: str | None = None
+    diagonal2_line_id: str | None = None
+    construction: bool = False
+
+
+class RectangleUpdate(BaseModel):
+    """Update a rectangle's construction flag - mirrors PolygonUpdate/
+    SlotUpdate. There is no corner-position field here either: a
+    rectangle's geometry is driven by its own Points/Lines/constraints
+    (see Sketch.add_rectangle), not edited directly."""
 
     construction: bool | None = None
 

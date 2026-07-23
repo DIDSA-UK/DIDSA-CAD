@@ -6,23 +6,37 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 
-/// Corrects a real, confirmed rendering-pipeline bug: every Body's geometry
-/// renders with world Z reflected relative to its true, stored coordinates -
-/// proven by importing a labeled reference STEP file (three arrows along
-/// +X/+Y/+Z) and comparing its known tip coordinates against where they
-/// actually appeared on screen at a known, fixed camera pose, then
-/// independently confirmed by round-tripping that same file through
-/// import -> in-memory OCCT shape -> export and finding the stored/exported
-/// geometry byte-identical to the original (so the backend/OCCT/export path
-/// is provably innocent - see docs/status.md's own investigation notes).
+/// **Currently unused by the Part Modeller** (`part_viewport.dart` no longer
+/// calls this - see its `_syncMeshNode`/edge-sync doc comments) - on-device
+/// follow-up testing (2026-07-21, same day this was added) found it was
+/// applied too broadly. It was built from a labeled-reference-STEP-file
+/// test that only exercised an *imported* Body; applying the resulting
+/// correction "uniformly regardless of Body source" turned out to be wrong
+/// for Extrude/Revolve/Sweep - a controlled test (fresh Boss along +Z)
+/// showed `hitTestBodies`/`boundsOfBodies` (both read `body.mesh` raw,
+/// never went through this function) land exactly where expected, while
+/// this correction shifted only the *visible* mesh to the opposite side -
+/// tapping the visible geometry hit nothing, and the real hit-test
+/// highlights appeared over empty space instead. No on-device report ever
+/// flagged Extrude/Revolve/Sweep rendering mirrored before this function
+/// was introduced, which points at Import specifically, not every Body
+/// source. Left defined (not deleted) since Import may still need a
+/// correctly source-scoped version of this - the backend's own
+/// `BodyMeshResponse.source` is only `"placeholder"`/`"computed"` today,
+/// so re-applying this correctly first needs a real way to tell an
+/// Import-produced Body apart from any other kind.
 ///
-/// The practical consequence went both directions: an imported file rendered
-/// mirrored on screen even though its stored data was correct, and - because
-/// modeling and visual comparison both happen "by eye" against this same
-/// mirrored viewport - a Part built in DIDSA-CAD would end up with genuinely
-/// Z-inverted stored geometry (calibrated against the wrong picture), which
-/// then round-tripped incorrectly through STEP export into any standards-
-/// compliant external viewer (confirmed directly: SolidWorks).
+/// Original rationale, still accurate for *what this function does*, just
+/// not *where it should be applied*: corrects a real, confirmed
+/// rendering-pipeline bug - a Body's geometry can render with world Z
+/// reflected relative to its true, stored coordinates - proven by importing
+/// a labeled reference STEP file (three arrows along +X/+Y/+Z) and
+/// comparing its known tip coordinates against where they actually appeared
+/// on screen at a known, fixed camera pose, then independently confirmed by
+/// round-tripping that same file through import -> in-memory OCCT shape ->
+/// export and finding the stored/exported geometry byte-identical to the
+/// original (so the backend/OCCT/export path is provably innocent - see
+/// docs/status.md's own investigation notes).
 ///
 /// Negates Z only (`(x, y, z) -> (x, y, -z)`) on every position-like field
 /// ([MeshDto.vertices]/[MeshDto.normals]/[MeshDto.edges]/
@@ -461,9 +475,17 @@ Node buildMeshEdgesNode(
   double width = kEdgeStrokeWidth,
   PolylineCap cap = PolylineCap.butt,
 }) {
+  // On-device feedback ("points are not visible"): a round cap's own
+  // triangle-fan disk (see [vertexMarkerSegments]'s doc comment) reads as
+  // back-facing under this renderer's default counter-clockwise-front
+  // convention (Material.bind's own doc comment) and gets silently culled
+  // regardless of width - see [buildSketchGeometryNode]'s own doc comment
+  // for the full story. `doubleSided` is only honored for opaque
+  // materials (also that doc comment), which this already is.
   final material = UnlitMaterial()
     ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = color;
+    ..baseColorFactor = color
+    ..doubleSided = true;
 
   final primitives = <MeshPrimitive>[
     for (final segment in segments)

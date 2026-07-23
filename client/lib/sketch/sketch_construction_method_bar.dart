@@ -180,16 +180,21 @@ class _PolygonSidesControl extends StatelessWidget {
             onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
           ),
           const SizedBox(width: 8),
-          // Feedback round: toggles the circumscribed/inscribed guide-circle
-          // preview every real regular polygon's vertices/edge-midpoints
-          // land on - see SketchController.showPolygonGuideCircles's own doc
+          // On-device feedback ("it should be renamed as appropriately"):
+          // toggles whether placing a Polygon also creates two real,
+          // solver-tracked circumscribed/inscribed Circles (selectable/
+          // dimensionable/deletable like any other Circle), not just a
+          // dashed preview - see
+          // SketchController.createPolygonReferenceCircles's own doc
           // comment. Same TextButton.icon(icon + visible label) shape this
           // bar's own Exit button already uses, so the label is always
           // visible, not just on long-press.
           TextButton.icon(
-            onPressed: controller.togglePolygonGuideCircles,
-            icon: Icon(controller.showPolygonGuideCircles ? Icons.circle_outlined : Icons.circle),
-            label: Text(controller.showPolygonGuideCircles ? 'Hide guides' : 'Show guides'),
+            onPressed: controller.togglePolygonReferenceCircles,
+            icon: Icon(controller.createPolygonReferenceCircles ? Icons.circle_outlined : Icons.circle),
+            label: Text(
+              controller.createPolygonReferenceCircles ? 'Reference circles: on' : 'Reference circles: off',
+            ),
           ),
         ],
       ),

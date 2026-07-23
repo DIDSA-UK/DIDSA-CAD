@@ -23,6 +23,7 @@
 // rather than silently omitted.
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:math' as math;
 
 import '../../api/sketch_api_client.dart';
 import 'slvs_bindings.dart';
@@ -63,6 +64,120 @@ class LocalSolveResult {
 /// that specific case - a blanket override would silently reintroduce that
 /// false positive.
 bool _isRedundancySafe(ConstraintDto c) => c is! AtMidpointConstraintDto;
+
+double _dist((double, double) a, (double, double) b) => math.sqrt(math.pow(b.$1 - a.$1, 2) + math.pow(b.$2 - a.$2, 2));
+
+double _pointLineDistance((double, double) point, (double, double) lineStart, (double, double) lineEnd) {
+  final dx = lineEnd.$1 - lineStart.$1;
+  final dy = lineEnd.$2 - lineStart.$2;
+  final length = math.sqrt(dx * dx + dy * dy);
+  if (length < 1e-12) return _dist(point, lineStart);
+  final cross = (point.$1 - lineStart.$1) * dy - (point.$2 - lineStart.$2) * dx;
+  return cross.abs() / length;
+}
+
+double _angleBetweenDegrees(
+  (double, double) line1Start,
+  (double, double) line1End,
+  (double, double) line2Start,
+  (double, double) line2End,
+) {
+  final dir1 = (line1End.$1 - line1Start.$1, line1End.$2 - line1Start.$2);
+  final dir2 = (line2End.$1 - line2Start.$1, line2End.$2 - line2Start.$2);
+  final len1 = math.sqrt(dir1.$1 * dir1.$1 + dir1.$2 * dir1.$2);
+  final len2 = math.sqrt(dir2.$1 * dir2.$1 + dir2.$2 * dir2.$2);
+  if (len1 < 1e-12 || len2 < 1e-12) return 0.0;
+  final dot = (dir1.$1 * dir2.$1 + dir1.$2 * dir2.$2) / (len1 * len2);
+  return math.acos(dot.clamp(-1.0, 1.0)) * 180 / math.pi;
+}
+
+const _residualTolerance = 1e-4;
+
+/// Direct port of solver.py's `_residual_verified_convergence` - see that
+/// function's own doc comment for why `resultCode` alone can't tell
+/// "stacked redundancy, still consistent" apart from a real conflict (a
+/// Polygon's own already-redundant EqualLength/EqualRadius/Angle chain plus
+/// a further genuinely-implied Constraint on top, e.g. an "across flats"
+/// LineDistanceConstraint between two opposite edges). Recomputes every
+/// Constraint's own residual directly from [resolvePoint] (the just-solved
+/// positions) rather than trusting `resultCode` - only trusted when every
+/// Constraint present is one of the types this knows how to verify, same
+/// "never guess about a type it can't verify" conservatism
+/// [_isRedundancySafe] already uses.
+bool _residualVerifiedConvergence({
+  required List<ConstraintDto> constraints,
+  required (double, double) Function(String pointId) resolvePoint,
+  required LineEndpoints lineEndpoints,
+  required double diagonal,
+}) {
+  const checkableTypes = <Type>{
+    DistanceConstraintDto,
+    EqualLengthConstraintDto,
+    EqualRadiusConstraintDto,
+    AngleConstraintDto,
+    TangentConstraintDto,
+    LineDistanceConstraintDto,
+  };
+  if (constraints.isEmpty || constraints.any((c) => !checkableTypes.contains(c.runtimeType))) {
+    return false;
+  }
+
+  final tolerance = math.max(diagonal * _residualTolerance, 1e-6);
+
+  for (final c in constraints) {
+    if (c is DistanceConstraintDto) {
+      if (c.provisional) continue;
+      final pointA = resolvePoint(c.pointAId);
+      final pointB = resolvePoint(c.pointBId);
+      // Bug fix: mirrors solver.py's _residual_verified_convergence fix -
+      // a "horizontal"/"vertical" DistanceConstraint pins only the X or Y
+      // separation (the free axis left unchecked), not plain Euclidean
+      // distance. Found via a Circle's own cardinal-point axis pins
+      // (always horizontal/vertical, distance 0.0) - checking Euclidean
+      // distance here could both reject an actually-satisfied projected
+      // constraint and, worse, accept a genuinely collapsed/degenerate
+      // solve whose Points happen to also be Euclidean-close.
+      final double actual;
+      if (c.orientation == 'horizontal') {
+        actual = (pointB.$1 - pointA.$1).abs();
+      } else if (c.orientation == 'vertical') {
+        actual = (pointB.$2 - pointA.$2).abs();
+      } else {
+        actual = _dist(pointA, pointB);
+      }
+      if ((actual - c.distance.abs()).abs() > tolerance) return false;
+    } else if (c is EqualLengthConstraintDto) {
+      final (s1, e1) = lineEndpoints(c.line1Id);
+      final (s2, e2) = lineEndpoints(c.line2Id);
+      final len1 = _dist(resolvePoint(s1), resolvePoint(e1));
+      final len2 = _dist(resolvePoint(s2), resolvePoint(e2));
+      if ((len1 - len2).abs() > tolerance) return false;
+    } else if (c is EqualRadiusConstraintDto) {
+      final r1 = _dist(resolvePoint(c.center1PointId), resolvePoint(c.radius1PointId));
+      final r2 = _dist(resolvePoint(c.center2PointId), resolvePoint(c.radius2PointId));
+      if ((r1 - r2).abs() > tolerance) return false;
+    } else if (c is AngleConstraintDto) {
+      final (s1, e1) = lineEndpoints(c.line1Id);
+      final (s2, e2) = lineEndpoints(c.line2Id);
+      final actualDegrees =
+          _angleBetweenDegrees(resolvePoint(s1), resolvePoint(e1), resolvePoint(s2), resolvePoint(e2));
+      var targetDegrees = c.angleDegrees.abs() % 360;
+      targetDegrees = math.min(targetDegrees, 360 - targetDegrees);
+      if ((actualDegrees - targetDegrees).abs() > 1e-2) return false;
+    } else if (c is TangentConstraintDto) {
+      final (s, e) = lineEndpoints(c.lineId);
+      final radius = _dist(resolvePoint(c.centerPointId), resolvePoint(c.radiusPointId));
+      final actualDistance = _pointLineDistance(resolvePoint(c.centerPointId), resolvePoint(s), resolvePoint(e));
+      if ((actualDistance - radius).abs() > tolerance) return false;
+    } else if (c is LineDistanceConstraintDto) {
+      final (s1, e1) = lineEndpoints(c.line1Id);
+      final (s2, _) = lineEndpoints(c.line2Id);
+      final actualDistance = _pointLineDistance(resolvePoint(s2), resolvePoint(s1), resolvePoint(e1));
+      if ((actualDistance - c.distance).abs() > tolerance) return false;
+    }
+  }
+  return true;
+}
 
 /// One `addToSolver` dispatch per constraint type - direct port of each
 /// Constraint subclass's `add_to_solver` in constraints.py. Every
@@ -203,6 +318,18 @@ LocalSolveResult _solveOnce({
     final resultCode = bindings.solve(sys, slvsSolveGroup, 1);
     var converged = resultCode == 0;
 
+    // Solved positions read back *before* either redundancy override below
+    // (both the narrow one and the residual-based one), same "best effort
+    // even when it doesn't fully converge" behaviour this has always had -
+    // _residualVerifiedConvergence needs them to check against.
+    final solvedPoints = <String, (double, double)>{};
+    for (final id in builder.solvedPointIds) {
+      final handle = builder.handleForPoint(id);
+      final u = bindings.getEntityParam(sys, handle, 0);
+      final v = bindings.getEntityParam(sys, handle, 1);
+      solvedPoints[id] = (bindings.getParamValue(sys, u), bindings.getParamValue(sys, v));
+    }
+
     // Same redundant-but-solved override as solver.py: a Slot-shaped
     // closed loop of Tangent/EqualRadius-tied Arcs is *mathematically*
     // over-determined by exactly one redundant equation. py-slvs reports
@@ -217,6 +344,31 @@ LocalSolveResult _solveOnce({
       converged = true;
     }
 
+    if (!converged) {
+      double minX = double.infinity, minY = double.infinity;
+      double maxX = -double.infinity, maxY = -double.infinity;
+      for (final (x, y) in points.values) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      final diagonal = math.sqrt(math.pow(maxX - minX, 2) + math.pow(maxY - minY, 2));
+      // Stacked redundancy (e.g. a Polygon's own already-redundant
+      // EqualLength/EqualRadius/Angle chain plus a further genuinely-
+      // implied Constraint on top) - see _residualVerifiedConvergence's own
+      // doc comment for why resultCode alone can't tell this apart from a
+      // real conflict here.
+      if (_residualVerifiedConvergence(
+        constraints: constraints,
+        resolvePoint: (id) => solvedPoints[id] ?? points[id]!,
+        lineEndpoints: lineEndpoints,
+        diagonal: diagonal,
+      )) {
+        converged = true;
+      }
+    }
+
     // Provisional-DOF floor: py-slvs's own Dof is unreliable for the
     // redundant system above - it reports 0 even while a real,
     // still-unconfirmed degree of freedom (e.g. a Slot's shared radius)
@@ -226,14 +378,6 @@ LocalSolveResult _solveOnce({
         constraints.any((c) => c is DistanceConstraintDto && c.provisional);
     final rawDof = bindings.getDof(sys);
     final dof = (converged && hasUnconfirmedProvisional) ? (rawDof > 1 ? rawDof : 1) : rawDof;
-
-    final solvedPoints = <String, (double, double)>{};
-    for (final id in builder.solvedPointIds) {
-      final handle = builder.handleForPoint(id);
-      final u = bindings.getEntityParam(sys, handle, 0);
-      final v = bindings.getEntityParam(sys, handle, 1);
-      solvedPoints[id] = (bindings.getParamValue(sys, u), bindings.getParamValue(sys, v));
-    }
 
     final failedCount = bindings.getFailedCount(sys);
     final solverReportedFailedConstraintIds = <String>[

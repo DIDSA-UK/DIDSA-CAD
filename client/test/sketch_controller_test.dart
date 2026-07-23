@@ -3,6 +3,7 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -43,6 +44,8 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> ellipses = {};
   final Map<String, Map<String, dynamic>> polygons = {};
+  final Map<String, Map<String, dynamic>> slots = {};
+  final Map<String, Map<String, dynamic>> rectangles = {};
   final Map<String, Map<String, dynamic>> splines = {};
   final Map<String, Map<String, dynamic>> texts = {};
   final Map<String, Map<String, dynamic>> sketches = {};
@@ -253,6 +256,16 @@ class _FakeBackend {
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
+    // On-device feedback ("cascadeing deletion needs more finesse..."):
+    // discards only the wrapper bookkeeping record - its own Lines/Arcs/
+    // Points/Constraints are left untouched, mirroring the real backend's
+    // `Sketch.collapse_polygon`/`collapse_slot`/`collapse_rectangle`.
+    final polygonCollapseMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/([^/]+)/collapse$').firstMatch(path);
+    if (polygonCollapseMatch != null && request.method == 'POST') {
+      polygons.remove(polygonCollapseMatch.group(1));
+      return http.Response('', 204);
+    }
+
     final polygonPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/(.+)$').firstMatch(path);
     if (polygonPatchMatch != null && request.method == 'PATCH') {
       final polygon = polygons[polygonPatchMatch.group(1)];
@@ -261,6 +274,78 @@ class _FakeBackend {
         polygon['construction'] = body['construction'] as bool;
       }
       return _json(polygon, 200);
+    }
+
+    final slotDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/slots/(.+)$').firstMatch(path);
+    if (slotDeleteMatch != null && request.method == 'DELETE') {
+      final slot = slots.remove(slotDeleteMatch.group(1));
+      if (slot != null) {
+        for (final entityId in [
+          slot['centerline_id'],
+          slot['arc1_id'],
+          slot['arc2_id'],
+          slot['line1_id'],
+          slot['line2_id'],
+        ]) {
+          lines.remove(entityId);
+          arcs.remove(entityId);
+        }
+        for (final constraintId in (slot['_constraint_ids'] as List).cast<String>()) {
+          constraints.remove(constraintId);
+        }
+      }
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final slotCollapseMatch = RegExp(r'^/sketch/sketches/[^/]+/slots/([^/]+)/collapse$').firstMatch(path);
+    if (slotCollapseMatch != null && request.method == 'POST') {
+      slots.remove(slotCollapseMatch.group(1));
+      return http.Response('', 204);
+    }
+
+    final slotPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/slots/(.+)$').firstMatch(path);
+    if (slotPatchMatch != null && request.method == 'PATCH') {
+      final slot = slots[slotPatchMatch.group(1)];
+      if (slot == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        slot['construction'] = body['construction'] as bool;
+      }
+      return _json(slot, 200);
+    }
+
+    final rectangleDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/rectangles/(.+)$').firstMatch(path);
+    if (rectangleDeleteMatch != null && request.method == 'DELETE') {
+      final rectangle = rectangles.remove(rectangleDeleteMatch.group(1));
+      if (rectangle != null) {
+        for (final lineId in (rectangle['line_ids'] as List).cast<String>()) {
+          lines.remove(lineId);
+        }
+        final diagonalLineId = rectangle['diagonal_line_id'] as String?;
+        if (diagonalLineId != null) lines.remove(diagonalLineId);
+        final diagonal2LineId = rectangle['diagonal2_line_id'] as String?;
+        if (diagonal2LineId != null) lines.remove(diagonal2LineId);
+        for (final constraintId in (rectangle['_constraint_ids'] as List).cast<String>()) {
+          constraints.remove(constraintId);
+        }
+      }
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final rectangleCollapseMatch =
+        RegExp(r'^/sketch/sketches/[^/]+/rectangles/([^/]+)/collapse$').firstMatch(path);
+    if (rectangleCollapseMatch != null && request.method == 'POST') {
+      rectangles.remove(rectangleCollapseMatch.group(1));
+      return http.Response('', 204);
+    }
+
+    final rectanglePatchMatch = RegExp(r'^/sketch/sketches/[^/]+/rectangles/(.+)$').firstMatch(path);
+    if (rectanglePatchMatch != null && request.method == 'PATCH') {
+      final rectangle = rectangles[rectanglePatchMatch.group(1)];
+      if (rectangle == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        rectangle['construction'] = body['construction'] as bool;
+      }
+      return _json(rectangle, 200);
     }
 
     final splineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/splines/(.+)$').firstMatch(path);
@@ -326,35 +411,59 @@ class _FakeBackend {
       if (constraint['type'] == 'angle') {
         constraint['angle_degrees'] = value;
       } else {
-        final oldDistance = (constraint['distance'] as num).toDouble();
         constraint['distance'] = value;
         // Mirrors the real backend: any explicit value PATCH confirms the
         // constraint, clearing `provisional` (see update_constraint_value).
         constraint['provisional'] = false;
-        // Task #94: a Polygon's own circumradius DistanceConstraint (center
-        // to vertex 0) is the *only* thing pinning the shape's absolute
-        // size - equal-length/equal-radius/angle alone only fix its shape,
-        // not its scale - so resizing it uniformly scales every vertex
-        // about the center, same as a real solve would settle to. Good
-        // enough to exercise the client's own vertex-drag-as-circumradius-
-        // edit logic against real, moved geometry rather than just a
-        // stored constraint value.
-        if (oldDistance > 1e-9) {
-          for (final polygon in polygons.values) {
-            final vertexPointIds = (polygon['vertex_point_ids'] as List).cast<String>();
-            if (polygon['center_point_id'] == constraint['point_a_id'] &&
-                vertexPointIds.first == constraint['point_b_id']) {
-              final center = points[polygon['center_point_id']]!;
-              final cx = (center['x'] as num).toDouble();
-              final cy = (center['y'] as num).toDouble();
-              final scale = value / oldDistance;
-              for (final vertexId in vertexPointIds) {
-                final vertex = points[vertexId]!;
-                vertex['x'] = cx + ((vertex['x'] as num).toDouble() - cx) * scale;
-                vertex['y'] = cy + ((vertex['y'] as num).toDouble() - cy) * scale;
-              }
-              break;
-            }
+        // Task #94: a Polygon/Slot's own circumradius DistanceConstraint
+        // (centre to vertex 0 / centre1 to corner a) is the *only* thing
+        // pinning the shape's absolute size - equal-length/equal-radius/
+        // angle/tangent alone only fix its shape, not its scale - so
+        // resizing it uniformly scales every vertex/corner about the
+        // centre, same as a real solve would settle to. Good enough to
+        // exercise the client's own vertex-drag-as-dimension-edit logic
+        // against real, moved geometry rather than just a stored
+        // constraint value. Scaled from each vertex's own *current* actual
+        // distance from centre, not the constraint's old stored value -
+        // the sketcher rebuild's closed-form drag path already PATCHes
+        // every point to its correct final position directly, *before*
+        // this PATCH fires (see SketchController._settleClosedFormShapeDrag),
+        // so scaling from the old stored value here would double-apply the
+        // resize on top of already-correct geometry.
+        double distance(Map<String, dynamic> a, Map<String, dynamic> b) => math.sqrt(
+              math.pow((b['x'] as num).toDouble() - (a['x'] as num).toDouble(), 2) +
+                  math.pow((b['y'] as num).toDouble() - (a['y'] as num).toDouble(), 2),
+            );
+        void scaleAbout(Map<String, dynamic> center, Iterable<String> vertexIds, double currentRadius) {
+          if (currentRadius <= 1e-9) return;
+          final cx = (center['x'] as num).toDouble();
+          final cy = (center['y'] as num).toDouble();
+          final scale = value / currentRadius;
+          for (final vertexId in vertexIds) {
+            final vertex = points[vertexId]!;
+            vertex['x'] = cx + ((vertex['x'] as num).toDouble() - cx) * scale;
+            vertex['y'] = cy + ((vertex['y'] as num).toDouble() - cy) * scale;
+          }
+        }
+
+        for (final polygon in polygons.values) {
+          final vertexPointIds = (polygon['vertex_point_ids'] as List).cast<String>();
+          if (polygon['center_point_id'] == constraint['point_a_id'] &&
+              vertexPointIds.first == constraint['point_b_id']) {
+            final center = points[polygon['center_point_id']]!;
+            scaleAbout(center, vertexPointIds, distance(center, points[vertexPointIds.first]!));
+            break;
+          }
+        }
+        for (final slot in slots.values) {
+          if (slot['center1_point_id'] == constraint['point_a_id'] && slot['a_point_id'] == constraint['point_b_id']) {
+            final center1 = points[slot['center1_point_id'] as String]!;
+            final center2 = points[slot['center2_point_id'] as String]!;
+            final aId = slot['a_point_id'] as String;
+            final currentRadius = distance(center1, points[aId]!);
+            scaleAbout(center1, [slot['a_point_id'], slot['b_point_id']].cast<String>(), currentRadius);
+            scaleAbout(center2, [slot['c_point_id'], slot['d_point_id']].cast<String>(), currentRadius);
+            break;
           }
         }
       }
@@ -845,19 +954,39 @@ class _FakeBackend {
       var radiusPointId = body['radius_point_id'] as String?;
       final requestedRadius = (body['radius'] as num?)?.toDouble() ?? 1.0;
       final cardinalPointIds = <String>[];
+      final center = points[body['center_point_id'] as String]!;
+      final centerX = (center['x'] as num).toDouble();
+      final centerY = (center['y'] as num).toDouble();
       if (radiusPointId == null) {
         // Centre-point circle tool's own mode (bare radius, no
         // radius_point_id/angle) - mirrors the real backend's
         // Sketch.add_circle: the new Point becomes the circle's own north
         // cardinal point directly.
-        final center = points[body['center_point_id'] as String]!;
         radiusPointId = _newId('point');
         points[radiusPointId] = {
           'id': radiusPointId,
-          'x': (center['x'] as num).toDouble(),
-          'y': (center['y'] as num).toDouble() + requestedRadius,
+          'x': centerX,
+          'y': centerY + requestedRadius,
         };
         cardinalPointIds.add(radiusPointId);
+      }
+      // Mirrors the real backend's _add_cardinal_points: North/East/South/
+      // West always exist regardless of creation mode - North is either the
+      // bare-radius Point above or created below alongside the rest.
+      final cardinalOffsets = <String, (double, double)>{
+        'north': (centerX, centerY + requestedRadius),
+        'east': (centerX + requestedRadius, centerY),
+        'south': (centerX, centerY - requestedRadius),
+        'west': (centerX - requestedRadius, centerY),
+      };
+      final remaining = cardinalPointIds.isEmpty
+          ? ['north', 'east', 'south', 'west']
+          : ['east', 'south', 'west'];
+      for (final key in remaining) {
+        final newId = _newId('point');
+        final offset = cardinalOffsets[key]!;
+        points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+        cardinalPointIds.add(newId);
       }
       final circle = {
         'id': id,
@@ -1114,6 +1243,57 @@ class _FakeBackend {
         };
         constraintIds.add(angleId);
       }
+      String? circumscribedCircleId;
+      String? inscribedCircleId;
+      // Mirrors the real backend's Sketch.add_polygon own reference_circles
+      // option (on-device feedback: "the 2 construction circles should be
+      // drawn and visible to the user to dimension and use in the
+      // sketch") - a minimal stand-in for the full circle-creation POST
+      // handler above (same shape: cardinal points + a provisional radius
+      // DistanceConstraint), just inlined rather than reused since that's
+      // structured as its own HTTP handler.
+      Map<String, dynamic> makeReferenceCircle(String radiusPointId, double circleRadius) {
+        final circleId = _newId('circle');
+        final cardinalPointIds = <String>[];
+        final cardinalOffsets = <String, (double, double)>{
+          'north': (cx, cy + circleRadius),
+          'east': (cx + circleRadius, cy),
+          'south': (cx, cy - circleRadius),
+          'west': (cx - circleRadius, cy),
+        };
+        for (final key in ['north', 'east', 'south', 'west']) {
+          final newId = _newId('point');
+          final offset = cardinalOffsets[key]!;
+          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+          cardinalPointIds.add(newId);
+        }
+        circles[circleId] = {
+          'id': circleId,
+          'center_point_id': body['center_point_id'],
+          'radius_point_id': radiusPointId,
+          'radius': circleRadius,
+          'construction': true,
+          'cardinal_point_ids': cardinalPointIds,
+        };
+        final constraintId = _newId('constraint');
+        constraints[constraintId] = {
+          'id': constraintId,
+          'point_a_id': body['center_point_id'],
+          'point_b_id': radiusPointId,
+          'distance': circleRadius,
+          'provisional': true,
+        };
+        return circles[circleId]!;
+      }
+
+      if (body['reference_circles'] == true) {
+        circumscribedCircleId = makeReferenceCircle(vertexPointIds[0], radius)['id'] as String;
+        final inradius = radius * math.cos(math.pi / sides);
+        final inscribedRadiusPointId = _newId('point');
+        points[inscribedRadiusPointId] = {'id': inscribedRadiusPointId, 'x': cx + inradius, 'y': cy};
+        inscribedCircleId = makeReferenceCircle(inscribedRadiusPointId, inradius)['id'] as String;
+      }
+
       final polygon = {
         'id': id,
         'center_point_id': body['center_point_id'],
@@ -1122,6 +1302,8 @@ class _FakeBackend {
         'radius': radius,
         'sides': sides,
         'construction': body['construction'] as bool? ?? false,
+        'circumscribed_circle_id': circumscribedCircleId,
+        'inscribed_circle_id': inscribedCircleId,
         // Not part of the real API response - kept only so this fake's own
         // DELETE handler above knows which Constraints to cascade, mirroring
         // the real backend's Sketch.delete_polygon.
@@ -1132,6 +1314,256 @@ class _FakeBackend {
     }
     if (polygonsCollectionMatch && request.method == 'GET') {
       return _jsonList(polygons.values.toList(), 200);
+    }
+
+    final slotsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/slots$').hasMatch(path);
+    if (slotsCollectionMatch && request.method == 'POST') {
+      final id = _newId('slot');
+      final center1Id = body['center1_point_id'] as String;
+      final center2Id = body['center2_point_id'] as String;
+      final radius = (body['radius'] as num).toDouble();
+      final c1 = points[center1Id]!;
+      final c2 = points[center2Id]!;
+      final c1x = (c1['x'] as num).toDouble(), c1y = (c1['y'] as num).toDouble();
+      final c2x = (c2['x'] as num).toDouble(), c2y = (c2['y'] as num).toDouble();
+      final dx = c2x - c1x, dy = c2y - c1y;
+      final length = math.sqrt(dx * dx + dy * dy);
+      final dirX = dx / length, dirY = dy / length;
+      final normalX = -dirY, normalY = dirX;
+      // Mirrors the real backend's Sketch.add_slot exactly - see that
+      // method's own doc comment for the corner-pairing geometry.
+      String newPointAt(double x, double y) {
+        final pid = _newId('point');
+        points[pid] = {'id': pid, 'x': x, 'y': y};
+        return pid;
+      }
+
+      final aId = newPointAt(c1x + normalX * radius, c1y + normalY * radius);
+      final bId = newPointAt(c1x - normalX * radius, c1y - normalY * radius);
+      final cId = newPointAt(c2x - normalX * radius, c2y - normalY * radius);
+      final dId = newPointAt(c2x + normalX * radius, c2y + normalY * radius);
+
+      final centerlineId = _newId('line');
+      lines[centerlineId] = {
+        'id': centerlineId,
+        'start_point_id': center1Id,
+        'end_point_id': center2Id,
+        'length': length,
+        'construction': true,
+      };
+
+      final constraintIds = <String>[];
+      String newArc(String centerId, String startId, String endId) {
+        final arcId = _newId('arc');
+        arcs[arcId] = {
+          'id': arcId,
+          'center_point_id': centerId,
+          'start_point_id': startId,
+          'end_point_id': endId,
+          'radius': radius,
+          'construction': false,
+        };
+        final radiusConstraintId = _newId('constraint');
+        constraints[radiusConstraintId] = {
+          'id': radiusConstraintId,
+          'point_a_id': centerId,
+          'point_b_id': startId,
+          'distance': radius,
+          'provisional': true,
+        };
+        arcs[arcId]!['_radius_constraint_id'] = radiusConstraintId;
+        final endConstraintId = _newId('constraint');
+        constraints[endConstraintId] = {
+          'id': endConstraintId,
+          'type': 'equal_radius',
+          'center1_point_id': centerId,
+          'radius1_point_id': startId,
+          'center2_point_id': centerId,
+          'radius2_point_id': endId,
+        };
+        constraintIds.add(endConstraintId);
+        return arcId;
+      }
+
+      final arc1Id = newArc(center1Id, aId, bId);
+      final line1Id = _newId('line');
+      lines[line1Id] = {'id': line1Id, 'start_point_id': bId, 'end_point_id': cId, 'length': 1.0, 'construction': false};
+      final arc2Id = newArc(center2Id, cId, dId);
+      final line2Id = _newId('line');
+      lines[line2Id] = {'id': line2Id, 'start_point_id': dId, 'end_point_id': aId, 'length': 1.0, 'construction': false};
+
+      // arc2's own provisional radius DistanceConstraint is replaced with
+      // ties back to arc1's, same as the real backend.
+      final arc2RadiusConstraintId = arcs[arc2Id]!.remove('_radius_constraint_id') as String;
+      constraints.remove(arc2RadiusConstraintId);
+      final radiusConstraintId = arcs[arc1Id]!.remove('_radius_constraint_id') as String;
+      for (final radiusPointId in [cId, dId]) {
+        final equalRadiusId = _newId('constraint');
+        constraints[equalRadiusId] = {
+          'id': equalRadiusId,
+          'type': 'equal_radius',
+          'center1_point_id': center1Id,
+          'radius1_point_id': aId,
+          'center2_point_id': center2Id,
+          'radius2_point_id': radiusPointId,
+        };
+        constraintIds.add(equalRadiusId);
+      }
+      for (final entry in [(arc1Id, line1Id), (arc1Id, line2Id), (arc2Id, line1Id), (arc2Id, line2Id)]) {
+        final tangentId = _newId('constraint');
+        constraints[tangentId] = {
+          'id': tangentId,
+          'type': 'tangent',
+          'center_point_id': entry.$1 == arc1Id ? center1Id : center2Id,
+          'radius_point_id': entry.$1 == arc1Id ? aId : cId,
+          'line_id': entry.$2,
+        };
+        constraintIds.add(tangentId);
+      }
+      constraintIds.add(radiusConstraintId);
+
+      final slot = {
+        'id': id,
+        'center1_point_id': center1Id,
+        'center2_point_id': center2Id,
+        'centerline_id': centerlineId,
+        'arc1_id': arc1Id,
+        'arc2_id': arc2Id,
+        'line1_id': line1Id,
+        'line2_id': line2Id,
+        'a_point_id': aId,
+        'b_point_id': bId,
+        'c_point_id': cId,
+        'd_point_id': dId,
+        'radius': radius,
+        'construction': body['construction'] as bool? ?? false,
+        // Not part of the real API response - kept only so this fake's own
+        // DELETE handler knows which Constraints to cascade.
+        '_constraint_ids': constraintIds,
+      };
+      slots[id] = slot;
+      return _json(slot, 201);
+    }
+    if (slotsCollectionMatch && request.method == 'GET') {
+      return _jsonList(slots.values.toList(), 200);
+    }
+
+    final rectanglesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/rectangles$').hasMatch(path);
+    if (rectanglesCollectionMatch && request.method == 'POST') {
+      final id = _newId('rectangle');
+      final cornerIds = (body['corner_point_ids'] as List).cast<String>();
+      final axisAligned = body['axis_aligned'] as bool? ?? true;
+      // Mirrors the real backend's Sketch.add_rectangle exactly - see that
+      // method's own doc comment for the fixed corner0->1->2->3->0 edge
+      // order and the axis-aligned-vs-free constraint chains.
+      final lineIds = <String>[];
+      for (var i = 0; i < 4; i++) {
+        final lineId = _newId('line');
+        lines[lineId] = {
+          'id': lineId,
+          'start_point_id': cornerIds[i],
+          'end_point_id': cornerIds[(i + 1) % 4],
+          'length': 1.0,
+          'construction': false,
+        };
+        lineIds.add(lineId);
+      }
+
+      final constraintIds = <String>[];
+      String? centerPointId;
+      String? diagonalLineId;
+      String? diagonal2LineId;
+      if (axisAligned) {
+        for (final lineId in [lineIds[0], lineIds[2]]) {
+          final line = lines[lineId]!;
+          final cid = _newId('constraint');
+          constraints[cid] = {
+            'id': cid,
+            'type': 'horizontal',
+            'line_id': lineId,
+            'point_a_id': line['start_point_id'],
+            'point_b_id': line['end_point_id'],
+          };
+          constraintIds.add(cid);
+        }
+        for (final lineId in [lineIds[1], lineIds[3]]) {
+          final line = lines[lineId]!;
+          final cid = _newId('constraint');
+          constraints[cid] = {
+            'id': cid,
+            'type': 'vertical',
+            'line_id': lineId,
+            'point_a_id': line['start_point_id'],
+            'point_b_id': line['end_point_id'],
+          };
+          constraintIds.add(cid);
+        }
+        diagonalLineId = _newId('line');
+        lines[diagonalLineId] = {
+          'id': diagonalLineId,
+          'start_point_id': cornerIds[0],
+          'end_point_id': cornerIds[2],
+          'length': 1.0,
+          'construction': true,
+        };
+        diagonal2LineId = _newId('line');
+        lines[diagonal2LineId] = {
+          'id': diagonal2LineId,
+          'start_point_id': cornerIds[1],
+          'end_point_id': cornerIds[3],
+          'length': 1.0,
+          'construction': true,
+        };
+        final corner0 = points[cornerIds[0]]!;
+        final corner1 = points[cornerIds[1]]!;
+        final corner2 = points[cornerIds[2]]!;
+        final corner3 = points[cornerIds[3]]!;
+        final centerX = ((corner0['x'] as num).toDouble() +
+                (corner1['x'] as num).toDouble() +
+                (corner2['x'] as num).toDouble() +
+                (corner3['x'] as num).toDouble()) /
+            4;
+        final centerY = ((corner0['y'] as num).toDouble() +
+                (corner1['y'] as num).toDouble() +
+                (corner2['y'] as num).toDouble() +
+                (corner3['y'] as num).toDouble()) /
+            4;
+        centerPointId = _newId('point');
+        points[centerPointId] = {'id': centerPointId, 'x': centerX, 'y': centerY};
+        final midCid = _newId('constraint');
+        constraints[midCid] = {
+          'id': midCid,
+          'type': 'at_midpoint',
+          'point_id': centerPointId,
+          'line_id': diagonalLineId,
+        };
+        constraintIds.add(midCid);
+      } else {
+        for (final pair in [(lineIds[0], lineIds[1]), (lineIds[1], lineIds[2]), (lineIds[2], lineIds[3])]) {
+          final cid = _newId('constraint');
+          constraints[cid] = {'id': cid, 'type': 'perpendicular', 'line1_id': pair.$1, 'line2_id': pair.$2};
+          constraintIds.add(cid);
+        }
+      }
+
+      final rectangle = {
+        'id': id,
+        'corner_point_ids': cornerIds,
+        'line_ids': lineIds,
+        'axis_aligned': axisAligned,
+        'center_point_id': centerPointId,
+        'diagonal_line_id': diagonalLineId,
+        'diagonal2_line_id': diagonal2LineId,
+        'construction': body['construction'] as bool? ?? false,
+        // Not part of the real API response - kept only so this fake's own
+        // DELETE handler knows which Constraints to cascade.
+        '_constraint_ids': constraintIds,
+      };
+      rectangles[id] = rectangle;
+      return _json(rectangle, 201);
+    }
+    if (rectanglesCollectionMatch && request.method == 'GET') {
+      return _jsonList(rectangles.values.toList(), 200);
     }
 
     final splinesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/splines$').hasMatch(path);
@@ -1511,7 +1943,9 @@ void main() {
 
     await controller.handleCanvasTap(5, 0);
 
-    expect(controller.points.length, 2);
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the end Point.
+    expect(controller.points.length, 3);
     expect(controller.lines.length, 1);
     expect(controller.lines.values.first.startPointId, firstPointId);
     expect(controller.currentChainStartPointId, isNot(firstPointId));
@@ -1529,7 +1963,9 @@ void main() {
     expect(controller.lines.length, 2);
     final secondLine = controller.lines.values.last;
     expect(secondLine.startPointId, secondPointId);
-    expect(controller.points.length, 3);
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the other two.
+    expect(controller.points.length, 4);
   });
 
   test('tapping back near the chain start closes the loop using its real point id', () async {
@@ -1550,7 +1986,12 @@ void main() {
     expect(controller.lines.length, 3);
     expect(controller.lines.values.last.endPointId, startId);
     expect(controller.chainInProgress, isFalse);
-    expect(controller.points.length, 3); // no new coincident point created
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the other two -
+    // the closing tap itself still creates no *additional* Point (it
+    // reuses [startId] directly via [_chainFirstPointId], bypassing
+    // [_pointIdAt] entirely).
+    expect(controller.points.length, 4);
   });
 
   test('finishChain ends the chain without closing a loop', () async {
@@ -1561,7 +2002,9 @@ void main() {
     controller.finishChain();
 
     expect(controller.chainInProgress, isFalse);
-    expect(controller.points.length, 1);
+    // Bug fix: the origin, plus a new start Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment).
+    expect(controller.points.length, 2);
     expect(controller.lines.length, 0);
   });
 
@@ -1596,7 +2039,11 @@ void main() {
 
     await controller.handleCanvasTap(5, 0);
 
-    expect(controller.points.length, 2);
+    // Bug fix: the origin, plus a new centre Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment - no longer shared
+    // directly with the origin's own id), plus all four North/East/South/
+    // West cardinal Points (see Sketch._add_cardinal_points).
+    expect(controller.points.length, 6);
     expect(controller.circles.length, 1);
     final circle = controller.circles.values.first;
     expect(circle.centerPointId, centerId);
@@ -1616,9 +2063,9 @@ void main() {
     expect(radiusConstraint.provisional, isTrue);
 
     controller.enterDimensionMode();
-    // On the boundary but not on the north cardinal point itself (see
-    // SketchController._clickCircleTool's own doc comment).
-    await controller.handleCanvasTap(5, 0);
+    // On the boundary but off every cardinal axis (see
+    // Sketch._add_cardinal_points).
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
     await controller.confirmGhostValue('radius', 5.0);
 
     final confirmed = controller.constraints[radiusConstraint.id] as DistanceConstraintDto;
@@ -1821,6 +2268,112 @@ void main() {
     expect(cornerLines.length, 3);
   });
 
+  group('Rectangle closed-form drag (parity follow-up: extends the same solver-free drag pattern '
+      'already shipped for Polygon/Slot/Circle/Arc/Ellipse to the newly-promoted Rectangle entity - '
+      'unlike those, a Rectangle has no provisional-radius collapse risk (its H/V constraints are '
+      'always real, never provisional), but the same "drag a corner and let a formula place the rest" '
+      'approach still eliminates the solver from the hot drag path entirely)', () {
+    test('dragging the centre translates every corner by the same delta, with zero solver/network '
+        'calls', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      final cornersBefore = [for (final id in rectangle.cornerPointIds) controller.points[id]!];
+
+      backend.requestLog.clear();
+      final centerId = rectangle.centerPointId!;
+      final center0 = controller.points[centerId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(centerId), isTrue);
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      for (var i = 0; i < 4; i++) {
+        final after = controller.points[rectangle.cornerPointIds[i]]!;
+        expect(after.x, closeTo(cornersBefore[i].x + 5, 1e-9));
+        expect(after.y, closeTo(cornersBefore[i].y + 5, 1e-9));
+      }
+    });
+
+    test('dragging a corner keeps the opposite corner fixed and recomputes the other two to stay '
+        'axis-aligned - the exact formula the Rectangle\'s own Horizontal/Vertical constraint chain '
+        'enforces, evaluated directly instead of via a solve', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      // Corners are (2,2), (10,2), (10,8), (2,8) in that cycle order - see
+      // the "Two Corner rectangle" test above. Corner 0 is dragged below;
+      // corner 2 (opposite) is its fixed anchor.
+      final corner0Id = rectangle.cornerPointIds[0];
+      final corner1Id = rectangle.cornerPointIds[1];
+      final corner2Id = rectangle.cornerPointIds[2];
+      final corner3Id = rectangle.cornerPointIds[3];
+      expect(controller.points[corner0Id]!.x, closeTo(2, 1e-9));
+      expect(controller.points[corner0Id]!.y, closeTo(2, 1e-9));
+      expect(controller.points[corner2Id]!.x, closeTo(10, 1e-9));
+      expect(controller.points[corner2Id]!.y, closeTo(8, 1e-9));
+
+      backend.requestLog.clear();
+      controller.cursorX = 2;
+      controller.cursorY = 2;
+      expect(controller.beginPointDrag(corner0Id), isTrue);
+      await controller.updatePointDrag(0, 0);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      expect(controller.points[corner0Id]!.x, closeTo(0, 1e-9));
+      expect(controller.points[corner0Id]!.y, closeTo(0, 1e-9));
+      // Opposite corner (2) never moved.
+      expect(controller.points[corner2Id]!.x, closeTo(10, 1e-9));
+      expect(controller.points[corner2Id]!.y, closeTo(8, 1e-9));
+      // Corner 1 shares Y with the dragged corner, X with the fixed anchor.
+      expect(controller.points[corner1Id]!.x, closeTo(10, 1e-9));
+      expect(controller.points[corner1Id]!.y, closeTo(0, 1e-9));
+      // Corner 3 shares X with the dragged corner, Y with the fixed anchor.
+      expect(controller.points[corner3Id]!.x, closeTo(0, 1e-9));
+      expect(controller.points[corner3Id]!.y, closeTo(8, 1e-9));
+      // The centre must track the new true centre too.
+      final center = controller.points[rectangle.centerPointId!]!;
+      expect(center.x, closeTo(5, 1e-9));
+      expect(center.y, closeTo(4, 1e-9));
+    });
+
+    test('once the centre Point is gone (no longer intact), dragging a corner falls back to the '
+        'ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      // Direct local removal (see the analogous Ellipse fallback test's own
+      // doc comment) - exactly what [_intactRectangleForPoint]'s live
+      // points-map check reads, with no other side effects.
+      controller.points.remove(rectangle.centerPointId);
+      final corner1Before = controller.points[rectangle.cornerPointIds[1]]!;
+
+      final corner0Id = rectangle.cornerPointIds[0];
+      final corner0 = controller.points[corner0Id]!;
+      controller.cursorX = corner0.x;
+      controller.cursorY = corner0.y;
+      expect(controller.beginPointDrag(corner0Id), isTrue);
+      await controller.updatePointDrag(0, 0);
+
+      // The closed-form path (which would have moved it instantly, per the
+      // test above) didn't run - corner 1 never moved.
+      final corner1After = controller.points[rectangle.cornerPointIds[1]]!;
+      expect(corner1After.x, closeTo(corner1Before.x, 1e-9));
+      expect(corner1After.y, closeTo(corner1Before.y, 1e-9));
+    });
+  });
+
   test('snapCandidatePointId is null outside draw mode and when nothing is nearby', () {
     controller.cursorX = 0;
     controller.cursorY = 0;
@@ -1993,8 +2546,10 @@ void main() {
     final end = controller.points[arc.endPointId]!;
     expect(end.x, closeTo(0, 1e-9));
     expect(end.y, closeTo(5, 1e-9));
-    // Two independent radius DistanceConstraints: center-start, center-end.
-    expect(controller.constraints.length, 2);
+    // Two independent radius DistanceConstraints: center-start, center-end,
+    // plus the CoincidentConstraint tying the new centre Point to the
+    // origin (see SketchController._pointIdAt's own doc comment).
+    expect(controller.constraints.length, 3);
   });
 
   test('on-device feedback: a small clockwise cursor sweep after placing the start Point creates a '
@@ -2209,8 +2764,12 @@ void main() {
     const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
     // Default anchor for this Line's DistanceConstraint label, per
     // _paintDistanceDimension's own layout: the two Points' screen
-    // positions, each nudged 18px along the perpendicular normal, averaged.
-    const defaultAnchor = Offset(500, 318);
+    // positions, each nudged 18px along the perpendicular normal, then
+    // averaged - the normal here is _canonicalPerpendicular's fixed
+    // "prefer up-screen" convention (negative dy), not raw
+    // Offset(-delta.dy, delta.dx), so a rightward line offsets *up* (300 -
+    // 18 = 282), not down.
+    const defaultAnchor = Offset(500, 282);
 
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), constraintId);
 
@@ -2218,8 +2777,15 @@ void main() {
     controller.updateLabelDrag(const Offset(30, -10));
     controller.endLabelDrag();
 
+    // On-device feedback ("dimensions should be movable anywhere"): the
+    // drag's perpendicular component (-10 along the up-pointing normal, so
+    // the line itself moves a further 10px up: 282 - 10 = 272) and its
+    // tangential component (+30 along the line's own rightward direction,
+    // sliding the label - not just the whole line - 30px right) are now
+    // both honored, computed once by _dimensionLabelPlacement and reused
+    // identically by the painter and this hit-test.
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), isNull);
-    expect(dimensionLabelAt(controller, transform, const Offset(530, 308), 5), constraintId);
+    expect(dimensionLabelAt(controller, transform, const Offset(530, 272), 5), constraintId);
   });
 
   test(
@@ -2252,6 +2818,170 @@ void main() {
         .singleWhere((i) => i.constraintId == constraintId);
     expect(afterItem.sketchLocalOffsetDistance, 3.5);
     expect(controller.linearOffsetDistanceFor(constraintId), 3.5);
+  });
+
+  test(
+      'bug fix (on-device feedback: "the linear dimension only moves left/right"): '
+      'setLinearAlongOffset flows through constraintOverlayItems as sketchLocalAlongOffset for a '
+      'confirmed DistanceConstraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    controller.tapGhost('length');
+    await controller.confirmGhostValue('length', 25.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintLinearDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalAlongOffset, isNull);
+    expect(controller.linearAlongOffsetFor(constraintId), isNull);
+
+    controller.setLinearAlongOffset(constraintId, 4.0);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintLinearDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalAlongOffset, 4.0);
+    expect(controller.linearAlongOffsetFor(constraintId), 4.0);
+  });
+
+  test(
+      'bug fix (on-device feedback: "radius and diameter dimensions are locked a set distance '
+      'from the arc or circle - I should be able to move them anywhere"): setRadialLegLength '
+      'flows through constraintOverlayItems as sketchLocalLegLength for a confirmed radial '
+      'DistanceConstraint, camera-independent unlike labelOffset', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+    await controller.confirmGhostValue('radius', 5.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintRadialDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalLegLength, isNull);
+    expect(controller.radialLegLengthFor(constraintId), isNull);
+
+    controller.setRadialLegLength(constraintId, 12.0);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintRadialDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalLegLength, 12.0);
+    expect(controller.radialLegLengthFor(constraintId), 12.0);
+  });
+
+  test(
+      'bug fix (on-device feedback: "dimensions should match technical drawing conventions"): '
+      'setAngleArcRadius flows through constraintOverlayItems as sketchLocalArcRadius for a '
+      'confirmed AngleConstraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // horizontal line, away from its own midpoint
+    await controller.handleCanvasTap(0.1, 8); // vertical line, away from its own midpoint
+    await controller.confirmGhostValue('angle', 90.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is AngleConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalArcRadius, isNull);
+    expect(controller.angleArcRadiusFor(constraintId), isNull);
+
+    controller.setAngleArcRadius(constraintId, 2.5);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalArcRadius, 2.5);
+    expect(controller.angleArcRadiusFor(constraintId), 2.5);
+  });
+
+  test(
+      'bug fix (same class as linear dimension\'s own along-offset fix): setAngleAlongOffset '
+      'flows through constraintOverlayItems as sketchLocalAlongOffset for a confirmed '
+      'AngleConstraint', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1); // horizontal line, away from its own midpoint
+    await controller.handleCanvasTap(0.1, 8); // vertical line, away from its own midpoint
+    await controller.confirmGhostValue('angle', 90.0);
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is AngleConstraintDto).key;
+
+    final beforeItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(beforeItem.sketchLocalAlongOffset, isNull);
+    expect(controller.angleAlongOffsetFor(constraintId), isNull);
+
+    controller.setAngleAlongOffset(constraintId, 1.5);
+
+    final afterItem = controller
+        .constraintOverlayItems()
+        .whereType<ConstraintAngleDimensionItem>()
+        .singleWhere((i) => i.constraintId == constraintId);
+    expect(afterItem.sketchLocalAlongOffset, 1.5);
+    expect(controller.angleAlongOffsetFor(constraintId), 1.5);
+  });
+
+  test(
+      'bug fix (on-device feedback: "when zooming in and out, the dimensions should not move '
+      'relative to the geometry"): labelOffsetForZoom rescales a raw screen-pixel offset recorded '
+      'at one pixelsPerUnit back to the same effective sketch-local vector at a different one',
+      () {
+    controller.beginLabelDrag('c0');
+    controller.updateLabelDrag(const Offset(20, 0), 10.0); // 2.0 sketch units at 10 px/unit
+    controller.endLabelDrag();
+
+    expect(controller.labelOffsetFor('c0'), const Offset(20, 0));
+    // Same pixelsPerUnit it was recorded at - unchanged.
+    expect(controller.labelOffsetForZoom('c0', 10.0), const Offset(20, 0));
+    // Zoomed in 2x since the drag - the same 2.0 sketch-unit offset is now
+    // 40px, not still 20px (the pre-fix bug: it used to stay a fixed 20px
+    // regardless of zoom, silently drifting relative to the geometry).
+    expect(controller.labelOffsetForZoom('c0', 20.0), const Offset(40, 0));
+    // Zoomed out 4x - correspondingly smaller.
+    expect(controller.labelOffsetForZoom('c0', 2.5), const Offset(5, 0));
+  });
+
+  test(
+      'labelOffsetForZoom falls back to the raw, unscaled offset when there is no recorded zoom '
+      'reference yet (e.g. a label offset written before this fix shipped, or via the embedded 3D '
+      'viewport\'s own fallback drag path, which passes no pixelsPerUnit)', () {
+    controller.beginLabelDrag('c0');
+    controller.updateLabelDrag(const Offset(15, 5)); // no pixelsPerUnit passed
+    controller.endLabelDrag();
+
+    expect(controller.labelOffsetForZoom('c0', 999.0), const Offset(15, 5));
   });
 
   test('updateLabelDrag sums successive deltas onto the offset', () async {
@@ -2335,7 +3065,14 @@ void main() {
 
     expect(controller.closedProfileFills, hasLength(1));
     expect(controller.closedProfileFills.single.pointIds, hasLength(3));
-    expect(controller.closedProfileFills.single.pointIds.toSet(), controller.points.keys.toSet());
+    // Bug fix: the origin itself is no longer one of the loop's own Points
+    // (see SketchController._pointIdAt's own doc comment) - it sits
+    // alongside the loop, merely coincident with one of its vertices, so
+    // it's excluded from this comparison.
+    expect(
+      controller.closedProfileFills.single.pointIds.toSet(),
+      controller.points.keys.where((id) => id != controller.originPointId).toSet(),
+    );
   });
 
   test(
@@ -2463,21 +3200,29 @@ void main() {
     expect(controller.plane, 'XY');
   });
 
-  test('tapping within the snap radius of the origin lands exactly on its real point id', () async {
+  test(
+      'bug fix (on-device feedback: "no entity should be able to use the origin point as one of '
+      'its points - there should be a new point with a coincidence constraint created when a '
+      'point is dropped on the origin, otherwise the user can\'t decouple the entity from the '
+      'origin"): tapping within the snap radius of the origin creates a new, distinct Point tied '
+      'to it by a CoincidentConstraint, not a direct reuse of the origin\'s own id', () async {
     controller.selectDrawTool(SketchTool.line);
 
     await controller.handleCanvasTap(0.1, 0.1);
 
-    expect(controller.chainFirstPointId, controller.originPointId);
-    expect(controller.points.length, 1); // reused the origin - no new coincident point
+    expect(controller.chainFirstPointId, isNot(controller.originPointId));
+    expect(controller.points.length, 2); // the origin, plus a new Point coincident with it
     expect(controller.errorMessage, isNull);
   });
 
-  test('a line cannot snap both ends onto the origin - the second tap still places a new point', () async {
+  test(
+      'a line placed with both taps within the origin\'s snap radius gets two distinct, '
+      'newly-created Points, each individually coincident with the origin - never the origin\'s '
+      'own id, and never each other\'s (same fix as above)', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0); // chain starts at the origin
+    await controller.handleCanvasTap(0, 0);
     final startId = controller.chainFirstPointId;
-    expect(startId, controller.originPointId);
+    expect(startId, isNot(controller.originPointId));
 
     // Still hovering the origin for the second tap of the same segment.
     await controller.handleCanvasTap(0, 0);
@@ -2485,8 +3230,33 @@ void main() {
     expect(controller.lines.length, 1);
     final line = controller.lines.values.first;
     expect(line.startPointId, startId);
-    expect(line.endPointId, isNot(startId)); // excluded - falls back to a new Point
+    expect(line.endPointId, isNot(startId));
+    expect(line.endPointId, isNot(controller.originPointId));
     expect(controller.errorMessage, isNull);
+  });
+
+  test(
+      'bug fix: placing a Circle centred on the origin creates a new, distinct centre Point tied '
+      'to the origin by a real CoincidentConstraint (rolled out via _pointIdAt to every '
+      'tap-to-place tool, not just the standalone Point tool)', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0.1, 0.1); // within snap radius of the origin
+    final centerId = controller.circleCenterPointId;
+    expect(centerId, isNot(controller.originPointId));
+
+    await controller.handleCanvasTap(5, 0);
+
+    final circle = controller.circles.values.single;
+    expect(circle.centerPointId, centerId);
+    final coincidentToOrigin = controller.constraints.values
+        .whereType<CoincidentConstraintDto>()
+        .where((c) => c.pointAId == controller.originPointId || c.pointBId == controller.originPointId)
+        .toList();
+    expect(coincidentToOrigin, hasLength(1));
+    expect(
+      {coincidentToOrigin.single.pointAId, coincidentToOrigin.single.pointBId},
+      {centerId, controller.originPointId},
+    );
   });
 
   test('a circle cannot be completed with a zero radius - tapping back on the centre is rejected', () async {
@@ -2498,7 +3268,10 @@ void main() {
     // back to some other nearby Point the way a Line's second tap does.
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0); // center snaps to the origin
-    expect(controller.circleCenterPointId, controller.originPointId);
+    // Bug fix (on-device feedback: "no entity should be able to use the
+    // origin point as one of its points"): a new, distinct centre Point
+    // coincident with the origin now, not the origin's own id directly.
+    expect(controller.circleCenterPointId, isNot(controller.originPointId));
 
     // Still hovering the origin for the radius tap.
     await controller.handleCanvasTap(0, 0);
@@ -2689,9 +3462,11 @@ void main() {
     expect(controller.errorMessage, isNull);
     expect(controller.polygonInProgress, isFalse);
     expect(controller.lines.length, 5);
+    // Bug fix: the origin, plus a new centre Point coincident with it (see
+    // SketchController._pointIdAt's own doc comment), plus the 5 vertices.
     expect(
       controller.points.length,
-      1 /* origin/center */ + 5,
+      2 /* origin + centre */ + 5,
     );
     expect(controller.constraints.values.whereType<EqualLengthConstraintDto>().length, 4);
     final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>().toList();
@@ -2905,19 +3680,20 @@ void main() {
     );
   });
 
-  test('togglePolygonGuideCircles flips showPolygonGuideCircles, reflected in the next ghost preview',
-      () async {
-    expect(controller.showPolygonGuideCircles, isTrue);
+  test(
+      'togglePolygonReferenceCircles flips createPolygonReferenceCircles, reflected in the next '
+      'ghost preview', () async {
+    expect(controller.createPolygonReferenceCircles, isFalse);
     controller.selectDrawTool(SketchTool.polygon);
     await controller.handleCanvasTap(0, 0);
     controller.cursorX = 5;
     controller.cursorY = 0;
-    expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isTrue);
-
-    controller.togglePolygonGuideCircles();
-
-    expect(controller.showPolygonGuideCircles, isFalse);
     expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isFalse);
+
+    controller.togglePolygonReferenceCircles();
+
+    expect(controller.createPolygonReferenceCircles, isTrue);
+    expect((controller.activeDrawGhost as PolygonGhost).showGuideCircles, isTrue);
   });
 
   test(
@@ -2938,6 +3714,65 @@ void main() {
     await controller.undo();
 
     expect(controller.polygons, isEmpty);
+  });
+
+  test(
+      'bug fix (on-device feedback: "the 2 construction circles should be drawn and visible to the '
+      'user to dimension and use in the sketch - at the moment they are not shown after placing '
+      'the polygon"): with createPolygonReferenceCircles toggled on, placing a Polygon also '
+      'creates two real, selectable Circles in controller.circles, and undo removes them too',
+      () async {
+    expect(controller.createPolygonReferenceCircles, isFalse, reason: 'off by default');
+    controller.togglePolygonReferenceCircles();
+    expect(controller.circles, isEmpty);
+
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+
+    final polygon = controller.polygons.values.single;
+    expect(polygon.circumscribedCircleId, isNotNull);
+    expect(polygon.inscribedCircleId, isNotNull);
+    expect(controller.circles.keys, containsAll([polygon.circumscribedCircleId, polygon.inscribedCircleId]));
+
+    final circumscribed = controller.circles[polygon.circumscribedCircleId]!;
+    expect(circumscribed.centerPointId, polygon.centerPointId);
+    expect(circumscribed.radiusPointId, polygon.vertexPointIds[0]);
+    // Every cardinal Point must have actually been fetched into
+    // controller.points, not just referenced by id.
+    for (final id in circumscribed.cardinalPointIds) {
+      expect(controller.points.containsKey(id), isTrue);
+    }
+
+    final inscribed = controller.circles[polygon.inscribedCircleId]!;
+    expect(inscribed.centerPointId, polygon.centerPointId);
+    final inscribedRadiusPoint = controller.points[inscribed.radiusPointId];
+    expect(inscribedRadiusPoint, isNotNull);
+    final center = controller.points[polygon.centerPointId]!;
+    final actualInradius = math.sqrt(
+      math.pow(inscribedRadiusPoint!.x - center.x, 2) + math.pow(inscribedRadiusPoint.y - center.y, 2),
+    );
+    expect(actualInradius, closeTo(10.0 * math.cos(math.pi / 6), 1e-6));
+
+    await controller.undo();
+
+    expect(controller.circles.keys, isNot(containsAll([polygon.circumscribedCircleId, polygon.inscribedCircleId])));
+  });
+
+  test(
+      'createPolygonReferenceCircles off (the default) creates a Polygon with no reference '
+      'circles at all', () async {
+    expect(controller.createPolygonReferenceCircles, isFalse);
+
+    controller.selectDrawTool(SketchTool.polygon);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+
+    final polygon = controller.polygons.values.single;
+    expect(polygon.circumscribedCircleId, isNull);
+    expect(polygon.inscribedCircleId, isNull);
+    expect(controller.circles, isEmpty);
   });
 
   test('a placed polygon drops out of controller.polygons once one of its Points is deleted',
@@ -3082,6 +3917,630 @@ void main() {
     expect(line2.endPointId, arc1.startPointId);
   });
 
+  test(
+      'dragging an intact Slot corner recomputes every other corner instantly via the closed-form '
+      'path - no constraint solve involved at all (sketcher rebuild: "the most robust method for '
+      'defining these shapes" - a formula has exactly one answer, so there is no wrong root for a '
+      'solver to find in the first place). Confirmed by the complete absence of any /solve call '
+      'during the drag itself, not just by the end result looking right', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(10, 5); // radius 5
+    controller.exitToSelectMode();
+    final arc1 = controller.arcs.values.first;
+    final arc2 = controller.arcs.values.last;
+    final aId = arc1.startPointId;
+    final cIdBefore = arc2.startPointId;
+    final cPointBefore = controller.points[cIdBefore]!;
+
+    backend.requestLog.clear();
+    expect(controller.beginPointDrag(aId), isTrue);
+    await controller.updatePointDrag(2, 8); // (0,5) dragged to (2,8) - a bigger radius
+
+    expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+        reason: 'the closed-form path never needs to solve anything');
+    // Every corner recomputed instantly, in the very same call - not just
+    // the touched one.
+    final cPointAfter = controller.points[cIdBefore]!;
+    expect(cPointAfter.y, isNot(closeTo(cPointBefore.y, 1e-9)));
+    final newRadius = math.sqrt(math.pow(controller.points[aId]!.x - 0, 2) + math.pow(controller.points[aId]!.y, 2));
+    final cRadius = math.sqrt(
+      math.pow(cPointAfter.x - 20, 2) + math.pow(cPointAfter.y, 2),
+    );
+    expect(cRadius, closeTo(newRadius, 1e-6));
+  });
+
+  test(
+      'once a Slot is no longer intact (one of its own Lines individually gone), dragging its '
+      'remaining corners falls back to the ordinary drag path instead of the closed-form one - '
+      'the shape is no longer intact, so the formula that assumed it still had all its own pieces '
+      'no longer applies. Confirmed by the sibling corner staying put instead of being instantly '
+      'recomputed, which only the closed-form path ever does synchronously', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(10, 5); // radius 5
+    controller.exitToSelectMode();
+    final arc1 = controller.arcs.values.first;
+    final arc2 = controller.arcs.values.last;
+    final aId = arc1.startPointId;
+    final cId = arc2.startPointId;
+
+    final line1 = controller.lines.values.firstWhere(
+      (line) => !line.construction && (line.startPointId == arc1.endPointId || line.endPointId == arc1.endPointId),
+    );
+    // Direct local removal, not deleteSelected(): a real delete now
+    // correctly cascades the *whole* Slot away (computeDeleteCascade's own
+    // Slot block - see the on-device feedback fix for "some points are not
+    // deleting because they are part of a slot but the slot has been
+    // deleted"), so there's no longer a "partially trimmed but the Slot
+    // record still hangs around" state reachable that way. Removing the
+    // Line directly from the local cache is exactly what
+    // [_intactSlotForPoint]'s live lines-map check reads, with no other
+    // side effects - the same pattern the Ellipse/Rectangle fallback tests
+    // already use for the same reason.
+    controller.lines.remove(line1.id);
+    final cPointBefore = controller.points[cId]!;
+
+    expect(controller.beginPointDrag(aId), isTrue);
+    await controller.updatePointDrag(2, 8);
+
+    // The sibling corner never moved - the closed-form path (which would
+    // have recomputed it instantly, same as the test above) didn't run,
+    // because the Slot is no longer intact.
+    final cPointAfter = controller.points[cId]!;
+    expect(cPointAfter.x, closeTo(cPointBefore.x, 1e-9));
+    expect(cPointAfter.y, closeTo(cPointBefore.y, 1e-9));
+  });
+
+  group('Circle closed-form drag (on-device feedback: "when dragging a circle it jumps around '
+      'instead of moving smoothly. I think it\'s struggling with the solve" - reproduced directly '
+      'against the real solver: a freshly-drawn Circle\'s radius DistanceConstraint is provisional, '
+      'so nothing pins it during a general-path drag and the radius can collapse toward zero in a '
+      'single step. Closed-form eliminates the solver from this drag entirely, the same fix already '
+      'shipped for Polygon/Slot)', () {
+    test('dragging the centre translates every cardinal Point by the same delta, radius unchanged, '
+        'with zero solver/network calls', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20); // centre
+      await controller.handleCanvasTap(30, 20); // radius 10 (always placed north regardless of tap angle)
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+      final eastBefore = controller.points[circle.cardinalPointIds[1]]!;
+
+      backend.requestLog.clear();
+      // Origin cursor set to the centre's own current position first, so
+      // updatePointDrag's (x, y) argument below lands the centre at exactly
+      // that absolute sketch-space position.
+      final centre0 = controller.points[circle.centerPointId]!;
+      controller.cursorX = centre0.x;
+      controller.cursorY = centre0.y;
+      expect(controller.beginPointDrag(circle.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 25); // centre moves (5, 5)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      final eastAfter = controller.points[circle.cardinalPointIds[1]]!;
+      expect(northAfter.x, closeTo(northBefore.x + 5, 1e-9));
+      expect(northAfter.y, closeTo(northBefore.y + 5, 1e-9));
+      expect(eastAfter.x, closeTo(eastBefore.x + 5, 1e-9));
+      expect(eastAfter.y, closeTo(eastBefore.y + 5, 1e-9));
+    });
+
+    test('dragging the radius Point (north) resizes every other cardinal Point too - the exact '
+        'scenario that used to collapse toward zero under the general solver path', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20); // centre
+      await controller.handleCanvasTap(30, 20); // radius 10
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      expect(circle.radiusPointId, circle.cardinalPointIds.first, reason: 'sanity check: this tool always places the radius point north');
+
+      backend.requestLog.clear();
+      // Origin cursor set to north's own current position first, so
+      // updatePointDrag's (x, y) argument below lands north at exactly that
+      // absolute sketch-space position.
+      final north0 = controller.points[circle.radiusPointId]!;
+      controller.cursorX = north0.x;
+      controller.cursorY = north0.y;
+      expect(controller.beginPointDrag(circle.radiusPointId), isTrue);
+      await controller.updatePointDrag(20, 45); // north dragged out to radius 25
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final north = controller.points[circle.radiusPointId]!;
+      expect(north.x, closeTo(20, 1e-6));
+      expect(north.y, closeTo(45, 1e-6));
+      for (final id in circle.cardinalPointIds.skip(1)) {
+        final p = controller.points[id]!;
+        final radius = math.sqrt(math.pow(p.x - 20, 2) + math.pow(p.y - 20, 2));
+        expect(radius, closeTo(25, 1e-6), reason: 'every cardinal Point must track the new radius exactly, not collapse');
+      }
+    });
+
+    test('once a cardinal Point is individually deleted (no longer intact), dragging the centre '
+        'falls back to the ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20);
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final eastId = circle.cardinalPointIds[1];
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: eastId));
+      await controller.deleteSelected();
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+
+      expect(controller.beginPointDrag(circle.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 25);
+
+      // The closed-form path (which would have translated it instantly, per
+      // the test above) didn't run - north never moved.
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      expect(northAfter.x, closeTo(northBefore.x, 1e-9));
+      expect(northAfter.y, closeTo(northBefore.y, 1e-9));
+    });
+  });
+
+  group('Arc closed-form drag (same on-device bug/fix as Circle - see that group\'s own doc comment - '
+      'an Arc\'s own radius DistanceConstraint is provisional too, so the general solver path left it '
+      'genuinely free during a drag)', () {
+    test('dragging the centre translates start and end by the same delta, radius and sweep unchanged, '
+        'with zero solver/network calls', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      // Off the origin on purpose - the origin itself can never be dragged
+      // (see beginPointDrag's own origin guard), and this test drags the
+      // centre.
+      await controller.handleCanvasTap(20, 20); // center
+      await controller.handleCanvasTap(25, 20); // start, radius 5
+      await controller.handleCanvasTap(20, 120); // end, lands at (20, 25)
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+      final startBefore = controller.points[arc.startPointId]!;
+      final endBefore = controller.points[arc.endPointId]!;
+
+      backend.requestLog.clear();
+      final center0 = controller.points[arc.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(arc.centerPointId), isTrue);
+      await controller.updatePointDrag(center0.x + 10, center0.y + 10); // centre moves (10, 10)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final startAfter = controller.points[arc.startPointId]!;
+      final endAfter = controller.points[arc.endPointId]!;
+      expect(startAfter.x, closeTo(startBefore.x + 10, 1e-9));
+      expect(startAfter.y, closeTo(startBefore.y + 10, 1e-9));
+      expect(endAfter.x, closeTo(endBefore.x + 10, 1e-9));
+      expect(endAfter.y, closeTo(endBefore.y + 10, 1e-9));
+    });
+
+    test('dragging the start Point resizes the radius and rescales the end Point, preserving the '
+        'end Point\'s own angle from centre exactly rather than recomputing it - the exact scenario '
+        'that used to collapse toward zero under the general solver path', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(5, 0); // start, radius 5
+      await controller.handleCanvasTap(0, 100); // end, lands at (0, 5) - 90 degrees from start
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+
+      backend.requestLog.clear();
+      final start0 = controller.points[arc.startPointId]!;
+      controller.cursorX = start0.x;
+      controller.cursorY = start0.y;
+      expect(controller.beginPointDrag(arc.startPointId), isTrue);
+      await controller.updatePointDrag(25, 0); // start dragged out to radius 25
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final start = controller.points[arc.startPointId]!;
+      expect(start.x, closeTo(25, 1e-6));
+      expect(start.y, closeTo(0, 1e-6));
+      final end = controller.points[arc.endPointId]!;
+      final endRadius = math.sqrt(math.pow(end.x, 2) + math.pow(end.y, 2));
+      expect(endRadius, closeTo(25, 1e-6), reason: 'end Point must track the new radius exactly, not collapse');
+      final endAngle = math.atan2(end.y, end.x);
+      expect(endAngle, closeTo(math.pi / 2, 1e-6), reason: 'end Point\'s own angle from centre must be preserved');
+    });
+
+    test('once the end Point is deleted (no longer intact), dragging the centre falls back to the '
+        'ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      // Off the origin on purpose - see the test above's own doc comment.
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(25, 20);
+      await controller.handleCanvasTap(20, 120);
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: arc.endPointId));
+      await controller.deleteSelected();
+      final startBefore = controller.points[arc.startPointId]!;
+
+      final center0 = controller.points[arc.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(arc.centerPointId), isTrue);
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5);
+
+      // The closed-form path (which would have translated it instantly, per
+      // the test above) didn't run - start never moved.
+      final startAfter = controller.points[arc.startPointId]!;
+      expect(startAfter.x, closeTo(startBefore.x, 1e-9));
+      expect(startAfter.y, closeTo(startBefore.y, 1e-9));
+    });
+  });
+
+  test(
+      'dragging a Slot corner reflows the rest of the shape sanely, even when the Slot was drawn '
+      'starting at the sketch origin (on-device feedback: "dragging constrained entities is still '
+      'horrible... one of the tangent constraints found the wrong solution" - the local solver pins '
+      'both the dragged Point *and* the sketch origin into the fixed group every drag-solve; when '
+      'the Slot\'s own first center happens to be the origin Point (this test\'s (0, 0) first tap '
+      'snaps onto it, same as any real drag started on the visible crosshair), that\'s two fixed '
+      'Points on one redundant Tangent+EqualRadius web instead of one, which a diagnostic probe '
+      'reproducing this exact fixture found could converge (resultCode 5) to a wildly wrong root - '
+      'a non-anchor Point landing thousands of units away - without the anchor-drift check above '
+      'ever seeing it, since the anchors themselves land exactly where pinned)', () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    localController.selectDrawTool(SketchTool.slot);
+    await localController.handleCanvasTap(0, 0); // snaps onto the sketch origin Point
+    await localController.handleCanvasTap(20, 0);
+    await localController.handleCanvasTap(10, 5); // radius 5
+    localController.exitToSelectMode();
+
+    final arc1 = localController.arcs.values.first; // centered at the origin
+    final arc2 = localController.arcs.values.last; // centered at (20, 0)
+    expect(localController.points[arc1.centerPointId]!.x, closeTo(0, 1e-9));
+    expect(localController.points[arc1.centerPointId]!.y, closeTo(0, 1e-9));
+    final aId = arc1.startPointId;
+
+    final grabbed = localController.beginPointDrag(aId);
+    expect(grabbed, isTrue);
+    // Gentle incremental drag - the same shape the diagnostic probe used to
+    // reproduce the blow-up, expressed as raw cursor positions (the drag
+    // started with the cursor at (10, 5), 'a' at (0, 5) - see
+    // updatePointDrag's own doc comment for the offset math).
+    for (final cursor in [(10.0, 6.0), (8.0, 8.0), (6.0, 10.0), (4.0, 12.0), (2.0, 14.0)]) {
+      await localController.updatePointDrag(cursor.$1, cursor.$2);
+    }
+
+    // The whole point of the fix: no other Point may land somewhere wildly
+    // far from the Slot's own actual size (a ~20x10 shape), whether that
+    // came from a (correctly-guarded-against) local blow-up or a sane
+    // fallback - a difference of thousands of units is never a legitimate
+    // reflow of a 5-unit drag.
+    for (final id in [arc1.centerPointId, arc1.endPointId, arc2.centerPointId, arc2.startPointId, arc2.endPointId]) {
+      final p = localController.points[id]!;
+      expect(p.x.abs() < 500 && p.y.abs() < 500, isTrue,
+          reason: 'Point $id blew up to (${p.x}, ${p.y})');
+    }
+  });
+
+  test(
+      'dragging a Polygon vertex through many small steps never lets its EqualLength chain drift '
+      'out of tolerance (on-device feedback, round 2: a raw, zero-user-dimension hexagon dragged '
+      'into a shape with a visibly short sliver edge - a real EqualLength violation the anchor-drift '
+      'and blow-up guards above cannot see, since a Polygon drag never moves anything far or flips '
+      'an Arc side. Root-caused via a diagnostic probe reusing this exact 6-side EqualLength + '
+      'EqualRadius + AngleConstraint fixture: many small incremental re-seeded local solves in a '
+      'row - an ordinary long finger-drag, not any single big jump - compound real, geometry-visible '
+      'drift in this redundant constraint chain even while every individual step reports converged)',
+      () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    localController.selectDrawTool(SketchTool.polygon);
+    localController.setPolygonSides(6);
+    await localController.handleCanvasTap(0, 0); // centre snaps onto the sketch origin Point
+    await localController.handleCanvasTap(10, 0); // first vertex - radius 10
+    localController.exitToSelectMode();
+
+    final polygon = localController.polygons.values.single;
+    final v0Id = polygon.vertexPointIds.first;
+    final grabbed = localController.beginPointDrag(v0Id);
+    expect(grabbed, isTrue);
+
+    // The same wobbling-circle drag path the diagnostic probe used to
+    // reproduce the drift - many tiny re-seeded steps, not one big jump.
+    // The drag started with the cursor at (10, 0), v0 also at (10, 0), so
+    // updatePointDrag's own origin-offset math (see its doc comment)
+    // collapses to "cursor position == target position" here.
+    for (var i = 1; i <= 200; i++) {
+      final angle = 2 * math.pi * i / 200 * 3; // 3 full loops
+      final radius = 10.0 + 3.0 * math.sin(i * 0.37); // wobble the radius too
+      await localController.updatePointDrag(radius * math.cos(angle), radius * math.sin(angle));
+    }
+
+    double length(String lineId) {
+      final line = localController.lines[lineId]!;
+      final a = localController.points[line.startPointId]!;
+      final b = localController.points[line.endPointId]!;
+      return math.sqrt(math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2));
+    }
+
+    final lengths = polygon.lineIds.map(length).toList();
+    final maxLength = lengths.reduce(math.max);
+    final minLength = lengths.reduce(math.min);
+    expect(maxLength - minLength, lessThan(1e-2), reason: 'EqualLength chain drifted: $lengths');
+  });
+
+  group('On-device feedback: deleting a Point/Line that belongs to a Slot/Rectangle no longer leaves '
+      'the owning entity behind, still referencing it server-side ("some points are not deleting '
+      'because they are part of a slot but the slot has been deleted")', () {
+    test('computeDeleteCascade routes a *partial* hit (one Slot corner Point) to collapsedSlots, not '
+        'slots, and leaves its own directly-touched Arc/Line in the ordinary arcs/lines cascade '
+        'undeduped - only the pieces actually selected/pulled in are slated for deletion, everything '
+        'else the Slot owns must survive', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+
+      final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: slot.aPointId)]);
+
+      expect(cascade.slots, isEmpty);
+      expect(cascade.collapsedSlots, {slot.id});
+      // aPointId is arc1's own start Point and line2's own end Point - both
+      // pulled in and left in the ordinary cascade, not deduped away.
+      expect(cascade.arcs, contains(slot.arc1Id));
+      expect(cascade.lines, contains(slot.line2Id));
+      // Nothing else the Slot owns was touched by this selection - must NOT
+      // be swept in too.
+      expect(cascade.arcs, isNot(contains(slot.arc2Id)));
+      expect(cascade.lines, isNot(contains(slot.centerlineId)));
+      expect(cascade.lines, isNot(contains(slot.line1Id)));
+    });
+
+    test('deleting a single Slot corner Point succeeds with no error, collapses just the Slot '
+        'bookkeeping record, and leaves the rest of the Slot\'s own geometry (its other Arc, other '
+        'Lines, other corners) exactly as it was - on-device feedback ("a previous fix went against a '
+        'design requirement... cascadeing deletion needs more finesse. if an entity from a rectangle, '
+        'slot, polygon is deleted it should collapse into lines and constraints"). Previously this '
+        '400ed outright ("Point is still referenced by slot ..."), then a later (now-reverted) fix '
+        'cascade-deleted the *whole* Slot instead of just the one Point - both wrong.', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+      final aId = slot.aPointId;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: aId));
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      // The wrapper bookkeeping is gone - it no longer means anything once
+      // one of its own pieces went away directly.
+      expect(controller.slots, isEmpty);
+      expect(controller.points.containsKey(aId), isFalse);
+      // Only what actually referenced aPointId (arc1, line2) is gone with
+      // it - everything else the Slot used to own survives untouched.
+      expect(controller.arcs.containsKey(slot.arc1Id), isFalse);
+      expect(controller.lines.containsKey(slot.line2Id), isFalse);
+      expect(controller.arcs.containsKey(slot.arc2Id), isTrue);
+      expect(controller.lines.containsKey(slot.centerlineId), isTrue);
+      expect(controller.lines.containsKey(slot.line1Id), isTrue);
+      expect(controller.points.containsKey(slot.bPointId), isTrue);
+      expect(controller.points.containsKey(slot.cPointId), isTrue);
+      expect(controller.points.containsKey(slot.dPointId), isTrue);
+    });
+
+    test('deleting a single Polygon edge Line collapses just the Polygon bookkeeping record - the '
+        'other N-1 edges and every vertex survive untouched', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(30, 0); // center
+      await controller.handleCanvasTap(40, 0); // first vertex
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final deletedLineId = polygon.lineIds[0];
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: deletedLineId));
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.polygons, isEmpty);
+      expect(controller.lines.containsKey(deletedLineId), isFalse);
+      for (final lineId in polygon.lineIds.skip(1)) {
+        expect(controller.lines.containsKey(lineId), isTrue);
+      }
+      for (final vertexId in polygon.vertexPointIds) {
+        expect(controller.points.containsKey(vertexId), isTrue);
+      }
+      expect(controller.points.containsKey(polygon.centerPointId), isTrue);
+    });
+
+    test('deleting a single Rectangle edge Line (the exact on-device repro: "if I create a rectangle '
+        'and I delete one line the whole rectangle gets deleted") collapses just the Rectangle '
+        'bookkeeping record - the other 3 edges, both diagonals, and all 4 corners survive untouched',
+        () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      final deletedLineId = rectangle.lineIds[0];
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: deletedLineId));
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.rectangles, isEmpty);
+      expect(controller.lines.containsKey(deletedLineId), isFalse);
+      for (final lineId in rectangle.lineIds.skip(1)) {
+        expect(controller.lines.containsKey(lineId), isTrue);
+      }
+      final diagonalLineId = rectangle.diagonalLineId;
+      if (diagonalLineId != null) expect(controller.lines.containsKey(diagonalLineId), isTrue);
+      final diagonal2LineId = rectangle.diagonal2LineId;
+      if (diagonal2LineId != null) expect(controller.lines.containsKey(diagonal2LineId), isTrue);
+      for (final cornerId in rectangle.cornerPointIds) {
+        expect(controller.points.containsKey(cornerId), isTrue);
+      }
+    });
+
+    test('undoing a single-Line delete that collapsed a Rectangle restores that one Line generically '
+        '- the Rectangle wrapper itself is not resurrected (there is no backend primitive to reattach '
+        'a wrapper to already-existing geometry), but nothing is lost or duplicated: the same corners '
+        'and every other edge/diagonal were never touched in the first place', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 8);
+      controller.exitToSelectMode();
+      final rectangle = controller.rectangles.values.single;
+      final deletedLineId = rectangle.lineIds[0];
+      final startId = controller.lines[deletedLineId]!.startPointId;
+      final endId = controller.lines[deletedLineId]!.endPointId;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: deletedLineId));
+      await controller.deleteSelected();
+      expect(controller.rectangles, isEmpty);
+      expect(controller.lines.containsKey(deletedLineId), isFalse);
+
+      await controller.undo();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.rectangles, isEmpty); // wrapper stays gone - documented trade-off.
+      final restoredLine = controller.lines.values.singleWhere(
+        (l) =>
+            (l.startPointId == startId && l.endPointId == endId) ||
+            (l.startPointId == endId && l.endPointId == startId),
+      );
+      expect(restoredLine, isNotNull);
+      // No duplicate lines were created between these two corners.
+      expect(
+        controller.lines.values.where(
+          (l) =>
+              (l.startPointId == startId && l.endPointId == endId) ||
+              (l.startPointId == endId && l.endPointId == startId),
+        ),
+        hasLength(1),
+      );
+    });
+
+    test('undoing a fully-consumed Slot delete (every one of its own Points selected, e.g. Select '
+        'All) still recreates the whole Slot with a new id, its own radius intact - the original, '
+        'well-tested add_slot-based undo path, unaffected by the partial-delete/collapse fix above',
+        () async {
+      controller.selectDrawTool(SketchTool.slot);
+      // Off the origin (0,0) deliberately - a tap there would snap/reuse
+      // the sketch's own origin Point instead of creating a fresh centre1
+      // Point, and the origin is always excluded from a Point selection
+      // (see computeDeleteCascade's own selection switch), which would
+      // make this selection wrongly look partial (5 of 6 own Points, not
+      // 6 of 6) rather than the "every one of its own Points" case this
+      // test means to exercise.
+      await controller.handleCanvasTap(30, 0);
+      await controller.handleCanvasTap(50, 0);
+      await controller.handleCanvasTap(40, 5); // radius 5
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+
+      for (final id in [
+        slot.center1PointId,
+        slot.center2PointId,
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+      ]) {
+        controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: id));
+      }
+      final cascade = controller.computeDeleteCascade(controller.selectionSet);
+      expect(cascade.slots, {slot.id});
+      expect(cascade.collapsedSlots, isEmpty);
+
+      await controller.deleteSelected();
+      expect(controller.slots, isEmpty);
+
+      await controller.undo();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.slots.length, 1);
+      final restored = controller.slots.values.single;
+      final center1 = controller.points[restored.center1PointId]!;
+      final a = controller.points[restored.aPointId]!;
+      final radius = math.sqrt(math.pow(a.x - center1.x, 2) + math.pow(a.y - center1.y, 2));
+      expect(radius, closeTo(5, 1e-6));
+    });
+
+    test('Select All then Delete on a Slot does not 404 on a corner Point the Slot\'s own cascade '
+        'already pruned - on-device feedback: "Server returned 404: Point not found" after Select '
+        'All then Delete on a Slot. Root cause: delete_slot prunes its own now-orphaned corner '
+        'Points server-side, exactly like every other shape-delete already does, but the Slot/'
+        'Rectangle/Polygon loops were the only ones not feeding that back into the "already gone, '
+        'do not delete it again" tracking every other shape-delete loop relies on - Select All '
+        'always puts every Point directly in the selection too, so the later explicit per-Point '
+        'delete retried one the Slot loop had already removed', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+
+      // Select All: every Point directly in the selection, exactly as
+      // sketch_ribbon.dart's own Select All does - not just the one that
+      // happens to trigger the Slot's own cascade.
+      for (final id in [
+        slot.center1PointId,
+        slot.center2PointId,
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+      ]) {
+        controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: id));
+      }
+      // Mirrors the real backend's delete_slot: its own corner Points are
+      // pruned as part of deleting the Slot itself (nothing else
+      // references them), reported back the same way delete_line/
+      // delete_circle/etc. already do.
+      backend.prunedPointIdsOnNextDelete = [
+        slot.center1PointId,
+        slot.center2PointId,
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+      ];
+
+      await controller.deleteSelected();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.slots, isEmpty);
+      expect(controller.points.containsKey(slot.aPointId), isFalse);
+      backend.prunedPointIdsOnNextDelete = const [];
+    });
+  });
+
   // --- Phase 6.2.4: Ellipse tool ------------------------------------------
 
   test('activeDrawGhost previews a plain circle while only the ellipse center is placed', () async {
@@ -3158,8 +4617,10 @@ void main() {
         {ellipse.minorPointNegId, ellipse.minorPointId});
     // Major-axis DistanceConstraint, minor-axis DistanceConstraint, 2
     // AtMidpointConstraints (center pinned to each axis Line's midpoint),
-    // and the PerpendicularConstraint tying the two axis Lines together.
-    expect(controller.constraints.length, 5);
+    // the PerpendicularConstraint tying the two axis Lines together, and
+    // the CoincidentConstraint tying the new centre Point to the origin
+    // (see SketchController._pointIdAt's own doc comment).
+    expect(controller.constraints.length, 6);
   });
 
   test('tapping an Ellipse in select mode, away from its defining Points, recognizes SelectionKind.ellipse',
@@ -3234,9 +4695,11 @@ void main() {
     ) as DistanceConstraintDto;
     expect(minorConstraint.distance, closeTo(7.0, 1e-9));
     // Major-axis DistanceConstraint, minor-axis DistanceConstraint, 2
-    // AtMidpointConstraints, and the PerpendicularConstraint tying the two
-    // axis Lines together.
-    expect(controller.constraints.length, 5);
+    // AtMidpointConstraints, the PerpendicularConstraint tying the two axis
+    // Lines together, and the CoincidentConstraint tying the new centre
+    // Point to the origin (see SketchController._pointIdAt's own doc
+    // comment).
+    expect(controller.constraints.length, 6);
   });
 
   test('computeDeleteCascade for a directly-selected Ellipse reports just the Ellipse - its own '
@@ -3399,6 +4862,145 @@ void main() {
       expect(controller.errorMessage, isNull);
       expect(controller.points.containsKey(endPointId), isFalse);
       backend.prunedPointIdsOnNextDelete = const [];
+    });
+  });
+
+  group('Ellipse closed-form drag (same on-device bug/fix as Circle/Arc - both of an Ellipse\'s own '
+      'radius DistanceConstraints are provisional too, see the backend Ellipse docstring)', () {
+    test('dragging the centre translates every axis Point by the same delta, both radii and the '
+        'rotation unchanged, with zero solver/network calls', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      // Off the origin on purpose - the origin itself can never be dragged
+      // (see beginPointDrag's own origin guard), and this test drags the
+      // centre.
+      await controller.handleCanvasTap(20, 20); // center
+      await controller.handleCanvasTap(30, 20); // major point - radius 10
+      await controller.handleCanvasTap(25, 24); // minor radius 4
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+      final majorBefore = controller.points[ellipse.majorPointId]!;
+      final majorNegBefore = controller.points[ellipse.majorPointNegId]!;
+      final minorBefore = controller.points[ellipse.minorPointId]!;
+      final minorNegBefore = controller.points[ellipse.minorPointNegId]!;
+
+      backend.requestLog.clear();
+      final center0 = controller.points[ellipse.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(ellipse.centerPointId), isTrue);
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5); // centre moves (5, 5)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final majorAfter = controller.points[ellipse.majorPointId]!;
+      final majorNegAfter = controller.points[ellipse.majorPointNegId]!;
+      final minorAfter = controller.points[ellipse.minorPointId]!;
+      final minorNegAfter = controller.points[ellipse.minorPointNegId]!;
+      expect(majorAfter.x, closeTo(majorBefore.x + 5, 1e-9));
+      expect(majorAfter.y, closeTo(majorBefore.y + 5, 1e-9));
+      expect(majorNegAfter.x, closeTo(majorNegBefore.x + 5, 1e-9));
+      expect(majorNegAfter.y, closeTo(majorNegBefore.y + 5, 1e-9));
+      expect(minorAfter.x, closeTo(minorBefore.x + 5, 1e-9));
+      expect(minorAfter.y, closeTo(minorBefore.y + 5, 1e-9));
+      expect(minorNegAfter.x, closeTo(minorNegBefore.x + 5, 1e-9));
+      expect(minorNegAfter.y, closeTo(minorNegBefore.y + 5, 1e-9));
+    });
+
+    test('dragging the major-axis Point resizes and rotates the whole ellipse, carrying the minor '
+        'radius along at its old magnitude rather than recomputing it - the exact scenario that used '
+        'to collapse toward zero under the general solver path', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(10, 0); // major point, angle 0, radius 10
+      await controller.handleCanvasTap(5, 4); // minor radius 4
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+
+      backend.requestLog.clear();
+      final major0 = controller.points[ellipse.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipse.majorPointId), isTrue);
+      // Rotate the major axis to 90 degrees and stretch it to radius 20.
+      await controller.updatePointDrag(0, 20);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final major = controller.points[ellipse.majorPointId]!;
+      expect(major.x, closeTo(0, 1e-6));
+      expect(major.y, closeTo(20, 1e-6));
+      final majorNeg = controller.points[ellipse.majorPointNegId]!;
+      expect(majorNeg.x, closeTo(0, 1e-6));
+      expect(majorNeg.y, closeTo(-20, 1e-6));
+      // Minor axis rotates to stay perpendicular (now pointing along -X/+X)
+      // but keeps its own old radius (4), not the major's new one.
+      final minor = controller.points[ellipse.minorPointId]!;
+      final minorRadius = math.sqrt(math.pow(minor.x, 2) + math.pow(minor.y, 2));
+      expect(minorRadius, closeTo(4, 1e-6), reason: 'minor radius must track its own old value, not collapse');
+      expect(minor.y, closeTo(0, 1e-6), reason: 'minor axis must stay perpendicular to the new major axis');
+    });
+
+    test('dragging the minor-axis Point rescales only the minor radius, projected onto the '
+        'perpendicular axis - the major axis is untouched', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0); // center
+      await controller.handleCanvasTap(10, 0); // major point, radius 10
+      await controller.handleCanvasTap(5, 4); // minor radius 4
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+
+      backend.requestLog.clear();
+      final minor0 = controller.points[ellipse.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipse.minorPointId), isTrue);
+      await controller.updatePointDrag(0, 9); // minor point dragged out to radius 9
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final minor = controller.points[ellipse.minorPointId]!;
+      expect(minor.x, closeTo(0, 1e-6));
+      expect(minor.y, closeTo(9, 1e-6));
+      final major = controller.points[ellipse.majorPointId]!;
+      expect(major.x, closeTo(10, 1e-6), reason: 'major axis must be untouched by a minor-axis drag');
+      expect(major.y, closeTo(0, 1e-6));
+    });
+
+    test('once the minor-axis negative Point is gone (no longer intact), dragging the centre '
+        'falls back to the ordinary drag path instead of the closed-form one', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      // Off the origin (unlike every other test in this group) - a
+      // grounded centre with real (non-provisional) AtMidpointConstraints
+      // still attached to it is a pre-existing rigidity-analysis quirk
+      // (unrelated to this change: the *general* path already can't drag
+      // such a centre even while the Ellipse is otherwise untouched) that
+      // would trip this test's own general-path fallback assertion below
+      // for a reason that has nothing to do with what this test verifies.
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20);
+      await controller.handleCanvasTap(25, 24);
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+      // Direct local removal rather than deleteSelected(): a real delete
+      // cascades the minor axis Line (and, in the fake backend, leaves its
+      // now-dangling AtMidpoint/Perpendicular constraints behind) - an
+      // unrelated fixture quirk that trips the *general* solver path's own
+      // over-constrained gating before this test's actual target
+      // ([_intactEllipseForPoint]'s live points-map check) ever gets
+      // exercised. Removing the Point directly from the local cache is
+      // exactly what that check reads, with no other side effects.
+      controller.points.remove(ellipse.minorPointNegId);
+      final majorBefore = controller.points[ellipse.majorPointId]!;
+
+      final center0 = controller.points[ellipse.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(ellipse.centerPointId), isTrue);
+      await controller.updatePointDrag(30, 30);
+
+      // The closed-form path (which would have translated it instantly, per
+      // the test above) didn't run - the major Point never moved.
+      final majorAfter = controller.points[ellipse.majorPointId]!;
+      expect(majorAfter.x, closeTo(majorBefore.x, 1e-9));
+      expect(majorAfter.y, closeTo(majorBefore.y, 1e-9));
     });
   });
 
@@ -3811,13 +5413,12 @@ void main() {
     controller.exitToSelectMode();
     final circleId = controller.circles.keys.first;
 
-    // On the circle's edge (radius 5, centered on the origin) but not near
-    // either of its two real Points - the centre, or the north cardinal
-    // point the radius tap now creates (see SketchController._clickCircleTool's
-    // own doc comment: the second tap only ever measures a distance, so
-    // (5, 0) itself - east - is empty space, unlike north at (0, 5).
-    controller.cursorX = 5;
-    controller.cursorY = 0;
+    // On the circle's edge (radius 5, centered on the origin) but off every
+    // cardinal axis - every Circle gets all four North/East/South/West
+    // Points (see Sketch._add_cardinal_points), so a diagonal spot is the
+    // only genuinely empty-space point on the boundary.
+    controller.cursorX = 5 * math.cos(math.pi / 4);
+    controller.cursorY = 5 * math.sin(math.pi / 4);
 
     final hovered = controller.hoveredEntity();
     expect(hovered, isNotNull);
@@ -4954,6 +6555,34 @@ void main() {
   });
 
   test(
+      'on-device feedback: adding a horizontal dimension between two points that already have a '
+      'vertical one leaves the vertical one in place instead of deleting it - vertical and '
+      'horizontal are complementary, not conflicting, unlike linear-vs-specific', () async {
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('v', 4.0);
+    final verticalId = controller.constraints.values.whereType<DistanceConstraintDto>().single.id;
+
+    // Re-pick the same two points and confirm the complementary orientation.
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(3, 4);
+    await controller.confirmGhostValue('h', 3.0);
+
+    final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>();
+    expect(distanceConstraints.length, 2); // both coexist - not over-writing each other
+    final vertical = distanceConstraints.firstWhere((c) => c.id == verticalId);
+    expect(vertical.orientation, 'vertical');
+    expect(vertical.distance, 4.0);
+    final horizontal = distanceConstraints.firstWhere((c) => c.id != verticalId);
+    expect(horizontal.orientation, 'horizontal');
+    expect(horizontal.distance, 3.0);
+  });
+
+  test(
       'bug-fix: a confirmed horizontal DistanceConstraint renders/hit-tests at its '
       'orientation-aware anchor, not the plain diagonal linear-dimension layout '
       '(this is what made a horizontal dimension look like it "became linear" on-device)',
@@ -5012,11 +6641,10 @@ void main() {
     await controller.handleCanvasTap(10, 0); // radius point -> radius 10
     controller.enterDimensionMode();
 
-    // On the boundary but not on the north cardinal point the radius tap
-    // now creates (see SketchController._clickCircleTool's own doc comment
-    // - the second tap only ever measures a distance, so east (10, 0) is
-    // empty space, unlike north at (0, 10)).
-    await controller.handleCanvasTap(10, 0);
+    // On the boundary but off every cardinal axis - every Circle gets all
+    // four North/East/South/West Points (see Sketch._add_cardinal_points),
+    // so a diagonal spot is the only genuinely empty-space point on it.
+    await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
 
     expect(controller.ghosts.map((g) => g.key).toSet(), {'radius', 'diameter'});
 
@@ -5034,7 +6662,8 @@ void main() {
     await controller.handleCanvasTap(0, 0); // center
     await controller.handleCanvasTap(10, 0); // radius point -> radius 10
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(10, 0); // on the circle's edge
+    // Off every cardinal axis - see Sketch._add_cardinal_points.
+    await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
 
     await controller.confirmGhostValue('diameter', 40.0);
 
@@ -5044,7 +6673,7 @@ void main() {
     // Re-picking the same circle and confirming the radius ghost this time
     // must flip the same (now-existing) constraint's display mode back.
     controller.enterDimensionMode();
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
     await controller.confirmGhostValue('radius', 20.0);
 
     expect(controller.showsDiameterFor(constraint.id), isFalse);
@@ -5137,6 +6766,43 @@ void main() {
     expect(
       controller.isImplicitPolygonEdgeTie(unrelatedLineIds[0], unrelatedLineIds[1]),
       isFalse,
+    );
+  });
+
+  test(
+      'on-device feedback ("the perpendicular constraint on the major and minor axes in an ellipse '
+      'is implicit of the form of an ellipse so it shouldn\'t be visible"): an Ellipse\'s own '
+      'auto-created PerpendicularConstraint between its major/minor axis Lines is hidden from '
+      'constraintOverlayItems, but a genuinely unrelated Perpendicular constraint between two '
+      'ordinary Lines still shows', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+
+    final ellipsePerp = controller.constraints.values.whereType<PerpendicularConstraintDto>().single;
+    expect(controller.isImplicitEllipseAxisPerpendicular(ellipsePerp.line1Id, ellipsePerp.line2Id), isTrue);
+    expect(
+      controller.constraintOverlayItems().whereType<ConstraintLabelItem>().where((i) => i.text == '⟂'),
+      isEmpty,
+    );
+
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(50, 50);
+    await controller.handleCanvasTap(60, 50);
+    controller.finishChain();
+    await controller.handleCanvasTap(50, 60);
+    await controller.handleCanvasTap(50, 70);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(58, 50.1); // first unrelated Line, away from its own midpoint (55, 50)
+    await controller.handleCanvasTap(50.1, 68); // second unrelated Line, away from its own midpoint (50, 65)
+    await controller.addPerpendicularConstraint();
+    final realPerp = controller.constraints.values.whereType<PerpendicularConstraintDto>().last;
+    expect(controller.isImplicitEllipseAxisPerpendicular(realPerp.line1Id, realPerp.line2Id), isFalse);
+    expect(
+      controller.constraintOverlayItems().whereType<ConstraintLabelItem>().where((i) => i.text == '⟂'),
+      isNotEmpty,
     );
   });
 
@@ -5292,7 +6958,12 @@ void main() {
     controller.selectDrawTool(SketchTool.point);
     await controller.handleCanvasTap(5.1, 0.1); // within snapRadius of the line's midpoint (5, 0)
 
-    expect(controller.points.length, 3); // origin + 2 line endpoints + midpoint, no extra
+    // Bug fix (on-device feedback: "no entity should be able to use the
+    // origin point as one of its points"): the Line's own start Point is
+    // now a new Point coincident with the origin, not the origin's own id
+    // directly - origin + line's own start Point + line's end Point +
+    // midpoint, no extra.
+    expect(controller.points.length, 4);
   });
 
   // --- New work package items 3 & 4: constraint selection/delete/edit -------
@@ -5305,7 +6976,11 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(4, 4); // selects the line, away from its midpoint
     await controller.applyConstraintOption(ConstraintOptionType.vertical);
-    final constraintId = controller.constraints.keys.single;
+    // Bug fix: the Line's own start Point at (0, 0) also creates a
+    // CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment), so `constraints.keys`
+    // now has 2 entries - filter to the actual Vertical one.
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key;
 
     controller.selectConstraint(constraintId);
 
@@ -5322,12 +6997,16 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(4, 4);
     await controller.applyConstraintOption(ConstraintOptionType.vertical);
-    final constraintId = controller.constraints.keys.single;
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key;
     controller.selectConstraint(constraintId);
 
     await controller.deleteSelected();
 
-    expect(controller.constraints, isEmpty);
+    // Bug fix: the origin-coincidence CoincidentConstraint (see
+    // SketchController._pointIdAt's own doc comment) is untouched by
+    // deleting the unrelated Vertical constraint, so this is no longer
+    // empty - it's down to just that one.
+    expect(controller.constraints.values, [isA<CoincidentConstraintDto>()]);
     expect(controller.selectionSet, isEmpty);
     expect(controller.errorMessage, isNull);
   });
@@ -5340,7 +7019,9 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(4, 4);
     await controller.applyConstraintOption(ConstraintOptionType.vertical);
-    controller.selectConstraint(controller.constraints.keys.single);
+    controller.selectConstraint(
+      controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key,
+    );
 
     expect(controller.selectedConstraintValue, isNull);
     expect(controller.selectedConstraintHasValue, isFalse);
@@ -5361,7 +7042,11 @@ void main() {
     await controller.handleCanvasTap(8, 2.4); // on the line, away from its midpoint
     await controller.confirmGhostValue('length', 25.0);
     controller.exitToSelectMode();
-    final constraintId = controller.constraints.keys.single;
+    // Bug fix: the Line's own start Point at (0, 0) also creates a
+    // CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment) - filter to the
+    // actual Distance one.
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
     controller.selectConstraint(constraintId);
 
     expect(controller.selectedConstraintValue, 25.0);
@@ -5377,6 +7062,67 @@ void main() {
   });
 
   test(
+      'bug fix (on-device feedback: "before this work any dimension could be edited... this has '
+      'been lost on certain dimension types"): selectedConstraintValue exposes an Angle '
+      'constraint\'s value, and updateSelectedConstraintValue PATCHes it', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 10);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.1, 8);
+    await controller.confirmGhostValue('angle', 90.0);
+    controller.exitToSelectMode();
+    final constraintId =
+        controller.constraints.entries.firstWhere((e) => e.value is AngleConstraintDto).key;
+    controller.selectConstraint(constraintId);
+
+    expect(controller.selectedConstraintValue, 90.0);
+    expect(controller.selectedConstraintHasValue, isTrue);
+    expect(controller.selectedConstraintIsAngle, isTrue);
+
+    await controller.updateSelectedConstraintValue(60.0);
+
+    expect(controller.errorMessage, isNull);
+    expect((controller.constraints[constraintId] as AngleConstraintDto).angleDegrees, 60.0);
+    expect(controller.selectionSet, isEmpty);
+  });
+
+  test(
+      'bug fix (on-device feedback: "this has been lost on certain dimension types"): '
+      'selectedConstraintValue exposes a LineDistance constraint\'s value (this getter never '
+      'covered it, a pre-existing gap now closed)', () {
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 0, y: 3);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 5, y: 3);
+    controller.lines['l1'] = const SketchLineView(id: 'l1', startPointId: 'p2', endPointId: 'p3');
+    controller.constraints['c0'] =
+        const LineDistanceConstraintDto(id: 'c0', line1Id: 'l0', line2Id: 'l1', distance: 3.0);
+    controller.selectConstraint('c0');
+
+    expect(controller.selectedConstraintValue, 3.0);
+    expect(controller.selectedConstraintHasValue, isTrue);
+    expect(controller.selectedConstraintIsAngle, isFalse);
+  });
+
+  test(
+      'bug fix (on-device feedback: "this has been lost on certain dimension types"): '
+      'selectedConstraintValue exposes a PointLineDistance constraint\'s value (this getter never '
+      'covered it, and the backend 422d any attempt to PATCH it - both gaps now closed)', () {
+    controller.points['pt'] = const SketchPointView(id: 'pt', x: 2, y: 3);
+    controller.constraints['c0'] =
+        const PointLineDistanceConstraintDto(id: 'c0', pointId: 'pt', lineId: 'l0', distance: 3.0);
+    controller.selectConstraint('c0');
+
+    expect(controller.selectedConstraintValue, 3.0);
+    expect(controller.selectedConstraintHasValue, isTrue);
+    expect(controller.selectedConstraintIsAngle, isFalse);
+  });
+
+  test(
       'updateSelectedConstraintValue re-solves and refreshes isUnderConstrained (bug fix: this '
       'used to leave dof stale until some later, unrelated mutation forced a fresh solve)',
       () async {
@@ -5388,7 +7134,11 @@ void main() {
     await controller.handleCanvasTap(8, 2.4);
     await controller.confirmGhostValue('length', 25.0);
     controller.exitToSelectMode();
-    final constraintId = controller.constraints.keys.single;
+    // Bug fix: the Line's own start Point at (0, 0) also creates a
+    // CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment) - filter to the
+    // actual Distance one.
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
     controller.selectConstraint(constraintId);
 
     backend.dof = 3; // would surface in isUnderConstrained only if a fresh solve ran
@@ -5506,6 +7256,203 @@ void main() {
     final lineDistanceConstraints = controller.constraints.values.whereType<LineDistanceConstraintDto>();
     expect(lineDistanceConstraints.length, 1);
     expect(lineDistanceConstraints.single.distance, 9.0);
+  });
+
+  test(
+      'dimensioning a Slot\'s two parallel straight sides shows a lineDistance ghost, not a '
+      'mismatched point-to-point one (on-device feedback: "I experienced an issue adding a '
+      'dimension between the two parallel lines in a slot. it offered dimensions between the '
+      'midpoint of one line and the end point of another" - _resolveSelectableAt resolves each '
+      'tap independently: a tap near a Line\'s middle materializes its midpoint into a real '
+      'Point, a tap nearer a Line\'s own end (here, shared with the adjacent Arc) resolves to '
+      'that endpoint Point directly - both come back as SelectionKind.point, so the dispatch '
+      'used to fall through to an ordinary point distance instead of the correct parallel-Line '
+      'one)', () async {
+    controller.selectDrawTool(SketchTool.slot);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(10, 5); // radius 5
+    controller.exitToSelectMode();
+    // line1 runs b=(0,-5) -> c=(20,-5); line2 runs d=(20,5) -> a=(0,5) - see
+    // _slotCorners' own doc comment for this exact pairing.
+    final line1 = controller.lines.values.firstWhere(
+      (line) => !line.construction && controller.points[line.startPointId]!.y < 0,
+    );
+    final line2 = controller.lines.values.firstWhere(
+      (line) => !line.construction && controller.points[line.startPointId]!.y > 0,
+    );
+    controller.enterDimensionMode();
+
+    await controller.handleCanvasTap(10, -5); // line1's exact midpoint - materializes a Point
+    // line2's own start Point (shared with an Arc) - a real endpoint, not a midpoint.
+    final line2Start = controller.points[line2.startPointId]!;
+    await controller.handleCanvasTap(line2Start.x, line2Start.y);
+
+    expect(controller.ghosts.map((g) => g.key).toSet(), {'lineDistance'});
+    final ghost = controller.ghosts.single;
+    expect(ghost.kind, GhostKind.lineDistance);
+    expect({ghost.lineAId, ghost.lineBId}, {line1.id, line2.id});
+    expect(controller.currentGhostValue(ghost), closeTo(10.0, 1e-9));
+  });
+
+  group('Slot construction points (arc apex + centreline midpoint), hover/select-only visible '
+      '(on-device feedback: "some points need to be available and visible for the user to use to '
+      'constrain: mid point of slot, midpoints of slot radii... These should respect hover '
+      'highlight and be visible when selected but should remain unseen otherwise")', () {
+    test('hoveredLineMidpoint reveals an intact Slot\'s Arc apex when the cursor is near it, and '
+        'stays null when it is not', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+
+      // arc1's apex is directly opposite the two straight sides, on the
+      // extended centreline: centre1 - radius along the c1->c2 direction.
+      controller.cursorX = -5;
+      controller.cursorY = 0;
+      expect(controller.hoveredLineMidpoint, isNotNull);
+      expect(controller.hoveredLineMidpoint!.$1, closeTo(-5, 1e-9));
+      expect(controller.hoveredLineMidpoint!.$2, closeTo(0, 1e-9));
+
+      controller.cursorX = 100;
+      controller.cursorY = 100;
+      expect(controller.hoveredLineMidpoint, isNull);
+    });
+
+    test('tapping near an intact Slot\'s Arc apex in dimension mode materializes a real Point '
+        'there, usable like any other dimension pick', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final pointCountBefore = controller.points.length;
+      controller.enterDimensionMode();
+
+      await controller.handleCanvasTap(-5, 0); // arc1's apex
+      await controller.handleCanvasTap(25, 0); // arc2's apex
+
+      expect(controller.points.length, pointCountBefore + 2);
+      expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+      final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
+      expect(controller.currentGhostValue(linearGhost), closeTo(30.0, 1e-6));
+    });
+
+    test('deleting one of a Slot\'s own straight Lines collapses just the Slot bookkeeping record '
+        '(see computeDeleteCascade\'s own Slot block) - it no longer cascades the rest of the Slot\'s '
+        'own geometry away with it, only leaving no Arc-apex snap target behind since the Slot is no '
+        'longer intact', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+      final arc1 = controller.arcs.values.first;
+      final line1 = controller.lines.values.firstWhere(
+        (line) => !line.construction && (line.startPointId == arc1.endPointId || line.endPointId == arc1.endPointId),
+      );
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: line1.id));
+      await controller.deleteSelected();
+
+      expect(controller.slots, isEmpty);
+      expect(controller.errorMessage, isNull);
+      expect(controller.lines.containsKey(line1.id), isFalse);
+      // The rest of the Slot's own geometry survives - only the wrapper
+      // record and the one directly-deleted Line are gone.
+      expect(controller.arcs.containsKey(slot.arc1Id), isTrue);
+      expect(controller.arcs.containsKey(slot.arc2Id), isTrue);
+      expect(controller.lines.containsKey(slot.centerlineId), isTrue);
+      final survivingSideId = slot.line1Id == line1.id ? slot.line2Id : slot.line1Id;
+      expect(controller.lines.containsKey(survivingSideId), isTrue);
+      controller.cursorX = -5;
+      controller.cursorY = 0;
+      expect(controller.hoveredLineMidpoint, isNull);
+    });
+  });
+
+  group('Circle/Polygon centre hover-reveal with a 3-second delayed hide (on-device feedback: '
+      '"when I hover over any part of a polygon or circle the midpoint should show as a centre '
+      'mark and it should hide 3 seconds after the cursor is no longer hovering over part of that '
+      'shape. This allows the user to see it, select it without it being otherwise distracting")', () {
+    test('hovering a Circle\'s curve reveals its centre Point', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      expect(controller.revealedShapeCenterPointId, isNull);
+
+      // On the circle's own curve, off every cardinal axis (see
+      // Sketch._add_cardinal_points) - a cardinal Point itself would hover
+      // as a Point, not the circle's edge.
+      controller.moveCursorToSketchPoint(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+
+      expect(controller.revealedShapeCenterPointId, circle.centerPointId);
+    });
+
+    test('hovering a Polygon\'s own edge reveals its centre Point', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(6);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final line = controller.lines[polygon.lineIds.first]!;
+      final start = controller.points[line.startPointId]!;
+      final end = controller.points[line.endPointId]!;
+
+      controller.moveCursorToSketchPoint((start.x + end.x) / 2, (start.y + end.y) / 2);
+
+      expect(controller.revealedShapeCenterPointId, polygon.centerPointId);
+    });
+
+    test('hovering something unrelated never reveals a centre', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      controller.exitToSelectMode();
+
+      controller.moveCursorToSketchPoint(100, 100);
+
+      expect(controller.revealedShapeCenterPointId, isNull);
+    });
+
+    test('moving off the shape does not hide the centre immediately, hides it only after 3 '
+        'seconds, and a re-hover before then cancels the pending hide', () {
+      fakeAsync((async) {
+        controller
+          ..selectDrawTool(SketchTool.circle)
+          ..handleCanvasTap(0, 0);
+        async.flushMicrotasks();
+        controller.handleCanvasTap(5, 0);
+        async.flushMicrotasks();
+        controller.exitToSelectMode();
+        final circle = controller.circles.values.single;
+
+        // Off every cardinal axis (see Sketch._add_cardinal_points) - a
+        // cardinal Point itself would hover as a Point, not the curve.
+        controller.moveCursorToSketchPoint(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId);
+
+        controller.moveCursorToSketchPoint(100, 100); // off the shape
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId,
+            reason: 'must not hide the instant the cursor leaves');
+
+        async.elapse(const Duration(seconds: 2));
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId, reason: 'not 3 seconds yet');
+
+        controller.moveCursorToSketchPoint(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // back on the circle before the hide fires
+        async.elapse(const Duration(seconds: 2)); // 4s total since first leaving, but re-hovered at 2s
+        expect(controller.revealedShapeCenterPointId, circle.centerPointId,
+            reason: 'a re-hover before the hide fires must cancel it, not just delay it');
+
+        controller.moveCursorToSketchPoint(100, 100);
+        async.elapse(const Duration(seconds: 3, milliseconds: 1));
+        expect(controller.revealedShapeCenterPointId, isNull);
+      });
+    });
   });
 
   test(
@@ -5744,13 +7691,25 @@ void main() {
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.exitToSelectMode();
-    final pointId = controller.lines.values.last.startPointId;
+    // The line's start Point snapped onto the origin ((0, 0) is always
+    // within snap radius of it) - use the *end* Point instead, since the
+    // origin itself can never be dragged (see beginPointDrag's own origin
+    // guard, added on-device feedback: "cannot move the sketch origin
+    // point" appearing after dragging something that was never the
+    // origin - the backend's own update_point 400s on it unconditionally).
+    final pointId = controller.lines.values.last.endPointId;
 
     expect(controller.beginPointDrag('does-not-exist'), isFalse);
     expect(controller.draggingPointId, isNull);
 
     expect(controller.beginPointDrag(pointId), isTrue);
     expect(controller.draggingPointId, pointId);
+  });
+
+  test('beginPointDrag refuses to grab the sketch origin Point directly - the backend\'s own '
+      'update_point 400s on it unconditionally', () async {
+    expect(controller.beginPointDrag(controller.originPointId!), isFalse);
+    expect(controller.draggingPointId, isNull);
   });
 
   test('beginPointDrag only records local drag state - no HTTP call, no Point movement', () async {
@@ -5760,10 +7719,13 @@ void main() {
     // _dragOriginCursorX/Y vs _dragOriginPointX/Y) rather than ever PATCHing
     // the touch-down position - otherwise the Point visibly jumps to the
     // touch position before any drag motion happens.
+    // Away from (0, 0) on purpose - a tap there snaps onto the Sketch's own
+    // origin Point, which can never be dragged (see beginPointDrag's own
+    // origin guard).
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
     backend.dof = 1;
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(15, 0);
     controller.finishChain();
     controller.exitToSelectMode();
     final pointId = controller.lines.values.last.startPointId;
@@ -5778,24 +7740,25 @@ void main() {
   });
 
   test('updatePointDrag PATCHes the dragged Point, offset from the touch by where the drag started', () async {
+    // Away from (0, 0) on purpose - see the test above's own doc comment.
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
     backend.dof = 1;
-    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(15, 0);
     controller.finishChain();
     controller.exitToSelectMode();
     final pointId = controller.lines.values.last.startPointId;
     // The chain's last tap left the controller's persistent cursor at
-    // (10, 0); this Point (the line's start) sits at (0, 0). beginPointDrag
+    // (15, 0); this Point (the line's start) sits at (5, 0). beginPointDrag
     // records that 10-unit offset, so updatePointDrag must apply moves
     // relative to it rather than snapping the Point to the raw touch
     // position - see beginPointDrag's doc comment.
     controller.beginPointDrag(pointId);
 
     backend.dof = 7; // would surface in isUnderConstrained if a solve ran
-    await controller.updatePointDrag(12, 34);
+    await controller.updatePointDrag(17, 34);
 
-    expect(controller.points[pointId]!.x, 2); // 0 + (12 - 10)
+    expect(controller.points[pointId]!.x, 7); // 5 + (17 - 15)
     expect(controller.points[pointId]!.y, 34); // 0 + (34 - 0)
     expect(controller.isUnderConstrained, isTrue); // unchanged: still the dof=1 from the line's solve
     expect(controller.errorMessage, isNull);
@@ -5861,22 +7824,171 @@ void main() {
     expect(distance, closeTo(50.0, 1e-6));
   });
 
+  test(
+      'updateLineDrag also solves locally (no /solve round trip) when a native library is injected, '
+      'reflowing a third Point to satisfy a live DistanceConstraint on the dragged Line\'s own endpoint '
+      '(on-device feedback: line drag never got the same in-process-solver treatment point drag did)',
+      () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    // Third Point created *before* the Line, not after - beginLineDrag
+    // records its drag-start offset from the controller's own persistent
+    // cursor position (see beginLineDrag's doc comment), so an unrelated
+    // tap between finishing the Line and starting the drag would corrupt
+    // that baseline. Placing this first keeps the Line's own last tap as
+    // the drag's actual starting cursor position, same as every other
+    // drag test in this file.
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(100, 100);
+    localController.exitToSelectMode();
+    final thirdPointId = localController.points.keys.firstWhere(
+      (id) => id != localController.originPointId,
+    );
+
+    localController.selectDrawTool(SketchTool.line);
+    // Away from (0, 0) on purpose - same origin-snap reasoning as the
+    // point-drag test above. Deliberately off-axis (not near-horizontal/
+    // vertical), unlike the regression test below - see that test's own
+    // doc comment for why an axis-aligned Line is a separate case.
+    await localController.handleCanvasTap(5, 5);
+    localBackend.dof = 1;
+    await localController.handleCanvasTap(19, 12);
+    localController.finishChain();
+    localController.exitToSelectMode();
+    final line = localController.lines.values.last;
+    final lineStartId = line.startPointId;
+    // Injected directly, same reasoning as the point-drag test above - the
+    // in-process solver reads live controller state, not the fake backend.
+    localController.constraints['dc1'] =
+        DistanceConstraintDto(id: 'dc1', pointAId: lineStartId, pointBId: thirdPointId, distance: 25.0);
+
+    final grabbed = localController.beginLineDrag(line.id);
+    expect(grabbed, isTrue);
+    localBackend.requestLog.clear();
+    await localController.updateLineDrag(20, 20);
+
+    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+
+    final draggedStart = localController.points[lineStartId]!;
+    final third = localController.points[thirdPointId]!;
+    final distance = math.sqrt(
+      math.pow(third.x - draggedStart.x, 2) + math.pow(third.y - draggedStart.y, 2),
+    );
+    expect(distance, closeTo(25.0, 1e-6));
+  });
+
+  test(
+      'updateLineDrag falls back to the server round trip (never applies a partial/inconsistent '
+      'local result) when dragging an axis-aligned Line whose own Horizontal Constraint, combined '
+      'with a separate Constraint reaching out to a third free Point, confuses the native solver\'s '
+      'anchor pinning - on-device-investigation bug fix: found via the test above, generalized - a '
+      'Horizontal/Vertical Constraint between two simultaneously-anchored Points is fine on its own, '
+      'but combined with any other Constraint reaching from one of them to a free Point, the native '
+      'solver was found to sometimes move an "anchored" Point anyway, which would otherwise silently '
+      'teleport the dragged Line somewhere else - not yet root-caused at the FFI/SLVS level, so this '
+      'checks anchor points landed where they were pinned before trusting the rest of a local solve\'s '
+      'result at all, falling back to the safe network path if not',
+      () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    // Third Point first, same drag-start-cursor reasoning as the passing
+    // test above.
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(100, 100);
+    localController.exitToSelectMode();
+    final thirdPointId = localController.points.keys.firstWhere(
+      (id) => id != localController.originPointId,
+    );
+
+    localController.selectDrawTool(SketchTool.line);
+    // Away from (0, 0) on purpose, same reasoning as every other test in
+    // this group - and exactly horizontal, so placing it auto-adds a
+    // HorizontalConstraint between the Line's own two Points (see
+    // "placing a near-horizontal line auto-adds a HorizontalConstraint on
+    // tap" elsewhere in this file) - both of which this drag anchors
+    // simultaneously.
+    await localController.handleCanvasTap(5, 5);
+    localBackend.dof = 1;
+    await localController.handleCanvasTap(15, 5);
+    localController.finishChain();
+    localController.exitToSelectMode();
+    final line = localController.lines.values.last;
+    expect(
+      localController.constraints.values.whereType<HorizontalConstraintDto>(),
+      isNotEmpty,
+      reason: 'sanity check: this scenario only reproduces the bug if the auto-Horizontal-Constraint '
+          'actually landed',
+    );
+    localController.constraints['dc1'] = DistanceConstraintDto(
+      id: 'dc1',
+      pointAId: line.startPointId,
+      pointBId: thirdPointId,
+      distance: 25.0,
+    );
+
+    final grabbed = localController.beginLineDrag(line.id);
+    expect(grabbed, isTrue);
+    localBackend.requestLog.clear();
+    await localController.updateLineDrag(20, 20);
+    // The network fallback's own solve fires via `unawaited(...)` (see
+    // _maybeSolveDuringDrag) - a real pointer-move handler can't block on
+    // it either, so updateLineDrag itself doesn't await it - one microtask
+    // turn lets it actually reach the (fake) backend before asserting on
+    // requestLog below.
+    await Future<void>.delayed(Duration.zero);
+
+    // The local solve's anchor-drift safety check must have rejected its
+    // own result (see _trySolveDuringDragLocally's own doc comment),
+    // falling back to the throttled server round trip instead - not left
+    // silently un-reflowed, and *definitely* not left with the dragged
+    // Line's endpoints moved somewhere other than where the drag put them.
+    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isTrue);
+    expect(localController.points[line.startPointId]!.x, 10); // 5 + (20 - 15)
+    expect(localController.points[line.startPointId]!.y, 20); // 5 + (20 - 5)
+    expect(localController.points[line.endPointId]!.x, 20); // 15 + (20 - 15)
+    expect(localController.points[line.endPointId]!.y, 20); // 5 + (20 - 5)
+  });
+
   test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 0); // snaps onto the origin
     backend.dof = 1;
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.exitToSelectMode();
-    final pointId = controller.lines.values.last.startPointId;
+    // Dragging the *end* Point, not the start - the start snapped onto the
+    // origin, which can never be dragged (see beginPointDrag's own origin
+    // guard), and the grounding check below needs the origin to stay part
+    // of this Line.
+    final pointId = controller.lines.values.last.endPointId;
     controller.beginPointDrag(pointId);
-    await controller.updatePointDrag(12, 34); // lands at (2, 34) - see the test above
+    await controller.updatePointDrag(12, 34); // lands at (12, 34): 10 + (12 - 10), 0 + (34 - 0)
 
     backend.dof = 0; // simulates the drop settling the sketch fully
     await controller.endPointDrag();
 
     expect(controller.draggingPointId, isNull);
-    expect(controller.points[pointId]!.x, 2);
+    expect(controller.points[pointId]!.x, 12);
     expect(controller.points[pointId]!.y, 34);
     expect(controller.errorMessage, isNull);
 
@@ -5971,10 +8083,11 @@ void main() {
     await controller.handleCanvasTap(23, 0);
     controller.exitToSelectMode();
 
-    // East of each circle, not the north cardinal point the radius tap
-    // creates (see SketchController._clickCircleTool's own doc comment).
-    await controller.handleCanvasTap(5, 0); // first circle's edge
-    await controller.handleCanvasTap(23, 0); // second circle's edge
+    // Off every cardinal axis of each circle - every Circle gets all four
+    // North/East/South/West Points (see Sketch._add_cardinal_points), so a
+    // diagonal spot is the only genuinely empty-space point on the edge.
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // first circle's edge
+    await controller.handleCanvasTap(20 + 3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4)); // second circle's edge
 
     expect(controller.selectionSet.length, 2);
     for (final type in ConstraintOptionType.values) {
@@ -5993,7 +8106,9 @@ void main() {
     controller.finishChain();
     controller.exitToSelectMode();
 
-    await controller.handleCanvasTap(5, 0); // the circle's edge, not its north cardinal point
+    // Off every cardinal axis - every Circle gets all four North/East/
+    // South/West Points (see Sketch._add_cardinal_points).
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // the circle's edge
     await controller.handleCanvasTap(25, 10.1); // the line, away from its midpoint
 
     expect(controller.selectionSet.length, 2);
@@ -6022,6 +8137,23 @@ void main() {
     expect({created.pointAId, created.pointBId}, {pointA, pointB});
   });
 
+  test(
+      'bug fix (on-device feedback: "when I drop a point on the origin/another point a coincident '
+      'constraint is created... the problem is I can\'t see the constraint label - as it\'s a '
+      'grounding constraint the user may want to delete it, so it should be visible"): '
+      'dimensionLabelAt finds a CoincidentConstraint\'s own label nudged away from the shared '
+      'Point, not sitting exactly on top of it', () {
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 3, y: 4);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 3, y: 4); // exactly coincident with p2
+    controller.constraints['c0'] = const CoincidentConstraintDto(id: 'c0', pointAId: 'p2', pointBId: 'p3');
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // p2/p3 both project to screen (460, 220) - the fixed (14, -14) nudge
+    // moves the badge to (474, 206), off the Point marker itself.
+    expect(dimensionLabelAt(controller, transform, const Offset(460, 220), 5), isNull);
+    expect(dimensionLabelAt(controller, transform, const Offset(474, 206), 5), 'c0');
+  });
+
   test('the origin is selectable so a Point can be constrained Coincident to it', () async {
     controller.selectDrawTool(SketchTool.point);
     await controller.handleCanvasTap(3, 9);
@@ -6041,17 +8173,25 @@ void main() {
     expect({created.pointAId, created.pointBId}, {controller.originPointId, pointB});
   });
 
-  test('dragTargetPointIdAt never offers the origin as a drag target, even under-constrained',
-      () async {
+  test('dragTargetPointIdAt never offers the origin\'s own real point as a drag target, even '
+      'under-constrained', () async {
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
+    await controller.handleCanvasTap(0, 0); // chain start
+    final startId = controller.chainFirstPointId;
     backend.dof = 1;
     await controller.handleCanvasTap(10, 0);
     controller.finishChain();
     controller.exitToSelectMode();
 
     expect(controller.isUnderConstrained, isTrue);
-    expect(controller.dragTargetPointIdAt(0, 0, 1), isNull);
+    // Bug fix (on-device feedback: "no entity should be able to use the
+    // origin point as one of its points"): the chain's own start Point is
+    // now a new, distinct Point coincident with the origin (see
+    // SketchController._pointIdAt's own doc comment), not the origin's own
+    // id - so it *is* now a legitimate drag target (that's the whole point
+    // of decoupling it), unlike the origin's own real point, which never is.
+    expect(controller.dragTargetPointIdAt(0, 0, 1), startId);
+    expect(controller.dragTargetPointIdAt(0, 0, 1), isNot(controller.originPointId));
   });
 
   test('addParallelConstraint creates a ParallelConstraint between the two selected Lines and '
@@ -6166,10 +8306,16 @@ void main() {
     controller.exitToSelectMode();
     await controller.handleCanvasTap(8, 0.1); // two Lines, not two Points
     await controller.handleCanvasTap(8, 5.8);
+    // Bug fix: the first Line's own start Point at (0, 0) already created
+    // one real CoincidentConstraint tying it to the origin (see
+    // SketchController._pointIdAt's own doc comment) - the no-op below
+    // must add no more than that.
+    final coincidentCountBefore = controller.constraints.values.whereType<CoincidentConstraintDto>().length;
+    expect(coincidentCountBefore, 1);
 
     await controller.addCoincidentConstraint();
 
-    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>().length, coincidentCountBefore);
     expect(controller.selectionSet.length, 2); // left untouched by the no-op
   });
 
@@ -6406,12 +8552,16 @@ void main() {
 
     backend.converged = false;
     backend.solverReportedFailedConstraintIds = [constraintId];
-    // Any further mutation re-solves and refreshes the tracked result -
-    // dragging the line's start Point (itself unrelated to the fake
-    // failure) is a convenient way to trigger one without adding new
-    // geometry.
-    controller.beginPointDrag(line.startPointId);
-    await controller.updatePointDrag(0, 0);
+    // Any further mutation re-solves and refreshes the tracked result - a
+    // no-op drag of the line's end Point (itself unrelated to the fake
+    // failure - and not the start, which snapped onto the origin and can
+    // never be dragged, see beginPointDrag's own origin guard) is a
+    // convenient way to trigger one without adding new geometry.
+    final endBefore = controller.points[line.endPointId]!;
+    controller.cursorX = endBefore.x;
+    controller.cursorY = endBefore.y;
+    controller.beginPointDrag(line.endPointId);
+    await controller.updatePointDrag(endBefore.x, endBefore.y);
     await controller.endPointDrag();
 
     expect(controller.isUnderConstrained, isTrue);
@@ -6427,33 +8577,49 @@ void main() {
     expect(controller.isFullyConstrained, isFalse); // no geometry yet.
 
     controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(0, 0); // chain start, snaps to the origin
-    // Phase 6.1: off-axis (not (10, 0)) so placement doesn't auto-add a
+    // Away from the origin, deliberately not snapped to it (same pattern as
+    // "a fully constrained and grounded Point..." below) - a bare Line
+    // creates no Constraint of its own (see dof_analysis.dart), so this
+    // test's whole premise (nothing grounded until an explicit Constraint
+    // reaches the origin) needs a start Point that isn't auto-coincided
+    // with the origin just by being placed near it (see
+    // SketchController._pointIdAt's own doc comment for that fix).
+    await controller.handleCanvasTap(20, 0);
+    // Phase 6.1: off-axis (not (30, 0)) so placement doesn't auto-add a
     // Constraint of its own - this test's whole premise is that a bare
     // Line creates none until the explicit VerticalConstraint below.
-    await controller.handleCanvasTap(10, 3);
+    await controller.handleCanvasTap(30, 3);
     controller.finishChain();
+    final line = controller.lines.values.single;
+    final startId = line.startPointId;
     controller.exitToSelectMode();
 
-    // Backend confirms dof<=0, but no Constraint ties the Line's far
-    // endpoint back to the origin - a Line by itself creates no
-    // Constraint (see dof_analysis.dart), so even though its *other*
-    // endpoint happens to literally be the origin Point, the far one is
-    // not grounded, and this must not read as fully constrained.
+    // Backend confirms dof<=0, but no Constraint ties the Line back to the
+    // origin at all yet, so this must not read as fully constrained.
     backend.dof = 0;
     controller.selectDrawTool(SketchTool.point);
-    await controller.handleCanvasTap(20, 20); // any mutation re-solves; unrelated standalone Point.
+    await controller.handleCanvasTap(50, 50); // any mutation re-solves; unrelated standalone Point.
     expect(controller.isUnderConstrained, isTrue);
     expect(controller.isFullyConstrained, isFalse);
 
-    // Ground it: a Vertical Constraint on the Line unions its two
-    // endpoints - one of which is the origin itself - into one cluster.
+    // Ground it: a real CoincidentConstraint ties the Line's start Point to
+    // the origin.
     controller.exitToSelectMode();
-    await controller.handleCanvasTap(8, 2.4); // the line, away from its midpoint
+    await controller.handleCanvasTap(0, 0); // the origin
+    expect(controller.selection!.id, controller.originPointId);
+    await controller.handleCanvasTap(20, 0); // adds the Line's start Point to the selection
+    await controller.addCoincidentConstraint();
+
+    // A Vertical Constraint on the Line unions its two endpoints - one of
+    // which is now grounded via the CoincidentConstraint above - into one
+    // cluster.
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(25, 1.5); // the line, away from its midpoint
     await controller.addVerticalConstraint();
 
     expect(controller.isUnderConstrained, isFalse);
     expect(controller.isFullyConstrained, isTrue);
+    expect(startId, isNot(controller.originPointId));
   });
 
   test('a fully constrained and grounded Point refuses to be dragged even while an unrelated '

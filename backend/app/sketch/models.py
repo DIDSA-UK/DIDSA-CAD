@@ -399,6 +399,23 @@ class Polygon(SketchEntity):
     equal_length_constraint_ids: list[str]
     angle_constraint_ids: list[str]
     sides: int
+    # On-device feedback ("when the toggle in the polygon tool is on, the 2
+    # construction circles should be drawn and visible to the user to
+    # dimension and use in the sketch - at the moment they are not shown
+    # after placing the polygon"): the previous "guide circles" toggle only
+    # ever drew a dashed, paint-only overlay recomputed live from the
+    # Polygon's own vertex Points - never a real, addressable, solver-
+    # tracked Circle the user could select or dimension, and gone entirely
+    # the moment the tool's ghost/preview phase ended. `reference_circles`
+    # (see `Sketch.add_polygon`'s own doc comment) creates real Circles
+    # instead - both `None` for a Polygon placed with that option off.
+    circumscribed_circle_id: str | None = None
+    inscribed_circle_id: str | None = None
+    # The inscribed circle's own TangentConstraint against the first edge
+    # Line - not part of `Circle.cardinal_constraint_ids`, so `delete_circle`
+    # alone wouldn't clean it up; tracked here so `delete_polygon` can (see
+    # that method's own cleanup).
+    inscribed_tangent_constraint_id: str | None = None
 
     @property
     def type(self) -> str:
@@ -408,6 +425,130 @@ class Polygon(SketchEntity):
         center = points[self.center_point_id]
         vertex = points[self.vertex_point_ids[0]]
         return math.hypot(vertex.x - center.x, vertex.y - center.y)
+
+
+@dataclass
+class Slot(SketchEntity):
+    """A slot (stadium) shape: two semicircular end caps (`arc1_id`/
+    `arc2_id`, centred on `center1_point_id`/`center2_point_id`) joined by
+    two straight sides (`line1_id`/`line2_id`) plus a construction
+    centreline (`centerline_id`) between the two centres.
+
+    Mirrors `Polygon`'s own "used to be a client-only shortcut, now atomic"
+    fix (see that class's docstring): previously composed client-side
+    across ~8 sequential API calls (`SketchController._clickSlotTool`) with
+    nothing server-side to identify "these 2 Arcs + 2 Lines + N Constraints
+    form one Slot" later - the same gap Polygon had before `add_polygon`
+    existed, and for the same reason (reliably reinterpreting a corner
+    drag as a width edit instead of an unconstrained 2D point move).
+
+    `a_point_id`/`b_point_id` are arc1's own start/end Points, `c_point_id`/
+    `d_point_id` arc2's - paired so line1 runs b->c and line2 runs d->a,
+    each an exact mirror of `SketchController._slotCorners`'s own geometry
+    (see that method's doc comment for why this exact pairing keeps both
+    Arcs bulging away from the other centre).
+
+    arc1's own radius DistanceConstraint (`radius_constraint_id`) is the
+    Slot's one real, independently-editable radius dimension - arc2's own
+    equivalent is deleted and replaced by two EqualRadiusConstraint ties
+    back to arc1 instead (`equal_radius_constraint_ids`, which also
+    includes each Arc's own internal start<->end tie from `add_arc`) - a
+    single shared radius across both end caps, not two independent ones.
+    The 4 TangentConstraints (`tangent_constraint_ids`, one per Arc/Line
+    pair) pin both caps flush against both sides; the last 2 are
+    mathematically implied by the first 2 plus the EqualRadius ties, which
+    is why solving this treats that redundancy as still converged (see
+    solver.py's own comment on result_code 4/5).
+
+    Does NOT override `endpoint_point_ids()` (same reasoning as Polygon):
+    always its own standalone closed profile.
+    """
+
+    id: str
+    center1_point_id: str
+    center2_point_id: str
+    centerline_id: str
+    arc1_id: str
+    arc2_id: str
+    line1_id: str
+    line2_id: str
+    a_point_id: str
+    b_point_id: str
+    c_point_id: str
+    d_point_id: str
+    radius_constraint_id: str
+    equal_radius_constraint_ids: list[str]
+    tangent_constraint_ids: list[str]
+
+    @property
+    def type(self) -> str:
+        return "slot"
+
+    def radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center1_point_id]
+        a = points[self.a_point_id]
+        return math.hypot(a.x - center.x, a.y - center.y)
+
+
+@dataclass
+class Rectangle(SketchEntity):
+    """A rectangle defined by four corner Points (`corner_point_ids`, in
+    order, connected in a cycle by `line_ids`) - real, independently
+    addressable Points/Lines, same as every other atomic-entity shape here
+    (Polygon/Slot/Ellipse).
+
+    Mirrors Polygon/Slot's own "used to be a client-only shortcut, now
+    atomic" fix (see those classes' own docstrings): previously composed
+    client-side across up to 10 sequential API calls
+    (`SketchController._buildRectangle`) with nothing server-side to
+    identify "these 4 Points + 4 Lines + N Constraints form one Rectangle"
+    later - the same gap Polygon/Slot had before their own promotion, and
+    for the same reason (reliably reinterpreting a corner drag as a resize
+    instead of an unconstrained 2D point move).
+
+    Two distinct constraint chains, matching the two ways the client's
+    Rectangle tool can build one (`add_rectangle`'s own `axis_aligned`
+    flag - see that method's doc comment):
+    - Axis-aligned (two-corner/centre-corner tools): each edge Line pinned
+      Horizontal or Vertical in turn (`axis_constraint_ids`), plus both
+      diagonal construction Lines (`diagonal_line_id`/`diagonal2_line_id`,
+      corner0->corner2 and corner1->corner3 respectively - both drawn, for
+      the familiar "X" through the centre) and an AtMidpointConstraint
+      (`midpoint_constraint_id`) pinning a real centre Point
+      (`center_point_id`) to just the first diagonal - mirrors Ellipse's
+      own "one AtMidpoint is enough, a second would be redundant"
+      reasoning: both diagonals share the same true midpoint once the H/V
+      constraints above hold, so a second AtMidpoint pinning centre to
+      `diagonal2_line_id` too is mathematically redundant in a way that
+      makes py-slvs fail to converge outright, not just harmlessly so -
+      `diagonal2_line_id` stays purely a construction visual.
+    - Free (three-point tool): no centre Point or diagonals at all
+      (`center_point_id`/`diagonal_line_id`/`diagonal2_line_id`/
+      `midpoint_constraint_id` all `None`) - each consecutive edge pair
+      pinned Perpendicular instead (also `axis_constraint_ids`, reused for
+      either chain since a caller only ever needs to delete them
+      generically), which is rotation-free but still keeps the result
+      rectangular.
+
+    Does NOT override `endpoint_point_ids()` - unlike Circle/Ellipse/Slot,
+    a Rectangle's own edges are ordinary real Lines forming a closed loop,
+    already correctly picked up by `profile.py`'s generic Line-chain walk
+    with no dedicated whole-entity profile function needed.
+    """
+
+    id: str
+    corner_point_ids: list[str]
+    line_ids: list[str]
+    axis_aligned: bool
+    axis_constraint_ids: list[str]
+    center_point_id: str | None = None
+    diagonal_line_id: str | None = None
+    diagonal2_line_id: str | None = None
+    midpoint_constraint_id: str | None = None
+
+    @property
+    def type(self) -> str:
+        return "rectangle"
 
 
 @dataclass
@@ -542,6 +683,8 @@ class SketchEntityType(str, Enum):
     ARC = "arc"
     ELLIPSE = "ellipse"
     POLYGON = "polygon"
+    SLOT = "slot"
+    RECTANGLE = "rectangle"
     SPLINE = "spline"
     TEXT = "text"
 
@@ -1062,6 +1205,7 @@ class Sketch:
         sides: int,
         *,
         construction: bool = False,
+        reference_circles: bool = False,
     ) -> Polygon:
         """Add a regular Polygon from an existing center Point and an
         existing first-vertex Point (together fixing the circumradius and
@@ -1073,6 +1217,18 @@ class Sketch:
         Point, mirroring Arc's own `end_angle` path - there is no existing-
         Point-sharing option for these, since a regular polygon's other
         vertices can only ever come from its own creation.
+
+        `reference_circles` (on-device feedback: "the 2 construction
+        circles should be drawn and visible to the user to dimension and
+        use in the sketch") additionally creates two real, ordinary
+        construction Circles via `add_circle` - a circumscribed one sharing
+        this Polygon's own center/first-vertex Points directly (so it
+        tracks the Polygon's own radius automatically, no extra constraint
+        needed), and an inscribed one at the mathematically exact inradius
+        (`circumradius * cos(pi / sides)`), tied to the first edge Line via
+        a real TangentConstraint so it stays correctly sized under drag
+        too. Both are ordinary Circles in every other respect - selectable,
+        dimensionable, deletable independently of the Polygon.
 
         See the Polygon class docstring for what the constraint chain does
         and why."""
@@ -1131,6 +1287,20 @@ class Sketch:
                 self.add_angle_constraint(line_ids[i], line_ids[i + 1], exterior_angle_degrees).id
             )
 
+        circumscribed_circle_id = None
+        inscribed_circle_id = None
+        inscribed_tangent_constraint_id = None
+        if reference_circles:
+            circumscribed_circle_id = self.add_circle(
+                center_point_id=center_point_id,
+                radius_point_id=first_vertex_point_id,
+                construction=True,
+            ).id
+            inradius = radius * math.cos(math.pi / sides)
+            inscribed = self.add_circle(center_point_id=center_point_id, radius=inradius, construction=True)
+            inscribed_tangent_constraint_id = self.add_tangent_constraint(inscribed.id, line_ids[0]).id
+            inscribed_circle_id = inscribed.id
+
         polygon = Polygon(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,
@@ -1142,12 +1312,199 @@ class Sketch:
             angle_constraint_ids=angle_constraint_ids,
             sides=sides,
             construction=construction,
+            circumscribed_circle_id=circumscribed_circle_id,
+            inscribed_circle_id=inscribed_circle_id,
+            inscribed_tangent_constraint_id=inscribed_tangent_constraint_id,
         )
         self.entities[polygon.id] = polygon
         return polygon
 
     def polygons(self) -> list[Polygon]:
         return [entity for entity in self.entities.values() if isinstance(entity, Polygon)]
+
+    def add_slot(
+        self,
+        center1_point_id: str,
+        center2_point_id: str,
+        radius: float,
+        *,
+        construction: bool = False,
+    ) -> Slot:
+        """Add a Slot from two existing centre Points and a radius (the
+        perpendicular distance from the centreline to each straight side -
+        also each end cap's own Arc radius) - together fixing the whole
+        shape, same as `add_polygon`'s center+first-vertex pair. Mirrors
+        `SketchController._clickSlotTool`'s own construction exactly (see
+        `_slotCorners`'s doc comment for the corner-pairing geometry and
+        the Slot class docstring for the constraint chain) - this just
+        does it atomically, server-side, instead of across ~8 client-
+        orchestrated calls.
+
+        See the Slot class docstring for what the constraint chain does
+        and why."""
+        center1 = self.points[center1_point_id]
+        center2 = self.points[center2_point_id]
+        dx = center2.x - center1.x
+        dy = center2.y - center1.y
+        length = math.hypot(dx, dy)
+        if length == 0:
+            raise ValueError("A slot's centreline cannot have zero length")
+        if radius <= 0:
+            raise ValueError("A slot's radius must be positive")
+        dir_x, dir_y = dx / length, dy / length
+        normal_x, normal_y = -dir_y, dir_x
+
+        a = self.add_point(center1.x + normal_x * radius, center1.y + normal_y * radius)
+        b = self.add_point(center1.x - normal_x * radius, center1.y - normal_y * radius)
+        c = self.add_point(center2.x - normal_x * radius, center2.y - normal_y * radius)
+        d = self.add_point(center2.x + normal_x * radius, center2.y + normal_y * radius)
+
+        centerline = self.add_line(center1_point_id, center2_point_id, construction=True)
+        arc1 = self.add_arc(center1_point_id, a.id, b.id)
+        line1 = self.add_line(b.id, c.id)
+        arc2 = self.add_arc(center2_point_id, c.id, d.id)
+        line2 = self.add_line(d.id, a.id)
+
+        # A Slot should carry a single editable radius dimension, not one
+        # per end-cap Arc - arc2's own provisional radius DistanceConstraint
+        # (from its own add_arc call) is replaced by two EqualRadiusConstraint
+        # ties back to arc1's; arc1's own two constraints stay untouched and
+        # remain the one visible/editable dimension (see the Slot class
+        # docstring).
+        self.constraints.pop(arc2.radius_constraint_id, None)
+        equal_radius_constraint_ids = [
+            self.add_equal_radius_constraint(arc1.id, arc2.id, radius2_point_id=point_id).id
+            for point_id in (c.id, d.id)
+        ]
+        tangent_constraint_ids = [
+            self.add_tangent_constraint(arc.id, line.id).id
+            for arc, line in ((arc1, line1), (arc1, line2), (arc2, line1), (arc2, line2))
+        ]
+
+        slot = Slot(
+            id=str(uuid.uuid4()),
+            center1_point_id=center1_point_id,
+            center2_point_id=center2_point_id,
+            centerline_id=centerline.id,
+            arc1_id=arc1.id,
+            arc2_id=arc2.id,
+            line1_id=line1.id,
+            line2_id=line2.id,
+            a_point_id=a.id,
+            b_point_id=b.id,
+            c_point_id=c.id,
+            d_point_id=d.id,
+            radius_constraint_id=arc1.radius_constraint_id,
+            equal_radius_constraint_ids=[
+                arc1.end_radius_constraint_id,
+                arc2.end_radius_constraint_id,
+                *equal_radius_constraint_ids,
+            ],
+            tangent_constraint_ids=tangent_constraint_ids,
+            construction=construction,
+        )
+        self.entities[slot.id] = slot
+        return slot
+
+    def slots(self) -> list[Slot]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Slot)]
+
+    def add_rectangle(
+        self,
+        corner_point_ids: list[str],
+        *,
+        axis_aligned: bool = True,
+        construction: bool = False,
+    ) -> Rectangle:
+        """Add a Rectangle from four existing corner Points, in order
+        (`corner0 -> corner1 -> corner2 -> corner3 -> corner0`) - the
+        client always resolves/places all four itself first (the same
+        snap-to-existing-point logic every other tool's own taps already
+        use - see `SketchController._pointIdAt`), exactly as it always has
+        for the Rectangle tool's own corner taps, so there's no coordinate
+        math to duplicate server-side: this only wires up the 4 edge Lines
+        and the constraint chain that makes them stay rectangular.
+
+        [axis_aligned] selects which chain (see the Rectangle class's own
+        docstring): `True` (the two-corner/centre-corner tools) pins each
+        edge Horizontal/Vertical in turn and adds a real centre Point tied
+        to one diagonal via a single AtMidpointConstraint; `False` (the
+        three-point tool, which can produce a rotated result) pins each
+        consecutive edge pair Perpendicular instead, with no centre Point
+        at all.
+        """
+        if len(corner_point_ids) != 4:
+            raise ValueError("A rectangle needs exactly 4 corner Points")
+        if len(set(corner_point_ids)) != 4:
+            raise ValueError("A rectangle's 4 corner Points must all be distinct")
+        for point_id in corner_point_ids:
+            if point_id not in self.points:
+                raise KeyError(point_id)
+
+        p0, p1, p2, p3 = corner_point_ids
+        line0 = self.add_line(p0, p1)
+        line1 = self.add_line(p1, p2)
+        line2 = self.add_line(p2, p3)
+        line3 = self.add_line(p3, p0)
+        line_ids = [line0.id, line1.id, line2.id, line3.id]
+
+        center_point_id: str | None = None
+        diagonal_line_id: str | None = None
+        diagonal2_line_id: str | None = None
+        midpoint_constraint_id: str | None = None
+        if axis_aligned:
+            axis_constraint_ids = [
+                self.add_horizontal_constraint(line0.id).id,
+                self.add_vertical_constraint(line1.id).id,
+                self.add_horizontal_constraint(line2.id).id,
+                self.add_vertical_constraint(line3.id).id,
+            ]
+            diagonal = self.add_line(p0, p2, construction=True)
+            diagonal_line_id = diagonal.id
+            diagonal2 = self.add_line(p1, p3, construction=True)
+            diagonal2_line_id = diagonal2.id
+            corner0 = self.points[p0]
+            corner1 = self.points[p1]
+            corner2 = self.points[p2]
+            corner3 = self.points[p3]
+            center = self.add_point(
+                (corner0.x + corner1.x + corner2.x + corner3.x) / 4,
+                (corner0.y + corner1.y + corner2.y + corner3.y) / 4,
+            )
+            center_point_id = center.id
+            # Bug-fix round 2 (see SketchController._buildRectangle's own
+            # doc comment): only one AtMidpoint constraint, not two - both
+            # diagonals share the same true midpoint once the H/V
+            # constraints above hold, so a second one pinning the same
+            # centre Point to the *other* diagonal is mathematically
+            # redundant in a way that makes py-slvs fail to converge
+            # outright, not just harmlessly so - diagonal2 stays purely a
+            # construction visual, same as the client always drew it.
+            midpoint_constraint_id = self.add_at_midpoint_constraint(center.id, diagonal.id).id
+        else:
+            axis_constraint_ids = [
+                self.add_perpendicular_constraint(line0.id, line1.id).id,
+                self.add_perpendicular_constraint(line1.id, line2.id).id,
+                self.add_perpendicular_constraint(line2.id, line3.id).id,
+            ]
+
+        rectangle = Rectangle(
+            id=str(uuid.uuid4()),
+            corner_point_ids=list(corner_point_ids),
+            line_ids=line_ids,
+            axis_aligned=axis_aligned,
+            axis_constraint_ids=axis_constraint_ids,
+            center_point_id=center_point_id,
+            diagonal_line_id=diagonal_line_id,
+            diagonal2_line_id=diagonal2_line_id,
+            midpoint_constraint_id=midpoint_constraint_id,
+            construction=construction,
+        )
+        self.entities[rectangle.id] = rectangle
+        return rectangle
+
+    def rectangles(self) -> list[Rectangle]:
+        return [entity for entity in self.entities.values() if isinstance(entity, Rectangle)]
 
     def add_spline(self, through_point_ids: list[str], *, construction: bool = False) -> Spline:
         """Add a Spline through 2+ existing Points, creating 2 control-
@@ -1873,7 +2230,121 @@ class Sketch:
             *polygon.angle_constraint_ids,
         ):
             self.constraints.pop(constraint_id, None)
+        # Reference circles (see `reference_circles`'s own doc comment on
+        # `add_polygon`) are this Polygon's own auxiliary construction
+        # geometry, same "delete every one of its own pieces too"
+        # reasoning as its edge Lines above - `delete_circle` alone cleans
+        # up each circle's own radius/cardinal constraints (and its own
+        # returned ids are already-pruned Points, kept separate from
+        # `candidates` below rather than fed back in for a second,
+        # redundant pruning pass); the inscribed circle's own
+        # TangentConstraint isn't part of that (see
+        # `Polygon.inscribed_tangent_constraint_id`'s own doc comment), so
+        # it's popped first, same `.pop(id, None)` "may already be gone"
+        # tolerance as everything else here.
+        self.constraints.pop(polygon.inscribed_tangent_constraint_id, None)
+        circle_pruned_point_ids: list[str] = []
+        for circle_id in (polygon.circumscribed_circle_id, polygon.inscribed_circle_id):
+            if circle_id is not None and circle_id in self.entities:
+                circle_pruned_point_ids.extend(self.delete_circle(circle_id))
+        return [*circle_pruned_point_ids, *self._prune_orphaned_points(candidates)]
+
+    def delete_slot(self, slot_id: str) -> list[str]:
+        """Remove a Slot and everything `add_slot` always creates alongside
+        it - both end-cap Arcs, both straight Lines, the construction
+        centreline, and every constraint in its radius/equal-radius/tangent
+        chain - same "internal implementation detail" exception
+        `delete_polygon`/`delete_circle`/etc. already make for their own
+        radius constraint(s). Every centre and corner Point is pruned
+        automatically if nothing else still needs it - see
+        `_prune_orphaned_points`. Returns the ids of any Points actually
+        removed."""
+        slot = self.entities.get(slot_id)
+        if not isinstance(slot, Slot):
+            raise KeyError(slot_id)
+        candidates = self._entity_defining_point_ids(slot)
+        del self.entities[slot_id]
+        # `.pop(id, None)` rather than `del`, matching `delete_polygon`'s own
+        # reasoning: a Slot's own Arc/Line can also be deleted directly (a
+        # trim, or a direct `DELETE /lines/{id}`/`/arcs/{id}`), so it may
+        # already be gone by the time this runs - a silent no-op here, not
+        # a KeyError.
+        for entity_id in (slot.centerline_id, slot.arc1_id, slot.arc2_id, slot.line1_id, slot.line2_id):
+            self.entities.pop(entity_id, None)
+        self.constraints.pop(slot.radius_constraint_id, None)
+        for constraint_id in (*slot.equal_radius_constraint_ids, *slot.tangent_constraint_ids):
+            self.constraints.pop(constraint_id, None)
         return self._prune_orphaned_points(candidates)
+
+    def delete_rectangle(self, rectangle_id: str) -> list[str]:
+        """Remove a Rectangle and everything `add_rectangle` always creates
+        alongside it - all 4 edge Lines, the diagonal construction Line
+        (axis-aligned only), and every constraint in its axis/midpoint
+        chain - same "internal implementation detail" exception
+        `delete_polygon`/`delete_slot`/etc. already make for their own
+        radius constraint(s). Every corner and centre Point is pruned
+        automatically if nothing else still needs it - see
+        `_prune_orphaned_points`. Returns the ids of any Points actually
+        removed."""
+        rectangle = self.entities.get(rectangle_id)
+        if not isinstance(rectangle, Rectangle):
+            raise KeyError(rectangle_id)
+        candidates = self._entity_defining_point_ids(rectangle)
+        del self.entities[rectangle_id]
+        # `.pop(id, None)` rather than `del`, matching `delete_slot`'s own
+        # reasoning: a Rectangle's own Line can also be deleted directly (a
+        # trim, or a direct `DELETE /lines/{id}`), so it may already be
+        # gone by the time this runs - a silent no-op here, not a KeyError.
+        for line_id in rectangle.line_ids:
+            self.entities.pop(line_id, None)
+        if rectangle.diagonal_line_id is not None:
+            self.entities.pop(rectangle.diagonal_line_id, None)
+        if rectangle.diagonal2_line_id is not None:
+            self.entities.pop(rectangle.diagonal2_line_id, None)
+        for constraint_id in rectangle.axis_constraint_ids:
+            self.constraints.pop(constraint_id, None)
+        if rectangle.midpoint_constraint_id is not None:
+            self.constraints.pop(rectangle.midpoint_constraint_id, None)
+        return self._prune_orphaned_points(candidates)
+
+    def collapse_polygon(self, polygon_id: str) -> None:
+        """Removes *only* the Polygon bookkeeping record - none of its own
+        Points/Lines/Constraints are touched. On-device feedback ("if an
+        entity from a rectangle, slot, polygon is deleted it should
+        collapse into lines and constraints"): the atomic-entity wrapper
+        (see the Polygon class's own docstring) exists purely to let a
+        vertex drag be recognized as one and to create everything in a
+        single call - it was never meant to make the underlying geometry
+        any less freely editable than plain Lines/Points always are.
+        Deleting one of a Polygon's own edges/vertices directly should
+        degrade it into ordinary, independently editable Lines/
+        Constraints, the same as it would have been before Polygon became
+        a real entity at all - not cascade the *rest* of the shape away
+        with it (see `delete_polygon` for the "delete every one of its own
+        pieces too" behaviour this is deliberately not). Called by the
+        router whenever one of a Polygon's own Lines/vertex Points is
+        deleted directly - see `app.sketch.router`'s own delete_line/
+        delete_point endpoints."""
+        polygon = self.entities.get(polygon_id)
+        if not isinstance(polygon, Polygon):
+            raise KeyError(polygon_id)
+        del self.entities[polygon_id]
+
+    def collapse_slot(self, slot_id: str) -> None:
+        """[collapse_polygon]'s counterpart for Slot - see that method's own
+        doc comment for the full reasoning."""
+        slot = self.entities.get(slot_id)
+        if not isinstance(slot, Slot):
+            raise KeyError(slot_id)
+        del self.entities[slot_id]
+
+    def collapse_rectangle(self, rectangle_id: str) -> None:
+        """[collapse_polygon]'s counterpart for Rectangle - see that
+        method's own doc comment for the full reasoning."""
+        rectangle = self.entities.get(rectangle_id)
+        if not isinstance(rectangle, Rectangle):
+            raise KeyError(rectangle_id)
+        del self.entities[rectangle_id]
 
     def delete_spline(self, spline_id: str) -> list[str]:
         """Remove a Spline and every `SplineTangentConstraint` `add_spline`
@@ -2282,6 +2753,20 @@ class Sketch:
                 *entity.vertex_point_ids,
             ):
                 return f"Point is still referenced by polygon {entity.id}"
+            if isinstance(entity, Slot) and point_id in (
+                entity.center1_point_id,
+                entity.center2_point_id,
+                entity.a_point_id,
+                entity.b_point_id,
+                entity.c_point_id,
+                entity.d_point_id,
+            ):
+                return f"Point is still referenced by slot {entity.id}"
+            if isinstance(entity, Rectangle) and point_id in (
+                *entity.corner_point_ids,
+                *((entity.center_point_id,) if entity.center_point_id else ()),
+            ):
+                return f"Point is still referenced by rectangle {entity.id}"
             if isinstance(entity, Spline) and (
                 point_id in entity.through_point_ids or point_id in entity.control_point_ids
             ):
@@ -2324,6 +2809,20 @@ class Sketch:
             )
         if isinstance(entity, Polygon):
             return (entity.center_point_id, *entity.vertex_point_ids)
+        if isinstance(entity, Slot):
+            return (
+                entity.center1_point_id,
+                entity.center2_point_id,
+                entity.a_point_id,
+                entity.b_point_id,
+                entity.c_point_id,
+                entity.d_point_id,
+            )
+        if isinstance(entity, Rectangle):
+            return (
+                *entity.corner_point_ids,
+                *((entity.center_point_id,) if entity.center_point_id else ()),
+            )
         if isinstance(entity, Spline):
             return (*entity.through_point_ids, *entity.control_point_ids)
         if isinstance(entity, TextEntity):

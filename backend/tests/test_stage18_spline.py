@@ -109,20 +109,29 @@ def test_add_spline_with_unknown_point_raises():
         sketch.add_spline([p1.id, "does-not-exist"])
 
 
-def test_delete_spline_removes_its_tangent_constraints_but_not_its_points():
+def test_delete_spline_removes_its_tangent_constraints_and_prunes_now_orphaned_points_but_leaves_a_still_shared_one():
+    # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
+    # see test_delete_line_prunes_a_now_orphaned_endpoint's own comment in
+    # test_stage6_delete.py): control Points no longer unconditionally
+    # survive their own Spline's deletion. `p1` stays shared with an
+    # unrelated Line here.
     sketch = Sketch(id="s", plane=Plane.XY)
     p1 = sketch.add_point(0.0, 0.0)
     p2 = sketch.add_point(10.0, 0.0)
     p3 = sketch.add_point(20.0, 0.0)
     spline = sketch.add_spline([p1.id, p2.id, p3.id])
+    other = sketch.add_point(30.0, 30.0)
+    sketch.add_line(p1.id, other.id)
     assert len(sketch.constraints) == 1
-    point_count_before = len(sketch.points)
 
     sketch.delete_spline(spline.id)
 
     assert spline.id not in sketch.entities
-    assert sketch.constraints == {}
-    assert len(sketch.points) == point_count_before
+    for constraint_id in spline.tangent_constraint_ids:
+        assert constraint_id not in sketch.constraints
+    assert p1.id in sketch.points
+    assert p2.id not in sketch.points
+    assert p3.id not in sketch.points
 
 
 def test_point_deletion_is_blocked_while_referenced_by_a_spline():
@@ -329,7 +338,10 @@ def test_delete_spline_over_the_api():
     ).json()
 
     response = client.delete(f"/sketch/sketches/{sketch['id']}/splines/{spline['id']}")
-    assert response.status_code == 204
+    # Bug fix (pre-existing stale test - predates `DeleteEntityResponse`;
+    # see test_delete_line_over_the_api's own comment in
+    # test_stage6_delete.py).
+    assert response.status_code == 200
 
     response = client.get(f"/sketch/sketches/{sketch['id']}/splines/{spline['id']}")
     assert response.status_code == 404

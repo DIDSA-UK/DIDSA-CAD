@@ -148,6 +148,12 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// still at the edge.
   Size? _lastSize;
 
+  /// Last [SketchController.autoFitRequestToken] seen by [_maybeAutoFit] -
+  /// compared against on every controller notification so a re-fit only
+  /// fires the moment that token actually changes, not on every unrelated
+  /// notification (a plain solve, a hover, ...).
+  int? _lastAutoFitToken;
+
   /// How close (logical pixels) the cursor must sit to a canvas edge to
   /// trigger panning, and how fast (screen pixels/second) panning ramps up
   /// to at the very edge - both arbitrary, tuned for a comfortable RTS-style
@@ -260,14 +266,34 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     _longPressPopOpacity = Tween<double>(begin: 0.6, end: 0.0).animate(
       CurvedAnimation(parent: _longPressPopController, curve: Curves.easeOut),
     );
+    _lastAutoFitToken = widget.controller.autoFitRequestToken;
+    widget.controller.addListener(_maybeAutoFit);
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_maybeAutoFit);
     _edgePanTicker.dispose();
     _longPressPopController.dispose();
     _longPressTimer?.cancel();
     super.dispose();
+  }
+
+  /// Watches [SketchController.autoFitRequestToken] - bumped whenever
+  /// confirming a dimension value just re-scaled the whole sketch (see that
+  /// field's own doc comment) - and re-fits the view the same way tapping
+  /// the "Zoom to fit" button does, so a sketch that just grew or shrank
+  /// dramatically doesn't stay stuck at its old pan/zoom, showing one
+  /// corner of a now-much-larger drawing or a speck in the middle of a
+  /// now-much-smaller one. A no-op on every other controller notification
+  /// (a plain solve, a hover, ...), which is most of them.
+  void _maybeAutoFit() {
+    final token = widget.controller.autoFitRequestToken;
+    if (token == _lastAutoFitToken) return;
+    _lastAutoFitToken = token;
+    final size = _lastSize;
+    if (size == null) return;
+    setState(() => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size));
   }
 
   /// Stage 23g: starts the long-press timer when [downScreen] (the
@@ -358,15 +384,23 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     _lastTick = elapsed;
     if (size == null || dt <= 0 || dt > 0.25) return;
     if (_activeTouches.length >= 2) return;
-    // Bug-fix round: while something's grabbed via drag mode, the cursor is
-    // hidden (see _SketchPainter's isCursorVisible check) but its screen
-    // position doesn't stop existing - if it happens to sit near an edge
-    // from an earlier move, this ambient RTS-style edge-pan kept firing
-    // every tick regardless, silently scrolling the view out from under a
-    // drag the user never asked to pan during. Every other pan/gesture path
-    // in this file already gates on isEntityGrabbed; this automatic,
-    // no-explicit-gesture one is the one that was missing it.
-    if (widget.controller.isEntityGrabbed) return;
+    // On-device feedback ("RTS style panning is no longer working... when
+    // using drag/drop this restricts where I can move entities as the
+    // invisible cursor gets stuck at the edge"): an earlier "bug fix round"
+    // added a blanket `if (isEntityGrabbed) return` here, reasoning that
+    // while something's grabbed via drag mode, the cursor is hidden (see
+    // _SketchPainter's isCursorVisible check) but its screen position
+    // doesn't stop existing - so a *stale* position sitting near an edge
+    // from an earlier move could keep firing edge-pan every tick,
+    // scrolling the view out from under a drag the user never asked to pan
+    // during. That reasoning is already fully covered by the idle-
+    // threshold check right below (a stale position, by definition, hasn't
+    // moved recently, so it already fails that check and never fires) -
+    // the isEntityGrabbed gate was strictly redundant for the stale case
+    // it was meant to fix, and wrongly also blocked the *legitimate* case:
+    // actively dragging an entity toward the edge, where the cursor *is*
+    // moving every tick and edge-pan is exactly what should let the drag
+    // keep going past the current viewport bounds.
     final lastMove = _lastCursorMoveTime;
     if (lastMove == null || DateTime.now().difference(lastMove) >= _edgePanIdleThreshold) return;
 
@@ -428,7 +462,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     final controller = widget.controller;
     if (!controller.isEntityGrabbed) return;
     if (controller.draggingLabelId != null) {
-      controller.updateLabelDrag(event.delta);
+      controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
       return;
     }
     final coord = transform.screenToSketch(event.localPosition.dx, event.localPosition.dy);
@@ -684,7 +718,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       if (widget.controller.isEntityGrabbed) {
         if (widget.controller.draggingLabelId != null) {
-          widget.controller.updateLabelDrag(event.delta);
+          widget.controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
         } else {
           widget.controller.updateGrabbedPosition(widget.controller.cursorX, widget.controller.cursorY);
         }
@@ -1511,9 +1545,32 @@ RadialDimensionGeometry? _radialDimensionGeometry(
   );
 }
 
+/// Bug fix (on-device feedback: "when I drop a point on the origin/another
+/// point a coincident constraint is created... the problem is I can't see
+/// the constraint label - as it's a grounding constraint the user may want
+/// to delete it, so it should be visible"): a Coincident constraint's own
+/// two Points sit at the exact same location by definition, so a bare
+/// pair-glyph's own midpoint is that same point - the badge used to render
+/// directly on top of the Point marker itself, indistinguishable/
+/// unclickable. A small fixed screen-pixel default nudge only kicks in
+/// when the two projected Points are (near-)coincident, so every other
+/// pair-glyph (V/H, Parallel, Perpendicular, ... which always separate two
+/// genuinely distinct entities) is unaffected. Shared by
+/// [_SketchPainter._paintAxisIndicator]/[_paintTwoLineGlyph]-equivalent
+/// callers and [_constraintLabelCenter] so they can never drift apart -
+/// same fix, same constant, as the embedded 3D viewport's own
+/// `sketch_constraint_overlay.dart`.
+const Offset _coincidentGlyphNudge = Offset(14, -14);
+
+Offset _pairGlyphMidpoint(Offset a, Offset b) {
+  final midpoint = (a + b) / 2;
+  return (a - b).distance < 1e-6 ? midpoint + _coincidentGlyphNudge : midpoint;
+}
+
 /// A Point pair's screen-space midpoint - null if either Point is missing.
-/// Shared by [_constraintLabelCenter]'s Vertical/Horizontal cases, mirroring
-/// [_SketchPainter._paintAxisIndicator]'s own midpoint layout.
+/// Shared by [_constraintLabelCenter]'s Vertical/Horizontal/Coincident
+/// cases, mirroring [_SketchPainter._paintAxisIndicator]'s own midpoint
+/// layout.
 Offset? _pointPairMidpointScreen(
   SketchController controller,
   ViewTransform transform,
@@ -1523,7 +1580,103 @@ Offset? _pointPairMidpointScreen(
   final a = controller.points[pointAId];
   final b = controller.points[pointBId];
   if (a == null || b == null) return null;
-  return (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
+  return _pairGlyphMidpoint(transform.sketchToScreen(a.x, a.y), transform.sketchToScreen(b.x, b.y));
+}
+
+/// The perpendicular offset distance for a linear/line-distance dimension's
+/// own dimension line - shared by [_SketchPainter._paintDistanceDimension]/
+/// [_SketchPainter._paintLineDistanceDimension] and their
+/// [_constraintLabelCenter] twins below, all four of which call this exact
+/// function so painting and hit-testing can never disagree about where the
+/// line itself sits (previously two *separate* formulas - see git history -
+/// which is what let a dragged dimension's regrab hit-box drift away from
+/// its actually-rendered position). [normal] must be a unit vector in this
+/// dimension's own canonical offset direction - the vertical/horizontal
+/// cases use their own fixed axis-aligned normal (no sign ambiguity to
+/// canonicalize); the diagonal/generic case uses [_canonicalPerpendicular]
+/// instead of a raw per-point-order cross product. The magnitude is floored
+/// so the dimension line can't collapse onto the geometry it measures; the
+/// sign is free to flip, so dragging the label to the other side of the
+/// measured entities moves the whole dimension there too, same as a real
+/// CAD tool allows.
+const double _defaultDimensionOffset = 18.0;
+const double _minDimensionOffsetMagnitude = 6.0;
+
+double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
+  if (labelOffset == Offset.zero) return _defaultDimensionOffset;
+  final projected = labelOffset.dx * normal.dx + labelOffset.dy * normal.dy;
+  final raw = _defaultDimensionOffset + projected;
+  if (raw.abs() < _minDimensionOffsetMagnitude) {
+    return raw.isNegative ? -_minDimensionOffsetMagnitude : _minDimensionOffsetMagnitude;
+  }
+  return raw;
+}
+
+/// A unit vector perpendicular to [delta], canonicalized to a fixed
+/// screen-relative sign regardless of [delta]'s own direction - so the same
+/// physical dimension line always offsets the same way whichever of its two
+/// Points happens to be stored as A vs B (swapping them negates [delta],
+/// which would otherwise negate this too).
+///
+/// On-device feedback ("swiping up/down moves the dimension in the wrong
+/// direction"): this arbitrary point-storage-order dependency, not the drag
+/// math itself, was the actual root cause for a diagonal (non-axis-aligned)
+/// dimension - roughly half of them (whichever happened to have their two
+/// Points created "backwards" relative to their sibling dimensions)
+/// offset from an identical drag gesture in the visually opposite direction
+/// from the rest. Vertical/Horizontal dimensions were never affected (they
+/// already use a fixed `Offset(1,0)`/`Offset(0,1)` normal, not one derived
+/// from point order).
+Offset _canonicalPerpendicular(Offset delta) {
+  final length = delta.distance;
+  if (length < 1e-6) return const Offset(0, -1);
+  var normal = Offset(-delta.dy, delta.dx) / length;
+  // Prefer pointing up-screen (negative dy); for a perfectly horizontal
+  // line (dy ~ 0) prefer +x instead - an arbitrary but *fixed* convention,
+  // chosen once here rather than inherited from whichever Point a given
+  // dimension happened to store as "A".
+  if (normal.dy > 1e-9 || (normal.dy.abs() <= 1e-9 && normal.dx < 0)) {
+    normal = -normal;
+  }
+  return normal;
+}
+
+/// On-device feedback ("dimensions should be movable anywhere, leaders and
+/// extension lines should work as expected"): once a linear/line-distance
+/// dimension's own dimension line has been positioned ([p1]/[p2] - already
+/// offset perpendicular to the measured geometry via
+/// [_dimensionOffsetDistance]), this places the label itself - honoring
+/// whatever's left of [labelOffset] *along* that line (its perpendicular
+/// component was already spent moving the line above), with a short leader
+/// back to the line once the label has actually moved off it, mirroring
+/// [_radialDimensionGeometry]'s own shoulder-and-landing-leg pattern
+/// (a radius/diameter dimension's label has always been freely
+/// repositionable this way - this brings linear/line-distance dimensions to
+/// parity with it instead of inventing a new pattern).
+///
+/// Below [_dimensionLeaderThreshold] the label just sits on the line's own
+/// midpoint with no leader - a previous on-device round explicitly rejected
+/// a leader appearing for a *plain perpendicular* drag (see
+/// [_dimensionOffsetDistance]'s call sites' own git history: "not how a
+/// real technical drawing looks, reported as an unwanted extra line"), and
+/// this preserves that outcome for exactly that case; a leader now only
+/// appears once the label is deliberately slid *along* the line, which is
+/// new freedom this fix adds, not the old complaint reappearing.
+const double _dimensionLeaderThreshold = 4.0;
+
+({Offset labelCenter, Offset? leaderFrom}) _dimensionLabelPlacement(
+  Offset p1,
+  Offset p2,
+  Offset labelOffset,
+) {
+  final anchor = (p1 + p2) / 2;
+  final delta = p2 - p1;
+  final length = delta.distance;
+  if (length < 1e-6) return (labelCenter: anchor, leaderFrom: null);
+  final tangent = delta / length;
+  final along = labelOffset.dx * tangent.dx + labelOffset.dy * tangent.dy;
+  if (along.abs() < _dimensionLeaderThreshold) return (labelCenter: anchor, leaderFrom: null);
+  return (labelCenter: anchor + tangent * along, leaderFrom: anchor);
 }
 
 /// [constraint]'s actual on-screen label center (with [labelOffset] already
@@ -1569,26 +1722,34 @@ Offset? _constraintLabelCenter(
       if (a == null || b == null) return null;
       final aScreen = transform.sketchToScreen(a.x, a.y);
       final bScreen = transform.sketchToScreen(b.x, b.y);
-      // Must mirror _paintDistanceDimension's per-orientation layout exactly,
-      // or dragging/hit-testing a horizontal/vertical dimension's label
-      // would target the old diagonal-layout midpoint instead of where it's
-      // actually drawn.
+      // Calls the exact same [_dimensionOffsetDistance]/
+      // [_canonicalPerpendicular]/[_dimensionLabelPlacement] helpers
+      // [_SketchPainter._paintDistanceDimension] does, so this can never
+      // drift from where the dimension is actually drawn (see those
+      // helpers' own doc comments for the on-device bugs that divergence
+      // caused).
+      final Offset p1;
+      final Offset p2;
       switch (c.orientation) {
         case 'vertical':
-          final offsetX = math.max(aScreen.dx, bScreen.dx) + 18.0;
-          return Offset(offsetX, (aScreen.dy + bScreen.dy) / 2) + labelOffset;
+          const normal = Offset(1, 0);
+          final offsetX = math.max(aScreen.dx, bScreen.dx) + _dimensionOffsetDistance(normal, labelOffset);
+          p1 = Offset(offsetX, aScreen.dy);
+          p2 = Offset(offsetX, bScreen.dy);
         case 'horizontal':
-          final offsetY = math.max(aScreen.dy, bScreen.dy) + 18.0;
-          return Offset((aScreen.dx + bScreen.dx) / 2, offsetY) + labelOffset;
+          const normal = Offset(0, 1);
+          final offsetY = math.max(aScreen.dy, bScreen.dy) + _dimensionOffsetDistance(normal, labelOffset);
+          p1 = Offset(aScreen.dx, offsetY);
+          p2 = Offset(bScreen.dx, offsetY);
         default:
           final delta = bScreen - aScreen;
-          final length = delta.distance;
-          if (length < 1e-6) return null;
-          final normal = Offset(-delta.dy, delta.dx) / length;
-          const offsetDistance = 18.0;
-          final offset = normal * offsetDistance;
-          return (aScreen + offset + bScreen + offset) / 2 + labelOffset;
+          if (delta.distance < 1e-6) return null;
+          final normal = _canonicalPerpendicular(delta);
+          final offsetVec = normal * _dimensionOffsetDistance(normal, labelOffset);
+          p1 = aScreen + offsetVec;
+          p2 = bScreen + offsetVec;
       }
+      return _dimensionLabelPlacement(p1, p2, labelOffset).labelCenter;
     case VerticalConstraintDto c:
       final base = _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
       return base == null ? null : base + labelOffset;
@@ -1600,15 +1761,47 @@ Offset? _constraintLabelCenter(
       // never hit-testable either. See
       // SketchController.isImplicitPolygonEdgeTie's own doc comment.
       if (controller.isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) return null;
-      final midpoint1 = _lineMidpointScreenFor(controller, transform, c.line1Id);
-      final midpoint2 = _lineMidpointScreenFor(controller, transform, c.line2Id);
-      if (midpoint1 == null || midpoint2 == null) return null;
-      return (midpoint1 + midpoint2) / 2 + labelOffset;
+      // Calls the exact same intersection/arc-radius math
+      // [_SketchPainter._paintAngleDimension] does, so this can never drift
+      // from where the dimension is actually drawn.
+      final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final midB = _lineMidpointScreenFor(controller, transform, c.line2Id);
+      if (midA == null || midB == null) return null;
+      final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+      final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+      final intersection = endpointsA != null && endpointsB != null
+          ? _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2)
+          : null;
+      final refDistance = (midB - midA).distance;
+      final intersectionTooFar = intersection != null &&
+          refDistance > 1e-6 &&
+          ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
+              (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance);
+      if (intersection == null || intersectionTooFar) {
+        return (midA + midB) / 2 + labelOffset;
+      }
+      final directionA = midA - intersection;
+      final directionB = midB - intersection;
+      if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+        return (midA + midB) / 2 + labelOffset;
+      }
+      final dir1 = directionA / directionA.distance;
+      final dir2 = directionB / directionB.distance;
+      final bisector = dir1 + dir2;
+      final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
+      final restingCenter = intersection + bisectorDirection * _angleGhostArcRadiusPixels + labelOffset;
+      final radius = math.max((restingCenter - intersection).distance, _minDimensionOffsetMagnitude);
+      final arcPoint1 = intersection + dir1 * radius;
+      final arcPoint2 = intersection + dir2 * radius;
+      return _dimensionLabelPlacement(arcPoint1, arcPoint2, labelOffset).labelCenter;
     case LineDistanceConstraintDto c:
-      // Bug fix: must mirror _paintLineDistanceDimension's own perpendicular-
-      // foot layout exactly (see that method's own doc comment), or hit-
-      // testing/dragging this label would target the old, visibly-wrong
-      // midpoint-to-midpoint position instead of where it's actually drawn.
+      // Calls the exact same [_dimensionOffsetDistance]/
+      // [_dimensionLabelPlacement] helpers
+      // [_SketchPainter._paintLineDistanceDimension] does (see
+      // [_dimensionOffsetDistance]'s own doc comment) - must still mirror
+      // that method's own perpendicular-foot layout to derive p1/p2 in the
+      // first place, since a Line-to-Line distance has no single pair of
+      // constrained Points the way DistanceConstraintDto does.
       final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
       final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
       final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
@@ -1621,9 +1814,10 @@ Offset? _constraintLabelCenter(
       final toLineB = endpointsB.$1 - midA;
       final t = toLineB.dx * perpToA.dx + toLineB.dy * perpToA.dy;
       final midB = midA + perpToA * t;
-      const offsetDistance = 18.0;
-      final offset = alongA * offsetDistance;
-      return (midA + offset + midB + offset) / 2 + labelOffset;
+      final offset = alongA * _dimensionOffsetDistance(alongA, labelOffset);
+      final p1 = midA + offset;
+      final p2 = midB + offset;
+      return _dimensionLabelPlacement(p1, p2, labelOffset).labelCenter;
     // Stage 23e: extends label rendering/hit-testing to every remaining
     // constraint type. AtMidpointConstraintDto is deliberately excluded -
     // Stage 22 decided it renders no badge at all, since it's purely a
@@ -1636,6 +1830,7 @@ Offset? _constraintLabelCenter(
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case PerpendicularConstraintDto c:
+      if (controller.isImplicitEllipseAxisPerpendicular(c.line1Id, c.line2Id)) return null;
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case EqualLengthConstraintDto c:
@@ -1646,11 +1841,35 @@ Offset? _constraintLabelCenter(
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case PointLineDistanceConstraintDto c:
+      // Calls the exact same perpendicular-foot/extension-line layout
+      // [_SketchPainter._paintPointLineDistanceDimension] does.
       final point = controller.points[c.pointId];
-      final lineMid = _lineMidpointScreenFor(controller, transform, c.lineId);
-      if (point == null || lineMid == null) return null;
+      final line = controller.lines[c.lineId];
+      if (point == null || line == null) return null;
+      final lineStart = controller.points[line.startPointId];
+      final lineEnd = controller.points[line.endPointId];
+      if (lineStart == null || lineEnd == null) return null;
       final pointScreen = transform.sketchToScreen(point.x, point.y);
-      return (pointScreen + lineMid) / 2 + labelOffset;
+      final lineStartScreen = transform.sketchToScreen(lineStart.x, lineStart.y);
+      final lineEndScreen = transform.sketchToScreen(lineEnd.x, lineEnd.y);
+      final lineDx = lineEndScreen.dx - lineStartScreen.dx;
+      final lineDy = lineEndScreen.dy - lineStartScreen.dy;
+      final lineLenSq = lineDx * lineDx + lineDy * lineDy;
+      final Offset footScreen;
+      if (lineLenSq < 1e-9) {
+        footScreen = lineStartScreen;
+      } else {
+        final t = ((pointScreen.dx - lineStartScreen.dx) * lineDx + (pointScreen.dy - lineStartScreen.dy) * lineDy) /
+            lineLenSq;
+        footScreen = Offset(lineStartScreen.dx + t * lineDx, lineStartScreen.dy + t * lineDy);
+      }
+      final delta = footScreen - pointScreen;
+      if (delta.distance < 1e-6) return pointScreen + labelOffset;
+      final normal = _canonicalPerpendicular(delta);
+      final offsetVec = normal * _dimensionOffsetDistance(normal, labelOffset);
+      final p1 = pointScreen + offsetVec;
+      final p2 = footScreen + offsetVec;
+      return _dimensionLabelPlacement(p1, p2, labelOffset).labelCenter;
     default:
       return null;
   }
@@ -1672,7 +1891,7 @@ String? dimensionLabelAt(
   double radius,
 ) {
   for (final entry in controller.constraints.entries) {
-    final labelOffset = controller.labelOffsetFor(entry.key);
+    final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
     final actual = _constraintLabelCenter(controller, transform, entry.value, labelOffset);
     if (actual == null) continue;
     if ((canvasPos - actual).distance <= radius) {
@@ -1725,7 +1944,15 @@ class _GhostValueEditorState extends State<GhostValueEditor> {
   void initState() {
     super.initState();
     final current = widget.controller.currentGhostValue(widget.ghost);
-    _text = TextEditingController(text: current == null ? '' : current.toStringAsFixed(2));
+    final text = current == null ? '' : current.toStringAsFixed(2);
+    // On-device feedback ("the current dimension should be highlighted so
+    // the user can immediately type over it"): pre-selecting the whole
+    // value (not just prefilling it with the cursor at the end, as before)
+    // means the very first keystroke replaces it outright - same fix
+    // applied to `sketch_ribbon.dart`'s `_ConstraintValueEditor`, the other
+    // place a confirmed dimension's value gets re-edited.
+    _text = TextEditingController(text: text)
+      ..selection = TextSelection(baseOffset: 0, extentOffset: text.length);
   }
 
   @override
@@ -1882,11 +2109,21 @@ class _SketchPainter extends CustomPainter {
   static const Color _fullyConstrainedColor = Color(0xFF2E7D32);
 
   /// Phase 3: a Line/Circle/Point that is *not* fully constrained and
-  /// *not* flagged as over-constrained either - plain "still has freedom"
-  /// charcoal grey, replacing the old sketch-wide-only black/blueGrey
-  /// split (Prompt B item B5) now that per-entity colouring covers that
-  /// role instead.
-  static const Color _unconstrainedColor = Color(0xFF36454F);
+  /// *not* flagged as over-constrained either - plain "still has freedom",
+  /// replacing the old sketch-wide-only black/blueGrey split (Prompt B item
+  /// B5) now that per-entity colouring covers that role instead.
+  ///
+  /// On-device feedback ("lines need higher contrast - link their colour
+  /// to the background colour"): a single fixed charcoal (the old
+  /// `0xFF36454F`) read as low-contrast against some [canvasColor] choices.
+  /// Derived from [canvasColor]'s own estimated brightness instead - the
+  /// same light/dark threshold Flutter's own `ThemeData` uses for
+  /// on-primary-color text - so a dark canvas gets white lines and a light
+  /// one gets black lines, never a mid-tone that can wash out against
+  /// either.
+  Color get _unconstrainedColor => ThemeData.estimateBrightnessForColor(canvasColor) == Brightness.light
+      ? Colors.black
+      : Colors.white;
 
   /// Phase 3 (3.2): a Line/Circle/Point implicated by an over-constrained
   /// (redundant/conflicting) Constraint cluster, or by one of the other
@@ -1932,15 +2169,34 @@ class _SketchPainter extends CustomPainter {
   /// felt oversized generally, independent of the touch hit-radius (which
   /// stays deliberately more generous than the visual size for touchability
   /// - see [SketchController.minTapHitRadiusPixels]/[SketchController.pointHitRadiusMultiplier]).
-  static const double _pointRadius = 3.0; // was 4
-  static const double _pointRadiusEmphasis = 4.5; // was 6 (chain-start/circle-center/hover)
-  static const double _pointRadiusSelected = 5.0; // was 7
-  static const double _pointRadiusSnapping = 7.0; // was 11 (chain-start snap-to-close)
+  // On-device feedback ("Points should be visible with a diameter slightly
+  // larger than the sketch line width"): a plain Point's own diameter
+  // (2 * _pointRadius) is derived from _lineStrokeWidth rather than a bare
+  // constant, so the two stay in the intended relationship if either is
+  // tuned again later. Bug fix: the first pass at this (0.65x, diameter
+  // ~1.3x the line width) turned out too subtle on-device ("I still can't
+  // see any points") - bumped to a still-modest but clearly legible margin.
+  // The emphasis/selected/snapping states keep the exact same multiples of
+  // the base radius this file already had (1.5x/1.67x/2.33x) - still
+  // visually distinct while scaling together.
+  static const double _pointRadius = _lineStrokeWidth * 1.1; // diameter ~2.2x the line width
+  static const double _pointRadiusEmphasis = _pointRadius * 1.5; // chain-start/circle-center/hover
+  static const double _pointRadiusSelected = _pointRadius * (5.0 / 3.0);
+  static const double _pointRadiusSnapping = _pointRadius * (7.0 / 3.0); // chain-start snap-to-close
   static const double _lineStrokeWidth = 1.8; // was 2, then 1.5 (on-device feedback: "increase line thickness for sketch lines slightly")
   static const double _lineStrokeWidthEmphasis = 2.7; // was 3, then 2.25 (selected/hover) - same 1.5x ratio to _lineStrokeWidth
   static const double _originHalfSize = 5.0; // was 7
   static const double _originHalfSizeSnapping = 7.0; // was 10
   static const double _dimensionFontSize = 9.5; // was 11
+  // On-device feedback ("what font options are available for dimension
+  // text? anything more suiting technical drawing?"): dimension/constraint
+  // labels previously had no fontFamily at all (bare platform default) -
+  // Lekton (SIL OFL, bundled via pubspec.yaml, see
+  // assets/fonts/Lekton/OFL.txt) is a monospace face with a clean,
+  // technical/blueprint feel, and its fixed-width digits keep dimension
+  // values visually aligned - same choice as the embedded 3D viewport's own
+  // `sketch_constraint_overlay.dart`.
+  static const String _dimensionFontFamily = 'Lekton';
   static const double _snapHighlightPointRadius = 3.0; // was 4 (snap/coincident highlight base)
   static const double _midpointSnapIndicatorRadius = 6.5; // was 9
 
@@ -2087,7 +2343,7 @@ class _SketchPainter extends CustomPainter {
       // badges no longer share one unselected color.
       final dimensionColor = isSelected ? _selectedColor : _dimensionLineColor;
       final badgeColor = isSelected ? _selectedColor : _constraintBadgeColor;
-      final labelOffset = controller.labelOffsetFor(entry.key);
+      final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
       switch (entry.value) {
         case DistanceConstraintDto c:
           // Cardinal-point axis constraints are pure solver plumbing (see
@@ -2129,6 +2385,7 @@ class _SketchPainter extends CustomPainter {
         case ParallelConstraintDto c:
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '∥', badgeColor, labelOffset);
         case PerpendicularConstraintDto c:
+          if (controller.isImplicitEllipseAxisPerpendicular(c.line1Id, c.line2Id)) break;
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '⟂', badgeColor, labelOffset);
         case EqualLengthConstraintDto c:
           // Same fix as AngleConstraintDto above - a Polygon's own edges are
@@ -2143,36 +2400,6 @@ class _SketchPainter extends CustomPainter {
           break;
       }
     }
-  }
-
-  /// Traditional-drawing dimension repositioning: dragging a distance/
-  /// line-distance dimension's label used to leave the dimension line
-  /// itself fixed and draw a separate leader line out to the floating
-  /// label - not how a real technical drawing looks, and reported as an
-  /// unwanted extra line. Instead, the drag *relocates the dimension line
-  /// itself* (this perpendicular offset distance), so the extension lines
-  /// stretch/shrink to reach it and the label sits directly on the
-  /// (now-relocated) dimension line, same as [_paintDistanceDimension]/
-  /// [_paintLineDistanceDimension] already did before any drag - no
-  /// separate leader line needed. [normal] must be a *unit* vector in the
-  /// dimension line's offset direction; the drag offset is projected onto
-  /// it so only the perpendicular component moves the line (sliding the
-  /// label along the line's own direction isn't supported yet). The
-  /// magnitude is floored so the dimension line can't collapse onto the
-  /// geometry it measures, but the sign is free to flip - dragging the
-  /// label to the other side of the measured entities moves the whole
-  /// dimension there too, same as a real CAD tool allows.
-  static const double _defaultDimensionOffset = 18.0;
-  static const double _minDimensionOffsetMagnitude = 6.0;
-
-  double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
-    if (labelOffset == Offset.zero) return _defaultDimensionOffset;
-    final projected = labelOffset.dx * normal.dx + labelOffset.dy * normal.dy;
-    final raw = _defaultDimensionOffset + projected;
-    if (raw.abs() < _minDimensionOffsetMagnitude) {
-      return raw.isNegative ? -_minDimensionOffsetMagnitude : _minDimensionOffsetMagnitude;
-    }
-    return raw;
   }
 
   /// ISO 129/ASME Y14.5-style extension (witness) line: leaves a small gap
@@ -2252,6 +2479,7 @@ class _SketchPainter extends CustomPainter {
       color: plainBlackText ? Colors.black : Colors.white,
       fontSize: _dimensionFontSize,
       fontWeight: FontWeight.w600,
+      fontFamily: _dimensionFontFamily,
     );
     final isDiameter = text.startsWith('⌀');
     final textSpan = isDiameter
@@ -2343,9 +2571,8 @@ class _SketchPainter extends CustomPainter {
         p2 = Offset(bScreen.dx, offsetY);
       default:
         final delta = bScreen - aScreen;
-        final length = delta.distance;
-        if (length < 1e-6) return;
-        final normal = Offset(-delta.dy, delta.dx) / length;
+        if (delta.distance < 1e-6) return;
+        final normal = _canonicalPerpendicular(delta);
         final offsetVec = normal * _dimensionOffsetDistance(normal, labelOffset);
         p1 = aScreen + offsetVec;
         p2 = bScreen + offsetVec;
@@ -2356,7 +2583,15 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 
-    _drawDimensionLabel(canvas, (p1 + p2) / 2, displayValue.toStringAsFixed(2), color, plainBlackText: true);
+    // On-device feedback ("dimensions should be movable anywhere, leaders
+    // and extension lines should work as expected"): the label can now
+    // slide along the dimension line too, not just sit at its midpoint -
+    // see [_dimensionLabelPlacement]'s own doc comment.
+    final placement = _dimensionLabelPlacement(p1, p2, labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, displayValue.toStringAsFixed(2), color, plainBlackText: true);
   }
 
   /// Radial (radius/diameter) dimension for a Circle or Arc's
@@ -2531,12 +2766,21 @@ class _SketchPainter extends CustomPainter {
     final dimPaint = Paint()
       ..color = color
       ..strokeWidth = _dimensionStrokeWidth;
-    _drawExtensionLine(canvas, midA, midA + offset, dimPaint);
-    _drawExtensionLine(canvas, midB, midB + offset, dimPaint);
-    canvas.drawLine(midA + offset, midB + offset, dimPaint);
-    _drawDimensionArrows(canvas, midA + offset, midB + offset, color);
+    final p1 = midA + offset;
+    final p2 = midB + offset;
+    _drawExtensionLine(canvas, midA, p1, dimPaint);
+    _drawExtensionLine(canvas, midB, p2, dimPaint);
+    canvas.drawLine(p1, p2, dimPaint);
+    _drawDimensionArrows(canvas, p1, p2, color);
 
-    _drawDimensionLabel(canvas, (midA + offset + midB + offset) / 2, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    // On-device feedback ("dimensions should be movable anywhere, leaders
+    // and extension lines should work as expected") - see
+    // [_dimensionLabelPlacement]'s own doc comment.
+    final placement = _dimensionLabelPlacement(p1, p2, labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, c.distance.toStringAsFixed(2), color, plainBlackText: true);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
@@ -2558,24 +2802,107 @@ class _SketchPainter extends CustomPainter {
     final a = controller.points[pointAId];
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
-    final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
+    final midpoint = _pairGlyphMidpoint(transform.sketchToScreen(a.x, a.y), transform.sketchToScreen(b.x, b.y));
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
-  /// Angle dimension: deliberately a numeric-only label rather than a
-  /// literal arc sweep - the two constrained Lines have no shared vertex in
-  /// general, so there's no single well-defined arc to draw. Placed at the
-  /// midpoint between each Line's own midpoint, which stays stable and
-  /// roughly "between" the two Lines regardless of their actual layout.
+  /// Angle dimension: an ISO 129/ASME Y14.5-style arc between the two
+  /// constrained Lines' own rays from their implied vertex - the two Lines
+  /// need not share an endpoint, so the vertex is the intersection of their
+  /// own infinite extensions ([_lineIntersectionScreen], the same
+  /// intersection [_layoutGhost]'s own angle-ghost preview already
+  /// computes), with witness (extension) lines out to the arc and tangent
+  /// arrowheads at each end.
+  ///
+  /// Bug fix (on-device feedback: "dimensions should match technical
+  /// drawing conventions" - this used to be a plain floating text chip, no
+  /// arc/extension lines at all): [labelOffset] now determines the arc's
+  /// own radius from the vertex (the full 2D vector, not just its
+  /// horizontal component - mirrors [_radialDimensionGeometry]'s own "the
+  /// entire drag is honoured" fix for the analogous "arbitrary direction,
+  /// only distance-from-a-centre-point matters" problem) rather than just
+  /// nudging a fixed floating chip. Falls back to the old plain-chip look
+  /// for the same degenerate/near-parallel/implausibly-far-vertex cases
+  /// [_layoutGhost]'s own angle preview already guards against.
   void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset) {
-    final midpoint1 = _lineMidpointScreen(c.line1Id);
-    final midpoint2 = _lineMidpointScreen(c.line2Id);
-    if (midpoint1 == null || midpoint2 == null) return;
-    final midpoint = (midpoint1 + midpoint2) / 2;
-    // On-device feedback: dropped the leading '∠' glyph - the trailing '°'
-    // already unambiguously marks this as an angle, and the extra symbol
-    // read as redundant clutter.
-    _drawDimensionLabel(canvas, midpoint + labelOffset, '${c.angleDegrees.toStringAsFixed(1)}°', color, plainBlackText: true);
+    final text = '${c.angleDegrees.toStringAsFixed(1)}°';
+    final midA = _lineMidpointScreen(c.line1Id);
+    final midB = _lineMidpointScreen(c.line2Id);
+    if (midA == null || midB == null) return;
+
+    final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+    final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+    final intersection = endpointsA != null && endpointsB != null
+        ? _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2)
+        : null;
+    final refDistance = (midB - midA).distance;
+    final intersectionTooFar = intersection != null &&
+        refDistance > 1e-6 &&
+        ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
+            (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance);
+
+    if (intersection == null || intersectionTooFar) {
+      final midpoint = (midA + midB) / 2;
+      _drawDimensionLabel(canvas, midpoint + labelOffset, text, color, plainBlackText: true);
+      return;
+    }
+    final directionA = midA - intersection;
+    final directionB = midB - intersection;
+    if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+      final midpoint = (midA + midB) / 2;
+      _drawDimensionLabel(canvas, midpoint + labelOffset, text, color, plainBlackText: true);
+      return;
+    }
+    final dir1 = directionA / directionA.distance;
+    final dir2 = directionB / directionB.distance;
+
+    final bisector = dir1 + dir2;
+    final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
+    final restingCenter = intersection + bisectorDirection * _angleGhostArcRadiusPixels + labelOffset;
+    final radius = math.max((restingCenter - intersection).distance, _minDimensionOffsetMagnitude);
+
+    final arcPoint1 = intersection + dir1 * radius;
+    final arcPoint2 = intersection + dir2 * radius;
+
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth;
+    // Paint() defaults to PaintingStyle.fill - drawArc with a fill-style
+    // paint fills the pie wedge, not a stroked arc - the only call site in
+    // this file that needs the style set explicitly.
+    final arcPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth
+      ..style = PaintingStyle.stroke;
+
+    Offset farEndpoint(Offset a, Offset b, Offset dir) {
+      final da = (a - intersection).dx * dir.dx + (a - intersection).dy * dir.dy;
+      final db = (b - intersection).dx * dir.dx + (b - intersection).dy * dir.dy;
+      return da >= db ? a : b;
+    }
+
+    if (endpointsA != null) {
+      _drawExtensionLine(canvas, farEndpoint(endpointsA.$1, endpointsA.$2, dir1), arcPoint1, dimPaint);
+    }
+    if (endpointsB != null) {
+      _drawExtensionLine(canvas, farEndpoint(endpointsB.$1, endpointsB.$2, dir2), arcPoint2, dimPaint);
+    }
+
+    final startAngle = math.atan2(dir1.dy, dir1.dx);
+    var sweep = math.atan2(dir2.dy, dir2.dx) - startAngle;
+    if (sweep > math.pi) sweep -= 2 * math.pi;
+    if (sweep <= -math.pi) sweep += 2 * math.pi;
+    canvas.drawArc(Rect.fromCircle(center: intersection, radius: radius), startAngle, sweep, false, arcPaint);
+
+    final sweepSign = sweep.isNegative ? -1.0 : 1.0;
+    _drawArrowhead(canvas, arcPoint1, Offset(dir1.dy, -dir1.dx) * sweepSign, color);
+    _drawArrowhead(canvas, arcPoint2, Offset(-dir2.dy, dir2.dx) * sweepSign, color);
+
+    final placement = _dimensionLabelPlacement(arcPoint1, arcPoint2, labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, text, color, plainBlackText: true);
   }
 
   /// Generic two-Line glyph (Stage 23e): a small text chip at the midpoint
@@ -2598,9 +2925,16 @@ class _SketchPainter extends CustomPainter {
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 
-  /// Point-to-Line distance dimension (Stage 23e, [PointLineDistanceConstraintDto]):
-  /// anchored between the Point and the Line's own midpoint, with the same
-  /// numeric-label convention as [_paintDistanceDimension].
+  /// Point-to-Line distance dimension ([PointLineDistanceConstraintDto]):
+  /// geometrically just a linear dimension between the Point and its own
+  /// perpendicular foot on the Line's *infinite* extension (not clamped to
+  /// the drawn segment - the constraint itself measures onto the infinite
+  /// extension) - reuses [_paintDistanceDimension]'s own extension-line/
+  /// arrowhead/leader layout exactly.
+  ///
+  /// Bug fix (on-device feedback: "dimensions should match technical
+  /// drawing conventions" - this used to be a plain floating text chip, no
+  /// extension lines at all).
   void _paintPointLineDistanceDimension(
     Canvas canvas,
     PointLineDistanceConstraintDto c,
@@ -2608,11 +2942,50 @@ class _SketchPainter extends CustomPainter {
     Offset labelOffset,
   ) {
     final point = controller.points[c.pointId];
-    final lineMid = _lineMidpointScreen(c.lineId);
-    if (point == null || lineMid == null) return;
+    final line = controller.lines[c.lineId];
+    if (point == null || line == null) return;
+    final lineStart = controller.points[line.startPointId];
+    final lineEnd = controller.points[line.endPointId];
+    if (lineStart == null || lineEnd == null) return;
     final pointScreen = transform.sketchToScreen(point.x, point.y);
-    final midpoint = (pointScreen + lineMid) / 2;
-    _drawDimensionLabel(canvas, midpoint + labelOffset, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    final lineStartScreen = transform.sketchToScreen(lineStart.x, lineStart.y);
+    final lineEndScreen = transform.sketchToScreen(lineEnd.x, lineEnd.y);
+    final lineDx = lineEndScreen.dx - lineStartScreen.dx;
+    final lineDy = lineEndScreen.dy - lineStartScreen.dy;
+    final lineLenSq = lineDx * lineDx + lineDy * lineDy;
+    final Offset footScreen;
+    if (lineLenSq < 1e-9) {
+      footScreen = lineStartScreen;
+    } else {
+      final t = ((pointScreen.dx - lineStartScreen.dx) * lineDx + (pointScreen.dy - lineStartScreen.dy) * lineDy) /
+          lineLenSq;
+      footScreen = Offset(lineStartScreen.dx + t * lineDx, lineStartScreen.dy + t * lineDy);
+    }
+
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth;
+
+    final delta = footScreen - pointScreen;
+    if (delta.distance < 1e-6) {
+      _drawDimensionLabel(canvas, pointScreen + labelOffset, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+      return;
+    }
+    final normal = _canonicalPerpendicular(delta);
+    final offsetVec = normal * _dimensionOffsetDistance(normal, labelOffset);
+    final p1 = pointScreen + offsetVec;
+    final p2 = footScreen + offsetVec;
+
+    _drawExtensionLine(canvas, pointScreen, p1, dimPaint);
+    _drawExtensionLine(canvas, footScreen, p2, dimPaint);
+    canvas.drawLine(p1, p2, dimPaint);
+    _drawDimensionArrows(canvas, p1, p2, color);
+
+    final placement = _dimensionLabelPlacement(p1, p2, labelOffset);
+    if (placement.leaderFrom != null) {
+      canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
+    }
+    _drawDimensionLabel(canvas, placement.labelCenter, c.distance.toStringAsFixed(2), color, plainBlackText: true);
   }
 
   Offset? _lineMidpointScreen(String lineId) {
@@ -2629,10 +3002,17 @@ class _SketchPainter extends CustomPainter {
   /// (see the `PolygonGhost` case in [_paintActiveDrawGhost]) for every
   /// already-*placed* Polygon too, live off its current Point positions (so
   /// it tracks a drag, same as any other geometry), gated by the same
-  /// [SketchController.showPolygonGuideCircles] toggle - reads off
+  /// [SketchController.createPolygonReferenceCircles] toggle - reads off
   /// [SketchController.polygons], the real persisted-entity map.
+  ///
+  /// Skips any Polygon that already has real
+  /// [SketchPolygonView.circumscribedCircleId]/[SketchPolygonView.
+  /// inscribedCircleId] Circles (see those fields' own doc comment) - those
+  /// render through the ordinary Circle painter like any other Circle, so
+  /// drawing this dashed overlay on top too would just double up on the
+  /// exact same two circles.
   void _paintPolygonGuideCircles(Canvas canvas) {
-    if (!controller.showPolygonGuideCircles) return;
+    if (!controller.createPolygonReferenceCircles) return;
     final polygons = controller.polygons.values;
     if (polygons.isEmpty) return;
     final guidePaint = Paint()
@@ -2640,6 +3020,7 @@ class _SketchPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
     for (final polygon in polygons) {
+      if (polygon.circumscribedCircleId != null || polygon.inscribedCircleId != null) continue;
       final centerPoint = controller.points[polygon.centerPointId];
       if (centerPoint == null || polygon.vertexPointIds.length < 3) continue;
       final vertices = polygon.vertexPointIds.map((id) => controller.points[id]).toList();
@@ -3609,6 +3990,15 @@ class _SketchPainter extends CustomPainter {
     final ellipseCenterId = controller.ellipseCenterPointId;
     final ellipseMajorId = controller.ellipseMajorPointId;
     final splineThroughIds = controller.splineInProgress ? controller.splineThroughPointIds : const <String>[];
+    // On-device feedback: a Circle's/Polygon's own centre Point used to be
+    // drawn unconditionally, every frame - now hidden unless hover-revealed
+    // (SketchController.revealedShapeCenterPointId) or selected, to avoid
+    // clutter (see that getter's own doc comment).
+    final shapeCenterIds = <String>{
+      for (final circle in controller.circles.values) circle.centerPointId,
+      for (final polygon in controller.polygons.values) polygon.centerPointId,
+    };
+    final revealedShapeCenterId = controller.revealedShapeCenterPointId;
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
@@ -3623,6 +4013,14 @@ class _SketchPainter extends CustomPainter {
       final pointIsGrabbed = controller.draggingPointId == point.id;
       final pointIsSelected = isSelected(SelectionKind.point, point.id);
       final isHovered = hovered?.kind == SelectionKind.point && hovered!.id == point.id;
+      if (shapeCenterIds.contains(point.id) &&
+          !isCircleCenter &&
+          !isPolygonCenter &&
+          point.id != revealedShapeCenterId &&
+          !pointIsSelected &&
+          !pointIsGrabbed) {
+        continue;
+      }
       final screenPos = transform.sketchToScreen(point.x, point.y);
       Color color = _unconstrainedColor;
       double radius = _pointRadius;

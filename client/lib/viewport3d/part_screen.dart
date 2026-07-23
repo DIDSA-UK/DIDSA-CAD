@@ -24,7 +24,9 @@ import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
+import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
+import 'import_format_dialog.dart';
 import 'mesh_geometry.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
@@ -485,11 +487,21 @@ class _PartScreenState extends State<PartScreen> {
       _toggleProfileLoop(entity);
       return;
     }
-    // A sketchLine tap while the path picker is open extends/undoes the
-    // Sweep path being built - see [_togglePathPick]. Checked before the
-    // Revolve axis special-case below for the same reason the profile-picker
-    // check above is - the two modes are never active at the same time.
-    if (_pathPickerActive && entity.kind == SelectionEntityKind.sketchLine) {
+    // A sketchLine/Arc/Ellipse/Spline tap while the path picker is open
+    // extends/undoes the Sweep path being built - see [_togglePathPick].
+    // On-device feedback ("unable to select an arc as the sweep path...
+    // ellipses and splines should also be valid targets"): used to only
+    // route sketchLine here - Circle stays excluded (see
+    // [_pathPickerSelectionFilter]'s own doc comment; unlike Ellipse, a
+    // Circle has no chain-connection precedent anywhere else in this
+    // file, and wasn't asked for). Checked before the Revolve axis
+    // special-case below for the same reason the profile-picker check
+    // above is - the two modes are never active at the same time.
+    if (_pathPickerActive &&
+        (entity.kind == SelectionEntityKind.sketchLine ||
+            entity.kind == SelectionEntityKind.sketchArc ||
+            entity.kind == SelectionEntityKind.sketchEllipse ||
+            entity.kind == SelectionEntityKind.sketchSpline)) {
       _togglePathPick(entity);
       return;
     }
@@ -1342,11 +1354,14 @@ class _PartScreenState extends State<PartScreen> {
   // profile step (see [_openPanelForTarget]'s `sweep` case) - unlike
   // Revolve's axis (a single Line, picked live while its own panel is open),
   // a Sweep's path is an *ordered*, possibly-multi-segment, possibly-cross-
-  // Sketch chain of Lines (confirmed decisions - see the backend's
-  // `SweepFeature` docstring), so it gets its own dedicated picking mode
-  // instead: tap Lines one at a time, in order, to build the chain; tap the
-  // most recently picked Line again to undo it; a checkmark FAB confirms
-  // once at least one segment is picked and opens [SweepPanel].
+  // Sketch chain of Lines/Arcs/Splines, or a lone standalone Ellipse
+  // (confirmed decisions - see the backend's `SweepFeature` docstring and,
+  // for the curved-entity generalization, `app.document.sweep.
+  // _resolve_path_segment`'s own doc comment), so it gets its own dedicated
+  // picking mode instead: tap segments one at a time, in order, to build
+  // the chain; tap the most recently picked one again to undo it; a
+  // checkmark FAB confirms once at least one segment is picked and opens
+  // [SweepPanel].
 
   /// True while the path picker is open.
   bool _pathPickerActive = false;
@@ -1374,11 +1389,16 @@ class _PartScreenState extends State<PartScreen> {
   /// entitiesBeforeX field serves.
   Set<SelectionEntityRef>? _entitiesBeforePathPicker;
 
-  /// Restricts the picker session to `sketchLine` hits only - a path
-  /// segment must be a Line (mirrors Revolve's own axis restriction;
-  /// Point/Circle are never valid path segments), and unlike the profile
-  /// picker's own filter, `body` stays off too - target-body picking only
-  /// happens later, once [SweepPanel] itself is open.
+  /// Restricts the picker session to `sketchLine`/`sketchArc`/
+  /// `sketchEllipse`/`sketchSpline` hits - Point/Circle are never valid
+  /// path segments (a Circle, like Ellipse, is always closed/standalone,
+  /// but wasn't asked for - see [_togglePathPick]'s own doc comment for
+  /// why Ellipse gets the standalone-only treatment Circle doesn't), and
+  /// unlike the profile picker's own filter, `body` stays off too -
+  /// target-body picking only happens later, once [SweepPanel] itself is
+  /// open. `sketchArc`/`sketchEllipse`/`sketchSpline` are left at their
+  /// own `true` defaults (see [SelectionFilterState]'s own doc comment) -
+  /// only `sketchCircle` needs an explicit override.
   static const _pathPickerSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -1415,18 +1435,70 @@ class _PartScreenState extends State<PartScreen> {
 
   static bool _pathPointsCoincide(vm.Vector3 a, vm.Vector3 b) => (a - b).length < _pathPointTolerance;
 
-  /// World-space `(start, end)` for the Sketch Line named by
-  /// [sketchFeatureId]/[sketchEntityId] - looked up in
+  /// World-space `(start, end)` for the path-capable Sketch entity named by
+  /// [sketchFeatureId]/[sketchEntityId]/[kind] - looked up in
   /// [_allSketchGeometries] (not [_visibleSketchGeometries], so an already-
   /// picked segment's own endpoints stay resolvable even if its Sketch gets
-  /// hidden mid-pick) - null if that Sketch/Line can no longer be resolved.
-  (vm.Vector3, vm.Vector3)? _lineWorldSegment(String sketchFeatureId, String sketchEntityId) {
+  /// hidden mid-pick) - null if that Sketch/entity can no longer be
+  /// resolved, or if [kind] is a closed/standalone kind with no endpoints
+  /// (Ellipse - see [_togglePathPick]'s own doc comment; never called with
+  /// Circle, [_pathPickerSelectionFilter] excludes it).
+  ///
+  /// On-device feedback ("unable to select an arc as the sweep path...
+  /// ellipses and splines should also be valid targets"): generalizes the
+  /// former Line-only `_lineWorldSegment` the same way
+  /// [_profileEntityKind]/[_profileEntityTypeString] generalized the
+  /// profile picker for the identical underlying gap - an Arc's/Spline's
+  /// own tessellated polyline is drawn start-to-end in the same order its
+  /// backend entity's own `start_point_id`/`through_point_ids[0]` and
+  /// `end_point_id`/`through_point_ids[-1]` are, so its first/last
+  /// polyline point *is* its real world-space start/end for chain-
+  /// connectivity purposes, same as a Line's own two-point segment.
+  /// [entityType] is the same lowercase `SketchEntityType` string
+  /// [SketchEntityRefDto.entityType] carries ('line'/'arc'/'spline') - both
+  /// call sites already have a [SketchEntityRefDto] in hand (or are about
+  /// to build one), so this switches on the wire string directly rather
+  /// than a [SelectionEntityKind] the caller would otherwise have to
+  /// convert back and forth.
+  (vm.Vector3, vm.Vector3)? _pathSegmentWorldEndpoints(
+    String sketchFeatureId,
+    String sketchEntityId,
+    String entityType,
+  ) {
     final geometry = _allSketchGeometries[sketchFeatureId];
     if (geometry == null) return null;
-    final index = geometry.lineIds.indexOf(sketchEntityId);
-    if (index == -1) return null;
-    return geometry.lineSegments[index];
+    switch (entityType) {
+      case 'line':
+        final index = geometry.lineIds.indexOf(sketchEntityId);
+        if (index == -1) return null;
+        return geometry.lineSegments[index];
+      case 'arc':
+        final index = geometry.arcIds.indexOf(sketchEntityId);
+        if (index == -1) return null;
+        final polyline = geometry.arcPolylines[index];
+        if (polyline.isEmpty) return null;
+        return (polyline.first, polyline.last);
+      case 'spline':
+        final index = geometry.splineIds.indexOf(sketchEntityId);
+        if (index == -1) return null;
+        final polyline = geometry.splinePolylines[index];
+        if (polyline.isEmpty) return null;
+        return (polyline.first, polyline.last);
+      default:
+        return null;
+    }
   }
+
+  /// [_togglePathPick]'s own backend-facing counterpart, mirroring
+  /// [_profileEntityTypeString]'s identical shape for the profile picker -
+  /// the exact lowercase string `SketchEntityType` (backend
+  /// `app.sketch.models`) expects for `SketchEntityRefDto.entityType`.
+  String _pathEntityTypeString(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.sketchArc => 'arc',
+        SelectionEntityKind.sketchEllipse => 'ellipse',
+        SelectionEntityKind.sketchSpline => 'spline',
+        _ => 'line',
+      };
 
   /// Traces [refs] (an ordered list of path picks) into its actual ordered
   /// world-space point chain - mirrors the backend's own `app.document.
@@ -1445,7 +1517,9 @@ class _PartScreenState extends State<PartScreen> {
     final points = <vm.Vector3>[];
     for (final ref in refs) {
       final sketchFeatureId = _sketchFeatureIdForSketchId(ref.sketchId);
-      final segment = sketchFeatureId == null ? null : _lineWorldSegment(sketchFeatureId, ref.entityId);
+      final segment = sketchFeatureId == null
+          ? null
+          : _pathSegmentWorldEndpoints(sketchFeatureId, ref.entityId, ref.entityType);
       if (segment == null) return null;
       final (start, end) = segment;
       if (points.isEmpty) {
@@ -1470,38 +1544,68 @@ class _PartScreenState extends State<PartScreen> {
     return points;
   }
 
-  /// [_toggleSelectedEntity]'s path-picker special-case - a sketchLine tap
-  /// while the path picker is open either extends [_pathPickerRefs] (starting
-  /// a brand-new chain if none is picked yet, or appending to whichever end
-  /// of the current chain the tapped Line's own endpoint coincides with), or
-  /// - if the tapped Line is the *most recently* picked one - undoes it (tap
-  /// the last pick again to remove it, mirroring this app's "tap again to
-  /// deselect" convention elsewhere). A tap that neither connects to the
-  /// chain nor targets the last pick gets an explanatory SnackBar rather
-  /// than [_toggleProfileLoop]'s own silent "stale hit" ignore - unlike a
-  /// stale profile-loop hit, a disconnected path tap is an expected, regular
-  /// occurrence during normal picking, not just stale data, so it needs real
-  /// feedback. [_selectedEntities] is rebuilt from [_pathPickerRefs] on every
-  /// change (rather than toggled independently) so the two can never drift
-  /// out of sync.
+  /// [_pathEntityTypeString]'s own reverse mapping, for rebuilding
+  /// [_selectedEntities] with each ref's real kind (so an Arc/Ellipse/
+  /// Spline pick highlights correctly, not just Line picks).
+  SelectionEntityKind _pathSelectionKindFor(String entityType) => switch (entityType) {
+        'arc' => SelectionEntityKind.sketchArc,
+        'ellipse' => SelectionEntityKind.sketchEllipse,
+        'spline' => SelectionEntityKind.sketchSpline,
+        _ => SelectionEntityKind.sketchLine,
+      };
+
+  /// [_toggleSelectedEntity]'s path-picker special-case - a Line/Arc/
+  /// Ellipse/Spline tap while the path picker is open either extends
+  /// [_pathPickerRefs] (starting a brand-new chain if none is picked yet,
+  /// or appending to whichever end of the current chain the tapped
+  /// entity's own endpoint coincides with), or - if the tapped entity is
+  /// the *most recently* picked one - undoes it (tap the last pick again
+  /// to remove it, mirroring this app's "tap again to deselect" convention
+  /// elsewhere). A tap that neither connects to the chain nor targets the
+  /// last pick gets an explanatory SnackBar rather than
+  /// [_toggleProfileLoop]'s own silent "stale hit" ignore - unlike a stale
+  /// profile-loop hit, a disconnected path tap is an expected, regular
+  /// occurrence during normal picking, not just stale data, so it needs
+  /// real feedback. [_selectedEntities] is rebuilt from [_pathPickerRefs]
+  /// on every change (rather than toggled independently) so the two can
+  /// never drift out of sync.
+  ///
+  /// On-device feedback ("ellipses...should also be valid targets for
+  /// sweep paths"): an Ellipse is always closed/standalone (see
+  /// `Sketch.Ellipse`'s own doc comment) - unlike Line/Arc/Spline, it has
+  /// no endpoints to chain with anything else, so it can only ever be
+  /// picked alone as a complete path. Guarded once, up front: rejects
+  /// extending a path with an Ellipse, or extending an already-Ellipse-
+  /// only path with anything else - the ordinary "tap the last pick again
+  /// to undo it" path below still works for clearing a standalone Ellipse
+  /// pick, since that check runs first.
   void _togglePathPick(SelectionEntityRef lineEntity) {
     final sketchId = _sketchIdForFeatureId(lineEntity.sketchFeatureId);
     if (sketchId == null) return;
-    final ref = SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: lineEntity.sketchEntityId);
+    final entityType = _pathEntityTypeString(lineEntity.kind);
+    final ref = SketchEntityRefDto(sketchId: sketchId, entityType: entityType, entityId: lineEntity.sketchEntityId);
+
+    final isSameAsLast = _pathPickerRefs.isNotEmpty &&
+        _pathPickerRefs.last.sketchId == ref.sketchId &&
+        _pathPickerRefs.last.entityId == ref.entityId;
+    final currentIsEllipseOnly = _pathPickerRefs.length == 1 && _pathPickerRefs.single.entityType == 'ellipse';
+    if (_pathPickerRefs.isNotEmpty && !isSameAsLast && (entityType == 'ellipse' || currentIsEllipseOnly)) {
+      _showSnack('An Ellipse path must stand alone - clear the current pick first');
+      return;
+    }
 
     List<SketchEntityRefDto> nextRefs;
-    if (_pathPickerRefs.isNotEmpty &&
-        _pathPickerRefs.last.sketchId == ref.sketchId &&
-        _pathPickerRefs.last.entityId == ref.entityId) {
+    if (isSameAsLast) {
       nextRefs = _pathPickerRefs.sublist(0, _pathPickerRefs.length - 1);
     } else if (_pathPickerRefs.any((r) => r.sketchId == ref.sketchId && r.entityId == ref.entityId)) {
-      _showSnack('That line is already part of the path');
+      _showSnack('That entity is already part of the path');
       return;
     } else if (_pathPickerRefs.isEmpty) {
       nextRefs = [ref];
     } else {
       final points = _tracePathPoints(_pathPickerRefs);
-      final segment = _lineWorldSegment(lineEntity.sketchFeatureId, lineEntity.sketchEntityId);
+      final segment =
+          _pathSegmentWorldEndpoints(lineEntity.sketchFeatureId, lineEntity.sketchEntityId, entityType);
       if (points == null || segment == null) return;
       final (start, end) = segment;
       // Checked against both ends of the chain built so far, not just its
@@ -1514,7 +1618,7 @@ class _PartScreenState extends State<PartScreen> {
           _pathPointsCoincide(points.first, end)) {
         nextRefs = [..._pathPickerRefs, ref];
       } else {
-        _showSnack("That line doesn't connect to the current path - tap one touching either end");
+        _showSnack("That entity doesn't connect to the current path - tap one touching either end");
         return;
       }
     }
@@ -1524,7 +1628,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = {
         for (final r in nextRefs)
           SelectionEntityRef(
-            kind: SelectionEntityKind.sketchLine,
+            kind: _pathSelectionKindFor(r.entityType),
             sketchFeatureId: _sketchFeatureIdForSketchId(r.sketchId) ?? '',
             sketchEntityId: r.entityId,
           ),
@@ -1538,6 +1642,10 @@ class _PartScreenState extends State<PartScreen> {
   /// [SweepPanel]'s own `pathIsClosed` (via [_sweepPathIsClosed]) so the two
   /// never disagree about the same path.
   bool _pathIsClosed(List<SketchEntityRefDto> refs) {
+    // A standalone Ellipse (see [_togglePathPick]'s own doc comment) is
+    // always closed, but has no endpoints for [_tracePathPoints] to trace -
+    // checked explicitly rather than falling through to it.
+    if (refs.length == 1 && refs.single.entityType == 'ellipse') return true;
     final points = _tracePathPoints(refs);
     return points != null && points.length > 2 && _pathPointsCoincide(points.first, points.last);
   }
@@ -1549,7 +1657,7 @@ class _PartScreenState extends State<PartScreen> {
   /// The top banner's live status text - segment count plus open/closed,
   /// mirroring [SweepPanel]'s own path summary line.
   String _pathPickerBannerText() {
-    if (_pathPickerRefs.isEmpty) return 'Tap a line to start the path';
+    if (_pathPickerRefs.isEmpty) return 'Tap a line, arc, ellipse or spline to start the path';
     final isClosed = _pathIsClosed(_pathPickerRefs);
     final count = _pathPickerRefs.length;
     return '$count segment${count == 1 ? '' : 's'} picked'
@@ -1818,6 +1926,12 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (!mounted) return;
     setState(() {
+      // On-device feedback ("after finishing creating or editing a
+      // feature, the build tree should auto close so the user can see the
+      // feature they just created or edited") - same fix applied to every
+      // Feature type's own confirm/cancel pair, see [_confirmExtrude]'s
+      // doc comment for the full reasoning.
+      _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
         _hiddenFeatureIds.add(sketchFeature.id);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
@@ -1850,6 +1964,7 @@ class _PartScreenState extends State<PartScreen> {
     final wasEditing = _editingSweepFeatureId != null;
     final editSnapshot = _sweepEditSnapshot;
     setState(() {
+      _featureTreeVisible = false;
       _sweepSketchFeature = null;
       _previewSweepFeatureId = null;
       _meshBeforeSweep = null;
@@ -1981,9 +2096,11 @@ class _PartScreenState extends State<PartScreen> {
   Map<String, ResolvedPlaneGeometry> _createPlaneGeometries = {};
 
   void _recomputeCreatePlaneGeometries() {
+    final hidden = _viewportHiddenFeatureIds;
     _createPlaneGeometries = {
       for (final feature in _features)
         if (feature.type == 'create_plane' &&
+            !hidden.contains(feature.id) &&
             feature.origin != null &&
             feature.normal != null &&
             feature.xAxis != null &&
@@ -2331,20 +2448,30 @@ class _PartScreenState extends State<PartScreen> {
   /// [DocumentApiClient.createImportFeature]. `type: FileType.any` for the
   /// same reason [_openNativeFile] uses it, not an extension allow-list -
   /// see that method's own doc comment for the Android MIME-type-filtering
-  /// bug this sidesteps.
-  static const Map<String, String> _importSourceFormatByExtension = {
-    'step': 'step',
-    'stp': 'step',
-    'stl': 'stl',
-    'obj': 'obj',
-    'gltf': 'gltf',
-    'glb': 'gltf',
-  };
-
+  /// bug this sidesteps (confirmed the same way here: `FileType.custom` +
+  /// `allowedExtensions` scoped to just the chosen format's own extensions
+  /// would be the more obviously "correct" choice once the user has already
+  /// picked a format below, but it's the exact bug already documented on
+  /// the mesh viewer's own `_pickAndLoad` - only the first extension in the
+  /// list reliably stays enabled on Android, greying out the rest).
+  ///
+  /// On-device request: folded the File menu's four separate format-specific
+  /// import entries into the single "Import…" entry it already had -
+  /// [showImportFormatDialog] is the first step now instead of four
+  /// ListTiles, mirroring Export's own explicit format choice without
+  /// needing Export's four-rows shape. Replaces the previous single-entry
+  /// behavior of silently guessing the format from whichever file's
+  /// extension the user happened to pick; now the user's chosen format is
+  /// authoritative, and a mismatched file is a clear, specific error instead
+  /// of an incorrectly-guessed import.
   Future<void> _importGeometry() async {
     setState(() => _toolbarOpen = false);
     final part = _part;
     if (part == null) return;
+
+    final sourceFormat = await showImportFormatDialog(context);
+    if (sourceFormat == null || !mounted) return;
+    final option = importFormatOptions.firstWhere((o) => o.value == sourceFormat);
 
     final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
     if (result == null || result.files.isEmpty || !mounted) return;
@@ -2353,9 +2480,12 @@ class _PartScreenState extends State<PartScreen> {
     if (bytes == null) return;
 
     final extension = (picked.extension ?? picked.name.split('.').last).toLowerCase();
-    final sourceFormat = _importSourceFormatByExtension[extension];
-    if (sourceFormat == null) {
-      setState(() => _errorMessage = 'Unrecognized file type: .$extension (expected STEP/STL/OBJ/glTF)');
+    if (!option.extensions.contains(extension)) {
+      setState(
+        () => _errorMessage =
+            'That file is .$extension, but you chose to import ${option.label} '
+            '(expected .${option.extensions.join('/.')})',
+      );
       return;
     }
 
@@ -2372,10 +2502,17 @@ class _PartScreenState extends State<PartScreen> {
   /// file's extension) via [DocumentApiClient.exportPart]. The backend 400s
   /// (surfaced as [_errorMessage] by [_runGuarded]) if the Part has no
   /// solid geometry yet - there is nothing to export before a first Boss.
-  Future<void> _exportPart(String format) async {
+  ///
+  /// On-device request: folded the File menu's four separate format-specific
+  /// export entries into one "Export…" entry - [showExportFormatDialog] is
+  /// the new first step, then the existing folder/filename picker below,
+  /// mirroring [_importGeometry]'s own single-entry-plus-dialog shape.
+  Future<void> _exportPart() async {
     setState(() => _toolbarOpen = false);
     final part = _part;
     if (part == null) return;
+    final format = await showExportFormatDialog(context);
+    if (format == null || !mounted) return;
     await _runGuarded(() async {
       final bytes = await _api.exportPart(part.id, format);
       await FilePicker.platform.saveFile(
@@ -2565,20 +2702,29 @@ class _PartScreenState extends State<PartScreen> {
   /// On-device feedback: the default (flip, rotationQuarterTurns) offered
   /// for a brand new fixed-plane Sketch's own orientation-confirm step - a
   /// custom (Feature-anchored) plane has no "which fixed plane" concept to
-  /// key off, so it always gets the identity `(false, 0)`. Computed via a
-  /// full calibration round (every flip x rotation combination, checked
-  /// programmatically against three independently on-device-captured
-  /// targets, one per fixed plane, *after* fixing `orientationFacingBasis`'s
-  /// own left-handed-basis bug - see that function's own doc comment for the
-  /// full story) rather than guessed: YZ needed no change at all
-  /// (`false, 0` was already an exact match); XY and XZ both needed a
-  /// genuinely different orientation than any single `flip` toggle alone
-  /// could reach, which is exactly why guessing only `flip` kept moving the
-  /// target on every previous round.
+  /// key off, so it always gets the identity `(false, 0)`.
+  ///
+  /// **2026-07-22, re-calibrated against the now-fixed renderer
+  /// (`FixedPerspectiveCamera` - see `orthographic_camera.dart`'s
+  /// `correctedLookAt`)**: a fresh on-device reading from the debug camera-
+  /// orientation overlay for each plane's own first-offered orientation,
+  /// matched by hand-computing `SketchPlaneBasis.withOrientation`'s exact
+  /// flip-then-rotate formula (`nextX = yAxis, nextY = -xAxis` per quarter
+  /// turn - `sketch_geometry_3d.dart`) for all 8 combinations per plane and
+  /// finding the one whose resulting `(xAxis, yAxis)` matches the reading -
+  /// not guessed, and not assumed to be the same combination the previous
+  /// (pre-render-fix) calibration round found, since `orientationFacingBasis`
+  /// changing which physical side of the plane the camera sits on (see its
+  /// own doc comment) means the *visually* matching flip/rotation for a
+  /// given plane can genuinely differ from before, independent of whichever
+  /// aesthetic corner was chosen:
+  /// - XY: `right=(1,0,0) up=(0,1,0) out=(0,0,1)` -> identity, `(false, 0)`.
+  /// - XZ: `right=(1,0,0) up=(0,0,-1) out=(0,1,0)` -> `(false, 2)`.
+  /// - YZ: `right=(0,0,-1) up=(0,1,0) out=(1,0,0)` -> `(false, 3)`.
   (bool, int) _defaultPendingOrientationFor(ReferencePlaneKind? fixedPlane) => switch (fixedPlane) {
-        ReferencePlaneKind.xy => (true, 1),
-        ReferencePlaneKind.xz => (true, 0),
-        ReferencePlaneKind.yz => (false, 0),
+        ReferencePlaneKind.xy => (false, 0),
+        ReferencePlaneKind.xz => (false, 2),
+        ReferencePlaneKind.yz => (false, 3),
         null => (false, 0),
       };
 
@@ -3338,10 +3484,11 @@ class _PartScreenState extends State<PartScreen> {
     if (_rollbackExcludedFeatureIds.isEmpty) return;
     setState(() {
       _rollbackExcludedFeatureIds.clear();
-      // Without this, [_visibleSketchGeometries] would stay computed
-      // against the mid-rollback hidden set until some unrelated later
-      // refresh happened to recompute it.
+      // Without this, [_visibleSketchGeometries]/[_createPlaneGeometries]
+      // would stay computed against the mid-rollback hidden set until some
+      // unrelated later refresh happened to recompute them.
       _recomputeVisibleSketchGeometries();
+      _recomputeCreatePlaneGeometries();
     });
     await _runGuarded(_refreshMesh);
   }
@@ -3735,6 +3882,17 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (!mounted) return;
     setState(() {
+      // On-device feedback ("after finishing creating or editing a
+      // feature, the build tree should auto close so the user can see the
+      // feature they just created or edited") - mirrors the existing
+      // Sweep/Revolve-sketch-picker sub-step's own open-to-pick/close-
+      // once-picked-or-cancelled precedent ([_startSweepSketchPicker]
+      // opens it, [_startPathPicker]/[_cancelSweepSketchPicker] close it
+      // again), just extended to every Feature type's own top-level
+      // confirm/cancel too - applied identically in every other Feature
+      // type's confirm/cancel pair below (Sweep/Revolve/CreatePlane/
+      // Fillet/Chamfer).
+      _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
         _hiddenFeatureIds.add(sketchFeature.id);
         // This is *the* auto-hide-on-consume case [_autoHiddenSketchFeatureIds]
@@ -3792,6 +3950,7 @@ class _PartScreenState extends State<PartScreen> {
     final wasEditing = _editingExtrudeFeatureId != null;
     final editSnapshot = _extrudeEditSnapshot;
     setState(() {
+      _featureTreeVisible = false;
       _extrudeSketchFeature = null;
       _previewExtrudeFeatureId = null;
       _meshBeforeExtrude = null;
@@ -4053,6 +4212,9 @@ class _PartScreenState extends State<PartScreen> {
     }
     if (!mounted) return;
     setState(() {
+      // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
+      // fix this mirrors.
+      _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
         _hiddenFeatureIds.add(sketchFeature.id);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
@@ -4084,6 +4246,7 @@ class _PartScreenState extends State<PartScreen> {
     final wasEditing = _editingRevolveFeatureId != null;
     final editSnapshot = _revolveEditSnapshot;
     setState(() {
+      _featureTreeVisible = false;
       _revolveSketchFeature = null;
       _previewRevolveFeatureId = null;
       _meshBeforeRevolve = null;
@@ -4469,6 +4632,9 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _confirmCreatePlane() async {
     _createPlaneDebounce?.cancel();
     setState(() {
+      // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
+      // fix this mirrors.
+      _featureTreeVisible = false;
       _createPlaneMode = null;
       _selectedEntities = _entitiesBeforeCreatePlane ?? {};
       _entitiesBeforeCreatePlane = null;
@@ -4489,6 +4655,7 @@ class _PartScreenState extends State<PartScreen> {
     final wasEditing = _editingCreatePlaneFeatureId != null;
     final editSnapshot = _createPlaneEditSnapshot;
     setState(() {
+      _featureTreeVisible = false;
       _createPlaneMode = null;
       _selectedEntities = _entitiesBeforeCreatePlane ?? {};
       _entitiesBeforeCreatePlane = null;
@@ -4802,6 +4969,9 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _confirmFillet() async {
     _filletDebounce?.cancel();
     setState(() {
+      // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
+      // fix this mirrors.
+      _featureTreeVisible = false;
       _filletActive = false;
       _selectedEntities = _entitiesBeforeFillet ?? {};
       _entitiesBeforeFillet = null;
@@ -4826,6 +4996,7 @@ class _PartScreenState extends State<PartScreen> {
     final wasEditing = _editingFilletFeatureId != null;
     final editSnapshot = _filletEditSnapshot;
     setState(() {
+      _featureTreeVisible = false;
       _filletActive = false;
       _selectedEntities = _entitiesBeforeFillet ?? {};
       _entitiesBeforeFillet = null;
@@ -5022,6 +5193,9 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _confirmChamfer() async {
     _chamferDebounce?.cancel();
     setState(() {
+      // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
+      // fix this mirrors.
+      _featureTreeVisible = false;
       _chamferActive = false;
       _selectedEntities = _entitiesBeforeChamfer ?? {};
       _entitiesBeforeChamfer = null;
@@ -5043,6 +5217,7 @@ class _PartScreenState extends State<PartScreen> {
     final wasEditing = _editingChamferFeatureId != null;
     final editSnapshot = _chamferEditSnapshot;
     setState(() {
+      _featureTreeVisible = false;
       _chamferActive = false;
       _selectedEntities = _entitiesBeforeChamfer ?? {};
       _entitiesBeforeChamfer = null;
@@ -5114,6 +5289,7 @@ class _PartScreenState extends State<PartScreen> {
       }
       _autoHiddenSketchFeatureIds.remove(feature.id);
       _recomputeVisibleSketchGeometries();
+      _recomputeCreatePlaneGeometries();
     });
     await _runGuarded(_refreshMesh);
   }
@@ -5248,6 +5424,14 @@ class _PartScreenState extends State<PartScreen> {
           documentPartId: _part?.id,
           sketchFeatureId: feature.id,
           planeBasis: basis,
+          // On-device feedback: other sketches should stay visible while
+          // orbiting, same as bodies - this Sketch's own entry is excluded
+          // since [SketchScreen] already renders it live from its own
+          // controller, not from this static snapshot.
+          otherSketchGeometries: {
+            for (final entry in _visibleSketchGeometries.entries)
+              if (entry.key != feature.id) entry.key: entry.value,
+          },
         ),
       ),
     );

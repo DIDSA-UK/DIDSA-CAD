@@ -263,6 +263,22 @@ class SketchGeometry3D {
   /// can be), so this only ever contains entries from those five id lists.
   final Set<String> constructionIds;
 
+  /// On-device feedback (bug fix: a Circle's own outline vanishing
+  /// entirely - fill still showing - whenever its centre Point was hidden
+  /// by the hover-reveal feature): [points]/[pointIds] must stay the
+  /// *complete* set every entity here resolves its own defining Points
+  /// against (`sketchGeometry3DFrom`'s own `pointsById` lookups silently
+  /// `continue`, dropping the whole entity, the moment one of its Points
+  /// is missing) - so "hide this Point's marker until hover-revealed" can
+  /// never be implemented by omitting it from that list, unlike
+  /// `sketch_canvas.dart`'s own equivalent (which only ever gates its
+  /// *drawing* loop, never touches the underlying Point map other
+  /// entities resolve against). This is the 3D-embedded counterpart of
+  /// that same gate instead: [buildSketchGeometryNode] skips creating a
+  /// marker primitive for any id in here, while every entity referencing
+  /// it still resolves normally.
+  final Set<String> hiddenPointIds;
+
   const SketchGeometry3D({
     required this.lineSegments,
     required this.lineIds,
@@ -277,6 +293,7 @@ class SketchGeometry3D {
     this.splinePolylines = const [],
     this.splineIds = const [],
     this.constructionIds = const <String>{},
+    this.hiddenPointIds = const <String>{},
   });
 
   static const empty = SketchGeometry3D(
@@ -339,7 +356,8 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
       listEquals(a.ellipseIds, b.ellipseIds) &&
       nestedListEquals(a.splinePolylines, b.splinePolylines) &&
       listEquals(a.splineIds, b.splineIds) &&
-      setEquals(a.constructionIds, b.constructionIds);
+      setEquals(a.constructionIds, b.constructionIds) &&
+      setEquals(a.hiddenPointIds, b.hiddenPointIds);
 }
 
 /// Builds [SketchGeometry3D] from a Sketch's raw DTOs - resolving each
@@ -366,6 +384,7 @@ SketchGeometry3D sketchGeometry3DFrom({
   List<ArcDto> arcs = const [],
   List<EllipseDto> ellipses = const [],
   List<SplineDto> splines = const [],
+  Set<String> hiddenPointIds = const <String>{},
 }) {
   final pointsById = {for (final p in points) p.id: p};
   final constructionIds = <String>{};
@@ -504,6 +523,7 @@ SketchGeometry3D sketchGeometry3DFrom({
     splinePolylines: splinePolylines,
     splineIds: splineIds,
     constructionIds: constructionIds,
+    hiddenPointIds: hiddenPointIds,
   );
 }
 
@@ -533,8 +553,17 @@ const double sketchLineWidth = 1.5;
 /// constant also sizes Selection mode's own selected-vertex highlight
 /// markers ([buildVertexMarkersNode] call sites in `part_viewport.dart`),
 /// which weren't part of this feedback and shouldn't shrink alongside a
-/// Sketch's own drawn points.
-const double sketchPointMarkerWidth = 4.5;
+/// Sketch's own drawn points. On-device feedback ("Points should be
+/// visible with a diameter slightly larger than the sketch line width"):
+/// derived from [sketchLineWidth] - earlier passes (1.3x, then 2.2x, then a
+/// bare 9.0 while root-causing a real *invisibility* bug, see
+/// [buildSketchGeometryNode]'s own doc comment on the round-cap culling fix)
+/// kept getting bumped chasing what turned out to be a separate,
+/// now-fixed rendering bug, not an actual sizing problem - once markers
+/// were genuinely rendering again, on-device feedback was that 9.0 read as
+/// oversized, then settled at 1.5x; later on-device feedback asked for
+/// markers 3x line thickness instead.
+const double sketchPointMarkerWidth = sketchLineWidth * 3.0;
 
 /// P23 (2D-sketcher feature parity): green, mirrors `sketch_canvas.dart`'s
 /// own `_fullyConstrainedColor` (`0xFF2E7D32`) - an entity whose defining
@@ -693,9 +722,23 @@ Node buildSketchGeometryNode(
   Map<String, vm.Vector4>? entityColors,
 }) {
   vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
+  // On-device feedback ("points are not visible"): a Point marker's own
+  // round-cap disk (see vertexMarkerSegments' doc comment for why a Point
+  // renders as one) comes from PolylineGeometry's fan-triangulated cap,
+  // whose winding - unlike the ordinary line-strip triangles every other
+  // primitive here uses - reads as back-facing under this renderer's
+  // default counter-clockwise-front convention (Material.bind's own doc
+  // comment) and was being silently culled regardless of marker width, no
+  // matter how many times that width got bumped. `doubleSided` is only
+  // honored for opaque materials (also that same doc comment) - true here
+  // for all of them, so this fixes the Point markers without needing to
+  // reverse-engineer/patch the third-party disk-winding math itself, at no
+  // cost to the Line/Circle/etc. outlines also built from this material
+  // (thin geometry with no real "back" to hide either way).
   UnlitMaterial materialFor(String id) => UnlitMaterial()
     ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = colorFor(id);
+    ..baseColorFactor = colorFor(id)
+    ..doubleSided = true;
 
   // P26: [id]'s outline as one or more [MeshPrimitive]s - a single solid
   // polyline normally, or a run of short dash primitives (all sharing the
@@ -726,15 +769,16 @@ Node buildSketchGeometryNode(
     for (var i = 0; i < geometry.splinePolylines.length; i++)
       ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
     for (var i = 0; i < geometry.points.length; i++)
-      for (final segment in vertexMarkerSegments([geometry.points[i]]))
-        MeshPrimitive(
-          PolylineGeometry(
-            [segment.$1, segment.$2],
-            width: sketchPointMarkerWidth,
-            cap: PolylineCap.round,
+      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]))
+        for (final segment in vertexMarkerSegments([geometry.points[i]]))
+          MeshPrimitive(
+            PolylineGeometry(
+              [segment.$1, segment.$2],
+              width: sketchPointMarkerWidth,
+              cap: PolylineCap.round,
+            ),
+            materialFor(geometry.pointIds[i]),
           ),
-          materialFor(geometry.pointIds[i]),
-        ),
   ];
 
   return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));
@@ -1292,8 +1336,20 @@ Node? buildDrawIndicatorsNode(List<DrawIndicatorMarker> markers) {
         MeshPrimitive(
           PolylineGeometry([segment.$1, segment.$2], width: marker.width, cap: PolylineCap.round),
           UnlitMaterial()
-            ..alphaMode = AlphaMode.blend
-            ..baseColorFactor = marker.color,
+            // On-device feedback ("the invisible cursor being naughty in the
+            // background" - the in-progress draw anchor/snap/candidate dots
+            // this Node renders): same round-cap culling bug as
+            // [buildSketchGeometryNode]'s own Point markers (see that
+            // function's own doc comment) - `doubleSided` is only honored
+            // for opaque materials, so switching out of AlphaMode.blend is
+            // required here too, same trade-off `buildMeshEdgesNode`'s own
+            // doc comment already accepted (a partial-alpha colour, e.g.
+            // [sketchIndicatorCandidateColor]'s 0.9, renders fully solid
+            // instead of its intended slight translucency) - an actually-
+            // visible solid dot beats a correctly-translucent invisible one.
+            ..alphaMode = AlphaMode.opaque
+            ..baseColorFactor = marker.color
+            ..doubleSided = true,
         ),
   ];
   return Node(name: 'sketch-draw-indicators', mesh: Mesh.primitives(primitives: primitives));

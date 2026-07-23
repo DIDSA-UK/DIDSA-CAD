@@ -408,6 +408,13 @@ class PolygonDto {
   final int sides;
   final bool construction;
 
+  /// On-device feedback ("the 2 construction circles should be drawn and
+  /// visible to the user to dimension and use in the sketch") - null
+  /// unless the polygon was created with `referenceCircles: true` (see
+  /// [SketchApiClient.createPolygon]'s own doc comment).
+  final String? circumscribedCircleId;
+  final String? inscribedCircleId;
+
   PolygonDto({
     required this.id,
     required this.centerPointId,
@@ -416,6 +423,8 @@ class PolygonDto {
     required this.radius,
     required this.sides,
     this.construction = false,
+    this.circumscribedCircleId,
+    this.inscribedCircleId,
   });
 
   factory PolygonDto.fromJson(Map<String, dynamic> json) => PolygonDto(
@@ -425,6 +434,92 @@ class PolygonDto {
         lineIds: (json['line_ids'] as List).cast<String>(),
         radius: (json['radius'] as num).toDouble(),
         sides: json['sides'] as int,
+        construction: json['construction'] as bool? ?? false,
+        circumscribedCircleId: json['circumscribed_circle_id'] as String?,
+        inscribedCircleId: json['inscribed_circle_id'] as String?,
+      );
+}
+
+class SlotDto {
+  final String id;
+  final String center1PointId;
+  final String center2PointId;
+  final String centerlineId;
+  final String arc1Id;
+  final String arc2Id;
+  final String line1Id;
+  final String line2Id;
+  final String aPointId;
+  final String bPointId;
+  final String cPointId;
+  final String dPointId;
+  final double radius;
+  final bool construction;
+
+  SlotDto({
+    required this.id,
+    required this.center1PointId,
+    required this.center2PointId,
+    required this.centerlineId,
+    required this.arc1Id,
+    required this.arc2Id,
+    required this.line1Id,
+    required this.line2Id,
+    required this.aPointId,
+    required this.bPointId,
+    required this.cPointId,
+    required this.dPointId,
+    required this.radius,
+    this.construction = false,
+  });
+
+  factory SlotDto.fromJson(Map<String, dynamic> json) => SlotDto(
+        id: json['id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
+        centerlineId: json['centerline_id'] as String,
+        arc1Id: json['arc1_id'] as String,
+        arc2Id: json['arc2_id'] as String,
+        line1Id: json['line1_id'] as String,
+        line2Id: json['line2_id'] as String,
+        aPointId: json['a_point_id'] as String,
+        bPointId: json['b_point_id'] as String,
+        cPointId: json['c_point_id'] as String,
+        dPointId: json['d_point_id'] as String,
+        radius: (json['radius'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+class RectangleDto {
+  final String id;
+  final List<String> cornerPointIds;
+  final List<String> lineIds;
+  final bool axisAligned;
+  final String? centerPointId;
+  final String? diagonalLineId;
+  final String? diagonal2LineId;
+  final bool construction;
+
+  RectangleDto({
+    required this.id,
+    required this.cornerPointIds,
+    required this.lineIds,
+    required this.axisAligned,
+    this.centerPointId,
+    this.diagonalLineId,
+    this.diagonal2LineId,
+    this.construction = false,
+  });
+
+  factory RectangleDto.fromJson(Map<String, dynamic> json) => RectangleDto(
+        id: json['id'] as String,
+        cornerPointIds: (json['corner_point_ids'] as List).cast<String>(),
+        lineIds: (json['line_ids'] as List).cast<String>(),
+        axisAligned: json['axis_aligned'] as bool,
+        centerPointId: json['center_point_id'] as String?,
+        diagonalLineId: json['diagonal_line_id'] as String?,
+        diagonal2LineId: json['diagonal2_line_id'] as String?,
         construction: json['construction'] as bool? ?? false,
       );
 }
@@ -1126,6 +1221,31 @@ class SketchApiClient {
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Standalone "2D Drawing" tool save: [sketchId]'s own full state as a
+  /// plain JSON object, for the caller to write straight to a local file -
+  /// see the backend's `app.sketch.router.export_sketch`/`app.document.
+  /// native_format.sketch_to_dict` for the exact shape (points/entities/
+  /// constraints/external_references, the same per-Sketch shape the
+  /// Part-level native file format already uses for a Sketch that belongs
+  /// to a SketchFeature).
+  Future<Map<String, dynamic>> exportSketch(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/export'), headers: _headers),
+        (body) => body as Map<String, dynamic>,
+      );
+
+  /// [exportSketch]'s inverse: creates a brand-new Sketch from a
+  /// previously-exported [data], always under a fresh id (never the id the
+  /// file happened to carry) - see the backend's `import_sketch` doc
+  /// comment for why. Throws [ApiException] (422) for a malformed file.
+  Future<SketchDto> importSketch(Map<String, dynamic> data) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/import'),
+              headers: _headers,
+              body: jsonEncode(data),
+            ),
+        (body) => SketchDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Sketcher-roadmap Phase 5's retrospective-redefine entry point - both
   /// fields required together, mirroring the backend's own
   /// `SketchOrientationUpdate` (see that class's own doc comment for why
@@ -1287,6 +1407,20 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<SlotDto>> listSlots(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/slots'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => SlotDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<List<RectangleDto>> listRectangles(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/rectangles'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => RectangleDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<List<SplineDto>> listSplines(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/splines'), headers: _headers),
         (body) => (body as List)
@@ -1436,6 +1570,7 @@ class SketchApiClient {
     String firstVertexPointId,
     int sides, {
     bool construction = false,
+    bool referenceCircles = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1446,9 +1581,66 @@ class SketchApiClient {
                 'first_vertex_point_id': firstVertexPointId,
                 'sides': sides,
                 'construction': construction,
+                'reference_circles': referenceCircles,
               }),
             ),
         (body) => PolygonDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from two existing centre Points and a radius (mirrors
+  /// how the client creates Circle/Arc/Ellipse/Polygon) - server-side,
+  /// `Sketch.add_slot` creates both end-cap Arcs, both straight Lines, the
+  /// construction centreline, and the whole radius/equal-radius/tangent
+  /// constraint chain atomically, returning it all in the response. Bug
+  /// fix: replaces the old client-orchestrated ~8-call sequence (create
+  /// each corner Point, each Line/Arc, each constraint one at a time) -
+  /// same "used to be a client-only shortcut" fix `createPolygon` already
+  /// got.
+  Future<SlotDto> createSlot(
+    String sketchId,
+    String center1PointId,
+    String center2PointId,
+    double radius, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/slots'),
+              headers: _headers,
+              body: jsonEncode({
+                'center1_point_id': center1PointId,
+                'center2_point_id': center2PointId,
+                'radius': radius,
+                'construction': construction,
+              }),
+            ),
+        (body) => SlotDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `Sketch.add_rectangle` creates all 4 edge Lines and the whole axis/
+  /// midpoint constraint chain atomically from 4 already-resolved corner
+  /// Points, returning it all in the response. Bug fix: replaces the old
+  /// client-orchestrated up-to-10-call sequence (create each edge Line,
+  /// each H/V or Perpendicular constraint, the diagonal, the centre Point,
+  /// the AtMidpoint constraint, one at a time) - same "used to be a
+  /// client-only shortcut" fix `createSlot`/`createPolygon` already got.
+  Future<RectangleDto> createRectangle(
+    String sketchId,
+    List<String> cornerPointIds, {
+    bool axisAligned = true,
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/rectangles'),
+              headers: _headers,
+              body: jsonEncode({
+                'corner_point_ids': cornerPointIds,
+                'axis_aligned': axisAligned,
+                'construction': construction,
+              }),
+            ),
+        (body) => RectangleDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Always creates from through-points that already exist (mirrors how
@@ -1803,6 +1995,59 @@ class SketchApiClient {
         (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
             .map((e) => e as String)
             .toList(),
+      );
+
+  Future<List<String>> deleteSlot(String sketchId, String slotId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/slots/$slotId'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
+      );
+
+  Future<List<String>> deleteRectangle(String sketchId, String rectangleId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/rectangles/$rectangleId'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
+      );
+
+  /// On-device feedback ("cascadeing deletion needs more finesse. if an
+  /// entity from a rectangle, slot, polygon is deleted it should collapse
+  /// into lines and constraints"): discards only the Polygon/Slot/
+  /// Rectangle bookkeeping record itself - its own Lines/Arcs/Points/
+  /// Constraints all keep existing as ordinary standalone geometry.
+  /// Unlike [deletePolygon]/[deleteSlot]/[deleteRectangle] (which cascade-
+  /// delete everything the wrapper owns), this is the right call once one
+  /// of the shape's own pieces has already been deleted directly and the
+  /// wrapper record is now meaningless bookkeeping.
+  Future<void> collapsePolygon(String sketchId, String polygonId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/polygons/$polygonId/collapse'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> collapseSlot(String sketchId, String slotId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/slots/$slotId/collapse'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<void> collapseRectangle(String sketchId, String rectangleId) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/rectangles/$rectangleId/collapse'),
+              headers: _headers,
+            ),
+        (_) {},
       );
 
   Future<List<String>> deleteSpline(String sketchId, String splineId) => _send(

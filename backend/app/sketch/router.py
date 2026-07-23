@@ -1,4 +1,5 @@
 import math
+import uuid
 
 from fastapi import APIRouter, HTTPException
 
@@ -28,7 +29,9 @@ from app.sketch.models import (
     NoIntersectionFoundError,
     Point,
     Polygon,
+    Rectangle,
     Sketch,
+    Slot,
     Spline,
     TextEntity,
 )
@@ -97,10 +100,16 @@ from app.sketch.schemas import (
     PolygonUpdate,
     ProfileDetectionResponse,
     ProfileResponse,
+    RectangleCreate,
+    RectangleResponse,
+    RectangleUpdate,
     SketchCreate,
     SketchOrientationUpdate,
     SketchResponse,
     SketchStateResponse,
+    SlotCreate,
+    SlotResponse,
+    SlotUpdate,
     SolveRequest,
     SolveResultResponse,
     SplineCreate,
@@ -118,6 +127,7 @@ from app.sketch.schemas import (
     VerticalConstraintResponse,
 )
 from app.sketch.solver import SolveResult, solve_sketch
+from app.sketch.store import add_sketch as _add_sketch
 from app.sketch.store import create_sketch as _create_sketch
 from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
 from app.sketch.text_geometry import place_local_point, text_to_polygons
@@ -164,6 +174,20 @@ def _get_polygon_or_404(sketch: Sketch, polygon_id: str) -> Polygon:
     entity = sketch.entities.get(polygon_id)
     if not isinstance(entity, Polygon):
         raise HTTPException(status_code=404, detail="Polygon not found")
+    return entity
+
+
+def _get_slot_or_404(sketch: Sketch, slot_id: str) -> Slot:
+    entity = sketch.entities.get(slot_id)
+    if not isinstance(entity, Slot):
+        raise HTTPException(status_code=404, detail="Slot not found")
+    return entity
+
+
+def _get_rectangle_or_404(sketch: Sketch, rectangle_id: str) -> Rectangle:
+    entity = sketch.entities.get(rectangle_id)
+    if not isinstance(entity, Rectangle):
+        raise HTTPException(status_code=404, detail="Rectangle not found")
     return entity
 
 
@@ -250,6 +274,40 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         radius=polygon.radius(sketch.points),
         sides=polygon.sides,
         construction=polygon.construction,
+        circumscribed_circle_id=polygon.circumscribed_circle_id,
+        inscribed_circle_id=polygon.inscribed_circle_id,
+    )
+
+
+def _slot_response(sketch: Sketch, slot: Slot) -> SlotResponse:
+    return SlotResponse(
+        id=slot.id,
+        center1_point_id=slot.center1_point_id,
+        center2_point_id=slot.center2_point_id,
+        centerline_id=slot.centerline_id,
+        arc1_id=slot.arc1_id,
+        arc2_id=slot.arc2_id,
+        line1_id=slot.line1_id,
+        line2_id=slot.line2_id,
+        a_point_id=slot.a_point_id,
+        b_point_id=slot.b_point_id,
+        c_point_id=slot.c_point_id,
+        d_point_id=slot.d_point_id,
+        radius=slot.radius(sketch.points),
+        construction=slot.construction,
+    )
+
+
+def _rectangle_response(rectangle: Rectangle) -> RectangleResponse:
+    return RectangleResponse(
+        id=rectangle.id,
+        corner_point_ids=rectangle.corner_point_ids,
+        line_ids=rectangle.line_ids,
+        axis_aligned=rectangle.axis_aligned,
+        center_point_id=rectangle.center_point_id,
+        diagonal_line_id=rectangle.diagonal_line_id,
+        diagonal2_line_id=rectangle.diagonal2_line_id,
+        construction=rectangle.construction,
     )
 
 
@@ -424,6 +482,54 @@ def create_sketch(payload: SketchCreate) -> SketchResponse:
 @router.get("/sketches/{sketch_id}", response_model=SketchResponse)
 def get_sketch(sketch_id: str) -> SketchResponse:
     sketch = _get_sketch_or_404(sketch_id)
+    return _sketch_response(sketch)
+
+
+@router.get("/sketches/{sketch_id}/export")
+def export_sketch(sketch_id: str) -> dict:
+    """Standalone "2D Drawing" tool save: a bare Sketch's own full state as
+    a plain JSON dict, for the client to write straight to a local file -
+    mirrors `app.document.router.export_native_document`'s identical
+    "hand back a dict, client owns the actual file" shape, just scoped to
+    one Sketch instead of a whole Document (a bare Sketch, reached via this
+    standalone `/sketch` API rather than the Document/Part/Feature layer,
+    has no Part to export *with* - see `app.document.native_format.
+    sketch_to_dict`'s own doc comment for why this reuses that exact
+    serialization rather than inventing a second one).
+
+    Function-local import (not module-level): `app.document.native_format`
+    imports from `app.sketch.models`/`constraints`, so a module-level
+    import back the other way would be a real circular dependency between
+    the `app.sketch` and `app.document` packages - the same avoidance
+    `app.document.sweep`'s own docstring documents for its own
+    `app.document.extrude` import."""
+    from app.document.native_format import sketch_to_dict
+
+    sketch = _get_sketch_or_404(sketch_id)
+    return sketch_to_dict(sketch)
+
+
+@router.post("/sketches/import", response_model=SketchResponse, status_code=201)
+def import_sketch(payload: dict) -> SketchResponse:
+    """Standalone "2D Drawing" tool open: the inverse of [export_sketch] -
+    creates a brand-new Sketch in the store from a previously-exported
+    dict, *not* a full-store replace the way `app.document.router.
+    import_native_document` is (that one owns the entire process's state;
+    this is one Sketch among however many already exist). Always assigns a
+    fresh id (never the id the export happened to carry) so re-opening the
+    same save file twice, or opening it alongside the Sketch it was
+    originally exported from, never collides with an existing entry.
+
+    Fails closed with a 422 for anything malformed, same convention
+    `import_native_document` uses for the Document-level format."""
+    from app.document.native_format import NativeFormatError, sketch_from_dict
+
+    try:
+        sketch = sketch_from_dict(payload)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid sketch file: {exc}")
+    sketch.id = str(uuid.uuid4())
+    _add_sketch(sketch)
     return _sketch_response(sketch)
 
 
@@ -875,6 +981,7 @@ def create_polygon(sketch_id: str, payload: PolygonCreate) -> PolygonResponse:
             payload.first_vertex_point_id,
             payload.sides,
             construction=payload.construction,
+            reference_circles=payload.reference_circles,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
@@ -910,6 +1017,129 @@ def delete_polygon(sketch_id: str, polygon_id: str) -> DeleteEntityResponse:
     _get_polygon_or_404(sketch, polygon_id)
     pruned_point_ids = sketch.delete_polygon(polygon_id)
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
+@router.post("/sketches/{sketch_id}/polygons/{polygon_id}/collapse", status_code=204)
+def collapse_polygon(sketch_id: str, polygon_id: str) -> None:
+    """On-device feedback ("if an entity from a rectangle, slot, polygon
+    is deleted it should collapse into lines and constraints"): removes
+    only the Polygon bookkeeping record, leaving its own Lines/Points/
+    Constraints exactly as they are - see Sketch.collapse_polygon's own
+    docstring. Called by the client whenever one of a Polygon's own Lines/
+    vertex Points is deleted directly, in place of the full cascading
+    delete_polygon above."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_polygon_or_404(sketch, polygon_id)
+    sketch.collapse_polygon(polygon_id)
+
+
+@router.post("/sketches/{sketch_id}/slots", response_model=SlotResponse, status_code=201)
+def create_slot(sketch_id: str, payload: SlotCreate) -> SlotResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        slot = sketch.add_slot(
+            payload.center1_point_id,
+            payload.center2_point_id,
+            payload.radius,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _slot_response(sketch, slot)
+
+
+@router.get("/sketches/{sketch_id}/slots", response_model=list[SlotResponse])
+def list_slots(sketch_id: str) -> list[SlotResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_slot_response(sketch, slot) for slot in sketch.slots()]
+
+
+@router.get("/sketches/{sketch_id}/slots/{slot_id}", response_model=SlotResponse)
+def get_slot(sketch_id: str, slot_id: str) -> SlotResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _slot_response(sketch, _get_slot_or_404(sketch, slot_id))
+
+
+@router.patch("/sketches/{sketch_id}/slots/{slot_id}", response_model=SlotResponse)
+def update_slot(sketch_id: str, slot_id: str, payload: SlotUpdate) -> SlotResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    slot = _get_slot_or_404(sketch, slot_id)
+    if payload.construction is not None:
+        slot.construction = payload.construction
+    return _slot_response(sketch, slot)
+
+
+@router.delete("/sketches/{sketch_id}/slots/{slot_id}", response_model=DeleteEntityResponse)
+def delete_slot(sketch_id: str, slot_id: str) -> DeleteEntityResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_slot_or_404(sketch, slot_id)
+    pruned_point_ids = sketch.delete_slot(slot_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
+@router.post("/sketches/{sketch_id}/slots/{slot_id}/collapse", status_code=204)
+def collapse_slot(sketch_id: str, slot_id: str) -> None:
+    """[collapse_polygon]'s counterpart for Slot - see that endpoint's own
+    doc comment."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_slot_or_404(sketch, slot_id)
+    sketch.collapse_slot(slot_id)
+
+
+@router.post("/sketches/{sketch_id}/rectangles", response_model=RectangleResponse, status_code=201)
+def create_rectangle(sketch_id: str, payload: RectangleCreate) -> RectangleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        rectangle = sketch.add_rectangle(
+            payload.corner_point_ids,
+            axis_aligned=payload.axis_aligned,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _rectangle_response(rectangle)
+
+
+@router.get("/sketches/{sketch_id}/rectangles", response_model=list[RectangleResponse])
+def list_rectangles(sketch_id: str) -> list[RectangleResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_rectangle_response(rectangle) for rectangle in sketch.rectangles()]
+
+
+@router.get("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=RectangleResponse)
+def get_rectangle(sketch_id: str, rectangle_id: str) -> RectangleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _rectangle_response(_get_rectangle_or_404(sketch, rectangle_id))
+
+
+@router.patch("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=RectangleResponse)
+def update_rectangle(sketch_id: str, rectangle_id: str, payload: RectangleUpdate) -> RectangleResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    rectangle = _get_rectangle_or_404(sketch, rectangle_id)
+    if payload.construction is not None:
+        rectangle.construction = payload.construction
+    return _rectangle_response(rectangle)
+
+
+@router.delete("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=DeleteEntityResponse)
+def delete_rectangle(sketch_id: str, rectangle_id: str) -> DeleteEntityResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_rectangle_or_404(sketch, rectangle_id)
+    pruned_point_ids = sketch.delete_rectangle(rectangle_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
+@router.post("/sketches/{sketch_id}/rectangles/{rectangle_id}/collapse", status_code=204)
+def collapse_rectangle(sketch_id: str, rectangle_id: str) -> None:
+    """[collapse_polygon]'s counterpart for Rectangle - see that endpoint's
+    own doc comment."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_rectangle_or_404(sketch, rectangle_id)
+    sketch.collapse_rectangle(rectangle_id)
 
 
 @router.post("/sketches/{sketch_id}/splines", response_model=SplineResponse, status_code=201)
@@ -1070,6 +1300,21 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
                 payload.orientation,
                 provisional=payload.provisional,
             )
+            # A brand-new, real (non-provisional) dimension on an edge that
+            # was never dimensioned before (as opposed to `update_constraint_
+            # value` PATCHing an *existing* one) goes through this path
+            # instead - e.g. the very first time a freshly-drawn Rectangle's
+            # edge is dimensioned, there is no pre-existing DistanceConstraint
+            # to PATCH, `create_distance_constraint` makes a new one outright.
+            # Same "first dimension in the sketch" rule applies: see
+            # `_scale_sketch_for_first_dimension`'s own doc comment.
+            if not payload.provisional:
+                has_other_dimension = any(
+                    cid != constraint.id and _is_length_dimension(other)
+                    for cid, other in sketch.constraints.items()
+                )
+                if not has_other_dimension:
+                    _scale_sketch_for_first_dimension(sketch, constraint, payload.distance)
         elif isinstance(payload, VerticalConstraintCreate):
             constraint = sketch.add_vertical_constraint(payload.line_id)
         elif isinstance(payload, HorizontalConstraintCreate):
@@ -1133,6 +1378,103 @@ def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     del sketch.constraints[constraint_id]
 
 
+def _is_length_dimension(constraint: Constraint) -> bool:
+    """True for a Constraint that pins a real-world *size* - as opposed to a
+    purely geometric relationship (Parallel, Coincident, ...) or an angle
+    (which fixes a shape's proportions but never its absolute scale). Used
+    to decide whether a DistanceConstraint about to be confirmed is the
+    sketch's *first* size reference (see `_scale_sketch_for_first_
+    dimension`) - a provisional DistanceConstraint doesn't count (see that
+    class's own doc comment: it's a shape tool's own placement rigidity,
+    not a user-confirmed dimension)."""
+    if isinstance(constraint, DistanceConstraint):
+        return not constraint.provisional
+    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint))
+
+
+def _scale_sketch_for_first_dimension(
+    sketch: Sketch, constraint: DistanceConstraint, new_distance: float
+) -> None:
+    """Called instead of `_reseed_distance_constraint_free_point` whenever
+    `constraint` is (about to become) the only length-defining dimension in
+    the sketch (see `_is_length_dimension`) - every Point in it was drawn at
+    an arbitrary freehand size with no real-world scale behind it yet.
+    Moving just `point_b` to the new value (the ordinary reseed) would leave
+    every other, still-freehand, entity at its old size: one edge snapping
+    to its real dimension while the rest of the sketch stays comically tiny
+    or huge next to it. Instead this scales every Point in the sketch
+    uniformly about `point_a` (which stays fixed) by `new_distance /
+    <current measured value along this constraint's own orientation>`, so
+    the whole drawing grows or shrinks together and keeps looking
+    proportionally the same it did on screen - the sketch-space equivalent
+    of "this edge is 4m, so the rest of what I drew must be to the same
+    scale" rather than "this one edge is 4m and everything else is still
+    whatever size my mouse happened to draw it at".
+
+    Every other constraint's own recorded distance (see the loop below) and
+    every Text entity's font `size` are scaled by the same factor, so
+    nothing sharing this sketch is left referring to its pre-scale size.
+
+    Falls back to the ordinary single-point reseed when either endpoint is
+    a Point this function must not move: one tracking an external
+    reference (`sketch.external_references` - pinned to a Body vertex/edge,
+    refreshed from OCCT, not freehand-editable) or the sketch origin. There
+    is no "whole freehand sketch" scale to establish against a dimension
+    anchored to something outside the sketch's own control.
+
+    A no-op (same as the reseed it replaces) when the current measured
+    value is exactly zero - no direction/ratio to scale by in that
+    degenerate case.
+    """
+    point_a = sketch.points.get(constraint.point_a_id)
+    point_b = sketch.points.get(constraint.point_b_id)
+    if point_a is None or point_b is None:
+        return
+
+    fixed_ids = set(sketch.external_references)
+    if sketch.origin_point_id is not None:
+        fixed_ids.add(sketch.origin_point_id)
+    if constraint.point_a_id in fixed_ids or constraint.point_b_id in fixed_ids:
+        _reseed_distance_constraint_free_point(sketch, constraint, new_distance)
+        return
+
+    dx = point_b.x - point_a.x
+    dy = point_b.y - point_a.y
+    if constraint.orientation == "horizontal":
+        current_distance = abs(dx)
+    elif constraint.orientation == "vertical":
+        current_distance = abs(dy)
+    else:
+        current_distance = math.hypot(dx, dy)
+    if current_distance == 0:
+        return
+
+    scale = new_distance / current_distance
+    anchor_x, anchor_y = point_a.x, point_a.y
+    for point_id, point in sketch.points.items():
+        if point_id in fixed_ids:
+            continue
+        point.x = anchor_x + (point.x - anchor_x) * scale
+        point.y = anchor_y + (point.y - anchor_y) * scale
+
+    # Every *other* dimension's own recorded value (confirmed or still-
+    # provisional - e.g. an Ellipse's un-confirmed major-axis constraint
+    # while its minor axis is the one being confirmed here) must scale by
+    # the same factor, or it goes stale relative to the geometry that just
+    # moved under it: uniform scaling about a shared anchor changes every
+    # pairwise distance by exactly `scale`, so this is exact, not an
+    # approximation.
+    for other in sketch.constraints.values():
+        if other is constraint:
+            continue
+        if isinstance(other, (DistanceConstraint, LineDistanceConstraint, PointLineDistanceConstraint)):
+            other.distance *= scale
+
+    for entity in sketch.entities.values():
+        if isinstance(entity, TextEntity):
+            entity.size *= scale
+
+
 def _reseed_distance_constraint_free_point(
     sketch: Sketch, constraint: DistanceConstraint, new_distance: float
 ) -> None:
@@ -1190,13 +1532,21 @@ def update_constraint_value(
     sketch = _get_sketch_or_404(sketch_id)
     constraint = _get_constraint_or_404(sketch, constraint_id)
     if isinstance(constraint, DistanceConstraint):
-        _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
+        has_other_dimension = any(
+            cid != constraint_id and _is_length_dimension(other) for cid, other in sketch.constraints.items()
+        )
+        if has_other_dimension:
+            _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
+        else:
+            _scale_sketch_for_first_dimension(sketch, constraint, payload.value)
         constraint.distance = payload.value
         # Any explicit value PATCH is the user confirming a size (this is
         # the same endpoint the ghost-confirm flow already calls) - clears
         # `provisional` without needing a separate confirm flag/endpoint.
         constraint.provisional = False
     elif isinstance(constraint, LineDistanceConstraint):
+        constraint.distance = payload.value
+    elif isinstance(constraint, PointLineDistanceConstraint):
         constraint.distance = payload.value
     elif isinstance(constraint, AngleConstraint):
         constraint.angle_degrees = payload.value

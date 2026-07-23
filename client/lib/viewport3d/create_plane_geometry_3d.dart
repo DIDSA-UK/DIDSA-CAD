@@ -1,7 +1,7 @@
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
-import 'reference_planes.dart' show doubleSidedQuadBuffers, referencePlaneBorderPoints;
+import 'reference_planes.dart' show doubleSidedQuadBuffers, closedLoopBorderPoints;
 
 /// C2: half-extent of a rendered Create Plane quad - a fixed default rather
 /// than one derived from the referencing geometry's bounding box, per this
@@ -113,7 +113,7 @@ Node buildCreatePlaneNode(
       1.0,
     );
   final borderGeometry = PolylineGeometry(
-    referencePlaneBorderPoints(_createPlaneHalfSize),
+    closedLoopBorderPoints(_createPlaneHalfSize),
     width: _createPlaneBorderWidth,
   );
 
