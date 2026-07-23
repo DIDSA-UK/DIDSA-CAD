@@ -460,6 +460,23 @@ class Slot(SketchEntity):
     is why solving this treats that redundancy as still converged (see
     solver.py's own comment on result_code 4/5).
 
+    Bug fix (on-device report: dimensioning one straight side then dragging
+    a corner solved to a self-intersecting, unequal-sided shape - "wrong
+    root on a tangent"): a TangentConstraint only pins the *perpendicular
+    distance* from an Arc's centre to a Line to that Arc's radius, which a
+    Line already passing through a Point on that circle (as every Slot side
+    always does, at its own shared corner) satisfies at exactly two
+    tangent-point locations - the intended one, on the side of the circle
+    facing away from the other end cap, and a spurious second one facing
+    *toward* it, which drags that corner across to the near side of its own
+    circle and produces exactly the reported shape. Nothing in the 4
+    TangentConstraints + EqualRadius chain above rules that second root out
+    - both satisfy the same tangency equations equally validly. The 2
+    ParallelConstraints below (`parallel_constraint_ids`, each straight
+    side tied to the construction centreline) close that gap: only the
+    intended root has both sides running parallel to the centreline, so it's
+    now the only one that satisfies the whole chain.
+
     Does NOT override `endpoint_point_ids()` (same reasoning as Polygon):
     always its own standalone closed profile.
     """
@@ -479,6 +496,7 @@ class Slot(SketchEntity):
     radius_constraint_id: str
     equal_radius_constraint_ids: list[str]
     tangent_constraint_ids: list[str]
+    parallel_constraint_ids: list[str]
 
     @property
     def type(self) -> str:
@@ -1381,6 +1399,12 @@ class Sketch:
             for arc, line in ((arc1, line1), (arc1, line2), (arc2, line1), (arc2, line2))
         ]
 
+        # Rules out the tangent chain's own spurious "near side" root - see
+        # the Slot class docstring's bug-fix note above.
+        parallel_constraint_ids = [
+            self.add_parallel_constraint(line.id, centerline.id).id for line in (line1, line2)
+        ]
+
         slot = Slot(
             id=str(uuid.uuid4()),
             center1_point_id=center1_point_id,
@@ -1401,6 +1425,7 @@ class Sketch:
                 *equal_radius_constraint_ids,
             ],
             tangent_constraint_ids=tangent_constraint_ids,
+            parallel_constraint_ids=parallel_constraint_ids,
             construction=construction,
         )
         self.entities[slot.id] = slot
@@ -2252,11 +2277,11 @@ class Sketch:
     def delete_slot(self, slot_id: str) -> list[str]:
         """Remove a Slot and everything `add_slot` always creates alongside
         it - both end-cap Arcs, both straight Lines, the construction
-        centreline, and every constraint in its radius/equal-radius/tangent
-        chain - same "internal implementation detail" exception
-        `delete_polygon`/`delete_circle`/etc. already make for their own
-        radius constraint(s). Every centre and corner Point is pruned
-        automatically if nothing else still needs it - see
+        centreline, and every constraint in its radius/equal-radius/
+        tangent/parallel chain - same "internal implementation detail"
+        exception `delete_polygon`/`delete_circle`/etc. already make for
+        their own radius constraint(s). Every centre and corner Point is
+        pruned automatically if nothing else still needs it - see
         `_prune_orphaned_points`. Returns the ids of any Points actually
         removed."""
         slot = self.entities.get(slot_id)
@@ -2272,7 +2297,11 @@ class Sketch:
         for entity_id in (slot.centerline_id, slot.arc1_id, slot.arc2_id, slot.line1_id, slot.line2_id):
             self.entities.pop(entity_id, None)
         self.constraints.pop(slot.radius_constraint_id, None)
-        for constraint_id in (*slot.equal_radius_constraint_ids, *slot.tangent_constraint_ids):
+        for constraint_id in (
+            *slot.equal_radius_constraint_ids,
+            *slot.tangent_constraint_ids,
+            *slot.parallel_constraint_ids,
+        ):
             self.constraints.pop(constraint_id, None)
         return self._prune_orphaned_points(candidates)
 

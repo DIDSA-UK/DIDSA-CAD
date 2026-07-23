@@ -84,6 +84,7 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     LineDistanceConstraint,
     HorizontalConstraint,
     VerticalConstraint,
+    ParallelConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -245,6 +246,25 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             point_a = points[constraint.point_a_id]
             point_b = points[constraint.point_b_id]
             if abs(point_b.x - point_a.x) > tolerance:
+                return False
+        elif isinstance(constraint, ParallelConstraint):
+            dir1 = (
+                points[constraint.line1_end_id].x - points[constraint.line1_start_id].x,
+                points[constraint.line1_end_id].y - points[constraint.line1_start_id].y,
+            )
+            dir2 = (
+                points[constraint.line2_end_id].x - points[constraint.line2_start_id].x,
+                points[constraint.line2_end_id].y - points[constraint.line2_start_id].y,
+            )
+            len1 = math.hypot(*dir1)
+            len2 = math.hypot(*dir2)
+            if len1 < 1e-9 or len2 < 1e-9:
+                continue  # A zero-length Line has no direction to compare - nothing to check.
+            # sin(angle between the two directions) - scale-invariant (unlike
+            # the raw cross product, which carries units of length^2), so a
+            # fixed small threshold works regardless of the Sketch's own size.
+            sin_angle = abs(dir1[0] * dir2[1] - dir1[1] * dir2[0]) / (len1 * len2)
+            if sin_angle > 1e-4:
                 return False
 
     return True
