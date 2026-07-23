@@ -25,16 +25,9 @@ void main() {
     halfHeight: 5,
   );
 
-  test('constraintOverlayItemLabelCenter resolves a ConstraintLabelItem to its own midpoint+offset', () {
-    const pointItem = ConstraintLabelItem(
-      constraintId: 'point',
-      selected: false,
-      anchorA: (1.0, 0.0),
-      anchorB: (1.0, 0.0),
-      text: 'V',
-      labelOffset: Offset.zero,
-      plainBlackText: false,
-    );
+  test(
+      'constraintOverlayItemLabelCenter resolves a ConstraintLabelItem with two genuinely distinct '
+      'anchors to their own midpoint+offset, with no nudge applied', () {
     const pairItem = ConstraintLabelItem(
       constraintId: 'pair',
       selected: false,
@@ -44,16 +37,69 @@ void main() {
       labelOffset: Offset.zero,
       plainBlackText: false,
     );
+    const midpointItem = ConstraintLabelItem(
+      constraintId: 'midpoint',
+      selected: false,
+      anchorA: (1.0, 0.0),
+      anchorB: (1.0, 0.0),
+      // anchorA == anchorB deliberately - see the dedicated coincident-nudge
+      // test below for why this is NOT expected to land at the same place.
+      text: 'unused',
+      labelOffset: Offset.zero,
+      plainBlackText: false,
+    );
     // Orthographic projection is affine (no perspective foreshortening) -
-    // the midpoint of two projected anchors must equal the projection of
-    // their own sketch-local midpoint, regardless of this camera's own
-    // exact scale/orientation convention (deliberately not hardcoded here).
-    final pointCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, pointItem);
+    // the midpoint of two DISTINCT projected anchors must equal the
+    // projection of their own sketch-local midpoint, regardless of this
+    // camera's own exact scale/orientation convention (deliberately not
+    // hardcoded here) - contrasted against [midpointItem] purely to prove
+    // that value, not to assert equality (see below).
     final pairCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, pairItem);
-    expect(pointCenter, isNotNull);
+    final midpointCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, midpointItem);
     expect(pairCenter, isNotNull);
-    expect(pairCenter!.dx, closeTo(pointCenter!.dx, 1e-6));
-    expect(pairCenter.dy, closeTo(pointCenter.dy, 1e-6));
+    expect(midpointCenter, isNotNull);
+    // Bug fix (on-device feedback: "when I drop a point on the origin/
+    // another point a coincident constraint is created... I can't see the
+    // constraint label"): unlike before this fix, a zero-distance anchor
+    // pair (e.g. Coincident) no longer lands exactly on the same spot a
+    // real, separated pair with the same midpoint would - see the
+    // dedicated nudge test below.
+    expect(midpointCenter!.dx, isNot(closeTo(pairCenter!.dx, 1e-6)));
+  });
+
+  test(
+      'bug fix (on-device feedback: "when I drop a point on the origin/another point a coincident '
+      'constraint is created... I can\'t see the constraint label - as it\'s a grounding constraint '
+      'the user may want to delete it, so it should be visible"): constraintOverlayItemLabelCenter '
+      'nudges a ConstraintLabelItem whose two anchors are exactly coincident away from the shared '
+      'Point, but leaves a genuinely separated pair (even one with the same numeric midpoint) alone',
+      () {
+    const coincidentItem = ConstraintLabelItem(
+      constraintId: 'coincident',
+      selected: false,
+      anchorA: (1.0, 0.0),
+      anchorB: (1.0, 0.0),
+      text: 'Coinc.',
+      labelOffset: Offset.zero,
+      plainBlackText: false,
+    );
+    const separatedItem = ConstraintLabelItem(
+      constraintId: 'separated',
+      selected: false,
+      anchorA: (0.0, 0.0),
+      anchorB: (2.0, 0.0),
+      text: 'V',
+      labelOffset: Offset.zero,
+      plainBlackText: false,
+    );
+    final coincidentCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, coincidentItem);
+    final separatedCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, separatedItem);
+    expect(coincidentCenter, isNotNull);
+    expect(separatedCenter, isNotNull);
+    // Both anchor pairs project to the same numeric sketch-local midpoint
+    // (1.0, 0.0), so any remaining difference is exactly the nudge.
+    final nudge = coincidentCenter! - separatedCenter!;
+    expect(nudge.distance, greaterThan(5.0)); // clearly off the Point marker, not a rounding wobble
   });
 
   test('constraintOverlayItemAt finds the item whose label centre is within radius', () {
@@ -137,12 +183,17 @@ void main() {
     );
     // pointA sits at the camera target, so its own screen position is the
     // same viewport-centre point under any zoom - resolved the same way
-    // test 1 above does, to avoid a second import just for this.
+    // test 1 above does, to avoid a second import just for this. A tiny
+    // (1e-4 sketch unit) anchor separation keeps the midpoint at the origin
+    // while staying well clear of [_pairGlyphMidpoint]'s own coincident-
+    // nudge threshold (1e-6 *screen* pixels) - an exactly-coincident pair
+    // would otherwise pick up that nudge here too, throwing off this test's
+    // own zoom-ratio math (unrelated to what this test is actually about).
     const targetItem = ConstraintLabelItem(
       constraintId: 'origin',
       selected: false,
-      anchorA: (0.0, 0.0),
-      anchorB: (0.0, 0.0),
+      anchorA: (-0.0001, 0.0),
+      anchorB: (0.0001, 0.0),
       text: '',
       labelOffset: Offset.zero,
       plainBlackText: false,

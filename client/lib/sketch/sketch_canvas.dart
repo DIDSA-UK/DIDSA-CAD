@@ -1519,9 +1519,32 @@ RadialDimensionGeometry? _radialDimensionGeometry(
   );
 }
 
+/// Bug fix (on-device feedback: "when I drop a point on the origin/another
+/// point a coincident constraint is created... the problem is I can't see
+/// the constraint label - as it's a grounding constraint the user may want
+/// to delete it, so it should be visible"): a Coincident constraint's own
+/// two Points sit at the exact same location by definition, so a bare
+/// pair-glyph's own midpoint is that same point - the badge used to render
+/// directly on top of the Point marker itself, indistinguishable/
+/// unclickable. A small fixed screen-pixel default nudge only kicks in
+/// when the two projected Points are (near-)coincident, so every other
+/// pair-glyph (V/H, Parallel, Perpendicular, ... which always separate two
+/// genuinely distinct entities) is unaffected. Shared by
+/// [_SketchPainter._paintAxisIndicator]/[_paintTwoLineGlyph]-equivalent
+/// callers and [_constraintLabelCenter] so they can never drift apart -
+/// same fix, same constant, as the embedded 3D viewport's own
+/// `sketch_constraint_overlay.dart`.
+const Offset _coincidentGlyphNudge = Offset(14, -14);
+
+Offset _pairGlyphMidpoint(Offset a, Offset b) {
+  final midpoint = (a + b) / 2;
+  return (a - b).distance < 1e-6 ? midpoint + _coincidentGlyphNudge : midpoint;
+}
+
 /// A Point pair's screen-space midpoint - null if either Point is missing.
-/// Shared by [_constraintLabelCenter]'s Vertical/Horizontal cases, mirroring
-/// [_SketchPainter._paintAxisIndicator]'s own midpoint layout.
+/// Shared by [_constraintLabelCenter]'s Vertical/Horizontal/Coincident
+/// cases, mirroring [_SketchPainter._paintAxisIndicator]'s own midpoint
+/// layout.
 Offset? _pointPairMidpointScreen(
   SketchController controller,
   ViewTransform transform,
@@ -1531,7 +1554,7 @@ Offset? _pointPairMidpointScreen(
   final a = controller.points[pointAId];
   final b = controller.points[pointBId];
   if (a == null || b == null) return null;
-  return (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
+  return _pairGlyphMidpoint(transform.sketchToScreen(a.x, a.y), transform.sketchToScreen(b.x, b.y));
 }
 
 /// The perpendicular offset distance for a linear/line-distance dimension's
@@ -1781,6 +1804,7 @@ Offset? _constraintLabelCenter(
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case PerpendicularConstraintDto c:
+      if (controller.isImplicitEllipseAxisPerpendicular(c.line1Id, c.line2Id)) return null;
       final base = _twoLineMidpointScreen(controller, transform, c.line1Id, c.line2Id);
       return base == null ? null : base + labelOffset;
     case EqualLengthConstraintDto c:
@@ -2138,6 +2162,15 @@ class _SketchPainter extends CustomPainter {
   static const double _originHalfSize = 5.0; // was 7
   static const double _originHalfSizeSnapping = 7.0; // was 10
   static const double _dimensionFontSize = 9.5; // was 11
+  // On-device feedback ("what font options are available for dimension
+  // text? anything more suiting technical drawing?"): dimension/constraint
+  // labels previously had no fontFamily at all (bare platform default) -
+  // Lekton (SIL OFL, bundled via pubspec.yaml, see
+  // assets/fonts/Lekton/OFL.txt) is a monospace face with a clean,
+  // technical/blueprint feel, and its fixed-width digits keep dimension
+  // values visually aligned - same choice as the embedded 3D viewport's own
+  // `sketch_constraint_overlay.dart`.
+  static const String _dimensionFontFamily = 'Lekton';
   static const double _snapHighlightPointRadius = 3.0; // was 4 (snap/coincident highlight base)
   static const double _midpointSnapIndicatorRadius = 6.5; // was 9
 
@@ -2326,6 +2359,7 @@ class _SketchPainter extends CustomPainter {
         case ParallelConstraintDto c:
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '∥', badgeColor, labelOffset);
         case PerpendicularConstraintDto c:
+          if (controller.isImplicitEllipseAxisPerpendicular(c.line1Id, c.line2Id)) break;
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '⟂', badgeColor, labelOffset);
         case EqualLengthConstraintDto c:
           // Same fix as AngleConstraintDto above - a Polygon's own edges are
@@ -2419,6 +2453,7 @@ class _SketchPainter extends CustomPainter {
       color: plainBlackText ? Colors.black : Colors.white,
       fontSize: _dimensionFontSize,
       fontWeight: FontWeight.w600,
+      fontFamily: _dimensionFontFamily,
     );
     final isDiameter = text.startsWith('⌀');
     final textSpan = isDiameter
@@ -2741,7 +2776,7 @@ class _SketchPainter extends CustomPainter {
     final a = controller.points[pointAId];
     final b = controller.points[pointBId];
     if (a == null || b == null) return;
-    final midpoint = (transform.sketchToScreen(a.x, a.y) + transform.sketchToScreen(b.x, b.y)) / 2;
+    final midpoint = _pairGlyphMidpoint(transform.sketchToScreen(a.x, a.y), transform.sketchToScreen(b.x, b.y));
     _drawDimensionLabel(canvas, midpoint + labelOffset, label, color);
   }
 

@@ -6525,6 +6525,43 @@ void main() {
     );
   });
 
+  test(
+      'on-device feedback ("the perpendicular constraint on the major and minor axes in an ellipse '
+      'is implicit of the form of an ellipse so it shouldn\'t be visible"): an Ellipse\'s own '
+      'auto-created PerpendicularConstraint between its major/minor axis Lines is hidden from '
+      'constraintOverlayItems, but a genuinely unrelated Perpendicular constraint between two '
+      'ordinary Lines still shows', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+
+    final ellipsePerp = controller.constraints.values.whereType<PerpendicularConstraintDto>().single;
+    expect(controller.isImplicitEllipseAxisPerpendicular(ellipsePerp.line1Id, ellipsePerp.line2Id), isTrue);
+    expect(
+      controller.constraintOverlayItems().whereType<ConstraintLabelItem>().where((i) => i.text == '⟂'),
+      isEmpty,
+    );
+
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(50, 50);
+    await controller.handleCanvasTap(60, 50);
+    controller.finishChain();
+    await controller.handleCanvasTap(50, 60);
+    await controller.handleCanvasTap(50, 70);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(58, 50.1); // first unrelated Line, away from its own midpoint (55, 50)
+    await controller.handleCanvasTap(50.1, 68); // second unrelated Line, away from its own midpoint (50, 65)
+    await controller.addPerpendicularConstraint();
+    final realPerp = controller.constraints.values.whereType<PerpendicularConstraintDto>().last;
+    expect(controller.isImplicitEllipseAxisPerpendicular(realPerp.line1Id, realPerp.line2Id), isFalse);
+    expect(
+      controller.constraintOverlayItems().whereType<ConstraintLabelItem>().where((i) => i.text == '⟂'),
+      isNotEmpty,
+    );
+  });
+
   test('on-device feedback: toggleRadiusDiameterDisplay flips the display mode and notifies listeners', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0);
@@ -7831,6 +7868,23 @@ void main() {
     expect(controller.ribbonVisible, isFalse);
     final created = controller.constraints.values.whereType<CoincidentConstraintDto>().single;
     expect({created.pointAId, created.pointBId}, {pointA, pointB});
+  });
+
+  test(
+      'bug fix (on-device feedback: "when I drop a point on the origin/another point a coincident '
+      'constraint is created... the problem is I can\'t see the constraint label - as it\'s a '
+      'grounding constraint the user may want to delete it, so it should be visible"): '
+      'dimensionLabelAt finds a CoincidentConstraint\'s own label nudged away from the shared '
+      'Point, not sitting exactly on top of it', () {
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 3, y: 4);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 3, y: 4); // exactly coincident with p2
+    controller.constraints['c0'] = const CoincidentConstraintDto(id: 'c0', pointAId: 'p2', pointBId: 'p3');
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // p2/p3 both project to screen (460, 220) - the fixed (14, -14) nudge
+    // moves the badge to (474, 206), off the Point marker itself.
+    expect(dimensionLabelAt(controller, transform, const Offset(460, 220), 5), isNull);
+    expect(dimensionLabelAt(controller, transform, const Offset(474, 206), 5), 'c0');
   });
 
   test('the origin is selectable so a Point can be constrained Coincident to it', () async {

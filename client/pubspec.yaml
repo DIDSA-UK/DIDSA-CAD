@@ -97,22 +97,19 @@ flutter:
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
 
-  # To add custom fonts to your application, add a fonts section here,
-  # in this "flutter" section. Each entry in this list should have a
-  # "family" key with the font family name, and a "fonts" key with a
-  # list giving the asset and other descriptors for the font. For
-  # example:
-  # fonts:
-  #   - family: Schyler
-  #     fonts:
-  #       - asset: fonts/Schyler-Regular.ttf
-  #       - asset: fonts/Schyler-Italic.ttf
-  #         style: italic
-  #   - family: Trajan Pro
-  #     fonts:
-  #       - asset: fonts/TrajanPro.ttf
-  #       - asset: fonts/TrajanPro_Bold.ttf
-  #         weight: 700
-  #
-  # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/to/font-from-package
+  # On-device feedback ("what font options are available for dimension
+  # text? anything more suiting technical drawing?"): dimension/constraint
+  # labels previously had no fontFamily at all, falling back to whatever
+  # the platform default happened to be. Lekton (SIL OFL, see
+  # assets/fonts/Lekton/OFL.txt) is a monospace face with a clean,
+  # technical/blueprint feel - its fixed-width digits also keep dimension
+  # values (10.00, 125.50, ...) visually aligned, which a proportional
+  # font doesn't.
+  fonts:
+    - family: Lekton
+      fonts:
+        - asset: assets/fonts/Lekton/Lekton-Regular.ttf
+        - asset: assets/fonts/Lekton/Lekton-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Lekton/Lekton-Italic.ttf
+          style: italic

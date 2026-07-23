@@ -5332,6 +5332,31 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
+  /// Whether [lineAId]/[lineBId] are an Ellipse's own major/minor axis
+  /// construction Lines (`add_ellipse`'s own auto-created
+  /// `PerpendicularConstraint`, tying them together so both axes stay
+  /// perpendicular under drag) - on-device feedback ("the perpendicular
+  /// constraint on the major and minor axes in an ellipse is implicit of
+  /// the form of an ellipse so it shouldn't be visible"), the exact same
+  /// reasoning [isImplicitPolygonEdgeTie]/[isCardinalAxisConstraint] already
+  /// established for other backend-auto-created "plumbing" constraints: an
+  /// Ellipse's own two axes wouldn't be an ellipse at all without being
+  /// perpendicular, so this isn't a real user-facing constraint to show or
+  /// let the user delete. Identified by Line membership (both axis Lines
+  /// found on the same Ellipse) rather than a stored id - the backend's own
+  /// `Ellipse.perpendicular_constraint_id` isn't sent to the client at all
+  /// (see `EllipseResponse`), matching how [isImplicitPolygonEdgeTie] is
+  /// itself identified by Line membership instead.
+  bool isImplicitEllipseAxisPerpendicular(String lineAId, String lineBId) {
+    for (final ellipse in ellipses.values) {
+      final axisIds = {ellipse.majorAxisLineId, ellipse.minorAxisLineId};
+      if (axisIds.contains(lineAId) && axisIds.contains(lineBId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   double _distanceToSegment(
     double px,
     double py,
@@ -10880,6 +10905,7 @@ class SketchController extends ChangeNotifier {
               _lineMidpointPairLabel(c.line1Id, c.line2Id, '∥', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case PerpendicularConstraintDto c:
+          if (isImplicitEllipseAxisPerpendicular(c.line1Id, c.line2Id)) break;
           final labelItem =
               _lineMidpointPairLabel(c.line1Id, c.line2Id, '⟂', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);

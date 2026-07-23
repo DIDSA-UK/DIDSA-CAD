@@ -67,6 +67,13 @@ const Color _selectedColor = Colors.purple;
 const Color _dimensionLineColor = Colors.black;
 const Color _constraintBadgeColor = Color(0xFFF5A623);
 const double _dimensionFontSize = 9.5;
+// On-device feedback ("what font options are available for dimension text?
+// anything more suiting technical drawing?"): dimension/constraint labels
+// previously had no fontFamily at all (bare platform default) - Lekton
+// (SIL OFL, bundled via pubspec.yaml, see assets/fonts/Lekton/OFL.txt) is a
+// monospace face with a clean, technical/blueprint feel, and its
+// fixed-width digits keep dimension values visually aligned.
+const String _dimensionFontFamily = 'Lekton';
 const double _dimensionStrokeWidth = 1.35; // matches sketch_canvas.dart's _lineStrokeWidth(1.8) * 0.75
 const double _extensionLineGap = 4.0;
 const double _extensionLineOvershoot = 3.0;
@@ -77,6 +84,26 @@ const double _minDimensionOffsetMagnitude = 6.0;
 const double _radialLegLength = 24.0;
 const double _diameterSymbolScale = 1.35;
 const double _defaultAngleArcRadius = 32.0;
+
+/// Bug fix (on-device feedback: "when I drop a point on the origin/another
+/// point a coincident constraint is created... the problem is I can't see
+/// the constraint label - as it's a grounding constraint the user may want
+/// to delete it, so it should be visible"): a Coincident constraint's own
+/// two Points sit at the exact same location by definition, so a bare
+/// [ConstraintLabelItem]'s own midpoint is that same point - the badge
+/// used to render directly on top of the Point marker itself,
+/// indistinguishable/unclickable. A small fixed screen-pixel default nudge
+/// only kicks in when the two projected anchors are (near-)coincident, so
+/// every other pair-glyph (V/H, Parallel, Perpendicular, ... which always
+/// separate two genuinely distinct entities) is unaffected. Shared by
+/// [_ConstraintOverlayPainter._paintLabel] and
+/// [constraintOverlayItemLabelCenter] so they can never drift apart.
+const Offset _coincidentGlyphNudge = Offset(14, -14);
+
+Offset _pairGlyphMidpoint(Offset a, Offset b) {
+  final midpoint = (a + b) / 2;
+  return (a - b).distance < 1e-6 ? midpoint + _coincidentGlyphNudge : midpoint;
+}
 
 /// [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees]'s own rotation
 /// - shared by [_ConstraintOverlayPainter._paintRadialDimension] and
@@ -343,7 +370,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final a = _project(item.anchorA);
     final b = _project(item.anchorB);
     if (a == null || b == null) return;
-    final midpoint = (a + b) / 2;
+    final midpoint = _pairGlyphMidpoint(a, b);
     _drawDimensionLabel(canvas, midpoint + item.labelOffset, item.text, color, plainBlackText: item.plainBlackText);
   }
 
@@ -653,6 +680,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
       color: plainBlackText ? Colors.black : Colors.white,
       fontSize: _dimensionFontSize,
       fontWeight: FontWeight.w600,
+      fontFamily: _dimensionFontFamily,
     );
     final isDiameter = text.startsWith('⌀');
     final textSpan = isDiameter
@@ -872,7 +900,7 @@ Offset? constraintOverlayItemLabelCenter(
       final a = project(it.anchorA);
       final b = project(it.anchorB);
       if (a == null || b == null) return null;
-      return (a + b) / 2 + it.labelOffset;
+      return _pairGlyphMidpoint(a, b) + it.labelOffset;
 
     case ConstraintLinearDimensionItem it:
       final aScreen = project(it.pointA);
