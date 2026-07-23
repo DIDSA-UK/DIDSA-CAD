@@ -66,12 +66,24 @@ List<SelectionContextAction> contextActionsFor(
   if (selection.isEmpty) return const [];
 
   // Prompt A3: none of Create Plane/Chamfer/Fillet make sense against a
-  // whole-Body selection - without this guard, a Body-only selection would
-  // fall through every branch below to the final "alone" case and
-  // nonsensically offer "Create Plane". Body selections don't compose with
-  // vertex/edge/face ones in the same table below; this deliberately
-  // suppresses every action rather than picking one arbitrarily.
-  if (selection.any((s) => s.kind == SelectionEntityKind.body)) return const [];
+  // whole-Body selection - a Body selection doesn't compose with
+  // vertex/edge/face ones in the same table below, so any selection mixing
+  // a Body with something else still offers nothing (deliberately
+  // suppressed rather than picking one arbitrarily), same as before.
+  //
+  // Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+  // §2.1/§4): a *lone* Body - exactly one, nothing else selected - now
+  // offers Mirror, the first real operation a Body-only selection has ever
+  // enabled. Checked before the generic mixed-Body guard below, same
+  // precedence pattern the single/two-plane-like checks further down use
+  // against their own generic buckets.
+  final bodies = selection.where((s) => s.kind == SelectionEntityKind.body).toList();
+  if (bodies.isNotEmpty) {
+    if (bodies.length == 1 && selection.length == 1) {
+      return const [SelectionContextAction('Mirror', enabled: true)];
+    }
+    return const [];
+  }
 
   final sketchPoints = selection.where((s) => s.kind == SelectionEntityKind.sketchPoint).toList();
   final sketchLines = selection.where((s) => s.kind == SelectionEntityKind.sketchLine).toList();

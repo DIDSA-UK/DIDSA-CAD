@@ -884,6 +884,123 @@ void main() {
     });
   });
 
+  group('Pattern/Mirror scoping Phase 1: FeatureDto.fromJson for a mirror Feature', () {
+    test('parses source_body_ids and mirror_plane', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'mirror',
+        'id': 'mirror-1',
+        'locked': false,
+        'produces': 'body',
+        'source_body_ids': ['body-1'],
+        'mirror_plane': {'face_ref': null, 'fixed_plane': 'YZ', 'plane_feature_id': null},
+      });
+
+      expect(dto.type, 'mirror');
+      expect(dto.sourceBodyIds, ['body-1']);
+      expect(dto.mirrorPlane?.fixedPlane, 'YZ');
+      expect(dto.produces, 'body');
+    });
+
+    test('defaults sourceBodyIds to empty and mirrorPlane to null when omitted', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'extrude',
+        'id': 'ef-1',
+        'locked': false,
+        'produces': 'body',
+        'sketch_feature_id': 'sf-1',
+        'extrude_type': 'boss',
+        'start_distance': 0.0,
+        'end_distance': 10.0,
+      });
+
+      expect(dto.sourceBodyIds, isEmpty);
+      expect(dto.mirrorPlane, isNull);
+    });
+  });
+
+  group('Pattern/Mirror scoping Phase 1: DocumentApiClient createMirrorFeature/updateMirrorFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('createMirrorFeature sends source_body_ids and mirror_plane', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'mirror',
+            'id': 'mirror-1',
+            'locked': false,
+            'produces': 'body',
+            'source_body_ids': ['body-1'],
+            'mirror_plane': {'face_ref': null, 'fixed_plane': 'YZ', 'plane_feature_id': null},
+          });
+        }),
+      );
+
+      final feature = await client.createMirrorFeature(
+        'part-1',
+        sourceBodyIds: const ['body-1'],
+        mirrorPlane: const PlaneRefDto(fixedPlane: 'YZ'),
+      );
+
+      expect(capturedBody['source_body_ids'], ['body-1']);
+      expect(capturedBody['mirror_plane'], {'fixed_plane': 'YZ'});
+      expect(feature.sourceBodyIds, ['body-1']);
+      expect(feature.mirrorPlane?.fixedPlane, 'YZ');
+    });
+
+    test('updateMirrorFeature only sends the fields supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'mirror',
+            'id': 'mirror-1',
+            'locked': false,
+            'produces': 'body',
+            'source_body_ids': ['body-1'],
+            'mirror_plane': {'face_ref': null, 'fixed_plane': 'XZ', 'plane_feature_id': null},
+          }, status: 200);
+        }),
+      );
+
+      await client.updateMirrorFeature(
+        'part-1',
+        'mirror-1',
+        mirrorPlane: const PlaneRefDto(fixedPlane: 'XZ'),
+      );
+
+      expect(capturedBody, {
+        'mirror_plane': {'fixed_plane': 'XZ'},
+      });
+    });
+
+    test('updateMirrorFeature sends source_body_ids when supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'mirror',
+            'id': 'mirror-1',
+            'locked': false,
+            'produces': 'body',
+            'source_body_ids': ['body-2'],
+            'mirror_plane': {'face_ref': null, 'fixed_plane': 'YZ', 'plane_feature_id': null},
+          }, status: 200);
+        }),
+      );
+
+      await client.updateMirrorFeature('part-1', 'mirror-1', sourceBodyIds: const ['body-2']);
+
+      expect(capturedBody, {
+        'source_body_ids': ['body-2'],
+      });
+    });
+  });
+
   group('DocumentApiClient createCreatePlaneFeature/updateCreatePlaneFeature', () {
     http.Response jsonResponse(Object body, {int status = 201}) =>
         http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});

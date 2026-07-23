@@ -9,7 +9,7 @@ reason, mirroring the existing app.document.extrude / app.sketch.store split
 by OCCT dependency.
 
 C5: `OFFSET_FACE`/`MIDPLANE`/`PARALLEL_TO_FACE_THROUGH_VERTEX` no longer
-require a Body face specifically - `_resolve_plane_ref` dispatches a
+require a Body face specifically - `resolve_plane_ref` dispatches a
 `PlaneRef` to whichever of a Body face (still OCCT, via `_resolve_planar_
 face`), a fixed reference plane, or an existing Plane it actually names, so
 this module's own resolvers work against a single, uniform `ResolvedPlane`
@@ -160,7 +160,7 @@ def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> R
 
     C5: returns a `ResolvedPlane` (plain float tuples) rather than the four
     raw OCCT `gp_Pnt`/`gp_Dir` values it used to - every caller now also
-    needs to combine this with `_resolve_plane_ref`'s other two, OCCT-free
+    needs to combine this with `resolve_plane_ref`'s other two, OCCT-free
     branches (a fixed reference plane, an existing Plane), so converting at
     this one boundary lets every caller work against the same plain-tuple
     `ResolvedPlane` shape regardless of which kind of reference it got."""
@@ -187,7 +187,7 @@ def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> R
     )
 
 
-def _resolve_plane_ref(
+def resolve_plane_ref(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     ref: PlaneRef,
@@ -205,7 +205,13 @@ def _resolve_plane_ref(
     Feature created *before* this one, and Feature creation is strictly
     append-only, so the reference graph is a DAG by construction. The
     router guarantees exactly one of the three fields is set before this is
-    ever called."""
+    ever called.
+
+    Public (no leading underscore) since Pattern/Mirror scoping's Phase 1
+    (`app.document.mirror.resolve_mirror_from_bodies`) is a second real
+    consumer outside this module - same "promote to public once a second
+    module needs it" convention `sketch_feature_id_for_sketch` (app.
+    document.graph) already follows."""
     if ref.face_ref is not None:
         return _resolve_planar_face(bodies, ref.face_ref)
     if ref.fixed_plane is not None:
@@ -228,11 +234,11 @@ def resolve_offset_face_from_bodies(
     along its own normal (positive = along the normal direction, matching
     `ExtrudeFeature`'s own signed-distance convention). C5: `plane_ref` can
     be a Body face, a fixed reference plane, or an existing Plane (see
-    `_resolve_plane_ref`) - `part`/`excluded_feature_ids` are only actually
+    `resolve_plane_ref`) - `part`/`excluded_feature_ids` are only actually
     used by the existing-Plane case, a Body face or fixed plane ignores
     both, but every caller threads them through uniformly rather than
     branching on `plane_ref`'s own kind itself."""
-    resolved = _resolve_plane_ref(part, bodies, plane_ref, excluded_feature_ids)
+    resolved = resolve_plane_ref(part, bodies, plane_ref, excluded_feature_ids)
     nx, ny, nz = resolved.normal
     ox, oy, oz = resolved.origin
     origin = (ox + nx * offset, oy + ny * offset, oz + nz * offset)
@@ -265,7 +271,7 @@ def resolve_midplane_from_bodies(
     """C3/C5: the `_from_bodies` core of `resolve_midplane` - a plane
     equidistant between two parallel plane-like references (any mix of
     Body faces, fixed reference planes, and existing Planes - see
-    `_resolve_plane_ref`), oriented along the first reference's own
+    `resolve_plane_ref`), oriented along the first reference's own
     (corrected) normal. Fails closed with `faces_not_parallel` (see
     `_faces_not_parallel`) unless the two references' normals are parallel
     or anti-parallel (`abs(dot) ~= 1`) - anything else has no single
@@ -292,8 +298,8 @@ def resolve_midplane_from_bodies(
     values - no OCCT construction needed in this function at all anymore
     (resolving the references themselves may still need it, for the
     Body-face case)."""
-    resolved_a = _resolve_plane_ref(part, bodies, plane_ref_a, excluded_feature_ids)
-    resolved_b = _resolve_plane_ref(part, bodies, plane_ref_b, excluded_feature_ids)
+    resolved_a = resolve_plane_ref(part, bodies, plane_ref_a, excluded_feature_ids)
+    resolved_b = resolve_plane_ref(part, bodies, plane_ref_b, excluded_feature_ids)
 
     dot = sum(a * b for a, b in zip(resolved_a.normal, resolved_b.normal))
     if abs(abs(dot) - 1.0) > 1e-6:
@@ -366,7 +372,7 @@ def resolve_parallel_face_through_vertex_from_bodies(
 ) -> ResolvedPlane:
     """C4/C5: the `_from_bodies` core of `resolve_parallel_face_through_vertex`
     - a plane parallel to `plane_ref`'s own plane (a Body face, a fixed
-    reference plane, or an existing Plane - see `_resolve_plane_ref`),
+    reference plane, or an existing Plane - see `resolve_plane_ref`),
     passing through `vertex_ref`'s position instead of `OFFSET_FACE`'s
     numeric offset. `vertex_ref`'s own position becomes `origin` directly
     (rather than, say, the reference's own origin projected along its
@@ -374,7 +380,7 @@ def resolve_parallel_face_through_vertex_from_bodies(
     construction, so using its own position as the plane's origin is both
     correct and the simplest option, and renders the plane's quad naturally
     centered on the point the user actually picked."""
-    resolved = _resolve_plane_ref(part, bodies, plane_ref, excluded_feature_ids)
+    resolved = resolve_plane_ref(part, bodies, plane_ref, excluded_feature_ids)
     vertex_point = _resolve_vertex_position(bodies, vertex_ref)
     origin = (vertex_point.X(), vertex_point.Y(), vertex_point.Z())
     return ResolvedPlane(origin=origin, normal=resolved.normal, x_axis=resolved.x_axis, y_axis=resolved.y_axis)

@@ -28,6 +28,7 @@ import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
 import 'mesh_geometry.dart';
+import 'mirror_panel.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
@@ -514,6 +515,20 @@ class _PartScreenState extends State<PartScreen> {
       _setRevolveAxis(entity);
       return;
     }
+    // Pattern/Mirror scoping Phase 1: a face/referencePlane/createPlane tap
+    // while the Mirror panel is open sets (or clears, if it's the
+    // already-picked one) the mirror plane - mirrors [_setRevolveAxis]
+    // exactly, generalized to three plane-like kinds instead of one
+    // (sketchLine). Never touches [_mirrorSourceBodyId] - the source Body is
+    // a separate field, not part of [_selectedEntities], for the whole
+    // Mirror session (see that section's own header comment).
+    if (_mirrorActive &&
+        (entity.kind == SelectionEntityKind.face ||
+            entity.kind == SelectionEntityKind.referencePlane ||
+            entity.kind == SelectionEntityKind.createPlane)) {
+      _setMirrorPlane(entity);
+      return;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
@@ -524,6 +539,26 @@ class _PartScreenState extends State<PartScreen> {
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+  }
+
+  /// Pattern/Mirror scoping Phase 1: [_toggleSelectedEntity]'s plane-like-kind
+  /// special-case for the Mirror flow - replaces whatever face/referencePlane/
+  /// createPlane entity (if any) is currently in [_selectedEntities] with
+  /// [planeEntity], unless [planeEntity] was already the one picked, in which
+  /// case it's cleared instead (tap the current plane pick again to deselect
+  /// it) - mirrors [_setRevolveAxis] exactly.
+  void _setMirrorPlane(SelectionEntityRef planeEntity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final alreadyPicked = next.contains(planeEntity);
+      next.removeWhere((e) =>
+          e.kind == SelectionEntityKind.face ||
+          e.kind == SelectionEntityKind.referencePlane ||
+          e.kind == SelectionEntityKind.createPlane);
+      if (!alreadyPicked) next.add(planeEntity);
+      _selectedEntities = next;
+    });
+    _scheduleMirrorPreview();
   }
 
   /// Prompt F: [_toggleSelectedEntity]'s sketchLine special-case for the
@@ -556,6 +591,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+    if (_mirrorActive) _scheduleMirrorPreview();
   }
 
   /// On-device feedback: [_toggleSelectedEntity]'s Face special-case for the
@@ -880,6 +916,92 @@ class _PartScreenState extends State<PartScreen> {
     sketchLine: false,
     sketchCircle: false,
     plane: false,
+  );
+
+  // --- Pattern/Mirror scoping Phase 1: Mirror -------------------------------
+  // See docs/pattern-mirror-scope.md §2.1/§4. Mirror's own shape differs from
+  // both Fillet's and Revolve's in one real way: `hitTestBodies` (selection_
+  // hit_test.dart) treats `filter.body`/`filter.face` as mutually exclusive
+  // at the whole-hit-test level (`filter.body` on promotes *every* face
+  // intersection to a `body`-kind entity, never a `face`-kind one) - so,
+  // unlike Revolve (whose axis pick is a `sketchLine`, hit-tested via a
+  // completely separate code path from its `body` target picks, so both can
+  // be live at once), Mirror cannot let the user pick a source Body and a
+  // mirror-plane face simultaneously through one filter. The source Body is
+  // therefore captured *once*, into its own field, at the moment the panel
+  // opens (from a pre-existing single-Body selection - see
+  // `selection_actions.dart`'s new Mirror entry), and [_selectedEntities]
+  // switches to being dedicated entirely to the second, separate plane pick
+  // for the rest of the panel's session - mirroring Fillet's "dedicated to
+  // one picking concern for the panel's whole lifetime" shape, just with the
+  // dedication starting *after* an initial capture rather than from open.
+
+  /// True while [MirrorPanel] is open - mirrors [_filletActive] exactly
+  /// (Mirror also has only the one construction method in Phase 1, so no
+  /// mode enum is needed).
+  bool _mirrorActive = false;
+
+  /// The Body being mirrored, captured once when the panel opens (either
+  /// from the single-Body selection that enabled the "Mirror" button, or -
+  /// in edit mode - from the existing MirrorFeature's own `source_body_ids`)
+  /// - never re-derived from [_selectedEntities] the way [_currentTargetBodyIds]
+  /// is for Extrude/Revolve, since [_selectedEntities] is dedicated to the
+  /// mirror-plane pick for the rest of this panel's session (see this
+  /// section's own header comment). Null only before the panel has opened.
+  String? _mirrorSourceBodyId;
+
+  /// The MirrorFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
+  /// Mirror needs no dual-mesh preview-overlay machinery at all (see
+  /// `docs/live-preview-pattern.md`'s decision tree: Mirror never lets the
+  /// user re-pick sub-shapes of the very Body it produces, only of an
+  /// upstream, already-final seed Body) - the plain [_bodies]/[isPreviewMesh]
+  /// path Extrude/Revolve already use is sufficient.
+  String? _previewMirrorFeatureId;
+
+  /// B4: non-null while [MirrorPanel] is editing an *already-existing*
+  /// MirrorFeature - mirrors [_editingFilletFeatureId].
+  String? _editingMirrorFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelMirror] PATCHes these back verbatim when
+  /// [_editingMirrorFeatureId] is set, same reason [_filletEditSnapshot]
+  /// exists.
+  ({List<String> sourceBodyIds, PlaneRefDto mirrorPlane})? _mirrorEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmMirror] and [_cancelMirror], same purpose
+  /// [_entitiesBeforeFillet] serves.
+  Set<SelectionEntityRef>? _entitiesBeforeMirror;
+
+  /// The pre-Mirror mesh [_cancelMirror] restores to on Cancel - mirrors
+  /// [_meshBeforeExtrude] (the simple-pattern equivalent of Fillet's own
+  /// [_filletPreviewMesh]/[_filletPreviewBodyId] pair, which Mirror doesn't
+  /// need - see this section's own header comment).
+  List<BodyMeshDto>? _meshBeforeMirror;
+
+  Timer? _mirrorDebounce;
+
+  /// Locks [_selectionFilterOverrides] to face/plane-like kinds only for the
+  /// mirror-plane-picking half of the Mirror flow (after the source Body has
+  /// already been captured into [_mirrorSourceBodyId] - see this section's
+  /// own header comment for why `body` stays off here even though a Body
+  /// pick is conceptually still "part of" a Mirror). `face: true` lets the
+  /// user pick a Body face (any Body's, including the source's own) as the
+  /// mirror plane; `plane: true` lets them pick a fixed reference plane or
+  /// an existing Plane feature the same way.
+  static const _mirrorSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: true,
   );
 
   // --- Prompt E: Chamfer state --------------------------------------------
@@ -3453,6 +3575,13 @@ class _PartScreenState extends State<PartScreen> {
       // the revolve branch above exactly.
       final opened = _openSweepPanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'mirror') {
+      // Pattern/Mirror scoping Phase 1: rollback is ended by
+      // _confirmMirror/_cancelMirror instead - mirrors the revolve/sweep
+      // branches above exactly, including the defensive "couldn't open,
+      // roll forward immediately" fallback.
+      final opened = _openMirrorPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
@@ -5030,6 +5159,246 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Pattern/Mirror scoping Phase 1: Mirror -------------------------------
+  // See docs/pattern-mirror-scope.md §2.1/§4 and this file's own "Pattern/
+  // Mirror scoping Phase 1: Mirror" state-field section above for the full
+  // reasoning behind Mirror's two-stage (capture source Body, then pick a
+  // plane) shape.
+
+  /// [SelectionContextPanel.onMirror]'s callback - `contextActionsFor`
+  /// enables this button for exactly one Body, nothing else, selected (see
+  /// that function's own new Mirror branch). Captures that Body's id and
+  /// opens [MirrorPanel] to pick a mirror plane next.
+  void _onMirrorTapped() {
+    final bodies = _selectedEntities.where((e) => e.kind == SelectionEntityKind.body);
+    if (bodies.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openMirrorPanel(bodies.first.bodyId);
+  }
+
+  /// Opens [MirrorPanel] for a brand-new MirrorFeature mirroring
+  /// [sourceBodyId] - captures it into [_mirrorSourceBodyId] and switches
+  /// [_selectedEntities] over to the mirror-plane pick (clearing whatever
+  /// was selected, mirroring [_openRevolvePanel]'s own "start the picker
+  /// selection empty" shape) for the rest of this panel's session. No
+  /// MirrorFeature exists yet until a plane is actually picked - mirrors
+  /// [_openFilletPanel]'s "nothing valid to create yet" reasoning, just
+  /// gated on a plane pick instead of a non-empty edge list.
+  void _openMirrorPanel(String sourceBodyId) {
+    setState(() {
+      _mirrorActive = true;
+      _mirrorSourceBodyId = sourceBodyId;
+      _previewMirrorFeatureId = null;
+      _meshBeforeMirror = _bodies;
+      _entitiesBeforeMirror = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mirrorSelectionFilter);
+    });
+  }
+
+  /// B4: opens [MirrorPanel] to edit an *already-existing* MirrorFeature -
+  /// mirrors [_openRevolvePanelForEdit]'s shape (a defensive `bool` return,
+  /// since - like Revolve's `axis_ref` - a real MirrorFeature always has
+  /// both `source_body_ids` and `mirror_plane`, but this stays defensive
+  /// rather than assuming). Unlike [_openFilletPanelForEdit], this does
+  /// *not* self-exclude this Feature's own id via [_beginRollback] - Mirror
+  /// never modifies its source Body in place (see this file's own Mirror
+  /// state-field section header comment), so there is nothing of its own
+  /// effect to hide from the live-edit session, the same reasoning
+  /// [_openExtrudePanelForEdit]/[_openRevolvePanelForEdit] rely on for not
+  /// self-excluding either.
+  ///
+  /// [_selectedEntities] is seeded with the reconstructed plane entity (via
+  /// [_mirrorPlaneEntityFor]) rather than cleared to `{}` - unlike Create
+  /// Plane's offset-only edit (which never re-sends `face_refs` and so never
+  /// needs to reconstruct anything), a Mirror's `mirror_plane` pick *is* the
+  /// only thing Phase 1's edit flow can change, so it must be both visible
+  /// and live-re-pickable, mirroring [_openFilletPanelForEdit]'s
+  /// reconstruction of `edgeRefs` into [SelectionEntityRef]s.
+  bool _openMirrorPanelForEdit(FeatureDto feature) {
+    final sourceBodyIds = feature.sourceBodyIds;
+    final mirrorPlane = feature.mirrorPlane;
+    if (sourceBodyIds.isEmpty || mirrorPlane == null) return false;
+
+    setState(() {
+      _mirrorActive = true;
+      _editingMirrorFeatureId = feature.id;
+      _previewMirrorFeatureId = feature.id;
+      _mirrorSourceBodyId = sourceBodyIds.first;
+      _mirrorEditSnapshot = (sourceBodyIds: sourceBodyIds, mirrorPlane: mirrorPlane);
+      _meshBeforeMirror = _bodies;
+      _entitiesBeforeMirror = _selectedEntities;
+      _selectedEntities = {_mirrorPlaneEntityFor(mirrorPlane)};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_mirrorSelectionFilter);
+    });
+    return true;
+  }
+
+  /// The face/referencePlane/createPlane-kind entity in [_selectedEntities] -
+  /// the mirror plane pick - or null if none is picked yet. Mirrors
+  /// [_revolveAxisEntity]'s manual-loop style, generalized to three
+  /// plane-like kinds instead of one.
+  SelectionEntityRef? get _mirrorPlaneEntity {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.face ||
+          entity.kind == SelectionEntityKind.referencePlane ||
+          entity.kind == SelectionEntityKind.createPlane) {
+        return entity;
+      }
+    }
+    return null;
+  }
+
+  /// [_mirrorPlaneEntity] converted to the wire [PlaneRefDto] - null whenever
+  /// no plane is picked yet. Reuses [_planeRefDtoFor] verbatim (built for
+  /// Create Plane's own OFFSET_FACE/MIDPLANE/PARALLEL_TO_FACE_THROUGH_VERTEX
+  /// modes, but generically shaped over exactly these same three kinds).
+  PlaneRefDto? _currentMirrorPlaneRef() {
+    final entity = _mirrorPlaneEntity;
+    return entity == null ? null : _planeRefDtoFor(entity);
+  }
+
+  /// Reverse of [_planeRefDtoFor] - reconstructs the [SelectionEntityRef] a
+  /// stored [PlaneRefDto] came from, for [_openMirrorPanelForEdit]'s live
+  /// re-pick session. No existing helper does this (Create Plane's own edit
+  /// flow never needs to - see [_openCreatePlanePanelForEdit]'s own doc
+  /// comment on why it doesn't reconstruct `face_refs`), so this is new.
+  SelectionEntityRef _mirrorPlaneEntityFor(PlaneRefDto ref) {
+    final faceRef = ref.faceRef;
+    if (faceRef != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: faceRef.bodyId, id: faceRef.index);
+    }
+    final fixedPlane = ref.fixedPlane;
+    if (fixedPlane != null) {
+      return SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: referencePlaneKindFromApiValue(fixedPlane),
+      );
+    }
+    return SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: ref.planeFeatureId ?? '');
+  }
+
+  /// Creates the preview MirrorFeature on the first call with a plane
+  /// picked, or PATCHes the one already created by an earlier call - mirrors
+  /// [_ensureRevolveFeatureExists] exactly (the simple pattern - no preview-
+  /// mesh overlay, no self-exclusion).
+  Future<void> _ensureMirrorFeatureExists(String sourceBodyId, PlaneRefDto mirrorPlane) async {
+    final part = _part;
+    if (part == null) return;
+
+    final existingId = _previewMirrorFeatureId;
+    if (existingId == null) {
+      final created = await _api.createMirrorFeature(
+        part.id,
+        sourceBodyIds: [sourceBodyId],
+        mirrorPlane: mirrorPlane,
+      );
+      _previewMirrorFeatureId = created.id;
+    } else {
+      await _api.updateMirrorFeature(
+        part.id,
+        existingId,
+        sourceBodyIds: [sourceBodyId],
+        mirrorPlane: mirrorPlane,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [MirrorPanel]'s live-preview debounce - mirrors [_scheduleRevolvePreview]
+  /// exactly, including skipping the re-solve entirely whenever no plane is
+  /// picked yet (mirrors Revolve's own "nothing to solve without an axis"
+  /// guard), re-checked at fire time per this file's "always the current
+  /// value" convention.
+  void _scheduleMirrorPreview() {
+    _mirrorDebounce?.cancel();
+    _mirrorDebounce = Timer(const Duration(milliseconds: 500), () {
+      final sourceBodyId = _mirrorSourceBodyId;
+      final mirrorPlane = _currentMirrorPlaneRef();
+      if (sourceBodyId == null || mirrorPlane == null) return;
+      _runGuarded(() => _ensureMirrorFeatureExists(sourceBodyId, mirrorPlane));
+    });
+  }
+
+  /// Keeps the just-created/edited Feature, restores whatever was selected
+  /// before the panel opened, and rolls B4 rollback forward - mirrors
+  /// [_confirmFillet] exactly, plus popping the [_mirrorSelectionFilter]
+  /// override [_openMirrorPanel]/[_openMirrorPanelForEdit] pushed.
+  Future<void> _confirmMirror() async {
+    _mirrorDebounce?.cancel();
+    setState(() {
+      // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
+      // fix this mirrors.
+      _featureTreeVisible = false;
+      _mirrorActive = false;
+      _mirrorSourceBodyId = null;
+      _selectedEntities = _entitiesBeforeMirror ?? {};
+      _entitiesBeforeMirror = null;
+      _previewMirrorFeatureId = null;
+      _editingMirrorFeatureId = null;
+      _mirrorEditSnapshot = null;
+      _meshBeforeMirror = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview Feature (new-Mirror flow) or PATCHes
+  /// [_mirrorEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelFillet]'s structure exactly.
+  Future<void> _cancelMirror() async {
+    _mirrorDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewMirrorFeatureId;
+    final meshBefore = _meshBeforeMirror;
+    final wasEditing = _editingMirrorFeatureId != null;
+    final editSnapshot = _mirrorEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _mirrorActive = false;
+      _mirrorSourceBodyId = null;
+      _selectedEntities = _entitiesBeforeMirror ?? {};
+      _entitiesBeforeMirror = null;
+      _previewMirrorFeatureId = null;
+      _editingMirrorFeatureId = null;
+      _mirrorEditSnapshot = null;
+      _meshBeforeMirror = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateMirrorFeature(
+            part.id,
+            previewId,
+            sourceBodyIds: editSnapshot.sourceBodyIds,
+            mirrorPlane: editSnapshot.mirrorPlane,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelExtrude]'s own optimization: restore the
+          // pre-Mirror mesh directly (no network round-trip) when a snapshot
+          // was captured on open - only ever null defensively (Mirror always
+          // opens from a resolved [_bodies] snapshot), in which case falling
+          // back to a real [_refreshMesh] keeps this correct either way.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   // --- Prompt E: Chamfer -------------------------------------------------
   // Mirrors the entire Fillet section directly above, method for method -
   // see that section's own doc comments for the full reasoning behind each
@@ -5547,9 +5916,13 @@ class _PartScreenState extends State<PartScreen> {
                   // picks, stable across re-solves) - an `||`, not a separate
                   // overlay, since only one of the three is ever active at
                   // once. Sweep (also Body-level picks) joins the same `||`.
+                  // Pattern/Mirror scoping Phase 1: Mirror joins it too - see
+                  // docs/pattern-mirror-scope.md §2.1/§4's own confirmation
+                  // that Mirror takes this same simple path.
                   isPreviewMesh: _extrudeSketchFeature != null ||
                       _revolveSketchFeature != null ||
-                      _sweepSketchFeature != null,
+                      _sweepSketchFeature != null ||
+                      _mirrorActive,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -5645,6 +6018,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_chamferActive &&
                     !_revolveActive &&
                     !_sweepActive &&
+                    !_mirrorActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -5659,6 +6033,7 @@ class _PartScreenState extends State<PartScreen> {
                         onChamfer: _onChamferTapped,
                         onNewSketchOnFace: _onNewSketchOnFaceTapped,
                         onNewSketch: _onNewSketchTapped,
+                        onMirror: _onMirrorTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),
@@ -5672,6 +6047,7 @@ class _PartScreenState extends State<PartScreen> {
                         !_chamferActive &&
                         !_revolveActive &&
                         !_sweepActive &&
+                        !_mirrorActive &&
                         !_profilePickerActive &&
                         !_pathPickerActive,
                     features: _features,
@@ -5800,6 +6176,16 @@ class _PartScreenState extends State<PartScreen> {
                       onDistanceChanged: _onChamferDistanceChanged,
                       onConfirm: _confirmChamfer,
                       onCancel: _cancelChamfer,
+                    ),
+                  ),
+                if (_mirrorActive)
+                  Positioned.fill(
+                    child: MirrorPanel(
+                      key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyId),
+                      title: _editingMirrorFeatureId != null ? 'Edit Mirror' : 'Mirror',
+                      hasPlanePicked: _mirrorPlaneEntity != null,
+                      onConfirm: _confirmMirror,
+                      onCancel: _cancelMirror,
                     ),
                   ),
                 if (_revolveActive)
@@ -6080,6 +6466,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_chamferActive &&
                     !_revolveActive &&
                     !_sweepActive &&
+                    !_mirrorActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned(
@@ -6356,7 +6743,8 @@ class _PartScreenState extends State<PartScreen> {
                         _filletActive ||
                         _chamferActive ||
                         _revolveActive ||
-                        _sweepActive)
+                        _sweepActive ||
+                        _mirrorActive)
                     ? 180
                     : 0,
               ),
@@ -6384,6 +6772,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_chamferActive &&
                       !_revolveActive &&
                       !_sweepActive &&
+                      !_mirrorActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive) ...[
                     const SizedBox(height: 12),

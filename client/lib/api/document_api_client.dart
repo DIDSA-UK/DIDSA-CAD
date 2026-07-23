@@ -262,6 +262,18 @@ class FeatureDto {
   /// field entirely.
   final bool hasLostReference;
 
+  /// Pattern/Mirror scoping's Phase 1 - only present on a `"mirror"`
+  /// Feature: which single Body (by id) is being reflected (the backend's
+  /// `MirrorFeature.source_body_ids`, restricted to exactly one entry in
+  /// Phase 1 - see `docs/pattern-mirror-scope.md`).
+  final List<String> sourceBodyIds;
+
+  /// Pattern/Mirror scoping's Phase 1 - only present on a `"mirror"`
+  /// Feature: the plane it's mirrored across (a Body face, a fixed
+  /// reference plane, or an existing Plane - reuses [PlaneRefDto] verbatim,
+  /// the same type `faceRefs` entries already use).
+  final PlaneRefDto? mirrorPlane;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -295,6 +307,8 @@ class FeatureDto {
     this.profileRefs = const [],
     this.pathRefs = const [],
     this.hasLostReference = false,
+    this.sourceBodyIds = const [],
+    this.mirrorPlane,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -355,6 +369,10 @@ class FeatureDto {
                 .toList() ??
             const [],
         hasLostReference: json['has_lost_reference'] as bool? ?? false,
+        sourceBodyIds: (json['source_body_ids'] as List?)?.cast<String>() ?? const [],
+        mirrorPlane: json['mirror_plane'] == null
+            ? null
+            : PlaneRefDto.fromJson(json['mirror_plane'] as Map<String, dynamic>),
       );
 }
 
@@ -749,6 +767,53 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 if (distance != null) 'distance': distance,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Pattern/Mirror scoping's Phase 1: creates a MirrorFeature reflecting
+  /// [sourceBodyIds]' single Body (Phase 1 scope - see the backend's
+  /// `_validate_mirror_source_body_ids`) across [mirrorPlane]. The backend
+  /// validates payload shape and resolvability before persisting
+  /// (`missing_reference`/`non_planar_reference`/`mirror_failed` on
+  /// failure - see `app.document.router.create_mirror_feature`), this
+  /// method just serializes whatever it's given, mirroring
+  /// [createChamferFeature]'s own shape.
+  Future<FeatureDto> createMirrorFeature(
+    String partId, {
+    required List<String> sourceBodyIds,
+    required PlaneRefDto mirrorPlane,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/mirror-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_body_ids': sourceBodyIds,
+                'mirror_plane': mirrorPlane.toJson(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing MirrorFeature - either/both of
+  /// [sourceBodyIds]/[mirrorPlane] may be supplied; omitted fields keep
+  /// their current value. Used for the live-preview debounced re-solve,
+  /// same pattern as [updateFilletFeature].
+  Future<FeatureDto> updateMirrorFeature(
+    String partId,
+    String featureId, {
+    List<String>? sourceBodyIds,
+    PlaneRefDto? mirrorPlane,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/mirror-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sourceBodyIds != null) 'source_body_ids': sourceBodyIds,
+                if (mirrorPlane != null) 'mirror_plane': mirrorPlane.toJson(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

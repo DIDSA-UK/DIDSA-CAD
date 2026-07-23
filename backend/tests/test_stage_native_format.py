@@ -27,6 +27,7 @@ from app.document.models import (
     FilletFeature,
     ImportFeature,
     ImportSourceFormat,
+    MirrorFeature,
     Part,
     PlaneRef,
     PlaneType,
@@ -140,6 +141,13 @@ def _build_document_with_every_feature_type(sketch: Sketch) -> Document:
     )
     part.add_feature(sweep)
 
+    mirror = MirrorFeature(
+        id="feat-mirror",
+        source_body_ids=[extrude.id],
+        mirror_plane=PlaneRef(plane_feature_id=plane_feature.id),
+    )
+    part.add_feature(mirror)
+
     document = Document(id="doc-1")
     document.parts[part.id] = part
     return document
@@ -229,6 +237,12 @@ def test_round_trips_every_feature_type_through_real_json():
     assert sweep.path_refs == original_sweep.path_refs
     assert sweep.mode == original_sweep.mode
     assert sweep.target_body_ids == original_sweep.target_body_ids
+
+    mirror = imported_by_id["feat-mirror"]
+    original_mirror = original_by_id["feat-mirror"]
+    assert mirror.source_body_ids == original_mirror.source_body_ids
+    assert mirror.mirror_plane == original_mirror.mirror_plane
+    assert mirror.source_feature_ids == original_mirror.source_feature_ids
 
     assert set(imported_sketches.keys()) == {sketch.id}
     imported_sketch = imported_sketches[sketch.id]

@@ -44,6 +44,7 @@ from app.document.models import (
     ExtrudeType,
     FilletFeature,
     ImportFeature,
+    MirrorFeature,
     Part,
     ResolvedPlane,
     RevolveFeature,
@@ -761,6 +762,7 @@ def compute_part_bodies(
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.import_geometry import resolve_import
+    from app.document.mirror import resolve_mirror_from_bodies
     from app.document.revolve import resolve_revolve_from_bodies
     from app.document.sweep import resolve_sweep_from_bodies
 
@@ -821,6 +823,21 @@ def compute_part_bodies(
             # bare face for a mesh format) - never split even if a STEP
             # import happens to contain multiple disjoint solids.
             bodies[feature.id] = solid
+            continue
+
+        if isinstance(feature, MirrorFeature):
+            try:
+                mirrored_shape = resolve_mirror_from_bodies(part, bodies, feature, excluded_feature_ids)
+            except HTTPException:
+                logger.warning("Skipping MirrorFeature %s: could not be resolved", feature.id)
+                continue
+            # Boss-with-no-target semantics (see MirrorFeature's own
+            # docstring) - a mirrored copy is always a brand-new, never-
+            # merged Body in Phase 1, so this reuses `_register_solids`
+            # directly rather than `_apply_boss_or_cut` (which also knows
+            # how to fuse/cut into `target_body_ids`, a concept Mirror
+            # doesn't have until Phase 5's merge option).
+            _register_solids(bodies, feature.id, mirrored_shape)
             continue
 
         if isinstance(feature, RevolveFeature):

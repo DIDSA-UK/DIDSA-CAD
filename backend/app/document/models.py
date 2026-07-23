@@ -602,6 +602,51 @@ class SweepFeature(Feature):
         return Produces.BODY
 
 
+@dataclass
+class MirrorFeature(Feature):
+    """Pattern/Mirror scoping's Phase 1 (see `docs/pattern-mirror-scope.md`
+    §2.1/§4): reflects the single Body named in `source_body_ids` across
+    `mirror_plane`, producing a brand-new, independent Body via OCCT
+    `gp_Trsf.SetMirror` (a `gp_Ax2` plane-mirror, not the `gp_Ax1`
+    line-mirror overload) - see `app.document.mirror.resolve_mirror_from_
+    bodies`.
+
+    `mirror_plane: PlaneRef` is reused verbatim from Create Plane/`OFFSET_
+    FACE` (see `PlaneRef`'s own docstring) rather than inventing a new
+    reference type - this is what lets `MirrorFeature` support "mirror
+    about a fixed plane", "mirror about a Body face", and "mirror about an
+    existing Plane feature" as the exact same field, matching every
+    mainstream CAD tool's own unified "pick a plane-like thing" mirror UX.
+
+    Phase 1 deliberately keeps `source_body_ids` restricted to exactly one
+    entry (see `app.document.router._validate_mirror_source_body_ids`) and
+    always produces a separate Body (no merge-into-source option yet,
+    unlike Boss/Cut's `target_body_ids`) - multi-body/multi-feature seeds
+    (`source_feature_ids`, reserved but unused until Phase 6) and a
+    keep-separate-vs-fuse `merge` toggle (Phase 5) are later, explicitly
+    scoped phases, not this one. Like a Boss with no `target_body_ids`,
+    it always mints a brand-new Body identified by its own Feature id."""
+
+    id: str
+    source_body_ids: list[str]
+    mirror_plane: PlaneRef
+    # Reserved for Phase 6 (multi-feature seed selection) - always empty
+    # in Phase 1; not yet read by app.document.mirror.
+    source_feature_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "mirror"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 class ImportSourceFormat(str, Enum):
     """Which interchange format an `ImportFeature`'s own `source_data` bytes
     are - mirrors `ExtrudeType`/`SweepMode`'s str-Enum pattern. `STEP` reads

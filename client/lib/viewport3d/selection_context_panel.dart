@@ -51,6 +51,12 @@ class SelectionContextPanel extends StatelessWidget {
   /// needs no new Plane Feature created first, unlike a Body face).
   final VoidCallback? onNewSketch;
 
+  /// Pattern/Mirror scoping's Phase 1: fired when the user taps an
+  /// *enabled* Mirror button (a single Body selected - see
+  /// `selection_actions.dart`'s `contextActionsFor`) - same "never called
+  /// for a disabled one" contract as [onFillet]/[onChamfer].
+  final VoidCallback? onMirror;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -60,6 +66,7 @@ class SelectionContextPanel extends StatelessWidget {
     this.onChamfer,
     this.onNewSketchOnFace,
     this.onNewSketch,
+    this.onMirror,
   });
 
   @override
@@ -125,6 +132,8 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onNewSketchOnFace : null;
       case 'New Sketch':
         return action.enabled ? onNewSketch : null;
+      case 'Mirror':
+        return action.enabled ? onMirror : null;
       default:
         return null;
     }

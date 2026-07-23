@@ -25,6 +25,7 @@ from app.document.import_geometry import resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.mesh_data import Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
+from app.document.mirror import resolve_mirror
 from app.document.native_format import NativeFormatError, export_native, import_native
 from app.document.step_export import export_step
 from app.document.models import (
@@ -36,6 +37,7 @@ from app.document.models import (
     FilletFeature,
     ImportFeature,
     ImportSourceFormat,
+    MirrorFeature,
     Part,
     PlaneRef,
     PlaneType,
@@ -75,6 +77,9 @@ from app.document.schemas import (
     ImportFeatureCreate,
     ImportFeatureResponse,
     MeshVertexData,
+    MirrorFeatureCreate,
+    MirrorFeatureResponse,
+    MirrorFeatureUpdate,
     NativeImportResponse,
     PartCreate,
     PartResponse,
@@ -302,6 +307,14 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             produces=feature.produces,
         )
+    if isinstance(feature, MirrorFeature):
+        return MirrorFeatureResponse(
+            id=feature.id,
+            source_body_ids=feature.source_body_ids,
+            mirror_plane=_plane_ref_to_schema(feature.mirror_plane),
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     if isinstance(feature, ImportFeature):
         return ImportFeatureResponse(
             id=feature.id,
@@ -372,6 +385,32 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
+                "RevolveFeature, SweepFeature, or ImportFeature in this Part",
+            )
+
+
+def _validate_mirror_source_body_ids(part: Part, source_body_ids: list[str]) -> None:
+    """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+    §2.1/§4): `source_body_ids` must have exactly one entry - the
+    multi-body/multi-feature seed widening described there is explicit
+    Phase 6 scope, not this one. Each entry must resolve to a Feature that
+    produces a Body already in this Part, via the identical accepted-type
+    check `_validate_target_body_ids` already established (a Body's id
+    always traces back to one of these four Feature types through
+    `base_feature_id`) - a MirrorFeature itself is deliberately not (yet)
+    an accepted producer here, since chaining a Mirror off another
+    Mirror's own output is also Phase 6 scope."""
+    if len(source_body_ids) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="MirrorFeature requires exactly one source_body_ids entry (Phase 1 scope)",
+        )
+    for source_id in source_body_ids:
+        source_feature = part.get_feature(base_feature_id(source_id))
+        if not isinstance(source_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"source_body_ids entry {source_id!r} does not refer to an ExtrudeFeature, "
                 "RevolveFeature, SweepFeature, or ImportFeature in this Part",
             )
 
@@ -1542,6 +1581,61 @@ def update_sweep_feature(part_id: str, feature_id: str, payload: SweepFeatureUpd
     feature.mode = candidate.mode
     feature.target_body_ids = candidate.target_body_ids
     feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/mirror-features", response_model=MirrorFeatureResponse, status_code=201)
+def create_mirror_feature(part_id: str, payload: MirrorFeatureCreate) -> MirrorFeatureResponse:
+    """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+    §2.1/§4): mirrors `create_chamfer_feature`'s exact shape - unlocked
+    from the start, fails closed (via `_validate_mirror_source_body_ids`/
+    `_validate_plane_ref` for payload shape, then `resolve_mirror` for
+    referential/geometric validity) before ever persisting an unresolvable
+    Mirror."""
+    part = get_part_or_404(part_id)
+    source_body_ids = list(payload.source_body_ids)
+    mirror_plane = _plane_ref_to_domain(payload.mirror_plane)
+    _validate_mirror_source_body_ids(part, source_body_ids)
+    _validate_plane_ref(part, mirror_plane)
+    feature = MirrorFeature(id=str(uuid.uuid4()), source_body_ids=source_body_ids, mirror_plane=mirror_plane)
+    resolve_mirror(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_mirror_feature_or_404(part: Part, feature_id: str) -> MirrorFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, MirrorFeature):
+        raise HTTPException(status_code=404, detail="Mirror feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/mirror-features/{feature_id}", response_model=MirrorFeatureResponse)
+def update_mirror_feature(
+    part_id: str, feature_id: str, payload: MirrorFeatureUpdate
+) -> MirrorFeatureResponse:
+    """Mirrors `update_chamfer_feature`'s exact shape - same validate-
+    before-mutate discipline against a scratch Feature sharing the real
+    one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_mirror_feature_or_404(part, feature_id)
+
+    new_source_body_ids = (
+        list(payload.source_body_ids) if payload.source_body_ids is not None else feature.source_body_ids
+    )
+    new_mirror_plane = (
+        _plane_ref_to_domain(payload.mirror_plane)
+        if payload.mirror_plane is not None
+        else feature.mirror_plane
+    )
+    _validate_mirror_source_body_ids(part, new_source_body_ids)
+    _validate_plane_ref(part, new_mirror_plane)
+
+    candidate = MirrorFeature(id=feature.id, source_body_ids=new_source_body_ids, mirror_plane=new_mirror_plane)
+    resolve_mirror(part, candidate)  # raises on an unresolvable reference
+
+    feature.source_body_ids = candidate.source_body_ids
+    feature.mirror_plane = candidate.mirror_plane
     return _feature_response(part, feature)
 
 

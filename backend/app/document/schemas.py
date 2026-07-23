@@ -527,6 +527,36 @@ class SweepFeatureResponse(BaseModel):
     produces: Produces
 
 
+class MirrorFeatureCreate(BaseModel):
+    """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+    §2.1/§4): creates a MirrorFeature reflecting `source_body_ids`' single
+    Body across `mirror_plane`. `source_body_ids` must have exactly one
+    entry in Phase 1 (see `app.document.router._validate_mirror_source_
+    body_ids`) - the multi-body/multi-feature seed widening is Phase 6."""
+
+    source_body_ids: list[str]
+    mirror_plane: PlaneRefSchema
+
+
+class MirrorFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ChamferFeatureUpdate`/`FilletFeatureUpdate`."""
+
+    source_body_ids: list[str] | None = None
+    mirror_plane: PlaneRefSchema | None = None
+
+
+class MirrorFeatureResponse(BaseModel):
+    type: Literal["mirror"] = "mirror"
+    id: str
+    source_body_ids: list[str]
+    mirror_plane: PlaneRefSchema
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # MirrorFeature.
+    produces: Produces
+
+
 class ImportFeatureCreate(BaseModel):
     """Creates an ImportFeature (locked-in scope: import as a fixed,
     non-parametric Body) - `data_base64` is the uploaded file's own raw
@@ -561,6 +591,7 @@ FeatureResponse = Union[
     ChamferFeatureResponse,
     RevolveFeatureResponse,
     SweepFeatureResponse,
+    MirrorFeatureResponse,
     ImportFeatureResponse,
 ]
 

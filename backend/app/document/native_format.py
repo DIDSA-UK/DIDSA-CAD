@@ -30,6 +30,7 @@ from app.document.models import (
     FilletFeature,
     ImportFeature,
     ImportSourceFormat,
+    MirrorFeature,
     Part,
     PlaneRef,
     PlaneType,
@@ -588,6 +589,14 @@ def _feature_to_dict(feature: Feature) -> dict:
             # base64 inside JSON, same as the create payload over HTTP.
             "source_data_base64": base64.b64encode(feature.source_data).decode("ascii"),
         }
+    if isinstance(feature, MirrorFeature):
+        return {
+            "type": "mirror",
+            "id": feature.id,
+            "source_body_ids": list(feature.source_body_ids),
+            "mirror_plane": _plane_ref_to_dict(feature.mirror_plane),
+            "source_feature_ids": list(feature.source_feature_ids),
+        }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
 
@@ -662,6 +671,13 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             source_format=ImportSourceFormat(_require(data, "source_format")),
             source_data=source_data,
+        )
+    if feature_type == "mirror":
+        return MirrorFeature(
+            id=feature_id,
+            source_body_ids=list(data.get("source_body_ids", [])),
+            mirror_plane=_plane_ref_from_dict(_require(data, "mirror_plane")),
+            source_feature_ids=list(data.get("source_feature_ids", [])),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 

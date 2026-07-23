@@ -588,6 +588,15 @@ tool's own default.
 
 ### Phase 1 — Mirror about a fixed plane or Body face
 
+**Status: implemented (2026-07-23) — see `docs/status.md`'s same-dated entry
+for the full implementation/verification write-up.** No `pythonocc-core`/
+Flutter SDK available in that implementation session, so the OCCT-free
+backend graph/native-format logic was verified by real test runs; every
+OCCT-touching backend module and the entire client side (no Dart/Flutter
+SDK at all in that sandbox) were `ast.parse`-verified/hand-reviewed against
+exact precedent only — real CI (backend) and an on-device/desktop build
+(client) are still needed to confirm beyond that.
+
 Single Body seed, always-separate output.
 
 - **Deliverable**: select one Body, pick a mirror plane (fixed XY/XZ/YZ,

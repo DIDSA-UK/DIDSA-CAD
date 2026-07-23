@@ -36,6 +36,7 @@ from app.document.models import (
     CreatePlaneFeature,
     ExtrudeFeature,
     FilletFeature,
+    MirrorFeature,
     Part,
     PlaneRef,
     PlaneType,
@@ -234,6 +235,16 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     different Sketch - see `SweepFeature`'s own docstring), not just one
     axis Sketch - see `_sweep_dependencies`.
 
+    Pattern/Mirror Phase 1: a `MirrorFeature` depends on the owning
+    ExtrudeFeature(s) of every `source_body_ids` entry (same
+    `base_feature_id`-deduplicated-via-`set` treatment as Fillet/Chamfer's
+    `edge_refs`) plus whatever `mirror_plane` itself depends on (see
+    `_plane_ref_dependency` - already shared with `CreatePlaneFeature`
+    above, since `PlaneRef` is reused verbatim). Deleting the Extrude that
+    created a mirrored Body, or the Plane/face-owning Feature a Mirror
+    reflects across, must cascade-delete the Mirror too - identical
+    reasoning to every other reference kind in this function.
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -259,6 +270,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _revolve_dependencies(part, feature)
         elif isinstance(feature, SweepFeature):
             depends_on = _sweep_dependencies(part, feature)
+        elif isinstance(feature, MirrorFeature):
+            depends_on = _mirror_dependencies(feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -309,6 +322,21 @@ def _plane_ref_dependency(ref: PlaneRef) -> str | None:
     if ref.plane_feature_id is not None:
         return ref.plane_feature_id
     return None
+
+
+def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:
+    """Pattern/Mirror Phase 1: `build_feature_graph`'s `MirrorFeature`
+    dependency-edge logic, split out to keep `build_feature_graph` itself's
+    per-type dispatch readable - mirrors `FilletFeature`/`ChamferFeature`'s
+    own `edge_refs` treatment for `source_body_ids` (deduplicated via a
+    `set`, `base_feature_id`-mapped), plus `_plane_ref_dependency` for
+    `mirror_plane`. `source_feature_ids` is reserved for Phase 6 and always
+    empty in Phase 1 - not read here yet."""
+    deps: set[str] = {base_feature_id(bid) for bid in feature.source_body_ids}
+    plane_dep = _plane_ref_dependency(feature.mirror_plane)
+    if plane_dep is not None:
+        deps.add(plane_dep)
+    return tuple(deps)
 
 
 def _create_plane_dependencies(part: Part, feature: CreatePlaneFeature) -> tuple[str, ...]:
