@@ -207,18 +207,28 @@ void main() {
     });
   });
 
-  group('Pattern/Mirror scoping Phase 1: contextActionsFor Mirror', () {
-    test('a lone Body offers a real, enabled Mirror', () {
+  group('Pattern/Mirror scoping Phase 1/2: contextActionsFor Mirror/Pattern', () {
+    test('a lone Body offers a real, enabled Mirror and a real, enabled Pattern', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       final actions = contextActionsFor({body});
-      expect(actions, [const SelectionContextAction('Mirror', enabled: true)]);
+      expect(actions, [
+        const SelectionContextAction('Mirror', enabled: true),
+        const SelectionContextAction('Pattern', enabled: true),
+      ]);
     });
 
-    test('two Bodies together also offer a real, enabled Mirror (multi-body seeding)', () {
+    test('two Bodies together offer Mirror enabled but Pattern disabled with a reason', () {
       const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
       final actions = contextActionsFor({bodyA, bodyB});
-      expect(actions, [const SelectionContextAction('Mirror', enabled: true)]);
+      expect(actions, [
+        const SelectionContextAction('Mirror', enabled: true),
+        const SelectionContextAction(
+          'Pattern',
+          enabled: false,
+          disabledReason: 'Pattern requires exactly one Body',
+        ),
+      ]);
     });
 
     test('a Body mixed with a Body sub-shape still suppresses everything', () {

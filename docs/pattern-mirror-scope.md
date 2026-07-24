@@ -652,29 +652,84 @@ Always-separate output (merge options remain Phase 5).
 
 ### Phase 2 — Rectangular pattern
 
-Straight-edge/sketch-line/fixed-axis direction, single Body seed, reverse,
-two-direction, always-separate output.
+**Status: implemented (2026-07-24) — see `docs/status.md`'s same-dated
+entry for the full implementation/verification write-up.** Verified for
+real: the full backend `pytest` suite (1014 tests, including 26 new
+Pattern-specific ones) against genuine `pythonocc-core`, and the full
+client `flutter test` suite (955 tests, including 18 new `PatternPanel`
+ones) plus a clean `flutter analyze`, using the same local toolchains
+bootstrapped for Phase 1's own verification pass.
 
-- **Deliverable**: select one Body, pick a direction (Body edge, Sketch
-  Line, or fixed X/Y/Z axis), set count + spacing, get N independent
-  Bodies; reverse-direction toggle; optional second direction for a 2D
-  grid pattern.
-- **Backend**: `PatternFeature` dataclass (rectangular fields only —
-  circular/skip/merge fields left undefined until their own phases, no
-  speculative unused fields). New `PatternDirectionRef` value type.
-  `pattern.py` module — straight-edge check reuses `create_plane.py`'s
-  exact idiom. Graph/`compute_part_bodies`/schema/router plumbing.
-- **Client**: `pattern_panel.dart`, `SegmentedButton<PatternMode>`
-  (Circular disabled/hidden until Phase 4), three-way direction picker
-  (edge / Sketch Line / fixed-axis dropdown, mirroring `PlaneRef`'s
-  three-way UI in `CreatePlanePanel`), `Icons.flip` reverse toggle per
-  direction, `contextActionsFor` extended.
-- **Complexity/risk**: medium. One new value type and a genuinely new
-  N-instance transform loop, but every individual piece (straight-edge
-  check, translation `gp_Trsf`, multi-Body registration) has a direct
-  precedent elsewhere. Build both directions now rather than deferring —
-  the data-model shape is identical either way, and a 1-direction-only
-  "rectangular pattern" would read as incomplete.
+Straight-edge/fixed-axis direction (client v1 — see below), single Body
+seed, reverse, two-direction, always-separate output, guided "New >
+Pattern" flow.
+
+- **Deliverable**: select one Body, pick a direction (Body edge or fixed
+  X/Y/Z axis in the shipped client; a Sketch Line is fully supported by the
+  backend but not yet exposed by the client panel — see the Client bullet
+  below), set count + spacing, get N independent Bodies (N is the total
+  including the untouched seed, matching mainstream CAD convention — see
+  the next bullet); reverse-direction toggle; optional second direction for
+  a 2D grid pattern. Reached either via the ambient `SelectionContextPanel`
+  ("Pattern" button on a lone-Body selection, alongside "Mirror") or via a
+  new guided "Add" FAB entry (`New > Pattern`): pick a Body (single
+  required pick — immediately advances, no separate confirm step the way
+  Mirror's own multi-select `pickingBodies` step needs) → pick a direction
+  (edge tap or an X/Y/Z button) → live preview → confirm.
+- **Backend**: `PatternFeature` dataclass (`source_body_ids: list[str]`
+  constrained to exactly one entry — unlike Mirror, Pattern's own
+  multi-body seeding is *not* pulled forward, remaining Phase 6 scope, per
+  this doc's own original Phase 6 revision note; `direction_1`/`count_1`/
+  `spacing_1`/`reverse_1` required, `direction_2`/`count_2`/`spacing_2`/
+  `reverse_2` optional — circular/skip/merge fields left undefined until
+  their own phases, no speculative unused fields). New `PatternDirectionRef`
+  value type (`edge_ref`/`sketch_line_ref`/`fixed_axis`, "exactly one of
+  three" — mirrors `PlaneRef`'s own convention). New `pattern.py` module —
+  straight-edge check reuses `create_plane.py`'s exact idiom, Sketch-Line
+  direction resolution mirrors `revolve.py`'s own `_resolve_axis` (minus the
+  axis origin — a translation direction needs no pivot point).
+  Index 0 of the flattened `i*count_2+j` instance grid is always the seed
+  Body itself (never re-created — the real design decision this phase had
+  to make, since the scope doc's own original pseudocode was ambiguous
+  about it): `count_1 * count_2` is the *total* instance count including
+  the seed, matching mainstream CAD tools' own "count includes the
+  original" convention, rather than producing a redundant zero-offset
+  duplicate on top of it. `direction_2`/`spacing_2`/`reverse_2` are only
+  ever read when `count_2 > 1` — a stale/unset `direction_2` is otherwise
+  functionally inert, which sidesteps needing a separate "omitted vs.
+  explicitly cleared" PATCH convention for it. Graph/`compute_part_bodies`/
+  schema/router plumbing follows the six-part checklist exactly, mirroring
+  `MirrorFeature`'s own Phase 1 shape throughout.
+- **Client**: `pattern_panel.dart` — two near-identical "direction"
+  sections (Direction 1 required, Direction 2 optional), each with X/Y/Z
+  fixed-axis buttons, count/spacing fields, and an `Icons.flip` reverse
+  toggle (the idiom this doc originally proposed). A new `_PatternStep`
+  wizard (`pickingBody` → `configuring`) drives the guided entry, structured
+  like Mirror's own two-step flow but simplified for Pattern's exactly-one-
+  Body scope: a Body tap immediately advances (no confirm step needed).
+  Because Direction 1 and Direction 2 can each independently come from an
+  edge tap, an "active direction slot" toggle (a `SegmentedButton`, shown
+  only once a second direction is enabled) disambiguates which one the next
+  edge tap fills. **Deliberate v1 scope cut**: only edge-tap and fixed-axis
+  direction sources are exposed by the panel — a Sketch-Line direction is
+  fully supported server-side (tested) but not yet reachable from this UI,
+  since a Sketch Line usable as a pattern direction isn't guaranteed to
+  already be visible in the viewport the way a Body edge always is (Revolve
+  solves this for its own axis pick with a dedicated Sketch-picker flow
+  this panel doesn't yet reuse — tracked as a fast-follow, not silently
+  dropped). `contextActionsFor` extended: a lone Body now offers both
+  "Mirror" and "Pattern"; 2+ Bodies still offer only "Mirror", with
+  "Pattern" shown disabled and a reason (Prompt D's own "explain, don't
+  silently omit" convention) rather than omitted outright.
+- **Complexity/risk**: medium, as scoped. One new value type and a
+  genuinely new N-instance transform loop, but every individual piece
+  (straight-edge check, translation `gp_Trsf`, multi-Body registration) has
+  a direct precedent elsewhere. Both directions were built from the start
+  rather than deferred — the data-model shape is identical either way, and
+  a 1-direction-only "rectangular pattern" would read as incomplete. The
+  client's own two-independent-direction-slots picking UX was the one
+  genuinely new interaction-design problem in this phase, not present in
+  Mirror's own single-plane-pick shape.
 
 ### Phase 3 — Skip instances
 

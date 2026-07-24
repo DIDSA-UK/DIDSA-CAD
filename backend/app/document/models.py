@@ -652,6 +652,100 @@ class MirrorFeature(Feature):
         return Produces.BODY
 
 
+class FixedAxis(str, Enum):
+    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+    §2.2/§2.5): a world-space X/Y/Z direction, for `PatternDirectionRef`'s
+    third option alongside a Body edge or a Sketch Line - the cheap, obvious
+    v1 addition the scope doc itself calls out. Mirrors `ExtrudeType`/
+    `SubShapeType`'s str-Enum pattern."""
+
+    X = "x"
+    Y = "y"
+    Z = "z"
+
+
+@dataclass(frozen=True)
+class PatternDirectionRef:
+    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+    §2.2/§2.5): exactly one of three - a straight Body edge, a straight
+    Sketch Line, or a fixed world axis - mirrors `PlaneRef`'s own "exactly
+    one of N fields, payload shape validated by the router" convention
+    (see `app.document.router._validate_pattern_direction_ref`). None of
+    the three existing reference types alone covers "an edge OR a sketch
+    line OR a fixed world axis", so this is genuinely new rather than a
+    reuse.
+
+    Resolved to a plain world-space direction (`app.document.pattern.
+    _direction_vector`), not a full axis with an origin point - a
+    Rectangular Pattern only ever translates along a direction, it never
+    needs a pivot the way Circular Pattern's own axis reference (Phase 4)
+    will."""
+
+    edge_ref: SubShapeRef | None = None
+    sketch_line_ref: SketchEntityRef | None = None
+    fixed_axis: FixedAxis | None = None
+
+
+@dataclass
+class PatternFeature(Feature):
+    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+    §2.2/§4): a Rectangular Pattern - repeats the Body named in
+    `source_body_ids` along `direction_1` (`count_1` instances, `spacing_1`
+    apart) and, if `direction_2` is set, crossed with `direction_2`
+    (`count_2` instances, `spacing_2` apart) for a 2D grid - via OCCT
+    `gp_Trsf.SetTranslation` per instance (see `app.document.pattern.
+    resolve_pattern_from_bodies`). `reverse_1`/`reverse_2` flip their
+    respective direction before use.
+
+    The flattened linear index for instance `(i, j)` is `i * count_2 + j`
+    (row-major) - matches this doc's own §2.2/§2.4 convention, kept even
+    though skip-instance addressing (Phase 3) isn't built yet, so a future
+    consumer doesn't have to reconcile two different index conventions.
+    Index 0 (`i=0, j=0`, both zero offset) is always the seed Body itself,
+    already registered under its own id by whichever earlier Feature
+    produced it - this Feature registers only the other `count_1*count_2-1`
+    instances as brand-new Bodies (see `app.document.extrude.
+    compute_part_bodies`'s own `PatternFeature` branch), matching every
+    mainstream CAD tool's own "count includes the original" convention
+    rather than adding a redundant zero-offset copy on top of the seed.
+
+    `source_body_ids` is constrained to exactly one entry in Phase 2 (see
+    `app.document.router._validate_pattern_source_body_ids`) - kept a list
+    for the same forward-compatible-field-shape reason `MirrorFeature.
+    source_body_ids` started that way before its own Phase 1 multi-body
+    revision. Pattern's own multi-body widening remains explicitly scoped
+    to Phase 6 (see `docs/pattern-mirror-scope.md`'s Phase 6 entry), not
+    pulled forward the way Mirror's was - Mirror's revision was driven by
+    explicit on-device feedback this Feature hasn't had.
+
+    Always produces separate Bodies (no merge-into-one option yet - Phase
+    5) and has no skip-instance suppression yet (Phase 3) - `count_1`/
+    `count_2` always produce a full, dense grid in Phase 2."""
+
+    id: str
+    source_body_ids: list[str]
+    direction_1: PatternDirectionRef
+    count_1: int
+    spacing_1: float
+    reverse_1: bool = False
+    direction_2: PatternDirectionRef | None = None
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
+
+    @property
+    def type(self) -> str:
+        return "pattern"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 class ImportSourceFormat(str, Enum):
     """Which interchange format an `ImportFeature`'s own `source_data` bytes
     are - mirrors `ExtrudeType`/`SweepMode`'s str-Enum pattern. `STEP` reads

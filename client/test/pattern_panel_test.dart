@@ -1,0 +1,216 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
+
+/// Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+/// §2.2/§4): unit-level coverage for [PatternPanel]'s Confirm-enablement
+/// rule and its X/Y/Z/reverse/second-direction controls - mirrors
+/// `mirror_panel_test.dart`'s own coverage shape. No `flutter_scene`
+/// dependency anywhere in `pattern_panel.dart`'s import chain, so this is a
+/// real, runnable widget test in this sandbox.
+void main() {
+  Widget harness({
+    bool hasDirection1 = false,
+    String? direction1Summary,
+    int initialCount1 = 2,
+    double initialSpacing1 = 10.0,
+    bool reverse1 = false,
+    void Function(String axis)? onSetDirection1FixedAxis,
+    void Function(int count)? onCount1Changed,
+    void Function(double spacing)? onSpacing1Changed,
+    void Function(bool reverse)? onReverse1Changed,
+    bool hasSecondDirection = false,
+    void Function(bool enabled)? onSecondDirectionToggled,
+    bool hasDirection2 = false,
+    String? direction2Summary,
+    int initialCount2 = 1,
+    double initialSpacing2 = 0.0,
+    bool reverse2 = false,
+    int activeDirectionSlot = 1,
+    void Function(int slot)? onActiveDirectionSlotChanged,
+    String title = 'Pattern',
+    VoidCallback? onConfirm,
+    VoidCallback? onCancel,
+  }) {
+    return MaterialApp(
+      home: Scaffold(
+        body: PatternPanel(
+          title: title,
+          hasDirection1: hasDirection1,
+          direction1Summary: direction1Summary,
+          onSetDirection1FixedAxis: onSetDirection1FixedAxis ?? (_) {},
+          initialCount1: initialCount1,
+          initialSpacing1: initialSpacing1,
+          reverse1: reverse1,
+          onCount1Changed: onCount1Changed,
+          onSpacing1Changed: onSpacing1Changed,
+          onReverse1Changed: onReverse1Changed,
+          hasSecondDirection: hasSecondDirection,
+          onSecondDirectionToggled: onSecondDirectionToggled ?? (_) {},
+          hasDirection2: hasDirection2,
+          direction2Summary: direction2Summary,
+          onSetDirection2FixedAxis: (_) {},
+          initialCount2: initialCount2,
+          initialSpacing2: initialSpacing2,
+          reverse2: reverse2,
+          activeDirectionSlot: activeDirectionSlot,
+          onActiveDirectionSlotChanged: onActiveDirectionSlotChanged ?? (_) {},
+          onConfirm: onConfirm ?? () {},
+          onCancel: onCancel ?? () {},
+        ),
+      ),
+    );
+  }
+
+  group('PatternPanel Confirm enablement', () {
+    testWidgets('no Direction 1 picked yet disables Confirm', (tester) async {
+      await tester.pumpWidget(harness(hasDirection1: false));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('Direction 1 picked with a valid count/spacing enables Confirm', (tester) async {
+      await tester.pumpWidget(harness(hasDirection1: true));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNotNull,
+      );
+    });
+
+    testWidgets('count_1 of 1 with no second direction disables Confirm (no-op pattern)', (tester) async {
+      await tester.pumpWidget(harness(hasDirection1: true, initialCount1: 1));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('second direction enabled but not yet picked disables Confirm', (tester) async {
+      await tester.pumpWidget(
+        harness(hasDirection1: true, hasSecondDirection: true, hasDirection2: false),
+      );
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('both directions picked with valid counts enables Confirm', (tester) async {
+      await tester.pumpWidget(
+        harness(
+          hasDirection1: true,
+          hasSecondDirection: true,
+          hasDirection2: true,
+          initialCount2: 2,
+          initialSpacing2: 10.0,
+        ),
+      );
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNotNull,
+      );
+    });
+
+    testWidgets('tapping Confirm fires onConfirm once valid', (tester) async {
+      var confirmed = false;
+      await tester.pumpWidget(harness(hasDirection1: true, onConfirm: () => confirmed = true));
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+      expect(confirmed, isTrue);
+    });
+  });
+
+  group('PatternPanel Direction 1 controls', () {
+    testWidgets('tapping X/Y/Z fires onSetDirection1FixedAxis', (tester) async {
+      String? picked;
+      await tester.pumpWidget(harness(onSetDirection1FixedAxis: (axis) => picked = axis));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Y'));
+      expect(picked, 'y');
+    });
+
+    testWidgets('shows the hint text while nothing is picked yet', (tester) async {
+      await tester.pumpWidget(harness(hasDirection1: false));
+      expect(find.text('Tap an edge, or pick a fixed axis'), findsOneWidget);
+    });
+
+    testWidgets('shows the direction summary once something is picked', (tester) async {
+      await tester.pumpWidget(harness(hasDirection1: true, direction1Summary: 'X axis'));
+      expect(find.text('X axis'), findsOneWidget);
+    });
+
+    testWidgets('tapping the reverse icon fires onReverse1Changed with the flipped value', (tester) async {
+      bool? reversed;
+      await tester.pumpWidget(harness(reverse1: false, onReverse1Changed: (r) => reversed = r));
+      await tester.tap(find.byIcon(Icons.flip));
+      expect(reversed, isTrue);
+    });
+  });
+
+  group('PatternPanel second direction toggle', () {
+    testWidgets('Direction 2 controls are hidden until enabled', (tester) async {
+      await tester.pumpWidget(harness(hasSecondDirection: false));
+      expect(find.text('Direction 2'), findsNothing);
+      expect(find.text('Add second direction'), findsOneWidget);
+    });
+
+    testWidgets('Direction 2 controls appear once enabled', (tester) async {
+      await tester.pumpWidget(harness(hasSecondDirection: true));
+      // Two: the segmented-toggle chip label and the section's own heading.
+      expect(find.text('Direction 2'), findsNWidgets(2));
+      expect(find.text('Remove second direction'), findsOneWidget);
+    });
+
+    testWidgets('tapping "Add second direction" fires onSecondDirectionToggled(true)', (tester) async {
+      bool? enabled;
+      await tester.pumpWidget(
+        harness(hasSecondDirection: false, onSecondDirectionToggled: (e) => enabled = e),
+      );
+      await tester.tap(find.text('Add second direction'));
+      expect(enabled, isTrue);
+    });
+
+    testWidgets('tapping "Remove second direction" fires onSecondDirectionToggled(false)', (tester) async {
+      bool? enabled;
+      await tester.pumpWidget(
+        harness(hasSecondDirection: true, onSecondDirectionToggled: (e) => enabled = e),
+      );
+      await tester.tap(find.text('Remove second direction'));
+      expect(enabled, isFalse);
+    });
+
+    testWidgets('the active-direction-slot toggle only appears once a second direction exists',
+        (tester) async {
+      await tester.pumpWidget(harness(hasSecondDirection: false));
+      // Only the section's own heading - no segmented-toggle chip yet.
+      expect(find.text('Direction 1'), findsOneWidget);
+      await tester.pumpWidget(harness(hasSecondDirection: true));
+      // Now both the segmented-toggle chip and the section's own heading.
+      expect(find.text('Direction 1'), findsNWidgets(2));
+      expect(find.text('Direction 2'), findsNWidgets(2));
+    });
+  });
+
+  group('PatternPanel title', () {
+    testWidgets('defaults to "Pattern"', (tester) async {
+      await tester.pumpWidget(harness());
+      expect(find.text('Pattern'), findsOneWidget);
+      expect(find.text('Edit Pattern'), findsNothing);
+    });
+
+    testWidgets('shows "Edit Pattern" when editing an existing Feature', (tester) async {
+      await tester.pumpWidget(harness(title: 'Edit Pattern', hasDirection1: true));
+      expect(find.text('Edit Pattern'), findsOneWidget);
+    });
+  });
+
+  group('PatternPanel Cancel', () {
+    testWidgets('Cancel is always enabled and fires onCancel', (tester) async {
+      var cancelled = false;
+      await tester.pumpWidget(harness(onCancel: () => cancelled = true));
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      expect(cancelled, isTrue);
+    });
+  });
+}

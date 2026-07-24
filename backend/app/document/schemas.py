@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from app.document.models import (
     ExtrudeType,
+    FixedAxis,
     ImportSourceFormat,
     PlaneType,
     Produces,
@@ -559,6 +560,81 @@ class MirrorFeatureResponse(BaseModel):
     produces: Produces
 
 
+class PatternDirectionRefSchema(BaseModel):
+    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+    §2.2/§2.5): the wire counterpart to `app.document.models.
+    PatternDirectionRef` - exactly one of `edge_ref`/`sketch_line_ref`/
+    `fixed_axis` should be supplied, matching `PlaneRefSchema`'s own "one of
+    three optional fields" convention (see its docstring); not enforced
+    here, checked by `app.document.router._validate_pattern_direction_ref`."""
+
+    edge_ref: SubShapeRefSchema | None = None
+    sketch_line_ref: SketchEntityRefSchema | None = None
+    fixed_axis: FixedAxis | None = None
+
+
+class PatternFeatureCreate(BaseModel):
+    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+    §2.2/§4): creates a `PatternFeature` repeating the single Body named in
+    `source_body_ids` along `direction_1` (`count_1` instances, `spacing_1`
+    apart), optionally crossed with `direction_2` for a 2D grid.
+    `source_body_ids` must have exactly one entry in Phase 2 (see
+    `app.document.router._validate_pattern_source_body_ids`) - unlike
+    Mirror, Pattern's own multi-body seeding remains Phase 6 scope, not
+    pulled forward (see `PatternFeature`'s own docstring)."""
+
+    source_body_ids: list[str]
+    direction_1: PatternDirectionRefSchema
+    count_1: int
+    spacing_1: float
+    reverse_1: bool = False
+    direction_2: PatternDirectionRefSchema | None = None
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
+
+
+class PatternFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MirrorFeatureUpdate`/`ChamferFeatureUpdate`. `direction_2` has no
+    separate "omitted vs. explicitly cleared" distinction to make (unlike
+    `ExtrudeFeatureUpdate.target_body_ids`' own `None`-vs-`[]` split) -
+    `direction_2`/`spacing_2`/`reverse_2` are only ever read when
+    `count_2 > 1` (see `PatternFeature`'s own docstring and
+    `app.document.pattern.resolve_pattern_from_bodies`), so dropping
+    `count_2` back to 1 alone already makes any previously-set `direction_2`
+    functionally inert - a client toggling "two-direction" off never needs
+    to null `direction_2` out explicitly, just stop sending `count_2 > 1`."""
+
+    source_body_ids: list[str] | None = None
+    direction_1: PatternDirectionRefSchema | None = None
+    count_1: int | None = None
+    spacing_1: float | None = None
+    reverse_1: bool | None = None
+    direction_2: PatternDirectionRefSchema | None = None
+    count_2: int | None = None
+    spacing_2: float | None = None
+    reverse_2: bool | None = None
+
+
+class PatternFeatureResponse(BaseModel):
+    type: Literal["pattern"] = "pattern"
+    id: str
+    source_body_ids: list[str]
+    direction_1: PatternDirectionRefSchema
+    count_1: int
+    spacing_1: float
+    reverse_1: bool
+    direction_2: PatternDirectionRefSchema | None = None
+    count_2: int
+    spacing_2: float
+    reverse_2: bool
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # PatternFeature.
+    produces: Produces
+
+
 class ImportFeatureCreate(BaseModel):
     """Creates an ImportFeature (locked-in scope: import as a fixed,
     non-parametric Body) - `data_base64` is the uploaded file's own raw
@@ -594,6 +670,7 @@ FeatureResponse = Union[
     RevolveFeatureResponse,
     SweepFeatureResponse,
     MirrorFeatureResponse,
+    PatternFeatureResponse,
     ImportFeatureResponse,
 ]
 

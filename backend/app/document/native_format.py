@@ -28,10 +28,13 @@ from app.document.models import (
     ExtrudeType,
     Feature,
     FilletFeature,
+    FixedAxis,
     ImportFeature,
     ImportSourceFormat,
     MirrorFeature,
     Part,
+    PatternDirectionRef,
+    PatternFeature,
     PlaneRef,
     PlaneType,
     PointRef,
@@ -510,6 +513,24 @@ def _plane_ref_from_dict(data: dict) -> PlaneRef:
     )
 
 
+def _pattern_direction_ref_to_dict(ref: PatternDirectionRef) -> dict:
+    return {
+        "edge_ref": _subshape_ref_to_dict(ref.edge_ref) if ref.edge_ref else None,
+        "sketch_line_ref": _sketch_entity_ref_to_dict(ref.sketch_line_ref) if ref.sketch_line_ref else None,
+        "fixed_axis": ref.fixed_axis.value if ref.fixed_axis else None,
+    }
+
+
+def _pattern_direction_ref_from_dict(data: dict) -> PatternDirectionRef:
+    return PatternDirectionRef(
+        edge_ref=_subshape_ref_from_dict(data["edge_ref"]) if data.get("edge_ref") else None,
+        sketch_line_ref=_sketch_entity_ref_from_dict(data["sketch_line_ref"])
+        if data.get("sketch_line_ref")
+        else None,
+        fixed_axis=FixedAxis(data["fixed_axis"]) if data.get("fixed_axis") else None,
+    )
+
+
 # --- Features --------------------------------------------------------------
 
 
@@ -597,6 +618,22 @@ def _feature_to_dict(feature: Feature) -> dict:
             "mirror_plane": _plane_ref_to_dict(feature.mirror_plane),
             "source_feature_ids": list(feature.source_feature_ids),
         }
+    if isinstance(feature, PatternFeature):
+        return {
+            "type": "pattern",
+            "id": feature.id,
+            "source_body_ids": list(feature.source_body_ids),
+            "direction_1": _pattern_direction_ref_to_dict(feature.direction_1),
+            "count_1": feature.count_1,
+            "spacing_1": feature.spacing_1,
+            "reverse_1": feature.reverse_1,
+            "direction_2": _pattern_direction_ref_to_dict(feature.direction_2)
+            if feature.direction_2
+            else None,
+            "count_2": feature.count_2,
+            "spacing_2": feature.spacing_2,
+            "reverse_2": feature.reverse_2,
+        }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
 
@@ -678,6 +715,21 @@ def _feature_from_dict(data: dict) -> Feature:
             source_body_ids=list(data.get("source_body_ids", [])),
             mirror_plane=_plane_ref_from_dict(_require(data, "mirror_plane")),
             source_feature_ids=list(data.get("source_feature_ids", [])),
+        )
+    if feature_type == "pattern":
+        return PatternFeature(
+            id=feature_id,
+            source_body_ids=list(data.get("source_body_ids", [])),
+            direction_1=_pattern_direction_ref_from_dict(_require(data, "direction_1")),
+            count_1=_require(data, "count_1"),
+            spacing_1=_require(data, "spacing_1"),
+            reverse_1=data.get("reverse_1", False),
+            direction_2=_pattern_direction_ref_from_dict(data["direction_2"])
+            if data.get("direction_2")
+            else None,
+            count_2=data.get("count_2", 1),
+            spacing_2=data.get("spacing_2", 0.0),
+            reverse_2=data.get("reverse_2", False),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 
