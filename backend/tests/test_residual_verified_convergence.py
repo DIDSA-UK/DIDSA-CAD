@@ -14,6 +14,8 @@ negative case (it doesn't just rubber-stamp a genuinely wrong value)."""
 
 import math
 
+import pytest
+
 from app.sketch.constraints import DistanceConstraint
 from app.sketch.models import Plane, Sketch
 from app.sketch.solver import _residual_verified_convergence, solve_sketch
@@ -36,6 +38,53 @@ def test_polygon_across_flats_with_the_correct_value_converges():
         "sanity check: py-slvs itself must not cleanly certify this - the residual fallback is "
         "what makes it converged, not a lucky clean solve"
     )
+
+
+def test_polygon_with_reference_circles_across_flats_with_the_correct_value_converges():
+    """Bug fix (on-device feedback, screenshot showing every Polygon edge/
+    radial Line still red/over-constrained after adding an across-flats
+    dimension - even after the fix above): a Polygon placed with
+    `reference_circles=True` (see `Sketch.add_polygon`'s own doc comment)
+    ties its inscribed circle's own radius Point to the first edge's
+    midpoint via an AtMidpointConstraint - `AtMidpointConstraint` was
+    missing from `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES`, so its mere
+    presence (true of every Polygon with reference circles) disqualified
+    the whole Sketch from residual verification, reintroducing the exact
+    over-constrained false positive the tests above already fixed for a
+    plain Polygon - the cardinal points/their own EqualRadius+zero-Distance
+    ties were never the problem (already residual-checkable); the
+    AtMidpointConstraint was the gap."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    across_flats = 2 * 10.0 * math.cos(math.pi / 6)
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], across_flats)
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.solver_reported_failed_constraint_ids == []
+    for vertex_id in polygon.vertex_point_ids:
+        vertex = sketch.points[vertex_id]
+        radius = math.hypot(vertex.x - center.x, vertex.y - center.y)
+        assert radius == pytest.approx(10.0, abs=1e-6)
+
+
+def test_polygon_with_reference_circles_across_flats_with_a_wrong_value_is_still_rejected():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], 99.0)
+    result = solve_sketch(sketch)
+
+    assert not result.converged
 
 
 def test_polygon_across_flats_with_the_correct_value_reports_no_failed_constraints():

@@ -98,7 +98,13 @@ const _residualTolerance = 1e-4;
 /// "stacked redundancy, still consistent" apart from a real conflict (a
 /// Polygon's own already-redundant EqualLength/EqualRadius/Angle chain plus
 /// a further genuinely-implied Constraint on top, e.g. an "across flats"
-/// LineDistanceConstraint between two opposite edges). Recomputes every
+/// LineDistanceConstraint between two opposite edges). [AtMidpointConstraintDto]
+/// is included (mirroring the backend's own fix) because a Polygon's
+/// inscribed reference circle ties its own radius Point to the first
+/// edge's midpoint that way (see the backend Polygon's own docstring) -
+/// excluding it would disqualify every Polygon placed with reference
+/// circles from residual verification entirely, the exact same class of
+/// bug Horizontal/Vertical fixed for a plain Polygon. Recomputes every
 /// Constraint's own residual directly from [resolvePoint] (the just-solved
 /// positions) rather than trusting `resultCode` - only trusted when every
 /// Constraint present is one of the types this knows how to verify, same
@@ -117,6 +123,7 @@ bool _residualVerifiedConvergence({
     AngleConstraintDto,
     TangentConstraintDto,
     LineDistanceConstraintDto,
+    AtMidpointConstraintDto,
   };
   if (constraints.isEmpty || constraints.any((c) => !checkableTypes.contains(c.runtimeType))) {
     return false;
@@ -174,6 +181,13 @@ bool _residualVerifiedConvergence({
       final (s2, _) = lineEndpoints(c.line2Id);
       final actualDistance = _pointLineDistance(resolvePoint(s2), resolvePoint(s1), resolvePoint(e1));
       if ((actualDistance - c.distance).abs() > tolerance) return false;
+    } else if (c is AtMidpointConstraintDto) {
+      final (s, e) = lineEndpoints(c.lineId);
+      final lineStart = resolvePoint(s);
+      final lineEnd = resolvePoint(e);
+      final point = resolvePoint(c.pointId);
+      final midpoint = ((lineStart.$1 + lineEnd.$1) / 2, (lineStart.$2 + lineEnd.$2) / 2);
+      if (_dist(point, midpoint) > tolerance) return false;
     }
   }
   return true;

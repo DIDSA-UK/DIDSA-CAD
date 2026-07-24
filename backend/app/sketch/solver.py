@@ -16,6 +16,7 @@ from py_slvs import slvs
 
 from app.sketch.constraints import (
     AngleConstraint,
+    AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     DistanceConstraint,
@@ -75,6 +76,25 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
 # disqualified the whole Sketch from residual verification even though the
 # check loop never actually needed to understand them to correctly verify
 # every other Constraint sharing the Sketch with one.
+#
+# Bug fix (on-device feedback: an across-flats dimension on a Polygon
+# placed *with* its own reference circles - see `Sketch.add_polygon`'s
+# `reference_circles` option - still showed the whole Polygon as over-
+# constrained, even after the fix above): a Polygon's inscribed reference
+# circle ties its own radius Point to the first edge's midpoint via an
+# AtMidpointConstraint (see the Polygon class's own docstring - this
+# replaced an older TangentConstraint-based design, which *was* already in
+# this allowlist). AtMidpointConstraint's mere presence - true of every
+# Polygon created with `reference_circles=True` - disqualified the whole
+# Sketch from residual verification the exact same way Horizontal/Vertical
+# used to, for the exact same reason: it's just as directly, cheaply
+# residual-checkable as every other entry here (see the new branch below),
+# and excluding it had no principled justification once it's actually
+# verified rather than blindly trusted (contrast this allowlist's own
+# `AtMidpointConstraint`-excludes-from-`_REDUNDANCY_SAFE_CONSTRAINT_TYPES`
+# reasoning above, which is about a *different*, weaker, non-verifying
+# override - see that override's own site below for why the two need not
+# agree on this type).
 _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     DistanceConstraint,
     EqualLengthConstraint,
@@ -85,6 +105,7 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     HorizontalConstraint,
     VerticalConstraint,
     ParallelConstraint,
+    AtMidpointConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -265,6 +286,14 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             # fixed small threshold works regardless of the Sketch's own size.
             sin_angle = abs(dir1[0] * dir2[1] - dir1[1] * dir2[0]) / (len1 * len2)
             if sin_angle > 1e-4:
+                return False
+        elif isinstance(constraint, AtMidpointConstraint):
+            point = points[constraint.point_id]
+            line_start = points[constraint.line_start_id]
+            line_end = points[constraint.line_end_id]
+            midpoint_x = (line_start.x + line_end.x) / 2
+            midpoint_y = (line_start.y + line_end.y) / 2
+            if math.hypot(point.x - midpoint_x, point.y - midpoint_y) > tolerance:
                 return False
 
     return True
