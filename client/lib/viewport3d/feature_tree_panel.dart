@@ -19,6 +19,8 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'revolve' => 'Revolve',
     'sweep' => 'Sweep',
     'import' => 'Import',
+    'mirror' => 'Mirror',
+    'pattern' => 'Pattern',
     _ => 'Sketch',
   };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
@@ -49,6 +51,8 @@ String _featureTypeAsset(String type) => switch (type) {
       'revolve' => 'assets/icons/feature/feature_revolve.svg',
       'sweep' => 'assets/icons/feature/feature_sweep.svg',
       'import' => 'assets/icons/feature/parttoolbar_import.svg',
+      'mirror' => 'assets/icons/feature/feature_mirror.svg',
+      'pattern' => 'assets/icons/feature/feature_pattern.svg',
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
 

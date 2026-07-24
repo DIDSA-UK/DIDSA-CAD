@@ -200,9 +200,41 @@ void main() {
       expect(actions, isEmpty);
     });
 
-    test('a Body-only selection still suppresses everything even with sketch entities elsewhere unselected', () {
+    test('a Body mixed with a Sketch entity still suppresses everything', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
-      expect(contextActionsFor({body}, isPointOnLine: alwaysTrue), isEmpty);
+      final actions = contextActionsFor({body, line}, isPointOnLine: alwaysTrue);
+      expect(actions, isEmpty);
+    });
+  });
+
+  group('Pattern/Mirror scoping Phase 1/2: contextActionsFor Mirror/Pattern', () {
+    test('a lone Body offers a real, enabled Mirror and a real, enabled Pattern', () {
+      const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      final actions = contextActionsFor({body});
+      expect(actions, [
+        const SelectionContextAction('Mirror', enabled: true),
+        const SelectionContextAction('Pattern', enabled: true),
+      ]);
+    });
+
+    test('two Bodies together offer Mirror enabled but Pattern disabled with a reason', () {
+      const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
+      final actions = contextActionsFor({bodyA, bodyB});
+      expect(actions, [
+        const SelectionContextAction('Mirror', enabled: true),
+        const SelectionContextAction(
+          'Pattern',
+          enabled: false,
+          disabledReason: 'Pattern requires exactly one Body',
+        ),
+      ]);
+    });
+
+    test('a Body mixed with a Body sub-shape still suppresses everything', () {
+      const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      final actions = contextActionsFor({body, _face0});
+      expect(actions, isEmpty);
     });
   });
 

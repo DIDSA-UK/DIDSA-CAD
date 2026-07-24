@@ -1,0 +1,107 @@
+"""OCCT geometry construction for MirrorFeature (Pattern/Mirror scoping's
+Phase 1 - see `docs/pattern-mirror-scope.md` §2.1/§4) - reflects one or more
+Bodies across a `mirror_plane` via OCCT `gp_Trsf.SetMirror(gp_Ax2)` (the
+plane-mirror overload - `gp_Ax1` mirrors about a *line*, not used here),
+producing one brand-new, independent Body per source. Kept in its own module
+and imported from `app.document.extrude`'s own `compute_part_bodies` via a
+function-local import (see that function's own doc comment) to avoid a
+circular import - same convention `app.document.fillet`/`chamfer` already
+establish, since this module needs `compute_part_bodies` at module level.
+
+On-device feedback (same day as Phase 1's initial ship): multi-body seeding
+was originally scoped as Phase 6 (`docs/pattern-mirror-scope.md`), but the
+guided "New > Mirror" flow's own UX ask ("select body/bodies (multiple
+bodies should be supported)") pulled it forward into Phase 1 directly - see
+that doc's own updated Phase 1/6 entries for the full reasoning.
+"""
+
+from fastapi import HTTPException
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
+from OCC.Core.TopoDS import TopoDS_Shape
+
+from app.document.create_plane import resolve_plane_ref
+from app.document.extrude import compute_part_bodies
+from app.document.models import MirrorFeature, Part
+
+
+def _mirror_source_not_found(body_id: str) -> HTTPException:
+    """One of `source_body_ids`' entries doesn't currently resolve to a
+    Body in the accumulator - same structured 422 envelope as B1's
+    `missing_reference` (`app.document.extrude._missing_reference`), just
+    keyed by a bare Body id rather than a full `SubShapeRef`, since a
+    Mirror references a whole Body, not one of its sub-shapes."""
+    return HTTPException(status_code=422, detail={"type": "missing_reference", "body_id": body_id})
+
+
+def _mirror_failed(body_id: str) -> HTTPException:
+    """`BRepBuilderAPI_Transform` produced an invalid result for the Body
+    named by `body_id` - rare for a rigid transform (unlike a boolean, a
+    mirror essentially never fails geometrically the way a fillet/chamfer/
+    fuse can), but kept for the same "never let a raw OCCT failure surface
+    as an uncaught 500" reason every other structured geometry error in
+    this codebase exists for (`fillet_failed`, `chamfer_failed`, ...)."""
+    return HTTPException(status_code=422, detail={"type": "mirror_failed", "body_id": body_id})
+
+
+def resolve_mirror_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature: MirrorFeature,
+    excluded_feature_ids: frozenset[str],
+) -> list[TopoDS_Shape]:
+    """The post-mirror shapes `feature` produces, one per `source_body_ids`
+    entry (same order), resolved against `bodies` - an already-in-progress
+    `app.document.extrude.compute_part_bodies` accumulator, never a fresh
+    recompute (same recursion-avoidance reasoning `app.document.fillet.
+    resolve_fillet_from_bodies`'s own doc comment gives, since `resolve_
+    plane_ref` may itself recurse into a referenced `CreatePlaneFeature`).
+
+    `mirror_plane` is resolved once and reused for every source Body -
+    every mirrored instance reflects across the exact same plane. Unlike
+    Fillet/Chamfer, this never modifies any source Body - each is read from
+    `bodies` and left completely untouched; every mirrored copy is an
+    entirely new, independent shape (Boss-with-no-target semantics - see
+    `MirrorFeature`'s own docstring). The caller (`app.document.extrude.
+    compute_part_bodies`) registers the returned shapes: under this
+    Feature's own id directly if there's exactly one, or `f"{feature.id}#
+    {i}"` per entry (mirroring `_register_solids`'s own single-vs-multiple
+    naming convention) if there are several."""
+    resolved_plane = resolve_plane_ref(part, bodies, feature.mirror_plane, excluded_feature_ids)
+    origin = gp_Pnt(*resolved_plane.origin)
+    normal = gp_Dir(*resolved_plane.normal)
+    trsf = gp_Trsf()
+    trsf.SetMirror(gp_Ax2(origin, normal))
+
+    mirrored_shapes = []
+    for body_id in feature.source_body_ids:
+        source = bodies.get(body_id)
+        if source is None:
+            raise _mirror_source_not_found(body_id)
+        transform = BRepBuilderAPI_Transform(source, trsf, True)
+        if not transform.IsDone():
+            raise _mirror_failed(body_id)
+        mirrored_shapes.append(transform.Shape())
+    return mirrored_shapes
+
+
+def resolve_mirror(
+    part: Part, feature: MirrorFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> list[TopoDS_Shape]:
+    """Fresh entry point for the router's create/update validation -
+    computes `bodies` *as if `feature` weren't in `part.features` yet*
+    (excludes its own id in addition to whatever the caller already
+    excludes), matching every other resolver's self-exclusion convention
+    in this codebase (`app.document.fillet.resolve_fillet`, `app.document.
+    revolve.resolve_revolve`, ...) for the same forward-looking reason
+    `resolve_revolve`'s own doc comment gives even though it's Boss/Cut-
+    shaped, not an in-place modify: Phase 1 alone (always brand-new,
+    never-merged Bodies - see `MirrorFeature`'s own docstring) has no actual
+    double-application risk yet, since nothing this Mirror produces is
+    ever fused back into anything else, but Phase 5's merge-into-source
+    option will introduce exactly that risk, and self-excluding
+    unconditionally now means Phase 5 doesn't have to remember to add it
+    later."""
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, all_excluded)
+    return resolve_mirror_from_bodies(part, bodies, feature, all_excluded)

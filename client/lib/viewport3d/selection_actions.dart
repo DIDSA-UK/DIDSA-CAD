@@ -66,12 +66,43 @@ List<SelectionContextAction> contextActionsFor(
   if (selection.isEmpty) return const [];
 
   // Prompt A3: none of Create Plane/Chamfer/Fillet make sense against a
-  // whole-Body selection - without this guard, a Body-only selection would
-  // fall through every branch below to the final "alone" case and
-  // nonsensically offer "Create Plane". Body selections don't compose with
-  // vertex/edge/face ones in the same table below; this deliberately
-  // suppresses every action rather than picking one arbitrarily.
-  if (selection.any((s) => s.kind == SelectionEntityKind.body)) return const [];
+  // whole-Body selection - a Body selection doesn't compose with
+  // vertex/edge/face ones in the same table below, so any selection mixing
+  // a Body with something else still offers nothing (deliberately
+  // suppressed rather than picking one arbitrarily), same as before.
+  //
+  // Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+  // §2.1/§4): one or more Bodies, nothing else selected - now offers
+  // Mirror, the first real operation a Body-only selection has ever
+  // enabled. On-device UX feedback on the guided "New > Mirror" flow pulled
+  // multi-body seeding forward from its original Phase 6 scoping into
+  // Phase 1 directly (see `MirrorFeature`'s own updated backend docstring),
+  // so any positive count of Bodies - not just exactly one - enables this
+  // now. Checked before the generic mixed-Body guard below, same precedence
+  // pattern the single/two-plane-like checks further down use against their
+  // own generic buckets.
+  // Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+  // §2.2/§4): a lone Body (exactly one, nothing else selected) also offers
+  // Pattern - unlike Mirror, Pattern's own multi-body seeding remains
+  // Phase 6 scope (see `PatternFeature`'s own backend docstring), so 2+
+  // Bodies still offer only Mirror, with Pattern shown disabled and a
+  // reason (the "explain, don't silently omit" convention Prompt D's own
+  // cross-body edge-selection guard already established for Chamfer/
+  // Fillet) rather than omitted outright.
+  final bodies = selection.where((s) => s.kind == SelectionEntityKind.body).toList();
+  if (bodies.isNotEmpty) {
+    if (bodies.length == selection.length) {
+      return [
+        const SelectionContextAction('Mirror', enabled: true),
+        SelectionContextAction(
+          'Pattern',
+          enabled: bodies.length == 1,
+          disabledReason: bodies.length == 1 ? null : 'Pattern requires exactly one Body',
+        ),
+      ];
+    }
+    return const [];
+  }
 
   final sketchPoints = selection.where((s) => s.kind == SelectionEntityKind.sketchPoint).toList();
   final sketchLines = selection.where((s) => s.kind == SelectionEntityKind.sketchLine).toList();

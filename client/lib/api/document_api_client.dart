@@ -121,6 +121,35 @@ class PlaneRefDto {
       };
 }
 
+/// Pattern/Mirror scoping's Phase 2: the wire counterpart to the backend's
+/// `PatternDirectionRefSchema` - exactly one of [edgeRef]/[sketchLineRef]/
+/// [fixedAxis] should be supplied (a straight Body edge, a straight Sketch
+/// Line, or a fixed world X/Y/Z axis), matching [PlaneRefDto]'s own "one of
+/// three optional fields" convention.
+class PatternDirectionRefDto {
+  final SubShapeRefDto? edgeRef;
+  final SketchEntityRefDto? sketchLineRef;
+  final String? fixedAxis;
+
+  const PatternDirectionRefDto({this.edgeRef, this.sketchLineRef, this.fixedAxis});
+
+  factory PatternDirectionRefDto.fromJson(Map<String, dynamic> json) => PatternDirectionRefDto(
+        edgeRef: json['edge_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['edge_ref'] as Map<String, dynamic>),
+        sketchLineRef: json['sketch_line_ref'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['sketch_line_ref'] as Map<String, dynamic>),
+        fixedAxis: json['fixed_axis'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (edgeRef != null) 'edge_ref': edgeRef!.toJson(),
+        if (sketchLineRef != null) 'sketch_line_ref': sketchLineRef!.toJson(),
+        if (fixedAxis != null) 'fixed_axis': fixedAxis,
+      };
+}
+
 /// A Feature in a Part's history - a SketchFeature, an ExtrudeFeature, or
 /// (C2) a CreatePlaneFeature, distinguished by [type] (the same
 /// discriminator the backend's `FeatureResponse` union uses). [sketchId] is
@@ -262,6 +291,38 @@ class FeatureDto {
   /// field entirely.
   final bool hasLostReference;
 
+  /// Pattern/Mirror scoping's Phase 1 - only present on a `"mirror"`
+  /// Feature: which single Body (by id) is being reflected (the backend's
+  /// `MirrorFeature.source_body_ids`, restricted to exactly one entry in
+  /// Phase 1 - see `docs/pattern-mirror-scope.md`).
+  final List<String> sourceBodyIds;
+
+  /// Pattern/Mirror scoping's Phase 1 - only present on a `"mirror"`
+  /// Feature: the plane it's mirrored across (a Body face, a fixed
+  /// reference plane, or an existing Plane - reuses [PlaneRefDto] verbatim,
+  /// the same type `faceRefs` entries already use).
+  final PlaneRefDto? mirrorPlane;
+
+  /// Pattern/Mirror scoping's Phase 2 - only present on a `"pattern"`
+  /// Feature: the first (required) repeat direction (a straight Body edge,
+  /// a straight Sketch Line, or a fixed world axis - see
+  /// [PatternDirectionRefDto]), how many instances ([count1]) [spacing1]
+  /// apart, optionally flipped ([reverse1]).
+  final PatternDirectionRefDto? direction1;
+  final int? count1;
+  final double? spacing1;
+  final bool reverse1;
+
+  /// Pattern/Mirror scoping's Phase 2 - only present (and only meaningful
+  /// when [count2] > 1 - see the backend's `PatternFeature` docstring) on a
+  /// `"pattern"` Feature: the optional second repeat direction for a 2D
+  /// grid pattern, same shape as [direction1]/[count1]/[spacing1]/
+  /// [reverse1].
+  final PatternDirectionRefDto? direction2;
+  final int count2;
+  final double spacing2;
+  final bool reverse2;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -295,6 +356,16 @@ class FeatureDto {
     this.profileRefs = const [],
     this.pathRefs = const [],
     this.hasLostReference = false,
+    this.sourceBodyIds = const [],
+    this.mirrorPlane,
+    this.direction1,
+    this.count1,
+    this.spacing1,
+    this.reverse1 = false,
+    this.direction2,
+    this.count2 = 1,
+    this.spacing2 = 0.0,
+    this.reverse2 = false,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -355,6 +426,22 @@ class FeatureDto {
                 .toList() ??
             const [],
         hasLostReference: json['has_lost_reference'] as bool? ?? false,
+        sourceBodyIds: (json['source_body_ids'] as List?)?.cast<String>() ?? const [],
+        mirrorPlane: json['mirror_plane'] == null
+            ? null
+            : PlaneRefDto.fromJson(json['mirror_plane'] as Map<String, dynamic>),
+        direction1: json['direction_1'] == null
+            ? null
+            : PatternDirectionRefDto.fromJson(json['direction_1'] as Map<String, dynamic>),
+        count1: json['count_1'] as int?,
+        spacing1: (json['spacing_1'] as num?)?.toDouble(),
+        reverse1: json['reverse_1'] as bool? ?? false,
+        direction2: json['direction_2'] == null
+            ? null
+            : PatternDirectionRefDto.fromJson(json['direction_2'] as Map<String, dynamic>),
+        count2: json['count_2'] as int? ?? 1,
+        spacing2: (json['spacing_2'] as num?)?.toDouble() ?? 0.0,
+        reverse2: json['reverse_2'] as bool? ?? false,
       );
 }
 
@@ -749,6 +836,130 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 if (distance != null) 'distance': distance,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Pattern/Mirror scoping's Phase 1: creates a MirrorFeature reflecting
+  /// [sourceBodyIds]' single Body (Phase 1 scope - see the backend's
+  /// `_validate_mirror_source_body_ids`) across [mirrorPlane]. The backend
+  /// validates payload shape and resolvability before persisting
+  /// (`missing_reference`/`non_planar_reference`/`mirror_failed` on
+  /// failure - see `app.document.router.create_mirror_feature`), this
+  /// method just serializes whatever it's given, mirroring
+  /// [createChamferFeature]'s own shape.
+  Future<FeatureDto> createMirrorFeature(
+    String partId, {
+    required List<String> sourceBodyIds,
+    required PlaneRefDto mirrorPlane,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/mirror-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_body_ids': sourceBodyIds,
+                'mirror_plane': mirrorPlane.toJson(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing MirrorFeature - either/both of
+  /// [sourceBodyIds]/[mirrorPlane] may be supplied; omitted fields keep
+  /// their current value. Used for the live-preview debounced re-solve,
+  /// same pattern as [updateFilletFeature].
+  Future<FeatureDto> updateMirrorFeature(
+    String partId,
+    String featureId, {
+    List<String>? sourceBodyIds,
+    PlaneRefDto? mirrorPlane,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/mirror-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sourceBodyIds != null) 'source_body_ids': sourceBodyIds,
+                if (mirrorPlane != null) 'mirror_plane': mirrorPlane.toJson(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Pattern/Mirror scoping's Phase 2: creates a PatternFeature repeating
+  /// [sourceBodyIds]' single Body (exactly one entry - unlike Mirror,
+  /// Pattern's own multi-body seeding remains Phase 6 scope, see the
+  /// backend's `_validate_pattern_source_body_ids`) along [direction1]
+  /// ([count1] instances, [spacing1] apart), optionally crossed with
+  /// [direction2] for a 2D grid. The backend validates payload shape and
+  /// resolvability before persisting (`missing_reference`/`non_linear_edge`/
+  /// `invalid_direction_ref`/`pattern_failed` on failure - see
+  /// `app.document.router.create_pattern_feature`), this method just
+  /// serializes whatever it's given, mirroring [createMirrorFeature]'s own
+  /// shape.
+  Future<FeatureDto> createPatternFeature(
+    String partId, {
+    required List<String> sourceBodyIds,
+    required PatternDirectionRefDto direction1,
+    required int count1,
+    required double spacing1,
+    bool reverse1 = false,
+    PatternDirectionRefDto? direction2,
+    int count2 = 1,
+    double spacing2 = 0.0,
+    bool reverse2 = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/pattern-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_body_ids': sourceBodyIds,
+                'direction_1': direction1.toJson(),
+                'count_1': count1,
+                'spacing_1': spacing1,
+                'reverse_1': reverse1,
+                if (direction2 != null) 'direction_2': direction2.toJson(),
+                'count_2': count2,
+                'spacing_2': spacing2,
+                'reverse_2': reverse2,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing PatternFeature - any subset of fields
+  /// may be supplied; omitted fields keep their current value. Used for the
+  /// live-preview debounced re-solve, same pattern as [updateMirrorFeature].
+  Future<FeatureDto> updatePatternFeature(
+    String partId,
+    String featureId, {
+    List<String>? sourceBodyIds,
+    PatternDirectionRefDto? direction1,
+    int? count1,
+    double? spacing1,
+    bool? reverse1,
+    PatternDirectionRefDto? direction2,
+    int? count2,
+    double? spacing2,
+    bool? reverse2,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/pattern-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sourceBodyIds != null) 'source_body_ids': sourceBodyIds,
+                if (direction1 != null) 'direction_1': direction1.toJson(),
+                if (count1 != null) 'count_1': count1,
+                if (spacing1 != null) 'spacing_1': spacing1,
+                if (reverse1 != null) 'reverse_1': reverse1,
+                if (direction2 != null) 'direction_2': direction2.toJson(),
+                if (count2 != null) 'count_2': count2,
+                if (spacing2 != null) 'spacing_2': spacing2,
+                if (reverse2 != null) 'reverse_2': reverse2,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

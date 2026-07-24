@@ -28,9 +28,11 @@ import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
 import 'mesh_geometry.dart';
+import 'mirror_panel.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
+import 'pattern_panel.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
@@ -51,6 +53,22 @@ import 'view_preferences.dart';
 /// own "Prompt G: profile picking" state section) is gathering picks for -
 /// decides whether confirming opens [ExtrudePanel] or [RevolvePanel].
 enum _ProfilePickerTarget { extrude, revolve, sweep }
+
+/// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+/// §2.1/§4): which mutually-exclusive half of the guided Mirror flow is
+/// currently live - see `_PartScreenState`'s own Mirror state-field
+/// section header comment for why body-picking and plane-picking can never
+/// be simultaneous.
+enum _MirrorStep { pickingBodies, pickingPlane }
+
+/// Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+/// §2.2/§4): which half of the guided Pattern flow is currently live -
+/// `pickingBody` (exactly one Body, per Phase 2's own single-body-seed
+/// scope - see `PatternFeature`'s own backend docstring) immediately
+/// advances to `configuring` the moment a Body is tapped, unlike Mirror's
+/// multi-select-then-confirm `pickingBodies` step, since there is only ever
+/// one valid choice to confirm.
+enum _PatternStep { pickingBody, configuring }
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -514,6 +532,44 @@ class _PartScreenState extends State<PartScreen> {
       _setRevolveAxis(entity);
       return;
     }
+    // Pattern/Mirror scoping Phase 1: a face/referencePlane/createPlane tap
+    // during the `pickingPlane` step sets (or clears, if it's the
+    // already-picked one) the mirror plane - mirrors [_setRevolveAxis]
+    // exactly, generalized to three plane-like kinds instead of one
+    // (sketchLine). Never touches [_mirrorSourceBodyIds] - the source
+    // Body/Bodies are a separate field, not part of [_selectedEntities],
+    // for this half of the Mirror session (see that section's own header
+    // comment). Gated on `pickingPlane` specifically (not just
+    // [_mirrorActive]) since a `pickingBodies` selection is body-only
+    // anyway ([_mirrorBodyPickerSelectionFilter] guarantees no face/plane
+    // hit can even occur then) and must fall through to the generic
+    // accumulate-toggle below instead.
+    if (_mirrorStep == _MirrorStep.pickingPlane &&
+        (entity.kind == SelectionEntityKind.face ||
+            entity.kind == SelectionEntityKind.referencePlane ||
+            entity.kind == SelectionEntityKind.createPlane)) {
+      _setMirrorPlane(entity);
+      return;
+    }
+    // Pattern/Mirror scoping Phase 2: a Body tap during `pickingBody`
+    // immediately advances to `configuring` with that single Body (Phase
+    // 2's own exactly-one-source scope - see this file's own Pattern
+    // state-field section header comment) - never touches
+    // [_selectedEntities] itself, mirroring [_confirmMirrorBodySelection]'s
+    // own "capture, then clear for the next step" shape, just without a
+    // separate confirm tap since there is only one valid choice.
+    if (_patternStep == _PatternStep.pickingBody && entity.kind == SelectionEntityKind.body) {
+      _confirmPatternBodySelection(entity);
+      return;
+    }
+    // An edge tap during `configuring` sets (or clears, if it's the
+    // already-picked one) whichever direction slot is currently active -
+    // mirrors [_setMirrorPlane]'s replace-not-accumulate shape, just picked
+    // per-slot instead of unconditionally.
+    if (_patternStep == _PatternStep.configuring && entity.kind == SelectionEntityKind.edge) {
+      _setPatternDirectionFromEdge(entity);
+      return;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
@@ -524,6 +580,26 @@ class _PartScreenState extends State<PartScreen> {
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+  }
+
+  /// Pattern/Mirror scoping Phase 1: [_toggleSelectedEntity]'s plane-like-kind
+  /// special-case for the Mirror flow - replaces whatever face/referencePlane/
+  /// createPlane entity (if any) is currently in [_selectedEntities] with
+  /// [planeEntity], unless [planeEntity] was already the one picked, in which
+  /// case it's cleared instead (tap the current plane pick again to deselect
+  /// it) - mirrors [_setRevolveAxis] exactly.
+  void _setMirrorPlane(SelectionEntityRef planeEntity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final alreadyPicked = next.contains(planeEntity);
+      next.removeWhere((e) =>
+          e.kind == SelectionEntityKind.face ||
+          e.kind == SelectionEntityKind.referencePlane ||
+          e.kind == SelectionEntityKind.createPlane);
+      if (!alreadyPicked) next.add(planeEntity);
+      _selectedEntities = next;
+    });
+    _scheduleMirrorPreview();
   }
 
   /// Prompt F: [_toggleSelectedEntity]'s sketchLine special-case for the
@@ -550,12 +626,28 @@ class _PartScreenState extends State<PartScreen> {
   /// for why this also reschedules the preview during [_extrudeActive]/
   /// [_filletActive]/[_chamferActive].
   void _clearSelectedEntities() {
-    setState(() => _selectedEntities = {});
+    setState(() {
+      // Pattern/Mirror scoping Phase 2: unlike every other flow here,
+      // Pattern's own picked directions live in [_patternDirection1]/
+      // [_patternDirection2], not solely in [_selectedEntities] (it needs
+      // two independent picks, where every other flow needs at most one) -
+      // an empty-space tap clearing [_selectedEntities] down to nothing
+      // would desync the visual highlight from that still-live state, so
+      // this preserves whichever direction-slot entities are currently
+      // picked instead of wiping them too.
+      _selectedEntities = _patternActive
+          ? {
+              if (_patternDirection1EdgeEntity != null) _patternDirection1EdgeEntity!,
+              if (_patternDirection2EdgeEntity != null) _patternDirection2EdgeEntity!,
+            }
+          : {};
+    });
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+    if (_mirrorActive) _scheduleMirrorPreview();
   }
 
   /// On-device feedback: [_toggleSelectedEntity]'s Face special-case for the
@@ -879,6 +971,263 @@ class _PartScreenState extends State<PartScreen> {
     sketchPoint: false,
     sketchLine: false,
     sketchCircle: false,
+    plane: false,
+  );
+
+  // --- Pattern/Mirror scoping Phase 1: Mirror -------------------------------
+  // See docs/pattern-mirror-scope.md §2.1/§4. Mirror's own shape differs from
+  // both Fillet's and Revolve's in one real way: `hitTestBodies` (selection_
+  // hit_test.dart) treats `filter.body`/`filter.face` as mutually exclusive
+  // at the whole-hit-test level (`filter.body` on promotes *every* face
+  // intersection to a `body`-kind entity, never a `face`-kind one) - so,
+  // unlike Revolve (whose axis pick is a `sketchLine`, hit-tested via a
+  // completely separate code path from its `body` target picks, so both can
+  // be live at once), Mirror cannot let the user pick source Bodies and a
+  // mirror-plane face simultaneously through one filter. [_mirrorStep] tracks
+  // which of the two mutually-exclusive picks is currently live: bodies are
+  // accumulated in [_selectedEntities] (via the generic toggle - `body`-kind
+  // entities are never special-cased, since [_mirrorBodyPickerSelectionFilter]
+  // already guarantees nothing else can be hit-tested during this step) while
+  // [_mirrorStep] is `pickingBodies`, then captured into [_mirrorSourceBodyIds]
+  // and cleared from [_selectedEntities] once confirmed (see
+  // [_confirmMirrorBodySelection]) - after which [_selectedEntities] switches
+  // to being dedicated entirely to the second, separate plane pick for the
+  // rest of the panel's session, mirroring Fillet's "dedicated to one picking
+  // concern for the panel's whole lifetime" shape, just with the dedication
+  // starting only once [_mirrorStep] reaches `pickingPlane` rather than from
+  // open. The ambient [SelectionContextPanel] entry (`_onMirrorTapped`) skips
+  // `pickingBodies` entirely, since its Bodies are already selected going in.
+
+  /// Which half of the two-stage Mirror flow is currently live, or null when
+  /// Mirror isn't active at all - see this section's own header comment.
+  /// [_mirrorActive] is a plain derived getter over this, kept so every
+  /// existing `_mirrorActive` guard site (mirroring [_filletActive]'s single-
+  /// bool shape) didn't need to change meaning.
+  _MirrorStep? _mirrorStep;
+
+  bool get _mirrorActive => _mirrorStep != null;
+
+  /// The Body/Bodies being mirrored, captured once the `pickingBodies` step
+  /// is confirmed (either from the guided "Add" FAB entry's own picker, or -
+  /// for the ambient [SelectionContextPanel] entry/edit mode - straight from
+  /// the pre-existing selection/Feature) - never re-derived from
+  /// [_selectedEntities] the way [_currentTargetBodyIds] is for Extrude/
+  /// Revolve, since [_selectedEntities] is dedicated to the mirror-plane pick
+  /// for the rest of this panel's session once this is set (see this
+  /// section's own header comment). Null until the `pickingBodies` step
+  /// completes (or is skipped).
+  List<String>? _mirrorSourceBodyIds;
+
+  /// The MirrorFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
+  /// Mirror needs no dual-mesh preview-overlay machinery at all (see
+  /// `docs/live-preview-pattern.md`'s decision tree: Mirror never lets the
+  /// user re-pick sub-shapes of the very Body it produces, only of an
+  /// upstream, already-final seed Body) - the plain [_bodies]/[isPreviewMesh]
+  /// path Extrude/Revolve already use is sufficient.
+  String? _previewMirrorFeatureId;
+
+  /// B4: non-null while [MirrorPanel] is editing an *already-existing*
+  /// MirrorFeature - mirrors [_editingFilletFeatureId].
+  String? _editingMirrorFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelMirror] PATCHes these back verbatim when
+  /// [_editingMirrorFeatureId] is set, same reason [_filletEditSnapshot]
+  /// exists.
+  ({List<String> sourceBodyIds, PlaneRefDto mirrorPlane})? _mirrorEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmMirror] and [_cancelMirror], same purpose
+  /// [_entitiesBeforeFillet] serves.
+  Set<SelectionEntityRef>? _entitiesBeforeMirror;
+
+  /// The pre-Mirror mesh [_cancelMirror] restores to on Cancel - mirrors
+  /// [_meshBeforeExtrude] (the simple-pattern equivalent of Fillet's own
+  /// [_filletPreviewMesh]/[_filletPreviewBodyId] pair, which Mirror doesn't
+  /// need - see this section's own header comment).
+  List<BodyMeshDto>? _meshBeforeMirror;
+
+  Timer? _mirrorDebounce;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for the
+  /// `pickingBodies` half of the guided "Add" FAB's Mirror flow
+  /// ([_startMirrorPicker]) - `body: true`, everything else off, so
+  /// [_toggleSelectedEntity]'s generic accumulate-toggle can safely
+  /// collect 1+ Bodies into [_selectedEntities] with no Mirror-specific
+  /// special-casing needed (nothing else can even be hit-tested while this
+  /// filter is live).
+  static const _mirrorBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  /// Locks [_selectionFilterOverrides] to face/plane-like kinds only for the
+  /// mirror-plane-picking half of the Mirror flow (after the source
+  /// Body/Bodies have already been captured into [_mirrorSourceBodyIds] -
+  /// see this section's own header comment for why `body` stays off here
+  /// even though a Body pick is conceptually still "part of" a Mirror).
+  /// `face: true` lets the user pick a Body face (any Body's, including a
+  /// source's own) as the mirror plane; `plane: true` lets them pick a
+  /// fixed reference plane or an existing Plane feature the same way.
+  static const _mirrorSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: true,
+  );
+
+  // --- Pattern/Mirror scoping Phase 2: Pattern -------------------------------
+  // See docs/pattern-mirror-scope.md §2.2/§4. Unlike Mirror, Pattern's own
+  // `source_body_ids` is Phase-2-restricted to exactly one entry (Pattern's
+  // own multi-body widening remains Phase 6, unlike Mirror's - see
+  // `PatternFeature`'s own backend docstring), so `pickingBody` immediately
+  // advances to `configuring` the moment one Body is tapped - no confirm
+  // step is needed the way Mirror's multi-select `pickingBodies` needs one.
+  //
+  // `configuring` picks a *direction* (Direction 1 always, Direction 2
+  // optional, for a 2D grid) rather than a plane - client v1 only exposes
+  // two of the three backend-supported direction sources (a straight Body
+  // edge, tapped live in the viewport; a fixed world X/Y/Z axis, via
+  // [PatternPanel]'s own buttons) - a Sketch Line direction is fully
+  // supported server-side but not yet reachable from this panel (see
+  // `pattern_panel.dart`'s own doc comment for why). Because *two*
+  // independent directions can each come from an edge tap,
+  // [_patternActiveDirectionSlot] says which one the next edge tap fills -
+  // switched via [PatternPanel]'s own two-chip toggle once a second
+  // direction is enabled.
+
+  /// Which half of the two-stage Pattern flow is currently live, or null
+  /// when Pattern isn't active at all - mirrors [_mirrorStep] exactly.
+  _PatternStep? _patternStep;
+
+  bool get _patternActive => _patternStep != null;
+
+  /// The single Body being patterned (Phase 2 scope - see this section's
+  /// own header comment) - captured once `pickingBody` completes (or is
+  /// skipped, for the ambient [SelectionContextPanel] entry/edit mode).
+  String? _patternSourceBodyId;
+
+  /// Direction 1 (required) and Direction 2 (optional, for a 2D grid) -
+  /// each independently either an edge-tap-derived [PatternDirectionRefDto]
+  /// or an X/Y/Z-button-derived one. The `*EdgeEntity` fields track which
+  /// [SelectionEntityRef] (if any) a direction's current value came from,
+  /// purely for [_selectedEntities] highlight bookkeeping - null whenever
+  /// that direction is unset or came from a fixed-axis button instead of a
+  /// viewport pick.
+  PatternDirectionRefDto? _patternDirection1;
+  SelectionEntityRef? _patternDirection1EdgeEntity;
+  int _patternCount1 = 2;
+  double _patternSpacing1 = 10.0;
+  bool _patternReverse1 = false;
+
+  bool _patternHasSecondDirection = false;
+  PatternDirectionRefDto? _patternDirection2;
+  SelectionEntityRef? _patternDirection2EdgeEntity;
+  int _patternCount2 = 1;
+  double _patternSpacing2 = 0.0;
+  bool _patternReverse2 = false;
+
+  /// Which direction slot (`1` or `2`) the next viewport edge tap fills -
+  /// see this section's own header comment. Always `1` while
+  /// [_patternHasSecondDirection] is false (there is nothing else it could
+  /// mean yet).
+  int _patternActiveDirectionSlot = 1;
+
+  /// The PatternFeature created (or, in edit mode, already existing) for
+  /// the panel session - mirrors [_previewMirrorFeatureId]'s simple
+  /// pattern (confirmed via `docs/live-preview-pattern.md`'s decision tree
+  /// the same way Mirror already is: Pattern never lets the user re-pick
+  /// sub-shapes of the very Body it produces, only of an upstream,
+  /// already-final seed Body).
+  String? _previewPatternFeatureId;
+
+  /// B4: non-null while [PatternPanel] is editing an *already-existing*
+  /// PatternFeature - mirrors [_editingMirrorFeatureId].
+  String? _editingPatternFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelPattern] PATCHes these back verbatim when
+  /// [_editingPatternFeatureId] is set, same reason [_mirrorEditSnapshot]
+  /// exists.
+  ({
+    List<String> sourceBodyIds,
+    PatternDirectionRefDto direction1,
+    int count1,
+    double spacing1,
+    bool reverse1,
+    PatternDirectionRefDto? direction2,
+    int count2,
+    double spacing2,
+    bool reverse2,
+  })? _patternEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened -
+  /// restored by both [_confirmPattern] and [_cancelPattern], same purpose
+  /// [_entitiesBeforeMirror] serves.
+  Set<SelectionEntityRef>? _entitiesBeforePattern;
+
+  /// The pre-Pattern mesh [_cancelPattern] restores to on Cancel - mirrors
+  /// [_meshBeforeMirror].
+  List<BodyMeshDto>? _meshBeforePattern;
+
+  Timer? _patternDebounce;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for the `pickingBody`
+  /// half of the guided "Add" FAB's Pattern flow ([_startPatternPicker]) -
+  /// mirrors [_mirrorBodyPickerSelectionFilter] exactly (a separate named
+  /// constant rather than a shared one, matching this file's own "each
+  /// flow keeps its own filter, even when the value happens to be
+  /// identical" convention - see the Chamfer state section's own header
+  /// comment).
+  static const _patternBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  /// Locks [_selectionFilterOverrides] to Body edges only for the
+  /// `configuring` half of the Pattern flow - `edge: true` lets the user
+  /// tap a straight Body edge for whichever direction slot is currently
+  /// active ([_patternActiveDirectionSlot]); everything else stays off,
+  /// including `body` (the source Body is already fixed by this point) and
+  /// `sketchLine` (client v1 scope - see this section's own header
+  /// comment).
+  static const _patternDirectionSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
     plane: false,
   );
 
@@ -3175,6 +3524,10 @@ class _PartScreenState extends State<PartScreen> {
         await _revolveSelectedFeature();
       case FeaturePickerAction.sweep:
         await _sweepSelectedFeature();
+      case FeaturePickerAction.mirror:
+        _startMirrorPicker();
+      case FeaturePickerAction.pattern:
+        _startPatternPicker();
     }
   }
 
@@ -3452,6 +3805,19 @@ class _PartScreenState extends State<PartScreen> {
       // Rollback is ended by _confirmSweep/_cancelSweep instead - mirrors
       // the revolve branch above exactly.
       final opened = _openSweepPanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'mirror') {
+      // Pattern/Mirror scoping Phase 1: rollback is ended by
+      // _confirmMirror/_cancelMirror instead - mirrors the revolve/sweep
+      // branches above exactly, including the defensive "couldn't open,
+      // roll forward immediately" fallback.
+      final opened = _openMirrorPanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'pattern') {
+      // Pattern/Mirror scoping Phase 2: rollback is ended by
+      // _confirmPattern/_cancelPattern instead - mirrors the mirror branch
+      // above exactly.
+      final opened = _openPatternPanelForEdit(feature);
       if (!opened) await _endRollback();
     } else {
       // Defensive: no known editable panel for this Feature type yet
@@ -5030,6 +5396,785 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Pattern/Mirror scoping Phase 1: Mirror -------------------------------
+  // See docs/pattern-mirror-scope.md §2.1/§4 and this file's own "Pattern/
+  // Mirror scoping Phase 1: Mirror" state-field section above for the full
+  // reasoning behind Mirror's two-stage (pick source Body/Bodies, confirm,
+  // then pick a plane) shape.
+
+  /// [FeaturePickerAction.mirror]'s guided "Add" FAB entry - unlike every
+  /// other guided entry (which either opens its target panel immediately or,
+  /// like Fillet/Chamfer, opens with an empty pick list under one filter for
+  /// the panel's whole lifetime), Mirror must gate on a confirmed Body
+  /// selection *before* the plane-picking filter (which excludes `body`
+  /// entirely) can even be pushed - see this section's own header comment.
+  /// Starts the `pickingBodies` step with an empty selection and a
+  /// Body-only filter; [_confirmMirrorBodySelection] advances to
+  /// `pickingPlane` once 1+ Bodies are picked.
+  void _startMirrorPicker() {
+    setState(() {
+      _mirrorStep = _MirrorStep.pickingBodies;
+      _mirrorSourceBodyIds = null;
+      _previewMirrorFeatureId = null;
+      _meshBeforeMirror = _bodies;
+      _entitiesBeforeMirror = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mirrorBodyPickerSelectionFilter);
+    });
+  }
+
+  /// The number of Bodies picked so far during the `pickingBodies` step -
+  /// drives the step-1 banner text and gates its confirm FAB. Zero whenever
+  /// [_mirrorStep] isn't `pickingBodies` (nothing else can be in
+  /// [_selectedEntities] then anyway, per [_mirrorBodyPickerSelectionFilter]).
+  int _mirrorPickedBodyCount() =>
+      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
+
+  /// Confirms the `pickingBodies` step (the banner's checkmark FAB - see
+  /// [_mirrorPickedBodyCount]) - captures every currently-selected Body into
+  /// [_mirrorSourceBodyIds], swaps [_selectionFilterOverrides] from
+  /// [_mirrorBodyPickerSelectionFilter] to [_mirrorSelectionFilter], and
+  /// advances to `pickingPlane`. Also temporarily forces the reference
+  /// planes visible for the plane pick (see the [PartViewport] call site's
+  /// own `referencePlanesHidden` override) - they're usually auto-hidden as
+  /// soon as the first Body exists (see [_hasAutoHiddenReferencePlanes]),
+  /// but a fixed-plane mirror pick needs them shown to be pickable at all.
+  void _confirmMirrorBodySelection() {
+    final bodyIds = _selectedEntities
+        .where((e) => e.kind == SelectionEntityKind.body)
+        .map((e) => e.bodyId)
+        .toList();
+    if (bodyIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
+    setState(() {
+      _mirrorSourceBodyIds = bodyIds;
+      _selectedEntities = {};
+      _selectionFilterOverrides.pop();
+      _selectionFilterOverrides.push(_mirrorSelectionFilter);
+      _mirrorStep = _MirrorStep.pickingPlane;
+    });
+  }
+
+  /// [SelectionContextPanel.onMirror]'s callback - `contextActionsFor`
+  /// enables this button for 1+ Bodies, nothing else, selected (see that
+  /// function's own Mirror branch). Those Bodies are already exactly what
+  /// the user wants mirrored, so this skips `pickingBodies` entirely and
+  /// jumps straight to `pickingPlane` with them pre-captured.
+  void _onMirrorTapped() {
+    final bodyIds = _selectedEntities
+        .where((e) => e.kind == SelectionEntityKind.body)
+        .map((e) => e.bodyId)
+        .toList();
+    if (bodyIds.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openMirrorPanel(bodyIds);
+  }
+
+  /// Opens [MirrorPanel] directly in the `pickingPlane` step for a brand-new
+  /// MirrorFeature mirroring [sourceBodyIds] - used by [_onMirrorTapped],
+  /// whose Bodies are already selected going in, so there is nothing for a
+  /// `pickingBodies` step to do. Switches [_selectedEntities] over to the
+  /// mirror-plane pick (clearing whatever was selected, mirroring
+  /// [_openRevolvePanel]'s own "start the picker selection empty" shape) for
+  /// the rest of this panel's session. No MirrorFeature exists yet until a
+  /// plane is actually picked - mirrors [_openFilletPanel]'s "nothing valid
+  /// to create yet" reasoning, just gated on a plane pick instead of a
+  /// non-empty edge list.
+  void _openMirrorPanel(List<String> sourceBodyIds) {
+    setState(() {
+      _mirrorStep = _MirrorStep.pickingPlane;
+      _mirrorSourceBodyIds = sourceBodyIds;
+      _previewMirrorFeatureId = null;
+      _meshBeforeMirror = _bodies;
+      _entitiesBeforeMirror = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mirrorSelectionFilter);
+    });
+  }
+
+  /// B4: opens [MirrorPanel] to edit an *already-existing* MirrorFeature -
+  /// mirrors [_openRevolvePanelForEdit]'s shape (a defensive `bool` return,
+  /// since - like Revolve's `axis_ref` - a real MirrorFeature always has
+  /// both `source_body_ids` and `mirror_plane`, but this stays defensive
+  /// rather than assuming). Unlike [_openFilletPanelForEdit], this does
+  /// *not* self-exclude this Feature's own id via [_beginRollback] - Mirror
+  /// never modifies its source Body/Bodies in place (see this file's own
+  /// Mirror state-field section header comment), so there is nothing of its
+  /// own effect to hide from the live-edit session, the same reasoning
+  /// [_openExtrudePanelForEdit]/[_openRevolvePanelForEdit] rely on for not
+  /// self-excluding either. Always enters directly at `pickingPlane` -
+  /// Phase 1's edit flow can only ever change `mirror_plane`, never
+  /// `source_body_ids` (there is no re-pick-Bodies UI on an existing
+  /// MirrorFeature yet), so there is no `pickingBodies` step to go through.
+  ///
+  /// [_selectedEntities] is seeded with the reconstructed plane entity (via
+  /// [_mirrorPlaneEntityFor]) rather than cleared to `{}` - unlike Create
+  /// Plane's offset-only edit (which never re-sends `face_refs` and so never
+  /// needs to reconstruct anything), a Mirror's `mirror_plane` pick *is* the
+  /// only thing Phase 1's edit flow can change, so it must be both visible
+  /// and live-re-pickable, mirroring [_openFilletPanelForEdit]'s
+  /// reconstruction of `edgeRefs` into [SelectionEntityRef]s.
+  bool _openMirrorPanelForEdit(FeatureDto feature) {
+    final sourceBodyIds = feature.sourceBodyIds;
+    final mirrorPlane = feature.mirrorPlane;
+    if (sourceBodyIds.isEmpty || mirrorPlane == null) return false;
+
+    setState(() {
+      _mirrorStep = _MirrorStep.pickingPlane;
+      _editingMirrorFeatureId = feature.id;
+      _previewMirrorFeatureId = feature.id;
+      _mirrorSourceBodyIds = sourceBodyIds;
+      _mirrorEditSnapshot = (sourceBodyIds: sourceBodyIds, mirrorPlane: mirrorPlane);
+      _meshBeforeMirror = _bodies;
+      _entitiesBeforeMirror = _selectedEntities;
+      _selectedEntities = {_mirrorPlaneEntityFor(mirrorPlane)};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_mirrorSelectionFilter);
+    });
+    return true;
+  }
+
+  /// The face/referencePlane/createPlane-kind entity in [_selectedEntities] -
+  /// the mirror plane pick - or null if none is picked yet. Mirrors
+  /// [_revolveAxisEntity]'s manual-loop style, generalized to three
+  /// plane-like kinds instead of one.
+  SelectionEntityRef? get _mirrorPlaneEntity {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.face ||
+          entity.kind == SelectionEntityKind.referencePlane ||
+          entity.kind == SelectionEntityKind.createPlane) {
+        return entity;
+      }
+    }
+    return null;
+  }
+
+  /// [_mirrorPlaneEntity] converted to the wire [PlaneRefDto] - null whenever
+  /// no plane is picked yet. Reuses [_planeRefDtoFor] verbatim (built for
+  /// Create Plane's own OFFSET_FACE/MIDPLANE/PARALLEL_TO_FACE_THROUGH_VERTEX
+  /// modes, but generically shaped over exactly these same three kinds).
+  PlaneRefDto? _currentMirrorPlaneRef() {
+    final entity = _mirrorPlaneEntity;
+    return entity == null ? null : _planeRefDtoFor(entity);
+  }
+
+  /// Reverse of [_planeRefDtoFor] - reconstructs the [SelectionEntityRef] a
+  /// stored [PlaneRefDto] came from, for [_openMirrorPanelForEdit]'s live
+  /// re-pick session. No existing helper does this (Create Plane's own edit
+  /// flow never needs to - see [_openCreatePlanePanelForEdit]'s own doc
+  /// comment on why it doesn't reconstruct `face_refs`), so this is new.
+  SelectionEntityRef _mirrorPlaneEntityFor(PlaneRefDto ref) {
+    final faceRef = ref.faceRef;
+    if (faceRef != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: faceRef.bodyId, id: faceRef.index);
+    }
+    final fixedPlane = ref.fixedPlane;
+    if (fixedPlane != null) {
+      return SelectionEntityRef(
+        kind: SelectionEntityKind.referencePlane,
+        referencePlaneKind: referencePlaneKindFromApiValue(fixedPlane),
+      );
+    }
+    return SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: ref.planeFeatureId ?? '');
+  }
+
+  /// Creates the preview MirrorFeature on the first call with a plane
+  /// picked, or PATCHes the one already created by an earlier call - mirrors
+  /// [_ensureRevolveFeatureExists] exactly (the simple pattern - no preview-
+  /// mesh overlay, no self-exclusion).
+  Future<void> _ensureMirrorFeatureExists(List<String> sourceBodyIds, PlaneRefDto mirrorPlane) async {
+    final part = _part;
+    if (part == null) return;
+
+    final existingId = _previewMirrorFeatureId;
+    if (existingId == null) {
+      final created = await _api.createMirrorFeature(
+        part.id,
+        sourceBodyIds: sourceBodyIds,
+        mirrorPlane: mirrorPlane,
+      );
+      _previewMirrorFeatureId = created.id;
+    } else {
+      await _api.updateMirrorFeature(
+        part.id,
+        existingId,
+        sourceBodyIds: sourceBodyIds,
+        mirrorPlane: mirrorPlane,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [MirrorPanel]'s live-preview debounce - mirrors [_scheduleRevolvePreview]
+  /// exactly, including skipping the re-solve entirely whenever no plane is
+  /// picked yet (mirrors Revolve's own "nothing to solve without an axis"
+  /// guard), re-checked at fire time per this file's "always the current
+  /// value" convention.
+  void _scheduleMirrorPreview() {
+    _mirrorDebounce?.cancel();
+    _mirrorDebounce = Timer(const Duration(milliseconds: 500), () {
+      final sourceBodyIds = _mirrorSourceBodyIds;
+      final mirrorPlane = _currentMirrorPlaneRef();
+      if (sourceBodyIds == null || mirrorPlane == null) return;
+      _runGuarded(() => _ensureMirrorFeatureExists(sourceBodyIds, mirrorPlane));
+    });
+  }
+
+  /// Keeps the just-created/edited Feature, restores whatever was selected
+  /// before the panel opened, and rolls B4 rollback forward - mirrors
+  /// [_confirmFillet] exactly, plus popping the [_mirrorSelectionFilter]
+  /// override [_openMirrorPanel]/[_openMirrorPanelForEdit] pushed.
+  Future<void> _confirmMirror() async {
+    _mirrorDebounce?.cancel();
+    setState(() {
+      // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
+      // fix this mirrors.
+      _featureTreeVisible = false;
+      _mirrorStep = null;
+      _mirrorSourceBodyIds = null;
+      _selectedEntities = _entitiesBeforeMirror ?? {};
+      _entitiesBeforeMirror = null;
+      _previewMirrorFeatureId = null;
+      _editingMirrorFeatureId = null;
+      _mirrorEditSnapshot = null;
+      _meshBeforeMirror = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview Feature (new-Mirror flow) or PATCHes
+  /// [_mirrorEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelFillet]'s structure exactly.
+  Future<void> _cancelMirror() async {
+    _mirrorDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewMirrorFeatureId;
+    final meshBefore = _meshBeforeMirror;
+    final wasEditing = _editingMirrorFeatureId != null;
+    final editSnapshot = _mirrorEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _mirrorStep = null;
+      _mirrorSourceBodyIds = null;
+      _selectedEntities = _entitiesBeforeMirror ?? {};
+      _entitiesBeforeMirror = null;
+      _previewMirrorFeatureId = null;
+      _editingMirrorFeatureId = null;
+      _mirrorEditSnapshot = null;
+      _meshBeforeMirror = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateMirrorFeature(
+            part.id,
+            previewId,
+            sourceBodyIds: editSnapshot.sourceBodyIds,
+            mirrorPlane: editSnapshot.mirrorPlane,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelExtrude]'s own optimization: restore the
+          // pre-Mirror mesh directly (no network round-trip) when a snapshot
+          // was captured on open - only ever null defensively (Mirror always
+          // opens from a resolved [_bodies] snapshot), in which case falling
+          // back to a real [_refreshMesh] keeps this correct either way.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  // --- Pattern/Mirror scoping Phase 2: Pattern -------------------------------
+  // See docs/pattern-mirror-scope.md §2.2/§4 and this file's own "Pattern/
+  // Mirror scoping Phase 2: Pattern" state-field section above for the full
+  // reasoning behind Pattern's own picking shape.
+
+  /// [FeaturePickerAction.pattern]'s guided "Add" FAB entry - starts the
+  /// `pickingBody` step with an empty selection and a Body-only filter;
+  /// [_confirmPatternBodySelection] advances to `configuring` the moment a
+  /// Body is tapped (mirrors [_startMirrorPicker]'s own shape, minus a
+  /// separate confirm step - Phase 2 only ever needs exactly one Body).
+  void _startPatternPicker() {
+    setState(() {
+      _patternStep = _PatternStep.pickingBody;
+      _patternSourceBodyId = null;
+      _previewPatternFeatureId = null;
+      _meshBeforePattern = _bodies;
+      _entitiesBeforePattern = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_patternBodyPickerSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s `pickingBody`-step Body-tap special case -
+  /// pops the body-only filter, pushes the edge-only `configuring` filter,
+  /// and resets every Direction 1/2 field to its default via
+  /// [_resetPatternConfiguringState]. Mirrors
+  /// [_confirmMirrorBodySelection]'s filter-swap shape.
+  void _confirmPatternBodySelection(SelectionEntityRef bodyEntity) {
+    setState(() {
+      _selectionFilterOverrides.pop();
+      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
+      _resetPatternConfiguringState(bodyEntity.bodyId);
+    });
+  }
+
+  /// [SelectionContextPanel.onPattern]'s callback - `contextActionsFor`
+  /// enables this button for exactly one Body, nothing else, selected (see
+  /// that function's own Pattern branch). That Body is already exactly
+  /// what the user wants patterned, so this skips `pickingBody` entirely
+  /// and jumps straight to `configuring` with it pre-captured - mirrors
+  /// [_onMirrorTapped]'s own ambient-entry shape.
+  void _onPatternTapped() {
+    final bodies = _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).toList();
+    if (bodies.length != 1) return; // Defensive - contextActionsFor already guarantees this.
+    _openPatternPanel(bodies.first.bodyId);
+  }
+
+  /// Opens [PatternPanel] directly in the `configuring` step for a
+  /// brand-new PatternFeature patterning [sourceBodyId] - used by
+  /// [_onPatternTapped], whose Body is already selected going in, so there
+  /// is nothing for a `pickingBody` step to do. Pushes the edge-only
+  /// `configuring` filter directly - no body-only filter was ever pushed
+  /// for this entry point, so there is nothing to pop first (mirrors
+  /// [_openMirrorPanel]'s own shape).
+  void _openPatternPanel(String sourceBodyId) {
+    setState(() {
+      _meshBeforePattern = _bodies;
+      _entitiesBeforePattern = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
+      _resetPatternConfiguringState(sourceBodyId);
+    });
+  }
+
+  /// Shared by [_confirmPatternBodySelection]/[_openPatternPanel] - resets
+  /// every Direction 1/2 field to its default and enters `configuring` for
+  /// [sourceBodyId]. Always called from inside a `setState` block by its
+  /// two callers (each of which has its own filter-stack bookkeeping to do
+  /// alongside this).
+  void _resetPatternConfiguringState(String sourceBodyId) {
+    _patternStep = _PatternStep.configuring;
+    _patternSourceBodyId = sourceBodyId;
+    _patternDirection1 = null;
+    _patternDirection1EdgeEntity = null;
+    _patternCount1 = 2;
+    _patternSpacing1 = 10.0;
+    _patternReverse1 = false;
+    _patternHasSecondDirection = false;
+    _patternDirection2 = null;
+    _patternDirection2EdgeEntity = null;
+    _patternCount2 = 1;
+    _patternSpacing2 = 0.0;
+    _patternReverse2 = false;
+    _patternActiveDirectionSlot = 1;
+    _previewPatternFeatureId = null;
+    _editingPatternFeatureId = null;
+    _patternEditSnapshot = null;
+    _selectedEntities = {};
+  }
+
+  /// B4: opens [PatternPanel] to edit an *already-existing* PatternFeature -
+  /// mirrors [_openMirrorPanelForEdit]'s shape (a defensive `bool` return).
+  /// Always enters directly at `configuring` - there is no re-pick-Body UI
+  /// on an existing PatternFeature yet, mirroring Mirror's own edit-flow
+  /// scope.
+  ///
+  /// Direction entities are only reconstructed into [_selectedEntities]
+  /// (and [_patternDirection1EdgeEntity]/[_patternDirection2EdgeEntity])
+  /// for an `edge_ref`-based direction, via [_patternEdgeEntityFor] - a
+  /// `fixed_axis` direction has nothing to highlight in the viewport, and a
+  /// `sketch_line_ref` one (reachable only via a hand-crafted request, not
+  /// yet this panel's own v1 UI - see this file's own Pattern state-field
+  /// section header comment) has no reconstruction path yet either; both
+  /// still show correctly via [_patternDirectionSummary], just without a
+  /// viewport highlight.
+  bool _openPatternPanelForEdit(FeatureDto feature) {
+    final sourceBodyIds = feature.sourceBodyIds;
+    final direction1 = feature.direction1;
+    if (sourceBodyIds.isEmpty || direction1 == null) return false;
+
+    final direction1Entity = _patternEdgeEntityFor(direction1);
+    final direction2 = feature.direction2;
+    final direction2Entity = direction2 == null ? null : _patternEdgeEntityFor(direction2);
+    final count1 = feature.count1 ?? 2;
+    final spacing1 = feature.spacing1 ?? 10.0;
+
+    setState(() {
+      _patternStep = _PatternStep.configuring;
+      _editingPatternFeatureId = feature.id;
+      _previewPatternFeatureId = feature.id;
+      _patternSourceBodyId = sourceBodyIds.first;
+      _patternDirection1 = direction1;
+      _patternDirection1EdgeEntity = direction1Entity;
+      _patternCount1 = count1;
+      _patternSpacing1 = spacing1;
+      _patternReverse1 = feature.reverse1;
+      _patternHasSecondDirection = direction2 != null && feature.count2 > 1;
+      _patternDirection2 = direction2;
+      _patternDirection2EdgeEntity = direction2Entity;
+      _patternCount2 = feature.count2;
+      _patternSpacing2 = feature.spacing2;
+      _patternReverse2 = feature.reverse2;
+      _patternActiveDirectionSlot = 1;
+      _patternEditSnapshot = (
+        sourceBodyIds: sourceBodyIds,
+        direction1: direction1,
+        count1: count1,
+        spacing1: spacing1,
+        reverse1: feature.reverse1,
+        direction2: direction2,
+        count2: feature.count2,
+        spacing2: feature.spacing2,
+        reverse2: feature.reverse2,
+      );
+      _meshBeforePattern = _bodies;
+      _entitiesBeforePattern = _selectedEntities;
+      _selectedEntities = {
+        if (direction1Entity != null) direction1Entity,
+        if (direction2Entity != null) direction2Entity,
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
+    });
+    return true;
+  }
+
+  /// The [SelectionEntityRef] a stored [PatternDirectionRefDto] came from,
+  /// if (and only if) it's an `edge_ref`-based direction - null for a
+  /// `fixed_axis`/`sketch_line_ref` one, which have nothing to highlight in
+  /// the viewport. Reverse of the plain construction
+  /// [_setPatternDirectionFromEdge] does inline, for
+  /// [_openPatternPanelForEdit]'s own live re-pick session.
+  SelectionEntityRef? _patternEdgeEntityFor(PatternDirectionRefDto dto) {
+    final edgeRef = dto.edgeRef;
+    if (edgeRef == null) return null;
+    return SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: edgeRef.bodyId, id: edgeRef.index);
+  }
+
+  /// A short human-readable summary of [dto]'s current pick, for
+  /// [PatternPanel.direction1Summary]/[direction2Summary] - null whenever
+  /// [dto] itself is (nothing picked yet).
+  String? _patternDirectionSummary(PatternDirectionRefDto? dto) {
+    if (dto == null) return null;
+    final fixedAxis = dto.fixedAxis;
+    if (fixedAxis != null) return '${fixedAxis.toUpperCase()} axis';
+    if (dto.edgeRef != null) return 'Edge selected';
+    if (dto.sketchLineRef != null) return 'Sketch Line selected';
+    return null;
+  }
+
+  /// [_toggleSelectedEntity]'s edge-kind special case for the `configuring`
+  /// step - replaces whichever edge (if any) is currently picked for
+  /// [_patternActiveDirectionSlot] with [edgeEntity], unless [edgeEntity]
+  /// was already the one picked, in which case it's cleared instead (tap
+  /// the current pick again to deselect it) - mirrors [_setMirrorPlane]
+  /// exactly, generalized to two independent slots.
+  void _setPatternDirectionFromEdge(SelectionEntityRef edgeEntity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final currentEntity =
+          _patternActiveDirectionSlot == 1 ? _patternDirection1EdgeEntity : _patternDirection2EdgeEntity;
+      if (currentEntity != null) next.remove(currentEntity);
+      final alreadyPicked = currentEntity == edgeEntity;
+      final newEntity = alreadyPicked ? null : edgeEntity;
+      if (newEntity != null) next.add(newEntity);
+      _selectedEntities = next;
+      final dto = newEntity == null
+          ? null
+          : PatternDirectionRefDto(
+              edgeRef: SubShapeRefDto(bodyId: newEntity.bodyId, shapeType: 'edge', index: newEntity.id),
+            );
+      if (_patternActiveDirectionSlot == 1) {
+        _patternDirection1EdgeEntity = newEntity;
+        _patternDirection1 = dto;
+      } else {
+        _patternDirection2EdgeEntity = newEntity;
+        _patternDirection2 = dto;
+      }
+    });
+    _schedulePatternPreview();
+  }
+
+  /// [PatternPanel.onSetDirection1FixedAxis]/[onSetDirection2FixedAxis]'s
+  /// shared callback - sets [slot]'s direction to a fixed world axis
+  /// directly (no viewport pick involved), clearing whatever edge entity
+  /// it previously held (and its viewport highlight, if any).
+  void _setPatternFixedAxis(int slot, String axis) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (slot == 1) {
+        if (_patternDirection1EdgeEntity != null) next.remove(_patternDirection1EdgeEntity);
+        _patternDirection1EdgeEntity = null;
+        _patternDirection1 = PatternDirectionRefDto(fixedAxis: axis);
+      } else {
+        if (_patternDirection2EdgeEntity != null) next.remove(_patternDirection2EdgeEntity);
+        _patternDirection2EdgeEntity = null;
+        _patternDirection2 = PatternDirectionRefDto(fixedAxis: axis);
+      }
+      _selectedEntities = next;
+    });
+    _schedulePatternPreview();
+  }
+
+  /// [PatternPanel.onActiveDirectionSlotChanged]'s callback - switches
+  /// which direction slot the next viewport edge tap fills, moving that
+  /// slot's own highlight in [_selectedEntities] along with it (the old
+  /// slot's edge entity, if any, stops being highlighted; the new slot's
+  /// own, if any, starts being highlighted again) so the viewport always
+  /// visually reflects which pick is currently "live".
+  void _setPatternActiveDirectionSlot(int slot) {
+    if (slot == _patternActiveDirectionSlot) return;
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final oldEntity =
+          _patternActiveDirectionSlot == 1 ? _patternDirection1EdgeEntity : _patternDirection2EdgeEntity;
+      if (oldEntity != null) next.remove(oldEntity);
+      _patternActiveDirectionSlot = slot;
+      final newEntity = slot == 1 ? _patternDirection1EdgeEntity : _patternDirection2EdgeEntity;
+      if (newEntity != null) next.add(newEntity);
+      _selectedEntities = next;
+    });
+  }
+
+  /// [PatternPanel.onSecondDirectionToggled]'s callback - enabling switches
+  /// the active slot to `2` (the natural next action) and bumps
+  /// [_patternCount2] up to a sensible default of 2 if it's still at its
+  /// inert `1`; disabling clears every Direction-2 field back to its
+  /// default (dropping its viewport highlight too) rather than leaving a
+  /// stale, merely-inert value around - tidier for [PatternPanel] to
+  /// display even though the backend would already treat it as a no-op
+  /// once `count_2` drops back to 1 (see `PatternFeatureUpdate`'s own
+  /// docstring).
+  void _setPatternHasSecondDirection(bool enabled) {
+    setState(() {
+      _patternHasSecondDirection = enabled;
+      if (enabled) {
+        _patternActiveDirectionSlot = 2;
+        if (_patternCount2 < 2) _patternCount2 = 2;
+        if (_patternSpacing2 <= 0) _patternSpacing2 = 10.0;
+      } else {
+        final next = Set<SelectionEntityRef>.of(_selectedEntities);
+        if (_patternDirection2EdgeEntity != null) next.remove(_patternDirection2EdgeEntity);
+        _selectedEntities = next;
+        _patternDirection2EdgeEntity = null;
+        _patternDirection2 = null;
+        _patternCount2 = 1;
+        _patternSpacing2 = 0.0;
+        _patternReverse2 = false;
+        _patternActiveDirectionSlot = 1;
+      }
+    });
+    _schedulePatternPreview();
+  }
+
+  void _onPatternCount1Changed(int count) {
+    _patternCount1 = count;
+    _schedulePatternPreview();
+  }
+
+  void _onPatternSpacing1Changed(double spacing) {
+    _patternSpacing1 = spacing;
+    _schedulePatternPreview();
+  }
+
+  void _onPatternReverse1Changed(bool reverse) {
+    setState(() => _patternReverse1 = reverse);
+    _schedulePatternPreview();
+  }
+
+  void _onPatternCount2Changed(int count) {
+    _patternCount2 = count;
+    _schedulePatternPreview();
+  }
+
+  void _onPatternSpacing2Changed(double spacing) {
+    _patternSpacing2 = spacing;
+    _schedulePatternPreview();
+  }
+
+  void _onPatternReverse2Changed(bool reverse) {
+    setState(() => _patternReverse2 = reverse);
+    _schedulePatternPreview();
+  }
+
+  /// Creates the preview PatternFeature on the first call with Direction 1
+  /// picked, or PATCHes the one already created/being edited on every
+  /// later call - mirrors [_ensureMirrorFeatureExists]'s exact shape.
+  /// [_patternHasSecondDirection] gates whether Direction 2's own fields
+  /// are actually sent - unchecked, they'd otherwise resend whatever stale
+  /// values are sitting in [_patternDirection2]/[_patternCount2]/etc. from
+  /// before the second direction was last turned off.
+  Future<void> _ensurePatternFeatureExists() async {
+    final part = _part;
+    final sourceBodyId = _patternSourceBodyId;
+    final direction1 = _patternDirection1;
+    if (part == null || sourceBodyId == null || direction1 == null) return;
+
+    final hasSecondDirection = _patternHasSecondDirection;
+    final existingId = _previewPatternFeatureId;
+    if (existingId == null) {
+      final created = await _api.createPatternFeature(
+        part.id,
+        sourceBodyIds: [sourceBodyId],
+        direction1: direction1,
+        count1: _patternCount1,
+        spacing1: _patternSpacing1,
+        reverse1: _patternReverse1,
+        direction2: hasSecondDirection ? _patternDirection2 : null,
+        count2: hasSecondDirection ? _patternCount2 : 1,
+        spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
+        reverse2: hasSecondDirection ? _patternReverse2 : false,
+      );
+      _previewPatternFeatureId = created.id;
+    } else {
+      await _api.updatePatternFeature(
+        part.id,
+        existingId,
+        sourceBodyIds: [sourceBodyId],
+        direction1: direction1,
+        count1: _patternCount1,
+        spacing1: _patternSpacing1,
+        reverse1: _patternReverse1,
+        direction2: hasSecondDirection ? _patternDirection2 : null,
+        count2: hasSecondDirection ? _patternCount2 : 1,
+        spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
+        reverse2: hasSecondDirection ? _patternReverse2 : false,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [PatternPanel]'s live-preview debounce - mirrors
+  /// [_scheduleMirrorPreview] exactly, including skipping the re-solve
+  /// entirely whenever there's nothing valid to preview yet: no Direction 1
+  /// picked, or a second direction enabled but not yet picked itself
+  /// (matches the backend's own `direction_2` required-when-`count_2>1`
+  /// rule - see `_validate_pattern_counts_and_direction_2` - so this never
+  /// fires a request the router would just reject anyway).
+  void _schedulePatternPreview() {
+    _patternDebounce?.cancel();
+    _patternDebounce = Timer(const Duration(milliseconds: 500), () {
+      final direction1 = _patternDirection1;
+      if (_patternSourceBodyId == null || direction1 == null) return;
+      if (_patternHasSecondDirection && _patternDirection2 == null) return;
+      _runGuarded(_ensurePatternFeatureExists);
+    });
+  }
+
+  /// Keeps the just-created/edited Feature, restores whatever was selected
+  /// before the panel opened, and rolls B4 rollback forward - mirrors
+  /// [_confirmMirror] exactly, plus popping the
+  /// [_patternDirectionSelectionFilter] override [_openPatternPanel]/
+  /// [_confirmPatternBodySelection]/[_openPatternPanelForEdit] pushed.
+  Future<void> _confirmPattern() async {
+    _patternDebounce?.cancel();
+    setState(() {
+      _featureTreeVisible = false;
+      _patternStep = null;
+      _patternSourceBodyId = null;
+      _patternDirection1 = null;
+      _patternDirection1EdgeEntity = null;
+      _patternHasSecondDirection = false;
+      _patternDirection2 = null;
+      _patternDirection2EdgeEntity = null;
+      _patternActiveDirectionSlot = 1;
+      _selectedEntities = _entitiesBeforePattern ?? {};
+      _entitiesBeforePattern = null;
+      _previewPatternFeatureId = null;
+      _editingPatternFeatureId = null;
+      _patternEditSnapshot = null;
+      _meshBeforePattern = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview Feature (new-Pattern flow) or
+  /// PATCHes [_patternEditSnapshot]'s stashed original values back (edit
+  /// flow) - mirrors [_cancelMirror]'s structure exactly.
+  Future<void> _cancelPattern() async {
+    _patternDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewPatternFeatureId;
+    final meshBefore = _meshBeforePattern;
+    final wasEditing = _editingPatternFeatureId != null;
+    final editSnapshot = _patternEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _patternStep = null;
+      _patternSourceBodyId = null;
+      _patternDirection1 = null;
+      _patternDirection1EdgeEntity = null;
+      _patternHasSecondDirection = false;
+      _patternDirection2 = null;
+      _patternDirection2EdgeEntity = null;
+      _patternActiveDirectionSlot = 1;
+      _selectedEntities = _entitiesBeforePattern ?? {};
+      _entitiesBeforePattern = null;
+      _previewPatternFeatureId = null;
+      _editingPatternFeatureId = null;
+      _patternEditSnapshot = null;
+      _meshBeforePattern = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updatePatternFeature(
+            part.id,
+            previewId,
+            sourceBodyIds: editSnapshot.sourceBodyIds,
+            direction1: editSnapshot.direction1,
+            count1: editSnapshot.count1,
+            spacing1: editSnapshot.spacing1,
+            reverse1: editSnapshot.reverse1,
+            direction2: editSnapshot.direction2,
+            count2: editSnapshot.count2,
+            spacing2: editSnapshot.spacing2,
+            reverse2: editSnapshot.reverse2,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelMirror]'s own optimization: restore the
+          // pre-Pattern mesh directly (no network round-trip) when a
+          // snapshot was captured on open.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   // --- Prompt E: Chamfer -------------------------------------------------
   // Mirrors the entire Fillet section directly above, method for method -
   // see that section's own doc comments for the full reasoning behind each
@@ -5547,9 +6692,15 @@ class _PartScreenState extends State<PartScreen> {
                   // picks, stable across re-solves) - an `||`, not a separate
                   // overlay, since only one of the three is ever active at
                   // once. Sweep (also Body-level picks) joins the same `||`.
+                  // Pattern/Mirror scoping Phase 1/2: Mirror and Pattern
+                  // both join it too - see docs/pattern-mirror-scope.md
+                  // §2.1/§2.2/§4's own confirmation that both take this
+                  // same simple path.
                   isPreviewMesh: _extrudeSketchFeature != null ||
                       _revolveSketchFeature != null ||
-                      _sweepSketchFeature != null,
+                      _sweepSketchFeature != null ||
+                      _mirrorActive ||
+                      _patternActive,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -5558,7 +6709,19 @@ class _PartScreenState extends State<PartScreen> {
                   // concurrent live-edit flow is ever added.
                   previewOverlayBodyId: _filletActive ? _filletPreviewBodyId : _chamferPreviewBodyId,
                   previewOverlayMesh: _filletActive ? _filletPreviewMesh : _chamferPreviewMesh,
-                  referencePlanesHidden: _referencePlanesHidden,
+                  // On-device UX feedback on the guided "New > Mirror" flow:
+                  // reference planes are temporarily forced visible for the
+                  // `pickingPlane` step, regardless of the user's own
+                  // [_referencePlanesHidden] preference - they're usually
+                  // auto-hidden as soon as the first Body exists (see
+                  // [_hasAutoHiddenReferencePlanes]), but a fixed-plane
+                  // mirror pick needs them shown to be pickable at all. Only
+                  // this render call site is overridden - [PartToolbar]'s
+                  // own `referencePlanesHidden:` (below) is left alone so its
+                  // toggle switch keeps reflecting the user's real
+                  // underlying preference throughout.
+                  referencePlanesHidden:
+                      _mirrorStep == _MirrorStep.pickingPlane ? false : _referencePlanesHidden,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
@@ -5645,6 +6808,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_chamferActive &&
                     !_revolveActive &&
                     !_sweepActive &&
+                    !_mirrorActive &&
+                    !_patternActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -5659,6 +6824,8 @@ class _PartScreenState extends State<PartScreen> {
                         onChamfer: _onChamferTapped,
                         onNewSketchOnFace: _onNewSketchOnFaceTapped,
                         onNewSketch: _onNewSketchTapped,
+                        onMirror: _onMirrorTapped,
+                        onPattern: _onPatternTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),
@@ -5672,6 +6839,8 @@ class _PartScreenState extends State<PartScreen> {
                         !_chamferActive &&
                         !_revolveActive &&
                         !_sweepActive &&
+                        !_mirrorActive &&
+                        !_patternActive &&
                         !_profilePickerActive &&
                         !_pathPickerActive,
                     features: _features,
@@ -5800,6 +6969,67 @@ class _PartScreenState extends State<PartScreen> {
                       onDistanceChanged: _onChamferDistanceChanged,
                       onConfirm: _confirmChamfer,
                       onCancel: _cancelChamfer,
+                    ),
+                  ),
+                // [MirrorPanel] itself only ever handles the `pickingPlane`
+                // step - `pickingBodies` has no bottom panel of its own,
+                // just the top banner + confirm FAB just below (mirroring
+                // the profile/path picker's own shape).
+                if (_mirrorStep == _MirrorStep.pickingPlane)
+                  Positioned.fill(
+                    child: MirrorPanel(
+                      key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyIds?.join(',')),
+                      title: _editingMirrorFeatureId != null ? 'Edit Mirror' : 'Mirror',
+                      hasPlanePicked: _mirrorPlaneEntity != null,
+                      onConfirm: _confirmMirror,
+                      onCancel: _cancelMirror,
+                    ),
+                  ),
+                // [PatternPanel] itself only ever handles the `configuring`
+                // step - `pickingBody` has no bottom panel of its own,
+                // mirroring [MirrorPanel]'s own shape.
+                if (_patternStep == _PatternStep.configuring)
+                  Positioned.fill(
+                    child: PatternPanel(
+                      // Includes [_patternHasSecondDirection] so toggling it
+                      // forces a fresh [PatternPanel] (and thus fresh
+                      // `initState`) - its own count2/spacing2
+                      // `TextEditingController`s are only ever seeded once,
+                      // so this is what actually picks up the sensible
+                      // defaults [_setPatternHasSecondDirection] bumps
+                      // `_patternCount2`/`_patternSpacing2` to on enable.
+                      // Re-seeding Direction 1's own controllers this way
+                      // too is harmless - `initialCount1`/`initialSpacing1`
+                      // are always already whatever the user last set them
+                      // to.
+                      key: ValueKey(
+                        '${_editingPatternFeatureId ?? _patternSourceBodyId}-$_patternHasSecondDirection',
+                      ),
+                      title: _editingPatternFeatureId != null ? 'Edit Pattern' : 'Pattern',
+                      hasDirection1: _patternDirection1 != null,
+                      direction1Summary: _patternDirectionSummary(_patternDirection1),
+                      onSetDirection1FixedAxis: (axis) => _setPatternFixedAxis(1, axis),
+                      initialCount1: _patternCount1,
+                      initialSpacing1: _patternSpacing1,
+                      reverse1: _patternReverse1,
+                      onCount1Changed: _onPatternCount1Changed,
+                      onSpacing1Changed: _onPatternSpacing1Changed,
+                      onReverse1Changed: _onPatternReverse1Changed,
+                      hasSecondDirection: _patternHasSecondDirection,
+                      onSecondDirectionToggled: _setPatternHasSecondDirection,
+                      hasDirection2: _patternDirection2 != null,
+                      direction2Summary: _patternDirectionSummary(_patternDirection2),
+                      onSetDirection2FixedAxis: (axis) => _setPatternFixedAxis(2, axis),
+                      initialCount2: _patternCount2,
+                      initialSpacing2: _patternSpacing2,
+                      reverse2: _patternReverse2,
+                      onCount2Changed: _onPatternCount2Changed,
+                      onSpacing2Changed: _onPatternSpacing2Changed,
+                      onReverse2Changed: _onPatternReverse2Changed,
+                      activeDirectionSlot: _patternActiveDirectionSlot,
+                      onActiveDirectionSlotChanged: _setPatternActiveDirectionSlot,
+                      onConfirm: _confirmPattern,
+                      onCancel: _cancelPattern,
                     ),
                   ),
                 if (_revolveActive)
@@ -6080,6 +7310,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_chamferActive &&
                     !_revolveActive &&
                     !_sweepActive &&
+                    !_mirrorActive &&
+                    !_patternActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned(
@@ -6319,6 +7551,171 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Pattern/Mirror scoping's Phase 1 guided "Add" FAB entry
+                // (`_startMirrorPicker`): shown for the whole `pickingBodies`
+                // step - same top-center pill convention as the Fillet/
+                // Chamfer banners above, but Cancel-only here too since
+                // confirming is the checkmark FAB below (mirrors the
+                // profile/path picker's own "Cancel in the banner, confirm
+                // via the FAB" split, needed because Mirror's Bodies aren't
+                // committed to anything until this step's own confirm -
+                // unlike Fillet/Chamfer, where every edge tap already lives
+                // straight in the one FilletFeature/ChamferFeature being
+                // built).
+                if (_mirrorStep == _MirrorStep.pickingBodies)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _mirrorPickedBodyCount() == 0
+                                          ? 'Select Body to Mirror'
+                                          : '${_mirrorPickedBodyCount()} body(s) selected - tap '
+                                              'checkmark to confirm',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelMirror,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Shown for the `pickingPlane` step until a plane is
+                // actually picked (mirrors the Fillet/Chamfer banners'
+                // `_previewXFeatureId == null` condition exactly - a plane
+                // pick immediately creates the preview MirrorFeature via
+                // [_scheduleMirrorPreview], so this naturally disappears the
+                // moment one lands). Also shown for [_onMirrorTapped]'s
+                // ambient entry (which skips `pickingBodies` and opens
+                // straight into `pickingPlane`), but never for B4 edit mode
+                // ([_openMirrorPanelForEdit] always seeds
+                // [_previewMirrorFeatureId] immediately, so this never shows
+                // then - matching every other edit flow's own guided-entry-
+                // only banner convention).
+                if (_mirrorStep == _MirrorStep.pickingPlane && _previewMirrorFeatureId == null)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Select Mirror Plane or Face'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelMirror,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Pattern/Mirror scoping's Phase 2 guided "Add" FAB entry
+                // (`_startPatternPicker`): shown for the whole `pickingBody`
+                // step - Cancel-only, mirroring the Fillet/Chamfer banners'
+                // shape, since a Body tap immediately advances to
+                // `configuring` on its own (Phase 2's own exactly-one-Body
+                // scope means there's nothing to separately confirm, unlike
+                // Mirror's own multi-select `pickingBodies` banner).
+                if (_patternStep == _PatternStep.pickingBody)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Select Body to Pattern'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelPattern,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Shown for the `configuring` step until Direction 1 is
+                // actually picked (mirrors the Mirror `pickingPlane`
+                // banner's own `_previewXFeatureId == null` condition
+                // exactly) - never shown for [_onPatternTapped]'s ambient
+                // entry or B4 edit mode for the same reasons Mirror's own
+                // `pickingPlane` banner isn't either.
+                if (_patternStep == _PatternStep.configuring && _previewPatternFeatureId == null)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Select an Edge or a Fixed Axis for Direction'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelPattern,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -6356,7 +7753,9 @@ class _PartScreenState extends State<PartScreen> {
                         _filletActive ||
                         _chamferActive ||
                         _revolveActive ||
-                        _sweepActive)
+                        _sweepActive ||
+                        _mirrorActive ||
+                        _patternActive)
                     ? 180
                     : 0,
               ),
@@ -6384,6 +7783,8 @@ class _PartScreenState extends State<PartScreen> {
                       !_chamferActive &&
                       !_revolveActive &&
                       !_sweepActive &&
+                      !_mirrorActive &&
+                      !_patternActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive) ...[
                     const SizedBox(height: 12),
@@ -6420,6 +7821,24 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'confirm-path-picker-fab',
                       tooltip: 'Confirm path selection',
                       onPressed: _busy || _pathPickerRefs.isEmpty ? null : _confirmPathPicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  ],
+                  // Pattern/Mirror scoping's Phase 1 `pickingBodies` step's
+                  // own "confirm" FAB, mirroring the profile/path pickers'
+                  // directly above - ticks off the currently-picked
+                  // Body/Bodies and advances to `pickingPlane` (see
+                  // [_confirmMirrorBodySelection]). Disabled until at least
+                  // one Body is picked, same "requires 1+" rule the path
+                  // picker's own FAB enforces just above.
+                  if (_mirrorStep == _MirrorStep.pickingBodies) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'confirm-mirror-body-picker-fab',
+                      tooltip: 'Confirm body selection',
+                      onPressed: _busy || _mirrorPickedBodyCount() == 0
+                          ? null
+                          : _confirmMirrorBodySelection,
                       child: const Icon(Icons.check),
                     ),
                   ],

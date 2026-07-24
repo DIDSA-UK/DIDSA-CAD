@@ -25,7 +25,9 @@ from app.document.import_geometry import resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.mesh_data import Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
+from app.document.mirror import resolve_mirror
 from app.document.native_format import NativeFormatError, export_native, import_native
+from app.document.pattern import resolve_pattern
 from app.document.step_export import export_step
 from app.document.models import (
     ChamferFeature,
@@ -34,9 +36,13 @@ from app.document.models import (
     ExtrudeType,
     Feature,
     FilletFeature,
+    FixedAxis,
     ImportFeature,
     ImportSourceFormat,
+    MirrorFeature,
     Part,
+    PatternDirectionRef,
+    PatternFeature,
     PlaneRef,
     PlaneType,
     PointRef,
@@ -75,9 +81,16 @@ from app.document.schemas import (
     ImportFeatureCreate,
     ImportFeatureResponse,
     MeshVertexData,
+    MirrorFeatureCreate,
+    MirrorFeatureResponse,
+    MirrorFeatureUpdate,
     NativeImportResponse,
     PartCreate,
     PartResponse,
+    PatternDirectionRefSchema,
+    PatternFeatureCreate,
+    PatternFeatureResponse,
+    PatternFeatureUpdate,
     PlaneRefSchema,
     PointRefSchema,
     RevolveFeatureCreate,
@@ -170,6 +183,24 @@ def _plane_ref_to_schema(ref: PlaneRef) -> PlaneRefSchema:
         face_ref=_subshape_ref_to_schema(ref.face_ref) if ref.face_ref else None,
         fixed_plane=ref.fixed_plane,
         plane_feature_id=ref.plane_feature_id,
+    )
+
+
+def _pattern_direction_ref_to_domain(schema: PatternDirectionRefSchema) -> PatternDirectionRef:
+    return PatternDirectionRef(
+        edge_ref=_subshape_ref_to_domain(schema.edge_ref) if schema.edge_ref else None,
+        sketch_line_ref=_sketch_entity_ref_to_domain(schema.sketch_line_ref)
+        if schema.sketch_line_ref
+        else None,
+        fixed_axis=schema.fixed_axis,
+    )
+
+
+def _pattern_direction_ref_to_schema(ref: PatternDirectionRef) -> PatternDirectionRefSchema:
+    return PatternDirectionRefSchema(
+        edge_ref=_subshape_ref_to_schema(ref.edge_ref) if ref.edge_ref else None,
+        sketch_line_ref=_sketch_entity_ref_to_schema(ref.sketch_line_ref) if ref.sketch_line_ref else None,
+        fixed_axis=ref.fixed_axis,
     )
 
 
@@ -302,6 +333,31 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             produces=feature.produces,
         )
+    if isinstance(feature, MirrorFeature):
+        return MirrorFeatureResponse(
+            id=feature.id,
+            source_body_ids=feature.source_body_ids,
+            mirror_plane=_plane_ref_to_schema(feature.mirror_plane),
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, PatternFeature):
+        return PatternFeatureResponse(
+            id=feature.id,
+            source_body_ids=feature.source_body_ids,
+            direction_1=_pattern_direction_ref_to_schema(feature.direction_1),
+            count_1=feature.count_1,
+            spacing_1=feature.spacing_1,
+            reverse_1=feature.reverse_1,
+            direction_2=_pattern_direction_ref_to_schema(feature.direction_2)
+            if feature.direction_2
+            else None,
+            count_2=feature.count_2,
+            spacing_2=feature.spacing_2,
+            reverse_2=feature.reverse_2,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     if isinstance(feature, ImportFeature):
         return ImportFeatureResponse(
             id=feature.id,
@@ -374,6 +430,109 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
                 "RevolveFeature, SweepFeature, or ImportFeature in this Part",
             )
+
+
+def _validate_mirror_source_body_ids(part: Part, source_body_ids: list[str]) -> None:
+    """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+    §2.1/§4): `source_body_ids` must have at least one entry - on-device
+    feedback on the guided "New > Mirror" flow pulled multi-body seeding
+    forward from its original Phase 6 scoping into Phase 1 directly (see
+    `MirrorFeature`'s own updated docstring), so any positive count is
+    valid here now, not just exactly one. Each entry must resolve to a
+    Feature that produces a Body already in this Part, via the identical
+    accepted-type check `_validate_target_body_ids` already established (a
+    Body's id always traces back to one of these four Feature types through
+    `base_feature_id`) - a MirrorFeature itself is deliberately not (yet) an
+    accepted producer here, since chaining a Mirror off another Mirror's own
+    output is still Phase 6 scope (multi-*feature* seeding), unaffected by
+    this widening."""
+    if not source_body_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="MirrorFeature requires at least one source_body_ids entry",
+        )
+    for source_id in source_body_ids:
+        source_feature = part.get_feature(base_feature_id(source_id))
+        if not isinstance(source_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"source_body_ids entry {source_id!r} does not refer to an ExtrudeFeature, "
+                "RevolveFeature, SweepFeature, or ImportFeature in this Part",
+            )
+
+
+def _validate_pattern_source_body_ids(part: Part, source_body_ids: list[str]) -> None:
+    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+    §2.2/§4): `source_body_ids` must have exactly one entry - unlike
+    Mirror, Pattern's own multi-body seeding is not pulled forward (see
+    `PatternFeature`'s own docstring for why); the entry must resolve to a
+    Feature that produces a Body already in this Part, via the identical
+    accepted-type check `_validate_mirror_source_body_ids`/`_validate_
+    target_body_ids` already establish."""
+    if len(source_body_ids) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="PatternFeature requires exactly one source_body_ids entry",
+        )
+    source_feature = part.get_feature(base_feature_id(source_body_ids[0]))
+    if not isinstance(source_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_body_ids entry {source_body_ids[0]!r} does not refer to an ExtrudeFeature, "
+            "RevolveFeature, SweepFeature, or ImportFeature in this Part",
+        )
+
+
+def _validate_pattern_direction_ref(ref: PatternDirectionRef, field_name: str) -> None:
+    """Pattern/Mirror scoping's Phase 2: enforces exactly one of `edge_ref`/
+    `sketch_line_ref`/`fixed_axis` is supplied on `ref` (`field_name` is
+    `"direction_1"` or `"direction_2"`, for the error message), matching
+    `PatternDirectionRef`'s own "one of three" convention (see its
+    docstring) - mirrors `_validate_plane_ref`'s identical shape. Always
+    called with a non-`None` `ref` - `direction_1` is never optional, and
+    `_validate_pattern_counts_and_direction_2` only calls this for
+    `direction_2` when a value was actually supplied, raising its own
+    "requires a direction_2 when count_2 > 1" error directly otherwise.
+    Whichever field is supplied is itself well-formed: an `edge_ref` must
+    have `shape_type=EDGE` (the same typed-slot check `_validate_plane_ref`
+    makes for its own `face_ref`). `fixed_axis` needs no further check -
+    `FixedAxis` is already a closed enum, so pydantic itself rejects
+    anything else."""
+    set_count = sum(x is not None for x in (ref.edge_ref, ref.sketch_line_ref, ref.fixed_axis))
+    if set_count != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} must have exactly one of edge_ref, sketch_line_ref, or fixed_axis",
+        )
+    if ref.edge_ref is not None and ref.edge_ref.shape_type != SubShapeType.EDGE:
+        raise HTTPException(status_code=422, detail=f"{field_name} edge_ref must have shape_type=EDGE")
+
+
+def _validate_pattern_counts_and_direction_2(
+    count_1: int, count_2: int, direction_2: PatternDirectionRef | None
+) -> None:
+    """Pattern/Mirror scoping's Phase 2: `count_1`/`count_2` must each be at
+    least 1 (a "pattern" of fewer than one instance in either direction is
+    meaningless), their product must be at least 2 (otherwise this Feature
+    would produce zero new Bodies beyond the untouched seed - see
+    `PatternFeature`'s own docstring on why index 0 never gets a new Body -
+    a pure no-op Feature, rejected the same "nothing valid to create" way
+    `_validate_target_body_ids` rejects an empty Cut), and `direction_2` is
+    required exactly when `count_2 > 1` (see `PatternFeatureUpdate`'s own
+    docstring on why `count_2 == 1` makes `direction_2` inert rather than
+    requiring it be explicitly cleared)."""
+    if count_1 < 1 or count_2 < 1:
+        raise HTTPException(status_code=422, detail="PatternFeature count_1 and count_2 must each be >= 1")
+    if count_1 * count_2 < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="PatternFeature count_1 * count_2 must be >= 2 - otherwise no new Body is produced "
+            "beyond the existing seed",
+        )
+    if direction_2 is not None:
+        _validate_pattern_direction_ref(direction_2, "direction_2")
+    elif count_2 > 1:
+        raise HTTPException(status_code=422, detail="PatternFeature requires a direction_2 when count_2 > 1")
 
 
 def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> SketchFeature:
@@ -1542,6 +1701,163 @@ def update_sweep_feature(part_id: str, feature_id: str, payload: SweepFeatureUpd
     feature.mode = candidate.mode
     feature.target_body_ids = candidate.target_body_ids
     feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/mirror-features", response_model=MirrorFeatureResponse, status_code=201)
+def create_mirror_feature(part_id: str, payload: MirrorFeatureCreate) -> MirrorFeatureResponse:
+    """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+    §2.1/§4): mirrors `create_chamfer_feature`'s exact shape - unlocked
+    from the start, fails closed (via `_validate_mirror_source_body_ids`/
+    `_validate_plane_ref` for payload shape, then `resolve_mirror` for
+    referential/geometric validity) before ever persisting an unresolvable
+    Mirror."""
+    part = get_part_or_404(part_id)
+    source_body_ids = list(payload.source_body_ids)
+    mirror_plane = _plane_ref_to_domain(payload.mirror_plane)
+    _validate_mirror_source_body_ids(part, source_body_ids)
+    _validate_plane_ref(part, mirror_plane)
+    feature = MirrorFeature(id=str(uuid.uuid4()), source_body_ids=source_body_ids, mirror_plane=mirror_plane)
+    resolve_mirror(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_mirror_feature_or_404(part: Part, feature_id: str) -> MirrorFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, MirrorFeature):
+        raise HTTPException(status_code=404, detail="Mirror feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/mirror-features/{feature_id}", response_model=MirrorFeatureResponse)
+def update_mirror_feature(
+    part_id: str, feature_id: str, payload: MirrorFeatureUpdate
+) -> MirrorFeatureResponse:
+    """Mirrors `update_chamfer_feature`'s exact shape - same validate-
+    before-mutate discipline against a scratch Feature sharing the real
+    one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_mirror_feature_or_404(part, feature_id)
+
+    new_source_body_ids = (
+        list(payload.source_body_ids) if payload.source_body_ids is not None else feature.source_body_ids
+    )
+    new_mirror_plane = (
+        _plane_ref_to_domain(payload.mirror_plane)
+        if payload.mirror_plane is not None
+        else feature.mirror_plane
+    )
+    _validate_mirror_source_body_ids(part, new_source_body_ids)
+    _validate_plane_ref(part, new_mirror_plane)
+
+    candidate = MirrorFeature(id=feature.id, source_body_ids=new_source_body_ids, mirror_plane=new_mirror_plane)
+    resolve_mirror(part, candidate)  # raises on an unresolvable reference
+
+    feature.source_body_ids = candidate.source_body_ids
+    feature.mirror_plane = candidate.mirror_plane
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/pattern-features", response_model=PatternFeatureResponse, status_code=201)
+def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> PatternFeatureResponse:
+    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
+    §2.2/§4): mirrors `create_mirror_feature`'s exact shape - unlocked from
+    the start, fails closed (via `_validate_pattern_source_body_ids`/
+    `_validate_pattern_direction_ref`/`_validate_pattern_counts_and_
+    direction_2` for payload shape, then `resolve_pattern` for
+    referential/geometric validity) before ever persisting an unresolvable
+    Pattern."""
+    part = get_part_or_404(part_id)
+    source_body_ids = list(payload.source_body_ids)
+    direction_1 = _pattern_direction_ref_to_domain(payload.direction_1)
+    direction_2 = (
+        _pattern_direction_ref_to_domain(payload.direction_2) if payload.direction_2 is not None else None
+    )
+    _validate_pattern_source_body_ids(part, source_body_ids)
+    _validate_pattern_direction_ref(direction_1, "direction_1")
+    _validate_pattern_counts_and_direction_2(payload.count_1, payload.count_2, direction_2)
+
+    feature = PatternFeature(
+        id=str(uuid.uuid4()),
+        source_body_ids=source_body_ids,
+        direction_1=direction_1,
+        count_1=payload.count_1,
+        spacing_1=payload.spacing_1,
+        reverse_1=payload.reverse_1,
+        direction_2=direction_2,
+        count_2=payload.count_2,
+        spacing_2=payload.spacing_2,
+        reverse_2=payload.reverse_2,
+    )
+    resolve_pattern(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_pattern_feature_or_404(part: Part, feature_id: str) -> PatternFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, PatternFeature):
+        raise HTTPException(status_code=404, detail="Pattern feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/pattern-features/{feature_id}", response_model=PatternFeatureResponse)
+def update_pattern_feature(
+    part_id: str, feature_id: str, payload: PatternFeatureUpdate
+) -> PatternFeatureResponse:
+    """Mirrors `update_mirror_feature`'s exact shape - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_pattern_feature_or_404(part, feature_id)
+
+    new_source_body_ids = (
+        list(payload.source_body_ids) if payload.source_body_ids is not None else feature.source_body_ids
+    )
+    new_direction_1 = (
+        _pattern_direction_ref_to_domain(payload.direction_1)
+        if payload.direction_1 is not None
+        else feature.direction_1
+    )
+    new_count_1 = payload.count_1 if payload.count_1 is not None else feature.count_1
+    new_spacing_1 = payload.spacing_1 if payload.spacing_1 is not None else feature.spacing_1
+    new_reverse_1 = payload.reverse_1 if payload.reverse_1 is not None else feature.reverse_1
+    new_direction_2 = (
+        _pattern_direction_ref_to_domain(payload.direction_2)
+        if payload.direction_2 is not None
+        else feature.direction_2
+    )
+    new_count_2 = payload.count_2 if payload.count_2 is not None else feature.count_2
+    new_spacing_2 = payload.spacing_2 if payload.spacing_2 is not None else feature.spacing_2
+    new_reverse_2 = payload.reverse_2 if payload.reverse_2 is not None else feature.reverse_2
+
+    _validate_pattern_source_body_ids(part, new_source_body_ids)
+    _validate_pattern_direction_ref(new_direction_1, "direction_1")
+    _validate_pattern_counts_and_direction_2(new_count_1, new_count_2, new_direction_2)
+
+    candidate = PatternFeature(
+        id=feature.id,
+        source_body_ids=new_source_body_ids,
+        direction_1=new_direction_1,
+        count_1=new_count_1,
+        spacing_1=new_spacing_1,
+        reverse_1=new_reverse_1,
+        direction_2=new_direction_2,
+        count_2=new_count_2,
+        spacing_2=new_spacing_2,
+        reverse_2=new_reverse_2,
+    )
+    resolve_pattern(part, candidate)  # raises on an unresolvable reference
+
+    feature.source_body_ids = candidate.source_body_ids
+    feature.direction_1 = candidate.direction_1
+    feature.count_1 = candidate.count_1
+    feature.spacing_1 = candidate.spacing_1
+    feature.reverse_1 = candidate.reverse_1
+    feature.direction_2 = candidate.direction_2
+    feature.count_2 = candidate.count_2
+    feature.spacing_2 = candidate.spacing_2
+    feature.reverse_2 = candidate.reverse_2
     return _feature_response(part, feature)
 
 

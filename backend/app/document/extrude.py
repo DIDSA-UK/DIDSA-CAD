@@ -44,7 +44,9 @@ from app.document.models import (
     ExtrudeType,
     FilletFeature,
     ImportFeature,
+    MirrorFeature,
     Part,
+    PatternFeature,
     ResolvedPlane,
     RevolveFeature,
     RevolveMode,
@@ -761,6 +763,8 @@ def compute_part_bodies(
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.import_geometry import resolve_import
+    from app.document.mirror import resolve_mirror_from_bodies
+    from app.document.pattern import resolve_pattern_from_bodies
     from app.document.revolve import resolve_revolve_from_bodies
     from app.document.sweep import resolve_sweep_from_bodies
 
@@ -821,6 +825,56 @@ def compute_part_bodies(
             # bare face for a mesh format) - never split even if a STEP
             # import happens to contain multiple disjoint solids.
             bodies[feature.id] = solid
+            continue
+
+        if isinstance(feature, MirrorFeature):
+            try:
+                mirrored_shapes = resolve_mirror_from_bodies(part, bodies, feature, excluded_feature_ids)
+            except HTTPException:
+                logger.warning("Skipping MirrorFeature %s: could not be resolved", feature.id)
+                continue
+            # Boss-with-no-target semantics (see MirrorFeature's own
+            # docstring) - every mirrored copy is a brand-new, never-merged
+            # Body in Phase 1, so this reuses `_register_solids` directly
+            # rather than `_apply_boss_or_cut` (which also knows how to
+            # fuse/cut into `target_body_ids`, a concept Mirror doesn't have
+            # until Phase 5's merge option). One source Body registers under
+            # this Feature's own id directly (unchanged from before multi-
+            # body seeding); 2+ sources each get their own `#N`-suffixed id
+            # (mirrors `_register_solids`'s own single-vs-multiple naming
+            # convention, applied here across sources rather than within
+            # one already-registered shape).
+            if len(mirrored_shapes) == 1:
+                _register_solids(bodies, feature.id, mirrored_shapes[0])
+            else:
+                for i, shape in enumerate(mirrored_shapes):
+                    _register_solids(bodies, f"{feature.id}#{i}", shape)
+            continue
+
+        if isinstance(feature, PatternFeature):
+            try:
+                instances = resolve_pattern_from_bodies(part, bodies, feature, excluded_feature_ids)
+            except HTTPException:
+                logger.warning("Skipping PatternFeature %s: could not be resolved", feature.id)
+                continue
+            # Index 0 (the seed Body itself) is never a key in `instances`
+            # (see `PatternFeature`'s own docstring) - the seed Body is
+            # already registered under its own id by whichever earlier
+            # Feature produced it, and this Feature never touches it, same
+            # Boss-with-no-target semantics `MirrorFeature` uses. Every
+            # other instance is a brand-new Body: `feature.id` alone when
+            # there's exactly one (a `count_1 * count_2 == 2` pattern),
+            # `f"{feature.id}#{index}"` per instance otherwise - mirrors
+            # `_register_solids`'s own single-vs-multiple naming
+            # convention, keyed by the pattern's own flattened linear
+            # index (not a freshly reindexed 0..N-1) so a future Phase 3
+            # skip-instance picker can address the exact same indices.
+            if len(instances) == 1:
+                ((_, only_shape),) = instances.items()
+                _register_solids(bodies, feature.id, only_shape)
+            else:
+                for index, shape in instances.items():
+                    _register_solids(bodies, f"{feature.id}#{index}", shape)
             continue
 
         if isinstance(feature, RevolveFeature):

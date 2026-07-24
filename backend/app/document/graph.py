@@ -36,7 +36,10 @@ from app.document.models import (
     CreatePlaneFeature,
     ExtrudeFeature,
     FilletFeature,
+    MirrorFeature,
     Part,
+    PatternDirectionRef,
+    PatternFeature,
     PlaneRef,
     PlaneType,
     RevolveFeature,
@@ -234,6 +237,24 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     different Sketch - see `SweepFeature`'s own docstring), not just one
     axis Sketch - see `_sweep_dependencies`.
 
+    Pattern/Mirror Phase 1: a `MirrorFeature` depends on the owning
+    ExtrudeFeature(s) of every `source_body_ids` entry (same
+    `base_feature_id`-deduplicated-via-`set` treatment as Fillet/Chamfer's
+    `edge_refs`) plus whatever `mirror_plane` itself depends on (see
+    `_plane_ref_dependency` - already shared with `CreatePlaneFeature`
+    above, since `PlaneRef` is reused verbatim). Deleting the Extrude that
+    created a mirrored Body, or the Plane/face-owning Feature a Mirror
+    reflects across, must cascade-delete the Mirror too - identical
+    reasoning to every other reference kind in this function.
+
+    Pattern/Mirror Phase 2: a `PatternFeature` gets the identical treatment
+    as `MirrorFeature`, generalized to two direction references instead of
+    one plane reference - depends on the owning Feature of its (single,
+    Phase 2) `source_body_ids` entry, plus whatever `direction_1`/
+    `direction_2` each depend on (see `_pattern_direction_dependency`: a
+    Body edge depends on that edge's owning Feature, a Sketch Line depends
+    on its owning SketchFeature, a fixed world axis depends on nothing).
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -259,6 +280,10 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _revolve_dependencies(part, feature)
         elif isinstance(feature, SweepFeature):
             depends_on = _sweep_dependencies(part, feature)
+        elif isinstance(feature, MirrorFeature):
+            depends_on = _mirror_dependencies(feature)
+        elif isinstance(feature, PatternFeature):
+            depends_on = _pattern_dependencies(part, feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -309,6 +334,57 @@ def _plane_ref_dependency(ref: PlaneRef) -> str | None:
     if ref.plane_feature_id is not None:
         return ref.plane_feature_id
     return None
+
+
+def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:
+    """Pattern/Mirror Phase 1: `build_feature_graph`'s `MirrorFeature`
+    dependency-edge logic, split out to keep `build_feature_graph` itself's
+    per-type dispatch readable - mirrors `FilletFeature`/`ChamferFeature`'s
+    own `edge_refs` treatment for `source_body_ids` (deduplicated via a
+    `set`, `base_feature_id`-mapped), plus `_plane_ref_dependency` for
+    `mirror_plane`. `source_feature_ids` is reserved for Phase 6 and always
+    empty in Phase 1 - not read here yet."""
+    deps: set[str] = {base_feature_id(bid) for bid in feature.source_body_ids}
+    plane_dep = _plane_ref_dependency(feature.mirror_plane)
+    if plane_dep is not None:
+        deps.add(plane_dep)
+    return tuple(deps)
+
+
+def _pattern_direction_dependency(part: Part, ref: PatternDirectionRef | None) -> str | None:
+    """Pattern/Mirror Phase 2: the single Feature id `ref` depends on, or
+    `None` if it depends on nothing (also `None` when `ref` itself is -
+    `direction_2` is optional) - mirrors `_plane_ref_dependency`'s own
+    three-way shape: an `edge_ref` depends on the owning Feature of its
+    Body (`base_feature_id`), a `sketch_line_ref` depends on the
+    SketchFeature wrapping its Sketch (via `sketch_feature_id_for_sketch`,
+    same lookup `_revolve_dependencies` uses for `axis_ref`), and a
+    `fixed_axis` depends on nothing - one of the three world axes always
+    exists, no Feature produces it."""
+    if ref is None:
+        return None
+    if ref.edge_ref is not None:
+        return base_feature_id(ref.edge_ref.body_id)
+    if ref.sketch_line_ref is not None:
+        return sketch_feature_id_for_sketch(part, ref.sketch_line_ref.sketch_id)
+    return None
+
+
+def _pattern_dependencies(part: Part, feature: PatternFeature) -> tuple[str, ...]:
+    """Pattern/Mirror Phase 2: `build_feature_graph`'s `PatternFeature`
+    dependency-edge logic, split out to keep `build_feature_graph` itself's
+    per-type dispatch readable - the owning Feature of its (single, Phase
+    2) `source_body_ids` entry, plus whatever `direction_1`/`direction_2`
+    each depend on via `_pattern_direction_dependency`, deduplicated via a
+    `set`."""
+    deps: set[str] = {base_feature_id(bid) for bid in feature.source_body_ids}
+    dep_1 = _pattern_direction_dependency(part, feature.direction_1)
+    if dep_1 is not None:
+        deps.add(dep_1)
+    dep_2 = _pattern_direction_dependency(part, feature.direction_2)
+    if dep_2 is not None:
+        deps.add(dep_2)
+    return tuple(deps)
 
 
 def _create_plane_dependencies(part: Part, feature: CreatePlaneFeature) -> tuple[str, ...]:
