@@ -124,6 +124,25 @@ def _point_line_distance(point: Point, line_start: Point, line_end: Point) -> fl
     return abs(cross) / length
 
 
+def _signed_point_line_distance(point: Point, line_start: Point, line_end: Point) -> float:
+    """Same as `_point_line_distance`, without the `abs()` - the sign
+    matches whichever side of the line `point` is currently on, the same
+    convention `models.py`'s own `_signed_point_line_distance` (used to
+    sign-correct `LineDistanceConstraint.distance` at creation/update time -
+    see that function's own doc comment) and py-slvs's underlying
+    `addPointLineDistance` both use. `LineDistanceConstraint.distance` is
+    signed for exactly that reason, so verifying it here needs the signed
+    variant too - comparing it against this function's own unsigned sibling
+    would flag every genuinely-satisfied solve as failed."""
+    dx = line_end.x - line_start.x
+    dy = line_end.y - line_start.y
+    length = math.hypot(dx, dy)
+    if length < 1e-12:
+        return 0.0
+    cross = (point.x - line_start.x) * dy - (point.y - line_start.y) * dx
+    return cross / length
+
+
 def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
     """Unsigned angle (0-180) between two Lines' direction vectors -
     deliberately unsigned since verifying an already-supposedly-satisfied
@@ -248,7 +267,10 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             if abs(actual_distance - radius) > tolerance:
                 return False
         elif isinstance(constraint, LineDistanceConstraint):
-            actual_distance = _point_line_distance(
+            # Signed, not `_point_line_distance`'s unsigned sibling -
+            # `constraint.distance` is signed too (see
+            # `_signed_point_line_distance`'s own doc comment).
+            actual_distance = _signed_point_line_distance(
                 points[constraint.line2_start_id],
                 points[constraint.line1_start_id],
                 points[constraint.line1_end_id],

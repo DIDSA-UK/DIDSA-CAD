@@ -804,6 +804,38 @@ class NoIntersectionFoundError(ValueError):
     (invalid endpoint, Polygon-owned edge), which stay ordinary 400s."""
 
 
+def _signed_point_line_distance(point: Point, line_start: Point, line_end: Point) -> float:
+    """Perpendicular distance from `point` to the infinite line through
+    `line_start`/`line_end`, signed by which side of that line `point`
+    currently sits on - the same cross-product convention py-slvs's own
+    `addPointLineDistance` (wrapped by `SolverBuilder.point_line_distance`)
+    uses internally.
+
+    Bug fix (on-device feedback: "an across flats dimension over
+    constrains the polygon" - reproduced directly against the real solver:
+    a hexagon's own opposite edges, needing to shrink to a new radius via
+    an added LineDistanceConstraint, never moved a single Point when given
+    a plain positive target value, but converged immediately given the
+    same magnitude negated): `LineDistanceConstraint.distance` /
+    `PointLineDistanceConstraint.distance` aren't plain magnitudes to
+    py-slvs - passing the wrong sign for the second Line's/Point's current
+    side doesn't just solve to the mirrored position, it fails to converge
+    at all. A dimension is always typed in as a positive magnitude (the UI
+    has no way to ask "which side" and shouldn't need to), so
+    `add_line_distance_constraint`/`add_point_line_distance_constraint`
+    (and `update_constraint_value`'s own equivalent for edits to an
+    existing one) use this to work out the correct sign from whichever
+    side the geometry is currently on, rather than trusting the caller's
+    always-positive value outright."""
+    dx = line_end.x - line_start.x
+    dy = line_end.y - line_start.y
+    length = math.hypot(dx, dy)
+    if length < 1e-12:
+        return 0.0
+    cross = (point.x - line_start.x) * dy - (point.y - line_start.y) * dx
+    return cross / length
+
+
 @dataclass
 class Sketch:
     """An independent 2D sketch, on one of the three fixed reference planes
@@ -3130,11 +3162,18 @@ class Sketch:
     ) -> LineDistanceConstraint:
         line1, line2 = self._two_lines_or_raise(line1_id, line2_id)
 
+        # See `_signed_point_line_distance`'s own doc comment for why this
+        # can't just store the caller's plain positive magnitude.
+        current = _signed_point_line_distance(
+            self.points[line2.start_point_id], self.points[line1.start_point_id], self.points[line1.end_point_id]
+        )
+        signed_distance = -abs(distance) if current < 0 else abs(distance)
+
         constraint = LineDistanceConstraint(
             id=str(uuid.uuid4()),
             line1_id=line1_id,
             line2_id=line2_id,
-            distance=distance,
+            distance=signed_distance,
             line1_start_id=line1.start_point_id,
             line1_end_id=line1.end_point_id,
             line2_start_id=line2.start_point_id,
@@ -3267,11 +3306,19 @@ class Sketch:
         if not isinstance(line, Line):
             raise KeyError(line_id)
 
+        # See `_signed_point_line_distance`'s own doc comment for why this
+        # can't just store the caller's plain positive magnitude - safe at
+        # distance 0 too (the midpoint-fix use above), since 0 has no sign.
+        current = _signed_point_line_distance(
+            self.points[point_id], self.points[line.start_point_id], self.points[line.end_point_id]
+        )
+        signed_distance = -abs(distance) if current < 0 else abs(distance)
+
         constraint = PointLineDistanceConstraint(
             id=str(uuid.uuid4()),
             point_id=point_id,
             line_id=line_id,
-            distance=distance,
+            distance=signed_distance,
             line_start_id=line.start_point_id,
             line_end_id=line.end_point_id,
         )

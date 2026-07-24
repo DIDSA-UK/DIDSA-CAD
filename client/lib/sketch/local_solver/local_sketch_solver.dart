@@ -76,6 +76,24 @@ double _pointLineDistance((double, double) point, (double, double) lineStart, (d
   return cross.abs() / length;
 }
 
+/// Same as [_pointLineDistance], without the `.abs()` - signed by which
+/// side of the line `point` currently sits on, matching the backend's own
+/// `_signed_point_line_distance` (solver.py/models.py) and py-slvs's
+/// underlying `addPointLineDistance`. `LineDistanceConstraintDto.distance`
+/// is signed for the same reason those are (see the backend's own doc
+/// comment: a plain positive magnitude fails to converge outright unless
+/// it happens to match the Line's current side) - comparing it against
+/// [_pointLineDistance]'s unsigned result here would flag every genuinely-
+/// satisfied solve as failed.
+double _signedPointLineDistance((double, double) point, (double, double) lineStart, (double, double) lineEnd) {
+  final dx = lineEnd.$1 - lineStart.$1;
+  final dy = lineEnd.$2 - lineStart.$2;
+  final length = math.sqrt(dx * dx + dy * dy);
+  if (length < 1e-12) return 0.0;
+  final cross = (point.$1 - lineStart.$1) * dy - (point.$2 - lineStart.$2) * dx;
+  return cross / length;
+}
+
 double _angleBetweenDegrees(
   (double, double) line1Start,
   (double, double) line1End,
@@ -181,7 +199,7 @@ bool _residualVerifiedConvergence({
     } else if (c is LineDistanceConstraintDto) {
       final (s1, e1) = lineEndpoints(c.line1Id);
       final (s2, _) = lineEndpoints(c.line2Id);
-      final actualDistance = _pointLineDistance(resolvePoint(s2), resolvePoint(s1), resolvePoint(e1));
+      final actualDistance = _signedPointLineDistance(resolvePoint(s2), resolvePoint(s1), resolvePoint(e1));
       if ((actualDistance - c.distance).abs() > tolerance) return false;
     }
   }
