@@ -53,6 +53,13 @@ import 'view_preferences.dart';
 /// decides whether confirming opens [ExtrudePanel] or [RevolvePanel].
 enum _ProfilePickerTarget { extrude, revolve, sweep }
 
+/// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
+/// §2.1/§4): which mutually-exclusive half of the guided Mirror flow is
+/// currently live - see `_PartScreenState`'s own Mirror state-field
+/// section header comment for why body-picking and plane-picking can never
+/// be simultaneous.
+enum _MirrorStep { pickingBodies, pickingPlane }
+
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
 /// [SketchScreen], which is reached by tapping a SketchFeature. A single
@@ -516,13 +523,18 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     // Pattern/Mirror scoping Phase 1: a face/referencePlane/createPlane tap
-    // while the Mirror panel is open sets (or clears, if it's the
+    // during the `pickingPlane` step sets (or clears, if it's the
     // already-picked one) the mirror plane - mirrors [_setRevolveAxis]
     // exactly, generalized to three plane-like kinds instead of one
-    // (sketchLine). Never touches [_mirrorSourceBodyId] - the source Body is
-    // a separate field, not part of [_selectedEntities], for the whole
-    // Mirror session (see that section's own header comment).
-    if (_mirrorActive &&
+    // (sketchLine). Never touches [_mirrorSourceBodyIds] - the source
+    // Body/Bodies are a separate field, not part of [_selectedEntities],
+    // for this half of the Mirror session (see that section's own header
+    // comment). Gated on `pickingPlane` specifically (not just
+    // [_mirrorActive]) since a `pickingBodies` selection is body-only
+    // anyway ([_mirrorBodyPickerSelectionFilter] guarantees no face/plane
+    // hit can even occur then) and must fall through to the generic
+    // accumulate-toggle below instead.
+    if (_mirrorStep == _MirrorStep.pickingPlane &&
         (entity.kind == SelectionEntityKind.face ||
             entity.kind == SelectionEntityKind.referencePlane ||
             entity.kind == SelectionEntityKind.createPlane)) {
@@ -926,29 +938,41 @@ class _PartScreenState extends State<PartScreen> {
   // intersection to a `body`-kind entity, never a `face`-kind one) - so,
   // unlike Revolve (whose axis pick is a `sketchLine`, hit-tested via a
   // completely separate code path from its `body` target picks, so both can
-  // be live at once), Mirror cannot let the user pick a source Body and a
-  // mirror-plane face simultaneously through one filter. The source Body is
-  // therefore captured *once*, into its own field, at the moment the panel
-  // opens (from a pre-existing single-Body selection - see
-  // `selection_actions.dart`'s new Mirror entry), and [_selectedEntities]
-  // switches to being dedicated entirely to the second, separate plane pick
-  // for the rest of the panel's session - mirroring Fillet's "dedicated to
-  // one picking concern for the panel's whole lifetime" shape, just with the
-  // dedication starting *after* an initial capture rather than from open.
+  // be live at once), Mirror cannot let the user pick source Bodies and a
+  // mirror-plane face simultaneously through one filter. [_mirrorStep] tracks
+  // which of the two mutually-exclusive picks is currently live: bodies are
+  // accumulated in [_selectedEntities] (via the generic toggle - `body`-kind
+  // entities are never special-cased, since [_mirrorBodyPickerSelectionFilter]
+  // already guarantees nothing else can be hit-tested during this step) while
+  // [_mirrorStep] is `pickingBodies`, then captured into [_mirrorSourceBodyIds]
+  // and cleared from [_selectedEntities] once confirmed (see
+  // [_confirmMirrorBodySelection]) - after which [_selectedEntities] switches
+  // to being dedicated entirely to the second, separate plane pick for the
+  // rest of the panel's session, mirroring Fillet's "dedicated to one picking
+  // concern for the panel's whole lifetime" shape, just with the dedication
+  // starting only once [_mirrorStep] reaches `pickingPlane` rather than from
+  // open. The ambient [SelectionContextPanel] entry (`_onMirrorTapped`) skips
+  // `pickingBodies` entirely, since its Bodies are already selected going in.
 
-  /// True while [MirrorPanel] is open - mirrors [_filletActive] exactly
-  /// (Mirror also has only the one construction method in Phase 1, so no
-  /// mode enum is needed).
-  bool _mirrorActive = false;
+  /// Which half of the two-stage Mirror flow is currently live, or null when
+  /// Mirror isn't active at all - see this section's own header comment.
+  /// [_mirrorActive] is a plain derived getter over this, kept so every
+  /// existing `_mirrorActive` guard site (mirroring [_filletActive]'s single-
+  /// bool shape) didn't need to change meaning.
+  _MirrorStep? _mirrorStep;
 
-  /// The Body being mirrored, captured once when the panel opens (either
-  /// from the single-Body selection that enabled the "Mirror" button, or -
-  /// in edit mode - from the existing MirrorFeature's own `source_body_ids`)
-  /// - never re-derived from [_selectedEntities] the way [_currentTargetBodyIds]
-  /// is for Extrude/Revolve, since [_selectedEntities] is dedicated to the
-  /// mirror-plane pick for the rest of this panel's session (see this
-  /// section's own header comment). Null only before the panel has opened.
-  String? _mirrorSourceBodyId;
+  bool get _mirrorActive => _mirrorStep != null;
+
+  /// The Body/Bodies being mirrored, captured once the `pickingBodies` step
+  /// is confirmed (either from the guided "Add" FAB entry's own picker, or -
+  /// for the ambient [SelectionContextPanel] entry/edit mode - straight from
+  /// the pre-existing selection/Feature) - never re-derived from
+  /// [_selectedEntities] the way [_currentTargetBodyIds] is for Extrude/
+  /// Revolve, since [_selectedEntities] is dedicated to the mirror-plane pick
+  /// for the rest of this panel's session once this is set (see this
+  /// section's own header comment). Null until the `pickingBodies` step
+  /// completes (or is skipped).
+  List<String>? _mirrorSourceBodyIds;
 
   /// The MirrorFeature created (or, in edit mode, already existing) for the
   /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
@@ -982,14 +1006,35 @@ class _PartScreenState extends State<PartScreen> {
 
   Timer? _mirrorDebounce;
 
+  /// Locks [_selectionFilterOverrides] to Bodies only for the
+  /// `pickingBodies` half of the guided "Add" FAB's Mirror flow
+  /// ([_startMirrorPicker]) - `body: true`, everything else off, so
+  /// [_toggleSelectedEntity]'s generic accumulate-toggle can safely
+  /// collect 1+ Bodies into [_selectedEntities] with no Mirror-specific
+  /// special-casing needed (nothing else can even be hit-tested while this
+  /// filter is live).
+  static const _mirrorBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
   /// Locks [_selectionFilterOverrides] to face/plane-like kinds only for the
-  /// mirror-plane-picking half of the Mirror flow (after the source Body has
-  /// already been captured into [_mirrorSourceBodyId] - see this section's
-  /// own header comment for why `body` stays off here even though a Body
-  /// pick is conceptually still "part of" a Mirror). `face: true` lets the
-  /// user pick a Body face (any Body's, including the source's own) as the
-  /// mirror plane; `plane: true` lets them pick a fixed reference plane or
-  /// an existing Plane feature the same way.
+  /// mirror-plane-picking half of the Mirror flow (after the source
+  /// Body/Bodies have already been captured into [_mirrorSourceBodyIds] -
+  /// see this section's own header comment for why `body` stays off here
+  /// even though a Body pick is conceptually still "part of" a Mirror).
+  /// `face: true` lets the user pick a Body face (any Body's, including a
+  /// source's own) as the mirror plane; `plane: true` lets them pick a
+  /// fixed reference plane or an existing Plane feature the same way.
   static const _mirrorSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -3297,6 +3342,8 @@ class _PartScreenState extends State<PartScreen> {
         await _revolveSelectedFeature();
       case FeaturePickerAction.sweep:
         await _sweepSelectedFeature();
+      case FeaturePickerAction.mirror:
+        _startMirrorPicker();
     }
   }
 
@@ -5162,31 +5209,92 @@ class _PartScreenState extends State<PartScreen> {
   // --- Pattern/Mirror scoping Phase 1: Mirror -------------------------------
   // See docs/pattern-mirror-scope.md §2.1/§4 and this file's own "Pattern/
   // Mirror scoping Phase 1: Mirror" state-field section above for the full
-  // reasoning behind Mirror's two-stage (capture source Body, then pick a
-  // plane) shape.
+  // reasoning behind Mirror's two-stage (pick source Body/Bodies, confirm,
+  // then pick a plane) shape.
 
-  /// [SelectionContextPanel.onMirror]'s callback - `contextActionsFor`
-  /// enables this button for exactly one Body, nothing else, selected (see
-  /// that function's own new Mirror branch). Captures that Body's id and
-  /// opens [MirrorPanel] to pick a mirror plane next.
-  void _onMirrorTapped() {
-    final bodies = _selectedEntities.where((e) => e.kind == SelectionEntityKind.body);
-    if (bodies.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
-    _openMirrorPanel(bodies.first.bodyId);
+  /// [FeaturePickerAction.mirror]'s guided "Add" FAB entry - unlike every
+  /// other guided entry (which either opens its target panel immediately or,
+  /// like Fillet/Chamfer, opens with an empty pick list under one filter for
+  /// the panel's whole lifetime), Mirror must gate on a confirmed Body
+  /// selection *before* the plane-picking filter (which excludes `body`
+  /// entirely) can even be pushed - see this section's own header comment.
+  /// Starts the `pickingBodies` step with an empty selection and a
+  /// Body-only filter; [_confirmMirrorBodySelection] advances to
+  /// `pickingPlane` once 1+ Bodies are picked.
+  void _startMirrorPicker() {
+    setState(() {
+      _mirrorStep = _MirrorStep.pickingBodies;
+      _mirrorSourceBodyIds = null;
+      _previewMirrorFeatureId = null;
+      _meshBeforeMirror = _bodies;
+      _entitiesBeforeMirror = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mirrorBodyPickerSelectionFilter);
+    });
   }
 
-  /// Opens [MirrorPanel] for a brand-new MirrorFeature mirroring
-  /// [sourceBodyId] - captures it into [_mirrorSourceBodyId] and switches
-  /// [_selectedEntities] over to the mirror-plane pick (clearing whatever
-  /// was selected, mirroring [_openRevolvePanel]'s own "start the picker
-  /// selection empty" shape) for the rest of this panel's session. No
-  /// MirrorFeature exists yet until a plane is actually picked - mirrors
-  /// [_openFilletPanel]'s "nothing valid to create yet" reasoning, just
-  /// gated on a plane pick instead of a non-empty edge list.
-  void _openMirrorPanel(String sourceBodyId) {
+  /// The number of Bodies picked so far during the `pickingBodies` step -
+  /// drives the step-1 banner text and gates its confirm FAB. Zero whenever
+  /// [_mirrorStep] isn't `pickingBodies` (nothing else can be in
+  /// [_selectedEntities] then anyway, per [_mirrorBodyPickerSelectionFilter]).
+  int _mirrorPickedBodyCount() =>
+      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
+
+  /// Confirms the `pickingBodies` step (the banner's checkmark FAB - see
+  /// [_mirrorPickedBodyCount]) - captures every currently-selected Body into
+  /// [_mirrorSourceBodyIds], swaps [_selectionFilterOverrides] from
+  /// [_mirrorBodyPickerSelectionFilter] to [_mirrorSelectionFilter], and
+  /// advances to `pickingPlane`. Also temporarily forces the reference
+  /// planes visible for the plane pick (see the [PartViewport] call site's
+  /// own `referencePlanesHidden` override) - they're usually auto-hidden as
+  /// soon as the first Body exists (see [_hasAutoHiddenReferencePlanes]),
+  /// but a fixed-plane mirror pick needs them shown to be pickable at all.
+  void _confirmMirrorBodySelection() {
+    final bodyIds = _selectedEntities
+        .where((e) => e.kind == SelectionEntityKind.body)
+        .map((e) => e.bodyId)
+        .toList();
+    if (bodyIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
     setState(() {
-      _mirrorActive = true;
-      _mirrorSourceBodyId = sourceBodyId;
+      _mirrorSourceBodyIds = bodyIds;
+      _selectedEntities = {};
+      _selectionFilterOverrides.pop();
+      _selectionFilterOverrides.push(_mirrorSelectionFilter);
+      _mirrorStep = _MirrorStep.pickingPlane;
+    });
+  }
+
+  /// [SelectionContextPanel.onMirror]'s callback - `contextActionsFor`
+  /// enables this button for 1+ Bodies, nothing else, selected (see that
+  /// function's own Mirror branch). Those Bodies are already exactly what
+  /// the user wants mirrored, so this skips `pickingBodies` entirely and
+  /// jumps straight to `pickingPlane` with them pre-captured.
+  void _onMirrorTapped() {
+    final bodyIds = _selectedEntities
+        .where((e) => e.kind == SelectionEntityKind.body)
+        .map((e) => e.bodyId)
+        .toList();
+    if (bodyIds.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openMirrorPanel(bodyIds);
+  }
+
+  /// Opens [MirrorPanel] directly in the `pickingPlane` step for a brand-new
+  /// MirrorFeature mirroring [sourceBodyIds] - used by [_onMirrorTapped],
+  /// whose Bodies are already selected going in, so there is nothing for a
+  /// `pickingBodies` step to do. Switches [_selectedEntities] over to the
+  /// mirror-plane pick (clearing whatever was selected, mirroring
+  /// [_openRevolvePanel]'s own "start the picker selection empty" shape) for
+  /// the rest of this panel's session. No MirrorFeature exists yet until a
+  /// plane is actually picked - mirrors [_openFilletPanel]'s "nothing valid
+  /// to create yet" reasoning, just gated on a plane pick instead of a
+  /// non-empty edge list.
+  void _openMirrorPanel(List<String> sourceBodyIds) {
+    setState(() {
+      _mirrorStep = _MirrorStep.pickingPlane;
+      _mirrorSourceBodyIds = sourceBodyIds;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -5204,11 +5312,14 @@ class _PartScreenState extends State<PartScreen> {
   /// both `source_body_ids` and `mirror_plane`, but this stays defensive
   /// rather than assuming). Unlike [_openFilletPanelForEdit], this does
   /// *not* self-exclude this Feature's own id via [_beginRollback] - Mirror
-  /// never modifies its source Body in place (see this file's own Mirror
-  /// state-field section header comment), so there is nothing of its own
-  /// effect to hide from the live-edit session, the same reasoning
+  /// never modifies its source Body/Bodies in place (see this file's own
+  /// Mirror state-field section header comment), so there is nothing of its
+  /// own effect to hide from the live-edit session, the same reasoning
   /// [_openExtrudePanelForEdit]/[_openRevolvePanelForEdit] rely on for not
-  /// self-excluding either.
+  /// self-excluding either. Always enters directly at `pickingPlane` -
+  /// Phase 1's edit flow can only ever change `mirror_plane`, never
+  /// `source_body_ids` (there is no re-pick-Bodies UI on an existing
+  /// MirrorFeature yet), so there is no `pickingBodies` step to go through.
   ///
   /// [_selectedEntities] is seeded with the reconstructed plane entity (via
   /// [_mirrorPlaneEntityFor]) rather than cleared to `{}` - unlike Create
@@ -5223,10 +5334,10 @@ class _PartScreenState extends State<PartScreen> {
     if (sourceBodyIds.isEmpty || mirrorPlane == null) return false;
 
     setState(() {
-      _mirrorActive = true;
+      _mirrorStep = _MirrorStep.pickingPlane;
       _editingMirrorFeatureId = feature.id;
       _previewMirrorFeatureId = feature.id;
-      _mirrorSourceBodyId = sourceBodyIds.first;
+      _mirrorSourceBodyIds = sourceBodyIds;
       _mirrorEditSnapshot = (sourceBodyIds: sourceBodyIds, mirrorPlane: mirrorPlane);
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -5285,7 +5396,7 @@ class _PartScreenState extends State<PartScreen> {
   /// picked, or PATCHes the one already created by an earlier call - mirrors
   /// [_ensureRevolveFeatureExists] exactly (the simple pattern - no preview-
   /// mesh overlay, no self-exclusion).
-  Future<void> _ensureMirrorFeatureExists(String sourceBodyId, PlaneRefDto mirrorPlane) async {
+  Future<void> _ensureMirrorFeatureExists(List<String> sourceBodyIds, PlaneRefDto mirrorPlane) async {
     final part = _part;
     if (part == null) return;
 
@@ -5293,7 +5404,7 @@ class _PartScreenState extends State<PartScreen> {
     if (existingId == null) {
       final created = await _api.createMirrorFeature(
         part.id,
-        sourceBodyIds: [sourceBodyId],
+        sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
       );
       _previewMirrorFeatureId = created.id;
@@ -5301,7 +5412,7 @@ class _PartScreenState extends State<PartScreen> {
       await _api.updateMirrorFeature(
         part.id,
         existingId,
-        sourceBodyIds: [sourceBodyId],
+        sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
       );
     }
@@ -5316,10 +5427,10 @@ class _PartScreenState extends State<PartScreen> {
   void _scheduleMirrorPreview() {
     _mirrorDebounce?.cancel();
     _mirrorDebounce = Timer(const Duration(milliseconds: 500), () {
-      final sourceBodyId = _mirrorSourceBodyId;
+      final sourceBodyIds = _mirrorSourceBodyIds;
       final mirrorPlane = _currentMirrorPlaneRef();
-      if (sourceBodyId == null || mirrorPlane == null) return;
-      _runGuarded(() => _ensureMirrorFeatureExists(sourceBodyId, mirrorPlane));
+      if (sourceBodyIds == null || mirrorPlane == null) return;
+      _runGuarded(() => _ensureMirrorFeatureExists(sourceBodyIds, mirrorPlane));
     });
   }
 
@@ -5333,8 +5444,8 @@ class _PartScreenState extends State<PartScreen> {
       // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
       // fix this mirrors.
       _featureTreeVisible = false;
-      _mirrorActive = false;
-      _mirrorSourceBodyId = null;
+      _mirrorStep = null;
+      _mirrorSourceBodyIds = null;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -5358,8 +5469,8 @@ class _PartScreenState extends State<PartScreen> {
     final editSnapshot = _mirrorEditSnapshot;
     setState(() {
       _featureTreeVisible = false;
-      _mirrorActive = false;
-      _mirrorSourceBodyId = null;
+      _mirrorStep = null;
+      _mirrorSourceBodyIds = null;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -5931,7 +6042,19 @@ class _PartScreenState extends State<PartScreen> {
                   // concurrent live-edit flow is ever added.
                   previewOverlayBodyId: _filletActive ? _filletPreviewBodyId : _chamferPreviewBodyId,
                   previewOverlayMesh: _filletActive ? _filletPreviewMesh : _chamferPreviewMesh,
-                  referencePlanesHidden: _referencePlanesHidden,
+                  // On-device UX feedback on the guided "New > Mirror" flow:
+                  // reference planes are temporarily forced visible for the
+                  // `pickingPlane` step, regardless of the user's own
+                  // [_referencePlanesHidden] preference - they're usually
+                  // auto-hidden as soon as the first Body exists (see
+                  // [_hasAutoHiddenReferencePlanes]), but a fixed-plane
+                  // mirror pick needs them shown to be pickable at all. Only
+                  // this render call site is overridden - [PartToolbar]'s
+                  // own `referencePlanesHidden:` (below) is left alone so its
+                  // toggle switch keeps reflecting the user's real
+                  // underlying preference throughout.
+                  referencePlanesHidden:
+                      _mirrorStep == _MirrorStep.pickingPlane ? false : _referencePlanesHidden,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
@@ -6178,10 +6301,14 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelChamfer,
                     ),
                   ),
-                if (_mirrorActive)
+                // [MirrorPanel] itself only ever handles the `pickingPlane`
+                // step - `pickingBodies` has no bottom panel of its own,
+                // just the top banner + confirm FAB just below (mirroring
+                // the profile/path picker's own shape).
+                if (_mirrorStep == _MirrorStep.pickingPlane)
                   Positioned.fill(
                     child: MirrorPanel(
-                      key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyId),
+                      key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyIds?.join(',')),
                       title: _editingMirrorFeatureId != null ? 'Edit Mirror' : 'Mirror',
                       hasPlanePicked: _mirrorPlaneEntity != null,
                       onConfirm: _confirmMirror,
@@ -6706,6 +6833,100 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Pattern/Mirror scoping's Phase 1 guided "Add" FAB entry
+                // (`_startMirrorPicker`): shown for the whole `pickingBodies`
+                // step - same top-center pill convention as the Fillet/
+                // Chamfer banners above, but Cancel-only here too since
+                // confirming is the checkmark FAB below (mirrors the
+                // profile/path picker's own "Cancel in the banner, confirm
+                // via the FAB" split, needed because Mirror's Bodies aren't
+                // committed to anything until this step's own confirm -
+                // unlike Fillet/Chamfer, where every edge tap already lives
+                // straight in the one FilletFeature/ChamferFeature being
+                // built).
+                if (_mirrorStep == _MirrorStep.pickingBodies)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _mirrorPickedBodyCount() == 0
+                                          ? 'Select Body to Mirror'
+                                          : '${_mirrorPickedBodyCount()} body(s) selected - tap '
+                                              'checkmark to confirm',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelMirror,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Shown for the `pickingPlane` step until a plane is
+                // actually picked (mirrors the Fillet/Chamfer banners'
+                // `_previewXFeatureId == null` condition exactly - a plane
+                // pick immediately creates the preview MirrorFeature via
+                // [_scheduleMirrorPreview], so this naturally disappears the
+                // moment one lands). Also shown for [_onMirrorTapped]'s
+                // ambient entry (which skips `pickingBodies` and opens
+                // straight into `pickingPlane`), but never for B4 edit mode
+                // ([_openMirrorPanelForEdit] always seeds
+                // [_previewMirrorFeatureId] immediately, so this never shows
+                // then - matching every other edit flow's own guided-entry-
+                // only banner convention).
+                if (_mirrorStep == _MirrorStep.pickingPlane && _previewMirrorFeatureId == null)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Center(
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('Select Mirror Plane or Face'),
+                                const SizedBox(width: 12),
+                                TextButton(
+                                  onPressed: _cancelMirror,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -6809,6 +7030,24 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'confirm-path-picker-fab',
                       tooltip: 'Confirm path selection',
                       onPressed: _busy || _pathPickerRefs.isEmpty ? null : _confirmPathPicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  ],
+                  // Pattern/Mirror scoping's Phase 1 `pickingBodies` step's
+                  // own "confirm" FAB, mirroring the profile/path pickers'
+                  // directly above - ticks off the currently-picked
+                  // Body/Bodies and advances to `pickingPlane` (see
+                  // [_confirmMirrorBodySelection]). Disabled until at least
+                  // one Body is picked, same "requires 1+" rule the path
+                  // picker's own FAB enforces just above.
+                  if (_mirrorStep == _MirrorStep.pickingBodies) ...[
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      heroTag: 'confirm-mirror-body-picker-fab',
+                      tooltip: 'Confirm body selection',
+                      onPressed: _busy || _mirrorPickedBodyCount() == 0
+                          ? null
+                          : _confirmMirrorBodySelection,
                       child: const Icon(Icons.check),
                     ),
                   ],

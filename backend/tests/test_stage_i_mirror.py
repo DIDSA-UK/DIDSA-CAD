@@ -161,6 +161,36 @@ def test_mirroring_about_yz_reflects_the_box_across_x_equals_zero():
     assert (mirrored_min_x, mirrored_max_x) == (-10.0, 0.0)
 
 
+def test_mirroring_two_source_bodies_produces_two_independent_mirrored_bodies():
+    """On-device UX feedback pulled multi-body seeding forward from Phase 6
+    into Phase 1 (see mirror.py's module docstring) - this is the first test
+    exercising `source_body_ids` with more than one entry."""
+    part = _create_part()
+    sketch_a = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0)
+    _create_extrude_feature(part["id"], sketch_a["id"])
+    sketch_b = _create_square_sketch_feature(part["id"], x0=100.0, y0=100.0)
+    _create_extrude_feature(part["id"], sketch_b["id"])
+    body_id_a, body_id_b = _body_ids(part["id"])
+
+    response = _create_mirror(part["id"], [body_id_a, body_id_b], _fixed_plane_ref("YZ"))
+    assert response.status_code == 201
+    feature = response.json()
+    assert feature["source_body_ids"] == [body_id_a, body_id_b]
+
+    body_ids = _body_ids(part["id"])
+    assert len(body_ids) == 4  # 2 sources + 2 mirrored
+
+    mirrored_ids = [bid for bid in body_ids if bid not in (body_id_a, body_id_b)]
+    assert len(mirrored_ids) == 2
+
+    ranges = {bid: _vertex_x_range(part["id"], bid) for bid in body_ids}
+    assert ranges[body_id_a] == (0.0, 10.0)
+    assert ranges[body_id_b] == (100.0, 110.0)
+    mirrored_ranges = [ranges[bid] for bid in mirrored_ids]
+    assert (-10.0, 0.0) in mirrored_ranges
+    assert (-110.0, -100.0) in mirrored_ranges
+
+
 def test_mirror_about_a_body_face_succeeds():
     part, body_id = _boxy_part_and_body()
     response = _create_mirror(part["id"], [body_id], _face_plane_ref(body_id, 0))
@@ -202,18 +232,6 @@ def test_list_features_includes_the_mirror():
 def test_zero_source_body_ids_is_rejected():
     part, _body_id = _boxy_part_and_body()
     response = _create_mirror(part["id"], [], _fixed_plane_ref("YZ"))
-    assert response.status_code == 422
-
-
-def test_two_source_body_ids_is_rejected_in_phase_1():
-    part = _create_part()
-    sketch_a = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0)
-    _create_extrude_feature(part["id"], sketch_a["id"])
-    sketch_b = _create_square_sketch_feature(part["id"], x0=100.0, y0=100.0)
-    _create_extrude_feature(part["id"], sketch_b["id"])
-    body_id_a, body_id_b = _body_ids(part["id"])
-
-    response = _create_mirror(part["id"], [body_id_a, body_id_b], _fixed_plane_ref("YZ"))
     assert response.status_code == 422
 
 

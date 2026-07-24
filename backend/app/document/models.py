@@ -605,9 +605,9 @@ class SweepFeature(Feature):
 @dataclass
 class MirrorFeature(Feature):
     """Pattern/Mirror scoping's Phase 1 (see `docs/pattern-mirror-scope.md`
-    §2.1/§4): reflects the single Body named in `source_body_ids` across
-    `mirror_plane`, producing a brand-new, independent Body via OCCT
-    `gp_Trsf.SetMirror` (a `gp_Ax2` plane-mirror, not the `gp_Ax1`
+    §2.1/§4): reflects every Body named in `source_body_ids` across
+    `mirror_plane`, producing one brand-new, independent Body per source via
+    OCCT `gp_Trsf.SetMirror` (a `gp_Ax2` plane-mirror, not the `gp_Ax1`
     line-mirror overload) - see `app.document.mirror.resolve_mirror_from_
     bodies`.
 
@@ -618,14 +618,19 @@ class MirrorFeature(Feature):
     existing Plane feature" as the exact same field, matching every
     mainstream CAD tool's own unified "pick a plane-like thing" mirror UX.
 
-    Phase 1 deliberately keeps `source_body_ids` restricted to exactly one
-    entry (see `app.document.router._validate_mirror_source_body_ids`) and
-    always produces a separate Body (no merge-into-source option yet,
-    unlike Boss/Cut's `target_body_ids`) - multi-body/multi-feature seeds
-    (`source_feature_ids`, reserved but unused until Phase 6) and a
-    keep-separate-vs-fuse `merge` toggle (Phase 5) are later, explicitly
-    scoped phases, not this one. Like a Boss with no `target_body_ids`,
-    it always mints a brand-new Body identified by its own Feature id."""
+    `source_body_ids` accepts one or more entries - on-device feedback on
+    the guided "New > Mirror" flow ("select body/bodies (multiple bodies
+    should be supported)") pulled multi-body seeding forward from its
+    original Phase 6 scoping into Phase 1 directly (see `docs/pattern-
+    mirror-scope.md`'s updated Phase 1/6 entries). Always produces separate
+    Bodies (no merge-into-source option yet, unlike Boss/Cut's
+    `target_body_ids`) - `source_feature_ids` (reserved but unused until
+    Phase 6's multi-*feature* seeding) and a keep-separate-vs-fuse `merge`
+    toggle (Phase 5) remain later, explicitly scoped work. Like a Boss with
+    no `target_body_ids`, a single source mints a brand-new Body identified
+    by its own Feature id directly; 2+ sources each get their own
+    `#N`-suffixed id (see `app.document.extrude.compute_part_bodies`'s own
+    `MirrorFeature` branch)."""
 
     id: str
     source_body_ids: list[str]

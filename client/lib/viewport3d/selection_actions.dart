@@ -72,14 +72,18 @@ List<SelectionContextAction> contextActionsFor(
   // suppressed rather than picking one arbitrarily), same as before.
   //
   // Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
-  // §2.1/§4): a *lone* Body - exactly one, nothing else selected - now
-  // offers Mirror, the first real operation a Body-only selection has ever
-  // enabled. Checked before the generic mixed-Body guard below, same
-  // precedence pattern the single/two-plane-like checks further down use
-  // against their own generic buckets.
+  // §2.1/§4): one or more Bodies, nothing else selected - now offers
+  // Mirror, the first real operation a Body-only selection has ever
+  // enabled. On-device UX feedback on the guided "New > Mirror" flow pulled
+  // multi-body seeding forward from its original Phase 6 scoping into
+  // Phase 1 directly (see `MirrorFeature`'s own updated backend docstring),
+  // so any positive count of Bodies - not just exactly one - enables this
+  // now. Checked before the generic mixed-Body guard below, same precedence
+  // pattern the single/two-plane-like checks further down use against their
+  // own generic buckets.
   final bodies = selection.where((s) => s.kind == SelectionEntityKind.body).toList();
   if (bodies.isNotEmpty) {
-    if (bodies.length == 1 && selection.length == 1) {
+    if (bodies.length == selection.length) {
       return const [SelectionContextAction('Mirror', enabled: true)];
     }
     return const [];

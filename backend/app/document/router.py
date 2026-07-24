@@ -391,19 +391,22 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
 
 def _validate_mirror_source_body_ids(part: Part, source_body_ids: list[str]) -> None:
     """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
-    §2.1/§4): `source_body_ids` must have exactly one entry - the
-    multi-body/multi-feature seed widening described there is explicit
-    Phase 6 scope, not this one. Each entry must resolve to a Feature that
-    produces a Body already in this Part, via the identical accepted-type
-    check `_validate_target_body_ids` already established (a Body's id
-    always traces back to one of these four Feature types through
-    `base_feature_id`) - a MirrorFeature itself is deliberately not (yet)
-    an accepted producer here, since chaining a Mirror off another
-    Mirror's own output is also Phase 6 scope."""
-    if len(source_body_ids) != 1:
+    §2.1/§4): `source_body_ids` must have at least one entry - on-device
+    feedback on the guided "New > Mirror" flow pulled multi-body seeding
+    forward from its original Phase 6 scoping into Phase 1 directly (see
+    `MirrorFeature`'s own updated docstring), so any positive count is
+    valid here now, not just exactly one. Each entry must resolve to a
+    Feature that produces a Body already in this Part, via the identical
+    accepted-type check `_validate_target_body_ids` already established (a
+    Body's id always traces back to one of these four Feature types through
+    `base_feature_id`) - a MirrorFeature itself is deliberately not (yet) an
+    accepted producer here, since chaining a Mirror off another Mirror's own
+    output is still Phase 6 scope (multi-*feature* seeding), unaffected by
+    this widening."""
+    if not source_body_ids:
         raise HTTPException(
             status_code=422,
-            detail="MirrorFeature requires exactly one source_body_ids entry (Phase 1 scope)",
+            detail="MirrorFeature requires at least one source_body_ids entry",
         )
     for source_id in source_body_ids:
         source_feature = part.get_feature(base_feature_id(source_id))

@@ -215,7 +215,7 @@ mirror a Cut's *effect* mirrors the Body that already reflects it:
 @dataclass
 class MirrorFeature(Feature):
     id: str
-    source_body_ids: list[str]      # bodies to mirror (v1: exactly one, see Phase 1)
+    source_body_ids: list[str]      # bodies to mirror (v1: 1+, widened from exactly-one - see Phase 1's 2026-07-24 revision)
     source_feature_ids: list[str]   # features to mirror, resolved to their output bodies (Phase 6)
     mirror_plane: PlaneRef          # reuse verbatim — face, fixed plane, or CreatePlaneFeature
     merge: MergeMode                # KEEP_SEPARATE | FUSE_INTO_SOURCE (Phase 5; default KEEP_SEPARATE)
@@ -588,33 +588,67 @@ tool's own default.
 
 ### Phase 1 — Mirror about a fixed plane or Body face
 
-**Status: implemented (2026-07-23) — see `docs/status.md`'s same-dated entry
-for the full implementation/verification write-up.** No `pythonocc-core`/
-Flutter SDK available in that implementation session, so the OCCT-free
-backend graph/native-format logic was verified by real test runs; every
-OCCT-touching backend module and the entire client side (no Dart/Flutter
-SDK at all in that sandbox) were `ast.parse`-verified/hand-reviewed against
-exact precedent only — real CI (backend) and an on-device/desktop build
-(client) are still needed to confirm beyond that.
+**Status: implemented (2026-07-23), revised (2026-07-24) — see
+`docs/status.md`'s matching dated entries for the full implementation/
+verification write-up.** No `pythonocc-core`/Flutter SDK available in the
+initial implementation session, so the OCCT-free backend graph/native-
+format logic was verified by real test runs there; every OCCT-touching
+backend module and the entire client side were `ast.parse`-verified/hand-
+reviewed against exact precedent only in that session. The 2026-07-24
+revision (below) verified everything for real instead: a local
+`pythonocc-core` env (micromamba) for the full backend `pytest` suite
+(988 tests) and a local Flutter SDK (master channel) for `flutter analyze`
++ the full client `flutter test` suite (937 tests) — both green — plus
+real GitHub Actions CI on the pushed branch.
 
-Single Body seed, always-separate output.
+Always-separate output (merge options remain Phase 5).
 
-- **Deliverable**: select one Body, pick a mirror plane (fixed XY/XZ/YZ,
-  an existing Body face, or an existing `CreatePlaneFeature`), get a
-  second, independent mirrored Body.
-- **Backend**: `MirrorFeature` dataclass (`source_body_ids` constrained to
-  exactly one entry for now, `mirror_plane: PlaneRef`, no `merge` field
-  yet — hardcode `KEEP_SEPARATE`, add the field in Phase 5 rather than
-  stubbing an unused enum now). New `mirror.py` module. Graph/
-  `compute_part_bodies`/schema/router plumbing per the six-step checklist.
-- **Client**: `mirror_panel.dart` (clone `fillet_panel.dart`), new
-  `contextActionsFor` branch ("exactly 1 Body selected" → offer "Mirror"),
-  plane-pick UX reused from `CreatePlanePanel`, simple `isPreviewMesh`
-  live preview.
+- **Deliverable**: select one or more Bodies, pick a mirror plane (fixed
+  XY/XZ/YZ, an existing Body face, or an existing `CreatePlaneFeature`),
+  get one independent mirrored Body per source. Reached either via the
+  ambient `SelectionContextPanel` ("Mirror" button on a Body-only
+  selection) or via a new guided "Add" FAB entry (`New > Mirror`): pick
+  Body/Bodies → confirm → pick a mirror plane (reference planes
+  temporarily forced visible for this step) → live preview → confirm.
+- **Backend**: `MirrorFeature` dataclass (`source_body_ids: list[str]`,
+  `mirror_plane: PlaneRef`, no `merge` field yet — hardcode
+  `KEEP_SEPARATE`, add the field in Phase 5 rather than stubbing an unused
+  enum now). New `mirror.py` module. Graph/`compute_part_bodies`/schema/
+  router plumbing per the six-step checklist. **Revision (2026-07-24):**
+  on-device UX feedback on the guided "New > Mirror" flow ("multiple
+  bodies should be supported") pulled multi-body seeding forward from its
+  original Phase 6 scoping directly into this phase — `source_body_ids`
+  now accepts any positive count, not just exactly one; `resolve_mirror_
+  from_bodies` mirrors every entry across the same resolved plane and
+  registers one Body per source (`feature.id` alone for a single source,
+  `#N`-suffixed per source for 2+, mirroring `_register_solids`'s own
+  single-vs-multiple convention). `source_feature_ids` (multi-*feature*
+  seeding) remains Phase 6 — unaffected by this widening.
+- **Client**: `mirror_panel.dart` (clone `fillet_panel.dart`), a
+  `contextActionsFor` branch (1+ Bodies, nothing else, selected → offer
+  "Mirror"), plane-pick UX reused from `CreatePlanePanel`, simple
+  `isPreviewMesh` live preview. **Revision (2026-07-24):** a new guided
+  "Add" FAB entry (`FeaturePickerAction.mirror`) drives a genuine two-step
+  wizard (`_MirrorStep.pickingBodies` → `pickingPlane`) — Body-picking and
+  plane-picking use mutually exclusive `SelectionFilterState`s
+  (`hitTestBodies` treats `filter.body`/`filter.face` as mutually
+  exclusive at the whole-hit-test level), so, unlike Revolve's axis pick
+  (a `sketchLine`, hit-tested via a completely separate code path from its
+  own Body picks), Mirror cannot let the user pick Bodies and a plane
+  simultaneously through one filter and genuinely needs the two-step
+  shape. Each step gets its own top banner (`Select Body to Mirror` /
+  `Select Mirror Plane or Face`) mirroring Fillet/Chamfer's guided-entry
+  banner convention, with a checkmark FAB (mirroring the profile/path
+  pickers' own) confirming the body-pick step. `contextActionsFor`'s
+  Mirror branch also widened to 1+ Bodies (still nothing else selected) to
+  match; its ambient entry skips straight to `pickingPlane` since its
+  Bodies are already selected going in.
 - **Complexity/risk**: low-medium. All the hard reference-resolution work
   (`PlaneRef`) is 100% pre-existing; the only genuinely new code is the
   `gp_Trsf.SetMirror` call itself plus the now-well-worn six-file Feature
-  checklist (five prior Feature types have already done it).
+  checklist (five prior Feature types have already done it). The
+  multi-body widening and guided two-step wizard added real, but bounded,
+  scope on top.
 
 ### Phase 2 — Rectangular pattern
 
@@ -694,22 +728,36 @@ Fuse vs. keep separate, for both Pattern and Mirror.
   survives a merge, what happens to selection state for instances that
   just got fused away) rather than new OCCT risk.
 
-### Phase 6 — Multi-body / multi-feature seed selection
+### Phase 6 — Multi-feature seed selection (+ Pattern's own multi-body)
 
 "Patterning bodies, patterning features" at full generality.
 
-- **Deliverable**: Pattern/Mirror accept a multi-select of Bodies and/or
-  Feature-tree entries, resolving Feature selections to their current
-  output Body/Bodies per §2.8.
-- **Backend**: widen `source_body_ids`/`source_feature_ids` validation
-  from exactly-one to 1+; `source_feature_ids` resolves via the one-line
-  `base_feature_id` lookup from §2.8 — no new resolution machinery.
+**Revision (2026-07-24)**: Mirror's own multi-*body* seeding (`source_
+body_ids` widened from exactly-one to 1+) was pulled forward into Phase 1
+directly, on guided-flow UX feedback — see that phase's own updated entry.
+What remains here is: (a) Pattern's own multi-body widening (Pattern
+hasn't shipped yet, so this was never split out separately until now),
+and (b) multi-*feature* seeding (`source_feature_ids`) for both Mirror and
+Pattern, which is a distinct capability (a Feature-tree entry as a
+selection source, resolved to its current output Body/Bodies) that
+multi-body widening alone doesn't provide.
+
+- **Deliverable**: Pattern accepts a multi-select of Bodies (matching
+  Mirror's own Phase-1-shipped behavior); both Pattern and Mirror accept
+  Feature-tree entries as sources, resolved to their current output
+  Body/Bodies per §2.8.
+- **Backend**: widen Pattern's own `source_body_ids` validation from
+  exactly-one to 1+ (mirrors Mirror's own Phase 1 revision exactly);
+  `source_feature_ids` resolves via the one-line `base_feature_id` lookup
+  from §2.8 — no new resolution machinery, for either Feature type.
 - **Client**: feed the existing multi-select accumulator directly into
-  the panels (no new selection mechanism), plus a Feature-tree
-  multi-select entry point (verify during implementation whether
+  Pattern's own panel (no new selection mechanism — mirrors Mirror's own
+  guided two-step wizard, built in Phase 1, as the template), plus a
+  Feature-tree multi-select entry point for `source_feature_ids` on both
+  Mirror and Pattern (verify during implementation whether
   `feature_tree_panel.dart` already supports this).
-- **Complexity/risk**: low-medium. Mostly widening validation bounds that
-  were artificially restricted to length-1 in earlier phases; the
+- **Complexity/risk**: low-medium. Pattern's own multi-body widening has a
+  direct, just-shipped precedent to copy (Mirror's Phase 1 revision); the
   Feature-tree-as-selection-source wiring is the one piece needing a
   direct on-device check before estimating further.
 

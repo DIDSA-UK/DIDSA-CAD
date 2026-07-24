@@ -214,10 +214,11 @@ void main() {
       expect(actions, [const SelectionContextAction('Mirror', enabled: true)]);
     });
 
-    test('two Bodies together still suppress everything (Phase 1: single-body seed only)', () {
+    test('two Bodies together also offer a real, enabled Mirror (multi-body seeding)', () {
       const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
-      expect(contextActionsFor({bodyA, bodyB}), isEmpty);
+      final actions = contextActionsFor({bodyA, bodyB});
+      expect(actions, [const SelectionContextAction('Mirror', enabled: true)]);
     });
 
     test('a Body mixed with a Body sub-shape still suppresses everything', () {

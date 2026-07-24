@@ -529,10 +529,12 @@ class SweepFeatureResponse(BaseModel):
 
 class MirrorFeatureCreate(BaseModel):
     """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
-    §2.1/§4): creates a MirrorFeature reflecting `source_body_ids`' single
-    Body across `mirror_plane`. `source_body_ids` must have exactly one
-    entry in Phase 1 (see `app.document.router._validate_mirror_source_
-    body_ids`) - the multi-body/multi-feature seed widening is Phase 6."""
+    §2.1/§4): creates a MirrorFeature reflecting every Body named in
+    `source_body_ids` across `mirror_plane`. `source_body_ids` must have at
+    least one entry (see `app.document.router._validate_mirror_source_
+    body_ids`) - multi-body seeding was pulled forward from its original
+    Phase 6 scoping into Phase 1 on guided-flow UX feedback; multi-*feature*
+    seeding (`source_feature_ids`) remains Phase 6."""
 
     source_body_ids: list[str]
     mirror_plane: PlaneRefSchema

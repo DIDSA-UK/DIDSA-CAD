@@ -827,17 +827,26 @@ def compute_part_bodies(
 
         if isinstance(feature, MirrorFeature):
             try:
-                mirrored_shape = resolve_mirror_from_bodies(part, bodies, feature, excluded_feature_ids)
+                mirrored_shapes = resolve_mirror_from_bodies(part, bodies, feature, excluded_feature_ids)
             except HTTPException:
                 logger.warning("Skipping MirrorFeature %s: could not be resolved", feature.id)
                 continue
             # Boss-with-no-target semantics (see MirrorFeature's own
-            # docstring) - a mirrored copy is always a brand-new, never-
-            # merged Body in Phase 1, so this reuses `_register_solids`
-            # directly rather than `_apply_boss_or_cut` (which also knows
-            # how to fuse/cut into `target_body_ids`, a concept Mirror
-            # doesn't have until Phase 5's merge option).
-            _register_solids(bodies, feature.id, mirrored_shape)
+            # docstring) - every mirrored copy is a brand-new, never-merged
+            # Body in Phase 1, so this reuses `_register_solids` directly
+            # rather than `_apply_boss_or_cut` (which also knows how to
+            # fuse/cut into `target_body_ids`, a concept Mirror doesn't have
+            # until Phase 5's merge option). One source Body registers under
+            # this Feature's own id directly (unchanged from before multi-
+            # body seeding); 2+ sources each get their own `#N`-suffixed id
+            # (mirrors `_register_solids`'s own single-vs-multiple naming
+            # convention, applied here across sources rather than within
+            # one already-registered shape).
+            if len(mirrored_shapes) == 1:
+                _register_solids(bodies, feature.id, mirrored_shapes[0])
+            else:
+                for i, shape in enumerate(mirrored_shapes):
+                    _register_solids(bodies, f"{feature.id}#{i}", shape)
             continue
 
         if isinstance(feature, RevolveFeature):
