@@ -38,6 +38,35 @@ def test_polygon_across_flats_with_the_correct_value_converges():
     )
 
 
+def test_polygon_across_flats_with_the_correct_value_reports_no_failed_constraints():
+    """Bug fix (on-device feedback: the 3D sketcher's Polygon vertices/edges
+    still showed/behaved as over-constrained - red, undraggable - even
+    though the across-flats dimension above converges correctly): py-slvs's
+    own `system.Failed` is a *raw*, pre-override diagnostic, populated
+    whenever `result_code != 0` - exactly the ambiguous case the residual
+    fallback exists to reinterpret as a genuine, consistent solve. Left
+    unguarded, `solve_sketch` used to return every one of the Sketch's
+    constraint ids here regardless of `converged`, and the client
+    (`SketchController.backendFlaggedOverConstrainedPointIds`) trusts that
+    list unconditionally, with no `converged` check of its own - so a
+    correctly-`converged=True` solve still poisoned every Polygon Point as
+    "over constrained" downstream. Nothing should read as "failed" once the
+    solve itself is reported converged."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    across_flats = 2 * 10.0 * math.cos(math.pi / 6)
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], across_flats)
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.solver_reported_failed_constraint_ids == []
+
+
 def test_polygon_edge_with_a_horizontal_constraint_that_is_not_satisfied_is_not_falsely_converged():
     """On-device feedback: "user places polygon > applies horizontal
     constraint to one side > polygon doesn't fully solve and looks wrong"
@@ -130,6 +159,9 @@ def test_polygon_across_flats_with_a_wrong_value_is_still_rejected():
     result = solve_sketch(sketch)
 
     assert not result.converged
+    # A genuine non-convergence must still surface py-slvs's own diagnostic -
+    # the fix that clears this list only applies once `converged` is True.
+    assert result.solver_reported_failed_constraint_ids
 
 
 def test_polygon_across_flats_is_not_polygon_specific_slot_style_redundancy_still_works():

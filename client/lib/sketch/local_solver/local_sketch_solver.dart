@@ -379,7 +379,16 @@ LocalSolveResult _solveOnce({
     final rawDof = bindings.getDof(sys);
     final dof = (converged && hasUnconfirmedProvisional) ? (rawDof > 1 ? rawDof : 1) : rawDof;
 
-    final failedCount = bindings.getFailedCount(sys);
+    // Bug fix: mirrors solver.py's own fix - `bindings.getFailedAt` reflects
+    // py-slvs's raw, pre-override diagnostic (populated whenever `resultCode
+    // != 0`), the exact condition either override above exists to
+    // reinterpret as a genuine, consistent solve. Left ungated, a Polygon's
+    // across-flats (or Horizontal-edge) case would report every one of its
+    // own constraint ids here even while `converged` above is correctly
+    // `true`, wrongly implicating every Point downstream. Nothing "failed"
+    // once the solve is reported converged, so this is only ever populated
+    // alongside `converged: false`.
+    final failedCount = converged ? 0 : bindings.getFailedCount(sys);
     final solverReportedFailedConstraintIds = <String>[
       for (var i = 0; i < failedCount; i++)
         if (constraintIdByHandle.containsKey(bindings.getFailedAt(sys, i)))

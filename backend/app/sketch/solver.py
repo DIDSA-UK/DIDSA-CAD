@@ -861,11 +861,35 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
     else:
         dof = system.Dof
 
-    solver_reported_failed_constraint_ids = [
-        constraint_id_by_handle[handle]
-        for handle in system.Failed
-        if handle in constraint_id_by_handle
-    ]
+    # Bug fix (on-device feedback: a Polygon's own across-flats
+    # LineDistanceConstraint - or a Horizontal/Vertical one on an edge -
+    # left every one of the Polygon's Points shown/treated as
+    # over-constrained client-side, even though `converged` above is
+    # correctly `True`): `system.Failed` is py-slvs's own raw diagnostic
+    # from *before* either redundancy override ran, and is populated
+    # whenever `result_code != 0` - exactly the case both overrides above
+    # exist to reinterpret as a genuine, consistent solve. Confirmed
+    # directly against the Polygon-across-flats case this module's own
+    # comments describe: `result_code == 1` with every one of the
+    # Sketch's constraints (not just the redundant chain) present in
+    # `system.Failed`, despite `converged` correctly ending up `True` via
+    # `_residual_verified_convergence`. The client
+    # (`SketchController.backendFlaggedOverConstrainedPointIds`) trusts
+    # this list unconditionally to flag/redden/un-drag Points, with no
+    # `converged` check of its own - so a stale, pre-override `Failed`
+    # list surfaces as a false "over constrained" report there regardless
+    # of how correct `converged`/`dof` above already are. Nothing "failed"
+    # once the solve is reported converged, so the list is only ever
+    # meaningful - and only ever populated - alongside `converged=False`.
+    solver_reported_failed_constraint_ids = (
+        []
+        if converged
+        else [
+            constraint_id_by_handle[handle]
+            for handle in system.Failed
+            if handle in constraint_id_by_handle
+        ]
+    )
 
     blamed_constraint_ids: list[str] = []
     if not converged:
