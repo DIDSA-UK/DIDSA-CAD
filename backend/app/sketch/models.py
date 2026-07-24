@@ -456,33 +456,32 @@ class Polygon(SketchEntity):
     # (see `Sketch.add_polygon`'s own doc comment) creates real Circles
     # instead - both `None` for a Polygon placed with that option off.
     #
-    # Both circles are purely *driven* by the Polygon, never independently
-    # defining: the circumscribed one shares the Polygon's own center/
-    # first-vertex Points directly (zero extra constraints - it tracks the
-    # Polygon's own radius by construction), and the inscribed one's own
-    # radius Point is pinned to the first edge's own midpoint (see
-    # `inscribed_midpoint_constraint_id` below) rather than to an
-    # independently-placed Point tied back in afterward via tangency -
-    # center-to-edge-midpoint distance already *is* the exact inradius for
-    # any regular polygon, a plain geometric consequence of the vertices'
-    # own (already fully-determined) positions, not a further constraint
-    # the solver has to separately reconcile against them.
+    # The circumscribed circle is purely *driven* by the Polygon, never
+    # independently defining: it shares the Polygon's own center/first-
+    # vertex Points directly (zero extra constraints - it tracks the
+    # Polygon's own radius by construction).
+    #
+    # Bug fix (on-device feedback: an across-flats dimension on a Polygon
+    # placed *with* reference circles still showed the whole Polygon as
+    # over-constrained): the inscribed circle's own radius Point was tried
+    # as the first edge's own midpoint (`AtMidpointConstraint`) instead of
+    # this TangentConstraint, on the theory that it's more clearly
+    # "driven" - reverted (see git history) once that turned out to be
+    # unsafe in general: `_residual_verified_convergence`'s own doc comment
+    # in solver.py explains why `AtMidpointConstraint` can't be trusted to
+    # verify "no remaining freedom", using the exact same real regression
+    # test that already excluded it from the *other*, weaker override
+    # (`test_two_at_midpoint_constraints_on_the_same_point_is_singular_
+    # once_hv_ties_diagonals_together`, test_stage15_constraints.py).
+    # TangentConstraint has no such gap and was already safely on that
+    # allowlist, so the inscribed circle goes back to it.
     circumscribed_circle_id: str | None = None
     inscribed_circle_id: str | None = None
-    # The inscribed circle's own radius Point is pinned to the first edge
-    # Line's midpoint via this AtMidpointConstraint - not part of
-    # `Circle.cardinal_constraint_ids`, so `delete_circle` alone wouldn't
-    # clean it up; tracked here so `delete_polygon` can (see that method's
-    # own cleanup). Replaces an earlier design's TangentConstraint against
-    # the first edge (see this class's own docstring): the two are
-    # geometrically equivalent for a regular polygon (both pin the
-    # inscribed circle to the exact same, correct radius/position), but
-    # AtMidpointConstraint ties the inscribed circle's Point to Points the
-    # Polygon's own chain already fully determines with no new constraint
-    # of its own to reconcile, where TangentConstraint asserted an
-    # independent tangency relationship on top of a separately-placed
-    # Point - "driven", not "defining".
-    inscribed_midpoint_constraint_id: str | None = None
+    # The inscribed circle's own TangentConstraint against the first edge
+    # Line - not part of `Circle.cardinal_constraint_ids`, so `delete_circle`
+    # alone wouldn't clean it up; tracked here so `delete_polygon` can (see
+    # that method's own cleanup).
+    inscribed_tangent_constraint_id: str | None = None
 
     @property
     def type(self) -> str:
@@ -1309,13 +1308,11 @@ class Sketch:
         construction Circles via `add_circle` - a circumscribed one sharing
         this Polygon's own center/first-vertex Points directly (so it
         tracks the Polygon's own radius automatically, no extra constraint
-        needed), and an inscribed one whose own radius Point sits at the
-        first edge Line's own midpoint (see `Polygon.inscribed_midpoint_
-        constraint_id`'s own doc comment for why - center-to-edge-midpoint
-        distance already *is* the exact inradius for a regular polygon, no
-        further constraint required to keep it correctly sized under
-        drag). Both are ordinary Circles in every other respect -
-        selectable, dimensionable, deletable independently of the Polygon.
+        needed), and an inscribed one at the mathematically exact inradius
+        (`circumradius * cos(pi / sides)`), tied to the first edge Line via
+        a real TangentConstraint so it stays correctly sized under drag
+        too. Both are ordinary Circles in every other respect - selectable,
+        dimensionable, deletable independently of the Polygon.
 
         See the Polygon class docstring for what the constraint chain does
         and why."""
@@ -1391,28 +1388,17 @@ class Sketch:
 
         circumscribed_circle_id = None
         inscribed_circle_id = None
-        inscribed_midpoint_constraint_id = None
+        inscribed_tangent_constraint_id = None
         if reference_circles:
             circumscribed_circle_id = self.add_circle(
                 center_point_id=center_point_id,
                 radius_point_id=first_vertex_point_id,
                 construction=True,
             ).id
-            # Driven, not defining (see `inscribed_midpoint_constraint_id`'s
-            # own doc comment): the inscribed circle's own radius Point is
-            # the first edge's own midpoint - already, by plain geometry,
-            # at the exact inradius distance from center for any regular
-            # polygon - rather than an independently-placed Point at a
-            # separately-computed inradius value, tied back to the first
-            # edge afterward via its own TangentConstraint.
-            second_vertex = self.points[vertex_point_ids[1]]
-            midpoint = self.add_point(
-                (first_vertex.x + second_vertex.x) / 2, (first_vertex.y + second_vertex.y) / 2
-            )
-            inscribed_midpoint_constraint_id = self.add_at_midpoint_constraint(midpoint.id, line_ids[0]).id
-            inscribed_circle_id = self.add_circle(
-                center_point_id=center_point_id, radius_point_id=midpoint.id, construction=True
-            ).id
+            inradius = radius * math.cos(math.pi / sides)
+            inscribed = self.add_circle(center_point_id=center_point_id, radius=inradius, construction=True)
+            inscribed_tangent_constraint_id = self.add_tangent_constraint(inscribed.id, line_ids[0]).id
+            inscribed_circle_id = inscribed.id
 
         polygon = Polygon(
             id=str(uuid.uuid4()),
@@ -1427,7 +1413,7 @@ class Sketch:
             construction=construction,
             circumscribed_circle_id=circumscribed_circle_id,
             inscribed_circle_id=inscribed_circle_id,
-            inscribed_midpoint_constraint_id=inscribed_midpoint_constraint_id,
+            inscribed_tangent_constraint_id=inscribed_tangent_constraint_id,
         )
         self.entities[polygon.id] = polygon
         return polygon
@@ -2358,14 +2344,11 @@ class Sketch:
         # returned ids are already-pruned Points, kept separate from
         # `candidates` below rather than fed back in for a second,
         # redundant pruning pass); the inscribed circle's own
-        # AtMidpointConstraint isn't part of that (see
-        # `Polygon.inscribed_midpoint_constraint_id`'s own doc comment), so
-        # it's popped first - before `delete_circle` runs and tries to
-        # prune the now-possibly-orphaned midpoint Point, which would
-        # otherwise still look referenced by this very Constraint - same
-        # `.pop(id, None)` "may already be gone" tolerance as everything
-        # else here.
-        self.constraints.pop(polygon.inscribed_midpoint_constraint_id, None)
+        # TangentConstraint isn't part of that (see
+        # `Polygon.inscribed_tangent_constraint_id`'s own doc comment), so
+        # it's popped first, same `.pop(id, None)` "may already be gone"
+        # tolerance as everything else here.
+        self.constraints.pop(polygon.inscribed_tangent_constraint_id, None)
         circle_pruned_point_ids: list[str] = []
         for circle_id in (polygon.circumscribed_circle_id, polygon.inscribed_circle_id):
             if circle_id is not None and circle_id in self.entities:

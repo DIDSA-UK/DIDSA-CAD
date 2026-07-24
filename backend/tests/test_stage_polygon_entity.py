@@ -97,10 +97,9 @@ def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles(
     after placing the polygon"): `reference_circles=True` must create two
     real, independently addressable Circles - a circumscribed one sharing
     the Polygon's own center/first-vertex Points directly, and an inscribed
-    one whose own radius Point sits at the first edge's own midpoint (see
-    the Polygon class's own docstring for why that's the exact inradius,
-    with no separate constraint needed to keep it that way under drag -
-    "driven", not "defining")."""
+    one at the exact mathematical inradius, tangent to the first edge (see
+    the Polygon class's own docstring for why this reverted from an
+    AtMidpointConstraint-based design back to TangentConstraint)."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
@@ -109,7 +108,7 @@ def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles(
 
     assert polygon.circumscribed_circle_id is not None
     assert polygon.inscribed_circle_id is not None
-    assert polygon.inscribed_midpoint_constraint_id is not None
+    assert polygon.inscribed_tangent_constraint_id is not None
 
     circumscribed = sketch.entities[polygon.circumscribed_circle_id]
     assert circumscribed.center_point_id == center.id
@@ -121,15 +120,7 @@ def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles(
     actual_inradius = math.hypot(inradius_point.x - center.x, inradius_point.y - center.y)
     assert actual_inradius == pytest.approx(10.0 * math.cos(math.pi / 6))
 
-    # The inscribed circle's own radius Point really is edge0's midpoint,
-    # not just numerically coincidentally at the right distance.
-    edge0 = sketch.entities[polygon.line_ids[0]]
-    edge0_start = sketch.points[edge0.start_point_id]
-    edge0_end = sketch.points[edge0.end_point_id]
-    assert inradius_point.x == pytest.approx((edge0_start.x + edge0_end.x) / 2)
-    assert inradius_point.y == pytest.approx((edge0_start.y + edge0_end.y) / 2)
-
-    assert polygon.inscribed_midpoint_constraint_id in sketch.constraints
+    assert polygon.inscribed_tangent_constraint_id in sketch.constraints
 
 
 def test_add_polygon_without_reference_circles_creates_neither():
@@ -141,24 +132,24 @@ def test_add_polygon_without_reference_circles_creates_neither():
 
     assert polygon.circumscribed_circle_id is None
     assert polygon.inscribed_circle_id is None
-    assert polygon.inscribed_midpoint_constraint_id is None
+    assert polygon.inscribed_tangent_constraint_id is None
 
 
-def test_delete_polygon_with_reference_circles_cleans_up_both_circles_and_the_midpoint_constraint():
+def test_delete_polygon_with_reference_circles_cleans_up_both_circles_and_the_tangent_constraint():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
     polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
     circumscribed_id = polygon.circumscribed_circle_id
     inscribed_id = polygon.inscribed_circle_id
-    midpoint_constraint_id = polygon.inscribed_midpoint_constraint_id
+    tangent_constraint_id = polygon.inscribed_tangent_constraint_id
     radial_line_ids = list(polygon.radial_line_ids)
 
     sketch.delete_polygon(polygon.id)
 
     assert circumscribed_id not in sketch.entities
     assert inscribed_id not in sketch.entities
-    assert midpoint_constraint_id not in sketch.constraints
+    assert tangent_constraint_id not in sketch.constraints
     for radial_line_id in radial_line_ids:
         assert radial_line_id not in sketch.entities
 

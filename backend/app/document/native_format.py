@@ -193,7 +193,7 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "sides": entity.sides,
             "circumscribed_circle_id": entity.circumscribed_circle_id,
             "inscribed_circle_id": entity.inscribed_circle_id,
-            "inscribed_midpoint_constraint_id": entity.inscribed_midpoint_constraint_id,
+            "inscribed_tangent_constraint_id": entity.inscribed_tangent_constraint_id,
         }
     if isinstance(entity, Slot):
         return {
@@ -310,9 +310,7 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             # this Polygon redesign (see that class's own docstring) has no
             # such key at all - those construction Lines never existed for
             # it, so an empty list is the correct, honest read (not a
-            # missing-data error), same "old file predates a since-added
-            # field" tolerance `inscribed_midpoint_constraint_id` below
-            # already needs.
+            # missing-data error).
             radial_line_ids=list(data.get("radial_line_ids", [])),
             radius_constraint_id=_require(data, "radius_constraint_id"),
             equal_radius_constraint_ids=list(_require(data, "equal_radius_constraint_ids")),
@@ -320,16 +318,7 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             sides=_require(data, "sides"),
             circumscribed_circle_id=data.get("circumscribed_circle_id"),
             inscribed_circle_id=data.get("inscribed_circle_id"),
-            # `inscribed_tangent_constraint_id` fallback: a native-format
-            # file saved before this Polygon redesign (see that class's own
-            # docstring) still uses the old key - the id it holds still
-            # correctly identifies whichever Constraint ties the inscribed
-            # circle to the Polygon (a TangentConstraint for an old file, an
-            # AtMidpointConstraint for a new one), which is all
-            # `delete_polygon`'s own cleanup actually needs (it pops by id,
-            # never by type).
-            inscribed_midpoint_constraint_id=data.get("inscribed_midpoint_constraint_id")
-            or data.get("inscribed_tangent_constraint_id"),
+            inscribed_tangent_constraint_id=data.get("inscribed_tangent_constraint_id"),
         )
     if entity_type == "slot":
         return Slot(
