@@ -103,6 +103,13 @@ class SketchPolygonView {
   final String centerPointId;
   final List<String> vertexPointIds;
   final List<String> lineIds;
+
+  /// One real construction Line per vertex (center to that vertex) - never
+  /// user-facing (see [isImplicitPolygonEdgeTie]'s own doc comment for how
+  /// this and [lineIds] both funnel into hiding the same class of implicit-
+  /// structure labels). See the backend's `app.sketch.models.Polygon.
+  /// radial_line_ids` doc comment for why these exist at all.
+  final List<String> radialLineIds;
   final int sides;
   final bool construction;
 
@@ -120,6 +127,7 @@ class SketchPolygonView {
     required this.centerPointId,
     required this.vertexPointIds,
     required this.lineIds,
+    required this.radialLineIds,
     required this.sides,
     this.construction = false,
     this.circumscribedCircleId,
@@ -3570,6 +3578,9 @@ class SketchController extends ChangeNotifier {
     for (final lineId in polygon.lineIds) {
       if (!lines.containsKey(lineId)) return null;
     }
+    for (final lineId in polygon.radialLineIds) {
+      if (!lines.containsKey(lineId)) return null;
+    }
     return polygon;
   }
 
@@ -5482,18 +5493,23 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
-  /// Whether [lineAId]/[lineBId] are both edges of the *same* still-existing
-  /// Polygon - the on-device feedback fix for the auto-created angle/equal-
-  /// length ties (`add_polygon`'s own `equal_length_constraint_ids`/
-  /// `angle_constraint_ids`) rendering a "45.0°"/"=" label at every vertex
-  /// the instant a Polygon is placed: they're implicit structure (the shape
-  /// wouldn't be a regular Polygon without them), not a user-facing
-  /// dimension, the same way [isCardinalAxisConstraint]'s zero-value ties
-  /// are already never shown. Identified by line membership (both edges
-  /// found in the same Polygon's own [SketchPolygonView.lineIds]) rather
-  /// than a stored id, matching how [circleForDistanceConstraint]/
-  /// [arcForDistanceConstraint] already identify "mine" by Point/Line
-  /// membership instead of the API exposing raw constraint ids.
+  /// Whether [lineAId]/[lineBId] are both edges - or both radial
+  /// construction Lines - of the *same* still-existing Polygon - the on-
+  /// device feedback fix for the auto-created angle/equal-length ties
+  /// (`add_polygon`'s own `angle_constraint_ids`, and an earlier design's
+  /// now-removed `equal_length_constraint_ids`) rendering a "45.0°"/"="
+  /// label at every vertex the instant a Polygon is placed: they're
+  /// implicit structure (the shape wouldn't be a regular Polygon without
+  /// them), not a user-facing dimension, the same way
+  /// [isCardinalAxisConstraint]'s zero-value ties are already never shown.
+  /// Identified by line membership (both Lines found in the same Polygon's
+  /// own [SketchPolygonView.lineIds] *or* both in its own
+  /// [SketchPolygonView.radialLineIds] - never one of each, since an
+  /// AngleConstraint here always pairs two radial Lines, never an edge
+  /// with a radial Line) rather than a stored id, matching how
+  /// [circleForDistanceConstraint]/[arcForDistanceConstraint] already
+  /// identify "mine" by Point/Line membership instead of the API exposing
+  /// raw constraint ids.
   ///
   /// Deliberately forward-looking: a Polygon's own `delete_polygon`
   /// currently cascades every one of its Lines/Constraints away together
@@ -5507,6 +5523,9 @@ class SketchController extends ChangeNotifier {
   bool isImplicitPolygonEdgeTie(String lineAId, String lineBId) {
     for (final polygon in polygons.values) {
       if (polygon.lineIds.contains(lineAId) && polygon.lineIds.contains(lineBId)) {
+        return true;
+      }
+      if (polygon.radialLineIds.contains(lineAId) && polygon.radialLineIds.contains(lineBId)) {
         return true;
       }
     }
@@ -5840,16 +5859,20 @@ class SketchController extends ChangeNotifier {
       }
     }
     // The backend's own Sketch.delete_polygon already deletes every one of
-    // its edge Lines as part of deleting the Polygon itself - same
-    // "already-gone Line" concern the Ellipse block above avoids for its
-    // own 2 axis Lines, generalized to all `sides` of them here. Only for
-    // [polygonIds] (every own piece already independently selected) - a
-    // [collapsedPolygonIds] entry leaves its surviving Lines exactly where
-    // they already are in [lineIds], to be deleted (or not) individually.
+    // its edge Lines - and every one of its radial construction Lines - as
+    // part of deleting the Polygon itself - same "already-gone Line"
+    // concern the Ellipse block above avoids for its own 2 axis Lines,
+    // generalized to all `sides` of each here. Only for [polygonIds] (every
+    // own piece already independently selected) - a [collapsedPolygonIds]
+    // entry leaves its surviving Lines exactly where they already are in
+    // [lineIds], to be deleted (or not) individually.
     for (final polygonId in polygonIds) {
       final polygon = polygons[polygonId];
       if (polygon == null) continue;
       for (final lineId in polygon.lineIds) {
+        lineIds.remove(lineId);
+      }
+      for (final lineId in polygon.radialLineIds) {
         lineIds.remove(lineId);
       }
     }
@@ -6816,6 +6839,7 @@ class SketchController extends ChangeNotifier {
         centerPointId: created.centerPointId,
         vertexPointIds: created.vertexPointIds,
         lineIds: created.lineIds,
+        radialLineIds: created.radialLineIds,
         sides: created.sides,
         construction: created.construction,
       );
@@ -6824,6 +6848,14 @@ class SketchController extends ChangeNotifier {
           id: created.lineIds[i],
           startPointId: created.vertexPointIds[i],
           endPointId: created.vertexPointIds[(i + 1) % created.vertexPointIds.length],
+        );
+      }
+      for (var i = 0; i < created.radialLineIds.length; i++) {
+        lines[created.radialLineIds[i]] = SketchLineView(
+          id: created.radialLineIds[i],
+          startPointId: created.centerPointId,
+          endPointId: created.vertexPointIds[i],
+          construction: true,
         );
       }
       // Vertex 0 is the (already-restored) first vertex passed above -
@@ -9249,6 +9281,7 @@ class SketchController extends ChangeNotifier {
         centerPointId: polygon.centerPointId,
         vertexPointIds: polygon.vertexPointIds,
         lineIds: polygon.lineIds,
+        radialLineIds: polygon.radialLineIds,
         sides: polygon.sides,
         construction: polygon.construction,
       );
@@ -9914,6 +9947,7 @@ class SketchController extends ChangeNotifier {
         centerPointId: polygon.centerPointId,
         vertexPointIds: polygon.vertexPointIds,
         lineIds: polygon.lineIds,
+        radialLineIds: polygon.radialLineIds,
         sides: polygon.sides,
         construction: polygon.construction,
         circumscribedCircleId: polygon.circumscribedCircleId,
@@ -9924,6 +9958,14 @@ class SketchController extends ChangeNotifier {
           id: polygon.lineIds[i],
           startPointId: polygon.vertexPointIds[i],
           endPointId: polygon.vertexPointIds[(i + 1) % polygon.vertexPointIds.length],
+        );
+      }
+      for (var i = 0; i < polygon.radialLineIds.length; i++) {
+        lines[polygon.radialLineIds[i]] = SketchLineView(
+          id: polygon.radialLineIds[i],
+          startPointId: polygon.centerPointId,
+          endPointId: polygon.vertexPointIds[i],
+          construction: true,
         );
       }
       // Vertex 0 is the (already-known) firstVertexId placed/snapped above -
@@ -9971,6 +10013,9 @@ class SketchController extends ChangeNotifier {
         await _api.deletePolygon(_sketchId!, polygon.id);
         polygons.remove(polygon.id);
         for (final lineId in polygon.lineIds) {
+          lines.remove(lineId);
+        }
+        for (final lineId in polygon.radialLineIds) {
           lines.remove(lineId);
         }
         for (final circleId in createdCircleIds) {

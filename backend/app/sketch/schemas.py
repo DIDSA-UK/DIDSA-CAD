@@ -457,6 +457,12 @@ class PolygonResponse(BaseModel):
     center_point_id: str
     vertex_point_ids: list[str]
     line_ids: list[str]
+    # One real construction Line per vertex (center to that vertex) - never
+    # user-facing, same "always-on, auto-created" precedent as
+    # EllipseResponse's own major_axis_line_id/minor_axis_line_id. See
+    # `app.sketch.models.Polygon.radial_line_ids`'s own doc comment for why
+    # these exist at all.
+    radial_line_ids: list[str]
     radius: float
     sides: int
     construction: bool = False

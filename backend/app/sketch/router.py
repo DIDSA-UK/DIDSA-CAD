@@ -271,6 +271,7 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         center_point_id=polygon.center_point_id,
         vertex_point_ids=polygon.vertex_point_ids,
         line_ids=polygon.line_ids,
+        radial_line_ids=polygon.radial_line_ids,
         radius=polygon.radius(sketch.points),
         sides=polygon.sides,
         construction=polygon.construction,

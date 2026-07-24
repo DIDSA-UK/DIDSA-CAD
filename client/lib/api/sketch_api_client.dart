@@ -404,6 +404,16 @@ class PolygonDto {
   final String centerPointId;
   final List<String> vertexPointIds;
   final List<String> lineIds;
+
+  /// One real construction Line per vertex (center to that vertex) - never
+  /// user-facing, same "always-on, auto-created" precedent as
+  /// [EllipseDto]'s own `majorAxisLineId`/`minorAxisLineId`. See the
+  /// backend's `app.sketch.models.Polygon.radial_line_ids` doc comment for
+  /// why these exist at all (pinning each vertex's own central angle,
+  /// rather than the edges' own turn angle, is what keeps a Polygon
+  /// genuinely non-redundant and robust under drag - see that class's own
+  /// docstring).
+  final List<String> radialLineIds;
   final double radius;
   final int sides;
   final bool construction;
@@ -420,6 +430,7 @@ class PolygonDto {
     required this.centerPointId,
     required this.vertexPointIds,
     required this.lineIds,
+    required this.radialLineIds,
     required this.radius,
     required this.sides,
     this.construction = false,
@@ -432,6 +443,7 @@ class PolygonDto {
         centerPointId: json['center_point_id'] as String,
         vertexPointIds: (json['vertex_point_ids'] as List).cast<String>(),
         lineIds: (json['line_ids'] as List).cast<String>(),
+        radialLineIds: (json['radial_line_ids'] as List).cast<String>(),
         radius: (json['radius'] as num).toDouble(),
         sides: json['sides'] as int,
         construction: json['construction'] as bool? ?? false,

@@ -377,12 +377,48 @@ class Polygon(SketchEntity):
     via its own EqualRadiusConstraint (`equal_radius_constraint_ids`, one
     per remaining vertex, via `add_equal_radius_constraint_from_points`
     since a Polygon has no owning Circle/Arc to resolve a center/rim pair
-    from). Consecutive edges are pinned to equal length
-    (`equal_length_constraint_ids`) and to the same exterior angle,
-    `360/sides` degrees (`angle_constraint_ids`) - `sides - 1` of each
-    (the last pair's equality follows by transitivity) - which together
-    keep the shape genuinely rigid/regular under an incremental drag (see
-    the regular-hexagon convergence test this mirrors).
+    from). Consecutive vertices' own *central* angle (as seen from center,
+    not the edges' own turn angle - see `radial_line_ids` below) is pinned
+    to `360/sides` degrees (`angle_constraint_ids`, `sides - 1` of them -
+    the last pair's equality follows by transitivity), which is enough on
+    its own (alongside equal radii above) to keep the shape genuinely
+    rigid/regular under an incremental drag (see the regular-hexagon
+    convergence test this mirrors).
+
+    Bug fix (on-device feedback: an "across flats" LineDistanceConstraint
+    between two opposite edges reported the whole Polygon as over-
+    constrained): an earlier design pinned every consecutive pair of
+    *edges* (not radial lines) to both equal length and the same exterior
+    turn angle - mathematically redundant once equal radii already held
+    (every one of the `sides - 1` equal-length ties was implied by the
+    other two families combined), and it was the extra stacked-redundant
+    equation family that made py-slvs's own rank-deficiency detection
+    unable to tell a genuinely-implied further Constraint (Horizontal, an
+    across-flats LineDistance) apart from a real conflict (see solver.py's
+    own `_residual_verified_convergence` doc comment). Dropping the equal-
+    length family and switching the angle family from edge-to-edge to
+    radial-line-to-radial-line (see `radial_line_ids` below) removes that
+    redundancy entirely - confirmed directly against the real solver
+    (equal radii + equal *central* angles alone, every side count 3-12
+    tested, both at creation and after a battery of modest single-vertex
+    drags: converges cleanly to an identical regular polygon, `result_code
+    == 0`, not just "redundant but consistent"). This also happens to be
+    *more* robust under drag than the edge-based version it replaces, not
+    just less redundant: an edge-to-edge exterior angle only pins the
+    *average* of each pair of neighbouring vertex-to-vertex arcs, not each
+    one individually, which (confirmed directly, the same drag battery)
+    regularly let the edge-based version settle into a genuinely non-
+    regular alternating-arc solution that still satisfied every one of its
+    own constraints - a real, if subtler, degenerate branch than the
+    "equal-length + equal-radius alone" one already known and guarded
+    against by the angle family in the first place. The corrected version
+    also matches how a regular polygon is conventionally built in other
+    parametric CAD kernels: a driving circle/radius plus equal angular
+    spacing *from the center*, with equal edge length following
+    automatically rather than being separately asserted, rather than this
+    project's own earlier, edge-based, more over-determined version.
+    `equal_length_constraint_ids` no longer exists on this class - removed,
+    not merely emptied, since nothing here creates it anymore.
 
     Does NOT override `endpoint_point_ids()` (unlike Arc): a Polygon's own
     Lines already form a closed loop by themselves, so it's always its own
@@ -394,9 +430,19 @@ class Polygon(SketchEntity):
     center_point_id: str
     vertex_point_ids: list[str]
     line_ids: list[str]
+    # One real construction Line per vertex, from `center_point_id` to
+    # `vertex_point_ids[i]` - never user-facing (always `construction=True`,
+    # same "always-on, auto-created, visible-but-dashed" precedent as
+    # Ellipse's own `major_axis_line_id`/`minor_axis_line_id`), it exists
+    # purely so `angle_constraint_ids` (above) has a real Line entity pair
+    # to pin each consecutive *central* angle against - py-slvs's
+    # AngleConstraint (like every Constraint here) references real Line
+    # ids, and there is no "angle between two arbitrary Point pairs sharing
+    # a vertex" primitive that would let it reference the vertices directly
+    # without a materialized Line.
+    radial_line_ids: list[str]
     radius_constraint_id: str
     equal_radius_constraint_ids: list[str]
-    equal_length_constraint_ids: list[str]
     angle_constraint_ids: list[str]
     sides: int
     # On-device feedback ("when the toggle in the polygon tool is on, the 2
@@ -409,13 +455,34 @@ class Polygon(SketchEntity):
     # the moment the tool's ghost/preview phase ended. `reference_circles`
     # (see `Sketch.add_polygon`'s own doc comment) creates real Circles
     # instead - both `None` for a Polygon placed with that option off.
+    #
+    # Both circles are purely *driven* by the Polygon, never independently
+    # defining: the circumscribed one shares the Polygon's own center/
+    # first-vertex Points directly (zero extra constraints - it tracks the
+    # Polygon's own radius by construction), and the inscribed one's own
+    # radius Point is pinned to the first edge's own midpoint (see
+    # `inscribed_midpoint_constraint_id` below) rather than to an
+    # independently-placed Point tied back in afterward via tangency -
+    # center-to-edge-midpoint distance already *is* the exact inradius for
+    # any regular polygon, a plain geometric consequence of the vertices'
+    # own (already fully-determined) positions, not a further constraint
+    # the solver has to separately reconcile against them.
     circumscribed_circle_id: str | None = None
     inscribed_circle_id: str | None = None
-    # The inscribed circle's own TangentConstraint against the first edge
-    # Line - not part of `Circle.cardinal_constraint_ids`, so `delete_circle`
-    # alone wouldn't clean it up; tracked here so `delete_polygon` can (see
-    # that method's own cleanup).
-    inscribed_tangent_constraint_id: str | None = None
+    # The inscribed circle's own radius Point is pinned to the first edge
+    # Line's midpoint via this AtMidpointConstraint - not part of
+    # `Circle.cardinal_constraint_ids`, so `delete_circle` alone wouldn't
+    # clean it up; tracked here so `delete_polygon` can (see that method's
+    # own cleanup). Replaces an earlier design's TangentConstraint against
+    # the first edge (see this class's own docstring): the two are
+    # geometrically equivalent for a regular polygon (both pin the
+    # inscribed circle to the exact same, correct radius/position), but
+    # AtMidpointConstraint ties the inscribed circle's Point to Points the
+    # Polygon's own chain already fully determines with no new constraint
+    # of its own to reconcile, where TangentConstraint asserted an
+    # independent tangency relationship on top of a separately-placed
+    # Point - "driven", not "defining".
+    inscribed_midpoint_constraint_id: str | None = None
 
     @property
     def type(self) -> str:
@@ -1242,11 +1309,13 @@ class Sketch:
         construction Circles via `add_circle` - a circumscribed one sharing
         this Polygon's own center/first-vertex Points directly (so it
         tracks the Polygon's own radius automatically, no extra constraint
-        needed), and an inscribed one at the mathematically exact inradius
-        (`circumradius * cos(pi / sides)`), tied to the first edge Line via
-        a real TangentConstraint so it stays correctly sized under drag
-        too. Both are ordinary Circles in every other respect - selectable,
-        dimensionable, deletable independently of the Polygon.
+        needed), and an inscribed one whose own radius Point sits at the
+        first edge Line's own midpoint (see `Polygon.inscribed_midpoint_
+        constraint_id`'s own doc comment for why - center-to-edge-midpoint
+        distance already *is* the exact inradius for a regular polygon, no
+        further constraint required to keep it correctly sized under
+        drag). Both are ordinary Circles in every other respect -
+        selectable, dimensionable, deletable independently of the Polygon.
 
         See the Polygon class docstring for what the constraint chain does
         and why."""
@@ -1284,55 +1353,81 @@ class Sketch:
             for i in range(1, sides)
         ]
 
-        # Equal side lengths alone leave a regular-looking polygon free to
-        # collapse into a non-regular (even self-intersecting) shape under
-        # drag - equal radii (above) rule out that particular degenerate
-        # branch, but not all of them (confirmed directly against the
-        # solver: equal-length + equal-radius alone can still converge with
-        # non-adjacent vertices coincident). Pinning the angle between every
-        # consecutive pair of edges to the same exterior angle (360/sides
-        # degrees) closes that gap and keeps the shape genuinely
-        # rigid/regular under an incremental drag - see the regular-hexagon
-        # convergence test this mirrors.
+        # Bug fix (on-device feedback: an "across flats" LineDistance
+        # dimension between two opposite edges reported the whole Polygon
+        # as over-constrained, root-caused to this chain's own baked-in
+        # redundancy - see the Polygon class's own docstring): each
+        # `radial_line_ids[i]` is a real (never user-facing) construction
+        # Line from center to `vertex_point_ids[i]`, giving AngleConstraint
+        # a real entity pair to pin the *central* angle between consecutive
+        # vertices directly (`radial_line_ids[i]` to `radial_line_ids[i+1]`,
+        # `360/sides` degrees apart) - unlike the *edge*-to-edge exterior
+        # angle an earlier design pinned instead, which only constrains the
+        # *average* of each pair of neighbouring vertex-to-vertex arcs, not
+        # each individually. That gap matters: confirmed directly against
+        # the real solver (a battery of modest single-vertex drags across
+        # side counts 3-12, anchored and re-solved, matching this module's
+        # own regular-hexagon convergence test's realistic drag scale) that
+        # the edge-based version regularly converges to a genuinely
+        # non-regular alternating-arc solution that still satisfies equal
+        # radii and every edge-pair's own exterior angle (a real, if
+        # subtler, degenerate branch than the "equal-length + equal-radius
+        # alone" one already known and guarded against below) - the
+        # central-angle version tested cleanly (zero failures) across the
+        # same battery. Equal radii (above) + equal central angles (below)
+        # alone fully and non-redundantly determine a regular polygon - no
+        # further per-edge EqualLengthConstraint needed (equal edge length
+        # follows automatically, the same "driving circle + equal angular
+        # spacing" shape a regular polygon is conventionally built from in
+        # other parametric CAD kernels).
+        radial_line_ids = [
+            self.add_line(center_point_id, vertex_point_ids[i], construction=True).id for i in range(sides)
+        ]
         exterior_angle_degrees = 360.0 / sides
-        equal_length_constraint_ids = []
-        angle_constraint_ids = []
-        for i in range(sides - 1):
-            equal_length_constraint_ids.append(
-                self.add_equal_length_constraint(line_ids[i], line_ids[i + 1]).id
-            )
-            angle_constraint_ids.append(
-                self.add_angle_constraint(line_ids[i], line_ids[i + 1], exterior_angle_degrees).id
-            )
+        angle_constraint_ids = [
+            self.add_angle_constraint(radial_line_ids[i], radial_line_ids[i + 1], exterior_angle_degrees).id
+            for i in range(sides - 1)
+        ]
 
         circumscribed_circle_id = None
         inscribed_circle_id = None
-        inscribed_tangent_constraint_id = None
+        inscribed_midpoint_constraint_id = None
         if reference_circles:
             circumscribed_circle_id = self.add_circle(
                 center_point_id=center_point_id,
                 radius_point_id=first_vertex_point_id,
                 construction=True,
             ).id
-            inradius = radius * math.cos(math.pi / sides)
-            inscribed = self.add_circle(center_point_id=center_point_id, radius=inradius, construction=True)
-            inscribed_tangent_constraint_id = self.add_tangent_constraint(inscribed.id, line_ids[0]).id
-            inscribed_circle_id = inscribed.id
+            # Driven, not defining (see `inscribed_midpoint_constraint_id`'s
+            # own doc comment): the inscribed circle's own radius Point is
+            # the first edge's own midpoint - already, by plain geometry,
+            # at the exact inradius distance from center for any regular
+            # polygon - rather than an independently-placed Point at a
+            # separately-computed inradius value, tied back to the first
+            # edge afterward via its own TangentConstraint.
+            second_vertex = self.points[vertex_point_ids[1]]
+            midpoint = self.add_point(
+                (first_vertex.x + second_vertex.x) / 2, (first_vertex.y + second_vertex.y) / 2
+            )
+            inscribed_midpoint_constraint_id = self.add_at_midpoint_constraint(midpoint.id, line_ids[0]).id
+            inscribed_circle_id = self.add_circle(
+                center_point_id=center_point_id, radius_point_id=midpoint.id, construction=True
+            ).id
 
         polygon = Polygon(
             id=str(uuid.uuid4()),
             center_point_id=center_point_id,
             vertex_point_ids=vertex_point_ids,
             line_ids=line_ids,
+            radial_line_ids=radial_line_ids,
             radius_constraint_id=radius_constraint.id,
             equal_radius_constraint_ids=equal_radius_constraint_ids,
-            equal_length_constraint_ids=equal_length_constraint_ids,
             angle_constraint_ids=angle_constraint_ids,
             sides=sides,
             construction=construction,
             circumscribed_circle_id=circumscribed_circle_id,
             inscribed_circle_id=inscribed_circle_id,
-            inscribed_tangent_constraint_id=inscribed_tangent_constraint_id,
+            inscribed_midpoint_constraint_id=inscribed_midpoint_constraint_id,
         )
         self.entities[polygon.id] = polygon
         return polygon
@@ -2227,10 +2322,11 @@ class Sketch:
 
     def delete_polygon(self, polygon_id: str) -> list[str]:
         """Remove a Polygon and everything `add_polygon` always creates
-        alongside it - all `sides` edge Lines and every constraint in its
-        radius/equal-radius/equal-length/angle chain - same "internal
-        implementation detail" exception `delete_circle`/`delete_arc`/
-        `delete_ellipse` already make for their own radius constraint(s).
+        alongside it - all `sides` edge Lines, all `sides` radial
+        construction Lines, and every constraint in its radius/equal-
+        radius/angle chain - same "internal implementation detail"
+        exception `delete_circle`/`delete_arc`/`delete_ellipse` already
+        make for their own radius constraint(s).
         The center and every vertex Point (including the `sides - 1` this
         Polygon itself created fresh) are pruned automatically if nothing
         else still needs them, same as `delete_line`/`delete_circle`/
@@ -2246,12 +2342,11 @@ class Sketch:
         # directly (its own `DELETE /lines/{id}` has no notion of "still
         # owned by a Polygon"), so it may already be gone by the time this
         # runs - that should be a silent no-op here, not a KeyError.
-        for line_id in polygon.line_ids:
+        for line_id in (*polygon.line_ids, *polygon.radial_line_ids):
             self.entities.pop(line_id, None)
         self.constraints.pop(polygon.radius_constraint_id, None)
         for constraint_id in (
             *polygon.equal_radius_constraint_ids,
-            *polygon.equal_length_constraint_ids,
             *polygon.angle_constraint_ids,
         ):
             self.constraints.pop(constraint_id, None)
@@ -2263,11 +2358,14 @@ class Sketch:
         # returned ids are already-pruned Points, kept separate from
         # `candidates` below rather than fed back in for a second,
         # redundant pruning pass); the inscribed circle's own
-        # TangentConstraint isn't part of that (see
-        # `Polygon.inscribed_tangent_constraint_id`'s own doc comment), so
-        # it's popped first, same `.pop(id, None)` "may already be gone"
-        # tolerance as everything else here.
-        self.constraints.pop(polygon.inscribed_tangent_constraint_id, None)
+        # AtMidpointConstraint isn't part of that (see
+        # `Polygon.inscribed_midpoint_constraint_id`'s own doc comment), so
+        # it's popped first - before `delete_circle` runs and tries to
+        # prune the now-possibly-orphaned midpoint Point, which would
+        # otherwise still look referenced by this very Constraint - same
+        # `.pop(id, None)` "may already be gone" tolerance as everything
+        # else here.
+        self.constraints.pop(polygon.inscribed_midpoint_constraint_id, None)
         circle_pruned_point_ids: list[str] = []
         for circle_id in (polygon.circumscribed_circle_id, polygon.inscribed_circle_id):
             if circle_id is not None and circle_id in self.entities:

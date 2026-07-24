@@ -21,10 +21,14 @@ def _dist(sketch: Sketch, a_id: str, b_id: str) -> float:
 
 
 def test_add_polygon_creates_the_full_constraint_chain_atomically():
-    """A hexagon: 5 new vertex Points (the first is passed in), 6 Lines, 1
-    real radius DistanceConstraint, 5 EqualRadiusConstraints, 5
-    EqualLengthConstraints, 5 AngleConstraints - see the Polygon class
-    docstring for why each family exists."""
+    """A hexagon: 5 new vertex Points (the first is passed in), 6 edge
+    Lines, 6 radial construction Lines (center to each vertex), 1 real
+    radius DistanceConstraint, 5 EqualRadiusConstraints, 5 AngleConstraints
+    between consecutive radial lines - see the Polygon class docstring for
+    why each family exists (and why an EqualLengthConstraint per edge pair,
+    and an edge-to-edge rather than radial-line-to-radial-line
+    AngleConstraint, both present in an earlier design, are no longer among
+    them)."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
@@ -40,9 +44,19 @@ def test_add_polygon_creates_the_full_constraint_chain_atomically():
     assert len(set(polygon.vertex_point_ids)) == 6, "every vertex must be a distinct point"
     assert len(sketch.points) == points_before + 5, "5 new vertices, the first was already given"
     assert len(polygon.line_ids) == 6
+    assert len(polygon.radial_line_ids) == 6
+    assert len(set(polygon.radial_line_ids)) == 6, "every radial line must be a distinct entity"
+    assert not set(polygon.radial_line_ids) & set(polygon.line_ids), "radial lines are not edges"
+    for i, radial_line_id in enumerate(polygon.radial_line_ids):
+        radial_line = sketch.entities[radial_line_id]
+        assert radial_line.construction is True
+        assert {radial_line.start_point_id, radial_line.end_point_id} == {
+            center.id,
+            polygon.vertex_point_ids[i],
+        }
     assert len(polygon.equal_radius_constraint_ids) == 5
-    assert len(polygon.equal_length_constraint_ids) == 5
     assert len(polygon.angle_constraint_ids) == 5
+    assert not hasattr(polygon, "equal_length_constraint_ids")
     assert polygon.radius_constraint_id in sketch.constraints
     assert polygon.radius(sketch.points) == pytest.approx(10.0)
 
@@ -83,7 +97,10 @@ def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles(
     after placing the polygon"): `reference_circles=True` must create two
     real, independently addressable Circles - a circumscribed one sharing
     the Polygon's own center/first-vertex Points directly, and an inscribed
-    one at the exact mathematical inradius, tangent to the first edge."""
+    one whose own radius Point sits at the first edge's own midpoint (see
+    the Polygon class's own docstring for why that's the exact inradius,
+    with no separate constraint needed to keep it that way under drag -
+    "driven", not "defining")."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
@@ -92,7 +109,7 @@ def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles(
 
     assert polygon.circumscribed_circle_id is not None
     assert polygon.inscribed_circle_id is not None
-    assert polygon.inscribed_tangent_constraint_id is not None
+    assert polygon.inscribed_midpoint_constraint_id is not None
 
     circumscribed = sketch.entities[polygon.circumscribed_circle_id]
     assert circumscribed.center_point_id == center.id
@@ -104,7 +121,15 @@ def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles(
     actual_inradius = math.hypot(inradius_point.x - center.x, inradius_point.y - center.y)
     assert actual_inradius == pytest.approx(10.0 * math.cos(math.pi / 6))
 
-    assert polygon.inscribed_tangent_constraint_id in sketch.constraints
+    # The inscribed circle's own radius Point really is edge0's midpoint,
+    # not just numerically coincidentally at the right distance.
+    edge0 = sketch.entities[polygon.line_ids[0]]
+    edge0_start = sketch.points[edge0.start_point_id]
+    edge0_end = sketch.points[edge0.end_point_id]
+    assert inradius_point.x == pytest.approx((edge0_start.x + edge0_end.x) / 2)
+    assert inradius_point.y == pytest.approx((edge0_start.y + edge0_end.y) / 2)
+
+    assert polygon.inscribed_midpoint_constraint_id in sketch.constraints
 
 
 def test_add_polygon_without_reference_circles_creates_neither():
@@ -116,23 +141,26 @@ def test_add_polygon_without_reference_circles_creates_neither():
 
     assert polygon.circumscribed_circle_id is None
     assert polygon.inscribed_circle_id is None
-    assert polygon.inscribed_tangent_constraint_id is None
+    assert polygon.inscribed_midpoint_constraint_id is None
 
 
-def test_delete_polygon_with_reference_circles_cleans_up_both_circles_and_the_tangent_constraint():
+def test_delete_polygon_with_reference_circles_cleans_up_both_circles_and_the_midpoint_constraint():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
     polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
     circumscribed_id = polygon.circumscribed_circle_id
     inscribed_id = polygon.inscribed_circle_id
-    tangent_id = polygon.inscribed_tangent_constraint_id
+    midpoint_constraint_id = polygon.inscribed_midpoint_constraint_id
+    radial_line_ids = list(polygon.radial_line_ids)
 
     sketch.delete_polygon(polygon.id)
 
     assert circumscribed_id not in sketch.entities
     assert inscribed_id not in sketch.entities
-    assert tangent_id not in sketch.constraints
+    assert midpoint_constraint_id not in sketch.constraints
+    for radial_line_id in radial_line_ids:
+        assert radial_line_id not in sketch.entities
 
 
 def test_regular_polygon_stays_regular_after_an_anchored_vertex_drag():
@@ -170,6 +198,46 @@ def test_regular_polygon_stays_regular_after_an_anchored_vertex_drag():
     assert all(length == pytest.approx(edge_lengths[0], abs=1e-6) for length in edge_lengths)
 
 
+@pytest.mark.parametrize("sides", [3, 4, 5, 6, 7, 8, 9, 10, 12])
+def test_regular_polygon_stays_regular_after_a_modest_drag_at_every_vertex_and_side_count(sides):
+    """Bug fix (found while root-causing the across-flats over-constrained
+    report - see the Polygon class docstring): the *previous*, edge-to-edge
+    AngleConstraint design only pins the *average* of each pair of
+    neighbouring vertex-to-vertex arcs, not each one individually, and
+    (confirmed directly against the real solver) regularly settles into a
+    genuinely non-regular alternating-arc solution - equal radii, equal
+    edge-to-edge turn angle, but *not* equal edge length - for an ordinary,
+    modest single-vertex drag at plenty of side counts. The radial-line
+    (center-to-vertex) AngleConstraint this replaces it with pins each
+    vertex's own central angle directly, closing that gap - this test
+    drags every single vertex of every side count 3-12 by a modest, real-
+    on-canvas-scale amount and re-solves, asserting the shape lands back on
+    a true regular polygon (equal radii *and* equal edge lengths) every
+    time, not just most of the time."""
+    from app.sketch.solver import solve_sketch
+
+    for vertex_index in range(sides):
+        sketch = Sketch(id="s", plane=Plane.XY)
+        center = sketch.add_point(0.0, 0.0)
+        first_vertex = sketch.add_point(10.0, 0.0)
+        polygon = sketch.add_polygon(center.id, first_vertex.id, sides)
+        sketch.constraints[polygon.radius_constraint_id].provisional = False
+
+        dragged_id = polygon.vertex_point_ids[vertex_index]
+        sketch.points[dragged_id].x += 1.2
+        sketch.points[dragged_id].y -= 0.8
+        result = solve_sketch(sketch, anchor_point_ids=frozenset({dragged_id}))
+
+        assert result.converged, f"sides={sides} vertex_index={vertex_index}"
+        radii = [_dist(sketch, center.id, v) for v in polygon.vertex_point_ids]
+        assert all(r == pytest.approx(radii[0], abs=1e-5) for r in radii), f"sides={sides} vertex_index={vertex_index}"
+        lines = [sketch.entities[line_id] for line_id in polygon.line_ids]
+        edge_lengths = [_dist(sketch, line.start_point_id, line.end_point_id) for line in lines]
+        assert all(
+            length == pytest.approx(edge_lengths[0], abs=1e-5) for length in edge_lengths
+        ), f"sides={sides} vertex_index={vertex_index}"
+
+
 def test_delete_polygon_removes_its_own_lines_and_constraints_and_prunes_now_orphaned_points_but_leaves_a_still_shared_one():
     # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
     # see test_delete_line_prunes_a_now_orphaned_endpoint's own comment in
@@ -186,7 +254,7 @@ def test_delete_polygon_removes_its_own_lines_and_constraints_and_prunes_now_orp
     sketch.delete_polygon(polygon.id)
 
     assert polygon.id not in sketch.entities
-    for line_id in polygon.line_ids:
+    for line_id in (*polygon.line_ids, *polygon.radial_line_ids):
         assert line_id not in sketch.entities
     assert sketch.constraints == {}
     assert center.id in sketch.points
@@ -331,6 +399,7 @@ def test_create_polygon_over_the_api():
     assert body["center_point_id"] == center["id"]
     assert len(body["vertex_point_ids"]) == 6
     assert len(body["line_ids"]) == 6
+    assert len(body["radial_line_ids"]) == 6
     assert body["radius"] == pytest.approx(10.0)
     assert body["construction"] is False
 
