@@ -14,6 +14,8 @@ negative case (it doesn't just rubber-stamp a genuinely wrong value)."""
 
 import math
 
+import pytest
+
 from app.sketch.constraints import DistanceConstraint
 from app.sketch.models import Plane, Sketch
 from app.sketch.solver import _residual_verified_convergence, solve_sketch
@@ -38,30 +40,106 @@ def test_polygon_across_flats_with_the_correct_value_converges():
     )
 
 
-def test_polygon_edge_with_a_horizontal_constraint_that_is_not_satisfied_is_not_falsely_converged():
+def test_polygon_with_reference_circles_across_flats_with_the_correct_value_converges():
+    """Bug fix (on-device feedback, screenshot showing every Polygon edge/
+    radial Line still red/over-constrained after adding an across-flats
+    dimension - even after the fix above): a Polygon placed with
+    `reference_circles=True` (see `Sketch.add_polygon`'s own doc comment)
+    ties its inscribed circle's own radius Point to the first edge's
+    midpoint via an AtMidpointConstraint - `AtMidpointConstraint` was
+    missing from `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES`, so its mere
+    presence (true of every Polygon with reference circles) disqualified
+    the whole Sketch from residual verification, reintroducing the exact
+    over-constrained false positive the tests above already fixed for a
+    plain Polygon - the cardinal points/their own EqualRadius+zero-Distance
+    ties were never the problem (already residual-checkable); the
+    AtMidpointConstraint was the gap."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    across_flats = 2 * 10.0 * math.cos(math.pi / 6)
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], across_flats)
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.solver_reported_failed_constraint_ids == []
+    for vertex_id in polygon.vertex_point_ids:
+        vertex = sketch.points[vertex_id]
+        radius = math.hypot(vertex.x - center.x, vertex.y - center.y)
+        assert radius == pytest.approx(10.0, abs=1e-6)
+
+
+def test_polygon_with_reference_circles_across_flats_with_a_wrong_value_is_still_rejected():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], 99.0)
+    result = solve_sketch(sketch)
+
+    assert not result.converged
+
+
+def test_polygon_across_flats_with_the_correct_value_reports_no_failed_constraints():
+    """Bug fix (on-device feedback: the 3D sketcher's Polygon vertices/edges
+    still showed/behaved as over-constrained - red, undraggable - even
+    though the across-flats dimension above converges correctly): py-slvs's
+    own `system.Failed` is a *raw*, pre-override diagnostic, populated
+    whenever `result_code != 0` - exactly the ambiguous case the residual
+    fallback exists to reinterpret as a genuine, consistent solve. Left
+    unguarded, `solve_sketch` used to return every one of the Sketch's
+    constraint ids here regardless of `converged`, and the client
+    (`SketchController.backendFlaggedOverConstrainedPointIds`) trusts that
+    list unconditionally, with no `converged` check of its own - so a
+    correctly-`converged=True` solve still poisoned every Polygon Point as
+    "over constrained" downstream. Nothing should read as "failed" once the
+    solve itself is reported converged."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    across_flats = 2 * 10.0 * math.cos(math.pi / 6)
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], across_flats)
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.solver_reported_failed_constraint_ids == []
+
+
+def test_polygon_edge_horizontal_constraint_converges_cleanly():
     """On-device feedback: "user places polygon > applies horizontal
     constraint to one side > polygon doesn't fully solve and looks wrong"
     (only fixing itself at some later, unrelated solve).
 
-    Root-caused to a *different*, more subtle bug than the across-flats
-    LineDistance tests above: py-slvs's own Newton solve empirically fails
-    to actually rotate a Polygon's own already-redundant EqualLength/
-    EqualRadius/Angle chain into a Horizontal-satisfying configuration in
-    one pass (confirmed directly: the solved Points still leave the
-    "horizontal" edge nowhere near horizontal, and repeated re-solves from
-    that same stuck position make no further progress at all - a genuine
-    solver-convergence-quality limitation, separate from and not fixed by
-    this change). What *this* fix closes is that the stuck, still-wrong
-    result used to be reported as `converged=True` anyway:
-    HorizontalConstraint/VerticalConstraint satisfied the *older*, narrower
-    `result_code in (4, 5)` override's own trigger condition (any Polygon
-    has an EqualRadiusConstraint) purely by being in
-    `_REDUNDANCY_SAFE_CONSTRAINT_TYPES`, with nothing checking whether the
-    Horizontal constraint itself was actually satisfied - a real,
-    demonstrable false positive, not just an ambiguous case. Adding both
-    types to `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` and reordering the two
-    overrides (residual-verified first) means this same still-broken
-    geometry is now honestly reported as `not converged`."""
+    Originally root-caused to a *different*, more subtle bug than the
+    across-flats LineDistance tests above: py-slvs's own Newton solve used
+    to empirically fail to actually rotate a Polygon's own already-
+    redundant EqualLength/EqualRadius/Angle chain into a Horizontal-
+    satisfying configuration in one pass, and this test used to assert
+    that stuck, still-wrong result was at least *honestly* reported as
+    `not converged` (see git history for that version) rather than a false
+    `converged=True` positive.
+
+    Superseded by the Polygon redesign (see that class's own docstring):
+    switching the angle family from edge-to-edge to radial-line-to-radial-
+    line (pinning each vertex's own central angle directly, rather than
+    only the *average* of each neighbouring arc pair) turned out to fix
+    this Newton-convergence-quality issue too, not just the redundancy it
+    was actually aimed at - confirmed directly against the real solver:
+    the exact same scenario that used to get stuck now converges cleanly,
+    genuinely horizontal, `result_code == 0`, in one pass. This test now
+    asserts the improved behaviour directly instead of merely the honest
+    non-convergence report the old design was stuck with."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
@@ -75,12 +153,9 @@ def test_polygon_edge_with_a_horizontal_constraint_that_is_not_satisfied_is_not_
     line0 = sketch.entities[polygon.line_ids[0]]
     point_a = sketch.points[line0.start_point_id]
     point_b = sketch.points[line0.end_point_id]
-    assert abs(point_b.y - point_a.y) > 1.0, (
-        "sanity check: py-slvs's own Newton solve must still genuinely fail to satisfy Horizontal "
-        "here (a separate, pre-existing solver-quality limitation) - this test is about the "
-        "convergence *report* being honest about that, not about the solve itself succeeding"
-    )
-    assert not result.converged
+    assert abs(point_b.y - point_a.y) < 1e-6
+    assert result.converged
+    assert result.result_code == 0
 
 
 def test_polygon_edge_horizontal_plus_across_flats_dimension_is_not_falsely_over_constrained():
@@ -88,14 +163,21 @@ def test_polygon_edge_horizontal_plus_across_flats_dimension_is_not_falsely_over
     constraint to one side > applies dimension between parallel lines >
     polygon shows as over constrained" - a genuinely self-consistent
     Polygon (Horizontal edge + a matching across-flats LineDistance, both
-    actually satisfied) must not be flagged as over-constrained just
-    because it also carries an already-redundant EqualLength/EqualRadius/
-    Angle chain underneath. Points are set directly to a mathematically
-    exact, already-satisfying configuration (bypassing py-slvs's own
-    Newton solve, which - see the sibling test above - empirically doesn't
-    reliably *reach* this configuration in one pass for this Polygon shape,
-    a separate concern from what this test verifies) so this exercises the
-    residual-verification logic itself in isolation."""
+    actually satisfied) must not be flagged as over-constrained. Unlike a
+    lone Horizontal constraint (see the sibling test above, which now
+    converges cleanly on its own after the Polygon redesign), stacking an
+    across-flats LineDistance on top of it still produces py-slvs's own
+    ambiguous `result_code == 1` (a measurement across two exactly-parallel
+    opposite edges of a genuinely regular/symmetric polygon is a real
+    Jacobian singularity at that exact configuration, confirmed directly
+    against the real solver - not fixed, or fixable, by any particular
+    choice of *which* constraints define the Polygon's own regularity) -
+    so residual verification is still exactly what's needed here. Points
+    are set directly to a mathematically exact, already-satisfying
+    configuration (bypassing the solve itself, whose own convergence
+    quality for this specific stacked case is a separate concern from what
+    this test verifies) so this exercises the residual-verification logic
+    itself in isolation."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
@@ -130,6 +212,9 @@ def test_polygon_across_flats_with_a_wrong_value_is_still_rejected():
     result = solve_sketch(sketch)
 
     assert not result.converged
+    # A genuine non-convergence must still surface py-slvs's own diagnostic -
+    # the fix that clears this list only applies once `converged` is True.
+    assert result.solver_reported_failed_constraint_ids
 
 
 def test_polygon_across_flats_is_not_polygon_specific_slot_style_redundancy_still_works():

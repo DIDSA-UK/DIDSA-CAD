@@ -143,61 +143,68 @@ class _PolygonSidesControl extends StatelessWidget {
   Widget build(BuildContext context) {
     final sides = controller.polygonSides;
     final onSurface = Theme.of(context).colorScheme.onSurface;
-    // On-device feedback: "the toggle in the polygon tool has no
-    // description" - a bare IconButton's tooltip only ever showed on
-    // long-press, so its meaning wasn't visible at a glance. Wrapped in a
-    // horizontally-scrollable Row (mirroring _methodChips' own Line/Circle/
-    // Rectangle chip row) since a permanent text label alongside the sides
-    // stepper and Exit button no longer reliably fits narrower screens.
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('$sides sides'),
-          IconButton(
-            icon: SvgPicture.asset(
-              'assets/icons/dimbar/dimbar_polygon_sides_decrease.svg',
-              width: 30,
-              height: 30,
-              colorFilter: ColorFilter.mode(
-                sides > 3 ? onSurface : Theme.of(context).disabledColor,
-                BlendMode.srcIn,
+    // On-device feedback: the "reference circles" control used to sit in
+    // the same scrollable row as the sides stepper, sharing whatever width
+    // was left over once the Exit button took its share - not enough for
+    // its own label to stay fully visible. A Switch (not a button posing as
+    // a toggle) on its own row below the stepper (mirroring _methodChips'
+    // own Line/Circle/Rectangle chip row for the stepper alone) gives the
+    // label a full row's width, and reads as the on/off toggle it actually
+    // is rather than a tappable button.
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('$sides sides'),
+              IconButton(
+                icon: SvgPicture.asset(
+                  'assets/icons/dimbar/dimbar_polygon_sides_decrease.svg',
+                  width: 30,
+                  height: 30,
+                  colorFilter: ColorFilter.mode(
+                    sides > 3 ? onSurface : Theme.of(context).disabledColor,
+                    BlendMode.srcIn,
+                  ),
+                ),
+                onPressed: sides > 3 ? () => controller.setPolygonSides(sides - 1) : null,
               ),
-            ),
-            onPressed: sides > 3 ? () => controller.setPolygonSides(sides - 1) : null,
-          ),
-          IconButton(
-            icon: SvgPicture.asset(
-              'assets/icons/dimbar/dimbar_polygon_sides_increase.svg',
-              width: 30,
-              height: 30,
-              colorFilter: ColorFilter.mode(
-                sides < 20 ? onSurface : Theme.of(context).disabledColor,
-                BlendMode.srcIn,
+              IconButton(
+                icon: SvgPicture.asset(
+                  'assets/icons/dimbar/dimbar_polygon_sides_increase.svg',
+                  width: 30,
+                  height: 30,
+                  colorFilter: ColorFilter.mode(
+                    sides < 20 ? onSurface : Theme.of(context).disabledColor,
+                    BlendMode.srcIn,
+                  ),
+                ),
+                onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
               ),
-            ),
-            onPressed: sides < 20 ? () => controller.setPolygonSides(sides + 1) : null,
+            ],
           ),
-          const SizedBox(width: 8),
-          // On-device feedback ("it should be renamed as appropriately"):
-          // toggles whether placing a Polygon also creates two real,
-          // solver-tracked circumscribed/inscribed Circles (selectable/
-          // dimensionable/deletable like any other Circle), not just a
-          // dashed preview - see
-          // SketchController.createPolygonReferenceCircles's own doc
-          // comment. Same TextButton.icon(icon + visible label) shape this
-          // bar's own Exit button already uses, so the label is always
-          // visible, not just on long-press.
-          TextButton.icon(
-            onPressed: controller.togglePolygonReferenceCircles,
-            icon: Icon(controller.createPolygonReferenceCircles ? Icons.circle_outlined : Icons.circle),
-            label: Text(
-              controller.createPolygonReferenceCircles ? 'Reference circles: on' : 'Reference circles: off',
+        ),
+        // On-device feedback ("it should be renamed as appropriately"):
+        // toggles whether placing a Polygon also creates two real,
+        // solver-tracked circumscribed/inscribed Circles (selectable/
+        // dimensionable/deletable like any other Circle), not just a
+        // dashed preview - see SketchController.createPolygonReferenceCircles's
+        // own doc comment.
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Reference circles', softWrap: false, overflow: TextOverflow.visible),
+            Switch(
+              value: controller.createPolygonReferenceCircles,
+              onChanged: (_) => controller.togglePolygonReferenceCircles(),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
+      ],
     );
   }
 }

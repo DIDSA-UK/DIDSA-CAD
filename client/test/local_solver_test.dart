@@ -209,10 +209,16 @@ void main() {
     expect(baseline.converged, isTrue, reason: 'sanity check: the polygon alone must already solve');
 
     // Across-flats distance for a regular hexagon of this radius: 2 * apothem.
+    // Negated (bug fix: LineDistanceConstraintDto.distance is a *signed*
+    // perpendicular distance, matching py-slvs's own addPointLineDistance -
+    // see backend solver.py's `_signed_point_line_distance` doc comment for
+    // why a plain positive magnitude doesn't just solve to the mirrored
+    // side, it fails to converge outright; v3 sits on line0's cross-
+    // product-negative side for this v0=(radius,0), CCW vertex layout).
     final acrossFlats = 2 * radius * math.cos(math.pi / sides);
     final withDimension = [
       ...constraints,
-      LineDistanceConstraintDto(id: 'flats', line1Id: 'line0', line2Id: 'line3', distance: acrossFlats),
+      LineDistanceConstraintDto(id: 'flats', line1Id: 'line0', line2Id: 'line3', distance: -acrossFlats),
     ];
 
     final result = solveSketchLocally(
@@ -226,10 +232,11 @@ void main() {
     expect(result.resultCode, isNot(0), reason: 'py-slvs itself never cleanly certifies this - the override is what makes it converged');
 
     // A deliberately wrong across-flats value must still be rejected - the
-    // override isn't a rubber stamp.
+    // override isn't a rubber stamp. Same (negative) side as above, just
+    // the wrong magnitude.
     final withWrongDimension = [
       ...constraints,
-      LineDistanceConstraintDto(id: 'flats', line1Id: 'line0', line2Id: 'line3', distance: acrossFlats + 5.0),
+      LineDistanceConstraintDto(id: 'flats', line1Id: 'line0', line2Id: 'line3', distance: -(acrossFlats + 5.0)),
     ];
     final wrongResult = solveSketchLocally(
       bindings: bindings,

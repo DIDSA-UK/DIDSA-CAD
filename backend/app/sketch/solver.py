@@ -75,6 +75,24 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
 # disqualified the whole Sketch from residual verification even though the
 # check loop never actually needed to understand them to correctly verify
 # every other Constraint sharing the Sketch with one.
+#
+# AtMidpointConstraint is deliberately NOT in this allowlist either
+# (tried once, reverted - see git history): it looked safe at first glance
+# since this function actually *verifies* each Constraint's own residual
+# rather than blindly trusting the type the way
+# `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` does - but "each Constraint's own
+# residual holds" is a strictly weaker claim than "the system has no
+# remaining freedom", and `test_two_at_midpoint_constraints_on_the_same_
+# point_is_singular_once_hv_ties_diagonals_together` (test_stage15_
+# constraints.py) proves the gap: an H/V-constrained rectangle with no
+# real width/height/position pin at all, tied by *two* AtMidpoint
+# constraints (one per diagonal) to the same centre Point, has both
+# constraints' own residuals satisfied at *any* valid rectangle size/
+# position whatsoever (the two diagonals' midpoints coincide automatically
+# for every rectangle, by construction) - so this check would have
+# reported `converged=True` for a genuinely still-under-constrained
+# sketch, exactly the false positive `_REDUNDANCY_SAFE_CONSTRAINT_TYPES`
+# already had to guard against for the same constraint type.
 _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     DistanceConstraint,
     EqualLengthConstraint,
@@ -104,6 +122,25 @@ def _point_line_distance(point: Point, line_start: Point, line_end: Point) -> fl
         return _distance(point, line_start)
     cross = (point.x - line_start.x) * dy - (point.y - line_start.y) * dx
     return abs(cross) / length
+
+
+def _signed_point_line_distance(point: Point, line_start: Point, line_end: Point) -> float:
+    """Same as `_point_line_distance`, without the `abs()` - the sign
+    matches whichever side of the line `point` is currently on, the same
+    convention `models.py`'s own `_signed_point_line_distance` (used to
+    sign-correct `LineDistanceConstraint.distance` at creation/update time -
+    see that function's own doc comment) and py-slvs's underlying
+    `addPointLineDistance` both use. `LineDistanceConstraint.distance` is
+    signed for exactly that reason, so verifying it here needs the signed
+    variant too - comparing it against this function's own unsigned sibling
+    would flag every genuinely-satisfied solve as failed."""
+    dx = line_end.x - line_start.x
+    dy = line_end.y - line_start.y
+    length = math.hypot(dx, dy)
+    if length < 1e-12:
+        return 0.0
+    cross = (point.x - line_start.x) * dy - (point.y - line_start.y) * dx
+    return cross / length
 
 
 def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
@@ -230,7 +267,10 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             if abs(actual_distance - radius) > tolerance:
                 return False
         elif isinstance(constraint, LineDistanceConstraint):
-            actual_distance = _point_line_distance(
+            # Signed, not `_point_line_distance`'s unsigned sibling -
+            # `constraint.distance` is signed too (see
+            # `_signed_point_line_distance`'s own doc comment).
+            actual_distance = _signed_point_line_distance(
                 points[constraint.line2_start_id],
                 points[constraint.line1_start_id],
                 points[constraint.line1_end_id],
@@ -861,11 +901,35 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
     else:
         dof = system.Dof
 
-    solver_reported_failed_constraint_ids = [
-        constraint_id_by_handle[handle]
-        for handle in system.Failed
-        if handle in constraint_id_by_handle
-    ]
+    # Bug fix (on-device feedback: a Polygon's own across-flats
+    # LineDistanceConstraint - or a Horizontal/Vertical one on an edge -
+    # left every one of the Polygon's Points shown/treated as
+    # over-constrained client-side, even though `converged` above is
+    # correctly `True`): `system.Failed` is py-slvs's own raw diagnostic
+    # from *before* either redundancy override ran, and is populated
+    # whenever `result_code != 0` - exactly the case both overrides above
+    # exist to reinterpret as a genuine, consistent solve. Confirmed
+    # directly against the Polygon-across-flats case this module's own
+    # comments describe: `result_code == 1` with every one of the
+    # Sketch's constraints (not just the redundant chain) present in
+    # `system.Failed`, despite `converged` correctly ending up `True` via
+    # `_residual_verified_convergence`. The client
+    # (`SketchController.backendFlaggedOverConstrainedPointIds`) trusts
+    # this list unconditionally to flag/redden/un-drag Points, with no
+    # `converged` check of its own - so a stale, pre-override `Failed`
+    # list surfaces as a false "over constrained" report there regardless
+    # of how correct `converged`/`dof` above already are. Nothing "failed"
+    # once the solve is reported converged, so the list is only ever
+    # meaningful - and only ever populated - alongside `converged=False`.
+    solver_reported_failed_constraint_ids = (
+        []
+        if converged
+        else [
+            constraint_id_by_handle[handle]
+            for handle in system.Failed
+            if handle in constraint_id_by_handle
+        ]
+    )
 
     blamed_constraint_ids: list[str] = []
     if not converged:

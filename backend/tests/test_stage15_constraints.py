@@ -490,7 +490,12 @@ def test_add_line_distance_constraint_between_two_existing_lines():
 
     assert constraint.id in sketch.constraints
     assert constraint.point_ids() == (a.id, b.id, c.id, d.id)
-    assert constraint.distance == 50.0
+    # Signed, not the raw 50.0 passed in (bug fix: py-slvs's own
+    # addPointLineDistance is a signed constraint - see
+    # `_signed_point_line_distance`'s own doc comment in models.py) -
+    # matches line2's current side of line1 (c sits on the cross-product-
+    # negative side of line1's a->b direction here).
+    assert constraint.distance == -50.0
 
 
 def test_add_point_line_distance_constraint_between_a_point_and_a_line():
@@ -504,7 +509,9 @@ def test_add_point_line_distance_constraint_between_a_point_and_a_line():
 
     assert constraint.id in sketch.constraints
     assert constraint.point_ids() == (p.id, a.id, b.id)
-    assert constraint.distance == 5.0
+    # Signed (same bug fix as the LineDistanceConstraint test above) - p
+    # sits on the cross-product-negative side of line a->b here.
+    assert constraint.distance == -5.0
 
 
 def test_point_line_distance_constraint_pins_point_onto_line_after_solve():
@@ -1033,7 +1040,8 @@ def test_create_line_distance_constraint_over_the_api():
     assert body["type"] == "line_distance"
     assert body["line1_id"] == line1["id"]
     assert body["line2_id"] == line2["id"]
-    assert body["distance"] == 50.0
+    # Signed (see test_add_line_distance_constraint_between_two_existing_lines).
+    assert body["distance"] == -50.0
 
 
 def test_create_point_line_distance_constraint_over_the_api():
@@ -1058,7 +1066,8 @@ def test_create_point_line_distance_constraint_over_the_api():
     assert body["type"] == "point_line_distance"
     assert body["point_id"] == p["id"]
     assert body["line_id"] == line["id"]
-    assert body["distance"] == 5.0
+    # Signed (see test_add_point_line_distance_constraint_between_a_point_and_a_line).
+    assert body["distance"] == -5.0
 
 
 def test_create_at_midpoint_constraint_over_the_api():
@@ -1314,7 +1323,10 @@ def test_update_constraint_value_on_a_point_line_distance_constraint():
     assert response.status_code == 200
     constraints = client.get(f"/sketch/sketches/{sketch['id']}/constraints").json()
     updated = next(c for c in constraints if c["id"] == constraint["id"])
-    assert updated["distance"] == 8.0
+    # Signed (bug fix: update_constraint_value preserves the Constraint's
+    # current side the same way creation does - see
+    # `_signed_line_distance_value`'s own doc comment in router.py).
+    assert updated["distance"] == -8.0
 
 
 def test_update_constraint_value_keeps_the_free_point_on_the_same_side():

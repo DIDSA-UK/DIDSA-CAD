@@ -76,6 +76,24 @@ double _pointLineDistance((double, double) point, (double, double) lineStart, (d
   return cross.abs() / length;
 }
 
+/// Same as [_pointLineDistance], without the `.abs()` - signed by which
+/// side of the line `point` currently sits on, matching the backend's own
+/// `_signed_point_line_distance` (solver.py/models.py) and py-slvs's
+/// underlying `addPointLineDistance`. `LineDistanceConstraintDto.distance`
+/// is signed for the same reason those are (see the backend's own doc
+/// comment: a plain positive magnitude fails to converge outright unless
+/// it happens to match the Line's current side) - comparing it against
+/// [_pointLineDistance]'s unsigned result here would flag every genuinely-
+/// satisfied solve as failed.
+double _signedPointLineDistance((double, double) point, (double, double) lineStart, (double, double) lineEnd) {
+  final dx = lineEnd.$1 - lineStart.$1;
+  final dy = lineEnd.$2 - lineStart.$2;
+  final length = math.sqrt(dx * dx + dy * dy);
+  if (length < 1e-12) return 0.0;
+  final cross = (point.$1 - lineStart.$1) * dy - (point.$2 - lineStart.$2) * dx;
+  return cross / length;
+}
+
 double _angleBetweenDegrees(
   (double, double) line1Start,
   (double, double) line1End,
@@ -98,7 +116,16 @@ const _residualTolerance = 1e-4;
 /// "stacked redundancy, still consistent" apart from a real conflict (a
 /// Polygon's own already-redundant EqualLength/EqualRadius/Angle chain plus
 /// a further genuinely-implied Constraint on top, e.g. an "across flats"
-/// LineDistanceConstraint between two opposite edges). Recomputes every
+/// LineDistanceConstraint between two opposite edges). [AtMidpointConstraintDto]
+/// is deliberately NOT among the checkable types below (tried once,
+/// reverted - see the backend's own solver.py doc comment for
+/// `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES`): verifying each Constraint's
+/// own residual is a strictly weaker claim than "the system has no
+/// remaining freedom", and an H/V-constrained rectangle tied by *two*
+/// AtMidpoint constraints (one per diagonal) to the same centre Point can
+/// have both residuals satisfied at *any* rectangle size/position
+/// whatsoever - a genuinely still-under-constrained sketch this check
+/// would otherwise report as converged. Recomputes every
 /// Constraint's own residual directly from [resolvePoint] (the just-solved
 /// positions) rather than trusting `resultCode` - only trusted when every
 /// Constraint present is one of the types this knows how to verify, same
@@ -172,7 +199,7 @@ bool _residualVerifiedConvergence({
     } else if (c is LineDistanceConstraintDto) {
       final (s1, e1) = lineEndpoints(c.line1Id);
       final (s2, _) = lineEndpoints(c.line2Id);
-      final actualDistance = _pointLineDistance(resolvePoint(s2), resolvePoint(s1), resolvePoint(e1));
+      final actualDistance = _signedPointLineDistance(resolvePoint(s2), resolvePoint(s1), resolvePoint(e1));
       if ((actualDistance - c.distance).abs() > tolerance) return false;
     }
   }
@@ -379,7 +406,16 @@ LocalSolveResult _solveOnce({
     final rawDof = bindings.getDof(sys);
     final dof = (converged && hasUnconfirmedProvisional) ? (rawDof > 1 ? rawDof : 1) : rawDof;
 
-    final failedCount = bindings.getFailedCount(sys);
+    // Bug fix: mirrors solver.py's own fix - `bindings.getFailedAt` reflects
+    // py-slvs's raw, pre-override diagnostic (populated whenever `resultCode
+    // != 0`), the exact condition either override above exists to
+    // reinterpret as a genuine, consistent solve. Left ungated, a Polygon's
+    // across-flats (or Horizontal-edge) case would report every one of its
+    // own constraint ids here even while `converged` above is correctly
+    // `true`, wrongly implicating every Point downstream. Nothing "failed"
+    // once the solve is reported converged, so this is only ever populated
+    // alongside `converged: false`.
+    final failedCount = converged ? 0 : bindings.getFailedCount(sys);
     final solverReportedFailedConstraintIds = <String>[
       for (var i = 0; i < failedCount; i++)
         if (constraintIdByHandle.containsKey(bindings.getFailedAt(sys, i)))

@@ -21,10 +21,14 @@ def _dist(sketch: Sketch, a_id: str, b_id: str) -> float:
 
 
 def test_add_polygon_creates_the_full_constraint_chain_atomically():
-    """A hexagon: 5 new vertex Points (the first is passed in), 6 Lines, 1
-    real radius DistanceConstraint, 5 EqualRadiusConstraints, 5
-    EqualLengthConstraints, 5 AngleConstraints - see the Polygon class
-    docstring for why each family exists."""
+    """A hexagon: 5 new vertex Points (the first is passed in), 6 edge
+    Lines, 6 radial construction Lines (center to each vertex), 1 real
+    radius DistanceConstraint, 5 EqualRadiusConstraints, 5 AngleConstraints
+    between consecutive radial lines - see the Polygon class docstring for
+    why each family exists (and why an EqualLengthConstraint per edge pair,
+    and an edge-to-edge rather than radial-line-to-radial-line
+    AngleConstraint, both present in an earlier design, are no longer among
+    them)."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
@@ -40,9 +44,19 @@ def test_add_polygon_creates_the_full_constraint_chain_atomically():
     assert len(set(polygon.vertex_point_ids)) == 6, "every vertex must be a distinct point"
     assert len(sketch.points) == points_before + 5, "5 new vertices, the first was already given"
     assert len(polygon.line_ids) == 6
+    assert len(polygon.radial_line_ids) == 6
+    assert len(set(polygon.radial_line_ids)) == 6, "every radial line must be a distinct entity"
+    assert not set(polygon.radial_line_ids) & set(polygon.line_ids), "radial lines are not edges"
+    for i, radial_line_id in enumerate(polygon.radial_line_ids):
+        radial_line = sketch.entities[radial_line_id]
+        assert radial_line.construction is True
+        assert {radial_line.start_point_id, radial_line.end_point_id} == {
+            center.id,
+            polygon.vertex_point_ids[i],
+        }
     assert len(polygon.equal_radius_constraint_ids) == 5
-    assert len(polygon.equal_length_constraint_ids) == 5
     assert len(polygon.angle_constraint_ids) == 5
+    assert not hasattr(polygon, "equal_length_constraint_ids")
     assert polygon.radius_constraint_id in sketch.constraints
     assert polygon.radius(sketch.points) == pytest.approx(10.0)
 
@@ -83,7 +97,9 @@ def test_add_polygon_with_reference_circles_creates_real_solver_tracked_circles(
     after placing the polygon"): `reference_circles=True` must create two
     real, independently addressable Circles - a circumscribed one sharing
     the Polygon's own center/first-vertex Points directly, and an inscribed
-    one at the exact mathematical inradius, tangent to the first edge."""
+    one at the exact mathematical inradius, tangent to the first edge (see
+    the Polygon class's own docstring for why this reverted from an
+    AtMidpointConstraint-based design back to TangentConstraint)."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
@@ -126,13 +142,16 @@ def test_delete_polygon_with_reference_circles_cleans_up_both_circles_and_the_ta
     polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
     circumscribed_id = polygon.circumscribed_circle_id
     inscribed_id = polygon.inscribed_circle_id
-    tangent_id = polygon.inscribed_tangent_constraint_id
+    tangent_constraint_id = polygon.inscribed_tangent_constraint_id
+    radial_line_ids = list(polygon.radial_line_ids)
 
     sketch.delete_polygon(polygon.id)
 
     assert circumscribed_id not in sketch.entities
     assert inscribed_id not in sketch.entities
-    assert tangent_id not in sketch.constraints
+    assert tangent_constraint_id not in sketch.constraints
+    for radial_line_id in radial_line_ids:
+        assert radial_line_id not in sketch.entities
 
 
 def test_regular_polygon_stays_regular_after_an_anchored_vertex_drag():
@@ -170,6 +189,46 @@ def test_regular_polygon_stays_regular_after_an_anchored_vertex_drag():
     assert all(length == pytest.approx(edge_lengths[0], abs=1e-6) for length in edge_lengths)
 
 
+@pytest.mark.parametrize("sides", [3, 4, 5, 6, 7, 8, 9, 10, 12])
+def test_regular_polygon_stays_regular_after_a_modest_drag_at_every_vertex_and_side_count(sides):
+    """Bug fix (found while root-causing the across-flats over-constrained
+    report - see the Polygon class docstring): the *previous*, edge-to-edge
+    AngleConstraint design only pins the *average* of each pair of
+    neighbouring vertex-to-vertex arcs, not each one individually, and
+    (confirmed directly against the real solver) regularly settles into a
+    genuinely non-regular alternating-arc solution - equal radii, equal
+    edge-to-edge turn angle, but *not* equal edge length - for an ordinary,
+    modest single-vertex drag at plenty of side counts. The radial-line
+    (center-to-vertex) AngleConstraint this replaces it with pins each
+    vertex's own central angle directly, closing that gap - this test
+    drags every single vertex of every side count 3-12 by a modest, real-
+    on-canvas-scale amount and re-solves, asserting the shape lands back on
+    a true regular polygon (equal radii *and* equal edge lengths) every
+    time, not just most of the time."""
+    from app.sketch.solver import solve_sketch
+
+    for vertex_index in range(sides):
+        sketch = Sketch(id="s", plane=Plane.XY)
+        center = sketch.add_point(0.0, 0.0)
+        first_vertex = sketch.add_point(10.0, 0.0)
+        polygon = sketch.add_polygon(center.id, first_vertex.id, sides)
+        sketch.constraints[polygon.radius_constraint_id].provisional = False
+
+        dragged_id = polygon.vertex_point_ids[vertex_index]
+        sketch.points[dragged_id].x += 1.2
+        sketch.points[dragged_id].y -= 0.8
+        result = solve_sketch(sketch, anchor_point_ids=frozenset({dragged_id}))
+
+        assert result.converged, f"sides={sides} vertex_index={vertex_index}"
+        radii = [_dist(sketch, center.id, v) for v in polygon.vertex_point_ids]
+        assert all(r == pytest.approx(radii[0], abs=1e-5) for r in radii), f"sides={sides} vertex_index={vertex_index}"
+        lines = [sketch.entities[line_id] for line_id in polygon.line_ids]
+        edge_lengths = [_dist(sketch, line.start_point_id, line.end_point_id) for line in lines]
+        assert all(
+            length == pytest.approx(edge_lengths[0], abs=1e-5) for length in edge_lengths
+        ), f"sides={sides} vertex_index={vertex_index}"
+
+
 def test_delete_polygon_removes_its_own_lines_and_constraints_and_prunes_now_orphaned_points_but_leaves_a_still_shared_one():
     # Bug fix (pre-existing stale test - predates `_prune_orphaned_points`;
     # see test_delete_line_prunes_a_now_orphaned_endpoint's own comment in
@@ -186,7 +245,7 @@ def test_delete_polygon_removes_its_own_lines_and_constraints_and_prunes_now_orp
     sketch.delete_polygon(polygon.id)
 
     assert polygon.id not in sketch.entities
-    for line_id in polygon.line_ids:
+    for line_id in (*polygon.line_ids, *polygon.radial_line_ids):
         assert line_id not in sketch.entities
     assert sketch.constraints == {}
     assert center.id in sketch.points
@@ -249,33 +308,53 @@ def test_collapse_polygon_removes_the_polygon_specific_point_deletion_blocker():
     directly against `_point_deletion_blocker`'s own return value (rather
     than a full end-to-end delete_point call).
 
-    Uses `center_point_id`, not a vertex: every vertex is also a real
-    edge Line's endpoint, and `_point_deletion_blocker` checks Line
-    references before Polygon ones, so a vertex's message would say
-    "line" regardless of whether the Polygon record still exists. The
-    centre Point is referenced by nothing but the Polygon entity itself
-    in the entity scan (its ties to the radius/equal-radius constraints
-    are Constraint references, checked only after every entity type), so
-    it's the one point where "polygon" being in the blocker message
-    actually depends on the Polygon record still existing."""
+    Bug fix (Polygon redesign - see that class's own docstring): the
+    centre Point used to be referenced by nothing but the Polygon entity
+    itself in the entity scan, making it the one point whose blocker
+    message directly proved whether the Polygon record still existed. Now
+    every one of a Polygon's own Points - centre included - is *also* the
+    endpoint of a real radial construction Line (`radial_line_ids`), which
+    `_point_deletion_blocker` checks before it ever reaches the Polygon
+    branch - so the plain "call it, read the string" check this test used
+    to do no longer distinguishes anything (the message says "line" either
+    way, collapsed or not). `exclude_entity_id=polygon.id` sidesteps that:
+    it answers "would this Point still be blocked if the Polygon record
+    itself didn't exist", which is exactly what collapsing actually does -
+    remove the Polygon record, nothing else (see `collapse_polygon`'s own
+    doc comment) - so comparing the *excluded* read against the *plain*
+    read, before and after collapsing, isolates the Polygon record's own
+    contribution to the block precisely, without depending on which
+    (Line- or Polygon-shaped) reason wins whatever race the entity-scan's
+    own iteration order happens to produce."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
     polygon = sketch.add_polygon(center.id, first_vertex.id, 5)
 
+    # Before collapsing, the Polygon record is still one of (at least) two
+    # independent reasons this Point is blocked - excluding it from the
+    # scan still finds the other (a radial Line's own endpoint) and still
+    # blocks the deletion.
     blocker = sketch._point_deletion_blocker(polygon.center_point_id)
+    blocker_excluding_polygon = sketch._point_deletion_blocker(
+        polygon.center_point_id, exclude_entity_id=polygon.id
+    )
     assert blocker is not None
-    assert "polygon" in blocker
+    assert blocker_excluding_polygon is not None
 
     sketch.collapse_polygon(polygon.id)
 
     blocker_after = sketch._point_deletion_blocker(polygon.center_point_id)
-    # Still blocked - the radius/equal-radius Constraints tying it to
-    # each vertex - but no longer by the (now-gone) Polygon record.
+    # Still blocked afterward - by the very same surviving radial Line
+    # `blocker_excluding_polygon` already found above, now the *only*
+    # remaining reason since the Polygon record itself is gone - proving
+    # collapse_polygon genuinely removed the Polygon-specific contribution
+    # to the block (not just that *some* reason still exists, which was
+    # already guaranteed and uninteresting).
     assert blocker_after is not None
-    assert "polygon" not in blocker_after
+    assert blocker_after == blocker_excluding_polygon
     # Everything the Polygon used to own survives untouched.
-    for line_id in polygon.line_ids:
+    for line_id in (*polygon.line_ids, *polygon.radial_line_ids):
         assert line_id in sketch.entities
     for vertex_id in polygon.vertex_point_ids:
         assert vertex_id in sketch.points
@@ -331,6 +410,7 @@ def test_create_polygon_over_the_api():
     assert body["center_point_id"] == center["id"]
     assert len(body["vertex_point_ids"]) == 6
     assert len(body["line_ids"]) == 6
+    assert len(body["radial_line_ids"]) == 6
     assert body["radius"] == pytest.approx(10.0)
     assert body["construction"] is False
 

@@ -34,6 +34,7 @@ from app.sketch.models import (
     Slot,
     Spline,
     TextEntity,
+    _signed_point_line_distance,
 )
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
@@ -271,6 +272,7 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         center_point_id=polygon.center_point_id,
         vertex_point_ids=polygon.vertex_point_ids,
         line_ids=polygon.line_ids,
+        radial_line_ids=polygon.radial_line_ids,
         radius=polygon.radius(sketch.points),
         sides=polygon.sides,
         construction=polygon.construction,
@@ -1525,6 +1527,18 @@ def _reseed_distance_constraint_free_point(
         point_b.y = point_a.y + dy * scale
 
 
+def _signed_line_distance_value(sketch: Sketch, line1_start_id: str, line1_end_id: str, other_point_id: str) -> float:
+    """See `_signed_point_line_distance`'s own doc comment (models.py): a
+    PATCH to an existing LineDistanceConstraint/PointLineDistanceConstraint
+    carries the same always-positive magnitude `add_line_distance_
+    constraint`/`add_point_line_distance_constraint` already have to sign-
+    correct at creation - preserve the same current side here too, rather
+    than trusting `payload.value` outright."""
+    return _signed_point_line_distance(
+        sketch.points[other_point_id], sketch.points[line1_start_id], sketch.points[line1_end_id]
+    )
+
+
 @router.patch("/sketches/{sketch_id}/constraints/{constraint_id}", response_model=SolveResultResponse)
 def update_constraint_value(
     sketch_id: str, constraint_id: str, payload: ConstraintValueUpdate
@@ -1545,9 +1559,15 @@ def update_constraint_value(
         # `provisional` without needing a separate confirm flag/endpoint.
         constraint.provisional = False
     elif isinstance(constraint, LineDistanceConstraint):
-        constraint.distance = payload.value
+        current = _signed_line_distance_value(
+            sketch, constraint.line1_start_id, constraint.line1_end_id, constraint.line2_start_id
+        )
+        constraint.distance = -abs(payload.value) if current < 0 else abs(payload.value)
     elif isinstance(constraint, PointLineDistanceConstraint):
-        constraint.distance = payload.value
+        current = _signed_line_distance_value(
+            sketch, constraint.line_start_id, constraint.line_end_id, constraint.point_id
+        )
+        constraint.distance = -abs(payload.value) if current < 0 else abs(payload.value)
     elif isinstance(constraint, AngleConstraint):
         constraint.angle_degrees = payload.value
     else:
