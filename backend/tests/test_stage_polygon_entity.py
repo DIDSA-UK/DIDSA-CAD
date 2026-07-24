@@ -317,33 +317,53 @@ def test_collapse_polygon_removes_the_polygon_specific_point_deletion_blocker():
     directly against `_point_deletion_blocker`'s own return value (rather
     than a full end-to-end delete_point call).
 
-    Uses `center_point_id`, not a vertex: every vertex is also a real
-    edge Line's endpoint, and `_point_deletion_blocker` checks Line
-    references before Polygon ones, so a vertex's message would say
-    "line" regardless of whether the Polygon record still exists. The
-    centre Point is referenced by nothing but the Polygon entity itself
-    in the entity scan (its ties to the radius/equal-radius constraints
-    are Constraint references, checked only after every entity type), so
-    it's the one point where "polygon" being in the blocker message
-    actually depends on the Polygon record still existing."""
+    Bug fix (Polygon redesign - see that class's own docstring): the
+    centre Point used to be referenced by nothing but the Polygon entity
+    itself in the entity scan, making it the one point whose blocker
+    message directly proved whether the Polygon record still existed. Now
+    every one of a Polygon's own Points - centre included - is *also* the
+    endpoint of a real radial construction Line (`radial_line_ids`), which
+    `_point_deletion_blocker` checks before it ever reaches the Polygon
+    branch - so the plain "call it, read the string" check this test used
+    to do no longer distinguishes anything (the message says "line" either
+    way, collapsed or not). `exclude_entity_id=polygon.id` sidesteps that:
+    it answers "would this Point still be blocked if the Polygon record
+    itself didn't exist", which is exactly what collapsing actually does -
+    remove the Polygon record, nothing else (see `collapse_polygon`'s own
+    doc comment) - so comparing the *excluded* read against the *plain*
+    read, before and after collapsing, isolates the Polygon record's own
+    contribution to the block precisely, without depending on which
+    (Line- or Polygon-shaped) reason wins whatever race the entity-scan's
+    own iteration order happens to produce."""
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
     polygon = sketch.add_polygon(center.id, first_vertex.id, 5)
 
+    # Before collapsing, the Polygon record is still one of (at least) two
+    # independent reasons this Point is blocked - excluding it from the
+    # scan still finds the other (a radial Line's own endpoint) and still
+    # blocks the deletion.
     blocker = sketch._point_deletion_blocker(polygon.center_point_id)
+    blocker_excluding_polygon = sketch._point_deletion_blocker(
+        polygon.center_point_id, exclude_entity_id=polygon.id
+    )
     assert blocker is not None
-    assert "polygon" in blocker
+    assert blocker_excluding_polygon is not None
 
     sketch.collapse_polygon(polygon.id)
 
     blocker_after = sketch._point_deletion_blocker(polygon.center_point_id)
-    # Still blocked - the radius/equal-radius Constraints tying it to
-    # each vertex - but no longer by the (now-gone) Polygon record.
+    # Still blocked afterward - by the very same surviving radial Line
+    # `blocker_excluding_polygon` already found above, now the *only*
+    # remaining reason since the Polygon record itself is gone - proving
+    # collapse_polygon genuinely removed the Polygon-specific contribution
+    # to the block (not just that *some* reason still exists, which was
+    # already guaranteed and uninteresting).
     assert blocker_after is not None
-    assert "polygon" not in blocker_after
+    assert blocker_after == blocker_excluding_polygon
     # Everything the Polygon used to own survives untouched.
-    for line_id in polygon.line_ids:
+    for line_id in (*polygon.line_ids, *polygon.radial_line_ids):
         assert line_id in sketch.entities
     for vertex_id in polygon.vertex_point_ids:
         assert vertex_id in sketch.points

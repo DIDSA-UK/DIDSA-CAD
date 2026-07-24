@@ -249,6 +249,9 @@ class _FakeBackend {
         for (final lineId in (polygon['line_ids'] as List).cast<String>()) {
           lines.remove(lineId);
         }
+        for (final lineId in (polygon['radial_line_ids'] as List).cast<String>()) {
+          lines.remove(lineId);
+        }
         for (final constraintId in (polygon['_constraint_ids'] as List).cast<String>()) {
           constraints.remove(constraintId);
         }
@@ -1202,6 +1205,26 @@ class _FakeBackend {
         };
         lineIds.add(lineId);
       }
+      // Bug fix: mirrors the real backend's Polygon redesign (see
+      // app.sketch.models.Polygon's own docstring) - a radial construction
+      // Line per vertex (center to that vertex), with AngleConstraint
+      // pinning each vertex's own central angle between consecutive radial
+      // Lines, replacing the old edge-to-edge EqualLength/Angle chain.
+      // `radial_line_ids` is a required field on the real PolygonResponse
+      // now (see PolygonDto.fromJson) - omitting it here throws a null-cast
+      // the instant any test creates a Polygon through this fake.
+      final radialLineIds = <String>[];
+      for (var i = 0; i < sides; i++) {
+        final radialLineId = _newId('line');
+        lines[radialLineId] = {
+          'id': radialLineId,
+          'start_point_id': body['center_point_id'],
+          'end_point_id': vertexPointIds[i],
+          'length': radius,
+          'construction': true,
+        };
+        radialLineIds.add(radialLineId);
+      }
       final constraintIds = <String>[];
       final radiusConstraintId = _newId('constraint');
       constraints[radiusConstraintId] = {
@@ -1225,20 +1248,12 @@ class _FakeBackend {
         constraintIds.add(equalRadiusId);
       }
       for (var i = 1; i < sides; i++) {
-        final equalLengthId = _newId('constraint');
-        constraints[equalLengthId] = {
-          'id': equalLengthId,
-          'type': 'equal_length',
-          'line1_id': lineIds[i - 1],
-          'line2_id': lineIds[i],
-        };
-        constraintIds.add(equalLengthId);
         final angleId = _newId('constraint');
         constraints[angleId] = {
           'id': angleId,
           'type': 'angle',
-          'line1_id': lineIds[i - 1],
-          'line2_id': lineIds[i],
+          'line1_id': radialLineIds[i - 1],
+          'line2_id': radialLineIds[i],
           'angle_degrees': 360.0 / sides,
         };
         constraintIds.add(angleId);
@@ -1299,6 +1314,7 @@ class _FakeBackend {
         'center_point_id': body['center_point_id'],
         'vertex_point_ids': vertexPointIds,
         'line_ids': lineIds,
+        'radial_line_ids': radialLineIds,
         'radius': radius,
         'sides': sides,
         'construction': body['construction'] as bool? ?? false,
@@ -3460,10 +3476,11 @@ void main() {
     expect(polygon.vertices[2].$2, closeTo(0, 1e-9));
   });
 
-  test('the polygon tool places center then first vertex across two taps, creating N Points, N Lines, '
-      'N-1 EqualLengthConstraints, one real circumradius DistanceConstraint, and N-1 '
-      'EqualRadiusConstraint ties locking every vertex onto the same circle (feedback round: form is '
-      'now locked, not free-floating)', () async {
+  test('the polygon tool places center then first vertex across two taps, creating N Points, N edge '
+      'Lines, N radial construction Lines, one real circumradius DistanceConstraint, N-1 '
+      'EqualRadiusConstraint ties locking every vertex onto the same circle, and N-1 AngleConstraint '
+      'ties locking every vertex\'s own central angle (feedback round: form is now locked, not '
+      'free-floating)', () async {
     controller.selectDrawTool(SketchTool.polygon);
     controller.setPolygonSides(5);
     await controller.handleCanvasTap(0, 0); // center
@@ -3471,18 +3488,25 @@ void main() {
 
     expect(controller.errorMessage, isNull);
     expect(controller.polygonInProgress, isFalse);
-    expect(controller.lines.length, 5);
+    // Bug fix (Polygon redesign - see app.sketch.models.Polygon's own
+    // docstring): 5 edges plus 5 radial construction Lines (centre to
+    // each vertex) - the radial Lines didn't exist before that redesign.
+    expect(controller.lines.length, 10);
     // Bug fix: the origin, plus a new centre Point coincident with it (see
     // SketchController._pointIdAt's own doc comment), plus the 5 vertices.
     expect(
       controller.points.length,
       2 /* origin + centre */ + 5,
     );
-    expect(controller.constraints.values.whereType<EqualLengthConstraintDto>().length, 4);
+    // No EqualLengthConstraint at all anymore - equal edge length follows
+    // automatically from equal radii + equal central angles below, rather
+    // than being separately asserted.
+    expect(controller.constraints.values.whereType<EqualLengthConstraintDto>(), isEmpty);
     final distanceConstraints = controller.constraints.values.whereType<DistanceConstraintDto>().toList();
     expect(distanceConstraints.length, 1);
     expect(distanceConstraints.single.distance, closeTo(10, 1e-9));
     expect(controller.constraints.values.whereType<EqualRadiusConstraintDto>().length, 4);
+    expect(controller.constraints.values.whereType<AngleConstraintDto>().length, 4);
   });
 
   test('a regular polygon survives a vertex drag - equal radii and equal edge lengths are preserved '
@@ -6742,9 +6766,9 @@ void main() {
   });
 
   test(
-      'on-device feedback: a regular Polygon\'s own auto-created angle/equal-length ties between '
-      'consecutive edges are implicit structure, hidden while the shape is whole - only a genuinely '
-      'unrelated Angle/EqualLength constraint between two ordinary Lines counts as a real dimension',
+      'on-device feedback: a regular Polygon\'s own auto-created angle ties between consecutive '
+      'radial construction Lines are implicit structure, hidden while the shape is whole - only a '
+      'genuinely unrelated Angle constraint between two ordinary Lines counts as a real dimension',
       () async {
     controller.selectDrawTool(SketchTool.polygon);
     controller.setPolygonSides(5);
@@ -6752,16 +6776,26 @@ void main() {
     await controller.handleCanvasTap(10, 0);
     controller.exitToSelectMode();
 
+    // Bug fix (Polygon redesign - see app.sketch.models.Polygon's own
+    // docstring): the auto-created AngleConstraint now ties consecutive
+    // radial construction Lines (centre to each vertex), not consecutive
+    // edges - there is no longer an EqualLengthConstraint at all (equal
+    // edge length follows automatically from equal radii + equal central
+    // angles, rather than being separately asserted).
     final polygonAngle = controller.constraints.values.whereType<AngleConstraintDto>().first;
-    final polygonEqualLength = controller.constraints.values.whereType<EqualLengthConstraintDto>().first;
+    final polygon = controller.polygons.values.single;
+    expect(polygon.radialLineIds, containsAll([polygonAngle.line1Id, polygonAngle.line2Id]));
     expect(controller.isImplicitPolygonEdgeTie(polygonAngle.line1Id, polygonAngle.line2Id), isTrue);
-    expect(
-      controller.isImplicitPolygonEdgeTie(polygonEqualLength.line1Id, polygonEqualLength.line2Id),
-      isTrue,
-    );
+    // The same hiding logic also still recognizes a pair of the Polygon's
+    // own edges (not just radial Lines) as implicit, for whichever future
+    // constraint might tie two of them together directly.
+    expect(controller.isImplicitPolygonEdgeTie(polygon.lineIds[0], polygon.lineIds[1]), isTrue);
+    // An edge and a radial Line are never paired by the same Constraint -
+    // not implicit either way.
+    expect(controller.isImplicitPolygonEdgeTie(polygon.lineIds[0], polygon.radialLineIds[0]), isFalse);
 
-    // Two ordinary Lines, nothing to do with the Polygon - an Angle/
-    // EqualLength constraint between them is a real, user-facing dimension.
+    // Two ordinary Lines, nothing to do with the Polygon - an Angle
+    // constraint between them is a real, user-facing dimension.
     final linesBefore = controller.lines.keys.toSet();
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(50, 50);
