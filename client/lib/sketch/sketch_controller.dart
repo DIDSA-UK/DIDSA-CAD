@@ -6520,8 +6520,29 @@ class SketchController extends ChangeNotifier {
       // the local cache afterward, same as every other entity's own
       // internal constraints already rely on.
       for (final id in cascade.polygons) {
+        final polygon = polygons[id];
         applyPrunedPoints(await _api.deletePolygon(_sketchId!, id));
         polygons.remove(id);
+        // Same reasoning as the Slot/Rectangle blocks below: delete_polygon
+        // cascades its own edge/radial Lines and reference Circles
+        // server-side, but computeDeleteCascade never lists them (they're
+        // deliberately excluded to avoid a redundant/404ing delete call -
+        // see that method's own doc comment), so nothing else prunes them
+        // from these local maps. Left stale, a later selectAll() would
+        // still pick up their (already backend-deleted) ids, and deleting
+        // that selection would then 404 with "line not found".
+        if (polygon != null) {
+          for (final lineId in polygon.lineIds) {
+            lines.remove(lineId);
+          }
+          for (final lineId in polygon.radialLineIds) {
+            lines.remove(lineId);
+          }
+          final circumscribedCircleId = polygon.circumscribedCircleId;
+          if (circumscribedCircleId != null) circles.remove(circumscribedCircleId);
+          final inscribedCircleId = polygon.inscribedCircleId;
+          if (inscribedCircleId != null) circles.remove(inscribedCircleId);
+        }
       }
       // Bug fix (on-device feedback: "select all > delete doesn't work on
       // polygons, says constraint not found"): delete_polygon cascades its

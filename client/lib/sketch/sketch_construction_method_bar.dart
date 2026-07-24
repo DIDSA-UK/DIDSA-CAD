@@ -191,9 +191,11 @@ class _PolygonSidesControl extends StatelessWidget {
           // visible, not just on long-press.
           TextButton.icon(
             onPressed: controller.togglePolygonReferenceCircles,
-            icon: Icon(controller.createPolygonReferenceCircles ? Icons.circle_outlined : Icons.circle),
+            icon: Icon(controller.createPolygonReferenceCircles ? Icons.circle : Icons.circle_outlined),
             label: Text(
               controller.createPolygonReferenceCircles ? 'Reference circles: on' : 'Reference circles: off',
+              softWrap: false,
+              overflow: TextOverflow.visible,
             ),
           ),
         ],

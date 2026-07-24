@@ -3855,6 +3855,37 @@ void main() {
     expect(controller.points.containsKey(vertexId), isFalse);
   });
 
+  test('bug fix: after deleting a whole Polygon (reference circles included), selectAll no longer '
+      'picks up its now backend-deleted edge/radial Lines and Circles as stale local entries',
+      () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.togglePolygonReferenceCircles();
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    final polygon = controller.polygons.values.single;
+    final staleLineIds = [...polygon.lineIds, ...polygon.radialLineIds];
+    final staleCircleIds = [polygon.circumscribedCircleId, polygon.inscribedCircleId];
+    controller.exitToSelectMode();
+
+    controller.selectAll();
+    await controller.deleteSelected();
+
+    expect(controller.polygons, isEmpty);
+    for (final lineId in staleLineIds) {
+      expect(controller.lines.containsKey(lineId), isFalse);
+    }
+    for (final circleId in staleCircleIds) {
+      expect(controller.circles.containsKey(circleId), isFalse);
+    }
+
+    controller.selectAll();
+    expect(controller.selectionSet, isEmpty);
+
+    await controller.deleteSelected();
+    expect(controller.errorMessage, isNull);
+  });
+
   test('setPolygonSides clamps to [3, 20]', () {
     controller.setPolygonSides(1);
     expect(controller.polygonSides, 3);
