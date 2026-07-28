@@ -8603,12 +8603,17 @@ void main() {
     await controller.handleCanvasTap(2, 3);
     await controller.handleCanvasTap(8, 3);
     controller.finishChain();
-    await controller.handleCanvasTap(1, 40);
+    await controller.handleCanvasTap(2, 40);
     await controller.handleCanvasTap(9, 40);
     controller.finishChain();
     controller.exitToSelectMode();
     await controller.handleCanvasTap(8, 0.1);
     await controller.handleCanvasTap(6.5, 3.1);
+    // Third line's midpoint is (5.5, 40), not (5, 40) - matches the same
+    // asymmetric-endpoints pattern the two tests above already use, so
+    // this tap doesn't land on/near the midpoint and snap-select a Point
+    // there instead of the Line (see the identical fix's own comment on
+    // addEqualLengthConstraint's sibling test above).
     await controller.handleCanvasTap(5, 40.1);
 
     await controller.addCollinearConstraint();
@@ -9620,6 +9625,69 @@ void main() {
       await freshController.offsetChain([], 1.0);
 
       expect(freshBackend.requestLog.any((r) => r.contains('/offset-chain')), isFalse);
+    });
+  });
+
+  group('hit-testing picks the nearest entity, not the first kind checked (on-device feedback: '
+      '"when I pick the arc to add to the offset, it seems to pick a straight line between the '
+      'end points of the arc")', () {
+    test('tapping a dome Arc that shares both endpoints with straight Lines picks the Arc, even '
+        'close to its own tangent points where a Line\'s own clamped segment end sits right next '
+        'to it', () async {
+      // Two vertical sides + an Arc bulging upward across the top, sharing
+      // an endpoint Point with each Line - the exact shape a rounded-top
+      // profile's own tangent points put a Line and an Arc directly
+      // against each other.
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(0, 10);
+      controller.finishChain();
+      await controller.handleCanvasTap(10, 0);
+      await controller.handleCanvasTap(10, 10);
+      controller.finishChain();
+
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(5, 10); // center
+      await controller.handleCanvasTap(10, 10); // start (radius 5, angle 0 relative to center)
+      // The direction hint is relative to the centre (5, 10), not
+      // absolute - (-100, 10) is 180 degrees from center, landing the end
+      // exactly at (0, 10) and sweeping CCW through 90 degrees (the
+      // dome's own peak), matching the Line's own end Points at both
+      // (0, 10) and (10, 10).
+      await controller.handleCanvasTap(-100, 10);
+      expect(controller.lines, hasLength(2));
+      expect(controller.arcs, hasLength(1));
+      final arc = controller.arcs.values.single;
+
+      controller.enterOffsetMode();
+      for (final (x, y) in [
+        (5.0, 15.0), // dome peak, far from either Line
+        (5 - 5 * 0.7071, 10 + 5 * 0.7071), // 45 degrees up-left of centre
+        (5 + 5 * 0.7071, 10 + 5 * 0.7071), // 45 degrees up-right of centre
+        // Just past the shared corner Point's own widened hit radius
+        // (radius * pointHitRadiusMultiplier = 0.6, see _entityAt's own
+        // doc comment) so this actually exercises the Line-vs-Arc
+        // tie-break instead of hitting the Point pass first - 0.65 above
+        // (10, 10)/(0, 10) is ~0.65 from the Line's own clamped segment
+        // end (just outside the default 0.5 hit radius, so the Line
+        // isn't even a candidate here) but only ~0.04 from the Arc's own
+        // curve (comfortably inside it).
+        (10.0, 10.65),
+        (0.0, 10.65),
+      ]) {
+        controller.enterOffsetMode(); // resets the pick set between probes
+        await controller.handleCanvasTap(x, y);
+        expect(controller.selectionSet, hasLength(1), reason: 'tap ($x, $y)');
+        expect(controller.selectionSet.single.kind, SelectionKind.arc, reason: 'tap ($x, $y)');
+        expect(controller.selectionSet.single.id, arc.id, reason: 'tap ($x, $y)');
+      }
+
+      // A tap clearly on one of the straight sides still correctly picks
+      // that Line, not the Arc - this fix is about picking the *nearest*
+      // entity, not about ever preferring an Arc.
+      controller.enterOffsetMode();
+      await controller.handleCanvasTap(10.0, 5.0);
+      expect(controller.selectionSet.single.kind, SelectionKind.line);
     });
   });
 }

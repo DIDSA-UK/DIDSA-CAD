@@ -2744,13 +2744,43 @@ class SketchController extends ChangeNotifier {
       }
     }
 
+    // On-device feedback ("when I pick the arc to add to the offset, it
+    // doesn't actually pick the arc, it seems to pick a straight line
+    // between the end points of the arc"): Line/Circle/Arc/Ellipse/Spline
+    // used to be checked in a fixed kind order, each returning on its own
+    // first in-range match - so whichever kind happened to be checked
+    // first always won a tap within range of more than one of them,
+    // regardless of which was actually closer to the tap. Most on-screen
+    // taps are nowhere near two different entities' hit zones at once, so
+    // this rarely mattered, but a Line and an Arc sharing an endpoint (the
+    // exact shape of a rounded corner/dome - a Line's own segment is
+    // clipped to end exactly at that shared Point, an Arc's sweep begins
+    // exactly there too) put a real seam directly at their tangent
+    // point - a tap meant for the Arc that happens to land within [radius]
+    // of that shared Point used to always resolve to the Line instead,
+    // simply because Lines were checked first. Now every kind's distance
+    // is computed up front and the single closest in-range candidate
+    // wins, matching how [_offset_chain_join] et al. already resolve
+    // ambiguity by nearest-distance rather than by which case happened to
+    // run first.
+    SketchSelection? bestEdgeLikeSelection;
+    double bestEdgeLikeDistance = double.infinity;
+    void considerEdgeLike(SelectionKind kind, String id, double distance) {
+      if (distance <= radius && distance < bestEdgeLikeDistance) {
+        bestEdgeLikeDistance = distance;
+        bestEdgeLikeSelection = SketchSelection(kind: kind, id: id);
+      }
+    }
+
     for (final line in lines.values) {
       final start = points[line.startPointId];
       final end = points[line.endPointId];
       if (start == null || end == null) continue;
-      if (_distanceToSegment(x, y, start.x, start.y, end.x, end.y) <= radius) {
-        return SketchSelection(kind: SelectionKind.line, id: line.id);
-      }
+      considerEdgeLike(
+        SelectionKind.line,
+        line.id,
+        _distanceToSegment(x, y, start.x, start.y, end.x, end.y),
+      );
     }
 
     for (final circle in circles.values) {
@@ -2761,9 +2791,7 @@ class SketchController extends ChangeNotifier {
         math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
       );
       final distanceToCenter = math.sqrt(math.pow(x - center.x, 2) + math.pow(y - center.y, 2));
-      if ((distanceToCenter - r).abs() <= radius) {
-        return SketchSelection(kind: SelectionKind.circle, id: circle.id);
-      }
+      considerEdgeLike(SelectionKind.circle, circle.id, (distanceToCenter - r).abs());
     }
 
     for (final arc in arcs.values) {
@@ -2786,9 +2814,7 @@ class SketchController extends ChangeNotifier {
               math.sqrt(math.pow(x - start.x, 2) + math.pow(y - start.y, 2)),
               math.sqrt(math.pow(x - end.x, 2) + math.pow(y - end.y, 2)),
             );
-      if (distanceToArc <= radius) {
-        return SketchSelection(kind: SelectionKind.arc, id: arc.id);
-      }
+      considerEdgeLike(SelectionKind.arc, arc.id, distanceToArc);
     }
 
     for (final ellipse in ellipses.values) {
@@ -2806,8 +2832,8 @@ class SketchController extends ChangeNotifier {
         major.y,
         liveMinorRadius,
       );
-      if (distanceToEllipse != null && distanceToEllipse <= radius) {
-        return SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id);
+      if (distanceToEllipse != null) {
+        considerEdgeLike(SelectionKind.ellipse, ellipse.id, distanceToEllipse);
       }
     }
 
@@ -2817,10 +2843,16 @@ class SketchController extends ChangeNotifier {
       for (var i = 0; i < sampled.length - 1; i++) {
         final a = sampled[i];
         final b = sampled[i + 1];
-        if (_distanceToSegment(x, y, a.$1, a.$2, b.$1, b.$2) <= radius) {
-          return SketchSelection(kind: SelectionKind.spline, id: spline.id);
-        }
+        considerEdgeLike(
+          SelectionKind.spline,
+          spline.id,
+          _distanceToSegment(x, y, a.$1, a.$2, b.$1, b.$2),
+        );
       }
+    }
+
+    if (bestEdgeLikeSelection != null) {
+      return bestEdgeLikeSelection;
     }
 
     for (final text in texts.values) {
