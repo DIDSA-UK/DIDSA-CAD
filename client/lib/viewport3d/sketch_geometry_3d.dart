@@ -279,6 +279,23 @@ class SketchGeometry3D {
   /// it still resolves normally.
   final Set<String> hiddenPointIds;
 
+  /// On-device feedback ("make the origin an asterisk... it should look the
+  /// same independent of the zoom level"): which of [pointIds] (if any) is
+  /// the Sketch's own origin - [buildSketchGeometryNode] skips this one
+  /// point's marker entirely (like [hiddenPointIds], but permanently rather
+  /// than for hover-reveal), since the origin gets its own dedicated,
+  /// genuinely constant-screen-size marker instead - a plain screen-space
+  /// overlay (`PartViewport`'s `_OriginMarkerPainter`), not real 3D-embedded
+  /// geometry the way every other marker here is (which is why a world-space
+  /// asterisk built from real geometry could never be made to look the same
+  /// at every zoom level - real geometry, by definition, doesn't). Null (the
+  /// default) for every caller except `sketch_screen.dart`'s actively-edited
+  /// Sketch - a reference Sketch drawn for context (`part_screen.dart`, or
+  /// this Sketch's own `otherSketchGeometries` siblings) has no live
+  /// `SketchController` to ask, and isn't the thing being edited anyway, so
+  /// its origin (if any) just renders as an ordinary point.
+  final String? originPointId;
+
   const SketchGeometry3D({
     required this.lineSegments,
     required this.lineIds,
@@ -294,6 +311,7 @@ class SketchGeometry3D {
     this.splineIds = const [],
     this.constructionIds = const <String>{},
     this.hiddenPointIds = const <String>{},
+    this.originPointId,
   });
 
   static const empty = SketchGeometry3D(
@@ -357,7 +375,8 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
       nestedListEquals(a.splinePolylines, b.splinePolylines) &&
       listEquals(a.splineIds, b.splineIds) &&
       setEquals(a.constructionIds, b.constructionIds) &&
-      setEquals(a.hiddenPointIds, b.hiddenPointIds);
+      setEquals(a.hiddenPointIds, b.hiddenPointIds) &&
+      a.originPointId == b.originPointId;
 }
 
 /// Builds [SketchGeometry3D] from a Sketch's raw DTOs - resolving each
@@ -385,6 +404,7 @@ SketchGeometry3D sketchGeometry3DFrom({
   List<EllipseDto> ellipses = const [],
   List<SplineDto> splines = const [],
   Set<String> hiddenPointIds = const <String>{},
+  String? originPointId,
 }) {
   final pointsById = {for (final p in points) p.id: p};
   final constructionIds = <String>{};
@@ -524,6 +544,7 @@ SketchGeometry3D sketchGeometry3DFrom({
     splineIds: splineIds,
     constructionIds: constructionIds,
     hiddenPointIds: hiddenPointIds,
+    originPointId: originPointId,
   );
 }
 
@@ -716,6 +737,16 @@ List<(vm.Vector3, vm.Vector3)> dashedSegments(
 /// so - like [buildReferencePlaneNode] - this cannot be exercised in a
 /// headless `flutter test` run. [sketchGeometry3DFrom] above is the pure,
 /// testable counterpart for the coordinate-mapping/geometry-layout logic.
+///
+/// [geometry.originPointId] (if set) never gets a marker here at all - see
+/// that field's own doc comment: on-device feedback found a 3D-embedded
+/// marker built from real (world-space) geometry couldn't be pixel-matched
+/// to a point's own constant-screen-size dot at every zoom level
+/// simultaneously, however it was drawn. The origin now gets a genuinely
+/// constant-size marker instead, via a plain screen-space overlay -
+/// `PartViewport`'s own `_OriginMarkerPainter`, mirroring how its
+/// `_CursorCrosshairPainter` already solves the exact same "must look the
+/// same at every zoom level" problem for the draw/select cursor.
 Node buildSketchGeometryNode(
   String featureId,
   SketchGeometry3D geometry, {
@@ -769,7 +800,8 @@ Node buildSketchGeometryNode(
     for (var i = 0; i < geometry.splinePolylines.length; i++)
       ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
     for (var i = 0; i < geometry.points.length; i++)
-      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]))
+      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
+          geometry.pointIds[i] != geometry.originPointId)
         for (final segment in vertexMarkerSegments([geometry.points[i]]))
           MeshPrimitive(
             PolylineGeometry(

@@ -50,9 +50,24 @@ class OrbitCamera {
   static const double defaultFarClip = kDefaultFarClip;
 
   /// Multiplier applied to a body's bounding-sphere radius to derive
-  /// [farClip] - generous enough that the far plane never clips a large
-  /// model from any orbit angle, per the project brief.
-  static const double _farClipRadiusFactor = 4.0;
+  /// [farClip].
+  ///
+  /// Bug fix (on-device feedback: "at a certain level of zoom, the geometry
+  /// and shading becomes invisible - it should always be visible"): this
+  /// was a flat `4.0`, independent of [_maxDistanceRadiusFactor] (`20`) -
+  /// once a radius grew past [_minFarClip]'s own floor (so [farClip]
+  /// actually followed this factor instead of sitting at the floor), the
+  /// camera's own allowed zoom-out range (up to `radius *
+  /// _maxDistanceRadiusFactor`) reached 5x farther than the far clip plane
+  /// (`radius * 4.0`) - the outer 80% of the allowed zoom-out range put
+  /// [target] (and everything near it, i.e. the actual geometry) beyond
+  /// [farClip], clipped from every angle. Kept `>= _maxDistanceRadiusFactor`
+  /// plus a whole extra `radius` of margin (the target's own bounding
+  /// sphere can extend a further `radius` past target itself, in the worst
+  /// case looking straight along the sphere's own diameter) - both
+  /// expressed as one invariant here, rather than two independent constants
+  /// that can drift apart the same way again.
+  static const double _farClipRadiusFactor = _maxDistanceRadiusFactor + 2;
 
   /// [farClip] never drops below this, even for a tiny/empty body - keeps
   /// the fixed reference planes (which extend well beyond any one body)

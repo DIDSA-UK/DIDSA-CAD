@@ -88,6 +88,17 @@ class PartViewport extends StatefulWidget {
   /// comment for why); only `sketch_screen.dart`'s Orbit View opts in.
   final Map<String, vm.Vector4> sketchEntityColors;
 
+  /// On-device feedback ("make the origin an asterisk... it should look the
+  /// same independent of the zoom level"): world position of the actively-
+  /// edited Sketch's own origin, if any - drawn as a small, genuinely
+  /// constant-screen-size marker (see [_OriginMarkerPainter]) rather than
+  /// real 3D-embedded geometry, mirroring how [_CursorCrosshairPainter]
+  /// already solves the same problem for the draw/select cursor. Null (the
+  /// default) draws nothing - `part_screen.dart`'s own call site (a Part's
+  /// Sketches shown as fixed, non-editing context) leaves this unset, same
+  /// as [sketchEntityColors].
+  final vm.Vector3? originWorldPoint;
+
   /// C2: per-Feature resolved Create Plane geometry (null values omitted by
   /// callers - a Plane whose reference is currently unresolvable has
   /// nothing to render, same convention [sketchGeometries] uses for a
@@ -529,10 +540,12 @@ class PartViewport extends StatefulWidget {
   /// Stage 18: the 3D viewport's appearance preferences (see
   /// [ViewPreferences]) - [PartScreen] owns these, the same controlled-
   /// widget pattern [renderMode] already uses. [bgColourHex] repaints the
-  /// canvas background every frame (see [_ScenePainter.paint]); [bodyColourHex]/
-  /// [bodyOpacity] only take effect on the next [_syncMeshNode] rebuild
-  /// (see [didUpdateWidget]), since they're baked into each Body's [Node]
-  /// material rather than read per-frame.
+  /// background every frame (see `build`'s own background layer, painted as
+  /// its own Stack child rather than inside [_ScenePainter] - see that
+  /// class's own doc comment for why); [bodyColourHex]/[bodyOpacity] only
+  /// take effect on the next [_syncMeshNode] rebuild (see [didUpdateWidget]),
+  /// since they're baked into each Body's [Node] material rather than read
+  /// per-frame.
   final String bgColourHex;
   final String bodyColourHex;
   final double bodyOpacity;
@@ -673,6 +686,7 @@ class PartViewport extends StatefulWidget {
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
     this.sketchEntityColors = const {},
+    this.originWorldPoint,
     this.createPlanes = const {},
     this.onCreatePlaneTap,
     this.selectedCreatePlaneFeatureId,
@@ -1293,8 +1307,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
       if (!_hasFramedCamera) {
         _camera.setTarget(vm.Vector3.zero());
-        _camera.setZoomBoundsForRadius(0);
       }
+      // Bug fix (on-device feedback: "zoom level is clamped in the 3d
+      // sketcher... user cannot see a sketch above a certain size"): this
+      // used to be `_camera.setZoomBoundsForRadius(0)`, folded into the
+      // `!_hasFramedCamera` branch above - but [_hasFramedCamera] is only
+      // ever set true once a real Body exists (see below), so for a bare
+      // Sketch with no reference Body, that branch actually ran on *every*
+      // call, forcibly resetting the zoom bounds to [OrbitCamera]'s tiny
+      // hardcoded defaults (and re-clamping the camera's current distance
+      // into them) each time - silently undoing any manual zoom-out past
+      // that default the moment the Sketch's own geometry changed. Calling
+      // [_syncZoomBounds] unconditionally instead makes this the same
+      // "recompute on every update" contract [_syncZoomBounds]'s own doc
+      // comment already establishes for the has-a-body path below.
+      _syncZoomBounds(null);
       return;
     }
     // Stage 11: in wireframe mode, the filled-faces Nodes are skipped
@@ -1409,11 +1436,33 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // geometry on every update (a body that's grown significantly must not
     // get far-clipped) - only the target (see above) and, via that, the
     // camera's overall framing stay put after the first sync.
-    _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
+    _syncZoomBounds(bounds);
     debugPrint(
       '[PartViewport][RenderDebug] bounds: center=${bounds?.center} '
       'boundingSphereRadius=${bounds?.boundingSphereRadius} cameraDistance=${_camera.distance}',
     );
+  }
+
+  /// On-device feedback ("zoom level is clamped in the 3d sketcher... user
+  /// cannot see a sketch above a certain size"): [OrbitCamera.
+  /// setZoomBoundsForRadius] used to be driven only by [bodyBounds] (a
+  /// reference Body's own bounding-sphere radius, or 0/defaults with no
+  /// Body at all) - a Sketch drawn larger than whatever that implied never
+  /// widened [OrbitCamera.maxDistance] to match, so the camera could never
+  /// zoom out far enough to frame it. Combines [bodyBounds] with every
+  /// currently-rendered Sketch's own drawn-geometry extent
+  /// ([boundsOfPoints] over [widget.sketchGeometries]' world-space
+  /// `points`), the same per-content (not one-size-fits-all) zoom floor
+  /// `SketchViewport.zoomToFit`/`minZoomFor` already give the flat 2D
+  /// canvas. Called from both [_syncMeshNode] (whenever [widget.bodies]
+  /// changes) and [_syncSketchNodes] (whenever [widget.sketchGeometries]
+  /// changes) so either growing large enough re-widens the bound, not just
+  /// whichever one happens to trigger a rebuild first.
+  void _syncZoomBounds(MeshBounds? bodyBounds) {
+    final sketchPoints = widget.sketchGeometries.values.expand((geometry) => geometry.points);
+    final sketchBounds = boundsOfPoints(sketchPoints);
+    final radius = math.max(bodyBounds?.boundingSphereRadius ?? 0, sketchBounds?.boundingSphereRadius ?? 0);
+    _camera.setZoomBoundsForRadius(radius);
   }
 
   /// Stage 11: rebuilds [_edgesNodes] from [PartViewport.bodies]' real OCCT
@@ -1529,11 +1578,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _sketchNodes = {
       for (final entry in widget.sketchGeometries.entries)
         if (!entry.value.isEmpty)
-          entry.key: buildSketchGeometryNode(entry.key, entry.value, entityColors: widget.sketchEntityColors),
+          entry.key: buildSketchGeometryNode(
+            entry.key,
+            entry.value,
+            entityColors: widget.sketchEntityColors,
+          ),
     };
     for (final node in _sketchNodes.values) {
       scene.add(node);
     }
+    // Bug fix ("zoom level is clamped in the 3d sketcher"): a Sketch's own
+    // drawn geometry growing large enough to need a wider zoom-out bound
+    // must re-widen it immediately, not wait for [widget.bodies] to also
+    // happen to change (which, for a bare Sketch with no reference Body, it
+    // never will) - see [_syncZoomBounds]'s own doc comment.
+    _syncZoomBounds(boundsOfBodies(widget.bodies));
   }
 
   /// C2: mirrors [_syncSketchNodes] for [PartViewport.createPlanes] - one
@@ -3204,8 +3263,41 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _viewportSize = size;
+        // On-device feedback ("make the origin an asterisk... it should
+        // look the same independent of the zoom level"): projected fresh
+        // every build, same as every other screen-space overlay below -
+        // null whenever there's no origin to show, or it's currently
+        // behind the camera ([worldToScreen]'s own `clip.w <= 0` case),
+        // rather than drawn at a nonsense position.
+        final originMarkerScreen =
+            widget.originWorldPoint == null ? null : worldToScreen(_camera.cameraFor(size), size, widget.originWorldPoint!);
         return Stack(
           children: [
+            // On-device feedback ("put it behind the cursor, dynamic
+            // highlighting and sketch entities"): painted as its own layer,
+            // separate from [_ScenePainter] (which used to paint this
+            // itself, opaquely, as the very first thing it drew - see that
+            // class's own doc comment for why that had to move here) - the
+            // origin marker below sits *between* this and [_ScenePainter]'s
+            // own (now background-less/transparent-where-empty) scene
+            // render, so real sketch geometry and hover/selection highlight
+            // nodes still paint over the marker wherever they actually
+            // cover it, while empty background still lets it show through.
+            Positioned.fill(
+              child: ColoredBox(color: colorFromHex(widget.bgColourHex)),
+            ),
+            // The marker itself - behind the 3D scene render (and so behind
+            // real sketch geometry/dynamic highlighting) and every
+            // cursor/overlay after it, per the same on-device feedback -
+            // but in front of the plain background above, so it's still
+            // visible wherever nothing else is drawn over it.
+            if (originMarkerScreen != null)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: size,
+                  painter: _OriginMarkerPainter(position: originMarkerScreen),
+                ),
+              ),
             Listener(
               onPointerDown: _onPointerDown,
               onPointerMove: _onPointerMove,
@@ -3219,7 +3311,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   scene: scene,
                   camera: _camera,
                   size: size,
-                  backgroundColor: colorFromHex(widget.bgColourHex),
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
                     if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
@@ -3424,6 +3515,63 @@ class _CursorCrosshairPainter extends CustomPainter {
       oldDelegate.hoverColor != hoverColor;
 }
 
+/// On-device feedback ("make the origin an asterisk the same colour as the
+/// other points" - through several follow-ups, ending in "it should look
+/// the same independent of the zoom level"): the Sketch origin's own
+/// marker, drawn as a plain screen-space overlay exactly the way
+/// [_CursorCrosshairPainter] above already draws the draw/select cursor -
+/// not real 3D-embedded geometry (see [SketchGeometry3D.originPointId]'s
+/// own doc comment for why a marker built from real geometry could never
+/// look the same at every zoom level). Same "dark outline + light inner
+/// stroke" technique and the same stroke weights as
+/// [_CursorCrosshairPainter] (contrast against any background, "thin
+/// pencil width arms" per on-device feedback), just 3 crossing arms (6
+/// rays) instead of a plain "+", and shorter than the cursor's own arms -
+/// also per on-device feedback ("shorter than the cursor's") - since the
+/// origin is a static landmark, not an interactive cursor, and doesn't need
+/// to read as prominently.
+class _OriginMarkerPainter extends CustomPainter {
+  final Offset position;
+
+  const _OriginMarkerPainter({required this.position});
+
+  // On-device feedback ("scale it down to 2/3 of it's current size and
+  // weight"): both the arm length and the stroke widths below scaled by
+  // 2/3 from their previous values (7, 2.5, 1.25).
+  static const double _armLength = 7 * 2 / 3;
+  static const double _sqrt3Over2 = 0.8660254037844386;
+  static const List<Offset> _armDirections = [
+    Offset(1, 0),
+    Offset(0.5, _sqrt3Over2),
+    Offset(-0.5, _sqrt3Over2),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final outlinePaint = Paint()
+      ..color = const Color(0xCC000000)
+      ..strokeWidth = 2.5 * 2 / 3
+      ..strokeCap = StrokeCap.square;
+    final innerPaint = Paint()
+      ..color = const Color(0xFFFFFFFF)
+      ..strokeWidth = 1.25 * 2 / 3;
+    // Every arm's outline drawn first, then every inner stroke on top -
+    // same draw order [_CursorCrosshairPainter] uses per-axis, just across
+    // 3 arms instead of 2.
+    for (final direction in _armDirections) {
+      final delta = direction * _armLength;
+      canvas.drawLine(position - delta, position + delta, outlinePaint);
+    }
+    for (final direction in _armDirections) {
+      final delta = direction * _armLength;
+      canvas.drawLine(position - delta, position + delta, innerPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _OriginMarkerPainter oldDelegate) => oldDelegate.position != position;
+}
+
 /// P25 (2D-sketcher feature parity): the marquee gesture's own live
 /// screen-space rectangle outline - a plain translucent-fill, solid-border
 /// rect between [corner1]/[corner2] (whichever order), mirroring
@@ -3454,11 +3602,24 @@ class _MarqueeRectPainter extends CustomPainter {
       oldDelegate.corner1 != corner1 || oldDelegate.corner2 != corner2;
 }
 
+/// On-device feedback ("put [the origin marker] behind the cursor, dynamic
+/// highlighting and sketch entities"): no longer paints its own opaque
+/// background - that used to be this class's very first drawing operation,
+/// which would have permanently hidden anything placed behind it in the
+/// Stack (the origin marker's whole point is to show through in empty
+/// background areas while real scene content still covers it - an opaque
+/// fill drawn *inside* this same [paint] call can't be sandwiched between
+/// a widget behind it and the scene content in front of it). The background
+/// is now `PartViewportState.build`'s own separate `ColoredBox` Stack child,
+/// painted before the origin marker; [scene.render] itself only ever draws
+/// pixels for actual scene content (bodies, Sketch geometry, hover/selection
+/// highlights) and leaves everything else transparent, letting whatever's
+/// behind this [CustomPaint] - the background, and the origin marker
+/// sandwiched in front of it - show through unless real content covers it.
 class _ScenePainter extends CustomPainter {
   final Scene scene;
   final OrbitCamera camera;
   final Size size;
-  final Color backgroundColor;
 
   /// Every [Node] (reference planes, Sketch geometry) whose [Mesh] may
   /// contain a [PolylineGeometry] primitive - each such primitive's
@@ -3475,7 +3636,6 @@ class _ScenePainter extends CustomPainter {
     required this.scene,
     required this.camera,
     required this.size,
-    required this.backgroundColor,
     this.polylineCarryingNodes = const [],
   });
 
@@ -3491,7 +3651,6 @@ class _ScenePainter extends CustomPainter {
       _loggedFirstPaint = true;
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, calling scene.render()...');
     }
-    canvas.drawRect(Offset.zero & canvasSize, Paint()..color = backgroundColor);
     final perspectiveCamera = camera.cameraFor(size);
     for (final node in polylineCarryingNodes) {
       for (final primitive in node.mesh?.primitives ?? const []) {

@@ -244,9 +244,15 @@ void main() {
     final camera = OrbitCamera();
 
     camera.setZoomBoundsForRadius(1000);
-    expect(camera.farClip, 4000); // radius * 4, above the 1000 floor
-    expect(camera.nearClip, closeTo(0.4, 1e-9)); // farClip / 10000
-    expect(camera.minDistance, closeTo(0.8, 1e-9)); // nearClip * 2
+    // Bug fix: farClip must stay comfortably ahead of maxDistance (radius *
+    // 20) - a target this far out plus its own bounding radius has to stay
+    // inside the far clip plane from every orbit angle, or it vanishes the
+    // moment the camera reaches the outer part of its allowed zoom-out
+    // range. farClip = radius * 22, above the 1000 floor.
+    expect(camera.farClip, 22000);
+    expect(camera.farClip, greaterThan(camera.maxDistance + 1000));
+    expect(camera.nearClip, closeTo(2.2, 1e-9)); // farClip / 10000
+    expect(camera.minDistance, closeTo(4.4, 1e-9)); // nearClip * 2
   });
 
   test('setZoomBoundsForRadius falls back to the fixed defaults for a non-positive radius', () {
