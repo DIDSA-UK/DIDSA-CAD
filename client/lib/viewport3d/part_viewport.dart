@@ -540,10 +540,12 @@ class PartViewport extends StatefulWidget {
   /// Stage 18: the 3D viewport's appearance preferences (see
   /// [ViewPreferences]) - [PartScreen] owns these, the same controlled-
   /// widget pattern [renderMode] already uses. [bgColourHex] repaints the
-  /// canvas background every frame (see [_ScenePainter.paint]); [bodyColourHex]/
-  /// [bodyOpacity] only take effect on the next [_syncMeshNode] rebuild
-  /// (see [didUpdateWidget]), since they're baked into each Body's [Node]
-  /// material rather than read per-frame.
+  /// background every frame (see `build`'s own background layer, painted as
+  /// its own Stack child rather than inside [_ScenePainter] - see that
+  /// class's own doc comment for why); [bodyColourHex]/[bodyOpacity] only
+  /// take effect on the next [_syncMeshNode] rebuild (see [didUpdateWidget]),
+  /// since they're baked into each Body's [Node] material rather than read
+  /// per-frame.
   final String bgColourHex;
   final String bodyColourHex;
   final double bodyOpacity;
@@ -3271,6 +3273,31 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             widget.originWorldPoint == null ? null : worldToScreen(_camera.cameraFor(size), size, widget.originWorldPoint!);
         return Stack(
           children: [
+            // On-device feedback ("put it behind the cursor, dynamic
+            // highlighting and sketch entities"): painted as its own layer,
+            // separate from [_ScenePainter] (which used to paint this
+            // itself, opaquely, as the very first thing it drew - see that
+            // class's own doc comment for why that had to move here) - the
+            // origin marker below sits *between* this and [_ScenePainter]'s
+            // own (now background-less/transparent-where-empty) scene
+            // render, so real sketch geometry and hover/selection highlight
+            // nodes still paint over the marker wherever they actually
+            // cover it, while empty background still lets it show through.
+            Positioned.fill(
+              child: ColoredBox(color: colorFromHex(widget.bgColourHex)),
+            ),
+            // The marker itself - behind the 3D scene render (and so behind
+            // real sketch geometry/dynamic highlighting) and every
+            // cursor/overlay after it, per the same on-device feedback -
+            // but in front of the plain background above, so it's still
+            // visible wherever nothing else is drawn over it.
+            if (originMarkerScreen != null)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: size,
+                  painter: _OriginMarkerPainter(position: originMarkerScreen),
+                ),
+              ),
             Listener(
               onPointerDown: _onPointerDown,
               onPointerMove: _onPointerMove,
@@ -3284,7 +3311,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   scene: scene,
                   camera: _camera,
                   size: size,
-                  backgroundColor: colorFromHex(widget.bgColourHex),
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
                     if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
@@ -3404,13 +3430,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   ),
                 ),
               ),
-            if (originMarkerScreen != null)
-              IgnorePointer(
-                child: CustomPaint(
-                  size: size,
-                  painter: _OriginMarkerPainter(position: originMarkerScreen),
-                ),
-              ),
             // On-device feedback: rendered as part of this State's own
             // build (not an external overlay driven by a stale snapshot -
             // see [PartViewport.sketchOrientationBasis]'s own doc comment)
@@ -3516,7 +3535,10 @@ class _OriginMarkerPainter extends CustomPainter {
 
   const _OriginMarkerPainter({required this.position});
 
-  static const double _armLength = 7;
+  // On-device feedback ("scale it down to 2/3 of it's current size and
+  // weight"): both the arm length and the stroke widths below scaled by
+  // 2/3 from their previous values (7, 2.5, 1.25).
+  static const double _armLength = 7 * 2 / 3;
   static const double _sqrt3Over2 = 0.8660254037844386;
   static const List<Offset> _armDirections = [
     Offset(1, 0),
@@ -3528,11 +3550,11 @@ class _OriginMarkerPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final outlinePaint = Paint()
       ..color = const Color(0xCC000000)
-      ..strokeWidth = 2.5
+      ..strokeWidth = 2.5 * 2 / 3
       ..strokeCap = StrokeCap.square;
     final innerPaint = Paint()
       ..color = const Color(0xFFFFFFFF)
-      ..strokeWidth = 1.25;
+      ..strokeWidth = 1.25 * 2 / 3;
     // Every arm's outline drawn first, then every inner stroke on top -
     // same draw order [_CursorCrosshairPainter] uses per-axis, just across
     // 3 arms instead of 2.
@@ -3580,11 +3602,24 @@ class _MarqueeRectPainter extends CustomPainter {
       oldDelegate.corner1 != corner1 || oldDelegate.corner2 != corner2;
 }
 
+/// On-device feedback ("put [the origin marker] behind the cursor, dynamic
+/// highlighting and sketch entities"): no longer paints its own opaque
+/// background - that used to be this class's very first drawing operation,
+/// which would have permanently hidden anything placed behind it in the
+/// Stack (the origin marker's whole point is to show through in empty
+/// background areas while real scene content still covers it - an opaque
+/// fill drawn *inside* this same [paint] call can't be sandwiched between
+/// a widget behind it and the scene content in front of it). The background
+/// is now `PartViewportState.build`'s own separate `ColoredBox` Stack child,
+/// painted before the origin marker; [scene.render] itself only ever draws
+/// pixels for actual scene content (bodies, Sketch geometry, hover/selection
+/// highlights) and leaves everything else transparent, letting whatever's
+/// behind this [CustomPaint] - the background, and the origin marker
+/// sandwiched in front of it - show through unless real content covers it.
 class _ScenePainter extends CustomPainter {
   final Scene scene;
   final OrbitCamera camera;
   final Size size;
-  final Color backgroundColor;
 
   /// Every [Node] (reference planes, Sketch geometry) whose [Mesh] may
   /// contain a [PolylineGeometry] primitive - each such primitive's
@@ -3601,7 +3636,6 @@ class _ScenePainter extends CustomPainter {
     required this.scene,
     required this.camera,
     required this.size,
-    required this.backgroundColor,
     this.polylineCarryingNodes = const [],
   });
 
@@ -3617,7 +3651,6 @@ class _ScenePainter extends CustomPainter {
       _loggedFirstPaint = true;
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, calling scene.render()...');
     }
-    canvas.drawRect(Offset.zero & canvasSize, Paint()..color = backgroundColor);
     final perspectiveCamera = camera.cameraFor(size);
     for (final node in polylineCarryingNodes) {
       for (final primitive in node.mesh?.primitives ?? const []) {
