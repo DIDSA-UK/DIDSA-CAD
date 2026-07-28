@@ -12,6 +12,7 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 
 /// A tiny in-memory fake of the backend's `/document` API - just enough of
@@ -43,6 +44,13 @@ class _FakeDocumentBackend {
     'triangle_indices': [
       [0, 1, 2],
     ],
+    // Skip-instances redesign: `hitTestFaces` indexes `mesh.faceIds`
+    // parallel to `mesh.triangleIndices` (see `MeshDto.faceIds`'s own doc
+    // comment) - without this, a hover ray that happens to actually
+    // intersect this triangle (now plausible once the Pattern mesh handler
+    // below returns more than one Body sharing this exact placeholder
+    // geometry) throws a RangeError instead of returning no hit.
+    'face_ids': [0],
   };
 
   http.Response handle(http.Request request) {
@@ -62,6 +70,40 @@ class _FakeDocumentBackend {
       // Prompt A3: the backend (Prompt A1) now returns an array of Bodies -
       // this fake always returns the single-entry placeholder-box shape,
       // since none of these tests actually exercise real Extrude geometry.
+      //
+      // Skip-instances redesign: a `pattern` Feature is the one exception -
+      // its own instance Bodies need *real*, scheme-correct ids (mirroring
+      // `compute_part_bodies`'s own `feature.id`/`feature.id#index` naming -
+      // see `extrude.py`'s doc comment there) for the viewport-tap-to-toggle
+      // tests below to target a specific instance, and its own stored
+      // `skip_indices` needs to actually filter the returned array (mirrors
+      // the real backend) so the "editing reveals every instance, Confirm
+      // re-applies the real selection" sequencing is observable end to end.
+      final patternFeature = features.firstWhere((f) => f['type'] == 'pattern', orElse: () => const {});
+      if (patternFeature.isNotEmpty) {
+        final seedId = (patternFeature['source_body_ids'] as List).first as String;
+        final isCircular = patternFeature['pattern_type'] == 'circular';
+        final totalCount = isCircular
+            ? (patternFeature['count_angular'] as num).toInt()
+            : (patternFeature['count_1'] as num).toInt() * (patternFeature['count_2'] as num).toInt();
+        final skipIndices = ((patternFeature['skip_indices'] as List?) ?? const [])
+            .map((n) => (n as num).toInt())
+            .toSet();
+        final featureId = patternFeature['id'] as String;
+        final nonSeedIndices = [
+          for (var i = 1; i < totalCount; i++)
+            if (!skipIndices.contains(i)) i,
+        ];
+        return _json([
+          {'body_id': seedId, 'source': 'placeholder', 'mesh': _placeholderMesh},
+          for (final i in nonSeedIndices)
+            {
+              'body_id': nonSeedIndices.length == 1 ? featureId : '$featureId#$i',
+              'source': 'placeholder',
+              'mesh': _placeholderMesh,
+            },
+        ], 200);
+      }
       return _json([
         {'body_id': 'placeholder', 'source': 'placeholder', 'mesh': _placeholderMesh},
       ], 200);
@@ -146,6 +188,29 @@ class _FakeDocumentBackend {
       if (body.containsKey('extrude_type')) feature['extrude_type'] = body['extrude_type'];
       if (body.containsKey('start_distance')) feature['start_distance'] = body['start_distance'];
       if (body.containsKey('end_distance')) feature['end_distance'] = body['end_distance'];
+      return _json(feature, 200);
+    }
+
+    final patternPatchMatch =
+        RegExp(r'^/document/parts/part-1/pattern-features/([^/]+)$').firstMatch(path);
+    if (patternPatchMatch != null && method == 'PATCH') {
+      final featureId = patternPatchMatch.group(1);
+      final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
+      if (feature.isEmpty) return http.Response('not found: feature', 404);
+      for (final key in [
+        'count_1',
+        'spacing_1',
+        'reverse_1',
+        'count_2',
+        'spacing_2',
+        'reverse_2',
+        'count_angular',
+        'angle_total',
+        'reverse_angular',
+        'skip_indices',
+      ]) {
+        if (body.containsKey(key)) feature[key] = body[key];
+      }
       return _json(feature, 200);
     }
 
@@ -391,6 +456,14 @@ void main() {
     expect(find.text('Hide Reference Planes'), findsOneWidget);
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isFalse);
 
+    // The toolbar's own max height is now capped to a third of the
+    // screen's height (was a fixed 520px), so an entry this far down the
+    // expanded View menu can be scrolled out of the visible, clipped area
+    // even though it's still in the tree - ensureVisible scrolls the
+    // ancestor SingleChildScrollView first, same as any other test
+    // targeting content that may not already be on-screen.
+    await tester.ensureVisible(find.text('Hide Reference Planes'));
+    await tester.pump();
     await tester.tap(find.text('Hide Reference Planes'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -399,6 +472,8 @@ void main() {
     expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isTrue);
     expect(tester.takeException(), isNull);
 
+    await tester.ensureVisible(find.text('Show Reference Planes'));
+    await tester.pump();
     await tester.tap(find.text('Show Reference Planes'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -687,6 +762,293 @@ void main() {
     expect(find.text('Sketch 1'), findsNothing);
     expect(find.text('Sketch 2'), findsNothing);
     expect(backend.features, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tapping a Pattern row in the Feature tree opens it for editing', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'pattern',
+          'id': 'feature-2',
+          'source_body_ids': ['body-1'],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Pattern 1'), findsOneWidget);
+
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Edit Pattern'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // PatternPanel's own initState eagerly re-emits its initial field
+    // values (see its own doc comment on why), which schedules a debounced
+    // live-preview PATCH - pump past it so no Timer is left pending when
+    // this test tears down.
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('long-pressing a Pattern row offers Delete, same as any other Feature type', (tester) async {
+    // The Pattern is deliberately *not* the last Feature here (cascade
+    // deletes it and everything after it) - the trailing Sketch means the
+    // confirmation dialog covers 2 Features ("Delete all"), matching the
+    // already-passing "long-pressing a Feature shows a confirmation
+    // dialog..." test's own shape, rather than the single-Feature
+    // ("Delete") case a lone last Feature would hit.
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {
+          'type': 'pattern',
+          'id': 'feature-1',
+          'source_body_ids': ['body-1'],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [],
+          'locked': true,
+        },
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Delete'));
+    await tester.pump();
+    await _pumpUntil(tester, () => find.text('Delete all').evaluate().isNotEmpty);
+
+    await tester.tap(find.text('Delete all'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await _pumpUntil(tester, () => find.text('Pattern 1').evaluate().isEmpty);
+
+    expect(backend.features, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'editing a Pattern with skip_indices reveals every instance for editing, and Confirm '
+      're-applies the real skip selection', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'pattern',
+          'id': 'feature-2',
+          'source_body_ids': ['body-1'],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [1],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Edit Pattern'), findsOneWidget);
+
+    // The force-reveal update ([_openPatternPanelForEdit]'s own doc
+    // comment) plus PatternPanel's own initState-eager debounced update
+    // both fire skip_indices: [] - pump well past both.
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+
+    final pattern = backend.features.firstWhere((f) => f['id'] == 'feature-2');
+    expect(pattern['skip_indices'], isEmpty);
+
+    // Fetch the mesh again to confirm every instance really is present
+    // (not just that the stored value is empty) while editing.
+    await _pumpUntil(tester, () {
+      final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      return viewport.bodies.any((b) => b.bodyId == 'feature-2#1') &&
+          viewport.bodies.any((b) => b.bodyId == 'feature-2#2');
+    });
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(pattern['skip_indices'], [1]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'tapping a Pattern instance Body in the viewport toggles its own skip/keep state, '
+      'and Confirm sends that real selection to the backend', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'pattern',
+          'id': 'feature-2',
+          'source_body_ids': ['body-1'],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Edit Pattern'), findsOneWidget);
+
+    final pattern = backend.features.firstWhere((f) => f['id'] == 'feature-2');
+    expect(pattern['skip_indices'], isEmpty);
+
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'feature-2#1'),
+        );
+    await tester.pump();
+
+    // Purely local - no PATCH fires for the toggle itself.
+    expect(pattern['skip_indices'], isEmpty);
+    expect(
+      tester.widget<PartViewport>(find.byType(PartViewport)).skippedPreviewBodyIds,
+      {'feature-2#1'},
+    );
+
+    // Tapping the same instance again clears it back to kept.
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'feature-2#1'),
+        );
+    await tester.pump();
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).skippedPreviewBodyIds, isEmpty);
+
+    // Toggle it skip again, then confirm - the real selection is only ever
+    // sent once, right here.
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'feature-2#1'),
+        );
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(pattern['skip_indices'], [1]);
     expect(tester.takeException(), isNull);
   });
 

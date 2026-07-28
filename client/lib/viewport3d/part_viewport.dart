@@ -521,6 +521,18 @@ class PartViewport extends StatefulWidget {
   final String? previewOverlayBodyId;
   final MeshDto? previewOverlayMesh;
 
+  /// Pattern/Mirror scoping's skip-instances redesign: the body ids (from
+  /// [bodies]) of every Pattern instance the user has currently marked
+  /// skip - rendered with a distinct, more-transparent grey tint (see
+  /// [_syncMeshNode]) instead of [isPreviewMesh]'s ordinary translucent
+  /// orange, so kept vs. skipped instances read apart at a glance while
+  /// every instance stays visible (and tappable, via [onSelectionToggle])
+  /// throughout live editing - see [PartScreen]'s own
+  /// `_ensurePatternFeatureExists` doc comment for why the mesh always
+  /// contains every instance during editing regardless of the real skip
+  /// selection. Empty outside a Pattern-editing session.
+  final Set<String> skippedPreviewBodyIds;
+
   /// Stage 10b: globally hides all three reference planes - both their
   /// rendered geometry and their [onPlaneTap] hit-testing, so a tap where a
   /// hidden plane would be falls through to [onBackgroundTap] instead of
@@ -729,6 +741,7 @@ class PartViewport extends StatefulWidget {
     this.isPreviewMesh = false,
     this.previewOverlayBodyId,
     this.previewOverlayMesh,
+    this.skippedPreviewBodyIds = const {},
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
@@ -1109,6 +1122,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.isPreviewMesh != oldWidget.isPreviewMesh ||
         widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
         widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
+        widget.skippedPreviewBodyIds != oldWidget.skippedPreviewBodyIds ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodyColourHex != oldWidget.bodyColourHex ||
         widget.bodyOpacity != oldWidget.bodyOpacity ||
@@ -1346,6 +1360,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // `body.mesh`), only the rendered geometry for this one Node swaps.
         final isPreviewOverlay =
             widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId;
+        final isSkippedInstance = widget.skippedPreviewBodyIds.contains(body.bodyId);
         // Deliberately *not* renderMirrorCorrectedMesh (on-device feedback,
         // 2026-07-21 follow-up round): that correction was applied
         // uniformly to every Body source, but a controlled on-device test
@@ -1386,12 +1401,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // whenever bodyOpacity < 1.0) needs double-sided-winding geometry,
         // or flutter_scene back-face-culls it regardless of the material's
         // own doubleSided flag - see geometryFromMesh's doc comment.
-        final isTranslucent = widget.isPreviewMesh || isPreviewOverlay || widget.bodyOpacity < 1.0;
+        final isTranslucent =
+            widget.isPreviewMesh || isPreviewOverlay || isSkippedInstance || widget.bodyOpacity < 1.0;
         final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
         // Live-operation preview overlays stay a flat, translucent tint -
         // they're meant to read as a distinct "in-progress" indicator, not
         // real lit geometry, so they're deliberately left on UnlitMaterial.
-        final material = (widget.isPreviewMesh || isPreviewOverlay)
+        // A Pattern instance marked skip gets its own pale, mostly-see-
+        // through grey instead - checked first so it wins over the ordinary
+        // preview tint for that one Body.
+        final material = isSkippedInstance
+            ? (UnlitMaterial()
+              ..alphaMode = AlphaMode.blend
+              ..baseColorFactor = vm.Vector4(0.55, 0.55, 0.55, 0.25))
+            : (widget.isPreviewMesh || isPreviewOverlay)
             ? (UnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
