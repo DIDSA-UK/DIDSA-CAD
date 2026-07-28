@@ -562,12 +562,29 @@ class _PartScreenState extends State<PartScreen> {
       _confirmPatternBodySelection(entity);
       return;
     }
-    // An edge tap during `configuring` sets (or clears, if it's the
-    // already-picked one) whichever direction slot is currently active -
-    // mirrors [_setMirrorPlane]'s replace-not-accumulate shape, just picked
-    // per-slot instead of unconditionally.
-    if (_patternStep == _PatternStep.configuring && entity.kind == SelectionEntityKind.edge) {
-      _setPatternDirectionFromEdge(entity);
+    // An edge or Sketch Line tap during `configuring` sets (or clears, if
+    // it's the already-picked one) whichever direction slot is currently
+    // active - mirrors [_setMirrorPlane]'s replace-not-accumulate shape,
+    // just picked per-slot instead of unconditionally. Rectangular mode
+    // only - Circular mode's own edge/face/sketchLine axis tap is the case
+    // directly below.
+    if (_patternStep == _PatternStep.configuring &&
+        _patternMode == PatternMode.rectangular &&
+        (entity.kind == SelectionEntityKind.edge || entity.kind == SelectionEntityKind.sketchLine)) {
+      _setPatternDirectionFromEntity(entity);
+      return;
+    }
+    // Pattern/Mirror scoping Phase 4 (revised): an edge, face, or Sketch
+    // Line tap during `configuring` in Circular mode sets (or clears) the
+    // single axis pick - unlike Rectangular's two independent direction
+    // slots, Circular has exactly one axis, so there is no active-slot
+    // concept to consult here.
+    if (_patternStep == _PatternStep.configuring &&
+        _patternMode == PatternMode.circular &&
+        (entity.kind == SelectionEntityKind.edge ||
+            entity.kind == SelectionEntityKind.face ||
+            entity.kind == SelectionEntityKind.sketchLine)) {
+      _setPatternAxisFromEntity(entity);
       return;
     }
     setState(() {
@@ -639,6 +656,7 @@ class _PartScreenState extends State<PartScreen> {
           ? {
               if (_patternDirection1EdgeEntity != null) _patternDirection1EdgeEntity!,
               if (_patternDirection2EdgeEntity != null) _patternDirection2EdgeEntity!,
+              if (_patternAxisEntity != null) _patternAxisEntity!,
             }
           : {};
     });
@@ -1102,14 +1120,12 @@ class _PartScreenState extends State<PartScreen> {
   // step is needed the way Mirror's multi-select `pickingBodies` needs one.
   //
   // `configuring` picks a *direction* (Direction 1 always, Direction 2
-  // optional, for a 2D grid) rather than a plane - client v1 only exposes
-  // two of the three backend-supported direction sources (a straight Body
-  // edge, tapped live in the viewport; a fixed world X/Y/Z axis, via
-  // [PatternPanel]'s own buttons) - a Sketch Line direction is fully
-  // supported server-side but not yet reachable from this panel (see
-  // `pattern_panel.dart`'s own doc comment for why). Because *two*
-  // independent directions can each come from an edge tap,
-  // [_patternActiveDirectionSlot] says which one the next edge tap fills -
+  // optional, for a 2D grid) rather than a plane - all three backend-
+  // supported direction sources are reachable from this panel: a straight
+  // Body edge or a Sketch Line, both tapped live in the viewport, or a
+  // fixed world X/Y/Z axis via [PatternPanel]'s own buttons. Because *two*
+  // independent directions can each come from an edge/Sketch-Line tap,
+  // [_patternActiveDirectionSlot] says which one the next tap fills -
   // switched via [PatternPanel]'s own two-chip toggle once a second
   // direction is enabled.
 
@@ -1123,6 +1139,17 @@ class _PartScreenState extends State<PartScreen> {
   /// own header comment) - captured once `pickingBody` completes (or is
   /// skipped, for the ambient [SelectionContextPanel] entry/edit mode).
   String? _patternSourceBodyId;
+
+  /// Pattern/Mirror scoping Phase 4: Rectangular or Circular - always
+  /// [PatternMode.rectangular] for a brand-new PatternFeature
+  /// ([_resetPatternConfiguringState]'s own default), only ever set to
+  /// [PatternMode.circular] via [_setPatternMode] (live, user-driven) or
+  /// [_openPatternPanelForEdit] (reconstructed from an existing Feature's
+  /// own stored `pattern_type`). Immutable once editing an existing
+  /// Feature - see [PatternPanel.canChangeMode]'s own doc comment for why
+  /// (`pattern_type` is never revised via PATCH; switching modes is
+  /// delete+recreate).
+  PatternMode _patternMode = PatternMode.rectangular;
 
   /// Direction 1 (required) and Direction 2 (optional, for a 2D grid) -
   /// each independently either an edge-tap-derived [PatternDirectionRefDto]
@@ -1150,6 +1177,18 @@ class _PartScreenState extends State<PartScreen> {
   /// mean yet).
   int _patternActiveDirectionSlot = 1;
 
+  /// Circular mode's own single axis pick - a `PatternAxisRef` wire value
+  /// (a circular or straight Body edge, a cylindrical Body face, or a
+  /// Sketch Line - all backend-supported and reachable from this panel).
+  /// [_patternAxisEntity] tracks which [SelectionEntityRef] (if any) it
+  /// came from, purely for [_selectedEntities] highlight bookkeeping - both
+  /// null whenever no axis is picked yet.
+  PatternAxisRefDto? _patternAxis;
+  SelectionEntityRef? _patternAxisEntity;
+  int _patternCountAngular = 2;
+  double _patternAngleTotal = 360.0;
+  bool _patternReverseAngular = false;
+
   /// The PatternFeature created (or, in edit mode, already existing) for
   /// the panel session - mirrors [_previewMirrorFeatureId]'s simple
   /// pattern (confirmed via `docs/live-preview-pattern.md`'s decision tree
@@ -1168,7 +1207,7 @@ class _PartScreenState extends State<PartScreen> {
   /// exists.
   ({
     List<String> sourceBodyIds,
-    PatternDirectionRefDto direction1,
+    PatternDirectionRefDto? direction1,
     int count1,
     double spacing1,
     bool reverse1,
@@ -1176,6 +1215,10 @@ class _PartScreenState extends State<PartScreen> {
     int count2,
     double spacing2,
     bool reverse2,
+    PatternAxisRefDto? axis,
+    int countAngular,
+    double angleTotal,
+    bool reverseAngular,
   })? _patternEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened -
@@ -1210,20 +1253,47 @@ class _PartScreenState extends State<PartScreen> {
     plane: false,
   );
 
-  /// Locks [_selectionFilterOverrides] to Body edges only for the
-  /// `configuring` half of the Pattern flow - `edge: true` lets the user
-  /// tap a straight Body edge for whichever direction slot is currently
-  /// active ([_patternActiveDirectionSlot]); everything else stays off,
-  /// including `body` (the source Body is already fixed by this point) and
-  /// `sketchLine` (client v1 scope - see this section's own header
-  /// comment).
+  /// Locks [_selectionFilterOverrides] to Body edges and Sketch Lines for
+  /// the `configuring` half of the Pattern flow - `edge: true` lets the
+  /// user tap a straight Body edge, `sketchLine: true` a Sketch Line, for
+  /// whichever direction slot is currently active
+  /// ([_patternActiveDirectionSlot]); everything else stays off, including
+  /// `body` (the source Body is already fixed by this point).
   static const _patternDirectionSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
     face: false,
     body: false,
     sketchPoint: false,
-    sketchLine: false,
+    sketchLine: true,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  /// Locks [_selectionFilterOverrides] to Body edges, Body faces, and
+  /// Sketch Lines for Circular mode's own `configuring` step - unlike
+  /// Rectangular's direction (which also accepts a fixed X/Y/Z axis
+  /// button, needing no viewport pick at all), Circular's axis has no
+  /// fixed-axis alternative (a circular pattern needs a real pivot point,
+  /// which a bare world-axis direction can't supply), so it's picked
+  /// exclusively via a viewport tap on a circular or straight Body edge, a
+  /// cylindrical Body face, or a Sketch Line - all three kinds must be
+  /// enabled simultaneously (confirmed during Phase 2's own investigation
+  /// that `filter.edge`/`filter.face` coexist fine in `hitTestBodies`,
+  /// unlike `filter.body`/`filter.face`'s mutual exclusivity; `sketchLine`
+  /// hit-testing is a fully independent pass over Sketch geometry - see
+  /// `hitTestBodies`'s own `sketchGeometries` loop - so it coexists with
+  /// both just as freely).
+  static const _patternAxisSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
     sketchCircle: false,
     sketchArc: false,
     sketchEllipse: false,
@@ -5776,6 +5846,7 @@ class _PartScreenState extends State<PartScreen> {
   /// alongside this).
   void _resetPatternConfiguringState(String sourceBodyId) {
     _patternStep = _PatternStep.configuring;
+    _patternMode = PatternMode.rectangular;
     _patternSourceBodyId = sourceBodyId;
     _patternDirection1 = null;
     _patternDirection1EdgeEntity = null;
@@ -5789,6 +5860,11 @@ class _PartScreenState extends State<PartScreen> {
     _patternSpacing2 = 0.0;
     _patternReverse2 = false;
     _patternActiveDirectionSlot = 1;
+    _patternAxis = null;
+    _patternAxisEntity = null;
+    _patternCountAngular = 2;
+    _patternAngleTotal = 360.0;
+    _patternReverseAngular = false;
     _previewPatternFeatureId = null;
     _editingPatternFeatureId = null;
     _patternEditSnapshot = null;
@@ -5801,19 +5877,80 @@ class _PartScreenState extends State<PartScreen> {
   /// on an existing PatternFeature yet, mirroring Mirror's own edit-flow
   /// scope.
   ///
-  /// Direction entities are only reconstructed into [_selectedEntities]
-  /// (and [_patternDirection1EdgeEntity]/[_patternDirection2EdgeEntity])
-  /// for an `edge_ref`-based direction, via [_patternEdgeEntityFor] - a
-  /// `fixed_axis` direction has nothing to highlight in the viewport, and a
-  /// `sketch_line_ref` one (reachable only via a hand-crafted request, not
-  /// yet this panel's own v1 UI - see this file's own Pattern state-field
-  /// section header comment) has no reconstruction path yet either; both
-  /// still show correctly via [_patternDirectionSummary], just without a
-  /// viewport highlight.
+  /// Direction/axis entities are reconstructed into [_selectedEntities]
+  /// (and [_patternDirection1EdgeEntity]/[_patternDirection2EdgeEntity]/
+  /// [_patternAxisEntity]) for an `edge_ref`/`face_ref`/`sketch_line_ref`-
+  /// based pick, via [_patternEdgeEntityFor]/[_patternAxisEntityFor] - only
+  /// a `fixed_axis` direction has nothing to highlight in the viewport (it
+  /// still shows correctly via [_patternDirectionSummary], just without a
+  /// viewport highlight).
+  ///
+  /// Branches on [FeatureDto.patternType] (defaulting to Rectangular, same
+  /// backward-compatible convention the backend's own native-format loader
+  /// uses for Phase-2-era saves) since a Circular Feature's own required
+  /// fields (`axis`/`count_angular`/`angle_total`) are entirely disjoint
+  /// from Rectangular's (`direction_1`/`count_1`/`spacing_1`) - see
+  /// `PatternFeature`'s own backend docstring.
   bool _openPatternPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
+    if (sourceBodyIds.isEmpty) return false;
+    final mode = PatternMode.fromApiValue(feature.patternType ?? 'rectangular');
+
+    if (mode == PatternMode.circular) {
+      final axis = feature.axis;
+      if (axis == null) return false;
+      final axisEntity = _patternAxisEntityFor(axis);
+      setState(() {
+        _patternStep = _PatternStep.configuring;
+        _patternMode = PatternMode.circular;
+        _editingPatternFeatureId = feature.id;
+        _previewPatternFeatureId = feature.id;
+        _patternSourceBodyId = sourceBodyIds.first;
+        _patternDirection1 = null;
+        _patternDirection1EdgeEntity = null;
+        _patternCount1 = 2;
+        _patternSpacing1 = 10.0;
+        _patternReverse1 = false;
+        _patternHasSecondDirection = false;
+        _patternDirection2 = null;
+        _patternDirection2EdgeEntity = null;
+        _patternCount2 = 1;
+        _patternSpacing2 = 0.0;
+        _patternReverse2 = false;
+        _patternActiveDirectionSlot = 1;
+        _patternAxis = axis;
+        _patternAxisEntity = axisEntity;
+        _patternCountAngular = feature.countAngular;
+        _patternAngleTotal = feature.angleTotal;
+        _patternReverseAngular = feature.reverseAngular;
+        _patternEditSnapshot = (
+          sourceBodyIds: sourceBodyIds,
+          direction1: null,
+          count1: 1,
+          spacing1: 0.0,
+          reverse1: false,
+          direction2: null,
+          count2: 1,
+          spacing2: 0.0,
+          reverse2: false,
+          axis: axis,
+          countAngular: feature.countAngular,
+          angleTotal: feature.angleTotal,
+          reverseAngular: feature.reverseAngular,
+        );
+        _meshBeforePattern = _bodies;
+        _entitiesBeforePattern = _selectedEntities;
+        _selectedEntities = {
+          if (axisEntity != null) axisEntity,
+        };
+        _selectionMode = true;
+        _selectionFilterOverrides.push(_patternAxisSelectionFilter);
+      });
+      return true;
+    }
+
     final direction1 = feature.direction1;
-    if (sourceBodyIds.isEmpty || direction1 == null) return false;
+    if (direction1 == null) return false;
 
     final direction1Entity = _patternEdgeEntityFor(direction1);
     final direction2 = feature.direction2;
@@ -5823,6 +5960,7 @@ class _PartScreenState extends State<PartScreen> {
 
     setState(() {
       _patternStep = _PatternStep.configuring;
+      _patternMode = PatternMode.rectangular;
       _editingPatternFeatureId = feature.id;
       _previewPatternFeatureId = feature.id;
       _patternSourceBodyId = sourceBodyIds.first;
@@ -5838,6 +5976,11 @@ class _PartScreenState extends State<PartScreen> {
       _patternSpacing2 = feature.spacing2;
       _patternReverse2 = feature.reverse2;
       _patternActiveDirectionSlot = 1;
+      _patternAxis = null;
+      _patternAxisEntity = null;
+      _patternCountAngular = 2;
+      _patternAngleTotal = 360.0;
+      _patternReverseAngular = false;
       _patternEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         direction1: direction1,
@@ -5848,6 +5991,10 @@ class _PartScreenState extends State<PartScreen> {
         count2: feature.count2,
         spacing2: feature.spacing2,
         reverse2: feature.reverse2,
+        axis: null,
+        countAngular: 1,
+        angleTotal: 360.0,
+        reverseAngular: false,
       );
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -5862,15 +6009,28 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// The [SelectionEntityRef] a stored [PatternDirectionRefDto] came from,
-  /// if (and only if) it's an `edge_ref`-based direction - null for a
-  /// `fixed_axis`/`sketch_line_ref` one, which have nothing to highlight in
-  /// the viewport. Reverse of the plain construction
-  /// [_setPatternDirectionFromEdge] does inline, for
-  /// [_openPatternPanelForEdit]'s own live re-pick session.
+  /// if (and only if) it's an `edge_ref`/`sketch_line_ref`-based direction -
+  /// null for a `fixed_axis` one, which has nothing to highlight in the
+  /// viewport, or (defensive only) a `sketch_line_ref` whose owning Sketch
+  /// Feature can no longer be resolved. Reverse of the plain construction
+  /// [_patternDirectionRefDtoFor] does, for [_openPatternPanelForEdit]'s
+  /// own live re-pick session.
   SelectionEntityRef? _patternEdgeEntityFor(PatternDirectionRefDto dto) {
     final edgeRef = dto.edgeRef;
-    if (edgeRef == null) return null;
-    return SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: edgeRef.bodyId, id: edgeRef.index);
+    if (edgeRef != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: edgeRef.bodyId, id: edgeRef.index);
+    }
+    final sketchLineRef = dto.sketchLineRef;
+    if (sketchLineRef != null) {
+      final sketchFeatureId = _sketchFeatureIdForSketchId(sketchLineRef.sketchId);
+      if (sketchFeatureId == null) return null;
+      return SelectionEntityRef(
+        kind: SelectionEntityKind.sketchLine,
+        sketchFeatureId: sketchFeatureId,
+        sketchEntityId: sketchLineRef.entityId,
+      );
+    }
+    return null;
   }
 
   /// A short human-readable summary of [dto]'s current pick, for
@@ -5885,27 +6045,160 @@ class _PartScreenState extends State<PartScreen> {
     return null;
   }
 
-  /// [_toggleSelectedEntity]'s edge-kind special case for the `configuring`
-  /// step - replaces whichever edge (if any) is currently picked for
-  /// [_patternActiveDirectionSlot] with [edgeEntity], unless [edgeEntity]
-  /// was already the one picked, in which case it's cleared instead (tap
-  /// the current pick again to deselect it) - mirrors [_setMirrorPlane]
-  /// exactly, generalized to two independent slots.
-  void _setPatternDirectionFromEdge(SelectionEntityRef edgeEntity) {
+  /// The [SelectionEntityRef] a stored [PatternAxisRefDto] came from -
+  /// reverse of [_patternAxisRefDtoFor], for [_openPatternPanelForEdit]'s
+  /// own live re-pick session. Null only defensively, for a
+  /// `sketch_line_ref` whose owning Sketch Feature can no longer be
+  /// resolved.
+  SelectionEntityRef? _patternAxisEntityFor(PatternAxisRefDto dto) {
+    final edgeRef = dto.edgeRef;
+    if (edgeRef != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: edgeRef.bodyId, id: edgeRef.index);
+    }
+    final faceRef = dto.faceRef;
+    if (faceRef != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: faceRef.bodyId, id: faceRef.index);
+    }
+    final sketchLineRef = dto.sketchLineRef;
+    if (sketchLineRef != null) {
+      final sketchFeatureId = _sketchFeatureIdForSketchId(sketchLineRef.sketchId);
+      if (sketchFeatureId == null) return null;
+      return SelectionEntityRef(
+        kind: SelectionEntityKind.sketchLine,
+        sketchFeatureId: sketchFeatureId,
+        sketchEntityId: sketchLineRef.entityId,
+      );
+    }
+    return null;
+  }
+
+  /// A short human-readable summary of [dto]'s current axis pick, for
+  /// [PatternPanel.axisSummary] - null whenever [dto] itself is (nothing
+  /// picked yet).
+  String? _patternAxisSummary(PatternAxisRefDto? dto) {
+    if (dto == null) return null;
+    if (dto.edgeRef != null) return 'Edge selected';
+    if (dto.faceRef != null) return 'Cylindrical face selected';
+    if (dto.sketchLineRef != null) return 'Sketch Line selected';
+    return null;
+  }
+
+  /// [PatternPanel.onModeChanged]'s callback - only reachable when
+  /// [PatternPanel.canChangeMode] is true, i.e. never while editing an
+  /// already-existing PatternFeature (`pattern_type` is immutable via
+  /// PATCH - see `PatternFeatureUpdate`'s own docstring; switching modes is
+  /// delete+recreate instead). Swaps the pushed viewport selection filter
+  /// for the new mode's own (edge-only for Rectangular, edge+face for
+  /// Circular) and clears out whichever mode's fields are being left, so
+  /// switching back and forth never leaves stale cross-mode state lying
+  /// around.
+  void _setPatternMode(PatternMode mode) {
+    if (mode == _patternMode) return;
+    setState(() {
+      _selectionFilterOverrides.pop();
+      _selectionFilterOverrides.push(
+        mode == PatternMode.circular ? _patternAxisSelectionFilter : _patternDirectionSelectionFilter,
+      );
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (_patternDirection1EdgeEntity != null) next.remove(_patternDirection1EdgeEntity);
+      if (_patternDirection2EdgeEntity != null) next.remove(_patternDirection2EdgeEntity);
+      if (_patternAxisEntity != null) next.remove(_patternAxisEntity);
+      _selectedEntities = next;
+      _patternMode = mode;
+      _patternDirection1 = null;
+      _patternDirection1EdgeEntity = null;
+      _patternHasSecondDirection = false;
+      _patternDirection2 = null;
+      _patternDirection2EdgeEntity = null;
+      _patternActiveDirectionSlot = 1;
+      _patternAxis = null;
+      _patternAxisEntity = null;
+      _patternCountAngular = 2;
+      _patternAngleTotal = 360.0;
+      _patternReverseAngular = false;
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s edge-or-face special case for Circular
+  /// mode's `configuring` step - replaces whatever axis entity (if any) is
+  /// currently picked with [entity], unless [entity] was already the one
+  /// picked, in which case it's cleared instead (tap the current pick again
+  /// to deselect it). Unlike Rectangular's two independent direction slots,
+  /// Circular has exactly one axis pick - mirrors [_setMirrorPlane]'s
+  /// single-slot replace-not-accumulate shape.
+  void _setPatternAxisFromEntity(SelectionEntityRef entity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final alreadyPicked = _patternAxisEntity == entity;
+      if (_patternAxisEntity != null) next.remove(_patternAxisEntity);
+      final newEntity = alreadyPicked ? null : entity;
+      if (newEntity != null) next.add(newEntity);
+      _selectedEntities = next;
+      _patternAxisEntity = newEntity;
+      _patternAxis = _patternAxisRefDtoFor(newEntity);
+    });
+    _schedulePatternPreview();
+  }
+
+  /// [entity] converted to the wire [PatternAxisRefDto] it represents - an
+  /// `edge_ref` for a Body edge (circular or straight - the backend's own
+  /// `_axis_from_ref` distinguishes those, not this client), a `face_ref`
+  /// for a Body face, or a `sketch_line_ref` (resolving the real Sketch id
+  /// via [_sketchIdForFeatureId], mirroring [_patternDirectionRefDtoFor]'s
+  /// identical conversion) for a Sketch Line - null for [entity] itself
+  /// null, or (defensive only) a Sketch Line whose owning Sketch id can no
+  /// longer be resolved.
+  PatternAxisRefDto? _patternAxisRefDtoFor(SelectionEntityRef? entity) {
+    if (entity == null) return null;
+    if (entity.kind == SelectionEntityKind.face) {
+      return PatternAxisRefDto(
+        faceRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+      );
+    }
+    if (entity.kind == SelectionEntityKind.sketchLine) {
+      final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+      if (sketchId == null) return null;
+      return PatternAxisRefDto(
+        sketchLineRef: SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId),
+      );
+    }
+    return PatternAxisRefDto(
+      edgeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+    );
+  }
+
+  void _onPatternCountAngularChanged(int count) {
+    _patternCountAngular = count;
+    _schedulePatternPreview();
+  }
+
+  void _onPatternAngleTotalChanged(double angle) {
+    _patternAngleTotal = angle;
+    _schedulePatternPreview();
+  }
+
+  void _onPatternReverseAngularChanged(bool reverse) {
+    setState(() => _patternReverseAngular = reverse);
+    _schedulePatternPreview();
+  }
+
+  /// [_toggleSelectedEntity]'s edge/Sketch-Line special case for the
+  /// `configuring` step - replaces whichever entity (if any) is currently
+  /// picked for [_patternActiveDirectionSlot] with [entity], unless
+  /// [entity] was already the one picked, in which case it's cleared
+  /// instead (tap the current pick again to deselect it) - mirrors
+  /// [_setMirrorPlane] exactly, generalized to two independent slots.
+  void _setPatternDirectionFromEntity(SelectionEntityRef entity) {
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       final currentEntity =
           _patternActiveDirectionSlot == 1 ? _patternDirection1EdgeEntity : _patternDirection2EdgeEntity;
       if (currentEntity != null) next.remove(currentEntity);
-      final alreadyPicked = currentEntity == edgeEntity;
-      final newEntity = alreadyPicked ? null : edgeEntity;
+      final alreadyPicked = currentEntity == entity;
+      final newEntity = alreadyPicked ? null : entity;
       if (newEntity != null) next.add(newEntity);
       _selectedEntities = next;
-      final dto = newEntity == null
-          ? null
-          : PatternDirectionRefDto(
-              edgeRef: SubShapeRefDto(bodyId: newEntity.bodyId, shapeType: 'edge', index: newEntity.id),
-            );
+      final dto = _patternDirectionRefDtoFor(newEntity);
       if (_patternActiveDirectionSlot == 1) {
         _patternDirection1EdgeEntity = newEntity;
         _patternDirection1 = dto;
@@ -5915,6 +6208,26 @@ class _PartScreenState extends State<PartScreen> {
       }
     });
     _schedulePatternPreview();
+  }
+
+  /// [entity] converted to the wire [PatternDirectionRefDto] it represents -
+  /// an `edge_ref` for a Body edge, a `sketch_line_ref` (resolving the real
+  /// Sketch id via [_sketchIdForFeatureId], mirroring
+  /// [_currentRevolveAxisRef]'s identical conversion) for a Sketch Line -
+  /// null for [entity] itself null, or (defensive only) a Sketch Line whose
+  /// owning Sketch id can no longer be resolved.
+  PatternDirectionRefDto? _patternDirectionRefDtoFor(SelectionEntityRef? entity) {
+    if (entity == null) return null;
+    if (entity.kind == SelectionEntityKind.sketchLine) {
+      final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+      if (sketchId == null) return null;
+      return PatternDirectionRefDto(
+        sketchLineRef: SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId),
+      );
+    }
+    return PatternDirectionRefDto(
+      edgeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+    );
   }
 
   /// [PatternPanel.onSetDirection1FixedAxis]/[onSetDirection2FixedAxis]'s
@@ -6019,18 +6332,56 @@ class _PartScreenState extends State<PartScreen> {
     _schedulePatternPreview();
   }
 
-  /// Creates the preview PatternFeature on the first call with Direction 1
-  /// picked, or PATCHes the one already created/being edited on every
+  /// Creates the preview PatternFeature on the first call with a valid
+  /// configuration (Direction 1 picked for Rectangular; an axis picked for
+  /// Circular), or PATCHes the one already created/being edited on every
   /// later call - mirrors [_ensureMirrorFeatureExists]'s exact shape.
   /// [_patternHasSecondDirection] gates whether Direction 2's own fields
   /// are actually sent - unchecked, they'd otherwise resend whatever stale
   /// values are sitting in [_patternDirection2]/[_patternCount2]/etc. from
-  /// before the second direction was last turned off.
+  /// before the second direction was last turned off. `pattern_type` is
+  /// only ever sent on create ([_setPatternMode] can't be reached while
+  /// editing, so [_patternMode] is fixed for the whole session of an
+  /// existing PatternFeature - the update endpoint has no such parameter
+  /// at all, mirroring `CreatePlaneFeatureUpdate.plane_type`'s identical
+  /// immutability convention).
   Future<void> _ensurePatternFeatureExists() async {
     final part = _part;
     final sourceBodyId = _patternSourceBodyId;
+    if (part == null || sourceBodyId == null) return;
+
+    if (_patternMode == PatternMode.circular) {
+      final axis = _patternAxis;
+      if (axis == null) return;
+      final existingId = _previewPatternFeatureId;
+      if (existingId == null) {
+        final created = await _api.createPatternFeature(
+          part.id,
+          sourceBodyIds: [sourceBodyId],
+          patternType: 'circular',
+          axis: axis,
+          countAngular: _patternCountAngular,
+          angleTotal: _patternAngleTotal,
+          reverseAngular: _patternReverseAngular,
+        );
+        _previewPatternFeatureId = created.id;
+      } else {
+        await _api.updatePatternFeature(
+          part.id,
+          existingId,
+          sourceBodyIds: [sourceBodyId],
+          axis: axis,
+          countAngular: _patternCountAngular,
+          angleTotal: _patternAngleTotal,
+          reverseAngular: _patternReverseAngular,
+        );
+      }
+      await _refreshMesh();
+      return;
+    }
+
     final direction1 = _patternDirection1;
-    if (part == null || sourceBodyId == null || direction1 == null) return;
+    if (direction1 == null) return;
 
     final hasSecondDirection = _patternHasSecondDirection;
     final existingId = _previewPatternFeatureId;
@@ -6068,17 +6419,25 @@ class _PartScreenState extends State<PartScreen> {
 
   /// [PatternPanel]'s live-preview debounce - mirrors
   /// [_scheduleMirrorPreview] exactly, including skipping the re-solve
-  /// entirely whenever there's nothing valid to preview yet: no Direction 1
-  /// picked, or a second direction enabled but not yet picked itself
-  /// (matches the backend's own `direction_2` required-when-`count_2>1`
-  /// rule - see `_validate_pattern_counts_and_direction_2` - so this never
-  /// fires a request the router would just reject anyway).
+  /// entirely whenever there's nothing valid to preview yet: for
+  /// Rectangular, no Direction 1 picked, or a second direction enabled but
+  /// not yet picked itself (matches the backend's own `direction_2`
+  /// required-when-`count_2>1` rule - see
+  /// `_validate_pattern_rectangular_payload` - so this never fires a
+  /// request the router would just reject anyway); for Circular, no axis
+  /// picked yet, or fewer than the 2 instances `count_angular` requires
+  /// (see `_validate_pattern_circular_payload`).
   void _schedulePatternPreview() {
     _patternDebounce?.cancel();
     _patternDebounce = Timer(const Duration(milliseconds: 500), () {
-      final direction1 = _patternDirection1;
-      if (_patternSourceBodyId == null || direction1 == null) return;
-      if (_patternHasSecondDirection && _patternDirection2 == null) return;
+      if (_patternSourceBodyId == null) return;
+      if (_patternMode == PatternMode.circular) {
+        if (_patternAxis == null || _patternCountAngular < 2) return;
+      } else {
+        final direction1 = _patternDirection1;
+        if (direction1 == null) return;
+        if (_patternHasSecondDirection && _patternDirection2 == null) return;
+      }
       _runGuarded(_ensurePatternFeatureExists);
     });
   }
@@ -6093,6 +6452,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _patternStep = null;
+      _patternMode = PatternMode.rectangular;
       _patternSourceBodyId = null;
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
@@ -6100,6 +6460,11 @@ class _PartScreenState extends State<PartScreen> {
       _patternDirection2 = null;
       _patternDirection2EdgeEntity = null;
       _patternActiveDirectionSlot = 1;
+      _patternAxis = null;
+      _patternAxisEntity = null;
+      _patternCountAngular = 2;
+      _patternAngleTotal = 360.0;
+      _patternReverseAngular = false;
       _selectedEntities = _entitiesBeforePattern ?? {};
       _entitiesBeforePattern = null;
       _previewPatternFeatureId = null;
@@ -6124,6 +6489,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _patternStep = null;
+      _patternMode = PatternMode.rectangular;
       _patternSourceBodyId = null;
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
@@ -6131,6 +6497,11 @@ class _PartScreenState extends State<PartScreen> {
       _patternDirection2 = null;
       _patternDirection2EdgeEntity = null;
       _patternActiveDirectionSlot = 1;
+      _patternAxis = null;
+      _patternAxisEntity = null;
+      _patternCountAngular = 2;
+      _patternAngleTotal = 360.0;
+      _patternReverseAngular = false;
       _selectedEntities = _entitiesBeforePattern ?? {};
       _entitiesBeforePattern = null;
       _previewPatternFeatureId = null;
@@ -6154,6 +6525,10 @@ class _PartScreenState extends State<PartScreen> {
             count2: editSnapshot.count2,
             spacing2: editSnapshot.spacing2,
             reverse2: editSnapshot.reverse2,
+            axis: editSnapshot.axis,
+            countAngular: editSnapshot.countAngular,
+            angleTotal: editSnapshot.angleTotal,
+            reverseAngular: editSnapshot.reverseAngular,
           );
           await _refreshFeatures();
         });
@@ -7003,9 +7378,18 @@ class _PartScreenState extends State<PartScreen> {
                       // are always already whatever the user last set them
                       // to.
                       key: ValueKey(
-                        '${_editingPatternFeatureId ?? _patternSourceBodyId}-$_patternHasSecondDirection',
+                        '${_editingPatternFeatureId ?? _patternSourceBodyId}-$_patternMode-$_patternHasSecondDirection',
                       ),
                       title: _editingPatternFeatureId != null ? 'Edit Pattern' : 'Pattern',
+                      mode: _patternMode,
+                      // Pattern/Mirror scoping Phase 4: `pattern_type` is
+                      // never revised via PATCH (switching Rectangular <->
+                      // Circular is delete+recreate - see
+                      // `PatternFeatureUpdate`'s own docstring), so the mode
+                      // toggle is only shown/enabled for a brand-new
+                      // PatternFeature.
+                      canChangeMode: _editingPatternFeatureId == null,
+                      onModeChanged: _setPatternMode,
                       hasDirection1: _patternDirection1 != null,
                       direction1Summary: _patternDirectionSummary(_patternDirection1),
                       onSetDirection1FixedAxis: (axis) => _setPatternFixedAxis(1, axis),
@@ -7028,6 +7412,14 @@ class _PartScreenState extends State<PartScreen> {
                       onReverse2Changed: _onPatternReverse2Changed,
                       activeDirectionSlot: _patternActiveDirectionSlot,
                       onActiveDirectionSlotChanged: _setPatternActiveDirectionSlot,
+                      hasAxis: _patternAxis != null,
+                      axisSummary: _patternAxisSummary(_patternAxis),
+                      initialCountAngular: _patternCountAngular,
+                      initialAngleTotal: _patternAngleTotal,
+                      reverseAngular: _patternReverseAngular,
+                      onCountAngularChanged: _onPatternCountAngularChanged,
+                      onAngleTotalChanged: _onPatternAngleTotalChanged,
+                      onReverseAngularChanged: _onPatternReverseAngularChanged,
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),
@@ -7681,12 +8073,13 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
-                // Shown for the `configuring` step until Direction 1 is
-                // actually picked (mirrors the Mirror `pickingPlane`
-                // banner's own `_previewXFeatureId == null` condition
-                // exactly) - never shown for [_onPatternTapped]'s ambient
-                // entry or B4 edit mode for the same reasons Mirror's own
-                // `pickingPlane` banner isn't either.
+                // Shown for the `configuring` step until Direction 1
+                // (Rectangular) or the axis (Circular) is actually picked
+                // (mirrors the Mirror `pickingPlane` banner's own
+                // `_previewXFeatureId == null` condition exactly) - never
+                // shown for [_onPatternTapped]'s ambient entry or B4 edit
+                // mode for the same reasons Mirror's own `pickingPlane`
+                // banner isn't either.
                 if (_patternStep == _PatternStep.configuring && _previewPatternFeatureId == null)
                   Positioned(
                     top: 8,
@@ -7695,21 +8088,33 @@ class _PartScreenState extends State<PartScreen> {
                     child: SafeArea(
                       bottom: false,
                       child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Select an Edge or a Fixed Axis for Direction'),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelPattern,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _patternMode == PatternMode.circular
+                                          ? 'Select an Edge, a Cylindrical Face, or a Sketch Line for the Axis'
+                                          : 'Select an Edge, a Sketch Line, or a Fixed Axis for Direction',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelPattern,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),

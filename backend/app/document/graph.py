@@ -38,6 +38,7 @@ from app.document.models import (
     FilletFeature,
     MirrorFeature,
     Part,
+    PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
     PlaneRef,
@@ -370,13 +371,36 @@ def _pattern_direction_dependency(part: Part, ref: PatternDirectionRef | None) -
     return None
 
 
+def _pattern_axis_dependency(part: Part, ref: PatternAxisRef | None) -> str | None:
+    """Pattern/Mirror Phase 4: the single Feature id `ref` depends on, or
+    `None` if it depends on nothing (also `None` when `ref` itself is - a
+    Rectangular `PatternFeature` has no `axis` at all) - mirrors
+    `_pattern_direction_dependency`'s own three-way shape, generalized to
+    `face_ref` as well as `edge_ref`: both depend on the owning Feature of
+    their Body (`base_feature_id`), `sketch_line_ref` depends on the
+    SketchFeature wrapping its Sketch, same as `_pattern_direction_
+    dependency`'s own identical case."""
+    if ref is None:
+        return None
+    if ref.edge_ref is not None:
+        return base_feature_id(ref.edge_ref.body_id)
+    if ref.face_ref is not None:
+        return base_feature_id(ref.face_ref.body_id)
+    if ref.sketch_line_ref is not None:
+        return sketch_feature_id_for_sketch(part, ref.sketch_line_ref.sketch_id)
+    return None
+
+
 def _pattern_dependencies(part: Part, feature: PatternFeature) -> tuple[str, ...]:
-    """Pattern/Mirror Phase 2: `build_feature_graph`'s `PatternFeature`
+    """Pattern/Mirror Phase 2/4: `build_feature_graph`'s `PatternFeature`
     dependency-edge logic, split out to keep `build_feature_graph` itself's
-    per-type dispatch readable - the owning Feature of its (single, Phase
-    2) `source_body_ids` entry, plus whatever `direction_1`/`direction_2`
-    each depend on via `_pattern_direction_dependency`, deduplicated via a
-    `set`."""
+    per-type dispatch readable - the owning Feature of its (single) `source_
+    body_ids` entry, plus whatever `direction_1`/`direction_2`/`axis` each
+    depend on via `_pattern_direction_dependency`/`_pattern_axis_dependency`
+    (at most one of `direction_1`/`direction_2` vs. `axis` is ever actually
+    set, per `feature.pattern_type`, but checking all three unconditionally
+    costs nothing and needs no `pattern_type` branch here), deduplicated via
+    a `set`."""
     deps: set[str] = {base_feature_id(bid) for bid in feature.source_body_ids}
     dep_1 = _pattern_direction_dependency(part, feature.direction_1)
     if dep_1 is not None:
@@ -384,6 +408,9 @@ def _pattern_dependencies(part: Part, feature: PatternFeature) -> tuple[str, ...
     dep_2 = _pattern_direction_dependency(part, feature.direction_2)
     if dep_2 is not None:
         deps.add(dep_2)
+    axis_dep = _pattern_axis_dependency(part, feature.axis)
+    if axis_dep is not None:
+        deps.add(axis_dep)
     return tuple(deps)
 
 
