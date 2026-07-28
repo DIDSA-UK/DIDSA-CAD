@@ -8088,25 +8088,33 @@ class _PartScreenState extends State<PartScreen> {
                     child: SafeArea(
                       bottom: false,
                       child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _patternMode == PatternMode.circular
-                                      ? 'Select an Edge, a Cylindrical Face, or a Sketch Line for the Axis'
-                                      : 'Select an Edge, a Sketch Line, or a Fixed Axis for Direction',
-                                ),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelPattern,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _patternMode == PatternMode.circular
+                                          ? 'Select an Edge, a Cylindrical Face, or a Sketch Line for the Axis'
+                                          : 'Select an Edge, a Sketch Line, or a Fixed Axis for Direction',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelPattern,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
