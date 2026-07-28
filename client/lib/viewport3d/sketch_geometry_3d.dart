@@ -703,17 +703,23 @@ List<(vm.Vector3, vm.Vector3)> dashedSegments(
 
 /// On-device feedback ("make the origin an asterisk the same colour as the
 /// other points" - then "make it smaller, about twice the size of a
-/// point"): half the world-space length of each of the origin marker's 3
-/// crossing arms. A point's own marker ([sketchPointMarkerWidth]) is a
-/// constant *screen-pixel* size, while this is a *world-space* size (the
-/// asterisk's arms are real geometry - drawn the same "real length, screen-
-/// constant stroke width" way every Line/Circle/the grid already are, see
-/// [sketchGridLinesFrom]'s own `spacing`), so the two can't be pixel-matched
-/// at every zoom level simultaneously - this is picked to land close to 2x
-/// a point's apparent size at typical editing zoom. The original `3.0` (a
-/// 6-unit arm span) read as a piece of drawn geometry in its own right
-/// rather than a point-sized glyph; this is a third of that.
-const double originMarkerHalfSize = 1.0;
+/// point" - then "half it's current size"): half the world-space length of
+/// each of the origin marker's 3 crossing arms. A point's own marker
+/// ([sketchPointMarkerWidth]) is a constant *screen-pixel* size, while this
+/// is a *world-space* size (the asterisk's arms are real geometry), so the
+/// two can't be pixel-matched at every zoom level simultaneously.
+const double originMarkerHalfSize = 0.5;
+
+/// On-device feedback ("reduce the stroke thickness to about 1/3 current
+/// size... make it scale with zoom level"): the origin marker's own stroke
+/// width, in *world* units (see [PolylineWidthMode.worldUnits] at its call
+/// site below) rather than [sketchPointMarkerWidth]'s constant screen-pixel
+/// width - every other point/Line/Circle in this file renders at a fixed
+/// on-screen thickness regardless of camera distance, but the origin marker
+/// now thins and thickens right along with its own arms
+/// ([originMarkerHalfSize]) as the camera zooms, rather than keeping a
+/// fixed pixel weight while its arms shrink/grow underneath it.
+const double originMarkerStrokeWidth = 0.15;
 
 /// The 3 arm directions (60 degrees apart, six rays total once each arm's
 /// both ends are drawn) making up the origin's asterisk, built from
@@ -745,7 +751,12 @@ Iterable<MeshPrimitive> _pointMarkerPrimitivesFor({
   final cap = isOrigin ? PolylineCap.butt : PolylineCap.round;
   for (final segment in segments) {
     yield MeshPrimitive(
-      PolylineGeometry([segment.$1, segment.$2], width: sketchPointMarkerWidth, cap: cap),
+      PolylineGeometry(
+        [segment.$1, segment.$2],
+        width: isOrigin ? originMarkerStrokeWidth : sketchPointMarkerWidth,
+        widthMode: isOrigin ? PolylineWidthMode.worldUnits : PolylineWidthMode.screenPixels,
+        cap: cap,
+      ),
       material,
     );
   }
