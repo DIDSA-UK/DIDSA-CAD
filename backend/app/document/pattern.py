@@ -98,14 +98,21 @@ def _pattern_failed(body_id: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "pattern_failed", "body_id": body_id})
 
 
-def _non_circular_edge(ref: SubShapeRef) -> HTTPException:
-    """Pattern/Mirror Phase 4: an `axis` `edge_ref` that resolves to a real
-    edge but not a circular one - a straight/Bezier/BSpline edge has no
-    centre or axis to rotate around. Same structured envelope shape as
-    `_non_linear_edge`, its own inverse-shaped sibling."""
+def _unsupported_axis_edge(ref: SubShapeRef) -> HTTPException:
+    """Pattern/Mirror Phase 4 (revised): an `axis` `edge_ref` that resolves
+    to a real edge but is neither circular nor straight - a
+    Bezier/BSpline/elliptical edge has no single well-defined axis to
+    rotate around. A circular edge supplies a centre + axis directly
+    (`gp_Circ.Location()`/`Axis()`); a straight edge supplies an axis via
+    its own line (`gp_Lin.Location()`/`Direction()` - the same pivot a real
+    axle running along that edge would have). Same structured envelope
+    shape as `_non_linear_edge`, its own inverse-shaped sibling - kept as
+    `type: "unsupported_axis_edge"` rather than the original Phase 4
+    `"non_circular_edge"` name now that a straight edge is a valid axis
+    too, not just a circular one."""
     return HTTPException(
         status_code=422,
-        detail={"type": "non_circular_edge", "body_id": ref.body_id, "index": ref.index},
+        detail={"type": "unsupported_axis_edge", "body_id": ref.body_id, "index": ref.index},
     )
 
 
@@ -138,8 +145,11 @@ def _axis_from_ref(
     `app.document.router._validate_pattern_axis_ref` before this is ever
     called).
 
-    `edge_ref` must be a circular edge (`BRepAdaptor_Curve.GetType() ==
-    GeomAbs_Circle`) - its own OCCT `gp_Circ` already carries a centre
+    `edge_ref` must be either a circular edge or a straight edge
+    (`BRepAdaptor_Curve.GetType()` one of `GeomAbs_Circle`/`GeomAbs_Line` -
+    any other curve type, e.g. Bezier/BSpline/elliptical, has no single
+    well-defined axis and is rejected via `_unsupported_axis_edge`). A
+    circular edge's own OCCT `gp_Circ` already carries a centre
     (`Location()`) and axis (`Axis().Direction()`), the same raw
     extraction `app.document.extrude.resolve_circular_edge_arc` performs
     for the sketcher's own edge-dimensioning work, but without that
@@ -147,21 +157,30 @@ def _axis_from_ref(
     no 2D sketch-plane coordinates at all, unlike that function's own
     Arc-materialization use case - see `docs/pattern-mirror-scope.md`
     §2.7's own note on why this is a thin new wrapper rather than a
-    reuse). `face_ref` must be a cylindrical face
-    (`BRepAdaptor_Surface.GetType() == GeomAbs_Cylinder`) - its own OCCT
-    `gp_Cylinder.Axis()` gives the identical `gp_Ax1` shape directly.
-    `sketch_line_ref` mirrors `app.document.revolve._resolve_axis`'s own
-    Sketch-Line-to-`gp_Ax1` resolution exactly (restricted to
-    `SketchEntityType.LINE`, same "not required to belong to the same
-    Sketch as the Profile" independence)."""
+    reuse). A straight edge's own OCCT `gp_Lin` gives an axis directly too
+    (`Location()`/`Direction()`) - the same idea as a real axle running
+    along that edge, and a genuinely useful axis source in its own right
+    (e.g. a Body's own straight side edge, rather than needing a separate
+    circular/cylindrical reference feature just to define a pivot).
+    `face_ref` must be a cylindrical face (`BRepAdaptor_Surface.GetType()
+    == GeomAbs_Cylinder`) - its own OCCT `gp_Cylinder.Axis()` gives the
+    identical `gp_Ax1` shape directly. `sketch_line_ref` mirrors
+    `app.document.revolve._resolve_axis`'s own Sketch-Line-to-`gp_Ax1`
+    resolution exactly (restricted to `SketchEntityType.LINE`, same "not
+    required to belong to the same Sketch as the Profile"
+    independence)."""
     if ref.edge_ref is not None:
         shape = resolve_subshape_from_bodies(bodies, ref.edge_ref)
         edge = topods.Edge(shape)
         curve = BRepAdaptor_Curve(edge)
-        if curve.GetType() != GeomAbs_Circle:
-            raise _non_circular_edge(ref.edge_ref)
-        circle = curve.Circle()
-        return gp_Ax1(circle.Location(), circle.Axis().Direction())
+        curve_type = curve.GetType()
+        if curve_type == GeomAbs_Circle:
+            circle = curve.Circle()
+            return gp_Ax1(circle.Location(), circle.Axis().Direction())
+        if curve_type == GeomAbs_Line:
+            line = curve.Line()
+            return gp_Ax1(line.Location(), line.Direction())
+        raise _unsupported_axis_edge(ref.edge_ref)
 
     if ref.face_ref is not None:
         shape = resolve_subshape_from_bodies(bodies, ref.face_ref)

@@ -957,7 +957,7 @@ class DocumentApiClient {
   /// [direction2] for a 2D grid - or Circular (`patternType='circular'`) -
   /// [countAngular] instances spread across [angleTotal] degrees around
   /// [axis]. The backend validates payload shape and resolvability before
-  /// persisting (`missing_reference`/`non_linear_edge`/`non_circular_edge`/
+  /// persisting (`missing_reference`/`non_linear_edge`/`unsupported_axis_edge`/
   /// `non_cylindrical_face`/`invalid_direction_ref`/`invalid_axis_ref`/
   /// `pattern_failed` on failure - see `app.document.router.
   /// create_pattern_feature`), this method just serializes whatever it's

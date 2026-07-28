@@ -23,27 +23,19 @@ enum PatternMode {
 /// [RevolvePanel]'s own Boss/Cut `SegmentedButton` toggle:
 /// - **Rectangular**: two independent, near-identical "direction" sections
 ///   (Direction 1 always required, Direction 2 optional, for a 2D grid).
-///   Client v1 scope (deliberate, matching this project's "narrowest
-///   correct slice first" convention): a direction is picked either by
-///   tapping a straight Body edge in the viewport (driven by [PartScreen],
-///   mirroring [RevolvePanel]'s own "picking happens behind this panel,
-///   hasAxis just reports status" shape) or by tapping one of this panel's
-///   own X/Y/Z buttons for a fixed world axis - Sketch-Line-driven
-///   directions are fully supported by the backend
-///   (`PatternDirectionRef.sketch_line_ref`) but not yet exposed by this
-///   panel, since a Sketch Line usable as a pattern direction isn't
-///   guaranteed to already be visible in the viewport the way a Body edge
-///   always is (Revolve's own axis-Sketch-Line picker solves this with a
-///   dedicated Sketch-picker flow this panel doesn't yet reuse) - tracked
-///   as a fast-follow, not silently dropped.
-/// - **Circular**: one axis (a circular Body edge or a cylindrical Body
-///   face, tapped live in the viewport - unlike Direction 1/2, there is no
-///   fixed-world-axis button alternative, since a Circular Pattern needs a
-///   real pivot point a bare world axis direction alone can't supply),
-///   `countAngular` instances spread across `angleTotal` degrees, plus a
-///   reverse toggle. Same client v1 Sketch-Line scope note as Rectangular
-///   applies here too (`PatternAxisRef.sketch_line_ref` is backend-only for
-///   now).
+///   A direction is picked by tapping a straight Body edge or a Sketch
+///   Line in the viewport (driven by [PartScreen], mirroring
+///   [RevolvePanel]'s own "picking happens behind this panel, hasAxis just
+///   reports status" shape - a Sketch Line pick reuses the same live-tap
+///   mechanism [RevolvePanel]'s own axis pick already uses, rather than a
+///   separate dedicated Sketch-picker flow), or by tapping one of this
+///   panel's own X/Y/Z buttons for a fixed world axis.
+/// - **Circular**: one axis (a circular or straight Body edge, a
+///   cylindrical Body face, or a Sketch Line, all tapped live in the
+///   viewport - unlike Direction 1/2, there is no fixed-world-axis button
+///   alternative, since a Circular Pattern needs a real pivot point a bare
+///   world axis direction alone can't supply), `countAngular` instances
+///   spread across `angleTotal` degrees, plus a reverse toggle.
 ///
 /// [canChangeMode] is false while editing an *existing* PatternFeature
 /// (`title` starts with `'Edit'`) - the backend never revises `pattern_type`
@@ -67,14 +59,15 @@ class PatternPanel extends StatefulWidget {
   final bool canChangeMode;
   final void Function(PatternMode mode) onModeChanged;
 
-  /// Whether Direction 1 has been picked yet (an edge tap or an X/Y/Z
-  /// button) - mirrors [RevolvePanel.hasAxis]'s live-read-every-build
-  /// convention. Confirm is disabled until this is true (Rectangular mode
-  /// only).
+  /// Whether Direction 1 has been picked yet (an edge/Sketch-Line tap or
+  /// an X/Y/Z button) - mirrors [RevolvePanel.hasAxis]'s live-read-every-
+  /// build convention. Confirm is disabled until this is true (Rectangular
+  /// mode only).
   final bool hasDirection1;
 
   /// A short human-readable summary of Direction 1's current pick - e.g.
-  /// "Edge selected" or "X axis" - or null when nothing is picked yet.
+  /// "Edge selected", "Sketch Line selected", or "X axis" - or null when
+  /// nothing is picked yet.
   final String? direction1Summary;
 
   final void Function(String axis) onSetDirection1FixedAxis;
@@ -108,15 +101,15 @@ class PatternPanel extends StatefulWidget {
   final int activeDirectionSlot;
   final void Function(int slot) onActiveDirectionSlotChanged;
 
-  /// Whether the Circular axis has been picked yet (an edge or cylindrical-
-  /// face tap in the viewport - see this class's own doc comment for why
-  /// there is no fixed-axis button alternative here). Confirm is disabled
-  /// until this is true (Circular mode only).
+  /// Whether the Circular axis has been picked yet (an edge, cylindrical-
+  /// face, or Sketch-Line tap in the viewport - see this class's own doc
+  /// comment for why there is no fixed-axis button alternative here).
+  /// Confirm is disabled until this is true (Circular mode only).
   final bool hasAxis;
 
   /// A short human-readable summary of the axis's current pick - e.g.
-  /// "Edge selected" or "Face selected" - or null when nothing is picked
-  /// yet.
+  /// "Edge selected", "Cylindrical face selected", or "Sketch Line
+  /// selected" - or null when nothing is picked yet.
   final String? axisSummary;
 
   final int initialCountAngular;
@@ -312,7 +305,9 @@ class _PatternPanelState extends State<PatternPanel> {
           children: [
             Expanded(
               child: Text(
-                hasDirection ? (summary ?? 'Direction selected') : 'Tap an edge, or pick a fixed axis',
+                hasDirection
+                    ? (summary ?? 'Direction selected')
+                    : 'Tap an edge or Sketch Line, or pick a fixed axis',
                 style: TextStyle(
                   color: hasDirection
                       ? Theme.of(context).colorScheme.onSurfaceVariant
@@ -434,7 +429,7 @@ class _PatternPanelState extends State<PatternPanel> {
         Text(
           widget.hasAxis
               ? (widget.axisSummary ?? 'Axis selected')
-              : 'Tap a circular edge or a cylindrical face for the axis',
+              : 'Tap an edge, a cylindrical face, or a Sketch Line for the axis',
           style: TextStyle(
             color: widget.hasAxis
                 ? Theme.of(context).colorScheme.onSurfaceVariant

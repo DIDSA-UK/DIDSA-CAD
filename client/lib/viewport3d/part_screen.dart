@@ -562,24 +562,28 @@ class _PartScreenState extends State<PartScreen> {
       _confirmPatternBodySelection(entity);
       return;
     }
-    // An edge tap during `configuring` sets (or clears, if it's the
-    // already-picked one) whichever direction slot is currently active -
-    // mirrors [_setMirrorPlane]'s replace-not-accumulate shape, just picked
-    // per-slot instead of unconditionally. Rectangular mode only - Circular
-    // mode's own edge-or-face axis tap is the case directly below.
+    // An edge or Sketch Line tap during `configuring` sets (or clears, if
+    // it's the already-picked one) whichever direction slot is currently
+    // active - mirrors [_setMirrorPlane]'s replace-not-accumulate shape,
+    // just picked per-slot instead of unconditionally. Rectangular mode
+    // only - Circular mode's own edge/face/sketchLine axis tap is the case
+    // directly below.
     if (_patternStep == _PatternStep.configuring &&
         _patternMode == PatternMode.rectangular &&
-        entity.kind == SelectionEntityKind.edge) {
-      _setPatternDirectionFromEdge(entity);
+        (entity.kind == SelectionEntityKind.edge || entity.kind == SelectionEntityKind.sketchLine)) {
+      _setPatternDirectionFromEntity(entity);
       return;
     }
-    // Pattern/Mirror scoping Phase 4: an edge OR face tap during
-    // `configuring` in Circular mode sets (or clears) the single axis pick -
-    // unlike Rectangular's two independent direction slots, Circular has
-    // exactly one axis, so there is no active-slot concept to consult here.
+    // Pattern/Mirror scoping Phase 4 (revised): an edge, face, or Sketch
+    // Line tap during `configuring` in Circular mode sets (or clears) the
+    // single axis pick - unlike Rectangular's two independent direction
+    // slots, Circular has exactly one axis, so there is no active-slot
+    // concept to consult here.
     if (_patternStep == _PatternStep.configuring &&
         _patternMode == PatternMode.circular &&
-        (entity.kind == SelectionEntityKind.edge || entity.kind == SelectionEntityKind.face)) {
+        (entity.kind == SelectionEntityKind.edge ||
+            entity.kind == SelectionEntityKind.face ||
+            entity.kind == SelectionEntityKind.sketchLine)) {
       _setPatternAxisFromEntity(entity);
       return;
     }
@@ -1116,14 +1120,12 @@ class _PartScreenState extends State<PartScreen> {
   // step is needed the way Mirror's multi-select `pickingBodies` needs one.
   //
   // `configuring` picks a *direction* (Direction 1 always, Direction 2
-  // optional, for a 2D grid) rather than a plane - client v1 only exposes
-  // two of the three backend-supported direction sources (a straight Body
-  // edge, tapped live in the viewport; a fixed world X/Y/Z axis, via
-  // [PatternPanel]'s own buttons) - a Sketch Line direction is fully
-  // supported server-side but not yet reachable from this panel (see
-  // `pattern_panel.dart`'s own doc comment for why). Because *two*
-  // independent directions can each come from an edge tap,
-  // [_patternActiveDirectionSlot] says which one the next edge tap fills -
+  // optional, for a 2D grid) rather than a plane - all three backend-
+  // supported direction sources are reachable from this panel: a straight
+  // Body edge or a Sketch Line, both tapped live in the viewport, or a
+  // fixed world X/Y/Z axis via [PatternPanel]'s own buttons. Because *two*
+  // independent directions can each come from an edge/Sketch-Line tap,
+  // [_patternActiveDirectionSlot] says which one the next tap fills -
   // switched via [PatternPanel]'s own two-chip toggle once a second
   // direction is enabled.
 
@@ -1176,12 +1178,11 @@ class _PartScreenState extends State<PartScreen> {
   int _patternActiveDirectionSlot = 1;
 
   /// Circular mode's own single axis pick - a `PatternAxisRef` wire value
-  /// (circular Body edge or cylindrical Body face; a Sketch Line axis is
-  /// backend-supported but not yet reachable from this panel, mirroring
-  /// Rectangular's own Sketch-Line-direction scope cut). [_patternAxisEntity]
-  /// tracks which [SelectionEntityRef] (if any) it came from, purely for
-  /// [_selectedEntities] highlight bookkeeping - both null whenever no axis
-  /// is picked yet.
+  /// (a circular or straight Body edge, a cylindrical Body face, or a
+  /// Sketch Line - all backend-supported and reachable from this panel).
+  /// [_patternAxisEntity] tracks which [SelectionEntityRef] (if any) it
+  /// came from, purely for [_selectedEntities] highlight bookkeeping - both
+  /// null whenever no axis is picked yet.
   PatternAxisRefDto? _patternAxis;
   SelectionEntityRef? _patternAxisEntity;
   int _patternCountAngular = 2;
@@ -1252,20 +1253,19 @@ class _PartScreenState extends State<PartScreen> {
     plane: false,
   );
 
-  /// Locks [_selectionFilterOverrides] to Body edges only for the
-  /// `configuring` half of the Pattern flow - `edge: true` lets the user
-  /// tap a straight Body edge for whichever direction slot is currently
-  /// active ([_patternActiveDirectionSlot]); everything else stays off,
-  /// including `body` (the source Body is already fixed by this point) and
-  /// `sketchLine` (client v1 scope - see this section's own header
-  /// comment).
+  /// Locks [_selectionFilterOverrides] to Body edges and Sketch Lines for
+  /// the `configuring` half of the Pattern flow - `edge: true` lets the
+  /// user tap a straight Body edge, `sketchLine: true` a Sketch Line, for
+  /// whichever direction slot is currently active
+  /// ([_patternActiveDirectionSlot]); everything else stays off, including
+  /// `body` (the source Body is already fixed by this point).
   static const _patternDirectionSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
     face: false,
     body: false,
     sketchPoint: false,
-    sketchLine: false,
+    sketchLine: true,
     sketchCircle: false,
     sketchArc: false,
     sketchEllipse: false,
@@ -1273,24 +1273,27 @@ class _PartScreenState extends State<PartScreen> {
     plane: false,
   );
 
-  /// Locks [_selectionFilterOverrides] to Body edges AND faces for
-  /// Circular mode's own `configuring` step - unlike Rectangular's
-  /// direction (which also accepts a fixed X/Y/Z axis button, needing no
-  /// viewport pick at all), Circular's axis has no fixed-axis alternative
-  /// (a circular pattern needs a real pivot point, which a bare world-axis
-  /// direction can't supply), so it's picked exclusively via a viewport
-  /// tap on either a circular edge or a cylindrical face - both kinds must
-  /// be enabled simultaneously (confirmed during Phase 2's own
-  /// investigation that `filter.edge`/`filter.face` coexist fine in
-  /// `hitTestBodies`, unlike `filter.body`/`filter.face`'s mutual
-  /// exclusivity).
+  /// Locks [_selectionFilterOverrides] to Body edges, Body faces, and
+  /// Sketch Lines for Circular mode's own `configuring` step - unlike
+  /// Rectangular's direction (which also accepts a fixed X/Y/Z axis
+  /// button, needing no viewport pick at all), Circular's axis has no
+  /// fixed-axis alternative (a circular pattern needs a real pivot point,
+  /// which a bare world-axis direction can't supply), so it's picked
+  /// exclusively via a viewport tap on a circular or straight Body edge, a
+  /// cylindrical Body face, or a Sketch Line - all three kinds must be
+  /// enabled simultaneously (confirmed during Phase 2's own investigation
+  /// that `filter.edge`/`filter.face` coexist fine in `hitTestBodies`,
+  /// unlike `filter.body`/`filter.face`'s mutual exclusivity; `sketchLine`
+  /// hit-testing is a fully independent pass over Sketch geometry - see
+  /// `hitTestBodies`'s own `sketchGeometries` loop - so it coexists with
+  /// both just as freely).
   static const _patternAxisSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
     face: true,
     body: false,
     sketchPoint: false,
-    sketchLine: false,
+    sketchLine: true,
     sketchCircle: false,
     sketchArc: false,
     sketchEllipse: false,
@@ -5874,16 +5877,13 @@ class _PartScreenState extends State<PartScreen> {
   /// on an existing PatternFeature yet, mirroring Mirror's own edit-flow
   /// scope.
   ///
-  /// Direction/axis entities are only reconstructed into [_selectedEntities]
+  /// Direction/axis entities are reconstructed into [_selectedEntities]
   /// (and [_patternDirection1EdgeEntity]/[_patternDirection2EdgeEntity]/
-  /// [_patternAxisEntity]) for an `edge_ref`/`face_ref`-based pick, via
-  /// [_patternEdgeEntityFor]/[_patternAxisEntityFor] - a `fixed_axis`
-  /// direction has nothing to highlight in the viewport, and a
-  /// `sketch_line_ref` one (reachable only via a hand-crafted request, not
-  /// yet this panel's own v1 UI - see this file's own Pattern state-field
-  /// section header comment) has no reconstruction path yet either; both
-  /// still show correctly via [_patternDirectionSummary]/[_patternAxisSummary],
-  /// just without a viewport highlight.
+  /// [_patternAxisEntity]) for an `edge_ref`/`face_ref`/`sketch_line_ref`-
+  /// based pick, via [_patternEdgeEntityFor]/[_patternAxisEntityFor] - only
+  /// a `fixed_axis` direction has nothing to highlight in the viewport (it
+  /// still shows correctly via [_patternDirectionSummary], just without a
+  /// viewport highlight).
   ///
   /// Branches on [FeatureDto.patternType] (defaulting to Rectangular, same
   /// backward-compatible convention the backend's own native-format loader
@@ -6009,15 +6009,28 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// The [SelectionEntityRef] a stored [PatternDirectionRefDto] came from,
-  /// if (and only if) it's an `edge_ref`-based direction - null for a
-  /// `fixed_axis`/`sketch_line_ref` one, which have nothing to highlight in
-  /// the viewport. Reverse of the plain construction
-  /// [_setPatternDirectionFromEdge] does inline, for
-  /// [_openPatternPanelForEdit]'s own live re-pick session.
+  /// if (and only if) it's an `edge_ref`/`sketch_line_ref`-based direction -
+  /// null for a `fixed_axis` one, which has nothing to highlight in the
+  /// viewport, or (defensive only) a `sketch_line_ref` whose owning Sketch
+  /// Feature can no longer be resolved. Reverse of the plain construction
+  /// [_patternDirectionRefDtoFor] does, for [_openPatternPanelForEdit]'s
+  /// own live re-pick session.
   SelectionEntityRef? _patternEdgeEntityFor(PatternDirectionRefDto dto) {
     final edgeRef = dto.edgeRef;
-    if (edgeRef == null) return null;
-    return SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: edgeRef.bodyId, id: edgeRef.index);
+    if (edgeRef != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: edgeRef.bodyId, id: edgeRef.index);
+    }
+    final sketchLineRef = dto.sketchLineRef;
+    if (sketchLineRef != null) {
+      final sketchFeatureId = _sketchFeatureIdForSketchId(sketchLineRef.sketchId);
+      if (sketchFeatureId == null) return null;
+      return SelectionEntityRef(
+        kind: SelectionEntityKind.sketchLine,
+        sketchFeatureId: sketchFeatureId,
+        sketchEntityId: sketchLineRef.entityId,
+      );
+    }
+    return null;
   }
 
   /// A short human-readable summary of [dto]'s current pick, for
@@ -6032,13 +6045,11 @@ class _PartScreenState extends State<PartScreen> {
     return null;
   }
 
-  /// The [SelectionEntityRef] a stored [PatternAxisRefDto] came from, if
-  /// (and only if) it's an `edge_ref`/`face_ref`-based axis - null for a
-  /// `sketch_line_ref` one, which has nothing to highlight in the viewport
-  /// (client v1 scope - see this file's own Pattern state-field section
-  /// header comment). Reverse of the plain construction
-  /// [_setPatternAxisFromEntity] does inline, for
-  /// [_openPatternPanelForEdit]'s own live re-pick session.
+  /// The [SelectionEntityRef] a stored [PatternAxisRefDto] came from -
+  /// reverse of [_patternAxisRefDtoFor], for [_openPatternPanelForEdit]'s
+  /// own live re-pick session. Null only defensively, for a
+  /// `sketch_line_ref` whose owning Sketch Feature can no longer be
+  /// resolved.
   SelectionEntityRef? _patternAxisEntityFor(PatternAxisRefDto dto) {
     final edgeRef = dto.edgeRef;
     if (edgeRef != null) {
@@ -6048,6 +6059,16 @@ class _PartScreenState extends State<PartScreen> {
     if (faceRef != null) {
       return SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: faceRef.bodyId, id: faceRef.index);
     }
+    final sketchLineRef = dto.sketchLineRef;
+    if (sketchLineRef != null) {
+      final sketchFeatureId = _sketchFeatureIdForSketchId(sketchLineRef.sketchId);
+      if (sketchFeatureId == null) return null;
+      return SelectionEntityRef(
+        kind: SelectionEntityKind.sketchLine,
+        sketchFeatureId: sketchFeatureId,
+        sketchEntityId: sketchLineRef.entityId,
+      );
+    }
     return null;
   }
 
@@ -6056,7 +6077,7 @@ class _PartScreenState extends State<PartScreen> {
   /// picked yet).
   String? _patternAxisSummary(PatternAxisRefDto? dto) {
     if (dto == null) return null;
-    if (dto.edgeRef != null) return 'Circular edge selected';
+    if (dto.edgeRef != null) return 'Edge selected';
     if (dto.faceRef != null) return 'Cylindrical face selected';
     if (dto.sketchLineRef != null) return 'Sketch Line selected';
     return null;
@@ -6114,18 +6135,36 @@ class _PartScreenState extends State<PartScreen> {
       if (newEntity != null) next.add(newEntity);
       _selectedEntities = next;
       _patternAxisEntity = newEntity;
-      _patternAxis = newEntity == null
-          ? null
-          : PatternAxisRefDto(
-              edgeRef: newEntity.kind == SelectionEntityKind.edge
-                  ? SubShapeRefDto(bodyId: newEntity.bodyId, shapeType: 'edge', index: newEntity.id)
-                  : null,
-              faceRef: newEntity.kind == SelectionEntityKind.face
-                  ? SubShapeRefDto(bodyId: newEntity.bodyId, shapeType: 'face', index: newEntity.id)
-                  : null,
-            );
+      _patternAxis = _patternAxisRefDtoFor(newEntity);
     });
     _schedulePatternPreview();
+  }
+
+  /// [entity] converted to the wire [PatternAxisRefDto] it represents - an
+  /// `edge_ref` for a Body edge (circular or straight - the backend's own
+  /// `_axis_from_ref` distinguishes those, not this client), a `face_ref`
+  /// for a Body face, or a `sketch_line_ref` (resolving the real Sketch id
+  /// via [_sketchIdForFeatureId], mirroring [_patternDirectionRefDtoFor]'s
+  /// identical conversion) for a Sketch Line - null for [entity] itself
+  /// null, or (defensive only) a Sketch Line whose owning Sketch id can no
+  /// longer be resolved.
+  PatternAxisRefDto? _patternAxisRefDtoFor(SelectionEntityRef? entity) {
+    if (entity == null) return null;
+    if (entity.kind == SelectionEntityKind.face) {
+      return PatternAxisRefDto(
+        faceRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+      );
+    }
+    if (entity.kind == SelectionEntityKind.sketchLine) {
+      final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+      if (sketchId == null) return null;
+      return PatternAxisRefDto(
+        sketchLineRef: SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId),
+      );
+    }
+    return PatternAxisRefDto(
+      edgeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+    );
   }
 
   void _onPatternCountAngularChanged(int count) {
@@ -6143,27 +6182,23 @@ class _PartScreenState extends State<PartScreen> {
     _schedulePatternPreview();
   }
 
-  /// [_toggleSelectedEntity]'s edge-kind special case for the `configuring`
-  /// step - replaces whichever edge (if any) is currently picked for
-  /// [_patternActiveDirectionSlot] with [edgeEntity], unless [edgeEntity]
-  /// was already the one picked, in which case it's cleared instead (tap
-  /// the current pick again to deselect it) - mirrors [_setMirrorPlane]
-  /// exactly, generalized to two independent slots.
-  void _setPatternDirectionFromEdge(SelectionEntityRef edgeEntity) {
+  /// [_toggleSelectedEntity]'s edge/Sketch-Line special case for the
+  /// `configuring` step - replaces whichever entity (if any) is currently
+  /// picked for [_patternActiveDirectionSlot] with [entity], unless
+  /// [entity] was already the one picked, in which case it's cleared
+  /// instead (tap the current pick again to deselect it) - mirrors
+  /// [_setMirrorPlane] exactly, generalized to two independent slots.
+  void _setPatternDirectionFromEntity(SelectionEntityRef entity) {
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       final currentEntity =
           _patternActiveDirectionSlot == 1 ? _patternDirection1EdgeEntity : _patternDirection2EdgeEntity;
       if (currentEntity != null) next.remove(currentEntity);
-      final alreadyPicked = currentEntity == edgeEntity;
-      final newEntity = alreadyPicked ? null : edgeEntity;
+      final alreadyPicked = currentEntity == entity;
+      final newEntity = alreadyPicked ? null : entity;
       if (newEntity != null) next.add(newEntity);
       _selectedEntities = next;
-      final dto = newEntity == null
-          ? null
-          : PatternDirectionRefDto(
-              edgeRef: SubShapeRefDto(bodyId: newEntity.bodyId, shapeType: 'edge', index: newEntity.id),
-            );
+      final dto = _patternDirectionRefDtoFor(newEntity);
       if (_patternActiveDirectionSlot == 1) {
         _patternDirection1EdgeEntity = newEntity;
         _patternDirection1 = dto;
@@ -6173,6 +6208,26 @@ class _PartScreenState extends State<PartScreen> {
       }
     });
     _schedulePatternPreview();
+  }
+
+  /// [entity] converted to the wire [PatternDirectionRefDto] it represents -
+  /// an `edge_ref` for a Body edge, a `sketch_line_ref` (resolving the real
+  /// Sketch id via [_sketchIdForFeatureId], mirroring
+  /// [_currentRevolveAxisRef]'s identical conversion) for a Sketch Line -
+  /// null for [entity] itself null, or (defensive only) a Sketch Line whose
+  /// owning Sketch id can no longer be resolved.
+  PatternDirectionRefDto? _patternDirectionRefDtoFor(SelectionEntityRef? entity) {
+    if (entity == null) return null;
+    if (entity.kind == SelectionEntityKind.sketchLine) {
+      final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+      if (sketchId == null) return null;
+      return PatternDirectionRefDto(
+        sketchLineRef: SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId),
+      );
+    }
+    return PatternDirectionRefDto(
+      edgeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+    );
   }
 
   /// [PatternPanel.onSetDirection1FixedAxis]/[onSetDirection2FixedAxis]'s
@@ -8043,8 +8098,8 @@ class _PartScreenState extends State<PartScreen> {
                               children: [
                                 Text(
                                   _patternMode == PatternMode.circular
-                                      ? 'Select a Circular Edge or a Cylindrical Face for the Axis'
-                                      : 'Select an Edge or a Fixed Axis for Direction',
+                                      ? 'Select an Edge, a Cylindrical Face, or a Sketch Line for the Axis'
+                                      : 'Select an Edge, a Sketch Line, or a Fixed Axis for Direction',
                                 ),
                                 const SizedBox(width: 12),
                                 TextButton(

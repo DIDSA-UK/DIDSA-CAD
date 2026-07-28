@@ -652,22 +652,22 @@ Always-separate output (merge options remain Phase 5).
 
 ### Phase 2 — Rectangular pattern
 
-**Status: implemented (2026-07-24) — see `docs/status.md`'s same-dated
-entry for the full implementation/verification write-up.** Verified for
-real: the full backend `pytest` suite (1014 tests, including 26 new
-Pattern-specific ones) against genuine `pythonocc-core`, and the full
-client `flutter test` suite (955 tests, including 18 new `PatternPanel`
-ones) plus a clean `flutter analyze`, using the same local toolchains
-bootstrapped for Phase 1's own verification pass.
+**Status: implemented (2026-07-24), revised (2026-07-28) — see
+`docs/status.md`'s matching dated entries for the full implementation/
+verification write-up.** Verified for real: the full backend `pytest`
+suite (1014 tests, including 26 new Pattern-specific ones) against genuine
+`pythonocc-core`, and the full client `flutter test` suite (955 tests,
+including 18 new `PatternPanel` ones) plus a clean `flutter analyze`,
+using the same local toolchains bootstrapped for Phase 1's own
+verification pass. **The 2026-07-28 revision (below)** exposed the
+Sketch-Line direction the original session had deliberately deferred.
 
-Straight-edge/fixed-axis direction (client v1 — see below), single Body
-seed, reverse, two-direction, always-separate output, guided "New >
-Pattern" flow.
+Straight-edge/Sketch-Line/fixed-axis direction, single Body seed, reverse,
+two-direction, always-separate output, guided "New > Pattern" flow.
 
-- **Deliverable**: select one Body, pick a direction (Body edge or fixed
-  X/Y/Z axis in the shipped client; a Sketch Line is fully supported by the
-  backend but not yet exposed by the client panel — see the Client bullet
-  below), set count + spacing, get N independent Bodies (N is the total
+- **Deliverable**: select one Body, pick a direction (a Body edge or a
+  Sketch Line, both tapped live in the viewport, or a fixed X/Y/Z axis),
+  set count + spacing, get N independent Bodies (N is the total
   including the untouched seed, matching mainstream CAD convention — see
   the next bullet); reverse-direction toggle; optional second direction for
   a 2D grid pattern. Reached either via the ambient `SelectionContextPanel`
@@ -708,16 +708,22 @@ Pattern" flow.
   like Mirror's own two-step flow but simplified for Pattern's exactly-one-
   Body scope: a Body tap immediately advances (no confirm step needed).
   Because Direction 1 and Direction 2 can each independently come from an
-  edge tap, an "active direction slot" toggle (a `SegmentedButton`, shown
-  only once a second direction is enabled) disambiguates which one the next
-  edge tap fills. **Deliberate v1 scope cut**: only edge-tap and fixed-axis
-  direction sources are exposed by the panel — a Sketch-Line direction is
-  fully supported server-side (tested) but not yet reachable from this UI,
-  since a Sketch Line usable as a pattern direction isn't guaranteed to
-  already be visible in the viewport the way a Body edge always is (Revolve
-  solves this for its own axis pick with a dedicated Sketch-picker flow
-  this panel doesn't yet reuse — tracked as a fast-follow, not silently
-  dropped). `contextActionsFor` extended: a lone Body now offers both
+  edge/Sketch-Line tap, an "active direction slot" toggle (a
+  `SegmentedButton`, shown only once a second direction is enabled)
+  disambiguates which one the next tap fills. **Revision (2026-07-28):**
+  a Sketch Line is now also a reachable direction source — the original
+  session's own v1 scope cut deferred it precisely because a Sketch Line
+  usable as a pattern direction isn't guaranteed to already be visible in
+  the viewport the way a Body edge always is (unlike Revolve's own axis
+  pick, which solves this with a dedicated Sketch-picker flow); this
+  revision instead just reuses the exact same live-viewport-tap mechanism
+  Revolve's own axis pick already uses (`hitTestBodies`'s `sketchLine`
+  filter flag), leaving visibility entirely up to the user's existing
+  Sketch-visibility toggle rather than building a dedicated picker -
+  `_setPatternDirectionFromEdge` was generalized into
+  `_setPatternDirectionFromEntity`, accepting either kind and building
+  `PatternDirectionRef.sketch_line_ref` for a Sketch-Line pick.
+  `contextActionsFor` extended: a lone Body now offers both
   "Mirror" and "Pattern"; 2+ Bodies still offer only "Mirror", with
   "Pattern" shown disabled and a reason (Prompt D's own "explain, don't
   silently omit" convention) rather than omitted outright.
@@ -746,17 +752,20 @@ Visual grid picker.
 
 ### Phase 4 — Circular pattern
 
-**Status: implemented (2026-07-28) — see `docs/status.md`'s same-dated
-entry for the full implementation/verification write-up.** Verified for
-real: the full backend `pytest` suite (1040 tests, including 26 new
-Circular-Pattern-specific ones) against genuine `pythonocc-core`, and the
-full client `flutter test` suite (970 tests, including 15 new
-`PatternPanel` circular-mode ones) plus a clean `flutter analyze`, using
-the same local toolchains bootstrapped for Phase 1/2's own verification
-passes.
+**Status: implemented (2026-07-28), revised same-day — see
+`docs/status.md`'s matching dated entries for the full implementation/
+verification write-up.** Verified for real: the full backend `pytest`
+suite (1041 tests after the same-day revision below, up from 1040 at
+initial implementation) against genuine `pythonocc-core`, and the full
+client `flutter test` suite (970 tests, including 15 new `PatternPanel`
+circular-mode ones) plus a clean `flutter analyze`, using the same local
+toolchains bootstrapped for Phase 1/2's own verification passes. **The
+same-day revision (below)** made a straight Body edge a valid axis source
+too (not just circular), and exposed the Sketch Line axis the initial
+session had deliberately deferred.
 
-Curved-edge / cylindrical-face direction sources (client v1 — see below),
-a Rectangular/Circular mode toggle inside the same guided "New > Pattern"
+Circular/straight-edge / cylindrical-face / Sketch-Line axis sources, a
+Rectangular/Circular mode toggle inside the same guided "New > Pattern"
 flow (not a separate feature entry), single Body seed, always-separate
 output. Skip-instances (radial variant) remains its own Phase 3 scope, not
 pulled forward here.
@@ -765,10 +774,8 @@ pulled forward here.
   Rectangular/Circular `SegmentedButton` (shown only for a brand-new
   PatternFeature — see the Client bullet below on why it's hidden while
   editing). Circular mode: pick one Body, pick a circular axis (a circular
-  Body edge or a cylindrical Body face, tapped live in the viewport — a
-  Sketch Line axis is fully supported by the backend but not yet exposed
-  by the client panel, same client v1 scope cut Phase 2's own Sketch-Line
-  direction already established), set instance count + total angle, get N
+  or straight Body edge, a cylindrical Body face, or a Sketch Line, all
+  tapped live in the viewport), set instance count + total angle, get N
   independent Bodies rotated around that axis (N is the total including
   the untouched seed, matching Phase 2's own `count_1 * count_2`
   convention); reverse toggle. Patterned Features (both modes) appear in
@@ -789,11 +796,24 @@ pulled forward here.
   dataclass itself — same split `_validate_plane_payload` already
   established for `CreatePlaneFeature`). New `_axis_from_ref` resolver in
   `pattern.py`: a circular Body edge via `BRepAdaptor_Curve`/
-  `GeomAbs_Circle` (new `non_circular_edge` error); a cylindrical Body face
-  via `BRepAdaptor_Surface`/`GeomAbs_Cylinder` (new `non_cylindrical_face`
-  error, the one genuinely new OCCT path this phase needed); a Sketch Line
-  mirrors `RevolveFeature._resolve_axis`'s own machinery, just returning a
-  full `gp_Ax1` (origin + direction) instead of a bare direction. Circular
+  `GeomAbs_Circle`; a cylindrical Body face via `BRepAdaptor_Surface`/
+  `GeomAbs_Cylinder` (new `non_cylindrical_face` error, the one genuinely
+  new OCCT path this phase needed); a Sketch Line mirrors
+  `RevolveFeature._resolve_axis`'s own machinery, just returning a full
+  `gp_Ax1` (origin + direction) instead of a bare direction. **Revision
+  (same day):** a straight Body edge is now *also* a valid axis (via its
+  own `gp_Lin.Location()`/`Direction()` — the same idea as a real axle
+  running along that edge), not just a circular one — the original
+  session's own `non_circular_edge` error was renamed to
+  `unsupported_axis_edge` (an edge that's neither circular nor straight,
+  e.g. elliptical/Bezier/BSpline, is still rejected). This surfaced a
+  latent test-helper bug: every OCCT circular extrusion has a straight
+  seam edge connecting its top/bottom circular caps, so brute-force edge
+  probes that only checked "did this succeed" (not "is this genuinely the
+  Body's own centre axis") started silently picking the off-axis seam
+  edge instead of the true circular one once straight edges became valid
+  too — fixed by verifying the resulting rotated instance is still
+  centred near the world origin, not success alone. Circular
   instances use `gp_Trsf.SetRotation(axis, angle_total/count_angular * i)`
   in place of Phase 2's `SetTranslation`, sharing the exact same
   index-0-is-the-untouched-seed convention. `pattern_type` is immutable via
@@ -811,16 +831,28 @@ pulled forward here.
   and a reverse toggle — deliberately **no** fixed-world-axis button
   alternative the way Direction 1/2 have X/Y/Z buttons, since a circular
   pattern needs a real pivot point a bare direction can't supply; the axis
-  is picked exclusively via a viewport tap on an edge or a face.
-  `part_screen.dart` gained a parallel `PatternMode`/axis-picking state
-  section alongside Phase 2's own direction-picking one: a new
-  `_patternAxisSelectionFilter` (edge **and** face enabled together —
-  confirmed during this phase that `filter.edge`/`filter.face` coexist
-  fine in `hitTestBodies`, unlike `filter.body`/`filter.face`'s mutual
-  exclusivity), `_setPatternMode` (swaps the pushed selection filter and
-  clears the mode being left), and `_openPatternPanelForEdit` now branches
-  on the edited Feature's own `pattern_type` to reconstruct either
-  Direction 1/2 state or axis state, pushing the matching filter.
+  is picked exclusively via a viewport tap on an edge, a face, or (as of
+  the same-day revision below) a Sketch Line. `part_screen.dart` gained a
+  parallel `PatternMode`/axis-picking state section alongside Phase 2's
+  own direction-picking one: a new `_patternAxisSelectionFilter` (edge,
+  face, **and** Sketch Line all enabled together — confirmed during this
+  phase that `filter.edge`/`filter.face` coexist fine in `hitTestBodies`,
+  unlike `filter.body`/`filter.face`'s mutual exclusivity, and that
+  `filter.sketchLine` hit-testing is a fully independent pass so it
+  coexists just as freely with both), `_setPatternMode` (swaps the pushed
+  selection filter and clears the mode being left), and
+  `_openPatternPanelForEdit` now branches on the edited Feature's own
+  `pattern_type` to reconstruct either Direction 1/2 state or axis state,
+  pushing the matching filter. **Revision (same day):** exposed the
+  Sketch-Line direction/axis both this phase and Phase 2 had deliberately
+  deferred, reusing the exact same live-viewport-tap mechanism Revolve's
+  own axis pick already uses rather than a dedicated Sketch-picker flow —
+  `_setPatternDirectionFromEdge`/`_setPatternAxisFromEntity` were widened
+  (the former renamed to `_setPatternDirectionFromEntity`) to also accept
+  a `sketchLine`-kind entity and build a `sketch_line_ref`, and
+  `_patternEdgeEntityFor`/`_patternAxisEntityFor` widened symmetrically to
+  reconstruct a Sketch-Line entity's own viewport highlight when
+  re-opening an existing Feature for editing.
 - **Complexity/risk**: medium, as scoped. Two of the three axis sources
   (circular edge, cylindrical face) needed genuinely new OCCT checks;
   Sketch-Line axis reused Revolve's own machinery near-verbatim. The

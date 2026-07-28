@@ -75,6 +75,28 @@ def _create_circle_sketch_feature(part_id: str, *, radius: float = 10.0, plane="
     return feature
 
 
+def _create_ellipse_sketch_feature(
+    part_id: str, *, major_radius: float = 10.0, minor_radius: float = 5.0, plane="XY"
+) -> dict:
+    """An Ellipse-profile Sketch, extruded to a Body whose curved
+    boundary edges are elliptical (`GeomAbs_Ellipse`) - neither circular
+    nor straight, so a genuinely unsupported `axis` `edge_ref` shape for
+    `_axis_from_ref`'s rejection test below."""
+    feature = _create_sketch_feature(part_id, plane)
+    center = _add_point(feature["sketch_id"], 0.0, 0.0)
+    response = client.post(
+        f"/sketch/sketches/{feature['sketch_id']}/ellipses",
+        json={
+            "center_point_id": center["id"],
+            "major_radius": major_radius,
+            "angle": 0.0,
+            "minor_radius": minor_radius,
+        },
+    )
+    assert response.status_code == 201
+    return feature
+
+
 def _create_extrude_feature(
     part_id: str,
     sketch_feature_id: str,
@@ -192,16 +214,34 @@ def _create_pattern_circular(
 
 
 def _first_circular_edge_index(part_id: str, body_id: str, *, probe_count: int = 12) -> int:
-    """Brute-forces which edge index on `body_id` is circular - mirrors
+    """Brute-forces which edge index on `body_id` is a genuinely circular
+    edge running through the Body's own true centre axis - mirrors
     test_stage_c4_create_plane.py's own edge-index brute force (exact
     index-to-topological-feature correspondence isn't part of this API's
-    contract)."""
+    contract), but (Pattern/Mirror Phase 4 revision) can no longer accept
+    success alone as proof of circularity: a straight seam edge - which
+    every OCCT circular extrusion has, connecting its top/bottom circular
+    caps along the surface's own parametric seam - is now ALSO a valid,
+    but off-axis, `edge_ref` (see `test_a_straight_edge_axis_...` below),
+    and would otherwise be picked up first. Verified instead by self-
+    patterning `body_id` around the candidate edge and checking the
+    resulting new instance's own bounding box is still centred near the
+    world origin in X/Y - true only when the axis is the Body's own true
+    centre (every current caller's own cylinder is itself centred at
+    (0, 0)), never for an off-centre seam edge, whose rotation visibly
+    shifts the whole Body's bounding box away from the origin."""
     for index in range(probe_count):
         response = _create_pattern_circular(part_id, [body_id], _edge_axis(body_id, index), 4)
-        if response.status_code == 201:
-            client.delete(f"/document/parts/{part_id}/features/{response.json()['id']}/cascade")
+        if response.status_code != 201:
+            continue
+        feature_id = response.json()["id"]
+        new_body_id = next(bid for bid in _body_ids(part_id) if bid != body_id)
+        x_range, y_range = _rounded_xy_ranges(part_id, new_body_id)
+        centered = abs(x_range[0] + x_range[1]) < 2.0 and abs(y_range[0] + y_range[1]) < 2.0
+        client.delete(f"/document/parts/{part_id}/features/{feature_id}/cascade")
+        if centered:
             return index
-    raise AssertionError("expected at least one circular edge")
+    raise AssertionError("expected at least one circular edge through the Body's own true centre")
 
 
 def _first_cylindrical_face_index(part_id: str, body_id: str, *, probe_count: int = 8) -> int:
@@ -211,6 +251,50 @@ def _first_cylindrical_face_index(part_id: str, body_id: str, *, probe_count: in
             client.delete(f"/document/parts/{part_id}/features/{response.json()['id']}/cascade")
             return index
     raise AssertionError("expected at least one cylindrical face")
+
+
+_STRAIGHT_EDGE_AXIS_Z_QUADRANT_POSITIONS = {
+    ((30.0, 35.0), (0.0, 5.0)),
+    ((-5.0, 0.0), (30.0, 35.0)),
+    ((-35.0, -30.0), (-5.0, 0.0)),
+    ((0.0, 5.0), (-35.0, -30.0)),
+}
+
+
+def _first_straight_edge_axis_index_through_world_z(
+    part_id: str, axis_body_id: str, target_body_id: str, *, probe_count: int = 12
+) -> int:
+    """Brute-forces which straight edge index on `axis_body_id` is the
+    vertical edge running exactly along the world Z axis (through the
+    origin) - not by guessing the topological index (edge-index-to-
+    geometry correspondence isn't part of this API's contract, same
+    reasoning as `_first_circular_edge_index`), but by actually performing
+    the circular pattern for each candidate and checking the resulting
+    quadrant positions exactly match a clean 90-degree-step rotation of
+    `target_body_id` about the true Z axis. `axis_body_id` is expected to
+    be a box whose own `(x0=0, y0=0)` corner sits at the world origin (see
+    `test_circular_pattern_via_a_straight_edge_axis_succeeds_and_rotates_
+    correctly`) - its *other* three vertical corner edges, and its
+    horizontal (X/Y-parallel) edges, are all straight too and so are all
+    individually valid `edge_ref` axes now, just not ones producing this
+    exact quadrant set, so this probe skips right past them rather than
+    treating a mismatch as a failure."""
+    for index in range(probe_count):
+        response = _create_pattern_circular(part_id, [target_body_id], _edge_axis(axis_body_id, index), 4)
+        if response.status_code != 201:
+            continue
+        feature_id = response.json()["id"]
+        # Includes target_body_id itself - the seed keeps its own id and
+        # occupies one of the 4 quadrant positions unrotated, exactly like
+        # `test_circular_pattern_around_a_z_axis_produces_the_expected_
+        # quadrant_positions`'s own `box_body_ids` convention above.
+        positions = {
+            _rounded_xy_ranges(part_id, bid) for bid in _body_ids(part_id) if bid != axis_body_id
+        }
+        client.delete(f"/document/parts/{part_id}/features/{feature_id}/cascade")
+        if positions == _STRAIGHT_EDGE_AXIS_Z_QUADRANT_POSITIONS:
+            return index
+    raise AssertionError("expected a straight edge axis producing a clean world-Z-axis rotation")
 
 
 # --- Success -------------------------------------------------------------------
@@ -359,6 +443,38 @@ def test_circular_pattern_via_a_sketch_line_axis_succeeds():
     assert len(_body_ids(part["id"])) == 4
 
 
+def test_circular_pattern_via_a_straight_edge_axis_succeeds_and_rotates_correctly():
+    """A straight Body edge is now (Pattern/Mirror Phase 4 revision) a
+    valid Circular Pattern axis in its own right, not just a circular
+    edge/cylindrical face - `_axis_from_ref` resolves it via the edge's
+    own `gp_Lin` (`Location()`/`Direction()`), the same idea as a real
+    axle running along that edge. Uses a dedicated axis-defining box whose
+    `(x0=0, y0=0)` corner sits exactly at the world origin, so one of its
+    4 vertical edges is exactly the world Z axis - brute-forced by index
+    (edge-to-index correspondence isn't part of the API's contract) and
+    verified with the same rigorous quadrant-position check the circular-
+    edge-axis test above uses, rather than merely asserting success."""
+    part = _create_part()
+    axis_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0, size=10.0)
+    _create_extrude_feature(part["id"], axis_sketch["id"], start_distance=0.0, end_distance=20.0)
+    axis_body_id = _first_body_id(part["id"])
+
+    box_sketch = _create_square_sketch_feature(part["id"], x0=30.0, y0=0.0, size=5.0)
+    _create_extrude_feature(part["id"], box_sketch["id"])
+    box_body_id = next(bid for bid in _body_ids(part["id"]) if bid != axis_body_id)
+
+    edge_index = _first_straight_edge_axis_index_through_world_z(part["id"], axis_body_id, box_body_id)
+
+    response = _create_pattern_circular(part["id"], [box_body_id], _edge_axis(axis_body_id, edge_index), 4)
+    assert response.status_code == 201
+    assert response.json()["pattern_type"] == "circular"
+
+    box_body_ids = [bid for bid in _body_ids(part["id"]) if bid != axis_body_id]
+    assert len(box_body_ids) == 4  # seed + 3 new instances
+    actual_positions = {_rounded_xy_ranges(part["id"], bid) for bid in box_body_ids}
+    assert actual_positions == _STRAIGHT_EDGE_AXIS_Z_QUADRANT_POSITIONS
+
+
 def test_list_features_includes_the_circular_pattern():
     part, body_id = _cylinder_part_and_body()
     edge_index = _first_circular_edge_index(part["id"], body_id)
@@ -474,12 +590,24 @@ def test_axis_face_ref_must_have_shape_type_face():
     assert response.status_code == 422
 
 
-def test_a_straight_edge_axis_is_rejected_as_non_circular_edge():
-    part, body_id = _boxy_part_and_body()
-    # A box's 12 edges are all straight - any index is non-circular.
-    response = _create_pattern_circular(part["id"], [body_id], _edge_axis(body_id, 0), 4)
-    assert response.status_code == 422
-    assert response.json()["detail"]["type"] == "non_circular_edge"
+def test_an_elliptical_edge_axis_is_rejected_as_unsupported_axis_edge():
+    """A straight edge and a circular edge are both valid axis sources
+    now (see `test_circular_pattern_via_a_straight_edge_axis_succeeds_
+    and_rotates_correctly`), but an edge that's neither - e.g. an
+    Ellipse-profile extrusion's own elliptical boundary edges - still has
+    no single well-defined axis and is rejected."""
+    part = _create_part()
+    ellipse_sketch = _create_ellipse_sketch_feature(part["id"])
+    _create_extrude_feature(part["id"], ellipse_sketch["id"])
+    body_id = _first_body_id(part["id"])
+
+    found_unsupported = None
+    for index in range(8):
+        response = _create_pattern_circular(part["id"], [body_id], _edge_axis(body_id, index), 4)
+        if response.status_code == 422 and response.json()["detail"].get("type") == "unsupported_axis_edge":
+            found_unsupported = index
+            break
+    assert found_unsupported is not None
 
 
 def test_a_planar_face_axis_is_rejected_as_non_cylindrical_face():

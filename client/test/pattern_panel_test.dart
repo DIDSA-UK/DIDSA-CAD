@@ -154,7 +154,7 @@ void main() {
 
     testWidgets('shows the hint text while nothing is picked yet', (tester) async {
       await tester.pumpWidget(harness(hasDirection1: false));
-      expect(find.text('Tap an edge, or pick a fixed axis'), findsOneWidget);
+      expect(find.text('Tap an edge or Sketch Line, or pick a fixed axis'), findsOneWidget);
     });
 
     testWidgets('shows the direction summary once something is picked', (tester) async {
@@ -310,7 +310,7 @@ void main() {
   group('PatternPanel Circular axis controls', () {
     testWidgets('shows the hint text while nothing is picked yet', (tester) async {
       await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: false));
-      expect(find.text('Tap a circular edge or a cylindrical face for the axis'), findsOneWidget);
+      expect(find.text('Tap an edge, a cylindrical face, or a Sketch Line for the axis'), findsOneWidget);
     });
 
     testWidgets('shows the axis summary once something is picked', (tester) async {
