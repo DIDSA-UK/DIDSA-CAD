@@ -11561,6 +11561,20 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// On-device feedback ("there are occasions when the sketch is wrong and
+  /// the next draw causes it to solve correctly"): a manual, no-op-geometry
+  /// re-solve - re-runs the same anchor-free [_solveAndTrackDof] every
+  /// ordinary mutation's finish tail already calls, without changing any
+  /// Point/Line/Constraint first, for whenever the solver's last-reported
+  /// state looks stale or wrong on its own (rather than needing to wait for
+  /// the next real edit to force a fresh solve). No-op while already busy
+  /// or with no active sketch, same guard every other mutating method here
+  /// uses.
+  Future<void> resolve() async {
+    if (_busy || _sketchId == null) return;
+    await _runGuarded(() => _solveAndTrackDof());
+  }
+
   Future<void> _runGuarded(Future<void> Function() body) async {
     _busy = true;
     errorMessage = null;

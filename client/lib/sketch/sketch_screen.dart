@@ -483,11 +483,33 @@ class _SketchScreenState extends State<SketchScreen> {
           ],
         ),
         actions: [
+          // On-device feedback ("there are occasions when the sketch is
+          // wrong and the next draw causes it to solve correctly... add a
+          // Re-solve button"): placed left of Undo per that same feedback.
+          // Always visible (like Undo), disabled only while busy - unlike
+          // Undo there's no stack-empty state to gate on, a re-solve is
+          // always a valid thing to ask for.
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) => IconButton(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              icon: Icon(
+                Icons.autorenew,
+                size: 26,
+                color: _controller.busy
+                    ? Theme.of(context).disabledColor
+                    : Theme.of(context).colorScheme.onSurface,
+              ),
+              tooltip: 'Re-solve',
+              onPressed: _controller.busy ? null : _controller.resolve,
+            ),
+          ),
           // Stage 19b item 4: always visible, disabled once the undo stack
           // is empty.
           AnimatedBuilder(
             animation: _controller,
             builder: (context, _) => IconButton(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
               icon: SvgPicture.asset(
                 'assets/icons/sketchbar/sketchbar_undo.svg',
                 width: 30,
@@ -510,6 +532,7 @@ class _SketchScreenState extends State<SketchScreen> {
             builder: (context, _) {
               if (_controller.mode != SketchMode.select) return const SizedBox.shrink();
               return IconButton(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
                 icon: SvgPicture.asset(
                   'assets/icons/sketchbar/sketchbar_select_all.svg',
                   width: 30,
@@ -1876,8 +1899,14 @@ class _SketchScreenState extends State<SketchScreen> {
   /// [ConstraintOverlay] takes a single flat list rather than layering two
   /// separate painters.
   List<ConstraintOverlayItem> get _embeddedConstraintOverlayItems {
+    // On-device feedback ("show/hide constraint labels option is missing
+    // from 3D sketch view options"): mirrors [SketchCanvas.labelsVisible]'s
+    // own gate in `sketch_canvas.dart` (`if (labelsVisible)
+    // _paintDimensionOverlays(canvas)`) - only the already-confirmed
+    // constraint overlays are hidden; a live, in-progress dimension ghost
+    // (still being placed) stays visible regardless, same as 2D.
     final fresh = [
-      ..._controller.constraintOverlayItems(),
+      if (_constraintLabelsVisible) ..._controller.constraintOverlayItems(),
       ..._controller.dimensionGhostOverlayItems(),
     ];
     final cached = _cachedConstraintOverlayItems;
@@ -1911,6 +1940,7 @@ class _SketchScreenState extends State<SketchScreen> {
       ellipses: _ellipseDtosFrom(_controller),
       splines: _splineDtosFrom(_controller),
       hiddenPointIds: _hiddenPointIdsFrom(_controller),
+      originPointId: _controller.originPointId,
     );
     final key = _controller.sketchId ?? 'active-sketch';
     // On-device feedback: other sketches share the Body hide/show toggle
@@ -2095,8 +2125,9 @@ class _SketchScreenState extends State<SketchScreen> {
     // Points don't carry their own construction/over-constrained state
     // beyond what SketchController.isPointForcedOverConstrained/rigidity
     // already report per-id - mirrors sketch_canvas.dart's own point loop,
-    // minus the origin (kept at the default colour here, same as 2D's own
-    // dedicated indigo origin marker never participating in this scheme).
+    // minus the origin, which never participates in the green/red/blue
+    // status scheme (mirrors 2D's own dedicated origin marker, which is
+    // always the same colour regardless of constraint status).
     for (final point in _controller.points.values) {
       if (point.id == _controller.originPointId) continue;
       final fullyConstrained = isFullyConstrained || rigidity.isPointFullyConstrained(point.id);
@@ -2106,6 +2137,17 @@ class _SketchScreenState extends State<SketchScreen> {
         fullyConstrained: fullyConstrained,
       );
     }
+    // On-device feedback ("make the origin an asterisk the same colour as
+    // the other points"): the origin used to fall through to this map
+    // having no entry at all, leaving [buildSketchGeometryNode]'s flat
+    // [sketchLineColor] default (a near-white grey) - unlike every other
+    // point above, which already gets [embeddedUnconstrainedColor]'s
+    // background-aware contrast via [statusColor]'s own fallback branch.
+    // Assigned directly (not through [statusColor]) so the origin still
+    // stays out of the green/red/blue status scheme, per the loop above's
+    // own doc comment - just no longer washed out against the background.
+    final originId = _controller.originPointId;
+    if (originId != null) colors[originId] = embeddedUnconstrainedColor;
 
     // P24: the currently-grabbed Point/Line (see [_dragModeActiveInOrbitView])
     // wins over every status colour above - applied last, mirrors 2D's own
@@ -2357,6 +2399,17 @@ class _SketchScreenState extends State<SketchScreen> {
           title: Text('Grid', style: titleStyle),
           value: _orbitGridVisible,
           onChanged: (value) => setState(() => _orbitGridVisible = value),
+        ),
+        // On-device feedback: this option existed in the flat 2D canvas's
+        // own View menu (see [_build2DViewMenu]) but was dropped when Orbit
+        // View got its own dedicated menu - re-added here, wired the same
+        // way into [_embeddedConstraintOverlayItems].
+        SwitchListTile(
+          dense: true,
+          visualDensity: density,
+          title: Text('Constraint Labels', style: titleStyle),
+          value: _constraintLabelsVisible,
+          onChanged: (value) => setState(() => _constraintLabelsVisible = value),
         ),
       ],
     );

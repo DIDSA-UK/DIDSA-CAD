@@ -25,41 +25,53 @@ class SketchConstructionMethodBar extends StatelessWidget {
             elevation: 8,
             color: Theme.of(context).colorScheme.surface,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: switch (controller.activeTool) {
-                      SketchTool.point => const Text('Tap to place a point'),
-                      SketchTool.arc => const Text('Tap center, then start, then end'),
-                      SketchTool.slot => const Text('Tap centerline start, end, then width'),
-                      SketchTool.ellipse => const Text('Tap center, major axis, then minor radius'),
-                      SketchTool.spline => const Text('Tap through-points, then Finish'),
-                      SketchTool.text => const Text('Tap to place text'),
-                      SketchTool.polygon => _PolygonSidesControl(controller: controller),
-                      SketchTool.line || SketchTool.circle || SketchTool.rectangle =>
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(children: _methodChips()),
-                        ),
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  TextButton.icon(
-                    onPressed: controller.exitToSelectMode,
-                    icon: SvgPicture.asset(
-                      'assets/icons/dimbar/dimbar_exit.svg',
-                      width: 26,
-                      height: 26,
-                      colorFilter: ColorFilter.mode(
-                        Theme.of(context).colorScheme.primary,
-                        BlendMode.srcIn,
-                      ),
+            child: ConstrainedBox(
+              // On-device feedback: this bar sits on top of (and is meant to
+              // fully hide) `SketchScreen`'s own "+" tool speed-dial FAB,
+              // positioned bottom:16 - a standard 56px FAB, so its top edge
+              // sits 72px up from the bottom. This bar's own content
+              // (padding + one row of chips/text) used to come out just
+              // under that, leaving the FAB's rounded top peeking out from
+              // behind it, which read as something accidentally left
+              // exposed rather than a deliberately layered UI. minHeight
+              // comfortably clears 72px with room to spare.
+              constraints: const BoxConstraints(minHeight: 88),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: switch (controller.activeTool) {
+                        SketchTool.point => const Text('Tap to place a point'),
+                        SketchTool.arc => const Text('Tap center, then start, then end'),
+                        SketchTool.slot => const Text('Tap centerline start, end, then width'),
+                        SketchTool.ellipse => const Text('Tap center, major axis, then minor radius'),
+                        SketchTool.spline => const Text('Tap through-points, then Finish'),
+                        SketchTool.text => const Text('Tap to place text'),
+                        SketchTool.polygon => _PolygonSidesControl(controller: controller),
+                        SketchTool.line || SketchTool.circle || SketchTool.rectangle =>
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(children: _methodChips()),
+                          ),
+                      },
                     ),
-                    label: const Text('Exit'),
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    TextButton.icon(
+                      onPressed: controller.exitToSelectMode,
+                      icon: SvgPicture.asset(
+                        'assets/icons/dimbar/dimbar_exit.svg',
+                        width: 26,
+                        height: 26,
+                        colorFilter: ColorFilter.mode(
+                          Theme.of(context).colorScheme.primary,
+                          BlendMode.srcIn,
+                        ),
+                      ),
+                      label: const Text('Exit'),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

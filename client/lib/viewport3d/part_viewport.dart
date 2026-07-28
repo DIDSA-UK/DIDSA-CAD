@@ -1293,8 +1293,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
       if (!_hasFramedCamera) {
         _camera.setTarget(vm.Vector3.zero());
-        _camera.setZoomBoundsForRadius(0);
       }
+      // Bug fix (on-device feedback: "zoom level is clamped in the 3d
+      // sketcher... user cannot see a sketch above a certain size"): this
+      // used to be `_camera.setZoomBoundsForRadius(0)`, folded into the
+      // `!_hasFramedCamera` branch above - but [_hasFramedCamera] is only
+      // ever set true once a real Body exists (see below), so for a bare
+      // Sketch with no reference Body, that branch actually ran on *every*
+      // call, forcibly resetting the zoom bounds to [OrbitCamera]'s tiny
+      // hardcoded defaults (and re-clamping the camera's current distance
+      // into them) each time - silently undoing any manual zoom-out past
+      // that default the moment the Sketch's own geometry changed. Calling
+      // [_syncZoomBounds] unconditionally instead makes this the same
+      // "recompute on every update" contract [_syncZoomBounds]'s own doc
+      // comment already establishes for the has-a-body path below.
+      _syncZoomBounds(null);
       return;
     }
     // Stage 11: in wireframe mode, the filled-faces Nodes are skipped
@@ -1409,11 +1422,33 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // geometry on every update (a body that's grown significantly must not
     // get far-clipped) - only the target (see above) and, via that, the
     // camera's overall framing stay put after the first sync.
-    _camera.setZoomBoundsForRadius(bounds?.boundingSphereRadius ?? 0);
+    _syncZoomBounds(bounds);
     debugPrint(
       '[PartViewport][RenderDebug] bounds: center=${bounds?.center} '
       'boundingSphereRadius=${bounds?.boundingSphereRadius} cameraDistance=${_camera.distance}',
     );
+  }
+
+  /// On-device feedback ("zoom level is clamped in the 3d sketcher... user
+  /// cannot see a sketch above a certain size"): [OrbitCamera.
+  /// setZoomBoundsForRadius] used to be driven only by [bodyBounds] (a
+  /// reference Body's own bounding-sphere radius, or 0/defaults with no
+  /// Body at all) - a Sketch drawn larger than whatever that implied never
+  /// widened [OrbitCamera.maxDistance] to match, so the camera could never
+  /// zoom out far enough to frame it. Combines [bodyBounds] with every
+  /// currently-rendered Sketch's own drawn-geometry extent
+  /// ([boundsOfPoints] over [widget.sketchGeometries]' world-space
+  /// `points`), the same per-content (not one-size-fits-all) zoom floor
+  /// `SketchViewport.zoomToFit`/`minZoomFor` already give the flat 2D
+  /// canvas. Called from both [_syncMeshNode] (whenever [widget.bodies]
+  /// changes) and [_syncSketchNodes] (whenever [widget.sketchGeometries]
+  /// changes) so either growing large enough re-widens the bound, not just
+  /// whichever one happens to trigger a rebuild first.
+  void _syncZoomBounds(MeshBounds? bodyBounds) {
+    final sketchPoints = widget.sketchGeometries.values.expand((geometry) => geometry.points);
+    final sketchBounds = boundsOfPoints(sketchPoints);
+    final radius = math.max(bodyBounds?.boundingSphereRadius ?? 0, sketchBounds?.boundingSphereRadius ?? 0);
+    _camera.setZoomBoundsForRadius(radius);
   }
 
   /// Stage 11: rebuilds [_edgesNodes] from [PartViewport.bodies]' real OCCT
@@ -1529,11 +1564,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _sketchNodes = {
       for (final entry in widget.sketchGeometries.entries)
         if (!entry.value.isEmpty)
-          entry.key: buildSketchGeometryNode(entry.key, entry.value, entityColors: widget.sketchEntityColors),
+          entry.key: buildSketchGeometryNode(
+            entry.key,
+            entry.value,
+            entityColors: widget.sketchEntityColors,
+            // Only the actively-edited Sketch ever has [SketchGeometry3D.
+            // originPointId] set (see that field's own doc comment), and
+            // [widget.sketchPlaneBasis] is specifically that Sketch's own
+            // plane - a mismatched basis for any other entry here is
+            // harmless, since [buildSketchGeometryNode] only reads it when
+            // an entry's own originPointId is non-null.
+            basis: widget.sketchPlaneBasis,
+          ),
     };
     for (final node in _sketchNodes.values) {
       scene.add(node);
     }
+    // Bug fix ("zoom level is clamped in the 3d sketcher"): a Sketch's own
+    // drawn geometry growing large enough to need a wider zoom-out bound
+    // must re-widen it immediately, not wait for [widget.bodies] to also
+    // happen to change (which, for a bare Sketch with no reference Body, it
+    // never will) - see [_syncZoomBounds]'s own doc comment.
+    _syncZoomBounds(boundsOfBodies(widget.bodies));
   }
 
   /// C2: mirrors [_syncSketchNodes] for [PartViewport.createPlanes] - one

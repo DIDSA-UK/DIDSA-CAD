@@ -257,6 +257,35 @@ MeshBounds? boundsOfBodies(List<BodyMeshDto> bodies) {
   );
 }
 
+/// On-device feedback ("zoom level is clamped in the 3d sketcher... user
+/// cannot see a sketch above a certain size"): the same AABB-based
+/// [MeshBounds] [boundsOfBodies] derives from a Body's mesh vertices, but
+/// over a plain [vm.Vector3] point cloud instead - lets
+/// `PartViewport._syncZoomBounds` fold a Sketch's own drawn (already
+/// world-projected, see `sketch_geometry_3d.dart`'s `SketchGeometry3D.points`)
+/// geometry extent into [OrbitCamera.setZoomBoundsForRadius], the same way
+/// `SketchViewport.zoomToFit` already sizes the flat 2D canvas's own zoom
+/// to whatever the Sketch actually contains rather than a fixed default.
+/// Returns `null` for an empty [points], same null-when-empty contract as
+/// [boundsOfMesh]/[boundsOfBodies].
+MeshBounds? boundsOfPoints(Iterable<vm.Vector3> points) {
+  vm.Vector3? min;
+  vm.Vector3? max;
+  for (final p in points) {
+    min = min == null
+        ? p
+        : vm.Vector3(math.min(min.x, p.x), math.min(min.y, p.y), math.min(min.z, p.z));
+    max = max == null
+        ? p
+        : vm.Vector3(math.max(max.x, p.x), math.max(max.y, p.y), math.max(max.z, p.z));
+  }
+  if (min == null || max == null) return null;
+  return MeshBounds(
+    center: (min + max) * 0.5,
+    boundingSphereRadius: (max - min).length * 0.5,
+  );
+}
+
 /// Line width (screen pixels, per [PolylineGeometry]'s default
 /// `widthMode`) for both edge-rendering modes - Stage 19a Item 3 narrowed
 /// this from the original `2.0` towards a more typical CAD wireframe

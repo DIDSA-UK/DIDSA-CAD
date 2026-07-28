@@ -279,6 +279,18 @@ class SketchGeometry3D {
   /// it still resolves normally.
   final Set<String> hiddenPointIds;
 
+  /// On-device feedback ("make the origin an asterisk the same colour as
+  /// the other points"): which of [pointIds] (if any) is the Sketch's own
+  /// origin - [buildSketchGeometryNode] renders this one point as a small
+  /// asterisk instead of every other point's plain round dot. Null (the
+  /// default) for every caller except `sketch_screen.dart`'s actively-edited
+  /// Sketch - a reference Sketch drawn for context (`part_screen.dart`, or
+  /// this Sketch's own `otherSketchGeometries` siblings) has no live
+  /// `SketchController` to ask, and isn't the thing being edited anyway, so
+  /// its origin (if any) just renders as an ordinary point, same as before
+  /// this fix.
+  final String? originPointId;
+
   const SketchGeometry3D({
     required this.lineSegments,
     required this.lineIds,
@@ -294,6 +306,7 @@ class SketchGeometry3D {
     this.splineIds = const [],
     this.constructionIds = const <String>{},
     this.hiddenPointIds = const <String>{},
+    this.originPointId,
   });
 
   static const empty = SketchGeometry3D(
@@ -357,7 +370,8 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
       nestedListEquals(a.splinePolylines, b.splinePolylines) &&
       listEquals(a.splineIds, b.splineIds) &&
       setEquals(a.constructionIds, b.constructionIds) &&
-      setEquals(a.hiddenPointIds, b.hiddenPointIds);
+      setEquals(a.hiddenPointIds, b.hiddenPointIds) &&
+      a.originPointId == b.originPointId;
 }
 
 /// Builds [SketchGeometry3D] from a Sketch's raw DTOs - resolving each
@@ -385,6 +399,7 @@ SketchGeometry3D sketchGeometry3DFrom({
   List<EllipseDto> ellipses = const [],
   List<SplineDto> splines = const [],
   Set<String> hiddenPointIds = const <String>{},
+  String? originPointId,
 }) {
   final pointsById = {for (final p in points) p.id: p};
   final constructionIds = <String>{};
@@ -524,6 +539,7 @@ SketchGeometry3D sketchGeometry3DFrom({
     splineIds: splineIds,
     constructionIds: constructionIds,
     hiddenPointIds: hiddenPointIds,
+    originPointId: originPointId,
   );
 }
 
@@ -685,6 +701,49 @@ List<(vm.Vector3, vm.Vector3)> dashedSegments(
   return result;
 }
 
+/// On-device feedback ("make the origin an asterisk the same colour as the
+/// other points"): half the world-space length of each of the origin
+/// marker's 3 crossing arms - small relative to [sketchGridLinesFrom]'s own
+/// default `spacing` (2.5) so the marker reads as a point-sized glyph, not a
+/// piece of drawn geometry.
+const double originMarkerHalfSize = 3.0;
+
+/// The 3 arm directions (60 degrees apart, six rays total once each arm's
+/// both ends are drawn) making up the origin's asterisk, built from
+/// [basis]'s own in-plane axes so the marker always lies flat against the
+/// Sketch's plane - not just facing the camera - regardless of which fixed
+/// or custom plane [basis] is.
+List<(vm.Vector3, vm.Vector3)> originMarkerSegments(SketchPlaneBasis basis, vm.Vector3 point) {
+  const sqrt3Over2 = 0.8660254037844386;
+  final arms = <vm.Vector3>[
+    basis.xAxis,
+    basis.xAxis * 0.5 + basis.yAxis * sqrt3Over2,
+    basis.xAxis * -0.5 + basis.yAxis * sqrt3Over2,
+  ];
+  return [for (final arm in arms) (point - arm * originMarkerHalfSize, point + arm * originMarkerHalfSize)];
+}
+
+/// One point marker's worth of [MeshPrimitive]s for [buildSketchGeometryNode]'s
+/// point loop: the origin's own asterisk ([originMarkerSegments], flat-capped
+/// so the crossing arms actually show rather than reading as a single round
+/// dot) when [isOrigin], otherwise every other point's plain round "fake dot"
+/// ([vertexMarkerSegments]).
+Iterable<MeshPrimitive> _pointMarkerPrimitivesFor({
+  required bool isOrigin,
+  required SketchPlaneBasis? basis,
+  required vm.Vector3 point,
+  required UnlitMaterial material,
+}) sync* {
+  final segments = isOrigin ? originMarkerSegments(basis!, point) : vertexMarkerSegments([point]);
+  final cap = isOrigin ? PolylineCap.butt : PolylineCap.round;
+  for (final segment in segments) {
+    yield MeshPrimitive(
+      PolylineGeometry([segment.$1, segment.$2], width: sketchPointMarkerWidth, cap: cap),
+      material,
+    );
+  }
+}
+
 /// Builds the [Node] rendering one Feature's [geometry] - one
 /// [MeshPrimitive] per Line segment, Circle/Arc/Ellipse/Spline outline, and
 /// Point marker, combined into a single [Mesh] so they share one
@@ -716,10 +775,17 @@ List<(vm.Vector3, vm.Vector3)> dashedSegments(
 /// so - like [buildReferencePlaneNode] - this cannot be exercised in a
 /// headless `flutter test` run. [sketchGeometry3DFrom] above is the pure,
 /// testable counterpart for the coordinate-mapping/geometry-layout logic.
+///
+/// [basis] orients [geometry.originPointId]'s own asterisk marker flat
+/// against the Sketch's plane (see [originMarkerSegments]) - null (the
+/// default) falls back to [geometry.originPointId]'s point rendering as an
+/// ordinary round dot, same as before this fix, since there's no plane to
+/// orient an asterisk against.
 Node buildSketchGeometryNode(
   String featureId,
   SketchGeometry3D geometry, {
   Map<String, vm.Vector4>? entityColors,
+  SketchPlaneBasis? basis,
 }) {
   vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
   // On-device feedback ("points are not visible"): a Point marker's own
@@ -770,15 +836,12 @@ Node buildSketchGeometryNode(
       ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
     for (var i = 0; i < geometry.points.length; i++)
       if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]))
-        for (final segment in vertexMarkerSegments([geometry.points[i]]))
-          MeshPrimitive(
-            PolylineGeometry(
-              [segment.$1, segment.$2],
-              width: sketchPointMarkerWidth,
-              cap: PolylineCap.round,
-            ),
-            materialFor(geometry.pointIds[i]),
-          ),
+        ..._pointMarkerPrimitivesFor(
+          isOrigin: basis != null && geometry.pointIds[i] == geometry.originPointId,
+          basis: basis,
+          point: geometry.points[i],
+          material: materialFor(geometry.pointIds[i]),
+        ),
   ];
 
   return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));
