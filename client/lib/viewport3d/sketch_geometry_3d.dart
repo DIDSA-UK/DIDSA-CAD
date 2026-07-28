@@ -702,11 +702,18 @@ List<(vm.Vector3, vm.Vector3)> dashedSegments(
 }
 
 /// On-device feedback ("make the origin an asterisk the same colour as the
-/// other points"): half the world-space length of each of the origin
-/// marker's 3 crossing arms - small relative to [sketchGridLinesFrom]'s own
-/// default `spacing` (2.5) so the marker reads as a point-sized glyph, not a
-/// piece of drawn geometry.
-const double originMarkerHalfSize = 3.0;
+/// other points" - then "make it smaller, about twice the size of a
+/// point"): half the world-space length of each of the origin marker's 3
+/// crossing arms. A point's own marker ([sketchPointMarkerWidth]) is a
+/// constant *screen-pixel* size, while this is a *world-space* size (the
+/// asterisk's arms are real geometry - drawn the same "real length, screen-
+/// constant stroke width" way every Line/Circle/the grid already are, see
+/// [sketchGridLinesFrom]'s own `spacing`), so the two can't be pixel-matched
+/// at every zoom level simultaneously - this is picked to land close to 2x
+/// a point's apparent size at typical editing zoom. The original `3.0` (a
+/// 6-unit arm span) read as a piece of drawn geometry in its own right
+/// rather than a point-sized glyph; this is a third of that.
+const double originMarkerHalfSize = 1.0;
 
 /// The 3 arm directions (60 degrees apart, six rays total once each arm's
 /// both ends are drawn) making up the origin's asterisk, built from
