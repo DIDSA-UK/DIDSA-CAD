@@ -1189,6 +1189,19 @@ class _PartScreenState extends State<PartScreen> {
   double _patternAngleTotal = 360.0;
   bool _patternReverseAngular = false;
 
+  /// Pattern/Mirror scoping's Phase 3: linear indices (Rectangular's own
+  /// `i * count_2 + j`, or Circular's own angular-step `i` - whichever
+  /// [_patternMode] implies) of instances suppressed rather than created -
+  /// mirrors [PatternPanel.skipIndices]/[onSkipToggled]'s own shape.
+  /// Index `0` (the seed) is never a member. Cleared out of range for the
+  /// pattern's own *current* total instance count right before every send
+  /// (see [_ensurePatternFeatureExists]) - shrinking `count_1`/`count_2`/
+  /// `count_angular` after some indices were already skipped would
+  /// otherwise risk sending a now-out-of-range index alongside the new,
+  /// smaller count in the same request, which the backend would reject
+  /// outright rather than silently clamp.
+  Set<int> _patternSkipIndices = {};
+
   /// The PatternFeature created (or, in edit mode, already existing) for
   /// the panel session - mirrors [_previewMirrorFeatureId]'s simple
   /// pattern (confirmed via `docs/live-preview-pattern.md`'s decision tree
@@ -1219,6 +1232,7 @@ class _PartScreenState extends State<PartScreen> {
     int countAngular,
     double angleTotal,
     bool reverseAngular,
+    List<int> skipIndices,
   })? _patternEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened -
@@ -5865,6 +5879,7 @@ class _PartScreenState extends State<PartScreen> {
     _patternCountAngular = 2;
     _patternAngleTotal = 360.0;
     _patternReverseAngular = false;
+    _patternSkipIndices = {};
     _previewPatternFeatureId = null;
     _editingPatternFeatureId = null;
     _patternEditSnapshot = null;
@@ -5923,6 +5938,7 @@ class _PartScreenState extends State<PartScreen> {
         _patternCountAngular = feature.countAngular;
         _patternAngleTotal = feature.angleTotal;
         _patternReverseAngular = feature.reverseAngular;
+        _patternSkipIndices = feature.skipIndices.toSet();
         _patternEditSnapshot = (
           sourceBodyIds: sourceBodyIds,
           direction1: null,
@@ -5937,6 +5953,7 @@ class _PartScreenState extends State<PartScreen> {
           countAngular: feature.countAngular,
           angleTotal: feature.angleTotal,
           reverseAngular: feature.reverseAngular,
+          skipIndices: feature.skipIndices,
         );
         _meshBeforePattern = _bodies;
         _entitiesBeforePattern = _selectedEntities;
@@ -5981,6 +5998,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternSkipIndices = feature.skipIndices.toSet();
       _patternEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         direction1: direction1,
@@ -5995,6 +6013,7 @@ class _PartScreenState extends State<PartScreen> {
         countAngular: 1,
         angleTotal: 360.0,
         reverseAngular: false,
+        skipIndices: feature.skipIndices,
       );
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -6182,6 +6201,18 @@ class _PartScreenState extends State<PartScreen> {
     _schedulePatternPreview();
   }
 
+  /// [PatternPanel.onSkipToggled]'s callback - toggles [index] in/out of
+  /// [_patternSkipIndices] (mirrors [PatternSkipGrid]'s own tap-to-toggle
+  /// shape).
+  void _onPatternSkipToggled(int index) {
+    setState(() {
+      final next = Set<int>.of(_patternSkipIndices);
+      if (!next.remove(index)) next.add(index);
+      _patternSkipIndices = next;
+    });
+    _schedulePatternPreview();
+  }
+
   /// [_toggleSelectedEntity]'s edge/Sketch-Line special case for the
   /// `configuring` step - replaces whichever entity (if any) is currently
   /// picked for [_patternActiveDirectionSlot] with [entity], unless
@@ -6353,6 +6384,11 @@ class _PartScreenState extends State<PartScreen> {
     if (_patternMode == PatternMode.circular) {
       final axis = _patternAxis;
       if (axis == null) return;
+      // Phase 3: clamped to the *current* count_angular right before
+      // sending - see [_patternSkipIndices]'s own doc comment on why a
+      // stale out-of-range index must never be sent alongside a since-
+      // shrunk count in the same request.
+      final skipIndices = _patternSkipIndices.where((i) => i > 0 && i < _patternCountAngular).toList();
       final existingId = _previewPatternFeatureId;
       if (existingId == null) {
         final created = await _api.createPatternFeature(
@@ -6363,6 +6399,7 @@ class _PartScreenState extends State<PartScreen> {
           countAngular: _patternCountAngular,
           angleTotal: _patternAngleTotal,
           reverseAngular: _patternReverseAngular,
+          skipIndices: skipIndices,
         );
         _previewPatternFeatureId = created.id;
       } else {
@@ -6374,6 +6411,7 @@ class _PartScreenState extends State<PartScreen> {
           countAngular: _patternCountAngular,
           angleTotal: _patternAngleTotal,
           reverseAngular: _patternReverseAngular,
+          skipIndices: skipIndices,
         );
       }
       await _refreshMesh();
@@ -6384,6 +6422,8 @@ class _PartScreenState extends State<PartScreen> {
     if (direction1 == null) return;
 
     final hasSecondDirection = _patternHasSecondDirection;
+    final totalCount = _patternCount1 * (hasSecondDirection ? _patternCount2 : 1);
+    final skipIndices = _patternSkipIndices.where((i) => i > 0 && i < totalCount).toList();
     final existingId = _previewPatternFeatureId;
     if (existingId == null) {
       final created = await _api.createPatternFeature(
@@ -6397,6 +6437,7 @@ class _PartScreenState extends State<PartScreen> {
         count2: hasSecondDirection ? _patternCount2 : 1,
         spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
         reverse2: hasSecondDirection ? _patternReverse2 : false,
+        skipIndices: skipIndices,
       );
       _previewPatternFeatureId = created.id;
     } else {
@@ -6412,6 +6453,7 @@ class _PartScreenState extends State<PartScreen> {
         count2: hasSecondDirection ? _patternCount2 : 1,
         spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
         reverse2: hasSecondDirection ? _patternReverse2 : false,
+        skipIndices: skipIndices,
       );
     }
     await _refreshMesh();
@@ -6465,6 +6507,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternSkipIndices = {};
       _selectedEntities = _entitiesBeforePattern ?? {};
       _entitiesBeforePattern = null;
       _previewPatternFeatureId = null;
@@ -6502,6 +6545,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternSkipIndices = {};
       _selectedEntities = _entitiesBeforePattern ?? {};
       _entitiesBeforePattern = null;
       _previewPatternFeatureId = null;
@@ -6529,6 +6573,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: editSnapshot.countAngular,
             angleTotal: editSnapshot.angleTotal,
             reverseAngular: editSnapshot.reverseAngular,
+            skipIndices: editSnapshot.skipIndices,
           );
           await _refreshFeatures();
         });
@@ -7420,6 +7465,8 @@ class _PartScreenState extends State<PartScreen> {
                       onCountAngularChanged: _onPatternCountAngularChanged,
                       onAngleTotalChanged: _onPatternAngleTotalChanged,
                       onReverseAngularChanged: _onPatternReverseAngularChanged,
+                      skipIndices: _patternSkipIndices,
+                      onSkipToggled: _onPatternSkipToggled,
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),

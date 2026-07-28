@@ -777,9 +777,18 @@ class PatternFeature(Feature):
     not encoded in the domain type" split `CreatePlaneFeature`/
     `ExtrudeFeature` already use.
 
-    Always produces separate Bodies (no merge-into-one option yet - Phase
-    5) and has no skip-instance suppression yet (Phase 3) - every count
-    field always produces a full, dense grid/ring."""
+    Always produces separate Bodies (no merge-into-one option yet -
+    Phase 5). `skip_indices` (Phase 3) suppresses individual instances by
+    their own linear index (the same `i * count_2 + j` row-major index for
+    Rectangular, or the plain angular-step index for Circular, that
+    `count_1`/`count_2`/`count_angular` themselves use) - a skipped index
+    is filtered out before `app.document.pattern._rectangular_instances`/
+    `_circular_instances` ever build a `BRepBuilderAPI_Transform` for it,
+    so a skipped instance never even briefly exists as a shape. Index `0`
+    (the untouched seed Body) can never usefully appear in `skip_indices` -
+    it was never going to be (re)created in the first place - so the
+    router rejects it explicitly (`app.document.router.
+    _validate_pattern_skip_indices`) rather than silently no-op-ing it."""
 
     id: str
     source_body_ids: list[str]
@@ -798,6 +807,8 @@ class PatternFeature(Feature):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    # Phase 3 (both construction methods):
+    skip_indices: list[int] = field(default_factory=list)
 
     @property
     def type(self) -> str:
