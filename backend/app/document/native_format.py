@@ -33,8 +33,10 @@ from app.document.models import (
     ImportSourceFormat,
     MirrorFeature,
     Part,
+    PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PatternType,
     PlaneRef,
     PlaneType,
     PointRef,
@@ -536,6 +538,24 @@ def _pattern_direction_ref_from_dict(data: dict) -> PatternDirectionRef:
     )
 
 
+def _pattern_axis_ref_to_dict(ref: PatternAxisRef) -> dict:
+    return {
+        "edge_ref": _subshape_ref_to_dict(ref.edge_ref) if ref.edge_ref else None,
+        "face_ref": _subshape_ref_to_dict(ref.face_ref) if ref.face_ref else None,
+        "sketch_line_ref": _sketch_entity_ref_to_dict(ref.sketch_line_ref) if ref.sketch_line_ref else None,
+    }
+
+
+def _pattern_axis_ref_from_dict(data: dict) -> PatternAxisRef:
+    return PatternAxisRef(
+        edge_ref=_subshape_ref_from_dict(data["edge_ref"]) if data.get("edge_ref") else None,
+        face_ref=_subshape_ref_from_dict(data["face_ref"]) if data.get("face_ref") else None,
+        sketch_line_ref=_sketch_entity_ref_from_dict(data["sketch_line_ref"])
+        if data.get("sketch_line_ref")
+        else None,
+    )
+
+
 # --- Features --------------------------------------------------------------
 
 
@@ -628,7 +648,10 @@ def _feature_to_dict(feature: Feature) -> dict:
             "type": "pattern",
             "id": feature.id,
             "source_body_ids": list(feature.source_body_ids),
-            "direction_1": _pattern_direction_ref_to_dict(feature.direction_1),
+            "pattern_type": feature.pattern_type.value,
+            "direction_1": _pattern_direction_ref_to_dict(feature.direction_1)
+            if feature.direction_1
+            else None,
             "count_1": feature.count_1,
             "spacing_1": feature.spacing_1,
             "reverse_1": feature.reverse_1,
@@ -638,6 +661,10 @@ def _feature_to_dict(feature: Feature) -> dict:
             "count_2": feature.count_2,
             "spacing_2": feature.spacing_2,
             "reverse_2": feature.reverse_2,
+            "axis": _pattern_axis_ref_to_dict(feature.axis) if feature.axis else None,
+            "count_angular": feature.count_angular,
+            "angle_total": feature.angle_total,
+            "reverse_angular": feature.reverse_angular,
         }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
@@ -725,9 +752,15 @@ def _feature_from_dict(data: dict) -> Feature:
         return PatternFeature(
             id=feature_id,
             source_body_ids=list(data.get("source_body_ids", [])),
-            direction_1=_pattern_direction_ref_from_dict(_require(data, "direction_1")),
-            count_1=_require(data, "count_1"),
-            spacing_1=_require(data, "spacing_1"),
+            # `pattern_type` (Phase 4) defaults to RECTANGULAR for any
+            # Pattern persisted before this field existed (Phase 2) - see
+            # `PatternType`'s own docstring.
+            pattern_type=PatternType(data.get("pattern_type", PatternType.RECTANGULAR.value)),
+            direction_1=_pattern_direction_ref_from_dict(data["direction_1"])
+            if data.get("direction_1")
+            else None,
+            count_1=data.get("count_1", 1),
+            spacing_1=data.get("spacing_1", 0.0),
             reverse_1=data.get("reverse_1", False),
             direction_2=_pattern_direction_ref_from_dict(data["direction_2"])
             if data.get("direction_2")
@@ -735,6 +768,10 @@ def _feature_from_dict(data: dict) -> Feature:
             count_2=data.get("count_2", 1),
             spacing_2=data.get("spacing_2", 0.0),
             reverse_2=data.get("reverse_2", False),
+            axis=_pattern_axis_ref_from_dict(data["axis"]) if data.get("axis") else None,
+            count_angular=data.get("count_angular", 1),
+            angle_total=data.get("angle_total", 360.0),
+            reverse_angular=data.get("reverse_angular", False),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 

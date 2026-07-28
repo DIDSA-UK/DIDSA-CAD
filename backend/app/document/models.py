@@ -678,38 +678,88 @@ class PatternDirectionRef:
     Resolved to a plain world-space direction (`app.document.pattern.
     _direction_vector`), not a full axis with an origin point - a
     Rectangular Pattern only ever translates along a direction, it never
-    needs a pivot the way Circular Pattern's own axis reference (Phase 4)
-    will."""
+    needs a pivot the way `PatternAxisRef` (Phase 4, Circular Pattern's own
+    axis reference) does."""
 
     edge_ref: SubShapeRef | None = None
     sketch_line_ref: SketchEntityRef | None = None
     fixed_axis: FixedAxis | None = None
 
 
+class PatternType(str, Enum):
+    """Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
+    §2.3/§4): which construction method a `PatternFeature` uses - mirrors
+    `PlaneType`'s "one dataclass, many construction methods" precedent
+    rather than splitting Rectangular/Circular into two Feature types (see
+    `docs/didsa-longterm-vision-and-model.md` §6's explicit decision
+    against giving patterns their own family of semantic sub-types).
+    Defaults to `RECTANGULAR` so every Phase-2-created `PatternFeature`
+    (persisted before this field existed) round-trips unchanged - see
+    `app.document.native_format`'s own `.get("pattern_type", ...)`
+    fallback."""
+
+    RECTANGULAR = "rectangular"
+    CIRCULAR = "circular"
+
+
+@dataclass(frozen=True)
+class PatternAxisRef:
+    """Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
+    §2.3/§2.7): exactly one of three - a circular Body edge, a cylindrical
+    Body face, or a Sketch Line - mirrors `PatternDirectionRef`'s own
+    "exactly one of N fields, payload shape validated by the router"
+    convention (see `app.document.router._validate_pattern_axis_ref`).
+
+    Unlike `PatternDirectionRef`, this resolves to a full world-space axis
+    (an origin point *and* a direction, not just a direction -
+    `app.document.pattern._axis_from_ref`) - a Circular Pattern rotates
+    around a real pivot, not just along a direction. `edge_ref`/`face_ref`
+    each already carry an implicit origin (the circle's centre, or a point
+    on the cylinder's own axis) via their own OCCT geometry; `sketch_line_ref`
+    supplies one explicitly (mirroring `RevolveFeature.axis_ref`'s identical
+    Sketch-Line-as-axis precedent, restricted to `SketchEntityType.LINE`
+    the same way)."""
+
+    edge_ref: SubShapeRef | None = None
+    face_ref: SubShapeRef | None = None
+    sketch_line_ref: SketchEntityRef | None = None
+
+
 @dataclass
 class PatternFeature(Feature):
-    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
-    §2.2/§4): a Rectangular Pattern - repeats the Body named in
-    `source_body_ids` along `direction_1` (`count_1` instances, `spacing_1`
-    apart) and, if `direction_2` is set, crossed with `direction_2`
-    (`count_2` instances, `spacing_2` apart) for a 2D grid - via OCCT
-    `gp_Trsf.SetTranslation` per instance (see `app.document.pattern.
-    resolve_pattern_from_bodies`). `reverse_1`/`reverse_2` flip their
-    respective direction before use.
+    """Pattern/Mirror scoping's Phase 2/4 (`docs/pattern-mirror-scope.md`
+    §2.2/§2.3/§4): one `PatternFeature` type covers both Rectangular and
+    Circular patterns via `pattern_type` (mirrors `CreatePlaneFeature`'s own
+    "one dataclass, many construction methods" precedent) - repeats the
+    Body named in `source_body_ids` either:
+    - **Rectangular** (`pattern_type=RECTANGULAR`, the default - Phase 2):
+      along `direction_1` (`count_1` instances, `spacing_1` apart) and, if
+      `direction_2` is set, crossed with `direction_2` (`count_2` instances,
+      `spacing_2` apart) for a 2D grid, via OCCT `gp_Trsf.SetTranslation`
+      per instance. `reverse_1`/`reverse_2` flip their respective direction
+      before use. The flattened linear index for instance `(i, j)` is
+      `i * count_2 + j` (row-major).
+    - **Circular** (`pattern_type=CIRCULAR` - Phase 4): `count_angular`
+      instances spaced evenly across `angle_total` degrees (default 360 -
+      a full revolution) around `axis` (a `PatternAxisRef`), via OCCT
+      `gp_Trsf.SetRotation(gp_Ax1, angle)` per instance - the per-instance
+      angular step is `angle_total / count_angular` (so a full-360 pattern
+      distributes evenly around the circle with no overlapping duplicate at
+      both 0° and 360°). `reverse_angular` flips the rotation direction.
+      The linear index is simply `count_angular`'s own iteration index `i`
+      (no second dimension - `count_2`/`direction_2` are meaningless here).
 
-    The flattened linear index for instance `(i, j)` is `i * count_2 + j`
-    (row-major) - matches this doc's own §2.2/§2.4 convention, kept even
-    though skip-instance addressing (Phase 3) isn't built yet, so a future
-    consumer doesn't have to reconcile two different index conventions.
-    Index 0 (`i=0, j=0`, both zero offset) is always the seed Body itself,
+    Both construction methods share the identical "index 0 is the untouched
+    seed Body itself" convention (see `app.document.pattern.
+    resolve_pattern_from_bodies`/`resolve_pattern_circular_from_bodies`):
     already registered under its own id by whichever earlier Feature
-    produced it - this Feature registers only the other `count_1*count_2-1`
-    instances as brand-new Bodies (see `app.document.extrude.
-    compute_part_bodies`'s own `PatternFeature` branch), matching every
-    mainstream CAD tool's own "count includes the original" convention
-    rather than adding a redundant zero-offset copy on top of the seed.
+    produced it, this Feature registers only the *other* instances as
+    brand-new Bodies (see `app.document.extrude.compute_part_bodies`'s own
+    `PatternFeature` branch), matching every mainstream CAD tool's own
+    "count includes the original" convention rather than adding a redundant
+    zero-offset copy on top of the seed.
 
-    `source_body_ids` is constrained to exactly one entry in Phase 2 (see
+    `source_body_ids` is constrained to exactly one entry (see
     `app.document.router._validate_pattern_source_body_ids`) - kept a list
     for the same forward-compatible-field-shape reason `MirrorFeature.
     source_body_ids` started that way before its own Phase 1 multi-body
@@ -718,20 +768,36 @@ class PatternFeature(Feature):
     pulled forward the way Mirror's was - Mirror's revision was driven by
     explicit on-device feedback this Feature hasn't had.
 
+    Every Rectangular-only and Circular-only field is optional/defaulted
+    (not just the ones Phase 2 already had before Circular existed) -
+    which fields are actually required for a given `pattern_type` is
+    enforced by the router at construction time
+    (`app.document.router._validate_pattern_payload`), not by this
+    dataclass itself, the same "payload shape validated by the API layer,
+    not encoded in the domain type" split `CreatePlaneFeature`/
+    `ExtrudeFeature` already use.
+
     Always produces separate Bodies (no merge-into-one option yet - Phase
-    5) and has no skip-instance suppression yet (Phase 3) - `count_1`/
-    `count_2` always produce a full, dense grid in Phase 2."""
+    5) and has no skip-instance suppression yet (Phase 3) - every count
+    field always produces a full, dense grid/ring."""
 
     id: str
     source_body_ids: list[str]
-    direction_1: PatternDirectionRef
-    count_1: int
-    spacing_1: float
+    pattern_type: PatternType = PatternType.RECTANGULAR
+    # Rectangular:
+    direction_1: PatternDirectionRef | None = None
+    count_1: int = 1
+    spacing_1: float = 0.0
     reverse_1: bool = False
     direction_2: PatternDirectionRef | None = None
     count_2: int = 1
     spacing_2: float = 0.0
     reverse_2: bool = False
+    # Circular:
+    axis: PatternAxisRef | None = None
+    count_angular: int = 1
+    angle_total: float = 360.0
+    reverse_angular: bool = False
 
     @property
     def type(self) -> str:

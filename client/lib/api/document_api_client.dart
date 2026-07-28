@@ -150,6 +150,37 @@ class PatternDirectionRefDto {
       };
 }
 
+/// Pattern/Mirror scoping's Phase 4: the wire counterpart to the backend's
+/// `PatternAxisRefSchema` - exactly one of [edgeRef]/[faceRef]/
+/// [sketchLineRef] should be supplied (a circular Body edge, a cylindrical
+/// Body face, or a Sketch Line), matching [PatternDirectionRefDto]'s own
+/// "one of three optional fields" convention.
+class PatternAxisRefDto {
+  final SubShapeRefDto? edgeRef;
+  final SubShapeRefDto? faceRef;
+  final SketchEntityRefDto? sketchLineRef;
+
+  const PatternAxisRefDto({this.edgeRef, this.faceRef, this.sketchLineRef});
+
+  factory PatternAxisRefDto.fromJson(Map<String, dynamic> json) => PatternAxisRefDto(
+        edgeRef: json['edge_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['edge_ref'] as Map<String, dynamic>),
+        faceRef: json['face_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        sketchLineRef: json['sketch_line_ref'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['sketch_line_ref'] as Map<String, dynamic>),
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (edgeRef != null) 'edge_ref': edgeRef!.toJson(),
+        if (faceRef != null) 'face_ref': faceRef!.toJson(),
+        if (sketchLineRef != null) 'sketch_line_ref': sketchLineRef!.toJson(),
+      };
+}
+
 /// A Feature in a Part's history - a SketchFeature, an ExtrudeFeature, or
 /// (C2) a CreatePlaneFeature, distinguished by [type] (the same
 /// discriminator the backend's `FeatureResponse` union uses). [sketchId] is
@@ -323,6 +354,23 @@ class FeatureDto {
   final double spacing2;
   final bool reverse2;
 
+  /// Pattern/Mirror scoping's Phase 4 - only present on a `"pattern"`
+  /// Feature: `"rectangular"` (the default) or `"circular"` - which of
+  /// [direction1]/[direction2] (Rectangular) vs. [axis]/[countAngular]/
+  /// [angleTotal]/[reverseAngular] (Circular) actually applies. Never
+  /// revised by an edit (see the backend's `PatternFeatureUpdate` docstring
+  /// - switching modes is a delete+recreate).
+  final String? patternType;
+
+  /// Pattern/Mirror scoping's Phase 4 - only present (and only meaningful
+  /// when [patternType] is `"circular"`) on a `"pattern"` Feature: the axis
+  /// to rotate around (a circular Body edge, a cylindrical Body face, or a
+  /// Sketch Line - see [PatternAxisRefDto]).
+  final PatternAxisRefDto? axis;
+  final int countAngular;
+  final double angleTotal;
+  final bool reverseAngular;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -366,6 +414,11 @@ class FeatureDto {
     this.count2 = 1,
     this.spacing2 = 0.0,
     this.reverse2 = false,
+    this.patternType,
+    this.axis,
+    this.countAngular = 1,
+    this.angleTotal = 360.0,
+    this.reverseAngular = false,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -442,6 +495,13 @@ class FeatureDto {
         count2: json['count_2'] as int? ?? 1,
         spacing2: (json['spacing_2'] as num?)?.toDouble() ?? 0.0,
         reverse2: json['reverse_2'] as bool? ?? false,
+        patternType: json['pattern_type'] as String?,
+        axis: json['axis'] == null
+            ? null
+            : PatternAxisRefDto.fromJson(json['axis'] as Map<String, dynamic>),
+        countAngular: json['count_angular'] as int? ?? 1,
+        angleTotal: (json['angle_total'] as num?)?.toDouble() ?? 360.0,
+        reverseAngular: json['reverse_angular'] as bool? ?? false,
       );
 }
 
@@ -888,28 +948,36 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// Pattern/Mirror scoping's Phase 2: creates a PatternFeature repeating
+  /// Pattern/Mirror scoping's Phase 2/4: creates a PatternFeature repeating
   /// [sourceBodyIds]' single Body (exactly one entry - unlike Mirror,
   /// Pattern's own multi-body seeding remains Phase 6 scope, see the
-  /// backend's `_validate_pattern_source_body_ids`) along [direction1]
+  /// backend's `_validate_pattern_source_body_ids`), either Rectangular
+  /// (`patternType='rectangular'`, the default) - along [direction1]
   /// ([count1] instances, [spacing1] apart), optionally crossed with
-  /// [direction2] for a 2D grid. The backend validates payload shape and
-  /// resolvability before persisting (`missing_reference`/`non_linear_edge`/
-  /// `invalid_direction_ref`/`pattern_failed` on failure - see
-  /// `app.document.router.create_pattern_feature`), this method just
-  /// serializes whatever it's given, mirroring [createMirrorFeature]'s own
-  /// shape.
+  /// [direction2] for a 2D grid - or Circular (`patternType='circular'`) -
+  /// [countAngular] instances spread across [angleTotal] degrees around
+  /// [axis]. The backend validates payload shape and resolvability before
+  /// persisting (`missing_reference`/`non_linear_edge`/`non_circular_edge`/
+  /// `non_cylindrical_face`/`invalid_direction_ref`/`invalid_axis_ref`/
+  /// `pattern_failed` on failure - see `app.document.router.
+  /// create_pattern_feature`), this method just serializes whatever it's
+  /// given, mirroring [createMirrorFeature]'s own shape.
   Future<FeatureDto> createPatternFeature(
     String partId, {
     required List<String> sourceBodyIds,
-    required PatternDirectionRefDto direction1,
-    required int count1,
-    required double spacing1,
+    String patternType = 'rectangular',
+    PatternDirectionRefDto? direction1,
+    int count1 = 1,
+    double spacing1 = 0.0,
     bool reverse1 = false,
     PatternDirectionRefDto? direction2,
     int count2 = 1,
     double spacing2 = 0.0,
     bool reverse2 = false,
+    PatternAxisRefDto? axis,
+    int countAngular = 1,
+    double angleTotal = 360.0,
+    bool reverseAngular = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -917,7 +985,8 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 'source_body_ids': sourceBodyIds,
-                'direction_1': direction1.toJson(),
+                'pattern_type': patternType,
+                if (direction1 != null) 'direction_1': direction1.toJson(),
                 'count_1': count1,
                 'spacing_1': spacing1,
                 'reverse_1': reverse1,
@@ -925,6 +994,10 @@ class DocumentApiClient {
                 'count_2': count2,
                 'spacing_2': spacing2,
                 'reverse_2': reverse2,
+                if (axis != null) 'axis': axis.toJson(),
+                'count_angular': countAngular,
+                'angle_total': angleTotal,
+                'reverse_angular': reverseAngular,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -933,6 +1006,9 @@ class DocumentApiClient {
   /// Partial update for an existing PatternFeature - any subset of fields
   /// may be supplied; omitted fields keep their current value. Used for the
   /// live-preview debounced re-solve, same pattern as [updateMirrorFeature].
+  /// `patternType` is deliberately not a parameter here at all - the
+  /// backend never revises it on update (see `PatternFeatureUpdate`'s own
+  /// docstring), so there is nothing for this method to send.
   Future<FeatureDto> updatePatternFeature(
     String partId,
     String featureId, {
@@ -945,6 +1021,10 @@ class DocumentApiClient {
     int? count2,
     double? spacing2,
     bool? reverse2,
+    PatternAxisRefDto? axis,
+    int? countAngular,
+    double? angleTotal,
+    bool? reverseAngular,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -960,6 +1040,10 @@ class DocumentApiClient {
                 if (count2 != null) 'count_2': count2,
                 if (spacing2 != null) 'spacing_2': spacing2,
                 if (reverse2 != null) 'reverse_2': reverse2,
+                if (axis != null) 'axis': axis.toJson(),
+                if (countAngular != null) 'count_angular': countAngular,
+                if (angleTotal != null) 'angle_total': angleTotal,
+                if (reverseAngular != null) 'reverse_angular': reverseAngular,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

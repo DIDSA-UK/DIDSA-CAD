@@ -746,27 +746,88 @@ Visual grid picker.
 
 ### Phase 4 — Circular pattern
 
-Curved-edge / cylindrical-face / axis-line direction sources.
+**Status: implemented (2026-07-28) — see `docs/status.md`'s same-dated
+entry for the full implementation/verification write-up.** Verified for
+real: the full backend `pytest` suite (1040 tests, including 26 new
+Circular-Pattern-specific ones) against genuine `pythonocc-core`, and the
+full client `flutter test` suite (970 tests, including 15 new
+`PatternPanel` circular-mode ones) plus a clean `flutter analyze`, using
+the same local toolchains bootstrapped for Phase 1/2's own verification
+passes.
 
-- **Deliverable**: select one Body, pick a circular axis source (curved
-  Body edge, cylindrical Body face, or a Sketch Line acting as an axis),
-  set instance count + total angle, get N independent Bodies rotated
-  around that axis; reverse toggle; skip-instances grid (radial variant).
-- **Backend**: `PatternAxisRef` value type, `axis`/`count_angular`/
-  `angle_total`/`reverse_angular` fields (already declared in Phase 2's
-  dataclass, unused until now), three axis resolvers (`axis_from_
-  circular_edge` — thin wrapper over `resolve_circular_edge_arc`;
-  `axis_from_cylindrical_face` — new `GeomAbs_Cylinder` check;
-  `axis_from_sketch_line` — near-verbatim copy of `RevolveFeature.
-  _resolve_axis`), `gp_Trsf.SetRotation` in the instance loop, new
-  `non_cylindrical_face` error.
-- **Client**: extend `pattern_panel.dart`'s `SegmentedButton` to enable
-  Circular mode, three-way axis picker, radial skip-instance dot layout
-  (new `CustomPainter` sibling to Phase 3's grid widget).
-- **Complexity/risk**: medium. Two of three axis resolvers are near-
-  verbatim reuse; cylindrical-face is the one genuinely new (small) OCCT
-  path. Main risk is UX clarity around three very different-looking valid
-  axis picks — worth on-device iteration.
+Curved-edge / cylindrical-face direction sources (client v1 — see below),
+a Rectangular/Circular mode toggle inside the same guided "New > Pattern"
+flow (not a separate feature entry), single Body seed, always-separate
+output. Skip-instances (radial variant) remains its own Phase 3 scope, not
+pulled forward here.
+
+- **Deliverable**: the existing "New > Pattern" flow now offers a
+  Rectangular/Circular `SegmentedButton` (shown only for a brand-new
+  PatternFeature — see the Client bullet below on why it's hidden while
+  editing). Circular mode: pick one Body, pick a circular axis (a circular
+  Body edge or a cylindrical Body face, tapped live in the viewport — a
+  Sketch Line axis is fully supported by the backend but not yet exposed
+  by the client panel, same client v1 scope cut Phase 2's own Sketch-Line
+  direction already established), set instance count + total angle, get N
+  independent Bodies rotated around that axis (N is the total including
+  the untouched seed, matching Phase 2's own `count_1 * count_2`
+  convention); reverse toggle. Patterned Features (both modes) appear in
+  the Build Tree exactly like any other Feature (`feature_tree_panel.dart`
+  keys purely on the generic `feature.type == 'pattern'`, unaware of
+  `pattern_type` — needed no changes) and tapping one reopens the edit
+  panel in the correct mode with its stored fields reconstructed.
+- **Backend**: `PatternType` enum (`RECTANGULAR`/`CIRCULAR`, defaulting to
+  `RECTANGULAR` for round-trip compatibility with Phase-2-era persisted
+  Features) added to `PatternFeature` alongside a new `PatternAxisRef`
+  value type (`edge_ref`/`face_ref`/`sketch_line_ref`, "exactly one of
+  three" — mirrors `PatternDirectionRef`'s own convention, generalized to
+  faces too) and `axis`/`count_angular`/`angle_total`/`reverse_angular`
+  fields; `direction_1`/`count_1`/`spacing_1` widened from required to
+  optional, since a Circular Feature never sets them (which fields are
+  actually required is validated by the router's own
+  `_validate_pattern_payload`, dispatching on `pattern_type`, not by the
+  dataclass itself — same split `_validate_plane_payload` already
+  established for `CreatePlaneFeature`). New `_axis_from_ref` resolver in
+  `pattern.py`: a circular Body edge via `BRepAdaptor_Curve`/
+  `GeomAbs_Circle` (new `non_circular_edge` error); a cylindrical Body face
+  via `BRepAdaptor_Surface`/`GeomAbs_Cylinder` (new `non_cylindrical_face`
+  error, the one genuinely new OCCT path this phase needed); a Sketch Line
+  mirrors `RevolveFeature._resolve_axis`'s own machinery, just returning a
+  full `gp_Ax1` (origin + direction) instead of a bare direction. Circular
+  instances use `gp_Trsf.SetRotation(axis, angle_total/count_angular * i)`
+  in place of Phase 2's `SetTranslation`, sharing the exact same
+  index-0-is-the-untouched-seed convention. `pattern_type` is immutable via
+  PATCH (switching Rectangular ↔ Circular is delete+recreate, mirroring
+  `CreatePlaneFeatureUpdate.plane_type`'s own immutability). The axis
+  reference is allowed to point at a *different* Body than the one being
+  patterned (confirmed by a dedicated cascade-delete test) — the
+  dependency-graph edge (`_pattern_axis_dependency` in `graph.py`) tracks
+  it correctly either way.
+- **Client**: `pattern_panel.dart` gained a `PatternMode` enum and a
+  Rectangular/Circular `SegmentedButton` (mirroring `RevolveMode`'s own
+  Boss/Cut toggle), hidden/disabled while editing an existing Feature
+  (`canChangeMode`) since `pattern_type` is immutable server-side. Circular
+  mode's own fields: an axis status line, Count/Angle(degrees) text fields,
+  and a reverse toggle — deliberately **no** fixed-world-axis button
+  alternative the way Direction 1/2 have X/Y/Z buttons, since a circular
+  pattern needs a real pivot point a bare direction can't supply; the axis
+  is picked exclusively via a viewport tap on an edge or a face.
+  `part_screen.dart` gained a parallel `PatternMode`/axis-picking state
+  section alongside Phase 2's own direction-picking one: a new
+  `_patternAxisSelectionFilter` (edge **and** face enabled together —
+  confirmed during this phase that `filter.edge`/`filter.face` coexist
+  fine in `hitTestBodies`, unlike `filter.body`/`filter.face`'s mutual
+  exclusivity), `_setPatternMode` (swaps the pushed selection filter and
+  clears the mode being left), and `_openPatternPanelForEdit` now branches
+  on the edited Feature's own `pattern_type` to reconstruct either
+  Direction 1/2 state or axis state, pushing the matching filter.
+- **Complexity/risk**: medium, as scoped. Two of the three axis sources
+  (circular edge, cylindrical face) needed genuinely new OCCT checks;
+  Sketch-Line axis reused Revolve's own machinery near-verbatim. The
+  trickiest part was verifying rotation geometry without assuming OCCT's
+  CW/CCW convention for a given `gp_Ax1` direction — solved with a
+  direction-agnostic, set-based bounding-box-quadrant test rather than
+  asserting a specific instance index lands at a specific position.
 
 ### Phase 5 — Merge options
 

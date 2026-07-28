@@ -41,8 +41,10 @@ from app.document.models import (
     ImportSourceFormat,
     MirrorFeature,
     Part,
+    PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PatternType,
     PlaneRef,
     PlaneType,
     PointRef,
@@ -87,6 +89,7 @@ from app.document.schemas import (
     NativeImportResponse,
     PartCreate,
     PartResponse,
+    PatternAxisRefSchema,
     PatternDirectionRefSchema,
     PatternFeatureCreate,
     PatternFeatureResponse,
@@ -201,6 +204,24 @@ def _pattern_direction_ref_to_schema(ref: PatternDirectionRef) -> PatternDirecti
         edge_ref=_subshape_ref_to_schema(ref.edge_ref) if ref.edge_ref else None,
         sketch_line_ref=_sketch_entity_ref_to_schema(ref.sketch_line_ref) if ref.sketch_line_ref else None,
         fixed_axis=ref.fixed_axis,
+    )
+
+
+def _pattern_axis_ref_to_domain(schema: PatternAxisRefSchema) -> PatternAxisRef:
+    return PatternAxisRef(
+        edge_ref=_subshape_ref_to_domain(schema.edge_ref) if schema.edge_ref else None,
+        face_ref=_subshape_ref_to_domain(schema.face_ref) if schema.face_ref else None,
+        sketch_line_ref=_sketch_entity_ref_to_domain(schema.sketch_line_ref)
+        if schema.sketch_line_ref
+        else None,
+    )
+
+
+def _pattern_axis_ref_to_schema(ref: PatternAxisRef) -> PatternAxisRefSchema:
+    return PatternAxisRefSchema(
+        edge_ref=_subshape_ref_to_schema(ref.edge_ref) if ref.edge_ref else None,
+        face_ref=_subshape_ref_to_schema(ref.face_ref) if ref.face_ref else None,
+        sketch_line_ref=_sketch_entity_ref_to_schema(ref.sketch_line_ref) if ref.sketch_line_ref else None,
     )
 
 
@@ -345,7 +366,10 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return PatternFeatureResponse(
             id=feature.id,
             source_body_ids=feature.source_body_ids,
-            direction_1=_pattern_direction_ref_to_schema(feature.direction_1),
+            pattern_type=feature.pattern_type,
+            direction_1=_pattern_direction_ref_to_schema(feature.direction_1)
+            if feature.direction_1
+            else None,
             count_1=feature.count_1,
             spacing_1=feature.spacing_1,
             reverse_1=feature.reverse_1,
@@ -355,6 +379,10 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             count_2=feature.count_2,
             spacing_2=feature.spacing_2,
             reverse_2=feature.reverse_2,
+            axis=_pattern_axis_ref_to_schema(feature.axis) if feature.axis else None,
+            count_angular=feature.count_angular,
+            angle_total=feature.angle_total,
+            reverse_angular=feature.reverse_angular,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -489,15 +517,14 @@ def _validate_pattern_direction_ref(ref: PatternDirectionRef, field_name: str) -
     `"direction_1"` or `"direction_2"`, for the error message), matching
     `PatternDirectionRef`'s own "one of three" convention (see its
     docstring) - mirrors `_validate_plane_ref`'s identical shape. Always
-    called with a non-`None` `ref` - `direction_1` is never optional, and
-    `_validate_pattern_counts_and_direction_2` only calls this for
-    `direction_2` when a value was actually supplied, raising its own
-    "requires a direction_2 when count_2 > 1" error directly otherwise.
-    Whichever field is supplied is itself well-formed: an `edge_ref` must
-    have `shape_type=EDGE` (the same typed-slot check `_validate_plane_ref`
-    makes for its own `face_ref`). `fixed_axis` needs no further check -
-    `FixedAxis` is already a closed enum, so pydantic itself rejects
-    anything else."""
+    called with a non-`None` `ref` - `_validate_pattern_rectangular_
+    payload` only calls this for `direction_1`/`direction_2` when a value
+    was actually required and supplied, raising its own error directly
+    otherwise. Whichever field is supplied is itself well-formed: an
+    `edge_ref` must have `shape_type=EDGE` (the same typed-slot check
+    `_validate_plane_ref` makes for its own `face_ref`). `fixed_axis` needs
+    no further check - `FixedAxis` is already a closed enum, so pydantic
+    itself rejects anything else."""
     set_count = sum(x is not None for x in (ref.edge_ref, ref.sketch_line_ref, ref.fixed_axis))
     if set_count != 1:
         raise HTTPException(
@@ -508,19 +535,30 @@ def _validate_pattern_direction_ref(ref: PatternDirectionRef, field_name: str) -
         raise HTTPException(status_code=422, detail=f"{field_name} edge_ref must have shape_type=EDGE")
 
 
-def _validate_pattern_counts_and_direction_2(
-    count_1: int, count_2: int, direction_2: PatternDirectionRef | None
+def _validate_pattern_rectangular_payload(
+    direction_1: PatternDirectionRef | None,
+    count_1: int,
+    count_2: int,
+    direction_2: PatternDirectionRef | None,
 ) -> None:
-    """Pattern/Mirror scoping's Phase 2: `count_1`/`count_2` must each be at
-    least 1 (a "pattern" of fewer than one instance in either direction is
-    meaningless), their product must be at least 2 (otherwise this Feature
-    would produce zero new Bodies beyond the untouched seed - see
-    `PatternFeature`'s own docstring on why index 0 never gets a new Body -
-    a pure no-op Feature, rejected the same "nothing valid to create" way
-    `_validate_target_body_ids` rejects an empty Cut), and `direction_2` is
-    required exactly when `count_2 > 1` (see `PatternFeatureUpdate`'s own
-    docstring on why `count_2 == 1` makes `direction_2` inert rather than
-    requiring it be explicitly cleared)."""
+    """Pattern/Mirror scoping's Phase 2: validates a Rectangular
+    `PatternFeature`'s own fields (`pattern_type == RECTANGULAR`) -
+    `direction_1` is required and must be well-formed; `count_1`/`count_2`
+    must each be at least 1 (a "pattern" of fewer than one instance in
+    either direction is meaningless), their product must be at least 2
+    (otherwise this Feature would produce zero new Bodies beyond the
+    untouched seed - see `PatternFeature`'s own docstring on why index 0
+    never gets a new Body - a pure no-op Feature, rejected the same
+    "nothing valid to create" way `_validate_target_body_ids` rejects an
+    empty Cut); `direction_2` is required exactly when `count_2 > 1` (see
+    `PatternFeatureUpdate`'s own docstring on why `count_2 == 1` makes
+    `direction_2` inert rather than requiring it be explicitly cleared)."""
+    if direction_1 is None:
+        raise HTTPException(
+            status_code=422,
+            detail="PatternFeature requires a direction_1 when pattern_type is rectangular",
+        )
+    _validate_pattern_direction_ref(direction_1, "direction_1")
     if count_1 < 1 or count_2 < 1:
         raise HTTPException(status_code=422, detail="PatternFeature count_1 and count_2 must each be >= 1")
     if count_1 * count_2 < 2:
@@ -533,6 +571,80 @@ def _validate_pattern_counts_and_direction_2(
         _validate_pattern_direction_ref(direction_2, "direction_2")
     elif count_2 > 1:
         raise HTTPException(status_code=422, detail="PatternFeature requires a direction_2 when count_2 > 1")
+
+
+def _validate_pattern_axis_ref(ref: PatternAxisRef, field_name: str = "axis") -> None:
+    """Pattern/Mirror scoping's Phase 4: enforces exactly one of `edge_ref`/
+    `face_ref`/`sketch_line_ref` is supplied on `ref`, matching
+    `PatternAxisRef`'s own "one of three" convention - mirrors
+    `_validate_pattern_direction_ref`'s identical shape, generalized to
+    `face_ref` as well as `edge_ref`: an `edge_ref` must have
+    `shape_type=EDGE`, a `face_ref` must have `shape_type=FACE` (the same
+    typed-slot checks `_validate_plane_ref`/`_validate_pattern_direction_
+    ref` already make for their own equivalents)."""
+    set_count = sum(x is not None for x in (ref.edge_ref, ref.face_ref, ref.sketch_line_ref))
+    if set_count != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} must have exactly one of edge_ref, face_ref, or sketch_line_ref",
+        )
+    if ref.edge_ref is not None and ref.edge_ref.shape_type != SubShapeType.EDGE:
+        raise HTTPException(status_code=422, detail=f"{field_name} edge_ref must have shape_type=EDGE")
+    if ref.face_ref is not None and ref.face_ref.shape_type != SubShapeType.FACE:
+        raise HTTPException(status_code=422, detail=f"{field_name} face_ref must have shape_type=FACE")
+
+
+def _validate_pattern_circular_payload(
+    axis: PatternAxisRef | None, count_angular: int, angle_total: float
+) -> None:
+    """Pattern/Mirror scoping's Phase 4: validates a Circular
+    `PatternFeature`'s own fields (`pattern_type == CIRCULAR`) - `axis` is
+    required and must be well-formed; `count_angular` must be at least 2
+    (a single-instance "pattern" produces no new Body beyond the untouched
+    seed, the identical no-op guard Rectangular's own `count_1*count_2>=2`
+    check enforces - there is no second dimension here to make a product
+    of, so this checks `count_angular` alone); `angle_total` must be in
+    `(0, 360]` (0 or negative sweeps nothing, more than a full turn
+    overlaps itself - mirrors `RevolveFeature.angle`'s own identical
+    range)."""
+    if axis is None:
+        raise HTTPException(
+            status_code=422,
+            detail="PatternFeature requires an axis when pattern_type is circular",
+        )
+    _validate_pattern_axis_ref(axis)
+    if count_angular < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="PatternFeature count_angular must be >= 2 - otherwise no new Body is produced "
+            "beyond the existing seed",
+        )
+    if angle_total <= 0 or angle_total > 360:
+        raise HTTPException(status_code=422, detail="PatternFeature angle_total must be > 0 and <= 360")
+
+
+def _validate_pattern_payload(
+    pattern_type: PatternType,
+    direction_1: PatternDirectionRef | None,
+    count_1: int,
+    count_2: int,
+    direction_2: PatternDirectionRef | None,
+    axis: PatternAxisRef | None,
+    count_angular: int,
+    angle_total: float,
+) -> None:
+    """Pattern/Mirror scoping's Phase 4: the single entry point both
+    `create_pattern_feature`/`update_pattern_feature` call - dispatches to
+    `_validate_pattern_rectangular_payload`/`_validate_pattern_circular_
+    payload` per `pattern_type`, so which fields are actually required for
+    a given Pattern never has to be re-derived at either call site (same
+    "payload shape validated by the API layer" split
+    `_validate_create_plane_payload` already uses for its own six
+    construction methods)."""
+    if pattern_type == PatternType.CIRCULAR:
+        _validate_pattern_circular_payload(axis, count_angular, angle_total)
+    else:
+        _validate_pattern_rectangular_payload(direction_1, count_1, count_2, direction_2)
 
 
 def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> SketchFeature:
@@ -1761,26 +1873,38 @@ def update_mirror_feature(
 
 @router.post("/parts/{part_id}/pattern-features", response_model=PatternFeatureResponse, status_code=201)
 def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> PatternFeatureResponse:
-    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
-    §2.2/§4): mirrors `create_mirror_feature`'s exact shape - unlocked from
-    the start, fails closed (via `_validate_pattern_source_body_ids`/
-    `_validate_pattern_direction_ref`/`_validate_pattern_counts_and_
-    direction_2` for payload shape, then `resolve_pattern` for
-    referential/geometric validity) before ever persisting an unresolvable
-    Pattern."""
+    """Pattern/Mirror scoping's Phase 2/4 (`docs/pattern-mirror-scope.md`
+    §2.2/§2.3/§4): mirrors `create_mirror_feature`'s exact shape - unlocked
+    from the start, fails closed (via `_validate_pattern_source_body_ids`/
+    `_validate_pattern_payload` for payload shape - itself dispatching on
+    `payload.pattern_type` to whichever of Rectangular's/Circular's own
+    required fields apply - then `resolve_pattern` for referential/
+    geometric validity) before ever persisting an unresolvable Pattern."""
     part = get_part_or_404(part_id)
     source_body_ids = list(payload.source_body_ids)
-    direction_1 = _pattern_direction_ref_to_domain(payload.direction_1)
+    direction_1 = (
+        _pattern_direction_ref_to_domain(payload.direction_1) if payload.direction_1 is not None else None
+    )
     direction_2 = (
         _pattern_direction_ref_to_domain(payload.direction_2) if payload.direction_2 is not None else None
     )
+    axis = _pattern_axis_ref_to_domain(payload.axis) if payload.axis is not None else None
     _validate_pattern_source_body_ids(part, source_body_ids)
-    _validate_pattern_direction_ref(direction_1, "direction_1")
-    _validate_pattern_counts_and_direction_2(payload.count_1, payload.count_2, direction_2)
+    _validate_pattern_payload(
+        payload.pattern_type,
+        direction_1,
+        payload.count_1,
+        payload.count_2,
+        direction_2,
+        axis,
+        payload.count_angular,
+        payload.angle_total,
+    )
 
     feature = PatternFeature(
         id=str(uuid.uuid4()),
         source_body_ids=source_body_ids,
+        pattern_type=payload.pattern_type,
         direction_1=direction_1,
         count_1=payload.count_1,
         spacing_1=payload.spacing_1,
@@ -1789,6 +1913,10 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         count_2=payload.count_2,
         spacing_2=payload.spacing_2,
         reverse_2=payload.reverse_2,
+        axis=axis,
+        count_angular=payload.count_angular,
+        angle_total=payload.angle_total,
+        reverse_angular=payload.reverse_angular,
     )
     resolve_pattern(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -1807,7 +1935,11 @@ def update_pattern_feature(
     part_id: str, feature_id: str, payload: PatternFeatureUpdate
 ) -> PatternFeatureResponse:
     """Mirrors `update_mirror_feature`'s exact shape - same validate-before-
-    mutate discipline against a scratch Feature sharing the real one's id."""
+    mutate discipline against a scratch Feature sharing the real one's id.
+    `pattern_type` itself is never revised (see `PatternFeatureUpdate`'s
+    own docstring - switching Rectangular <-> Circular is a delete+
+    recreate), so `_validate_pattern_payload` is always called with the
+    Feature's own existing, unchangeable `pattern_type`."""
     part = get_part_or_404(part_id)
     feature = _get_pattern_feature_or_404(part, feature_id)
 
@@ -1830,14 +1962,31 @@ def update_pattern_feature(
     new_count_2 = payload.count_2 if payload.count_2 is not None else feature.count_2
     new_spacing_2 = payload.spacing_2 if payload.spacing_2 is not None else feature.spacing_2
     new_reverse_2 = payload.reverse_2 if payload.reverse_2 is not None else feature.reverse_2
+    new_axis = _pattern_axis_ref_to_domain(payload.axis) if payload.axis is not None else feature.axis
+    new_count_angular = (
+        payload.count_angular if payload.count_angular is not None else feature.count_angular
+    )
+    new_angle_total = payload.angle_total if payload.angle_total is not None else feature.angle_total
+    new_reverse_angular = (
+        payload.reverse_angular if payload.reverse_angular is not None else feature.reverse_angular
+    )
 
     _validate_pattern_source_body_ids(part, new_source_body_ids)
-    _validate_pattern_direction_ref(new_direction_1, "direction_1")
-    _validate_pattern_counts_and_direction_2(new_count_1, new_count_2, new_direction_2)
+    _validate_pattern_payload(
+        feature.pattern_type,
+        new_direction_1,
+        new_count_1,
+        new_count_2,
+        new_direction_2,
+        new_axis,
+        new_count_angular,
+        new_angle_total,
+    )
 
     candidate = PatternFeature(
         id=feature.id,
         source_body_ids=new_source_body_ids,
+        pattern_type=feature.pattern_type,
         direction_1=new_direction_1,
         count_1=new_count_1,
         spacing_1=new_spacing_1,
@@ -1846,6 +1995,10 @@ def update_pattern_feature(
         count_2=new_count_2,
         spacing_2=new_spacing_2,
         reverse_2=new_reverse_2,
+        axis=new_axis,
+        count_angular=new_count_angular,
+        angle_total=new_angle_total,
+        reverse_angular=new_reverse_angular,
     )
     resolve_pattern(part, candidate)  # raises on an unresolvable reference
 
@@ -1858,6 +2011,10 @@ def update_pattern_feature(
     feature.count_2 = candidate.count_2
     feature.spacing_2 = candidate.spacing_2
     feature.reverse_2 = candidate.reverse_2
+    feature.axis = candidate.axis
+    feature.count_angular = candidate.count_angular
+    feature.angle_total = candidate.angle_total
+    feature.reverse_angular = candidate.reverse_angular
     return _feature_response(part, feature)
 
 

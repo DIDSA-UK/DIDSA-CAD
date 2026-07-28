@@ -863,12 +863,15 @@ def compute_part_bodies(
             # Feature produced it, and this Feature never touches it, same
             # Boss-with-no-target semantics `MirrorFeature` uses. Every
             # other instance is a brand-new Body: `feature.id` alone when
-            # there's exactly one (a `count_1 * count_2 == 2` pattern),
+            # there's exactly one (a `count_1 * count_2 == 2` Rectangular
+            # pattern, or a `count_angular == 2` Circular one - Phase 4),
             # `f"{feature.id}#{index}"` per instance otherwise - mirrors
             # `_register_solids`'s own single-vs-multiple naming
-            # convention, keyed by the pattern's own flattened linear
-            # index (not a freshly reindexed 0..N-1) so a future Phase 3
-            # skip-instance picker can address the exact same indices.
+            # convention, keyed by the pattern's own linear index (row-
+            # major `i*count_2+j` for Rectangular, the plain angular-step
+            # index for Circular - not a freshly reindexed 0..N-1 either
+            # way) so a future Phase 3 skip-instance picker can address the
+            # exact same indices.
             if len(instances) == 1:
                 ((_, only_shape),) = instances.items()
                 _register_solids(bodies, feature.id, only_shape)

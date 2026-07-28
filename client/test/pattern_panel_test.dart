@@ -11,6 +11,9 @@ import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 /// real, runnable widget test in this sandbox.
 void main() {
   Widget harness({
+    PatternMode mode = PatternMode.rectangular,
+    bool canChangeMode = true,
+    void Function(PatternMode mode)? onModeChanged,
     bool hasDirection1 = false,
     String? direction1Summary,
     int initialCount1 = 2,
@@ -29,6 +32,14 @@ void main() {
     bool reverse2 = false,
     int activeDirectionSlot = 1,
     void Function(int slot)? onActiveDirectionSlotChanged,
+    bool hasAxis = false,
+    String? axisSummary,
+    int initialCountAngular = 2,
+    double initialAngleTotal = 360.0,
+    bool reverseAngular = false,
+    void Function(int count)? onCountAngularChanged,
+    void Function(double angle)? onAngleTotalChanged,
+    void Function(bool reverse)? onReverseAngularChanged,
     String title = 'Pattern',
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -37,6 +48,9 @@ void main() {
       home: Scaffold(
         body: PatternPanel(
           title: title,
+          mode: mode,
+          canChangeMode: canChangeMode,
+          onModeChanged: onModeChanged ?? (_) {},
           hasDirection1: hasDirection1,
           direction1Summary: direction1Summary,
           onSetDirection1FixedAxis: onSetDirection1FixedAxis ?? (_) {},
@@ -56,6 +70,14 @@ void main() {
           reverse2: reverse2,
           activeDirectionSlot: activeDirectionSlot,
           onActiveDirectionSlotChanged: onActiveDirectionSlotChanged ?? (_) {},
+          hasAxis: hasAxis,
+          axisSummary: axisSummary,
+          initialCountAngular: initialCountAngular,
+          initialAngleTotal: initialAngleTotal,
+          reverseAngular: reverseAngular,
+          onCountAngularChanged: onCountAngularChanged,
+          onAngleTotalChanged: onAngleTotalChanged,
+          onReverseAngularChanged: onReverseAngularChanged,
           onConfirm: onConfirm ?? () {},
           onCancel: onCancel ?? () {},
         ),
@@ -211,6 +233,131 @@ void main() {
       await tester.pumpWidget(harness(onCancel: () => cancelled = true));
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       expect(cancelled, isTrue);
+    });
+  });
+
+  group('PatternPanel mode toggle', () {
+    testWidgets('shown when canChangeMode is true', (tester) async {
+      await tester.pumpWidget(harness(canChangeMode: true));
+      expect(find.text('Rectangular'), findsOneWidget);
+      expect(find.text('Circular'), findsOneWidget);
+    });
+
+    testWidgets('hidden when canChangeMode is false (editing an existing Feature)', (tester) async {
+      await tester.pumpWidget(harness(canChangeMode: false));
+      expect(find.text('Rectangular'), findsNothing);
+      expect(find.text('Circular'), findsNothing);
+    });
+
+    testWidgets('tapping Circular fires onModeChanged', (tester) async {
+      PatternMode? picked;
+      await tester.pumpWidget(harness(onModeChanged: (mode) => picked = mode));
+      await tester.tap(find.text('Circular'));
+      expect(picked, PatternMode.circular);
+    });
+
+    testWidgets('Rectangular mode shows direction fields, not the axis field', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.rectangular));
+      expect(find.text('Direction 1'), findsOneWidget);
+      expect(find.text('Axis'), findsNothing);
+    });
+
+    testWidgets('Circular mode shows the axis field, not direction fields', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular));
+      expect(find.text('Axis'), findsOneWidget);
+      expect(find.text('Direction 1'), findsNothing);
+    });
+  });
+
+  group('PatternPanel Circular Confirm enablement', () {
+    testWidgets('no axis picked yet disables Confirm', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: false));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('axis picked with a valid count/angle enables Confirm', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNotNull,
+      );
+    });
+
+    testWidgets('count_angular of 1 disables Confirm (no-op pattern)', (tester) async {
+      await tester.pumpWidget(
+        harness(mode: PatternMode.circular, hasAxis: true, initialCountAngular: 1),
+      );
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('an invalid angle_total disables Confirm', (tester) async {
+      await tester.pumpWidget(
+        harness(mode: PatternMode.circular, hasAxis: true, initialAngleTotal: 0),
+      );
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+  });
+
+  group('PatternPanel Circular axis controls', () {
+    testWidgets('shows the hint text while nothing is picked yet', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: false));
+      expect(find.text('Tap a circular edge or a cylindrical face for the axis'), findsOneWidget);
+    });
+
+    testWidgets('shows the axis summary once something is picked', (tester) async {
+      await tester.pumpWidget(
+        harness(mode: PatternMode.circular, hasAxis: true, axisSummary: 'Circular edge selected'),
+      );
+      expect(find.text('Circular edge selected'), findsOneWidget);
+    });
+
+    testWidgets('editing count_angular fires onCountAngularChanged', (tester) async {
+      int? count;
+      await tester.pumpWidget(
+        harness(mode: PatternMode.circular, hasAxis: true, onCountAngularChanged: (c) => count = c),
+      );
+      await tester.enterText(find.widgetWithText(TextField, 'Count'), '6');
+      expect(count, 6);
+    });
+
+    testWidgets('editing angle_total fires onAngleTotalChanged', (tester) async {
+      double? angle;
+      await tester.pumpWidget(
+        harness(mode: PatternMode.circular, hasAxis: true, onAngleTotalChanged: (a) => angle = a),
+      );
+      await tester.enterText(find.widgetWithText(TextField, 'Angle (degrees)'), '180');
+      expect(angle, 180.0);
+    });
+
+    testWidgets('tapping the reverse icon fires onReverseAngularChanged with the flipped value',
+        (tester) async {
+      bool? reversed;
+      await tester.pumpWidget(
+        harness(
+          mode: PatternMode.circular,
+          hasAxis: true,
+          reverseAngular: false,
+          onReverseAngularChanged: (r) => reversed = r,
+        ),
+      );
+      await tester.tap(find.byIcon(Icons.flip));
+      expect(reversed, isTrue);
+    });
+
+    testWidgets('there is no fixed-axis button in Circular mode', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
+      expect(find.widgetWithText(OutlinedButton, 'X'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, 'Y'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, 'Z'), findsNothing);
     });
   });
 }
