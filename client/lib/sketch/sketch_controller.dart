@@ -7840,6 +7840,19 @@ class SketchController extends ChangeNotifier {
       // this just passes through whichever [_convertBodyEdgeToLocalState]
       // actually resolved.
       final selection = await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
+      // On-device feedback ("offsetting the circular edge of a cylinder
+      // fails with a degenerate_edge error"): a full circular Body edge
+      // can now resolve to a Circle - mirrors [_handleOffsetTap]'s own
+      // Circle branch (a Circle has no chain endpoints to join, so it
+      // always goes straight to [offsetPreviewTargets] as a standalone
+      // target rather than into the chain-accumulation set, where
+      // `offsetChain` would reject it outright - see that backend
+      // method's own "Circles aren't accepted here" doc comment).
+      if (selection.kind == SelectionKind.circle) {
+        _offsetPreviewTargets = [selection];
+        _offsetPreviewDistance = null;
+        return;
+      }
       _toggleOffsetChainPick(selection);
     });
   }
@@ -8412,11 +8425,14 @@ class SketchController extends ChangeNotifier {
   /// re-pick (see `Sketch.add_or_reuse_external_vertex_reference`).
   /// On-device feedback ("when I offset a curved edge it creates a
   /// straight line"): now returns a [SketchSelection] (kind-aware)
-  /// instead of a bare Line id - `convert_body_edge` can hand back either
-  /// a Line (the original chord fallback) or a real Arc (a coplanar
-  /// circular Body edge - see the backend's own doc comment), never both,
-  /// so callers that used to assume "always a Line" (like
-  /// [pickBodyEdgeForOffset]) now dispatch on [SketchSelection.kind].
+  /// instead of a bare Line id - `convert_body_edge` can hand back a Line
+  /// (the original chord fallback), a real Arc (a coplanar circular Body
+  /// edge - see the backend's own doc comment), or a real Circle (a
+  /// coplanar *full* circular Body edge, e.g. a cylinder's rim - on-device
+  /// feedback: "offsetting the circular edge of a cylinder fails with a
+  /// degenerate_edge error"), never more than one of the three, so callers
+  /// that used to assume "always a Line" (like [pickBodyEdgeForOffset])
+  /// now dispatch on [SketchSelection.kind].
   Future<SketchSelection> _convertBodyEdgeToLocalState(String bodyId, int edgeIndex) async {
     final partId = _documentPartId!;
     final sketchFeatureId = _documentSketchFeatureId!;
@@ -8449,6 +8465,44 @@ class SketchController extends ChangeNotifier {
         }
       });
       return SketchSelection(kind: SelectionKind.arc, id: arc.id);
+    }
+
+    // On-device feedback ("offsetting the circular edge of a cylinder
+    // fails with a degenerate_edge error"): a full circular Body edge
+    // (both endpoints the same vertex) now resolves as a real Circle -
+    // see the backend's own ConvertEdgeResponse doc comment for why
+    // start_point/end_point are meaningless (both equal to centerPoint)
+    // in this case and are deliberately not used here.
+    final circle = result.circle;
+    if (circle != null) {
+      if (circles.containsKey(circle.id)) return SketchSelection(kind: SelectionKind.circle, id: circle.id);
+      circles[circle.id] = SketchCircleView(
+        id: circle.id,
+        centerPointId: circle.centerPointId,
+        radiusPointId: circle.radiusPointId,
+        construction: circle.construction,
+        cardinalPointIds: circle.cardinalPointIds,
+      );
+      final circleId = circle.id;
+      final cardinalPointIds = <String>[];
+      // The four cardinal Points (including the radius Point itself, in
+      // this bare-radius creation mode - see Sketch.add_circle's own doc
+      // comment) are always freshly created server-side, same fetch-and-
+      // cache as the centre-point circle tool's own post-creation step.
+      for (final id in circle.cardinalPointIds) {
+        final point = await _api.getPoint(sketchId, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        cardinalPointIds.add(point.id);
+      }
+      _pushUndo(() async {
+        await _api.deleteCircle(sketchId, circleId);
+        circles.remove(circleId);
+        for (final pointId in [...newPointIds, ...cardinalPointIds]) {
+          await _api.deletePoint(sketchId, pointId);
+          points.remove(pointId);
+        }
+      });
+      return SketchSelection(kind: SelectionKind.circle, id: circle.id);
     }
 
     final line = result.line!;

@@ -125,12 +125,20 @@ class ExternalEdgeReferenceDto {
 /// [ExternalEdgeReferenceDto] (still exactly right for
 /// `create_external_edge_reference`, which this fix left unchanged, "always
 /// a chord" and all) since `convert_body_edge`'s own response can now be
-/// *either* [line] or [arc] - exactly one is ever non-null, mirroring the
-/// backend schema's own doc comment. [centerPoint] is only present
-/// alongside [arc].
+/// *either* [line], [arc], or [circle] - exactly one is ever non-null,
+/// mirroring the backend schema's own doc comment. [centerPoint] is only
+/// present alongside [arc]/[circle].
+///
+/// On-device feedback ("offsetting the circular edge of a cylinder fails
+/// with a degenerate_edge error"): [circle] is set for a *full* circular
+/// Body edge (a cylinder's rim, a drilled hole, ...) - [startPoint]/
+/// [endPoint] carry no real information in that case (the backend sets
+/// both equal to [centerPoint], since a full circle has no distinct
+/// start/end of its own) and should be ignored by [circle]-branch callers.
 class ConvertEdgeResultDto {
   final LineDto? line;
   final ArcDto? arc;
+  final CircleDto? circle;
   final PointDto startPoint;
   final PointDto endPoint;
   final PointDto? centerPoint;
@@ -138,6 +146,7 @@ class ConvertEdgeResultDto {
   ConvertEdgeResultDto({
     this.line,
     this.arc,
+    this.circle,
     required this.startPoint,
     required this.endPoint,
     this.centerPoint,
@@ -146,6 +155,7 @@ class ConvertEdgeResultDto {
   factory ConvertEdgeResultDto.fromJson(Map<String, dynamic> json) => ConvertEdgeResultDto(
         line: json['line'] == null ? null : LineDto.fromJson(json['line'] as Map<String, dynamic>),
         arc: json['arc'] == null ? null : ArcDto.fromJson(json['arc'] as Map<String, dynamic>),
+        circle: json['circle'] == null ? null : CircleDto.fromJson(json['circle'] as Map<String, dynamic>),
         startPoint: PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
         endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
         centerPoint:

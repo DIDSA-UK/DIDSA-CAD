@@ -612,6 +612,54 @@ class _FakeBackend {
           201,
         );
       }
+      // On-device feedback ("offsetting the circular edge of a cylinder
+      // fails with a degenerate_edge error"): edgeIndex 100 is this fake's
+      // own sentinel for "the real backend detected a coplanar *full*
+      // circular edge" - returns a circle (with its own 4 cardinal Points,
+      // same shape the real createCircle route already fakes below) rather
+      // than a line/arc, with start_point/end_point/center_point all the
+      // same Point, mirroring the real backend's own contract for this
+      // case.
+      if (edgeIndex == 100) {
+        final centerId = _newId('point');
+        final centerX = bodyId.length.toDouble() + 5;
+        const centerY = 0.0;
+        const radius = 5.0;
+        final centerPoint = {'id': centerId, 'x': centerX, 'y': centerY};
+        points[centerId] = centerPoint;
+        final cardinalPointIds = <String>[];
+        final cardinalOffsets = <String, (double, double)>{
+          'north': (centerX, centerY + radius),
+          'east': (centerX + radius, centerY),
+          'south': (centerX, centerY - radius),
+          'west': (centerX - radius, centerY),
+        };
+        for (final key in ['north', 'east', 'south', 'west']) {
+          final newId = _newId('point');
+          final offset = cardinalOffsets[key]!;
+          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+          cardinalPointIds.add(newId);
+        }
+        final circleId = _newId('circle');
+        final circle = {
+          'id': circleId,
+          'center_point_id': centerId,
+          'radius_point_id': cardinalPointIds.first,
+          'radius': radius,
+          'construction': false,
+          'cardinal_point_ids': cardinalPointIds,
+        };
+        circles[circleId] = circle;
+        return _json(
+          {
+            'circle': circle,
+            'start_point': centerPoint,
+            'end_point': centerPoint,
+            'center_point': centerPoint,
+          },
+          201,
+        );
+      }
       final lineId = _newId('line');
       final line = {
         'id': lineId,
@@ -6069,6 +6117,47 @@ void main() {
       expect(freshController.points.containsKey(startId), isFalse);
       expect(freshController.points.containsKey(endId), isFalse);
       expect(freshBackend.requestLog.any((r) => r.contains('DELETE') && r.contains('/arcs/')), isTrue);
+    });
+
+    test(
+        'bug fix ("offsetting the circular edge of a cylinder fails with a degenerate_edge error"): '
+        'a full circular Body edge converts as a real Circle and goes straight to offsetPreviewTargets '
+        '(bypassing the chain-pick set, same as a Sketch-entity Circle tap already does)', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterOffsetMode();
+
+      await freshController.pickBodyEdgeForOffset('body-1', 100); // 100 = this fake's "full circle" sentinel
+
+      expect(freshController.lines, isEmpty);
+      expect(freshController.arcs, isEmpty);
+      expect(freshController.circles, hasLength(1));
+      final circle = freshController.circles.values.single;
+      expect(circle.construction, isFalse);
+      expect(circle.cardinalPointIds, hasLength(4));
+      for (final id in circle.cardinalPointIds) {
+        expect(freshController.points.containsKey(id), isTrue);
+      }
+      // Unlike the Arc/Line cases above, a Circle pick never enters the
+      // chain-accumulation selectionSet - it jumps straight to the value
+      // bar as a standalone target, since offsetChain rejects Circles.
+      expect(freshController.selectionSet, isEmpty);
+      expect(freshController.offsetPreviewTargets, hasLength(1));
+      expect(freshController.offsetPreviewTargets!.single.kind, SelectionKind.circle);
+      expect(freshController.offsetPreviewTargets!.single.id, circle.id);
+
+      final circleId = circle.id;
+      final cardinalIds = List<String>.from(circle.cardinalPointIds);
+
+      // Undo isn't reachable via the normal path here (offsetPreviewTargets
+      // bypasses the ribbon), but the conversion itself still pushed a real
+      // undo entry - confirm it cleans up the Circle and all 4 cardinal Points.
+      await freshController.undo();
+
+      expect(freshController.circles.containsKey(circleId), isFalse);
+      for (final id in cardinalIds) {
+        expect(freshController.points.containsKey(id), isFalse);
+      }
+      expect(freshBackend.requestLog.any((r) => r.contains('DELETE') && r.contains('/circles/')), isTrue);
     });
   });
 
