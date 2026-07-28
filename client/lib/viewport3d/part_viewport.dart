@@ -88,6 +88,17 @@ class PartViewport extends StatefulWidget {
   /// comment for why); only `sketch_screen.dart`'s Orbit View opts in.
   final Map<String, vm.Vector4> sketchEntityColors;
 
+  /// On-device feedback ("make the origin an asterisk... it should look the
+  /// same independent of the zoom level"): world position of the actively-
+  /// edited Sketch's own origin, if any - drawn as a small, genuinely
+  /// constant-screen-size marker (see [_OriginMarkerPainter]) rather than
+  /// real 3D-embedded geometry, mirroring how [_CursorCrosshairPainter]
+  /// already solves the same problem for the draw/select cursor. Null (the
+  /// default) draws nothing - `part_screen.dart`'s own call site (a Part's
+  /// Sketches shown as fixed, non-editing context) leaves this unset, same
+  /// as [sketchEntityColors].
+  final vm.Vector3? originWorldPoint;
+
   /// C2: per-Feature resolved Create Plane geometry (null values omitted by
   /// callers - a Plane whose reference is currently unresolvable has
   /// nothing to render, same convention [sketchGeometries] uses for a
@@ -673,6 +684,7 @@ class PartViewport extends StatefulWidget {
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
     this.sketchEntityColors = const {},
+    this.originWorldPoint,
     this.createPlanes = const {},
     this.onCreatePlaneTap,
     this.selectedCreatePlaneFeatureId,
@@ -1568,13 +1580,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             entry.key,
             entry.value,
             entityColors: widget.sketchEntityColors,
-            // Only the actively-edited Sketch ever has [SketchGeometry3D.
-            // originPointId] set (see that field's own doc comment), and
-            // [widget.sketchPlaneBasis] is specifically that Sketch's own
-            // plane - a mismatched basis for any other entry here is
-            // harmless, since [buildSketchGeometryNode] only reads it when
-            // an entry's own originPointId is non-null.
-            basis: widget.sketchPlaneBasis,
           ),
     };
     for (final node in _sketchNodes.values) {
@@ -3256,6 +3261,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _viewportSize = size;
+        // On-device feedback ("make the origin an asterisk... it should
+        // look the same independent of the zoom level"): projected fresh
+        // every build, same as every other screen-space overlay below -
+        // null whenever there's no origin to show, or it's currently
+        // behind the camera ([worldToScreen]'s own `clip.w <= 0` case),
+        // rather than drawn at a nonsense position.
+        final originMarkerScreen =
+            widget.originWorldPoint == null ? null : worldToScreen(_camera.cameraFor(size), size, widget.originWorldPoint!);
         return Stack(
           children: [
             Listener(
@@ -3391,6 +3404,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   ),
                 ),
               ),
+            if (originMarkerScreen != null)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: size,
+                  painter: _OriginMarkerPainter(position: originMarkerScreen),
+                ),
+              ),
             // On-device feedback: rendered as part of this State's own
             // build (not an external overlay driven by a stale snapshot -
             // see [PartViewport.sketchOrientationBasis]'s own doc comment)
@@ -3474,6 +3494,60 @@ class _CursorCrosshairPainter extends CustomPainter {
       oldDelegate.position != position ||
       oldDelegate.hasHover != hasHover ||
       oldDelegate.hoverColor != hoverColor;
+}
+
+/// On-device feedback ("make the origin an asterisk the same colour as the
+/// other points" - through several follow-ups, ending in "it should look
+/// the same independent of the zoom level"): the Sketch origin's own
+/// marker, drawn as a plain screen-space overlay exactly the way
+/// [_CursorCrosshairPainter] above already draws the draw/select cursor -
+/// not real 3D-embedded geometry (see [SketchGeometry3D.originPointId]'s
+/// own doc comment for why a marker built from real geometry could never
+/// look the same at every zoom level). Same "dark outline + light inner
+/// stroke" technique and the same stroke weights as
+/// [_CursorCrosshairPainter] (contrast against any background, "thin
+/// pencil width arms" per on-device feedback), just 3 crossing arms (6
+/// rays) instead of a plain "+", and shorter than the cursor's own arms -
+/// also per on-device feedback ("shorter than the cursor's") - since the
+/// origin is a static landmark, not an interactive cursor, and doesn't need
+/// to read as prominently.
+class _OriginMarkerPainter extends CustomPainter {
+  final Offset position;
+
+  const _OriginMarkerPainter({required this.position});
+
+  static const double _armLength = 7;
+  static const double _sqrt3Over2 = 0.8660254037844386;
+  static const List<Offset> _armDirections = [
+    Offset(1, 0),
+    Offset(0.5, _sqrt3Over2),
+    Offset(-0.5, _sqrt3Over2),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final outlinePaint = Paint()
+      ..color = const Color(0xCC000000)
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.square;
+    final innerPaint = Paint()
+      ..color = const Color(0xFFFFFFFF)
+      ..strokeWidth = 1.25;
+    // Every arm's outline drawn first, then every inner stroke on top -
+    // same draw order [_CursorCrosshairPainter] uses per-axis, just across
+    // 3 arms instead of 2.
+    for (final direction in _armDirections) {
+      final delta = direction * _armLength;
+      canvas.drawLine(position - delta, position + delta, outlinePaint);
+    }
+    for (final direction in _armDirections) {
+      final delta = direction * _armLength;
+      canvas.drawLine(position - delta, position + delta, innerPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _OriginMarkerPainter oldDelegate) => oldDelegate.position != position;
 }
 
 /// P25 (2D-sketcher feature parity): the marquee gesture's own live

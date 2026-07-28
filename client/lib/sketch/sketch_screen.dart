@@ -1130,6 +1130,13 @@ class _SketchScreenState extends State<SketchScreen> {
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
         sketchEntityColors: _embeddedSketchEntityColors,
+        // On-device feedback ("make the origin an asterisk... it should
+        // look the same independent of the zoom level"): the origin's own
+        // local sketch coordinates are always (0, 0) (see
+        // SketchController.adoptSketch), so its world position is just
+        // orbitBasis's own origin - no need to look it up via
+        // _controller.points/originPointId here.
+        originWorldPoint: orbitBasis.origin,
         referencePlanesHidden: true,
         renderMode: _orbitRenderMode,
         bodyColourHex: _orbitBodyColourHex,
@@ -2137,18 +2144,6 @@ class _SketchScreenState extends State<SketchScreen> {
         fullyConstrained: fullyConstrained,
       );
     }
-    // On-device feedback ("make the origin an asterisk the same colour as
-    // the other points"): the origin used to fall through to this map
-    // having no entry at all, leaving [buildSketchGeometryNode]'s flat
-    // [sketchLineColor] default (a near-white grey) - unlike every other
-    // point above, which already gets [embeddedUnconstrainedColor]'s
-    // background-aware contrast via [statusColor]'s own fallback branch.
-    // Assigned directly (not through [statusColor]) so the origin still
-    // stays out of the green/red/blue status scheme, per the loop above's
-    // own doc comment - just no longer washed out against the background.
-    final originId = _controller.originPointId;
-    if (originId != null) colors[originId] = embeddedUnconstrainedColor;
-
     // P24: the currently-grabbed Point/Line (see [_dragModeActiveInOrbitView])
     // wins over every status colour above - applied last, mirrors 2D's own
     // grabbed > selected > hovered > over-constrained > ... priority chain

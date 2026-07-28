@@ -279,16 +279,21 @@ class SketchGeometry3D {
   /// it still resolves normally.
   final Set<String> hiddenPointIds;
 
-  /// On-device feedback ("make the origin an asterisk the same colour as
-  /// the other points"): which of [pointIds] (if any) is the Sketch's own
-  /// origin - [buildSketchGeometryNode] renders this one point as a small
-  /// asterisk instead of every other point's plain round dot. Null (the
+  /// On-device feedback ("make the origin an asterisk... it should look the
+  /// same independent of the zoom level"): which of [pointIds] (if any) is
+  /// the Sketch's own origin - [buildSketchGeometryNode] skips this one
+  /// point's marker entirely (like [hiddenPointIds], but permanently rather
+  /// than for hover-reveal), since the origin gets its own dedicated,
+  /// genuinely constant-screen-size marker instead - a plain screen-space
+  /// overlay (`PartViewport`'s `_OriginMarkerPainter`), not real 3D-embedded
+  /// geometry the way every other marker here is (which is why a world-space
+  /// asterisk built from real geometry could never be made to look the same
+  /// at every zoom level - real geometry, by definition, doesn't). Null (the
   /// default) for every caller except `sketch_screen.dart`'s actively-edited
   /// Sketch - a reference Sketch drawn for context (`part_screen.dart`, or
   /// this Sketch's own `otherSketchGeometries` siblings) has no live
   /// `SketchController` to ask, and isn't the thing being edited anyway, so
-  /// its origin (if any) just renders as an ordinary point, same as before
-  /// this fix.
+  /// its origin (if any) just renders as an ordinary point.
   final String? originPointId;
 
   const SketchGeometry3D({
@@ -701,67 +706,6 @@ List<(vm.Vector3, vm.Vector3)> dashedSegments(
   return result;
 }
 
-/// On-device feedback ("make the origin an asterisk the same colour as the
-/// other points" - then "make it smaller, about twice the size of a
-/// point" - then "half it's current size"): half the world-space length of
-/// each of the origin marker's 3 crossing arms. A point's own marker
-/// ([sketchPointMarkerWidth]) is a constant *screen-pixel* size, while this
-/// is a *world-space* size (the asterisk's arms are real geometry), so the
-/// two can't be pixel-matched at every zoom level simultaneously.
-const double originMarkerHalfSize = 0.5;
-
-/// On-device feedback ("reduce the stroke thickness to about 1/3 current
-/// size... make it scale with zoom level"): the origin marker's own stroke
-/// width, in *world* units (see [PolylineWidthMode.worldUnits] at its call
-/// site below) rather than [sketchPointMarkerWidth]'s constant screen-pixel
-/// width - every other point/Line/Circle in this file renders at a fixed
-/// on-screen thickness regardless of camera distance, but the origin marker
-/// now thins and thickens right along with its own arms
-/// ([originMarkerHalfSize]) as the camera zooms, rather than keeping a
-/// fixed pixel weight while its arms shrink/grow underneath it.
-const double originMarkerStrokeWidth = 0.15;
-
-/// The 3 arm directions (60 degrees apart, six rays total once each arm's
-/// both ends are drawn) making up the origin's asterisk, built from
-/// [basis]'s own in-plane axes so the marker always lies flat against the
-/// Sketch's plane - not just facing the camera - regardless of which fixed
-/// or custom plane [basis] is.
-List<(vm.Vector3, vm.Vector3)> originMarkerSegments(SketchPlaneBasis basis, vm.Vector3 point) {
-  const sqrt3Over2 = 0.8660254037844386;
-  final arms = <vm.Vector3>[
-    basis.xAxis,
-    basis.xAxis * 0.5 + basis.yAxis * sqrt3Over2,
-    basis.xAxis * -0.5 + basis.yAxis * sqrt3Over2,
-  ];
-  return [for (final arm in arms) (point - arm * originMarkerHalfSize, point + arm * originMarkerHalfSize)];
-}
-
-/// One point marker's worth of [MeshPrimitive]s for [buildSketchGeometryNode]'s
-/// point loop: the origin's own asterisk ([originMarkerSegments], flat-capped
-/// so the crossing arms actually show rather than reading as a single round
-/// dot) when [isOrigin], otherwise every other point's plain round "fake dot"
-/// ([vertexMarkerSegments]).
-Iterable<MeshPrimitive> _pointMarkerPrimitivesFor({
-  required bool isOrigin,
-  required SketchPlaneBasis? basis,
-  required vm.Vector3 point,
-  required UnlitMaterial material,
-}) sync* {
-  final segments = isOrigin ? originMarkerSegments(basis!, point) : vertexMarkerSegments([point]);
-  final cap = isOrigin ? PolylineCap.butt : PolylineCap.round;
-  for (final segment in segments) {
-    yield MeshPrimitive(
-      PolylineGeometry(
-        [segment.$1, segment.$2],
-        width: isOrigin ? originMarkerStrokeWidth : sketchPointMarkerWidth,
-        widthMode: isOrigin ? PolylineWidthMode.worldUnits : PolylineWidthMode.screenPixels,
-        cap: cap,
-      ),
-      material,
-    );
-  }
-}
-
 /// Builds the [Node] rendering one Feature's [geometry] - one
 /// [MeshPrimitive] per Line segment, Circle/Arc/Ellipse/Spline outline, and
 /// Point marker, combined into a single [Mesh] so they share one
@@ -794,16 +738,19 @@ Iterable<MeshPrimitive> _pointMarkerPrimitivesFor({
 /// headless `flutter test` run. [sketchGeometry3DFrom] above is the pure,
 /// testable counterpart for the coordinate-mapping/geometry-layout logic.
 ///
-/// [basis] orients [geometry.originPointId]'s own asterisk marker flat
-/// against the Sketch's plane (see [originMarkerSegments]) - null (the
-/// default) falls back to [geometry.originPointId]'s point rendering as an
-/// ordinary round dot, same as before this fix, since there's no plane to
-/// orient an asterisk against.
+/// [geometry.originPointId] (if set) never gets a marker here at all - see
+/// that field's own doc comment: on-device feedback found a 3D-embedded
+/// marker built from real (world-space) geometry couldn't be pixel-matched
+/// to a point's own constant-screen-size dot at every zoom level
+/// simultaneously, however it was drawn. The origin now gets a genuinely
+/// constant-size marker instead, via a plain screen-space overlay -
+/// `PartViewport`'s own `_OriginMarkerPainter`, mirroring how its
+/// `_CursorCrosshairPainter` already solves the exact same "must look the
+/// same at every zoom level" problem for the draw/select cursor.
 Node buildSketchGeometryNode(
   String featureId,
   SketchGeometry3D geometry, {
   Map<String, vm.Vector4>? entityColors,
-  SketchPlaneBasis? basis,
 }) {
   vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
   // On-device feedback ("points are not visible"): a Point marker's own
@@ -853,13 +800,17 @@ Node buildSketchGeometryNode(
     for (var i = 0; i < geometry.splinePolylines.length; i++)
       ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
     for (var i = 0; i < geometry.points.length; i++)
-      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]))
-        ..._pointMarkerPrimitivesFor(
-          isOrigin: basis != null && geometry.pointIds[i] == geometry.originPointId,
-          basis: basis,
-          point: geometry.points[i],
-          material: materialFor(geometry.pointIds[i]),
-        ),
+      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
+          geometry.pointIds[i] != geometry.originPointId)
+        for (final segment in vertexMarkerSegments([geometry.points[i]]))
+          MeshPrimitive(
+            PolylineGeometry(
+              [segment.$1, segment.$2],
+              width: sketchPointMarkerWidth,
+              cap: PolylineCap.round,
+            ),
+            materialFor(geometry.pointIds[i]),
+          ),
   ];
 
   return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));
