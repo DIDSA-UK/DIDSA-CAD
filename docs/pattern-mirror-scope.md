@@ -739,16 +739,69 @@ two-direction, always-separate output, guided "New > Pattern" flow.
 
 ### Phase 3 — Skip instances
 
-Visual grid picker.
+**Status: implemented (2026-07-28) — see `docs/status.md`'s same-dated
+entry for the full implementation/verification write-up.** Implemented
+*after* Phase 4 (Circular pattern) rather than before it, per this doc's
+own original phased-plan ordering being superseded by actual delivery
+order - this section's original design already anticipated both variants
+(a rectangular grid and a radial ring for Circular), so no redesign was
+needed, only implementation against the now-real `PatternFeature`/
+`PatternPanel`. Verified for real: the full backend `pytest` suite (1073
+tests, including 14 new skip-instance-specific ones) against genuine
+`pythonocc-core`, and the full client `flutter test` suite (985 tests,
+including a new `pattern_skip_grid_test.dart` plus widened
+`pattern_panel_test.dart` coverage) plus a clean `flutter analyze`, using
+the same local toolchains bootstrapped for every prior Phase's own
+verification pass.
 
-- **Deliverable**: a clickable dot-grid inside the Pattern panel to
-  suppress individual instances without deleting the whole pattern.
-- **Backend**: `skip_indices: list[int]`, filtered before transform
-  generation, `invalid_skip_index` validation at the router.
-- **Client**: new `pattern_skip_grid.dart` (linear-indexed dot grid,
-  `i*count_2+j` convention), wired into `pattern_panel.dart`.
-- **Complexity/risk**: low. Backend change is a one-line filter; the real
-  work is the new, self-contained grid widget.
+Visual grid picker, for both Rectangular and Circular.
+
+- **Deliverable**: a clickable dot-grid inside the Pattern panel (both
+  modes) to suppress individual instances without deleting the whole
+  pattern - a rectangular grid (row-major, matching Rectangular's own
+  `i * count_2 + j` index) or a radial ring spanning `angle_total` degrees
+  (matching Circular's own angular-step index), live-PATCHed the same
+  debounced way every other panel field is. Index `0` (the untouched seed)
+  is always shown filled and non-interactive - it was never going to be
+  (re)created in the first place, so there is nothing there to suppress.
+- **Backend**: `skip_indices: list[int]` added to `PatternFeature`
+  (defaulted to `[]` for round-trip compatibility with every Pattern
+  persisted before this field existed), filtered out in
+  `_rectangular_instances`/`_circular_instances` before a
+  `BRepBuilderAPI_Transform` is ever built for that index (a skipped
+  instance never even briefly exists as a shape - cheaper than
+  generate-then-discard). New `app.document.router.
+  _validate_pattern_skip_indices`, called from the same single
+  `_validate_pattern_payload` entry point both endpoints already share -
+  rejects `0` (the seed - never created, so nothing to suppress) and
+  anything `>= total_count` (Rectangular's own `count_1 * count_2`,
+  Circular's own `count_angular`) rather than silently ignoring either.
+  `PatternFeatureUpdate.skip_indices` gets its own `None`-vs-`[]`
+  distinction (omitted leaves the current skip set untouched; `[]`
+  explicitly un-skips everything), the same convention
+  `ExtrudeFeatureUpdate.target_body_ids` already established - genuinely
+  needed here, unlike `direction_2`'s own inert-when-unset shortcut,
+  since there is no equivalent "count drops to a value that makes this
+  meaningless" escape hatch for a skip set.
+- **Client**: new `pattern_skip_grid.dart` (`PatternSkipGrid`) - plain
+  `Positioned`/`Container` dot widgets for both layouts (not a
+  `CustomPainter` for the radial case, despite this section's own original
+  note suggesting one - discrete widgets give the identical visual result
+  with free hit-testing, no custom pointer-math needed), wired into
+  `pattern_panel.dart`'s own `_rectangularFields()`/`_circularFields()`
+  via a small shared `_skipInstancesSection` helper (hidden entirely when
+  the pattern's own total instance count is `<= 1`, matching the backend's
+  own no-op guard). `part_screen.dart` gained `_patternSkipIndices`/
+  `_onPatternSkipToggled`, wired into `_ensurePatternFeatureExists`,
+  `_openPatternPanelForEdit` (both modes), and the confirm/cancel resets -
+  clamped to the pattern's own *current* total instance count right before
+  every send, so shrinking `count_1`/`count_2`/`count_angular` after some
+  indices were already skipped can never accidentally send a now-out-of-
+  range index alongside the smaller count in the same request.
+- **Complexity/risk**: low, as scoped. The backend change really was close
+  to a one-line filter per instance loop; the real work was the new,
+  self-contained grid widget and its wiring - no design surprises, since
+  Phase 4's own prior existence had already been accounted for here.
 
 ### Phase 4 — Circular pattern
 

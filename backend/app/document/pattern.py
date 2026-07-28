@@ -298,7 +298,9 @@ def _rectangular_instances(
     it doesn't actually affect). `reverse_1`/`reverse_2` flip each
     direction before any instance is generated. Index 0 (`i=0, j=0`) is
     never a key in the returned dict - see `resolve_pattern_from_bodies`'s
-    own doc comment."""
+    own doc comment. `skip_indices` (Phase 3) is filtered out the same
+    way - a skipped instance's `BRepBuilderAPI_Transform` is never even
+    briefly built, cheaper than generate-then-discard."""
     dir_1 = _direction_vector(part, bodies, feature.direction_1, excluded_feature_ids)
     if feature.reverse_1:
         dir_1 = dir_1.Reversed()
@@ -308,11 +310,12 @@ def _rectangular_instances(
         if feature.reverse_2:
             dir_2 = dir_2.Reversed()
 
+    skip_indices = set(feature.skip_indices)
     instances: dict[int, TopoDS_Shape] = {}
     for i in range(feature.count_1):
         for j in range(feature.count_2):
             index = i * feature.count_2 + j
-            if index == 0:
+            if index == 0 or index in skip_indices:
                 continue
             offset = gp_Vec(dir_1) * (i * feature.spacing_1)
             if dir_2 is not None:
@@ -341,15 +344,17 @@ def _circular_instances(
     both 0° and 360° - see `PatternFeature`'s own docstring).
     `reverse_angular` flips the rotation direction. Index 0 (angle 0) is
     never a key in the returned dict, same convention as the Rectangular
-    case - it is always the untouched seed Body."""
+    case - it is always the untouched seed Body. `skip_indices` (Phase 3)
+    is filtered out the same way `_rectangular_instances` does."""
     axis = _axis_from_ref(part, bodies, feature.axis, excluded_feature_ids)
     step_radians = math.radians(feature.angle_total / feature.count_angular)
     if feature.reverse_angular:
         step_radians = -step_radians
 
+    skip_indices = set(feature.skip_indices)
     instances: dict[int, TopoDS_Shape] = {}
     for i in range(feature.count_angular):
-        if i == 0:
+        if i == 0 or i in skip_indices:
             continue
         trsf = gp_Trsf()
         trsf.SetRotation(axis, step_radians * i)

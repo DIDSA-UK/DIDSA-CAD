@@ -665,6 +665,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "count_angular": feature.count_angular,
             "angle_total": feature.angle_total,
             "reverse_angular": feature.reverse_angular,
+            "skip_indices": list(feature.skip_indices),
         }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
@@ -772,6 +773,9 @@ def _feature_from_dict(data: dict) -> Feature:
             count_angular=data.get("count_angular", 1),
             angle_total=data.get("angle_total", 360.0),
             reverse_angular=data.get("reverse_angular", False),
+            # `skip_indices` (Phase 3) defaults to empty for any Pattern
+            # persisted before this field existed (Phase 2/4).
+            skip_indices=list(data.get("skip_indices", [])),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 

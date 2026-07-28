@@ -383,6 +383,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             count_angular=feature.count_angular,
             angle_total=feature.angle_total,
             reverse_angular=feature.reverse_angular,
+            skip_indices=list(feature.skip_indices),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -623,6 +624,27 @@ def _validate_pattern_circular_payload(
         raise HTTPException(status_code=422, detail="PatternFeature angle_total must be > 0 and <= 360")
 
 
+def _validate_pattern_skip_indices(skip_indices: list[int], total_count: int) -> None:
+    """Pattern/Mirror scoping's Phase 3: every entry of `skip_indices` must
+    be a real, would-otherwise-be-created instance index - the same linear
+    index (Rectangular's flattened `i * count_2 + j`, or Circular's own
+    angular-step `i`) `app.document.pattern._rectangular_instances`/
+    `_circular_instances` use. `0` (the untouched seed - never created in
+    the first place, so there is nothing there to suppress) and anything
+    `>= total_count` (Rectangular's own `count_1 * count_2`, Circular's own
+    `count_angular`) are both rejected outright rather than silently
+    ignored - the same "fail closed, don't let a stale/off-by-one index
+    quietly do nothing" discipline every other Pattern validator here
+    already follows."""
+    for index in skip_indices:
+        if index <= 0 or index >= total_count:
+            raise HTTPException(
+                status_code=422,
+                detail=f"skip_indices entries must be >= 1 and < the pattern's own total instance count "
+                f"(got {index})",
+            )
+
+
 def _validate_pattern_payload(
     pattern_type: PatternType,
     direction_1: PatternDirectionRef | None,
@@ -632,6 +654,7 @@ def _validate_pattern_payload(
     axis: PatternAxisRef | None,
     count_angular: int,
     angle_total: float,
+    skip_indices: list[int],
 ) -> None:
     """Pattern/Mirror scoping's Phase 4: the single entry point both
     `create_pattern_feature`/`update_pattern_feature` call - dispatches to
@@ -640,11 +663,15 @@ def _validate_pattern_payload(
     a given Pattern never has to be re-derived at either call site (same
     "payload shape validated by the API layer" split
     `_validate_create_plane_payload` already uses for its own six
-    construction methods)."""
+    construction methods). `_validate_pattern_skip_indices` (Phase 3) is
+    validated against whichever total-instance-count the resolved
+    `pattern_type` implies."""
     if pattern_type == PatternType.CIRCULAR:
         _validate_pattern_circular_payload(axis, count_angular, angle_total)
+        _validate_pattern_skip_indices(skip_indices, count_angular)
     else:
         _validate_pattern_rectangular_payload(direction_1, count_1, count_2, direction_2)
+        _validate_pattern_skip_indices(skip_indices, count_1 * count_2)
 
 
 def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> SketchFeature:
@@ -1899,6 +1926,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         axis,
         payload.count_angular,
         payload.angle_total,
+        payload.skip_indices,
     )
 
     feature = PatternFeature(
@@ -1917,6 +1945,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         count_angular=payload.count_angular,
         angle_total=payload.angle_total,
         reverse_angular=payload.reverse_angular,
+        skip_indices=list(payload.skip_indices),
     )
     resolve_pattern(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -1970,6 +1999,9 @@ def update_pattern_feature(
     new_reverse_angular = (
         payload.reverse_angular if payload.reverse_angular is not None else feature.reverse_angular
     )
+    new_skip_indices = (
+        list(payload.skip_indices) if payload.skip_indices is not None else feature.skip_indices
+    )
 
     _validate_pattern_source_body_ids(part, new_source_body_ids)
     _validate_pattern_payload(
@@ -1981,6 +2013,7 @@ def update_pattern_feature(
         new_axis,
         new_count_angular,
         new_angle_total,
+        new_skip_indices,
     )
 
     candidate = PatternFeature(
@@ -1999,6 +2032,7 @@ def update_pattern_feature(
         count_angular=new_count_angular,
         angle_total=new_angle_total,
         reverse_angular=new_reverse_angular,
+        skip_indices=new_skip_indices,
     )
     resolve_pattern(part, candidate)  # raises on an unresolvable reference
 
@@ -2015,6 +2049,7 @@ def update_pattern_feature(
     feature.count_angular = candidate.count_angular
     feature.angle_total = candidate.angle_total
     feature.reverse_angular = candidate.reverse_angular
+    feature.skip_indices = candidate.skip_indices
     return _feature_response(part, feature)
 
 

@@ -371,6 +371,12 @@ class FeatureDto {
   final double angleTotal;
   final bool reverseAngular;
 
+  /// Pattern/Mirror scoping's Phase 3 - only present on a `"pattern"`
+  /// Feature: linear indices (Rectangular's own `i * count_2 + j`, or
+  /// Circular's own angular-step `i`) of instances suppressed rather than
+  /// created - index `0` (the untouched seed) can never appear here.
+  final List<int> skipIndices;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -419,6 +425,7 @@ class FeatureDto {
     this.countAngular = 1,
     this.angleTotal = 360.0,
     this.reverseAngular = false,
+    this.skipIndices = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -502,6 +509,7 @@ class FeatureDto {
         countAngular: json['count_angular'] as int? ?? 1,
         angleTotal: (json['angle_total'] as num?)?.toDouble() ?? 360.0,
         reverseAngular: json['reverse_angular'] as bool? ?? false,
+        skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
       );
 }
 
@@ -978,6 +986,7 @@ class DocumentApiClient {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    List<int> skipIndices = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -998,6 +1007,7 @@ class DocumentApiClient {
                 'count_angular': countAngular,
                 'angle_total': angleTotal,
                 'reverse_angular': reverseAngular,
+                'skip_indices': skipIndices,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -1025,6 +1035,7 @@ class DocumentApiClient {
     int? countAngular,
     double? angleTotal,
     bool? reverseAngular,
+    List<int>? skipIndices,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -1044,6 +1055,11 @@ class DocumentApiClient {
                 if (countAngular != null) 'count_angular': countAngular,
                 if (angleTotal != null) 'angle_total': angleTotal,
                 if (reverseAngular != null) 'reverse_angular': reverseAngular,
+                // Phase 3: `null` (omitted) leaves the Feature's current
+                // skip set untouched; `[]` explicitly un-skips every
+                // previously-skipped instance - see the backend's
+                // `PatternFeatureUpdate.skip_indices` own docstring.
+                if (skipIndices != null) 'skip_indices': skipIndices,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

@@ -620,6 +620,7 @@ class PatternFeatureCreate(BaseModel):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    skip_indices: list[int] = []
 
 
 class PatternFeatureUpdate(BaseModel):
@@ -636,7 +637,13 @@ class PatternFeatureUpdate(BaseModel):
     `pattern_type` is never changed by an update (switching Rectangular
     <-> Circular is a delete+recreate, not an edit - mirrors
     `CreatePlaneFeatureUpdate`'s identical "construction method itself
-    never changes" convention for `plane_type`)."""
+    never changes" convention for `plane_type`).
+
+    `skip_indices` (Phase 3) genuinely does need an omitted-vs-explicitly-
+    cleared distinction, unlike `direction_2` above - `None` (omitted)
+    leaves the Feature's current skip set untouched, `[]` explicitly
+    un-skips every previously-skipped instance, the same `None`-vs-`[]`
+    split `ExtrudeFeatureUpdate.target_body_ids` already establishes."""
 
     source_body_ids: list[str] | None = None
     direction_1: PatternDirectionRefSchema | None = None
@@ -651,6 +658,7 @@ class PatternFeatureUpdate(BaseModel):
     count_angular: int | None = None
     angle_total: float | None = None
     reverse_angular: bool | None = None
+    skip_indices: list[int] | None = None
 
 
 class PatternFeatureResponse(BaseModel):
@@ -670,6 +678,7 @@ class PatternFeatureResponse(BaseModel):
     count_angular: int
     angle_total: float
     reverse_angular: bool
+    skip_indices: list[int]
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # PatternFeature.

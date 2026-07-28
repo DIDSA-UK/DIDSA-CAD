@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
+import 'package:didsa_cad_client/viewport3d/pattern_skip_grid.dart';
 
 /// Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
 /// §2.2/§4): unit-level coverage for [PatternPanel]'s Confirm-enablement
@@ -40,6 +41,8 @@ void main() {
     void Function(int count)? onCountAngularChanged,
     void Function(double angle)? onAngleTotalChanged,
     void Function(bool reverse)? onReverseAngularChanged,
+    Set<int> skipIndices = const {},
+    void Function(int index)? onSkipToggled,
     String title = 'Pattern',
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -78,6 +81,8 @@ void main() {
           onCountAngularChanged: onCountAngularChanged,
           onAngleTotalChanged: onAngleTotalChanged,
           onReverseAngularChanged: onReverseAngularChanged,
+          skipIndices: skipIndices,
+          onSkipToggled: onSkipToggled ?? (_) {},
           onConfirm: onConfirm ?? () {},
           onCancel: onCancel ?? () {},
         ),
@@ -358,6 +363,52 @@ void main() {
       expect(find.widgetWithText(OutlinedButton, 'X'), findsNothing);
       expect(find.widgetWithText(OutlinedButton, 'Y'), findsNothing);
       expect(find.widgetWithText(OutlinedButton, 'Z'), findsNothing);
+    });
+  });
+
+  group('PatternPanel skip-instances grid', () {
+    testWidgets('hidden in Rectangular mode when count_1 * count_2 is 1', (tester) async {
+      await tester.pumpWidget(harness(initialCount1: 1, initialCount2: 1));
+      expect(find.text('Skip Instances'), findsNothing);
+      expect(find.byType(PatternSkipGrid), findsNothing);
+    });
+
+    testWidgets('shown in Rectangular mode with the rectangular layout and count_1 * count_2 total',
+        (tester) async {
+      await tester.pumpWidget(harness(initialCount1: 3, initialCount2: 1));
+      expect(find.text('Skip Instances'), findsOneWidget);
+      final grid = tester.widget<PatternSkipGrid>(find.byType(PatternSkipGrid));
+      expect(grid.layout, PatternSkipGridLayout.rectangular);
+      expect(grid.totalCount, 3);
+    });
+
+    testWidgets('tapping a skip dot fires onSkipToggled with its own index', (tester) async {
+      int? toggled;
+      await tester.pumpWidget(
+        harness(initialCount1: 3, initialCount2: 1, onSkipToggled: (i) => toggled = i),
+      );
+      await tester.tap(find.byKey(const ValueKey('pattern-skip-dot-1')));
+      expect(toggled, 1);
+    });
+
+    testWidgets('reflects skipIndices as hollow dots', (tester) async {
+      await tester.pumpWidget(harness(initialCount1: 3, initialCount2: 1, skipIndices: {1}));
+      final grid = tester.widget<PatternSkipGrid>(find.byType(PatternSkipGrid));
+      expect(grid.skipIndices, {1});
+    });
+
+    testWidgets('hidden in Circular mode when count_angular is 1', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true, initialCountAngular: 1));
+      expect(find.text('Skip Instances'), findsNothing);
+      expect(find.byType(PatternSkipGrid), findsNothing);
+    });
+
+    testWidgets('shown in Circular mode with the radial layout and count_angular total', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true, initialCountAngular: 5));
+      expect(find.text('Skip Instances'), findsOneWidget);
+      final grid = tester.widget<PatternSkipGrid>(find.byType(PatternSkipGrid));
+      expect(grid.layout, PatternSkipGridLayout.radial);
+      expect(grid.totalCount, 5);
     });
   });
 }
