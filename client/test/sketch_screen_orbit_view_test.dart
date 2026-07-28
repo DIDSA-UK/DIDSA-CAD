@@ -243,7 +243,13 @@ void main() {
     await tester.pump();
 
     expect(find.text('3D View'), findsOneWidget);
-    expect(find.text('Constraint Labels'), findsNothing); // the 2D-only menu is replaced, not stacked
+    // Bug fix (on-device feedback: "show/hide constraint labels option is
+    // missing from 3D sketch view options - it was available before we
+    // moved over to the new 3D sketcher"): this used to assert findsNothing
+    // here, treating the option's absence as intentional ("the 2D-only menu
+    // is replaced, not stacked") - it was actually a regression, now fixed
+    // by adding the same toggle to _build3DViewMenu.
+    expect(find.text('Constraint Labels'), findsOneWidget);
     expect(find.text('Body Colour'), findsOneWidget);
     expect(find.text('Body Transparency'), findsOneWidget);
     expect(find.text('Wireframe'), findsOneWidget);
