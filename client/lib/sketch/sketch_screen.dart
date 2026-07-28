@@ -1331,15 +1331,62 @@ class _SketchScreenState extends State<SketchScreen> {
   /// is already rebuilt from controller state on every build.
   Set<SelectionEntityRef> get _embeddedSelectedEntities {
     final featureId = _controller.sketchId ?? 'active-sketch';
-    return {
-      for (final selection in _controller.selectionSet)
-        if (_embeddedSelectionEntityKind(selection.kind) case final kind?)
-          SelectionEntityRef(
-            kind: kind,
+    final refs = <SelectionEntityRef>{};
+    for (final selection in _controller.selectionSet) {
+      // On-device feedback: a selected Constraint used to contribute nothing
+      // here (see _embeddedSelectionEntityKind's null case below) - expand
+      // it into the Point/Line ids it actually references instead, plus any
+      // Circle/Arc whose center/radius Point is among them, so the embedded
+      // 3D view highlights the same geometry the 2D canvas now does (see
+      // sketch_canvas.dart's own constraint-highlight fix).
+      if (selection.kind == SelectionKind.constraint) {
+        final referenced = _controller.entitiesReferencedByConstraint(selection.id);
+        for (final pointId in referenced.pointIds) {
+          refs.add(SelectionEntityRef(
+            kind: SelectionEntityKind.sketchPoint,
             sketchFeatureId: featureId,
-            sketchEntityId: selection.id,
-          ),
-    };
+            sketchEntityId: pointId,
+          ));
+        }
+        for (final lineId in referenced.lineIds) {
+          refs.add(SelectionEntityRef(
+            kind: SelectionEntityKind.sketchLine,
+            sketchFeatureId: featureId,
+            sketchEntityId: lineId,
+          ));
+        }
+        for (final circle in _controller.circles.values) {
+          if (referenced.pointIds.contains(circle.centerPointId) ||
+              referenced.pointIds.contains(circle.radiusPointId)) {
+            refs.add(SelectionEntityRef(
+              kind: SelectionEntityKind.sketchCircle,
+              sketchFeatureId: featureId,
+              sketchEntityId: circle.id,
+            ));
+          }
+        }
+        for (final arc in _controller.arcs.values) {
+          if (referenced.pointIds.contains(arc.centerPointId) ||
+              referenced.pointIds.contains(arc.startPointId) ||
+              referenced.pointIds.contains(arc.endPointId)) {
+            refs.add(SelectionEntityRef(
+              kind: SelectionEntityKind.sketchArc,
+              sketchFeatureId: featureId,
+              sketchEntityId: arc.id,
+            ));
+          }
+        }
+        continue;
+      }
+      if (_embeddedSelectionEntityKind(selection.kind) case final kind?) {
+        refs.add(SelectionEntityRef(
+          kind: kind,
+          sketchFeatureId: featureId,
+          sketchEntityId: selection.id,
+        ));
+      }
+    }
+    return refs;
   }
 
   /// P33: [SelectionKind] -> [SelectionEntityKind] for every real Sketch

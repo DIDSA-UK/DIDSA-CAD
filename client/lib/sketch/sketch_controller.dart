@@ -5718,8 +5718,24 @@ class SketchController extends ChangeNotifier {
           pointIds: {d.center1PointId, d.radius1PointId, d.center2PointId, d.radius2PointId},
           lineIds: <String>{},
         ),
+      TangentConstraintDto d => (
+          pointIds: {d.centerPointId, d.radiusPointId},
+          lineIds: {d.lineId},
+        ),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
+  }
+
+  /// Public wrapper around [_constraintReferences] for UI layers that need
+  /// to highlight whatever a selected Constraint is driving (the Line/Point
+  /// it references) - see sketch_canvas.dart's `isSelected` and
+  /// sketch_screen.dart's `_embeddedSelectedEntities`, neither of which
+  /// otherwise has a way to turn a `SelectionKind.constraint` selection into
+  /// the entities it should highlight.
+  ({Set<String> pointIds, Set<String> lineIds}) entitiesReferencedByConstraint(String constraintId) {
+    final constraint = constraints[constraintId];
+    if (constraint == null) return (pointIds: const <String>{}, lineIds: const <String>{});
+    return _constraintReferences(constraint);
   }
 
   /// Everything deleting [selection] would need to also delete, computed
@@ -7414,6 +7430,19 @@ class SketchController extends ChangeNotifier {
       return const [
         ConstraintOption(type: ConstraintOptionType.radius, label: 'Radius', wired: true),
         ConstraintOption(type: ConstraintOptionType.diameter, label: 'Diameter', wired: true),
+      ];
+    }
+
+    // On-device feedback: Equal/Collinear used to require exactly 2 lines
+    // selected (the `sel.length != 2` gate below), even though both
+    // generalize cleanly to 3+ lines (chained pairwise against the first
+    // selected line - see [_createSelectionSetConstraint]'s own doc
+    // comment). Parallel/Perpendicular stay 2-line-only: "parallel to more
+    // than one other line" isn't a well-defined single action the same way.
+    if (sel.length > 2 && sel.every((s) => s.kind == SelectionKind.line)) {
+      return const [
+        ConstraintOption(type: ConstraintOptionType.equalLength, label: 'Equal', wired: true),
+        ConstraintOption(type: ConstraintOptionType.collinear, label: 'Collinear', wired: true),
       ];
     }
 
@@ -9180,15 +9209,30 @@ class SketchController extends ChangeNotifier {
   /// flyout on success, same as [addVerticalConstraint]/[addHorizontalConstraint]
   /// - solver errors surface via the existing [_runGuarded]/[errorMessage]
   /// path, nothing new there.
+  ///
+  /// On-device feedback: Equal/Collinear now also reach here with more than
+  /// 2 Lines selected (see [availableConstraintOptions]'s `sel.length > 2`
+  /// branch) - for N &gt; 2, chains N-1 pairwise constraints against the
+  /// first selected Line rather than the single [create] call a 2-selection
+  /// makes, which is how "all these lines are equal/collinear" is expressed
+  /// with only the existing binary constraint types (no N-ary backend type
+  /// needed). All of them undo together as one step.
   Future<void> _createSelectionSetConstraint(
     Future<ConstraintDto> Function(String sketchId, String idA, String idB) create,
   ) async {
-    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
-    final idA = _selectionSet[0].id;
-    final idB = _selectionSet[1].id;
+    if (_selectionSet.length < 2 || _busy || _sketchId == null) return;
+    final referenceId = _selectionSet[0].id;
+    final targetIds = _selectionSet.skip(1).map((s) => s.id).toList();
     await _runGuarded(() async {
-      final constraint = await create(_sketchId!, idA, idB);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      final created = <ConstraintDto>[];
+      for (final targetId in targetIds) {
+        created.add(await create(_sketchId!, referenceId, targetId));
+      }
+      _pushUndo(() async {
+        for (final constraint in created.reversed) {
+          await _api.deleteConstraint(_sketchId!, constraint.id);
+        }
+      });
       await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;

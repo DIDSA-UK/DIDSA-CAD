@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -116,6 +117,13 @@ class PartScreen extends StatefulWidget {
   /// "&lt;Part name&gt;.DIDSAprt" default.
   final String? initialFileName;
 
+  /// Native Load/Save: the full filesystem path Open just read this Part
+  /// from, carried through the same way as [initialFileName] - lets a
+  /// subsequent plain Save on the fresh screen write straight back to it
+  /// (see [_PartScreenState._lastSavedFilePath]) instead of falling back to
+  /// the save dialog.
+  final String? initialFilePath;
+
   const PartScreen({
     super.key,
     this.documentApi,
@@ -123,6 +131,7 @@ class PartScreen extends StatefulWidget {
     this.initialPartId,
     this.initialHiddenFeatureIds = const [],
     this.initialFileName,
+    this.initialFilePath,
   });
 
   @override
@@ -403,6 +412,18 @@ class _PartScreenState extends State<PartScreen> {
   /// (a deliberate fresh prompt), but still updates it from whatever the
   /// user actually saves to, same as a plain Save does.
   String? _lastSavedFileName;
+
+  /// On-device feedback ("Save should overwrite the file being edited
+  /// instead of always prompting for a name"): the full filesystem path
+  /// backing [_lastSavedFileName], when one is known - either the path Open
+  /// read this Part from, or wherever the save dialog last wrote it to. A
+  /// plain Save writes straight to this path via `dart:io` when set, with
+  /// no dialog; Save As always goes through the dialog and refreshes this
+  /// from its result, same as it already does for [_lastSavedFileName].
+  /// Null for a brand-new (never Opened/Saved) Part, or if a previous
+  /// silent write to it failed (deleted/moved/permission revoked since) -
+  /// either way [_saveNativeFile] falls back to the dialog.
+  String? _lastSavedFilePath;
 
   /// B4 true-rollback's own "pretend these Features (and hence everything
   /// depending on them) don't exist yet" state (see [_beginRollback]/
@@ -2627,6 +2648,7 @@ class _PartScreenState extends State<PartScreen> {
     // own doc comment. A no-op (empty) for every non-native-Load launch.
     _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
     _lastSavedFileName = widget.initialFileName;
+    _lastSavedFilePath = widget.initialFilePath;
     _loadPart();
     _loadViewPreferences();
   }
@@ -2733,53 +2755,73 @@ class _PartScreenState extends State<PartScreen> {
   /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
   /// Document (every Part's ordered Feature list, plus every Sketch it
   /// references - no cached mesh/geometry) as this app's own native
-  /// project file format, and hands the bytes to the platform's save-file
-  /// dialog under [suggestedFileName]. Client-owned files (locked-in
-  /// scope): the backend has no project storage of its own, this is this
-  /// app's one point of contact with the device's actual filesystem for
-  /// Save/Save As. Remembers whatever filename the user actually saved to
-  /// (the dialog lets them rename even the suggestion) as
-  /// [_lastSavedFileName], so a later plain Save reuses it.
-  Future<void> _exportAndSaveNativeFile(String suggestedFileName) async {
+  /// project file format's raw bytes. Client-owned files (locked-in scope):
+  /// the backend has no project storage of its own, this is this app's one
+  /// point of contact with the device's actual filesystem for Save/Save As.
+  Future<Uint8List> _buildNativeExportBytes() async {
+    final data = await _api.exportNative();
+    // On-device feedback: the backend's own export knows nothing about
+    // Hide/Show (purely client-side, see [_hiddenFeatureIds]'s own doc
+    // comment) - stash it directly into the same JSON object under a key
+    // the backend's `import_native` simply ignores, so opening this file
+    // elsewhere restores it too instead of silently losing it.
+    data['hidden_feature_ids'] = _hiddenFeatureIds.toList();
+    return Uint8List.fromList(utf8.encode(jsonEncode(data)));
+  }
+
+  /// Hands [bytes] to the platform's save-file dialog under
+  /// [suggestedFileName]. Remembers wherever the user actually saved to
+  /// (the dialog lets them rename/relocate even the suggestion) as both
+  /// [_lastSavedFileName] and [_lastSavedFilePath], so a later plain Save
+  /// can write straight back to it with no dialog.
+  Future<void> _saveNativeFileViaDialog(String suggestedFileName, Uint8List bytes) async {
+    final savedPath = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save Project',
+      fileName: suggestedFileName,
+      bytes: bytes,
+    );
+    if (savedPath != null) {
+      _lastSavedFileName = savedPath.split('/').last;
+      _lastSavedFilePath = savedPath;
+    }
+  }
+
+  /// Native Save: on-device feedback fix - a plain Save used to always go
+  /// through the same save-file dialog as Save As, even for a Part that had
+  /// already been saved/opened once this session. Now, when
+  /// [_lastSavedFilePath] is already known, it writes straight to that path
+  /// via `dart:io` with no dialog at all; the dialog (via
+  /// [_saveNativeFileViaDialog], re-suggesting [_lastSavedFileName]) is only
+  /// used for the very first save of a session, or as a fallback if the
+  /// remembered path is no longer writable (deleted/moved/permission
+  /// revoked since).
+  Future<void> _saveNativeFile() async {
+    setState(() => _toolbarOpen = false);
     await _runGuarded(() async {
-      final data = await _api.exportNative();
-      // On-device feedback: the backend's own export knows nothing about
-      // Hide/Show (purely client-side, see [_hiddenFeatureIds]'s own doc
-      // comment) - stash it directly into the same JSON object under a key
-      // the backend's `import_native` simply ignores, so opening this file
-      // elsewhere restores it too instead of silently losing it.
-      data['hidden_feature_ids'] = _hiddenFeatureIds.toList();
-      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(data)));
-      final savedPath = await FilePicker.platform.saveFile(
-        dialogTitle: 'Save Project',
-        fileName: suggestedFileName,
-        bytes: bytes,
-      );
-      if (savedPath != null) {
-        _lastSavedFileName = savedPath.split('/').last;
+      final bytes = await _buildNativeExportBytes();
+      final knownPath = _lastSavedFilePath;
+      if (knownPath != null) {
+        try {
+          await File(knownPath).writeAsBytes(bytes);
+          return;
+        } catch (_) {
+          // Falls through to the dialog below.
+        }
       }
+      await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt', bytes);
     });
   }
 
-  /// Native Save: re-suggests [_lastSavedFileName] (whatever this session
-  /// last Opened-from or Saved-to) as the dialog's default, so a quick
-  /// re-save doesn't fall back to a generic name every time - see
-  /// [_lastSavedFileName]'s own doc comment for why this can't be a truly
-  /// silent overwrite (Android's Storage Access Framework has no such
-  /// concept without deeper persisted-URI-permission integration; every
-  /// save, Save or Save As alike, goes through the same platform dialog).
-  Future<void> _saveNativeFile() async {
-    setState(() => _toolbarOpen = false);
-    await _exportAndSaveNativeFile(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt');
-  }
-
-  /// Native Save As: always suggests a fresh, generic name (never
-  /// [_lastSavedFileName]) - the deliberate difference from plain Save,
-  /// given both otherwise go through the identical save-file dialog (see
+  /// Native Save As: always suggests a fresh, generic name and always goes
+  /// through the save dialog - the deliberate difference from plain Save,
+  /// which skips the dialog entirely once a path is known (see
   /// [_saveNativeFile]'s own doc comment).
   Future<void> _saveAsNativeFile() async {
     setState(() => _toolbarOpen = false);
-    await _exportAndSaveNativeFile('${_part?.name ?? 'part'}.DIDSAprt');
+    await _runGuarded(() async {
+      final bytes = await _buildNativeExportBytes();
+      await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', bytes);
+    });
   }
 
   /// File > New: starts a brand-new, blank Part - the same "always start
@@ -2870,6 +2912,7 @@ class _PartScreenState extends State<PartScreen> {
           initialPartId: imported!.partIds.first,
           initialHiddenFeatureIds: hiddenFeatureIds,
           initialFileName: result.files.single.name,
+          initialFilePath: result.files.single.path,
         ),
       ),
     );

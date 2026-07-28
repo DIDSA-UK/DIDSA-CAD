@@ -7064,6 +7064,37 @@ void main() {
     expect(controller.selectionSet.first.id, constraintId);
   });
 
+  // On-device feedback ("when a constraint is selected the entity it's
+  // driving should change colour"): sketch_canvas.dart's `isSelected` and
+  // sketch_screen.dart's `_embeddedSelectedEntities` both expand a selected
+  // Constraint into the Line/Point ids it references via this method, to
+  // highlight them - exercised directly here since neither the CustomPainter
+  // nor the embedded 3D view is unit-testable at this level.
+  test('entitiesReferencedByConstraint returns the Line/Point ids a Vertical constraint '
+      'references', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    final line = controller.lines.values.single;
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(4, 4);
+    await controller.applyConstraintOption(ConstraintOptionType.vertical);
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key;
+
+    final refs = controller.entitiesReferencedByConstraint(constraintId);
+
+    expect(refs.lineIds, {line.id});
+    expect(refs.pointIds, {line.startPointId, line.endPointId});
+  });
+
+  test('entitiesReferencedByConstraint returns an empty result for an unknown constraint id', () async {
+    final refs = controller.entitiesReferencedByConstraint('does-not-exist');
+
+    expect(refs.lineIds, isEmpty);
+    expect(refs.pointIds, isEmpty);
+  });
+
   test('deleteSelected removes a selected Constraint and re-solves', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
@@ -8412,6 +8443,90 @@ void main() {
 
     expect(controller.errorMessage, isNull);
     expect(controller.constraints.values.whereType<CollinearConstraintDto>().length, 1);
+  });
+
+  // On-device feedback: Equal/Collinear used to require exactly 2 selected
+  // Lines - selecting a 3rd offered neither. Both generalize to N lines by
+  // chaining pairwise against the first selected Line.
+  test('availableConstraintOptions offers Equal/Collinear (not Parallel/Perpendicular) for 3 '
+      'selected Lines', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(0, 8);
+    controller.finishChain();
+    await controller.handleCanvasTap(2, 20);
+    await controller.handleCanvasTap(9, 20);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.15, 7.1); // away from (0, 8)'s hit radius, see tests above
+    await controller.handleCanvasTap(5, 20.1);
+
+    final types = controller.availableConstraintOptions.map((o) => o.type).toSet();
+
+    expect(types, {ConstraintOptionType.equalLength, ConstraintOptionType.collinear});
+    expect(controller.canApplyConstraint(ConstraintOptionType.equalLength), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.collinear), isTrue);
+  });
+
+  test('addEqualLengthConstraint chains N-1 EqualLengthConstraints against the first selected '
+      'Line when 3 Lines are selected, and undoes as a single step', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(0, 8);
+    controller.finishChain();
+    await controller.handleCanvasTap(2, 20);
+    await controller.handleCanvasTap(9, 20);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1);
+    final firstLineId = (controller.selectionSet.single).id;
+    await controller.handleCanvasTap(0.15, 7.1);
+    await controller.handleCanvasTap(5, 20.1);
+
+    await controller.addEqualLengthConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.selectionSet, isEmpty);
+    final created = controller.constraints.values.whereType<EqualLengthConstraintDto>().toList();
+    expect(created.length, 2);
+    for (final constraint in created) {
+      expect({constraint.line1Id, constraint.line2Id}, contains(firstLineId));
+    }
+
+    await controller.undo();
+
+    expect(controller.constraints.values.whereType<EqualLengthConstraintDto>(), isEmpty);
+  });
+
+  test('addCollinearConstraint chains N-1 CollinearConstraints against the first selected Line '
+      'when 3 Lines are selected', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(2, 3);
+    await controller.handleCanvasTap(8, 3);
+    controller.finishChain();
+    await controller.handleCanvasTap(1, 40);
+    await controller.handleCanvasTap(9, 40);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(6.5, 3.1);
+    await controller.handleCanvasTap(5, 40.1);
+
+    await controller.addCollinearConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.selectionSet, isEmpty);
+    expect(controller.constraints.values.whereType<CollinearConstraintDto>().length, 2);
   });
 
   // --- Stage 23g/23h: marquee selection and the Selected Entities list ------

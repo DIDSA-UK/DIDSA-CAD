@@ -3612,9 +3612,26 @@ class _SketchPainter extends CustomPainter {
     // rendered with no highlight at all - only the dimension bar's own chip
     // list showed what was picked. The two lists are never populated at the
     // same time (different modes), so checking both here is safe.
+    //
+    // On-device feedback: selecting a Constraint (SelectionKind.constraint)
+    // used to highlight nothing at all - the Line/Point it actually drives
+    // gave no visual feedback. Expand every selected Constraint into the
+    // Line/Point ids it references up front, then fold that into
+    // [isSelected] below (and into the Circle/Arc loops further down, which
+    // key off their defining Points rather than off `isSelected` directly).
+    final constraintReferencedPointIds = <String>{};
+    final constraintReferencedLineIds = <String>{};
+    for (final selection in selectionSet) {
+      if (selection.kind != SelectionKind.constraint) continue;
+      final refs = controller.entitiesReferencedByConstraint(selection.id);
+      constraintReferencedPointIds.addAll(refs.pointIds);
+      constraintReferencedLineIds.addAll(refs.lineIds);
+    }
     bool isSelected(SelectionKind kind, String id) =>
         selectionSet.any((s) => s.kind == kind && s.id == id) ||
-        controller.dimensionSelection.any((s) => s.kind == kind && s.id == id);
+        controller.dimensionSelection.any((s) => s.kind == kind && s.id == id) ||
+        (kind == SelectionKind.line && constraintReferencedLineIds.contains(id)) ||
+        (kind == SelectionKind.point && constraintReferencedPointIds.contains(id));
 
     for (final line in controller.lines.values) {
       final start = controller.points[line.startPointId];
@@ -3670,7 +3687,9 @@ class _SketchPainter extends CustomPainter {
       final radius = math.sqrt(
         math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
       );
-      final circleIsSelected = isSelected(SelectionKind.circle, circle.id);
+      final circleIsSelected = isSelected(SelectionKind.circle, circle.id) ||
+          constraintReferencedPointIds.contains(circle.centerPointId) ||
+          constraintReferencedPointIds.contains(circle.radiusPointId);
       final isHovered = hovered?.kind == SelectionKind.circle && hovered!.id == circle.id;
       // Phase 3: same per-entity DOF preview (plus the same backend-derived
       // red/whole-sketch-green sources) as the Line loop above, treating a
@@ -3710,7 +3729,10 @@ class _SketchPainter extends CustomPainter {
       final end = controller.points[arc.endPointId];
       if (center == null || start == null || end == null) continue;
       final radius = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
-      final arcIsSelected = isSelected(SelectionKind.arc, arc.id);
+      final arcIsSelected = isSelected(SelectionKind.arc, arc.id) ||
+          constraintReferencedPointIds.contains(arc.centerPointId) ||
+          constraintReferencedPointIds.contains(arc.startPointId) ||
+          constraintReferencedPointIds.contains(arc.endPointId);
       final isHovered = hovered?.kind == SelectionKind.arc && hovered!.id == arc.id;
       // Same per-entity DOF preview as Circle above, treating an Arc's
       // center/start pair and center/end pair as its two defining
