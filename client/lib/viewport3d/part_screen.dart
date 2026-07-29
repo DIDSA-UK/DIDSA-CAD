@@ -489,14 +489,15 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectionMode = !_selectionMode);
   }
 
-  /// Whether the top-left hamburger/feature-tree FAB column (and, since
-  /// the on-device "move the select/orbit fab" fix, the top-right
-  /// selection-mode FAB it moved to) should currently show at all - the
-  /// exact same set of "something else owns this corner/needs the whole
-  /// screen right now" modes the top-left column's own `if` already
-  /// gated on before that fab moved out of it, now shared so both FABs
-  /// hide/show in lockstep rather than the moved one needing its own,
-  /// possibly-drifting copy of this condition.
+  /// Whether the top-left hamburger/feature-tree FAB column should
+  /// currently show at all - "something else owns this corner/needs the
+  /// whole screen right now" modes. On-device feedback ("I do want
+  /// select/orbit-mode switching available while a tool panel is open"):
+  /// the top-right selection-mode FAB used to share this exact condition
+  /// (from when it first moved to that corner) but now has its own,
+  /// deliberately less restrictive [_selectionModeFabVisible] instead - the
+  /// two corners can genuinely disagree now, so this is no longer a
+  /// "shared by both" condition, just the left column's own.
   bool get _viewportFabColumnsVisible =>
       !_featureTreeVisible &&
       !_planeSelectionMode &&
@@ -511,6 +512,42 @@ class _PartScreenState extends State<PartScreen> {
       !_patternActive &&
       !_profilePickerActive &&
       !_pathPickerActive;
+
+  /// Whether [FeatureTreePanel] is actually on screen right now - true
+  /// [_featureTreeVisible] alone is not enough, since that flag stays
+  /// true even while a tool session forces the panel itself hidden (see
+  /// [FeatureTreePanel.visible]'s own call site, which uses this exact
+  /// condition) - a stale true left over from opening the tree *before*
+  /// starting a tool must not itself hide anything.
+  bool get _featureTreePanelVisible =>
+      _featureTreeVisible &&
+      !_extrudeActive &&
+      !_createPlaneActive &&
+      !_filletActive &&
+      !_chamferActive &&
+      !_revolveActive &&
+      !_sweepActive &&
+      !_mirrorActive &&
+      !_patternActive &&
+      !_profilePickerActive &&
+      !_pathPickerActive;
+
+  /// On-device feedback ("I do want select/orbit-mode switching available
+  /// while a tool panel is open"): deliberately a separate, wider-open
+  /// condition from [_viewportFabColumnsVisible] - unlike the hamburger/
+  /// feature-tree column (which genuinely can't coexist with a tool panel;
+  /// opening either one mid-flow would abandon whatever's in progress),
+  /// toggling orbit vs selection is just about which gesture set the
+  /// viewport dispatches to and stays meaningful throughout every tool's
+  /// own picking/preview session - a user reorienting the camera to see
+  /// what they're about to pick is exactly the case this FAB exists for.
+  /// Still hidden while [_featureTreePanelVisible] (the tree, not the
+  /// viewport, is the thing being interacted with) or
+  /// [_confirmingSketchOrientation] (that step already forces orbit mode
+  /// for its own duration - see [_addSketchFeature]'s own doc comment - so
+  /// the toggle would be both redundant and misleadingly implying a choice
+  /// that isn't actually available).
+  bool get _selectionModeFabVisible => !_featureTreePanelVisible && !_confirmingSketchOrientation;
 
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
@@ -7460,10 +7497,14 @@ class _PartScreenState extends State<PartScreen> {
                 // view button exactly; `top: 56` sits directly under it (its
                 // 40px `FloatingActionButton.small`/`IconButton.filled`
                 // height + an 8px gap, the same gap this Column's other
-                // FABs already use) - shares [_viewportFabColumnsVisible]
-                // with the top-left hamburger/feature-tree column so both
-                // hide/show together, same as before the move.
-                if (_viewportFabColumnsVisible)
+                // FABs already use). On-device feedback ("I do want select/
+                // orbit-mode switching available while a tool panel is
+                // open"): uses its own, deliberately wider-open
+                // [_selectionModeFabVisible] rather than sharing
+                // [_viewportFabColumnsVisible] with the top-left hamburger/
+                // feature-tree column - see that getter's own doc comment
+                // for why the two corners now genuinely differ.
+                if (_selectionModeFabVisible)
                   Positioned(
                     top: 56,
                     right: 8,
@@ -7562,17 +7603,7 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: _featureTreeVisible &&
-                        !_extrudeActive &&
-                        !_createPlaneActive &&
-                        !_filletActive &&
-                        !_chamferActive &&
-                        !_revolveActive &&
-                        !_sweepActive &&
-                        !_mirrorActive &&
-                        !_patternActive &&
-                        !_profilePickerActive &&
-                        !_pathPickerActive,
+                    visible: _featureTreePanelVisible,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,

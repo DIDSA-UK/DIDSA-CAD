@@ -1351,6 +1351,56 @@ void main() {
   );
 
   testWidgets(
+    'on-device feedback ("I do want select/orbit-mode switching available while a tool panel is '
+    'open"): the select/orbit FAB stays visible and functions once Extrude is active, unlike the '
+    "hamburger/feature-tree column, which still hides during a tool session",
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Extrude'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Still hidden - opening either would abandon the in-progress Extrude.
+      expect(find.byTooltip('Feature tree'), findsNothing);
+      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.byTooltip('Close toolbar'), findsNothing);
+
+      // But the select/orbit toggle is still there and still works. Extrude
+      // defaults _selectionMode to true on open (target-body picking needs
+      // it), so the FAB starts showing the orbit-mode entry point.
+      expect(find.byTooltip('Switch to orbit mode'), findsOneWidget);
+      await tester.tap(find.byTooltip('Switch to orbit mode'));
+      await tester.pump();
+
+      expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     "long-pressing a SketchFeature without a closed profile shows Extrude disabled, "
     "with an explanatory subtitle",
     (tester) async {
