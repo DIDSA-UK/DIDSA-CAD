@@ -2744,13 +2744,43 @@ class SketchController extends ChangeNotifier {
       }
     }
 
+    // On-device feedback ("when I pick the arc to add to the offset, it
+    // doesn't actually pick the arc, it seems to pick a straight line
+    // between the end points of the arc"): Line/Circle/Arc/Ellipse/Spline
+    // used to be checked in a fixed kind order, each returning on its own
+    // first in-range match - so whichever kind happened to be checked
+    // first always won a tap within range of more than one of them,
+    // regardless of which was actually closer to the tap. Most on-screen
+    // taps are nowhere near two different entities' hit zones at once, so
+    // this rarely mattered, but a Line and an Arc sharing an endpoint (the
+    // exact shape of a rounded corner/dome - a Line's own segment is
+    // clipped to end exactly at that shared Point, an Arc's sweep begins
+    // exactly there too) put a real seam directly at their tangent
+    // point - a tap meant for the Arc that happens to land within [radius]
+    // of that shared Point used to always resolve to the Line instead,
+    // simply because Lines were checked first. Now every kind's distance
+    // is computed up front and the single closest in-range candidate
+    // wins, matching how [_offset_chain_join] et al. already resolve
+    // ambiguity by nearest-distance rather than by which case happened to
+    // run first.
+    SketchSelection? bestEdgeLikeSelection;
+    double bestEdgeLikeDistance = double.infinity;
+    void considerEdgeLike(SelectionKind kind, String id, double distance) {
+      if (distance <= radius && distance < bestEdgeLikeDistance) {
+        bestEdgeLikeDistance = distance;
+        bestEdgeLikeSelection = SketchSelection(kind: kind, id: id);
+      }
+    }
+
     for (final line in lines.values) {
       final start = points[line.startPointId];
       final end = points[line.endPointId];
       if (start == null || end == null) continue;
-      if (_distanceToSegment(x, y, start.x, start.y, end.x, end.y) <= radius) {
-        return SketchSelection(kind: SelectionKind.line, id: line.id);
-      }
+      considerEdgeLike(
+        SelectionKind.line,
+        line.id,
+        _distanceToSegment(x, y, start.x, start.y, end.x, end.y),
+      );
     }
 
     for (final circle in circles.values) {
@@ -2761,9 +2791,7 @@ class SketchController extends ChangeNotifier {
         math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
       );
       final distanceToCenter = math.sqrt(math.pow(x - center.x, 2) + math.pow(y - center.y, 2));
-      if ((distanceToCenter - r).abs() <= radius) {
-        return SketchSelection(kind: SelectionKind.circle, id: circle.id);
-      }
+      considerEdgeLike(SelectionKind.circle, circle.id, (distanceToCenter - r).abs());
     }
 
     for (final arc in arcs.values) {
@@ -2786,9 +2814,7 @@ class SketchController extends ChangeNotifier {
               math.sqrt(math.pow(x - start.x, 2) + math.pow(y - start.y, 2)),
               math.sqrt(math.pow(x - end.x, 2) + math.pow(y - end.y, 2)),
             );
-      if (distanceToArc <= radius) {
-        return SketchSelection(kind: SelectionKind.arc, id: arc.id);
-      }
+      considerEdgeLike(SelectionKind.arc, arc.id, distanceToArc);
     }
 
     for (final ellipse in ellipses.values) {
@@ -2806,8 +2832,8 @@ class SketchController extends ChangeNotifier {
         major.y,
         liveMinorRadius,
       );
-      if (distanceToEllipse != null && distanceToEllipse <= radius) {
-        return SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id);
+      if (distanceToEllipse != null) {
+        considerEdgeLike(SelectionKind.ellipse, ellipse.id, distanceToEllipse);
       }
     }
 
@@ -2817,10 +2843,16 @@ class SketchController extends ChangeNotifier {
       for (var i = 0; i < sampled.length - 1; i++) {
         final a = sampled[i];
         final b = sampled[i + 1];
-        if (_distanceToSegment(x, y, a.$1, a.$2, b.$1, b.$2) <= radius) {
-          return SketchSelection(kind: SelectionKind.spline, id: spline.id);
-        }
+        considerEdgeLike(
+          SelectionKind.spline,
+          spline.id,
+          _distanceToSegment(x, y, a.$1, a.$2, b.$1, b.$2),
+        );
       }
+    }
+
+    if (bestEdgeLikeSelection != null) {
+      return bestEdgeLikeSelection;
     }
 
     for (final text in texts.values) {
@@ -5718,8 +5750,24 @@ class SketchController extends ChangeNotifier {
           pointIds: {d.center1PointId, d.radius1PointId, d.center2PointId, d.radius2PointId},
           lineIds: <String>{},
         ),
+      TangentConstraintDto d => (
+          pointIds: {d.centerPointId, d.radiusPointId},
+          lineIds: {d.lineId},
+        ),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
+  }
+
+  /// Public wrapper around [_constraintReferences] for UI layers that need
+  /// to highlight whatever a selected Constraint is driving (the Line/Point
+  /// it references) - see sketch_canvas.dart's `isSelected` and
+  /// sketch_screen.dart's `_embeddedSelectedEntities`, neither of which
+  /// otherwise has a way to turn a `SelectionKind.constraint` selection into
+  /// the entities it should highlight.
+  ({Set<String> pointIds, Set<String> lineIds}) entitiesReferencedByConstraint(String constraintId) {
+    final constraint = constraints[constraintId];
+    if (constraint == null) return (pointIds: const <String>{}, lineIds: const <String>{});
+    return _constraintReferences(constraint);
   }
 
   /// Everything deleting [selection] would need to also delete, computed
@@ -7417,6 +7465,19 @@ class SketchController extends ChangeNotifier {
       ];
     }
 
+    // On-device feedback: Equal/Collinear used to require exactly 2 lines
+    // selected (the `sel.length != 2` gate below), even though both
+    // generalize cleanly to 3+ lines (chained pairwise against the first
+    // selected line - see [_createSelectionSetConstraint]'s own doc
+    // comment). Parallel/Perpendicular stay 2-line-only: "parallel to more
+    // than one other line" isn't a well-defined single action the same way.
+    if (sel.length > 2 && sel.every((s) => s.kind == SelectionKind.line)) {
+      return const [
+        ConstraintOption(type: ConstraintOptionType.equalLength, label: 'Equal', wired: true),
+        ConstraintOption(type: ConstraintOptionType.collinear, label: 'Collinear', wired: true),
+      ];
+    }
+
     if (sel.length != 2) return const [];
 
     final kinds = sel.map((s) => s.kind).toSet();
@@ -7811,6 +7872,19 @@ class SketchController extends ChangeNotifier {
       // this just passes through whichever [_convertBodyEdgeToLocalState]
       // actually resolved.
       final selection = await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
+      // On-device feedback ("offsetting the circular edge of a cylinder
+      // fails with a degenerate_edge error"): a full circular Body edge
+      // can now resolve to a Circle - mirrors [_handleOffsetTap]'s own
+      // Circle branch (a Circle has no chain endpoints to join, so it
+      // always goes straight to [offsetPreviewTargets] as a standalone
+      // target rather than into the chain-accumulation set, where
+      // `offsetChain` would reject it outright - see that backend
+      // method's own "Circles aren't accepted here" doc comment).
+      if (selection.kind == SelectionKind.circle) {
+        _offsetPreviewTargets = [selection];
+        _offsetPreviewDistance = null;
+        return;
+      }
       _toggleOffsetChainPick(selection);
     });
   }
@@ -8383,11 +8457,14 @@ class SketchController extends ChangeNotifier {
   /// re-pick (see `Sketch.add_or_reuse_external_vertex_reference`).
   /// On-device feedback ("when I offset a curved edge it creates a
   /// straight line"): now returns a [SketchSelection] (kind-aware)
-  /// instead of a bare Line id - `convert_body_edge` can hand back either
-  /// a Line (the original chord fallback) or a real Arc (a coplanar
-  /// circular Body edge - see the backend's own doc comment), never both,
-  /// so callers that used to assume "always a Line" (like
-  /// [pickBodyEdgeForOffset]) now dispatch on [SketchSelection.kind].
+  /// instead of a bare Line id - `convert_body_edge` can hand back a Line
+  /// (the original chord fallback), a real Arc (a coplanar circular Body
+  /// edge - see the backend's own doc comment), or a real Circle (a
+  /// coplanar *full* circular Body edge, e.g. a cylinder's rim - on-device
+  /// feedback: "offsetting the circular edge of a cylinder fails with a
+  /// degenerate_edge error"), never more than one of the three, so callers
+  /// that used to assume "always a Line" (like [pickBodyEdgeForOffset])
+  /// now dispatch on [SketchSelection.kind].
   Future<SketchSelection> _convertBodyEdgeToLocalState(String bodyId, int edgeIndex) async {
     final partId = _documentPartId!;
     final sketchFeatureId = _documentSketchFeatureId!;
@@ -8420,6 +8497,44 @@ class SketchController extends ChangeNotifier {
         }
       });
       return SketchSelection(kind: SelectionKind.arc, id: arc.id);
+    }
+
+    // On-device feedback ("offsetting the circular edge of a cylinder
+    // fails with a degenerate_edge error"): a full circular Body edge
+    // (both endpoints the same vertex) now resolves as a real Circle -
+    // see the backend's own ConvertEdgeResponse doc comment for why
+    // start_point/end_point are meaningless (both equal to centerPoint)
+    // in this case and are deliberately not used here.
+    final circle = result.circle;
+    if (circle != null) {
+      if (circles.containsKey(circle.id)) return SketchSelection(kind: SelectionKind.circle, id: circle.id);
+      circles[circle.id] = SketchCircleView(
+        id: circle.id,
+        centerPointId: circle.centerPointId,
+        radiusPointId: circle.radiusPointId,
+        construction: circle.construction,
+        cardinalPointIds: circle.cardinalPointIds,
+      );
+      final circleId = circle.id;
+      final cardinalPointIds = <String>[];
+      // The four cardinal Points (including the radius Point itself, in
+      // this bare-radius creation mode - see Sketch.add_circle's own doc
+      // comment) are always freshly created server-side, same fetch-and-
+      // cache as the centre-point circle tool's own post-creation step.
+      for (final id in circle.cardinalPointIds) {
+        final point = await _api.getPoint(sketchId, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        cardinalPointIds.add(point.id);
+      }
+      _pushUndo(() async {
+        await _api.deleteCircle(sketchId, circleId);
+        circles.remove(circleId);
+        for (final pointId in [...newPointIds, ...cardinalPointIds]) {
+          await _api.deletePoint(sketchId, pointId);
+          points.remove(pointId);
+        }
+      });
+      return SketchSelection(kind: SelectionKind.circle, id: circle.id);
     }
 
     final line = result.line!;
@@ -9180,15 +9295,30 @@ class SketchController extends ChangeNotifier {
   /// flyout on success, same as [addVerticalConstraint]/[addHorizontalConstraint]
   /// - solver errors surface via the existing [_runGuarded]/[errorMessage]
   /// path, nothing new there.
+  ///
+  /// On-device feedback: Equal/Collinear now also reach here with more than
+  /// 2 Lines selected (see [availableConstraintOptions]'s `sel.length > 2`
+  /// branch) - for N &gt; 2, chains N-1 pairwise constraints against the
+  /// first selected Line rather than the single [create] call a 2-selection
+  /// makes, which is how "all these lines are equal/collinear" is expressed
+  /// with only the existing binary constraint types (no N-ary backend type
+  /// needed). All of them undo together as one step.
   Future<void> _createSelectionSetConstraint(
     Future<ConstraintDto> Function(String sketchId, String idA, String idB) create,
   ) async {
-    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
-    final idA = _selectionSet[0].id;
-    final idB = _selectionSet[1].id;
+    if (_selectionSet.length < 2 || _busy || _sketchId == null) return;
+    final referenceId = _selectionSet[0].id;
+    final targetIds = _selectionSet.skip(1).map((s) => s.id).toList();
     await _runGuarded(() async {
-      final constraint = await create(_sketchId!, idA, idB);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      final created = <ConstraintDto>[];
+      for (final targetId in targetIds) {
+        created.add(await create(_sketchId!, referenceId, targetId));
+      }
+      _pushUndo(() async {
+        for (final constraint in created.reversed) {
+          await _api.deleteConstraint(_sketchId!, constraint.id);
+        }
+      });
       await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;

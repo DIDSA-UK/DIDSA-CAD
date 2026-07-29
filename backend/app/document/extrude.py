@@ -1131,6 +1131,47 @@ def resolve_circular_edge_arc(
     return (center_x, center_y, radius, resolved_start, resolved_end)
 
 
+def resolve_full_circular_edge(
+    bodies: dict[str, TopoDS_Shape],
+    ref: SubShapeRef,
+    basis: ResolvedPlane,
+) -> tuple[float, float, float] | None:
+    """On-device feedback ("offsetting the circular edge of a cylinder
+    fails with a degenerate_edge error"): `resolve_circular_edge_arc`'s
+    sibling for a *full* circular Body edge - one whose two topological
+    endpoints are the same Body vertex (e.g. a cylinder's rim, or a
+    drilled hole), which `app.document.router.convert_body_edge` used to
+    reject outright as `degenerate_edge` before curve-type detection ever
+    ran (see that function's own doc comment - it's not OCCT-degenerate,
+    just topologically closed). Unlike `resolve_circular_edge_arc`, there
+    are no two distinct endpoints to resolve a CCW sweep between - a full
+    circle has no "which way does it sweep" question at all - so this
+    stops at `resolve_planar_circle`'s own centre/radius result instead of
+    calling `resolve_ccw_arc_endpoints`.
+
+    Returns `None` for the same two reasons `resolve_circular_edge_arc`
+    does: not circular at all (`BRepAdaptor_Curve.GetType() !=
+    GeomAbs_Circle`), or circular but not coplanar with `basis`
+    (`resolve_planar_circle` returning `None`) - the caller's own
+    `degenerate_edge` 422 remains the fallback for either case, unchanged
+    from before this fix."""
+    edge_shape = resolve_subshape_from_bodies(bodies, ref)
+    edge = topods.Edge(edge_shape)
+    adaptor = BRepAdaptor_Curve(edge)
+    if adaptor.GetType() != GeomAbs_Circle:
+        return None
+
+    circle = adaptor.Circle()
+    center_point = circle.Location()
+    axis_direction = circle.Axis().Direction()
+    return resolve_planar_circle(
+        basis,
+        circle_center=(center_point.X(), center_point.Y(), center_point.Z()),
+        circle_axis=(axis_direction.X(), axis_direction.Y(), axis_direction.Z()),
+        circle_radius=circle.Radius(),
+    )
+
+
 def resolve_subshape(
     part: Part, ref: SubShapeRef, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> TopoDS_Shape:

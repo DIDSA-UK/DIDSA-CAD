@@ -27,15 +27,15 @@ String featureDisplayName(List<FeatureDto> features, int index) {
   return '$label $ordinal';
 }
 
-/// On-device feedback: whether the last (unlocked) Feature of [type] has an
-/// actual edit panel to open - an `ImportFeature` has none (a fixed,
-/// non-parametric Body wrapping whatever file it imported, see the
-/// backend's own docstring for why), so it was showing "Editable" in the
-/// tree despite tapping it doing nothing editable at all. Every other type
-/// today does have a real edit panel (see `PartScreen._onFeatureTap`'s own
-/// per-type dispatch) - this stays a plain negative check rather than an
-/// allow-list so it doesn't need updating for every future Feature type
-/// that keeps following that same pattern.
+/// On-device feedback: whether a Feature of [type] has an actual edit panel
+/// to open - an `ImportFeature` has none (a fixed, non-parametric Body
+/// wrapping whatever file it imported, see the backend's own docstring for
+/// why), so it was showing "Editable" in the tree despite tapping it doing
+/// nothing editable at all. Every other type today does have a real edit
+/// panel (see `PartScreen._onFeatureTap`'s own per-type dispatch, reachable
+/// for any Feature since B4 - not just the last one) - this stays a plain
+/// negative check rather than an allow-list so it doesn't need updating for
+/// every future Feature type that keeps following that same pattern.
 bool _hasEditPanel(String type) => type != 'import';
 
 /// Maps a Feature's `type` string to its tree-row glyph. `'sketch'` and
@@ -68,17 +68,21 @@ String _featureTypeAsset(String type) => switch (type) {
 /// something to list - no such data source exists yet, so there is nothing
 /// to render for them today.
 ///
-/// Locked Features (every Feature except the last) are shown greyed out
-/// with a lock icon and remain tappable - a tap only selects/highlights
-/// them, per the project brief - while the editable (last) Feature is
-/// tappable to open it for editing. Selection is purely a display concern
-/// here; [onFeatureTap] decides what a tap actually does. A long-press on
-/// any row (locked or not) invokes [onFeatureLongPress] - unlike a tap,
-/// this is available regardless of lock state, since the cascade-delete
-/// action it can lead to also removes everything after a locked Feature
-/// that depends on it. Tapping a Body row calls [onBodyTap] instead -
-/// Bodies aren't edited directly, only selected/highlighted (the same way
-/// tapping one in the 3D viewport already does).
+/// On-device feedback ("we now have the ability to edit parent features and
+/// parametric flow is working - I think [the Locked badge] can be
+/// removed"): every row, not just the last Feature, now shows its own
+/// type glyph and "Editable"/"Imported" subtitle - since B4, tapping *any*
+/// Feature (not just the last) opens it for editing, so a "Locked" badge
+/// implying otherwise was actively misleading. [onFeatureTap] still decides
+/// what a tap actually does; this tree is purely a display concern. A
+/// long-press on any row invokes [onFeatureLongPress], which can lead to a
+/// cascade-delete - that flow (via [showCascadeDeleteDialog]) is what now
+/// warns the user, by naming every Feature involved, when deleting a
+/// non-last Feature would also remove everything after it that depends on
+/// it, rather than a permanent per-row badge doing that job less
+/// specifically. Tapping a Body row calls [onBodyTap] instead - Bodies
+/// aren't edited directly, only selected/highlighted (the same way tapping
+/// one in the 3D viewport already does).
 ///
 /// Hidden by default so the 3D viewport gets full space - slides in from
 /// the left (same [AnimatedSlide] pattern as [SketchRibbon]) when
@@ -483,18 +487,15 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         selected: selected,
         // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
         // independent overlay badge - kept alongside (not instead of) the
-        // locked-vs-editable icon/glyph below, since a Feature could in
-        // principle be both locked and carrying a lost reference at once.
+        // type glyph below.
         leading: Stack(
           clipBehavior: Clip.none,
           children: [
-            feature.locked
-                ? Icon(Icons.lock, size: 26, color: Colors.grey)
-                : SvgIcon(
-                    _featureTypeAsset(feature.type),
-                    size: 26,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+            SvgIcon(
+              _featureTypeAsset(feature.type),
+              size: 26,
+              color: Theme.of(context).colorScheme.primary,
+            ),
             if (feature.hasLostReference)
               Positioned(
                 right: -2,
@@ -512,11 +513,9 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         subtitle: Text(
           feature.hasLostReference
               ? 'Lost reference'
-              : feature.locked
-                  ? 'Locked'
-                  : _hasEditPanel(feature.type)
-                      ? 'Editable'
-                      : 'Imported',
+              : _hasEditPanel(feature.type)
+                  ? 'Editable'
+                  : 'Imported',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: feature.hasLostReference
