@@ -492,6 +492,17 @@ Bodies"* — `source_feature_ids` resolves via `{bid for bid in bodies if
 base_feature_id(bid) == fid}`, a one-line lookup, not new re-entrant
 Feature-graph machinery.
 
+**Revision (2026-07-29)**: on-device follow-up narrowed this section's own
+"defer Option B" verdict rather than overturning it — see §2.11. Mirroring
+an asymmetric hole/cut pattern into the *same* Body (not a second,
+independent mirrored Body) turned out to be a real, common use case
+`MergeMode.FUSE_INTO_ONE` (§2.10) cannot actually serve. Option B's
+Extrude/Revolve/Sweep-into-shared-target subset (both Feature types
+already expose a standalone pre-boolean tool shape — see §2.11) is now
+scoped as Phase 8; the genuinely harder Fillet/Chamfer remainder (no
+standalone tool shape to transform) stays deferred, per §2.11's own
+scope-boundary note.
+
 ### 2.9 Patterning inside sketches (2D)
 
 Sketch geometry (`app/sketch/models.py`) has no OCCT Body/Feature graph —
@@ -562,6 +573,143 @@ mirroring `_apply_boss_or_cut`'s existing multi-target fuse convention.
 **Default: `KEEP_SEPARATE`** for both, matching every mainstream CAD
 tool's own default.
 
+### 2.11 Feature pattern and feature mirror (Cut/Boss subset of Option B)
+
+**Trigger**: on-device follow-up to §2.8's own "defer Option B" call —
+Mirror's own version of the same underlying problem surfaced directly.
+Mirroring an asymmetric hole/cut pattern about a plane, *into the same
+Body* (not producing a second independent mirrored Body), is a real,
+common CAD workflow with no correct path today. `MergeMode.
+FUSE_INTO_ONE` (§2.10) looks like it should cover this but doesn't —
+`BRepAlgoAPI_Fuse` is a union; unioning two differently-holed copies of
+the same envelope doesn't subtract material, so both holes get filled
+back in rather than combined. Mirror needs a real boolean **Cut using the
+mirrored tool shape**, not a fuse of two already-cut Bodies. This
+generalizes cleanly to Pattern too (repeating a hole/boss N times into
+one shared target, rather than N independent Body copies) — the two
+share essentially all of the same new machinery, so this section (and
+the phase it produces, §4 Phase 8) covers both.
+
+**Why this is a narrower, more tractable slice of Option B than §2.8's
+own "re-run any Feature's resolver" framing.** §2.8 originally described
+Option B in its most general form — re-invoke *any* seed Feature's own
+resolver with its defining references transformed. That's genuinely hard
+for Fillet/Chamfer: they operate directly on `SubShapeRef`-indexed edges
+of an *already-existing* target Body's own topology (`BRepFilletAPI`),
+with no standalone shape of their own to transform — there is no "the
+edge this fillet would round if the pattern's second instance existed
+yet," since that edge doesn't exist until the pattern actually runs.
+Extrude/Revolve/Sweep are different: `_apply_boss_or_cut`
+(`extrude.py:608`) already receives a **standalone tool solid** — the
+raw extruded/revolved/swept shape — *before* it gets fused into or cut
+from `target_body_ids`. That pre-boolean tool shape is exactly the kind
+of rigid, transformable `TopoDS_Shape` Option A's own `gp_Trsf` loop
+already knows how to copy N times or mirror once. So this phase is
+scoped to **Extrude/Revolve/Sweep Features in Cut mode, or Boss mode
+with a non-empty `target_body_ids`** (a targetless Boss has no "shared
+target" problem at all — Option A already copies it correctly as an
+independent Body) — Fillet/Chamfer feature-pattern remains genuinely
+deferred, a separate future scoping effort, not folded into this phase.
+
+**New field, not a new mode enum.** Mirrors this codebase's own
+established "which optional field is set selects the behavior"
+convention (`PlaneRef`'s `face_ref`/`fixed_plane`/`plane_feature_id`,
+`PatternDirectionRef`'s three fields): a new `tool_feature_id: str |
+None = None` on both `MirrorFeature` and `PatternFeature`, mutually
+exclusive with `source_body_ids`/`source_feature_ids` (validated by the
+router, same "exactly one of N" shape every other multi-option field in
+this codebase already uses). Its presence *is* the mode switch — no
+separate `seed_kind` enum needed.
+
+**New backend capability — genuinely new, not a copy-adjacent reuse.**
+`compute_part_bodies`'s own `ExtrudeFeature`/`RevolveFeature`/
+`SweepFeature` branches currently compute a tool shape and immediately
+hand it to `_apply_boss_or_cut` inline — there is no standalone function
+today that resolves *just* the tool shape for an arbitrary upstream
+Feature id, callable from outside that loop. New `resolve_feature_tool_
+shape(part, bodies, feature_id, excluded_feature_ids) -> (TopoDS_Shape,
+list[str] target_body_ids, bool is_cut)` (`extrude.py`, next to
+`_apply_boss_or_cut`) factors that computation out so both `compute_
+part_bodies`'s own existing branches *and* Pattern/Mirror's new
+`tool_feature_id` path can call it — the one piece of this phase that
+touches already-shipped, well-tested code, so it's the primary
+complexity/risk driver, not the Pattern/Mirror-side logic itself (see
+this section's own complexity note below).
+
+**Resolution — Pattern (`tool_feature_id` set):**
+- Resolve the tool shape and its own `(target_body_ids, is_cut)` once via
+  `resolve_feature_tool_shape`.
+- v1 scope: exactly one target (`target_body_ids[0]`) — `tool_feature_
+  id`'s own Feature may in principle name several targets (Extrude/
+  Revolve/Sweep already support multi-target fuse/cut), but multi-target
+  feature-pattern is real added complexity deferred the same way
+  Pattern's own multi-*body* seeding was staged behind Mirror's (§4
+  Phase 6) — not needed for the common case.
+- Index `0` is **already baked into the target** — the seed Cut/Boss
+  Feature already ran once, earlier in feature order (Pattern can only
+  reference an upstream Feature), so by the time Pattern's own branch
+  runs, the target Body already reflects instance 0. Pattern only
+  computes the *other* `count-1` transformed tool copies (same `gp_Trsf`
+  loop §2.2/§2.3 already build, skip-filtered the same way — §2.4's
+  `skip_indices` applies unchanged), unions them into one combined tool,
+  and applies **one** `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse` (per `is_cut`)
+  against the target's current shape in `bodies` — not `count-1`
+  separate booleans, for the same reason `_fuse_realized_instances`
+  (§2.10) unions before a single fuse rather than fusing one-by-one into
+  the target repeatedly.
+- `merge` (§2.10) is meaningless in this mode — there is exactly one
+  target by construction, "keep separate" has no referent. The router
+  rejects `merge=KEEP_SEPARATE` when `tool_feature_id` is set, so a
+  client sending it gets a clear error rather than silent ignoring.
+
+**Resolution — Mirror (`tool_feature_id` set):**
+- Same tool-shape resolution; `mirror_plane` resolved exactly as today
+  (§2.1, `resolve_plane_ref` reused verbatim).
+- Mirror the tool shape once via the existing `gp_Trsf.SetMirror` path,
+  then one `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse` against the target — this
+  is the actual fix for "mirror an asymmetric hole pattern into the same
+  part": the target ends up with both the original hole(s) and their
+  mirror image, correctly subtracted, not unioned-and-refilled.
+- Same v1 single-target scope, same `merge` inapplicability as Pattern's
+  own feature-mode above.
+
+**New structured error**: `invalid_tool_feature_ref` (422) —
+`tool_feature_id` doesn't resolve to a qualifying Feature (wrong type, or
+a Cut/Boss with the disqualifying shape above).
+
+**New dependency-graph edge**: `_tool_feature_dependency` (`graph.py`,
+mirrors `_plane_ref_dependency`'s own shape) — a Pattern/Mirror with
+`tool_feature_id` set depends on that Feature's own `base_feature_id`, so
+cascade-delete and topological ordering both work for free, same as
+every other reference type in this codebase.
+
+**Client**: both panels gain a third seed-picking path — pick an
+eligible Cut/Boss Feature from the Feature tree (reuses whatever
+`feature_tree_panel.dart` selection-source wiring Phase 6 ends up
+building, restricted to Features that would pass `invalid_tool_feature_
+ref` validation) rather than picking a Body/edge/plane in the viewport.
+Exact UI shape (a mode toggle on the existing panels vs. a distinct
+entry point) needs an on-device pass before committing — deliberately
+not fully speculated here.
+
+**Complexity/risk**: medium-high. The single real risk is `resolve_
+feature_tool_shape`'s own extraction from `compute_part_bodies`'s
+existing inline branches — refactoring already-shipped, heavily-tested
+geometry code without regressing it needs care and a dedicated
+verification pass (every existing Extrude/Revolve/Sweep test must keep
+passing unchanged). Everything downstream of that extraction (the
+Pattern/Mirror-side Cut/Fuse-into-target logic) is comparatively
+low-risk, closely mirroring `_fuse_realized_instances`'s own
+already-shipped shape (§2.10).
+
+**Explicitly out of scope**: Fillet/Chamfer feature-pattern/mirror (no
+standalone tool shape — see this section's own scope-boundary note
+above); multi-target feature-pattern/mirror (v1 is single-target only);
+any interaction between feature-mode and `PatternType.CIRCULAR`'s own
+axis/angle addressing beyond the already-covered index conventions
+(should just work unchanged, but not separately verified in this design
+pass).
+
 ---
 
 ## 3. Other CAD-tool pattern/mirror-adjacent features — survey and scope call
@@ -575,11 +723,11 @@ tool's own default.
 | Varying instance spacing | Deferred | `spacing_1: float` would need to become `float \| list[float]` plus a cumulative-vs-per-step semantics decision — real but small; a natural future widening of the existing field. |
 | Pattern seed = pattern (nested patterns) | **Structurally unblocked already, not specially built for** | `source_body_ids` can already name a Body produced by an earlier `PatternFeature` — the graph plumbing needs zero special-casing. Only real risk is combinatorial instance-count explosion; recommend a soft `pattern_too_large` cap (e.g. `total_instances > 500`) rather than bespoke nested-pattern code. |
 | Instances-to-skip via a visual grid picker | **In scope — §2.4, Phase 3** | Explicitly required. |
-| Geometry pattern vs. feature pattern | **Decided — §2.8**: build geometry-pattern now, defer feature-pattern | See §2.8's full reasoning. |
+| Geometry pattern vs. feature pattern | **Decided — §2.8/§2.11**: Option A (geometry pattern) is the default/primary path for both Feature types; Option B's Extrude/Revolve/Sweep-into-shared-target subset is now scoped as Phase 8 (§2.11); the Fillet/Chamfer remainder stays deferred | See §2.8/§2.11's full reasoning. |
 | Symmetric extend (pattern in both directions from a center) | Cheap UI convenience, fold in once base pattern exists | Purely client-side: reinterpret existing fields (shift index-0 to the geometric center) rather than a new backend concept. |
 | Associativity / seed-edit propagation | **Already works by construction** | No dirty-flag caching anywhere (§1) — every `/mesh` fetch fully recomputes from scratch, so editing the seed (while still the last Feature, per `is_locked`) and re-fetching automatically re-runs Pattern/Mirror against the new shape. One accepted wrinkle: if the seed's *topology* changes shape, Pattern/Mirror's own direction/axis/plane `SubShapeRef` can go stale — the same project-wide, already-documented limitation, not a new risk. |
 | A real, named `CreateAxisFeature` | **Deferred — §2.7's own recommendation** | Ad hoc `PatternAxisRef` resolution covers required scope; revisit once a second consumer needs a shared, named axis. |
-| Feature-pattern chaining (pattern of a pattern's *feature*) | Deferred — depends on Option B (§2.8) shipping first | N/A until feature-pattern itself exists. |
+| Feature-pattern chaining (pattern of a pattern's *feature*) | Deferred — depends on Phase 8 (§2.11) shipping first | N/A until feature-pattern itself exists. |
 | Equation/formula-driven instance count or spacing | Out of scope entirely | No parametric-expression system exists anywhere in this codebase (every numeric Feature field is a plain literal) — a whole-app capability, not a Pattern-specific gap. |
 
 ---
@@ -1075,15 +1223,54 @@ multi-body widening alone doesn't provide.
   to avoid regressing existing non-patterned sketches — budget a
   dedicated on-device verification pass.
 
-### Phase 8+ — Explicitly deferred, not scheduled
+### Phase 8 — Feature pattern and feature mirror (Cut/Boss into a shared target)
+
+**Status: scoped (2026-07-29), not started.** Per §2.11 — the
+Extrude/Revolve/Sweep-into-shared-target subset of Option B (§2.8),
+covering both Pattern and Mirror. Direct trigger: on-device follow-up
+noting that mirroring an asymmetric hole pattern into the *same* Body
+(rather than producing a second, independent mirrored Body) is a real,
+common use case with no correct path today — see §2.11's own "why
+`FUSE_INTO_ONE` doesn't cover this" reasoning.
+
+- **Deliverable**: pick an eligible upstream Cut/Boss-into-target
+  Feature (not a Body) as the seed; Pattern repeats its own cut/boss
+  effect N times into the same shared target; Mirror reflects it once
+  into the same shared target — e.g. a plate with one off-center hole,
+  mirrored, ends up with two holes (its own mirror image), not two
+  separate plates.
+- **Backend**: `tool_feature_id: str | None` on both `MirrorFeature`/
+  `PatternFeature` (mutually exclusive with `source_body_ids`/
+  `source_feature_ids`); new `resolve_feature_tool_shape` (`extrude.py`)
+  factoring the tool-shape computation out of `compute_part_bodies`'s
+  existing inline `ExtrudeFeature`/`RevolveFeature`/`SweepFeature`
+  branches so both that loop and Pattern/Mirror's new path can share it;
+  one combined `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse` per Pattern/Mirror
+  resolution (per §2.11's own "union then one boolean" shape, not N
+  separate booleans); new `_tool_feature_dependency` graph edge; new
+  `invalid_tool_feature_ref` validation.
+- **Client**: a third seed-picking path on both panels (Feature-tree
+  selection of an eligible Cut/Boss, rather than a Body/edge/plane pick)
+  — exact UI shape needs an on-device pass, not fully speculated in
+  §2.11.
+- **Complexity/risk**: medium-high, as scoped in §2.11 — the real risk
+  is safely factoring `resolve_feature_tool_shape` out of already-shipped
+  `compute_part_bodies` logic without regressing it (every existing
+  Extrude/Revolve/Sweep test must keep passing unchanged); the
+  Pattern/Mirror-side logic itself closely mirrors Phase 5's
+  already-shipped `_fuse_realized_instances` shape.
+
+### Phase 9+ — Explicitly deferred, not scheduled
 
 Per §3's survey: pattern-along-a-curve, sketch-driven/table-driven
 pattern, fill pattern, varying instance spacing, a standalone
-`CreateAxisFeature`, feature-pattern (§2.8 Option B), per-instance
-independent sketch-pattern editing (§2.9's Option 1 upgrade), and
-equation-driven instance parameters. Each is called out above with its
-one-line "why not now" reason preserved, so a future scoping pass doesn't
-have to re-derive the reasoning from scratch.
+`CreateAxisFeature`, **Fillet/Chamfer feature-pattern/mirror** (the
+genuinely-hard remainder of Option B — see §2.11's own scope-boundary
+note; the Extrude/Revolve/Sweep subset is Phase 8, not deferred),
+per-instance independent sketch-pattern editing (§2.9's Option 1
+upgrade), and equation-driven instance parameters. Each is called out
+above with its one-line "why not now" reason preserved, so a future
+scoping pass doesn't have to re-derive the reasoning from scratch.
 
 ---
 
@@ -1114,3 +1301,10 @@ have to re-derive the reasoning from scratch.
 - `docs/live-preview-pattern.md` — confirms Pattern/Mirror both take the
   simple `isPreviewMesh` path, a load-bearing decision for the client
   implementation's complexity estimate.
+- **Phase 8 (§2.11) only**: `backend/app/document/extrude.py`'s
+  `_apply_boss_or_cut` (`extrude.py:608`) and `compute_part_bodies`'s own
+  `ExtrudeFeature`/`RevolveFeature`/`SweepFeature` branches — the source
+  of the pre-boolean tool-shape computation `resolve_feature_tool_shape`
+  extracts into a standalone, reusable function. This is the one file
+  where Phase 8 touches already-shipped logic rather than adding
+  alongside it, so it's the phase's own primary risk surface.
