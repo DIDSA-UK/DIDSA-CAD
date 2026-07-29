@@ -40,6 +40,7 @@ from app.document.models import (
     FixedAxis,
     ImportFeature,
     ImportSourceFormat,
+    MergeMode,
     MirrorFeature,
     Part,
     PatternAxisRef,
@@ -360,6 +361,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             id=feature.id,
             source_body_ids=feature.source_body_ids,
             mirror_plane=_plane_ref_to_schema(feature.mirror_plane),
+            merge=feature.merge,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -385,6 +387,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             angle_total=feature.angle_total,
             reverse_angular=feature.reverse_angular,
             skip_indices=list(feature.skip_indices),
+            merge=feature.merge,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -1886,7 +1889,12 @@ def create_mirror_feature(part_id: str, payload: MirrorFeatureCreate) -> MirrorF
     mirror_plane = _plane_ref_to_domain(payload.mirror_plane)
     _validate_mirror_source_body_ids(part, source_body_ids)
     _validate_plane_ref(part, mirror_plane)
-    feature = MirrorFeature(id=str(uuid.uuid4()), source_body_ids=source_body_ids, mirror_plane=mirror_plane)
+    feature = MirrorFeature(
+        id=str(uuid.uuid4()),
+        source_body_ids=source_body_ids,
+        mirror_plane=mirror_plane,
+        merge=payload.merge,
+    )
     resolve_mirror(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -1917,14 +1925,21 @@ def update_mirror_feature(
         if payload.mirror_plane is not None
         else feature.mirror_plane
     )
+    new_merge = payload.merge if payload.merge is not None else feature.merge
     _validate_mirror_source_body_ids(part, new_source_body_ids)
     _validate_plane_ref(part, new_mirror_plane)
 
-    candidate = MirrorFeature(id=feature.id, source_body_ids=new_source_body_ids, mirror_plane=new_mirror_plane)
+    candidate = MirrorFeature(
+        id=feature.id,
+        source_body_ids=new_source_body_ids,
+        mirror_plane=new_mirror_plane,
+        merge=new_merge,
+    )
     resolve_mirror(part, candidate)  # raises on an unresolvable reference
 
     feature.source_body_ids = candidate.source_body_ids
     feature.mirror_plane = candidate.mirror_plane
+    feature.merge = candidate.merge
     return _feature_response(part, feature)
 
 
@@ -1976,6 +1991,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         angle_total=payload.angle_total,
         reverse_angular=payload.reverse_angular,
         skip_indices=list(payload.skip_indices),
+        merge=payload.merge,
     )
     resolve_pattern(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -2032,6 +2048,7 @@ def update_pattern_feature(
     new_skip_indices = (
         list(payload.skip_indices) if payload.skip_indices is not None else feature.skip_indices
     )
+    new_merge = payload.merge if payload.merge is not None else feature.merge
 
     _validate_pattern_source_body_ids(part, new_source_body_ids)
     _validate_pattern_payload(
@@ -2063,6 +2080,7 @@ def update_pattern_feature(
         angle_total=new_angle_total,
         reverse_angular=new_reverse_angular,
         skip_indices=new_skip_indices,
+        merge=new_merge,
     )
     resolve_pattern(part, candidate)  # raises on an unresolvable reference
 
@@ -2080,6 +2098,7 @@ def update_pattern_feature(
     feature.angle_total = candidate.angle_total
     feature.reverse_angular = candidate.reverse_angular
     feature.skip_indices = candidate.skip_indices
+    feature.merge = candidate.merge
     return _feature_response(part, feature)
 
 

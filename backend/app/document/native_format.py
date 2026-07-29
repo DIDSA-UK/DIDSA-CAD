@@ -31,6 +31,7 @@ from app.document.models import (
     FixedAxis,
     ImportFeature,
     ImportSourceFormat,
+    MergeMode,
     MirrorFeature,
     Part,
     PatternAxisRef,
@@ -642,6 +643,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "source_body_ids": list(feature.source_body_ids),
             "mirror_plane": _plane_ref_to_dict(feature.mirror_plane),
             "source_feature_ids": list(feature.source_feature_ids),
+            "merge": feature.merge.value,
         }
     if isinstance(feature, PatternFeature):
         return {
@@ -666,6 +668,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "angle_total": feature.angle_total,
             "reverse_angular": feature.reverse_angular,
             "skip_indices": list(feature.skip_indices),
+            "merge": feature.merge.value,
         }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
@@ -748,6 +751,9 @@ def _feature_from_dict(data: dict) -> Feature:
             source_body_ids=list(data.get("source_body_ids", [])),
             mirror_plane=_plane_ref_from_dict(_require(data, "mirror_plane")),
             source_feature_ids=list(data.get("source_feature_ids", [])),
+            # `merge` (Phase 5) defaults to KEEP_SEPARATE for any Mirror
+            # persisted before this field existed (Phase 1-4).
+            merge=MergeMode(data.get("merge", MergeMode.KEEP_SEPARATE.value)),
         )
     if feature_type == "pattern":
         return PatternFeature(
@@ -776,6 +782,9 @@ def _feature_from_dict(data: dict) -> Feature:
             # `skip_indices` (Phase 3) defaults to empty for any Pattern
             # persisted before this field existed (Phase 2/4).
             skip_indices=list(data.get("skip_indices", [])),
+            # `merge` (Phase 5) defaults to KEEP_SEPARATE for any Pattern
+            # persisted before this field existed (Phase 2-4).
+            merge=MergeMode(data.get("merge", MergeMode.KEEP_SEPARATE.value)),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 

@@ -967,18 +967,57 @@ pulled forward here.
 
 ### Phase 5 — Merge options
 
-Fuse vs. keep separate, for both Pattern and Mirror.
+**Status: implemented (2026-07-29) — see `docs/status.md`'s matching
+dated entry for the full implementation/verification write-up.** Verified
+for real: the full backend `pytest` suite (1091 tests, including 16 new
+`test_stage_m_merge.py` ones plus 2 new native-format round-trip tests)
+against genuine `pythonocc-core`, and the full client `flutter test` suite
+(992 tests, including 7 new `MirrorPanel`/`PatternPanel` merge-toggle
+ones) plus a clean `flutter analyze`, using freshly-bootstrapped local
+toolchains (micromamba + conda-forge for the backend, a `master`-channel
+Flutter SDK clone for the client — see `.github/workflows/client-
+verify.yml`'s own comment on why `master`, not `stable`, is required here).
+
+Fuse vs. keep separate, for both Mirror and Pattern (Rectangular and
+Circular alike).
 
 - **Deliverable**: a merge toggle on both panels — "Keep Separate"
-  (default, current behavior from Phases 1-4) vs. "Merge into One Body."
-- **Backend**: `MergeMode` enum, `merge` field retrofitted onto both
-  dataclasses (additive, default-preserving, non-breaking), fuse chain
-  mirroring `_apply_boss_or_cut`'s existing multi-target logic.
-- **Client**: a `SegmentedButton<MergeMode>`/switch on both panels.
-- **Complexity/risk**: low-medium. Fuse logic is copy-adjacent to
-  existing code; the real risk is body-identity bookkeeping (which id
-  survives a merge, what happens to selection state for instances that
-  just got fused away) rather than new OCCT risk.
+  (default, unchanged Phase 1-4 behavior) vs. "Merge into One Body."
+- **Backend**: `MergeMode` enum (`KEEP_SEPARATE`/`FUSE_INTO_ONE`),
+  `merge` field retrofitted onto both `MirrorFeature` and `PatternFeature`
+  (additive, default-preserving — `native_format.py`'s loader defaults a
+  missing `merge` key to `KEEP_SEPARATE` for any pre-Phase-5 save). New
+  shared `app.document.extrude._fuse_realized_instances` helper (placed
+  next to `_apply_boss_or_cut`, since that's where the existing
+  `MirrorFeature`/`PatternFeature` `compute_part_bodies` branches already
+  live inline) — fuses every realized (already-transformed) instance
+  together with every named source Body via repeated `BRepAlgoAPI_Fuse`,
+  then registers the result under whichever source's own Feature index
+  sorts lowest (`_apply_boss_or_cut`'s own survivor-tie-break convention,
+  reused verbatim) rather than minting a brand-new id — mirrors a Boss
+  fused into an existing target. A skipped Pattern instance (Phase 3)
+  never even briefly exists as a shape, so it's never part of a
+  `FUSE_INTO_ONE` merge either, for free. `schemas.py`/`router.py` thread
+  `merge` through Create/Update/Response for both Feature types exactly
+  like every other field.
+- **Client**: a `SegmentedButton<MergeMode>` on both `mirror_panel.dart`
+  and `pattern_panel.dart` (new shared `MergeMode` enum in
+  `document_api_client.dart`, since — unlike `RevolveMode`/`PatternMode`,
+  which each pick between disjoint field groups — this is a simple
+  two-way toggle both Feature types share verbatim, not something worth
+  duplicating per panel). `part_screen.dart` gained `_mirrorMerge`/
+  `_patternMerge` state (reset to `KEEP_SEPARATE` at the start of every
+  fresh session, reconstructed from the edited Feature's own stored value
+  when re-opening an existing one for editing, included in both Features'
+  own B4 edit-snapshot record types so Cancel restores it correctly) and
+  `_setMirrorMerge`/`_setPatternMerge` setters wired into the live-preview
+  debounce, mirroring every other toggle field's exact shape.
+- **Complexity/risk**: low-medium, as scoped. Fuse logic was genuinely
+  copy-adjacent to `_apply_boss_or_cut`'s existing multi-target logic, not
+  a new OCCT risk; the real design decision was the survivor-id
+  tie-break (the fused Body inherits an existing source's id rather than
+  the Feature's own), which fell out directly from mirroring that
+  existing convention rather than needing a new one.
 
 ### Phase 6 — Multi-feature seed selection (+ Pattern's own multi-body)
 

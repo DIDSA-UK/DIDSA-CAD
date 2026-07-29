@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../api/document_api_client.dart';
+
 /// Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
 /// §2.3/§4): Rectangular or Circular - mirrors [RevolveMode]'s own
 /// `apiValue`/`fromApiValue` str-enum convention, matching the backend's
@@ -119,6 +121,14 @@ class PatternPanel extends StatefulWidget {
   final void Function(double angle)? onAngleTotalChanged;
   final void Function(bool reverse)? onReverseAngularChanged;
 
+  /// Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
+  /// §2.10/§4): `MergeMode.keepSeparate` (the default - every realized
+  /// instance registers as its own Body) or `MergeMode.fuseIntoOne` (every
+  /// realized instance plus the untouched seed Body fused together into
+  /// one) - shared by both Rectangular and Circular mode.
+  final MergeMode merge;
+  final void Function(MergeMode merge) onMergeChanged;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -158,6 +168,8 @@ class PatternPanel extends StatefulWidget {
     this.onCountAngularChanged,
     this.onAngleTotalChanged,
     this.onReverseAngularChanged,
+    required this.merge,
+    required this.onMergeChanged,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -531,6 +543,15 @@ class _PatternPanelState extends State<PatternPanel> {
                       ),
                     ),
                   if (widget.mode == PatternMode.circular) _circularFields() else _rectangularFields(),
+                  const SizedBox(height: 12),
+                  SegmentedButton<MergeMode>(
+                    segments: const [
+                      ButtonSegment(value: MergeMode.keepSeparate, label: Text('Keep Separate')),
+                      ButtonSegment(value: MergeMode.fuseIntoOne, label: Text('Merge into One Body')),
+                    ],
+                    selected: {widget.merge},
+                    onSelectionChanged: (selection) => widget.onMergeChanged(selection.first),
+                  ),
                   const SizedBox(height: 8),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,

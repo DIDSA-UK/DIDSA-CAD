@@ -27,8 +27,11 @@ from app.document.models import (
     FilletFeature,
     ImportFeature,
     ImportSourceFormat,
+    MergeMode,
     MirrorFeature,
     Part,
+    PatternFeature,
+    PatternType,
     PlaneRef,
     PlaneType,
     PointRef,
@@ -145,6 +148,9 @@ def _build_document_with_every_feature_type(sketch: Sketch) -> Document:
         id="feat-mirror",
         source_body_ids=[extrude.id],
         mirror_plane=PlaneRef(plane_feature_id=plane_feature.id),
+        # Phase 5 - a non-default value, so the round trip below actually
+        # exercises `merge` rather than trivially matching two defaults.
+        merge=MergeMode.FUSE_INTO_ONE,
     )
     part.add_feature(mirror)
 
@@ -243,6 +249,7 @@ def test_round_trips_every_feature_type_through_real_json():
     assert mirror.source_body_ids == original_mirror.source_body_ids
     assert mirror.mirror_plane == original_mirror.mirror_plane
     assert mirror.source_feature_ids == original_mirror.source_feature_ids
+    assert mirror.merge == original_mirror.merge == MergeMode.FUSE_INTO_ONE
 
     assert set(imported_sketches.keys()) == {sketch.id}
     imported_sketch = imported_sketches[sketch.id]
@@ -317,6 +324,87 @@ def test_sketch_feature_anchored_to_a_custom_plane_round_trips_plane_feature_id(
     imported_sketch_feature = imported_document.parts["part-3"].get_feature("feat-sketch")
     assert imported_sketch_feature.plane_feature_id == plane_feature.id
     assert imported_sketches[sketch.id].plane is None
+
+
+def test_pattern_feature_round_trips_through_real_json_including_merge():
+    """PatternFeature was never added to `_build_document_with_every_
+    feature_type`'s own big "every Feature type" tree above (a pre-existing
+    gap this Phase 5 pass doesn't otherwise need to fix), so this is its
+    first native-format round-trip coverage - scoped to Phase 5's own new
+    `merge` field plus enough surrounding fields to prove the whole Feature
+    round-trips, not just `merge` in isolation."""
+    part = Part(id="part-pattern", name="Pattern Part")
+    extrude = ExtrudeFeature(
+        id="feat-extrude",
+        sketch_feature_id="feat-sketch",
+        extrude_type=ExtrudeType.BOSS,
+        start_distance=0.0,
+        end_distance=10.0,
+    )
+    part.add_feature(extrude)
+    pattern = PatternFeature(
+        id="feat-pattern",
+        source_body_ids=[extrude.id],
+        pattern_type=PatternType.RECTANGULAR,
+        direction_1=None,
+        count_1=3,
+        spacing_1=20.0,
+        skip_indices=[1],
+        merge=MergeMode.FUSE_INTO_ONE,
+    )
+    part.add_feature(pattern)
+
+    document = Document(id="doc-pattern")
+    document.parts[part.id] = part
+
+    exported = json.loads(json.dumps(export_native(document, {})))
+    imported_document, _ = import_native(exported)
+    imported_pattern = imported_document.parts["part-pattern"].get_feature("feat-pattern")
+
+    assert imported_pattern.source_body_ids == pattern.source_body_ids
+    assert imported_pattern.pattern_type == pattern.pattern_type
+    assert imported_pattern.count_1 == pattern.count_1
+    assert imported_pattern.spacing_1 == pattern.spacing_1
+    assert imported_pattern.skip_indices == pattern.skip_indices
+    assert imported_pattern.merge == pattern.merge == MergeMode.FUSE_INTO_ONE
+
+
+def test_mirror_and_pattern_merge_default_to_keep_separate_for_pre_phase_5_saves():
+    """Backward compatibility: a Mirror/Pattern persisted before Phase 5's
+    `merge` field existed has no `"merge"` key in its saved dict at all -
+    must import as `KEEP_SEPARATE`, not raise."""
+    payload = {
+        "schema_version": 1,
+        "document": {
+            "id": "doc-legacy",
+            "parts": [
+                {
+                    "id": "part-legacy",
+                    "name": "Legacy Part",
+                    "features": [
+                        {
+                            "type": "mirror",
+                            "id": "feat-mirror-legacy",
+                            "source_body_ids": ["feat-extrude"],
+                            "mirror_plane": {"fixed_plane": "XY"},
+                        },
+                        {
+                            "type": "pattern",
+                            "id": "feat-pattern-legacy",
+                            "source_body_ids": ["feat-extrude"],
+                            "count_1": 2,
+                            "spacing_1": 5.0,
+                        },
+                    ],
+                }
+            ],
+        },
+        "sketches": [],
+    }
+    imported_document, _ = import_native(payload)
+    part = imported_document.parts["part-legacy"]
+    assert part.get_feature("feat-mirror-legacy").merge == MergeMode.KEEP_SEPARATE
+    assert part.get_feature("feat-pattern-legacy").merge == MergeMode.KEEP_SEPARATE
 
 
 def test_export_only_includes_sketches_actually_referenced_by_a_sketch_feature():
