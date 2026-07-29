@@ -18,6 +18,7 @@ import '../sketch/sketch_controller.dart'
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
+import 'orthographic_camera.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'scene_preferences.dart';
@@ -1995,12 +1996,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
   }
 
+  /// Bug fix (on-device feedback: "when in orthographic view looking
+  /// directly at the canvas, picking an arc picks its chord instead;
+  /// picking a circle errors - rotating the camera away fixes it"): every
+  /// [hitTestBodies] call site below needs this to pass its own
+  /// `orthographicHalfHeight` - see that function's own private
+  /// `_worldUnitsPerPixelAtDepth` helper (`selection_hit_test.dart`) for
+  /// why a straight-on orthographic ray needs it and a perspective one
+  /// (this returns `null` for) doesn't.
+  double? _orthographicHalfHeightOf(Camera camera) => camera is OrthographicCamera ? camera.halfHeight : null;
+
   /// Converts a confirmed tap into a [ReferencePlaneKind] hit-test, via the
   /// same [PerspectiveCamera.screenPointToRay] `flutter_scene` already
   /// builds for its own picking/`raycast.dart` - reused here rather than
   /// reimplementing screen-to-world unprojection by hand.
   void _handleTap(Offset localPosition) {
-    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(localPosition, _viewportSize);
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(localPosition, _viewportSize);
     final hit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
     if (hit != null) {
       widget.onPlaneTap(hit.plane);
@@ -2045,6 +2057,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 body: false,
               ),
               facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+              orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             );
             if (bodyHit != null) {
               widget.onSketchEntityTap?.call(bodyHit.entity);
@@ -2320,7 +2333,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _hoverHit = null;
       return;
     }
-    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(cursor, _viewportSize);
     // Prompt C1: previously gated on `widget.bodies.isEmpty` alone, which
     // skipped hit-testing entirely for a Part with no Bodies yet (e.g. a
     // bare Sketch with no Extrude) - now also runs whenever there's Sketch
@@ -2334,6 +2348,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             sketchGeometries: widget.sketchGeometries,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
     final planeHit = _hoverHitTestPlanes(ray);
     if (meshHit == null) {
@@ -2421,7 +2436,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// empty space, mirroring `sketch_canvas.dart`'s own `hasEntityNear`
   /// check in `_maybeStartLongPress`.
   bool _hasEntityNearScreenPoint(Offset screenPosition) {
-    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(screenPosition, _viewportSize);
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
     final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
         ? null
         : hitTestBodies(
@@ -2431,6 +2447,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             sketchGeometries: widget.sketchGeometries,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
     return meshHit != null || _hoverHitTestPlanes(ray) != null;
   }
@@ -2863,7 +2880,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // Same filter as [_handleTap]'s own branch - see that branch's
           // own comment for why a face is excluded by default and how
           // [preferEntityPickIncludesFace] widens it.
-          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final camera = _camera.cameraFor(_viewportSize);
+          final ray = camera.screenPointToRay(cursor, _viewportSize);
           final bodyHit = hitTestBodies(
             ray: ray,
             viewportSize: _viewportSize,
@@ -2875,6 +2893,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               body: false,
             ),
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
           if (bodyHit != null) {
             widget.onSketchEntityTap?.call(bodyHit.entity);

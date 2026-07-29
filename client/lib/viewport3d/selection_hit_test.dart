@@ -188,9 +188,40 @@ class HoverHit {
 /// internally (mirrors `hitTestReferencePlanes`'s choice to stay off
 /// `flutter_scene`'s own `raycast.dart`, for the same "stay pure and
 /// unit-testable" reason).
-double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize) {
+///
+/// Bug fix (on-device feedback: "when in orthographic view looking
+/// directly at the canvas, picking an arc picks its chord instead;
+/// picking a circle errors - rotating the camera away fixes it"): this
+/// always used the perspective-FOV-based formula below, even when the ray
+/// actually came from an `OrthographicCamera` - under orthographic
+/// projection, world-units-per-pixel is *constant* regardless of depth
+/// (`OrthographicProjection.halfHeight`'s own doc comment: "the
+/// orthographic equivalent of `PerspectiveProjection.fovRadiansY`" - not
+/// depth-scaled at all), but this function scaled it with depth anyway, as
+/// if every camera were perspective. Two edges that nearly overlap in
+/// screen space - which only happens when the camera looks straight down
+/// the axis separating them, e.g. straight-on at the sketch plane - could
+/// then rank in the wrong order purely because they sit at different
+/// depths along that same ray: whichever is farther along the ray got an
+/// inflated (too generous) effective pixel radius, whichever is nearer got
+/// a shrunk (too strict) one - exactly the kind of tie a curved edge's own
+/// chord (which shares both endpoints with the real arc, so sits very
+/// close to it in screen space from a straight-on view) would win purely
+/// by depth-scaling luck. From any other camera angle the two candidates
+/// are already separated in screen space and this depth-dependent error
+/// stops mattering - matching the reported "rotate away and it picks
+/// correctly" behaviour exactly.
+///
+/// [orthographicHalfHeight], when passed (the calling camera's own
+/// `OrthographicCamera.halfHeight`), switches to the correct
+/// depth-independent formula instead; null (every call site that hasn't
+/// opted in, and every perspective camera) keeps the original formula
+/// unchanged.
+double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize, {double? orthographicHalfHeight}) {
   if (viewportSize.height <= 0) return double.infinity;
-  final worldHeightAtDepth = 2 * depth * math.tan(kCameraVerticalFovRadians / 2);
+  final worldHeightAtDepth = orthographicHalfHeight != null
+      ? 2 * orthographicHalfHeight
+      : 2 * depth * math.tan(kCameraVerticalFovRadians / 2);
   return worldHeightAtDepth / viewportSize.height;
 }
 
@@ -203,6 +234,7 @@ HoverHit? hitTestVertices(
   List<vm.Vector3> vertices,
   List<int> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -212,7 +244,8 @@ HoverHit? hitTestVertices(
     if (t <= 0) continue;
     final closestOnRay = ray.origin + direction * t;
     final worldDistance = (vertices[i] - closestOnRay).length;
-    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+    final pixelDistance = worldDistance /
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || pixelDistance < best.pixelDistance!) {
       best = HoverHit(
@@ -269,6 +302,7 @@ HoverHit? hitTestEdges(
   List<(vm.Vector3, vm.Vector3)> segments,
   List<int> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -277,7 +311,8 @@ HoverHit? hitTestEdges(
         _closestRaySegmentDistance(ray.origin, direction, segments[i].$1, segments[i].$2);
     if (closest == null) continue;
     final (t, worldDistance) = closest;
-    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+    final pixelDistance = worldDistance /
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || pixelDistance < best.pixelDistance!) {
       best = HoverHit(
@@ -303,6 +338,7 @@ HoverHit? hitTestSketchPoints(
   List<vm.Vector3> points,
   List<String> ids, {
   double radiusPixels = kVertexSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -312,7 +348,8 @@ HoverHit? hitTestSketchPoints(
     if (t <= 0) continue;
     final closestOnRay = ray.origin + direction * t;
     final worldDistance = (points[i] - closestOnRay).length;
-    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+    final pixelDistance = worldDistance /
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || pixelDistance < best.pixelDistance!) {
       best = HoverHit(
@@ -340,6 +377,7 @@ HoverHit? hitTestSketchLines(
   List<(vm.Vector3, vm.Vector3)> segments,
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -348,7 +386,8 @@ HoverHit? hitTestSketchLines(
         _closestRaySegmentDistance(ray.origin, direction, segments[i].$1, segments[i].$2);
     if (closest == null) continue;
     final (t, worldDistance) = closest;
-    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+    final pixelDistance = worldDistance /
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || pixelDistance < best.pixelDistance!) {
       best = HoverHit(
@@ -380,6 +419,7 @@ HoverHit? hitTestSketchCircles(
   List<List<vm.Vector3>> polygons,
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -389,6 +429,7 @@ HoverHit? hitTestSketchCircles(
       ids,
       SelectionEntityKind.sketchCircle,
       radiusPixels: radiusPixels,
+      orthographicHalfHeight: orthographicHalfHeight,
     );
 
 /// On-device feedback: a Circle could be selected but an Arc/Ellipse/
@@ -406,6 +447,7 @@ HoverHit? hitTestSketchArcs(
   List<List<vm.Vector3>> polylines,
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -415,6 +457,7 @@ HoverHit? hitTestSketchArcs(
       ids,
       SelectionEntityKind.sketchArc,
       radiusPixels: radiusPixels,
+      orthographicHalfHeight: orthographicHalfHeight,
     );
 
 /// Mirrors [hitTestSketchCircles] for an Ellipse's own closed polygon (see
@@ -427,6 +470,7 @@ HoverHit? hitTestSketchEllipses(
   List<List<vm.Vector3>> polygons,
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -436,6 +480,7 @@ HoverHit? hitTestSketchEllipses(
       ids,
       SelectionEntityKind.sketchEllipse,
       radiusPixels: radiusPixels,
+      orthographicHalfHeight: orthographicHalfHeight,
     );
 
 /// Mirrors [hitTestSketchArcs] for a Spline's own tessellated polyline (see
@@ -448,6 +493,7 @@ HoverHit? hitTestSketchSplines(
   List<List<vm.Vector3>> polylines,
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -457,6 +503,7 @@ HoverHit? hitTestSketchSplines(
       ids,
       SelectionEntityKind.sketchSpline,
       radiusPixels: radiusPixels,
+      orthographicHalfHeight: orthographicHalfHeight,
     );
 
 HoverHit? _hitTestSketchPolylines(
@@ -467,6 +514,7 @@ HoverHit? _hitTestSketchPolylines(
   List<String> ids,
   SelectionEntityKind kind, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -476,7 +524,8 @@ HoverHit? _hitTestSketchPolylines(
       final closest = _closestRaySegmentDistance(ray.origin, direction, polyline[i], polyline[i + 1]);
       if (closest == null) continue;
       final (t, worldDistance) = closest;
-      final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(t, viewportSize);
+      final pixelDistance = worldDistance /
+          _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
       if (pixelDistance > radiusPixels) continue;
       if (best == null || pixelDistance < best.pixelDistance!) {
         best = HoverHit(
@@ -648,6 +697,7 @@ HoverHit? hitTestMeshEntities({
   double radiusPixels = kSelectionHitRadiusPixels,
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   SelectionFilterState filter = SelectionFilterState.defaults,
+  double? orthographicHalfHeight,
 }) {
   final vertexHit = filter.vertex
       ? hitTestVertices(
@@ -656,6 +706,7 @@ HoverHit? hitTestMeshEntities({
           topologyVerticesFromMesh(mesh),
           mesh.topologyVertexIds,
           radiusPixels: vertexRadiusPixels,
+          orthographicHalfHeight: orthographicHalfHeight,
         )
       : null;
   final edgeHit = filter.edge
@@ -665,6 +716,7 @@ HoverHit? hitTestMeshEntities({
           edgeSegmentsFromMesh(mesh),
           mesh.edgeIds,
           radiusPixels: radiusPixels,
+          orthographicHalfHeight: orthographicHalfHeight,
         )
       : null;
 
@@ -746,6 +798,7 @@ HoverHit? hitTestBodies({
   // there is nothing rendered to be "behind", so reaching through stays
   // intentional there.
   bool facesOccludeOtherHits = false,
+  double? orthographicHalfHeight,
 }) {
   HoverHit taggedWithBody(HoverHit hit, String bodyId) => HoverHit(
         entity: SelectionEntityRef(kind: hit.entity.kind, bodyId: bodyId, id: hit.entity.id),
@@ -767,6 +820,7 @@ HoverHit? hitTestBodies({
         topologyVerticesFromMesh(mesh),
         mesh.topologyVertexIds,
         radiusPixels: vertexRadiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestVertex == null || hit.pixelDistance! < bestVertex.pixelDistance!)) {
         bestVertex = taggedWithBody(hit, body.bodyId);
@@ -779,6 +833,7 @@ HoverHit? hitTestBodies({
         edgeSegmentsFromMesh(mesh),
         mesh.edgeIds,
         radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
         bestEdge = taggedWithBody(hit, body.bodyId);
@@ -803,6 +858,7 @@ HoverHit? hitTestBodies({
         geometry.points,
         geometry.pointIds,
         radiusPixels: vertexRadiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestVertex == null || hit.pixelDistance! < bestVertex.pixelDistance!)) {
         bestVertex = hit;
@@ -816,6 +872,7 @@ HoverHit? hitTestBodies({
         geometry.lineSegments,
         geometry.lineIds,
         radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
         bestEdge = hit;
@@ -829,6 +886,7 @@ HoverHit? hitTestBodies({
         geometry.circlePolygons,
         geometry.circleIds,
         radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
         bestEdge = hit;
@@ -842,6 +900,7 @@ HoverHit? hitTestBodies({
         geometry.arcPolylines,
         geometry.arcIds,
         radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
         bestEdge = hit;
@@ -855,6 +914,7 @@ HoverHit? hitTestBodies({
         geometry.ellipsePolygons,
         geometry.ellipseIds,
         radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
         bestEdge = hit;
@@ -868,6 +928,7 @@ HoverHit? hitTestBodies({
         geometry.splinePolylines,
         geometry.splineIds,
         radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
       );
       if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
         bestEdge = hit;
