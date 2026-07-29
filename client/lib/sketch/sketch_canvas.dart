@@ -840,6 +840,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                       transform: transform,
                       referenceGhostSegments: widget.referenceGhostSegments,
                       referenceGhostVertices: widget.referenceGhostVertices,
+                      referenceGhostEdges: widget.referenceGhostEdges,
                       referenceBodyHidden: widget.referenceBodyHidden,
                       labelsVisible: widget.constraintLabelsVisible,
                       canvasColor: widget.canvasColor,
@@ -2056,6 +2057,7 @@ class _SketchPainter extends CustomPainter {
   final ViewTransform transform;
   final List<((double, double), (double, double))> referenceGhostSegments;
   final List<(String, int, double, double)> referenceGhostVertices;
+  final List<(String, int, (double, double), (double, double))> referenceGhostEdges;
   final bool referenceBodyHidden;
   final bool labelsVisible;
   final Color canvasColor;
@@ -2066,6 +2068,7 @@ class _SketchPainter extends CustomPainter {
     required this.transform,
     this.referenceGhostSegments = const [],
     this.referenceGhostVertices = const [],
+    this.referenceGhostEdges = const [],
     this.referenceBodyHidden = false,
     this.labelsVisible = true,
     this.canvasColor = SketchCanvas.defaultColor,
