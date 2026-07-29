@@ -7878,7 +7878,14 @@ class SketchController extends ChangeNotifier {
       // identically (see [_handleOffsetTap]'s own Line/Arc branch), so
       // this just passes through whichever [_convertBodyEdgeToLocalState]
       // actually resolved.
-      final selection = await _convertBodyEdgeToLocalState(bodyId, edgeIndex);
+      //
+      // On-device feedback ("when offsetting an edge, a line or curve is
+      // created on the edge - these lines should be construction"): this
+      // seed is only ever a reference for the offset distance to measure
+      // from, never its own profile boundary, so it's created construction
+      // - unlike [pickConvertEntityEdge]'s own real, extrude-participating
+      // copy.
+      final selection = await _convertBodyEdgeToLocalState(bodyId, edgeIndex, construction: true);
       // On-device feedback ("offsetting the circular edge of a cylinder
       // fails with a degenerate_edge error"): a full circular Body edge
       // can now resolve to a Circle - mirrors [_handleOffsetTap]'s own
@@ -8828,10 +8835,21 @@ class SketchController extends ChangeNotifier {
   /// degenerate_edge error"), never more than one of the three, so callers
   /// that used to assume "always a Line" (like [pickBodyEdgeForOffset])
   /// now dispatch on [SketchSelection.kind].
-  Future<SketchSelection> _convertBodyEdgeToLocalState(String bodyId, int edgeIndex) async {
+  ///
+  /// On-device feedback ("when offsetting an edge, a line or curve is
+  /// created on the edge - these lines should be construction"):
+  /// [construction] defaults to `false` (Convert Entities' own real,
+  /// extrude-participating copy, unchanged) - [pickBodyEdgeForOffset]
+  /// passes `true` instead, since that seed only ever measures the offset
+  /// distance from, and was never meant to be its own profile boundary.
+  Future<SketchSelection> _convertBodyEdgeToLocalState(
+    String bodyId,
+    int edgeIndex, {
+    bool construction = false,
+  }) async {
     final partId = _documentPartId!;
     final sketchFeatureId = _documentSketchFeatureId!;
-    final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex);
+    final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex, construction: construction);
     final newPointIds = <String>[];
     for (final p in [result.startPoint, result.endPoint, if (result.centerPoint case final c?) c]) {
       if (points.containsKey(p.id)) continue;

@@ -303,3 +303,18 @@ deliberately unbuilt along the way, not yet scoped further:
   user could switch between (e.g. "this phone" vs "that tablet") - fine for
   a single device, would need real design work to extend to multiple.
   Not requested, not attempted.
+- **Silent re-save on Android.** On-device feedback: after PR #110's Save
+  fix (`_canPersistFilePathForReuse` - see `part_screen.dart`), Android
+  still prompts for a location/filename on every save, even a re-save of
+  an already-saved Part - by design, not a bug: `file_picker`'s Android
+  `saveFile()` only ever hands back a fabricated `Downloads`-guessed path,
+  never a real, `dart:io`-writable one, so there is currently no way to
+  silently reuse a prior save location there (desktop already does, since
+  its path *is* real). Closing this gap for real would need a native
+  Android Storage Access Framework integration - persisting a writable
+  `ACTION_CREATE_DOCUMENT` URI's permission grant across app sessions (via
+  `ContentResolver.takePersistableUriPermission`) and writing through that
+  URI on subsequent saves via a platform channel - not something
+  `file_picker`'s existing Flutter API exposes. Real scope (new platform
+  channel/native Kotlin code, not a `file_picker` config tweak), not yet
+  designed or attempted.

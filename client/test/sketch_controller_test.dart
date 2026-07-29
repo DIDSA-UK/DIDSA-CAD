@@ -582,6 +582,7 @@ class _FakeBackend {
       convertEdgeRequestCount++;
       final bodyId = body['body_id'] as String;
       final edgeIndex = (body['edge_index'] as num).toDouble();
+      final construction = (body['construction'] as bool?) ?? false;
       final startId = _newId('point');
       final endId = _newId('point');
       final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex};
@@ -604,7 +605,7 @@ class _FakeBackend {
           'start_point_id': startId,
           'end_point_id': endId,
           'radius': 5.0,
-          'construction': false,
+          'construction': construction,
         };
         arcs[arcId] = arc;
         return _json(
@@ -646,7 +647,7 @@ class _FakeBackend {
           'center_point_id': centerId,
           'radius_point_id': cardinalPointIds.first,
           'radius': radius,
-          'construction': false,
+          'construction': construction,
           'cardinal_point_ids': cardinalPointIds,
         };
         circles[circleId] = circle;
@@ -666,7 +667,7 @@ class _FakeBackend {
         'start_point_id': startId,
         'end_point_id': endId,
         'length': 10.0,
-        'construction': false,
+        'construction': construction,
       };
       lines[lineId] = line;
       return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
@@ -6062,7 +6063,12 @@ void main() {
       expect(freshBackend.convertEdgeRequestCount, 1);
       expect(freshController.lines, hasLength(1));
       final line = freshController.lines.values.single;
-      expect(line.construction, isFalse);
+      // On-device feedback ("when offsetting an edge, a line or curve is
+      // created on the edge - these lines should be construction"):
+      // unlike Convert Entities' own real, extrude-participating copy,
+      // Offset's seed is only ever a reference to measure the offset
+      // distance from.
+      expect(line.construction, isTrue);
       // Not yet in offsetPreviewTargets - only Finish opens the value bar,
       // same as a Sketch-entity Line/Arc pick.
       expect(freshController.offsetPreviewTargets, isNull);
@@ -6100,7 +6106,9 @@ void main() {
       expect(freshController.lines, isEmpty);
       expect(freshController.arcs, hasLength(1));
       final arc = freshController.arcs.values.single;
-      expect(arc.construction, isFalse);
+      // See the Line-pick test above for why Offset's own seed is
+      // construction, unlike Convert Entities' real copy.
+      expect(arc.construction, isTrue);
       expect(freshController.points.containsKey(arc.centerPointId), isTrue);
       expect(freshController.selectionSet, hasLength(1));
       expect(freshController.selectionSet.single.kind, SelectionKind.arc);
@@ -6132,7 +6140,9 @@ void main() {
       expect(freshController.arcs, isEmpty);
       expect(freshController.circles, hasLength(1));
       final circle = freshController.circles.values.single;
-      expect(circle.construction, isFalse);
+      // See the Line-pick test above for why Offset's own seed is
+      // construction, unlike Convert Entities' real copy.
+      expect(circle.construction, isTrue);
       expect(circle.cardinalPointIds, hasLength(4));
       for (final id in circle.cardinalPointIds) {
         expect(freshController.points.containsKey(id), isTrue);

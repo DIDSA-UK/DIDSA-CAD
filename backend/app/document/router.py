@@ -1297,7 +1297,7 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             )
         center_x, center_y, radius = circle_params
         center_point = sketch.add_point(center_x, center_y)
-        circle = sketch.add_circle(center_point.id, radius=radius, construction=False)
+        circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
         center_response = PointResponse(id=center_point.id, x=center_point.x, y=center_point.y)
         return ConvertEdgeResponse(
             circle=CircleResponse(
@@ -1330,7 +1330,7 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         else:
             arc_start_point, arc_end_point = end_point, start_point
         center_point = sketch.add_point(center_x, center_y)
-        arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=False)
+        arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
         return ConvertEdgeResponse(
             arc=ArcResponse(
                 id=arc.id,
@@ -1345,7 +1345,7 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             center_point=PointResponse(id=center_point.id, x=center_point.x, y=center_point.y),
         )
 
-    line = sketch.add_line(start_point.id, end_point.id, construction=False)
+    line = sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
     return ConvertEdgeResponse(
         line=LineResponse(
             id=line.id,

@@ -219,10 +219,20 @@ class ConvertVertexCreate(BaseModel):
 class ConvertEdgeCreate(BaseModel):
     """Convert Entities' edge-shaped sibling to `ConvertVertexCreate` - see
     that schema's own doc comment for why this is a separate concept from
-    `ExternalEdgeReferenceCreate` despite the identical wire shape."""
+    `ExternalEdgeReferenceCreate` despite the identical wire shape.
+
+    On-device feedback ("when offsetting an edge, a line or curve is
+    created on the edge - these lines should be construction"): defaults
+    to `False` (real, extrude-participating geometry), matching every
+    prior behavior - Convert Entities itself still wants a real, non-
+    construction copy of the picked edge. Offset's own edge-to-seed
+    conversion (`SketchController.pickBodyEdgeForOffset`) passes `True`
+    instead - that seed is never meant to be its own profile boundary,
+    only a reference for the offset distance to measure from."""
 
     body_id: str
     edge_index: int
+    construction: bool = False
 
 
 class ConvertEdgeResponse(BaseModel):

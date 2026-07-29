@@ -1365,24 +1365,31 @@ class SketchApiClient {
       );
 
   /// [convertBodyVertex]'s edge-shaped sibling - materializes a Body edge
-  /// as either a real, non-construction Line (the original v1 chord) or a
-  /// real Arc (on-device feedback: "when I offset a curved edge it
-  /// creates a straight line" - see the backend's `app.document.router.
-  /// convert_body_edge` doc comment for the coplanar-circular-edge
-  /// detection this added, and its own v1 limits). [ConvertEdgeResultDto]
-  /// carries either, never [ExternalEdgeReferenceDto]'s old fixed "always
-  /// a Line" shape.
+  /// as either a Line (the original v1 chord) or a real Arc (on-device
+  /// feedback: "when I offset a curved edge it creates a straight line" -
+  /// see the backend's `app.document.router.convert_body_edge` doc comment
+  /// for the coplanar-circular-edge detection this added, and its own v1
+  /// limits). [ConvertEdgeResultDto] carries either, never
+  /// [ExternalEdgeReferenceDto]'s old fixed "always a Line" shape.
+  ///
+  /// [construction] defaults to `false` (Convert Entities' own real,
+  /// extrude-participating copy, unchanged) - on-device feedback ("when
+  /// offsetting an edge, a line or curve is created on the edge - these
+  /// lines should be construction"): [SketchController.pickBodyEdgeForOffset]
+  /// passes `true` instead, since that seed is only ever a reference for
+  /// the offset distance to measure from, never its own profile boundary.
   Future<ConvertEdgeResultDto> convertBodyEdge(
     String partId,
     String sketchFeatureId,
     String bodyId,
-    int edgeIndex,
-  ) =>
+    int edgeIndex, {
+    bool construction = false,
+  }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/edge'),
               headers: _headers,
-              body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex}),
+              body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex, 'construction': construction}),
             ),
         (body) => ConvertEdgeResultDto.fromJson(body as Map<String, dynamic>),
       );

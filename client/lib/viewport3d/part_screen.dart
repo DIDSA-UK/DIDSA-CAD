@@ -488,6 +488,29 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectionMode = !_selectionMode);
   }
 
+  /// Whether the top-left hamburger/feature-tree FAB column (and, since
+  /// the on-device "move the select/orbit fab" fix, the top-right
+  /// selection-mode FAB it moved to) should currently show at all - the
+  /// exact same set of "something else owns this corner/needs the whole
+  /// screen right now" modes the top-left column's own `if` already
+  /// gated on before that fab moved out of it, now shared so both FABs
+  /// hide/show in lockstep rather than the moved one needing its own,
+  /// possibly-drifting copy of this condition.
+  bool get _viewportFabColumnsVisible =>
+      !_featureTreeVisible &&
+      !_planeSelectionMode &&
+      !_confirmingSketchOrientation &&
+      !_extrudeActive &&
+      !_createPlaneActive &&
+      !_filletActive &&
+      !_chamferActive &&
+      !_revolveActive &&
+      !_sweepActive &&
+      !_mirrorActive &&
+      !_patternActive &&
+      !_profilePickerActive &&
+      !_pathPickerActive;
+
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
   /// (Fix 4) when the cursor's hover hit is non-null.
@@ -7422,6 +7445,46 @@ class _PartScreenState extends State<PartScreen> {
                   // overlay here.
                   sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
                 ),
+                // On-device feedback ("move the select/orbit fab to the top
+                // right group of fabs under 'centre view'"): a sibling of
+                // [PartViewport] here, not a widget passed into it - that
+                // widget's own top-right "Reset view" button lives inside
+                // its scene-dependent build (`if (scene == null) return
+                // CircularProgressIndicator()`), so embedding this FAB
+                // there too would delay its first appearance until the GPU
+                // scene finishes initializing, unlike every other FAB here
+                // (all immediately available, same "stay visible regardless
+                // of anything else" precedent [hamburger-fab] already
+                // documents). `right: 8` matches PartViewport's own Reset
+                // view button exactly; `top: 56` sits directly under it (its
+                // 40px `FloatingActionButton.small`/`IconButton.filled`
+                // height + an 8px gap, the same gap this Column's other
+                // FABs already use) - shares [_viewportFabColumnsVisible]
+                // with the top-left hamburger/feature-tree column so both
+                // hide/show together, same as before the move.
+                if (_viewportFabColumnsVisible)
+                  Positioned(
+                    top: 56,
+                    right: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: FloatingActionButton.small(
+                        heroTag: 'selection-mode-fab',
+                        tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+                        backgroundColor:
+                            _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
+                        onPressed: _busy ? null : _toggleSelectionMode,
+                        // The icon shows the mode a tap will switch *into*:
+                        // a cursor/pointer while in (default) Orbit mode,
+                        // an orbit/rotate glyph while in Selection mode.
+                        child: SvgIcon(
+                          _selectionMode
+                              ? 'assets/icons/viewport/viewport_orbit_mode.svg'
+                              : 'assets/icons/viewport/viewport_selection_mode.svg',
+                        ),
+                      ),
+                    ),
+                  ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
                 // a decoration on PartViewport itself, so its own layout
@@ -7988,19 +8051,7 @@ class _PartScreenState extends State<PartScreen> {
                 // feature-tree FAB specifically (unlike the hamburger just
                 // below, which already has its own extrude-aware check) sat
                 // underneath/overlapping A4's banner.
-                if (!_featureTreeVisible &&
-                    !_planeSelectionMode &&
-                    !_confirmingSketchOrientation &&
-                    !_extrudeActive &&
-                    !_createPlaneActive &&
-                    !_filletActive &&
-                    !_chamferActive &&
-                    !_revolveActive &&
-                    !_sweepActive &&
-                    !_mirrorActive &&
-                    !_patternActive &&
-                    !_profilePickerActive &&
-                    !_pathPickerActive)
+                if (_viewportFabColumnsVisible)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -8009,36 +8060,14 @@ class _PartScreenState extends State<PartScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // On-device feedback: moved here from the
-                          // bottom-right FAB column, which used to hide
-                          // this FAB entirely whenever the toolbar was open
-                          // (it painted on top of the open toolbar panel
-                          // otherwise) or during the sketch-orientation
-                          // confirm step (it covered that step's own
-                          // Continue button) - sitting just above the
-                          // toolbar's own panel here means neither problem
-                          // applies, so this can now stay visible
-                          // unconditionally (aside from [_busy]), matching
-                          // the hamburger toggle's own "must stay visible
-                          // regardless of anything else" precedent directly
-                          // below.
-                          FloatingActionButton.small(
-                            heroTag: 'selection-mode-fab',
-                            tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
-                            backgroundColor:
-                                _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
-                            onPressed: _busy ? null : _toggleSelectionMode,
-                            // The icon shows the mode a tap will switch
-                            // *into*: a cursor/pointer while in (default)
-                            // Orbit mode, an orbit/rotate glyph while in
-                            // Selection mode.
-                            child: SvgIcon(
-                              _selectionMode
-                                  ? 'assets/icons/viewport/viewport_orbit_mode.svg'
-                                  : 'assets/icons/viewport/viewport_selection_mode.svg',
-                            ),
-                          ),
-                          const SizedBox(height: 8),
+                          // On-device feedback ("move the select/orbit fab
+                          // to the top right group of fabs under 'centre
+                          // view'"): the selection/orbit-mode toggle used
+                          // to live here first in this Column - moved to
+                          // [PartViewport]'s own top-right corner (see
+                          // [topRightSecondaryAction] below), directly
+                          // under its "Reset view" FAB. Hamburger/feature-
+                          // tree now lead this Column instead.
                           // Fix 7: was an IconButton.filled, now a FAB above
                           // 'feature-tree-fab' in this same Column, matching
                           // how every other toolbar/viewport toggle here is a
