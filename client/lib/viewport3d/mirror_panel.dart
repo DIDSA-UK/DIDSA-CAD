@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../api/document_api_client.dart';
+
 /// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
 /// §2.1/§4): the bottom-sheet-style panel [PartScreen] opens once Mirror is
 /// enabled (a single Body selected - see `selection_actions.dart`'s
@@ -25,6 +27,13 @@ class MirrorPanel extends StatelessWidget {
   /// field uses, just driven by a viewport pick instead of a text field.
   final bool hasPlanePicked;
 
+  /// Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
+  /// §2.10/§4): `MergeMode.keepSeparate` (the default - every mirrored
+  /// copy registers as its own Body) or `MergeMode.fuseIntoOne` (every
+  /// mirrored copy plus every source Body fused together into one).
+  final MergeMode merge;
+  final void Function(MergeMode merge) onMergeChanged;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -32,6 +41,8 @@ class MirrorPanel extends StatelessWidget {
     super.key,
     this.title = 'Mirror',
     required this.hasPlanePicked,
+    required this.merge,
+    required this.onMergeChanged,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -63,6 +74,15 @@ class MirrorPanel extends StatelessWidget {
                         : Theme.of(context).colorScheme.error,
                     fontSize: 12,
                   ),
+                ),
+                const SizedBox(height: 12),
+                SegmentedButton<MergeMode>(
+                  segments: const [
+                    ButtonSegment(value: MergeMode.keepSeparate, label: Text('Keep Separate')),
+                    ButtonSegment(value: MergeMode.fuseIntoOne, label: Text('Merge into One Body')),
+                  ],
+                  selected: {merge},
+                  onSelectionChanged: (selection) => onMergeChanged(selection.first),
                 ),
                 const SizedBox(height: 12),
                 Row(

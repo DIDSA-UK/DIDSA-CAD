@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 
 /// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
@@ -18,7 +19,13 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: MirrorPanel(hasPlanePicked: false, onConfirm: () {}, onCancel: () {}),
+            body: MirrorPanel(
+              hasPlanePicked: false,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
           ),
         ),
       );
@@ -32,7 +39,13 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: MirrorPanel(hasPlanePicked: true, onConfirm: () {}, onCancel: () {}),
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
           ),
         ),
       );
@@ -49,6 +62,8 @@ void main() {
           home: Scaffold(
             body: MirrorPanel(
               hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
               onConfirm: () => confirmed = true,
               onCancel: () {},
             ),
@@ -63,7 +78,13 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: MirrorPanel(hasPlanePicked: false, onConfirm: () {}, onCancel: () {}),
+            body: MirrorPanel(
+              hasPlanePicked: false,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
           ),
         ),
       );
@@ -74,7 +95,13 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: MirrorPanel(hasPlanePicked: true, onConfirm: () {}, onCancel: () {}),
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
           ),
         ),
       );
@@ -87,7 +114,13 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: MirrorPanel(hasPlanePicked: false, onConfirm: () {}, onCancel: () {}),
+            body: MirrorPanel(
+              hasPlanePicked: false,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
           ),
         ),
       );
@@ -102,6 +135,8 @@ void main() {
             body: MirrorPanel(
               title: 'Edit Mirror',
               hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -109,6 +144,63 @@ void main() {
         ),
       );
       expect(find.text('Edit Mirror'), findsOneWidget);
+    });
+  });
+
+  group('MirrorPanel merge toggle', () {
+    testWidgets('shows Keep Separate as selected by default', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      final segmentedButton = tester.widget<SegmentedButton<MergeMode>>(find.byType(SegmentedButton<MergeMode>));
+      expect(segmentedButton.selected, {MergeMode.keepSeparate});
+    });
+
+    testWidgets('reflects fuseIntoOne as selected', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.fuseIntoOne,
+              onMergeChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      final segmentedButton = tester.widget<SegmentedButton<MergeMode>>(find.byType(SegmentedButton<MergeMode>));
+      expect(segmentedButton.selected, {MergeMode.fuseIntoOne});
+    });
+
+    testWidgets('tapping "Merge into One Body" fires onMergeChanged with fuseIntoOne', (tester) async {
+      MergeMode? changedTo;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (m) => changedTo = m,
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Merge into One Body'));
+      expect(changedTo, MergeMode.fuseIntoOne);
     });
   });
 
@@ -120,6 +212,8 @@ void main() {
           home: Scaffold(
             body: MirrorPanel(
               hasPlanePicked: false,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
               onConfirm: () {},
               onCancel: () => cancelled = true,
             ),

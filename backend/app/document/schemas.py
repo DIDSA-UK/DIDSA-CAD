@@ -6,6 +6,7 @@ from app.document.models import (
     ExtrudeType,
     FixedAxis,
     ImportSourceFormat,
+    MergeMode,
     PatternType,
     PlaneType,
     Produces,
@@ -550,10 +551,13 @@ class MirrorFeatureCreate(BaseModel):
     least one entry (see `app.document.router._validate_mirror_source_
     body_ids`) - multi-body seeding was pulled forward from its original
     Phase 6 scoping into Phase 1 on guided-flow UX feedback; multi-*feature*
-    seeding (`source_feature_ids`) remains Phase 6."""
+    seeding (`source_feature_ids`) remains Phase 6. `merge` (Phase 5,
+    `docs/pattern-mirror-scope.md` §2.10) defaults to `KEEP_SEPARATE`,
+    matching `MirrorFeature`'s own dataclass default."""
 
     source_body_ids: list[str]
     mirror_plane: PlaneRefSchema
+    merge: MergeMode = MergeMode.KEEP_SEPARATE
 
 
 class MirrorFeatureUpdate(BaseModel):
@@ -562,6 +566,7 @@ class MirrorFeatureUpdate(BaseModel):
 
     source_body_ids: list[str] | None = None
     mirror_plane: PlaneRefSchema | None = None
+    merge: MergeMode | None = None
 
 
 class MirrorFeatureResponse(BaseModel):
@@ -569,6 +574,7 @@ class MirrorFeatureResponse(BaseModel):
     id: str
     source_body_ids: list[str]
     mirror_plane: PlaneRefSchema
+    merge: MergeMode
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # MirrorFeature.
@@ -618,7 +624,9 @@ class PatternFeatureCreate(BaseModel):
     `source_body_ids` must have exactly one entry (see `app.document.
     router._validate_pattern_source_body_ids`) - unlike Mirror, Pattern's
     own multi-body seeding remains Phase 6 scope, not pulled forward (see
-    `PatternFeature`'s own docstring)."""
+    `PatternFeature`'s own docstring). `merge` (Phase 5, `docs/pattern-
+    mirror-scope.md` §2.10) defaults to `KEEP_SEPARATE`, matching
+    `PatternFeature`'s own dataclass default."""
 
     source_body_ids: list[str]
     pattern_type: PatternType = PatternType.RECTANGULAR
@@ -635,6 +643,7 @@ class PatternFeatureCreate(BaseModel):
     angle_total: float = 360.0
     reverse_angular: bool = False
     skip_indices: list[int] = []
+    merge: MergeMode = MergeMode.KEEP_SEPARATE
 
 
 class PatternFeatureUpdate(BaseModel):
@@ -673,6 +682,7 @@ class PatternFeatureUpdate(BaseModel):
     angle_total: float | None = None
     reverse_angular: bool | None = None
     skip_indices: list[int] | None = None
+    merge: MergeMode | None = None
 
 
 class PatternFeatureResponse(BaseModel):
@@ -693,6 +703,7 @@ class PatternFeatureResponse(BaseModel):
     angle_total: float
     reverse_angular: bool
     skip_indices: list[int]
+    merge: MergeMode
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # PatternFeature.

@@ -44,6 +44,7 @@ from app.document.models import (
     ExtrudeType,
     FilletFeature,
     ImportFeature,
+    MergeMode,
     MirrorFeature,
     Part,
     PatternFeature,
@@ -663,6 +664,48 @@ def _apply_boss_or_cut(
             _register_solids(bodies, target_id, cut_result)
 
 
+def _fuse_realized_instances(
+    bodies: dict[str, TopoDS_Shape],
+    feature_index: dict[str, int],
+    base_ids: list[str],
+    realized_shapes: list[TopoDS_Shape],
+) -> None:
+    """Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
+    §2.10/§4, `MergeMode.FUSE_INTO_ONE`), shared by both `MirrorFeature`'s
+    and `PatternFeature`'s own `compute_part_bodies` branches below: fuses
+    every already-transformed shape in `realized_shapes` (Mirror's own
+    mirrored copies, or Pattern's own non-seed/non-skipped instances)
+    together with every existing Body named in `base_ids` (Mirror's own
+    `source_body_ids`; Pattern's single-entry seed) via repeated
+    `BRepAlgoAPI_Fuse` - the exact same call `_apply_boss_or_cut`'s own
+    multi-target fuse already uses, generalized here to fuse a *group of
+    newly-realized shapes* into a *group of pre-existing Bodies* rather
+    than one new solid into N targets.
+
+    The surviving Body id mirrors `_apply_boss_or_cut`'s own tie-break
+    exactly: whichever `base_ids` entry's owning Feature sorts lowest in
+    `feature_index` (`base_feature_id`-resolved, so a `#N`-suffixed source
+    id still resolves to its real owning Feature) - the fused result
+    inherits an existing Body's identity rather than minting a brand-new
+    one, same as a Boss fused into a target. Every other `base_ids` entry
+    is deleted from `bodies`; the fused shape is (re)registered under the
+    survivor id via `_register_solids`, so a fuse that happens to produce
+    more than one disconnected solid still splits correctly, same as any
+    other Boss/Cut result. `base_ids` is assumed already known to exist in
+    `bodies` - both call sites only reach here after their own resolver
+    already proved every source Body it names resolved successfully."""
+    merged: TopoDS_Shape | None = None
+    for shape in realized_shapes:
+        merged = shape if merged is None else BRepAlgoAPI_Fuse(merged, shape).Shape()
+    for base_id in base_ids:
+        merged = bodies[base_id] if merged is None else BRepAlgoAPI_Fuse(merged, bodies[base_id]).Shape()
+
+    survivor_id = min(base_ids, key=lambda bid: feature_index[base_feature_id(bid)])
+    for base_id in base_ids:
+        del bodies[base_id]
+    _register_solids(bodies, survivor_id, merged)
+
+
 def compute_part_bodies(
     part: Part, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> dict[str, TopoDS_Shape]:
@@ -844,7 +887,13 @@ def compute_part_bodies(
             # (mirrors `_register_solids`'s own single-vs-multiple naming
             # convention, applied here across sources rather than within
             # one already-registered shape).
-            if len(mirrored_shapes) == 1:
+            #
+            # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every mirrored
+            # copy plus every source Body together into one Body, via the
+            # shared `_fuse_realized_instances` helper above.
+            if feature.merge == MergeMode.FUSE_INTO_ONE:
+                _fuse_realized_instances(bodies, feature_index, feature.source_body_ids, mirrored_shapes)
+            elif len(mirrored_shapes) == 1:
                 _register_solids(bodies, feature.id, mirrored_shapes[0])
             else:
                 for i, shape in enumerate(mirrored_shapes):
@@ -872,7 +921,16 @@ def compute_part_bodies(
             # index for Circular - not a freshly reindexed 0..N-1 either
             # way) so a future Phase 3 skip-instance picker can address the
             # exact same indices.
-            if len(instances) == 1:
+            #
+            # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every realized
+            # (non-skipped) instance plus the untouched seed Body together
+            # into one Body, registered under the seed's own existing id -
+            # via the shared `_fuse_realized_instances` helper above.
+            if feature.merge == MergeMode.FUSE_INTO_ONE:
+                _fuse_realized_instances(
+                    bodies, feature_index, feature.source_body_ids, list(instances.values())
+                )
+            elif len(instances) == 1:
                 ((_, only_shape),) = instances.items()
                 _register_solids(bodies, feature.id, only_shape)
             else:

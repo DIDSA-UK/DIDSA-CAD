@@ -191,6 +191,28 @@ class PatternAxisRefDto {
 /// as one DTO (rather than three separate classes) since most call sites
 /// (the Feature tree, the long-press menu) only care about [id]/[type]/
 /// [locked] regardless of which kind a row is.
+/// Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
+/// §2.10/§4): whether a Mirror/Pattern Feature's realized instances stay
+/// independent Bodies or get fused together into one - shared by both
+/// [MirrorPanel] and [PatternPanel] (unlike [RevolveMode]/[PatternMode],
+/// which each pick between two entirely different field groups, this is a
+/// simple two-way toggle both Feature types share verbatim, so it lives
+/// here rather than being duplicated per-panel). Mirrors [PatternMode]'s
+/// own `apiValue`/`fromApiValue` str-enum convention, matching the
+/// backend's `MergeMode` string values exactly.
+enum MergeMode {
+  keepSeparate,
+  fuseIntoOne;
+
+  String get apiValue => switch (this) {
+        MergeMode.keepSeparate => 'keep_separate',
+        MergeMode.fuseIntoOne => 'fuse_into_one',
+      };
+
+  static MergeMode fromApiValue(String value) =>
+      MergeMode.values.firstWhere((m) => m.apiValue == value, orElse: () => MergeMode.keepSeparate);
+}
+
 class FeatureDto {
   final String type;
   final String id;
@@ -377,6 +399,16 @@ class FeatureDto {
   /// created - index `0` (the untouched seed) can never appear here.
   final List<int> skipIndices;
 
+  /// Pattern/Mirror scoping's Phase 5 - present on both `"mirror"` and
+  /// `"pattern"` Features: `"keep_separate"` (the default - every realized
+  /// instance registers as its own Body) or `"fuse_into_one"` (every
+  /// realized instance plus the original source Body/Bodies fused
+  /// together via `BRepAlgoAPI_Fuse` - see the backend's `MergeMode`).
+  /// Kept as the raw backend string here (like [mode]/[patternType]
+  /// already are) - see [MergeMode] for the parsed Dart enum the panels
+  /// themselves use.
+  final String merge;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -426,6 +458,7 @@ class FeatureDto {
     this.angleTotal = 360.0,
     this.reverseAngular = false,
     this.skipIndices = const [],
+    this.merge = 'keep_separate',
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -510,6 +543,7 @@ class FeatureDto {
         angleTotal: (json['angle_total'] as num?)?.toDouble() ?? 360.0,
         reverseAngular: json['reverse_angular'] as bool? ?? false,
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
+        merge: json['merge'] as String? ?? 'keep_separate',
       );
 }
 
@@ -921,6 +955,7 @@ class DocumentApiClient {
     String partId, {
     required List<String> sourceBodyIds,
     required PlaneRefDto mirrorPlane,
+    MergeMode merge = MergeMode.keepSeparate,
   }) =>
       _send(
         () => _httpClient.post(
@@ -929,20 +964,22 @@ class DocumentApiClient {
               body: jsonEncode({
                 'source_body_ids': sourceBodyIds,
                 'mirror_plane': mirrorPlane.toJson(),
+                'merge': merge.apiValue,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// Partial update for an existing MirrorFeature - either/both of
-  /// [sourceBodyIds]/[mirrorPlane] may be supplied; omitted fields keep
-  /// their current value. Used for the live-preview debounced re-solve,
-  /// same pattern as [updateFilletFeature].
+  /// Partial update for an existing MirrorFeature - any of [sourceBodyIds]/
+  /// [mirrorPlane]/[merge] may be supplied; omitted fields keep their
+  /// current value. Used for the live-preview debounced re-solve, same
+  /// pattern as [updateFilletFeature].
   Future<FeatureDto> updateMirrorFeature(
     String partId,
     String featureId, {
     List<String>? sourceBodyIds,
     PlaneRefDto? mirrorPlane,
+    MergeMode? merge,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -951,6 +988,7 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (sourceBodyIds != null) 'source_body_ids': sourceBodyIds,
                 if (mirrorPlane != null) 'mirror_plane': mirrorPlane.toJson(),
+                if (merge != null) 'merge': merge.apiValue,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -987,6 +1025,7 @@ class DocumentApiClient {
     double angleTotal = 360.0,
     bool reverseAngular = false,
     List<int> skipIndices = const [],
+    MergeMode merge = MergeMode.keepSeparate,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1008,6 +1047,7 @@ class DocumentApiClient {
                 'angle_total': angleTotal,
                 'reverse_angular': reverseAngular,
                 'skip_indices': skipIndices,
+                'merge': merge.apiValue,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -1036,6 +1076,7 @@ class DocumentApiClient {
     double? angleTotal,
     bool? reverseAngular,
     List<int>? skipIndices,
+    MergeMode? merge,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -1060,6 +1101,7 @@ class DocumentApiClient {
                 // previously-skipped instance - see the backend's
                 // `PatternFeatureUpdate.skip_indices` own docstring.
                 if (skipIndices != null) 'skip_indices': skipIndices,
+                if (merge != null) 'merge': merge.apiValue,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

@@ -655,6 +655,13 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleMirrorPreview();
   }
 
+  /// [MirrorPanel.onMergeChanged] - mirrors [_setMirrorPlane]'s own
+  /// "update state, reschedule the debounced preview" shape.
+  void _setMirrorMerge(MergeMode merge) {
+    setState(() => _mirrorMerge = merge);
+    _scheduleMirrorPreview();
+  }
+
   /// Prompt F: [_toggleSelectedEntity]'s sketchLine special-case for the
   /// Revolve flow - replaces whatever `sketchLine` entity (if any) is
   /// currently in [_selectedEntities] with [axisEntity], unless [axisEntity]
@@ -1081,6 +1088,14 @@ class _PartScreenState extends State<PartScreen> {
   /// path Extrude/Revolve already use is sufficient.
   String? _previewMirrorFeatureId;
 
+  /// Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
+  /// §2.10/§4): `MergeMode.keepSeparate` (the default) or `MergeMode.
+  /// fuseIntoOne` - see [MirrorPanel.merge]. Reset to the default at the
+  /// start of every fresh session ([_startMirrorPicker]/[_openMirrorPanel]),
+  /// reconstructed from the edited Feature's own stored value in
+  /// [_openMirrorPanelForEdit].
+  MergeMode _mirrorMerge = MergeMode.keepSeparate;
+
   /// B4: non-null while [MirrorPanel] is editing an *already-existing*
   /// MirrorFeature - mirrors [_editingFilletFeatureId].
   String? _editingMirrorFeatureId;
@@ -1089,7 +1104,7 @@ class _PartScreenState extends State<PartScreen> {
   /// started - [_cancelMirror] PATCHes these back verbatim when
   /// [_editingMirrorFeatureId] is set, same reason [_filletEditSnapshot]
   /// exists.
-  ({List<String> sourceBodyIds, PlaneRefDto mirrorPlane})? _mirrorEditSnapshot;
+  ({List<String> sourceBodyIds, PlaneRefDto mirrorPlane, MergeMode merge})? _mirrorEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - restored
   /// by both [_confirmMirror] and [_cancelMirror], same purpose
@@ -1238,6 +1253,13 @@ class _PartScreenState extends State<PartScreen> {
   /// outright rather than silently clamp.
   Set<int> _patternSkipIndices = {};
 
+  /// Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
+  /// §2.10/§4): `MergeMode.keepSeparate` (the default) or `MergeMode.
+  /// fuseIntoOne` - see [PatternPanel.merge]. Mirrors [_mirrorMerge]'s own
+  /// reset/reconstruct shape exactly, shared across both Rectangular and
+  /// Circular mode.
+  MergeMode _patternMerge = MergeMode.keepSeparate;
+
   /// The PatternFeature created (or, in edit mode, already existing) for
   /// the panel session - mirrors [_previewMirrorFeatureId]'s simple
   /// pattern (confirmed via `docs/live-preview-pattern.md`'s decision tree
@@ -1269,6 +1291,7 @@ class _PartScreenState extends State<PartScreen> {
     double angleTotal,
     bool reverseAngular,
     List<int> skipIndices,
+    MergeMode merge,
   })? _patternEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened -
@@ -5557,6 +5580,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _mirrorStep = _MirrorStep.pickingBodies;
       _mirrorSourceBodyIds = null;
+      _mirrorMerge = MergeMode.keepSeparate;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -5627,6 +5651,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _mirrorStep = _MirrorStep.pickingPlane;
       _mirrorSourceBodyIds = sourceBodyIds;
+      _mirrorMerge = MergeMode.keepSeparate;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -5665,12 +5690,14 @@ class _PartScreenState extends State<PartScreen> {
     final mirrorPlane = feature.mirrorPlane;
     if (sourceBodyIds.isEmpty || mirrorPlane == null) return false;
 
+    final merge = MergeMode.fromApiValue(feature.merge);
     setState(() {
       _mirrorStep = _MirrorStep.pickingPlane;
       _editingMirrorFeatureId = feature.id;
       _previewMirrorFeatureId = feature.id;
       _mirrorSourceBodyIds = sourceBodyIds;
-      _mirrorEditSnapshot = (sourceBodyIds: sourceBodyIds, mirrorPlane: mirrorPlane);
+      _mirrorMerge = merge;
+      _mirrorEditSnapshot = (sourceBodyIds: sourceBodyIds, mirrorPlane: mirrorPlane, merge: merge);
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
       _selectedEntities = {_mirrorPlaneEntityFor(mirrorPlane)};
@@ -5738,6 +5765,7 @@ class _PartScreenState extends State<PartScreen> {
         part.id,
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
+        merge: _mirrorMerge,
       );
       _previewMirrorFeatureId = created.id;
     } else {
@@ -5746,6 +5774,7 @@ class _PartScreenState extends State<PartScreen> {
         existingId,
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
+        merge: _mirrorMerge,
       );
     }
     await _refreshMesh();
@@ -5778,6 +5807,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _mirrorStep = null;
       _mirrorSourceBodyIds = null;
+      _mirrorMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -5803,6 +5833,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _mirrorStep = null;
       _mirrorSourceBodyIds = null;
+      _mirrorMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -5819,6 +5850,7 @@ class _PartScreenState extends State<PartScreen> {
             previewId,
             sourceBodyIds: editSnapshot.sourceBodyIds,
             mirrorPlane: editSnapshot.mirrorPlane,
+            merge: editSnapshot.merge,
           );
           await _refreshFeatures();
         });
@@ -5938,6 +5970,7 @@ class _PartScreenState extends State<PartScreen> {
     _patternAngleTotal = 360.0;
     _patternReverseAngular = false;
     _patternSkipIndices = {};
+    _patternMerge = MergeMode.keepSeparate;
     _previewPatternFeatureId = null;
     _editingPatternFeatureId = null;
     _patternEditSnapshot = null;
@@ -5973,6 +6006,7 @@ class _PartScreenState extends State<PartScreen> {
       final axis = feature.axis;
       if (axis == null) return false;
       final axisEntity = _patternAxisEntityFor(axis);
+      final merge = MergeMode.fromApiValue(feature.merge);
       setState(() {
         _patternStep = _PatternStep.configuring;
         _patternMode = PatternMode.circular;
@@ -5997,6 +6031,7 @@ class _PartScreenState extends State<PartScreen> {
         _patternAngleTotal = feature.angleTotal;
         _patternReverseAngular = feature.reverseAngular;
         _patternSkipIndices = feature.skipIndices.toSet();
+        _patternMerge = merge;
         _patternEditSnapshot = (
           sourceBodyIds: sourceBodyIds,
           direction1: null,
@@ -6012,6 +6047,7 @@ class _PartScreenState extends State<PartScreen> {
           angleTotal: feature.angleTotal,
           reverseAngular: feature.reverseAngular,
           skipIndices: feature.skipIndices,
+          merge: merge,
         );
         _meshBeforePattern = _bodies;
         _entitiesBeforePattern = _selectedEntities;
@@ -6037,6 +6073,7 @@ class _PartScreenState extends State<PartScreen> {
     final direction2Entity = direction2 == null ? null : _patternEdgeEntityFor(direction2);
     final count1 = feature.count1 ?? 2;
     final spacing1 = feature.spacing1 ?? 10.0;
+    final merge = MergeMode.fromApiValue(feature.merge);
 
     setState(() {
       _patternStep = _PatternStep.configuring;
@@ -6062,6 +6099,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
       _patternSkipIndices = feature.skipIndices.toSet();
+      _patternMerge = merge;
       _patternEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         direction1: direction1,
@@ -6077,6 +6115,7 @@ class _PartScreenState extends State<PartScreen> {
         angleTotal: 360.0,
         reverseAngular: false,
         skipIndices: feature.skipIndices,
+        merge: merge,
       );
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -6266,6 +6305,13 @@ class _PartScreenState extends State<PartScreen> {
 
   void _onPatternReverseAngularChanged(bool reverse) {
     setState(() => _patternReverseAngular = reverse);
+    _schedulePatternPreview();
+  }
+
+  /// [PatternPanel.onMergeChanged] - mirrors [_setMirrorMerge]'s own shape,
+  /// shared across both Rectangular and Circular mode.
+  void _setPatternMerge(MergeMode merge) {
+    setState(() => _patternMerge = merge);
     _schedulePatternPreview();
   }
 
@@ -6523,6 +6569,7 @@ class _PartScreenState extends State<PartScreen> {
           angleTotal: _patternAngleTotal,
           reverseAngular: _patternReverseAngular,
           skipIndices: skipIndices,
+          merge: _patternMerge,
         );
         _previewPatternFeatureId = created.id;
       } else {
@@ -6535,6 +6582,7 @@ class _PartScreenState extends State<PartScreen> {
           angleTotal: _patternAngleTotal,
           reverseAngular: _patternReverseAngular,
           skipIndices: skipIndices,
+          merge: _patternMerge,
         );
       }
       await _refreshMesh();
@@ -6559,6 +6607,7 @@ class _PartScreenState extends State<PartScreen> {
         spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
         reverse2: hasSecondDirection ? _patternReverse2 : false,
         skipIndices: skipIndices,
+        merge: _patternMerge,
       );
       _previewPatternFeatureId = created.id;
     } else {
@@ -6575,6 +6624,7 @@ class _PartScreenState extends State<PartScreen> {
         spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
         reverse2: hasSecondDirection ? _patternReverse2 : false,
         skipIndices: skipIndices,
+        merge: _patternMerge,
       );
     }
     await _refreshMesh();
@@ -6641,6 +6691,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
       _patternSkipIndices = {};
+      _patternMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforePattern ?? {};
       _entitiesBeforePattern = null;
       _previewPatternFeatureId = null;
@@ -6679,6 +6730,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
       _patternSkipIndices = {};
+      _patternMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforePattern ?? {};
       _entitiesBeforePattern = null;
       _previewPatternFeatureId = null;
@@ -6707,6 +6759,7 @@ class _PartScreenState extends State<PartScreen> {
             angleTotal: editSnapshot.angleTotal,
             reverseAngular: editSnapshot.reverseAngular,
             skipIndices: editSnapshot.skipIndices,
+            merge: editSnapshot.merge,
           );
           await _refreshFeatures();
         });
@@ -7535,6 +7588,8 @@ class _PartScreenState extends State<PartScreen> {
                       key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyIds?.join(',')),
                       title: _editingMirrorFeatureId != null ? 'Edit Mirror' : 'Mirror',
                       hasPlanePicked: _mirrorPlaneEntity != null,
+                      merge: _mirrorMerge,
+                      onMergeChanged: _setMirrorMerge,
                       onConfirm: _confirmMirror,
                       onCancel: _cancelMirror,
                     ),
@@ -7599,6 +7654,8 @@ class _PartScreenState extends State<PartScreen> {
                       onCountAngularChanged: _onPatternCountAngularChanged,
                       onAngleTotalChanged: _onPatternAngleTotalChanged,
                       onReverseAngularChanged: _onPatternReverseAngularChanged,
+                      merge: _patternMerge,
+                      onMergeChanged: _setPatternMerge,
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),

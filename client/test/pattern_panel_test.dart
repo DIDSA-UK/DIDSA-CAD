@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 
 /// Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
@@ -40,6 +41,8 @@ void main() {
     void Function(int count)? onCountAngularChanged,
     void Function(double angle)? onAngleTotalChanged,
     void Function(bool reverse)? onReverseAngularChanged,
+    MergeMode merge = MergeMode.keepSeparate,
+    void Function(MergeMode merge)? onMergeChanged,
     String title = 'Pattern',
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -78,6 +81,8 @@ void main() {
           onCountAngularChanged: onCountAngularChanged,
           onAngleTotalChanged: onAngleTotalChanged,
           onReverseAngularChanged: onReverseAngularChanged,
+          merge: merge,
+          onMergeChanged: onMergeChanged ?? (_) {},
           onConfirm: onConfirm ?? () {},
           onCancel: onCancel ?? () {},
         ),
@@ -382,6 +387,32 @@ void main() {
     testWidgets('shown in Circular mode once count_angular is more than 1', (tester) async {
       await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true, initialCountAngular: 5));
       expect(find.text(hintText), findsOneWidget);
+    });
+  });
+
+  group('PatternPanel merge toggle', () {
+    testWidgets('shows Keep Separate as selected by default in Rectangular mode', (tester) async {
+      await tester.pumpWidget(harness());
+      final segmentedButton = tester.widget<SegmentedButton<MergeMode>>(find.byType(SegmentedButton<MergeMode>));
+      expect(segmentedButton.selected, {MergeMode.keepSeparate});
+    });
+
+    testWidgets('reflects fuseIntoOne as selected', (tester) async {
+      await tester.pumpWidget(harness(merge: MergeMode.fuseIntoOne));
+      final segmentedButton = tester.widget<SegmentedButton<MergeMode>>(find.byType(SegmentedButton<MergeMode>));
+      expect(segmentedButton.selected, {MergeMode.fuseIntoOne});
+    });
+
+    testWidgets('tapping "Merge into One Body" fires onMergeChanged with fuseIntoOne', (tester) async {
+      MergeMode? changedTo;
+      await tester.pumpWidget(harness(onMergeChanged: (m) => changedTo = m));
+      await tester.tap(find.text('Merge into One Body'));
+      expect(changedTo, MergeMode.fuseIntoOne);
+    });
+
+    testWidgets('is shown in Circular mode too', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
+      expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
     });
   });
 }

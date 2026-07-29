@@ -602,6 +602,28 @@ class SweepFeature(Feature):
         return Produces.BODY
 
 
+class MergeMode(str, Enum):
+    """Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
+    §2.10/§4): whether a `MirrorFeature`/`PatternFeature`'s realized
+    instances register as independent Bodies or get fused together into
+    one, on both Feature types. Mirrors `ExtrudeType`/`SweepMode`'s
+    str-Enum pattern. `KEEP_SEPARATE` (the default, matching every
+    mainstream CAD tool's own default) is every Phase 1-4 Feature's
+    existing behaviour, unchanged - each realized instance registers as
+    its own Body via the established `#N`-suffix convention. `FUSE_INTO_
+    ONE` fuses every realized instance plus the original source Body/
+    Bodies together via repeated `BRepAlgoAPI_Fuse` (see `app.document.
+    extrude._fuse_realized_instances`, sharing `_apply_boss_or_cut`'s own
+    multi-target fuse/survivor-tie-break/`_register_solids` convention),
+    registered as a single Body under whichever source's own Feature
+    index sorts lowest - not a brand-new id, the same "the fused result
+    inherits an existing target's identity" convention `_apply_boss_or_
+    cut`'s own Boss-into-target case already uses."""
+
+    KEEP_SEPARATE = "keep_separate"
+    FUSE_INTO_ONE = "fuse_into_one"
+
+
 @dataclass
 class MirrorFeature(Feature):
     """Pattern/Mirror scoping's Phase 1 (see `docs/pattern-mirror-scope.md`
@@ -622,15 +644,16 @@ class MirrorFeature(Feature):
     the guided "New > Mirror" flow ("select body/bodies (multiple bodies
     should be supported)") pulled multi-body seeding forward from its
     original Phase 6 scoping into Phase 1 directly (see `docs/pattern-
-    mirror-scope.md`'s updated Phase 1/6 entries). Always produces separate
-    Bodies (no merge-into-source option yet, unlike Boss/Cut's
-    `target_body_ids`) - `source_feature_ids` (reserved but unused until
-    Phase 6's multi-*feature* seeding) and a keep-separate-vs-fuse `merge`
-    toggle (Phase 5) remain later, explicitly scoped work. Like a Boss with
-    no `target_body_ids`, a single source mints a brand-new Body identified
-    by its own Feature id directly; 2+ sources each get their own
-    `#N`-suffixed id (see `app.document.extrude.compute_part_bodies`'s own
-    `MirrorFeature` branch)."""
+    mirror-scope.md`'s updated Phase 1/6 entries). Defaults to `KEEP_
+    SEPARATE` (see `MergeMode`) - a single source mints a brand-new Body
+    identified by its own Feature id directly; 2+ sources each get their
+    own `#N`-suffixed id (see `app.document.extrude.compute_part_bodies`'s
+    own `MirrorFeature` branch), like a Boss with no `target_body_ids`.
+    `merge=FUSE_INTO_ONE` (Phase 5) instead fuses every mirrored copy plus
+    every source Body together into a single Body (see `app.document.
+    extrude._fuse_realized_instances`) - `source_feature_ids` (reserved but
+    unused until Phase 6's multi-*feature* seeding) remains later,
+    explicitly scoped work."""
 
     id: str
     source_body_ids: list[str]
@@ -638,6 +661,8 @@ class MirrorFeature(Feature):
     # Reserved for Phase 6 (multi-feature seed selection) - always empty
     # in Phase 1; not yet read by app.document.mirror.
     source_feature_ids: list[str] = field(default_factory=list)
+    # Phase 5 (§2.10): KEEP_SEPARATE (default) vs. FUSE_INTO_ONE.
+    merge: MergeMode = MergeMode.KEEP_SEPARATE
 
     @property
     def type(self) -> str:
@@ -777,14 +802,21 @@ class PatternFeature(Feature):
     not encoded in the domain type" split `CreatePlaneFeature`/
     `ExtrudeFeature` already use.
 
-    Always produces separate Bodies (no merge-into-one option yet -
-    Phase 5). `skip_indices` (Phase 3) suppresses individual instances by
+    Defaults to `KEEP_SEPARATE` (see `MergeMode`) - every realized
+    instance registers as its own Body. `merge=FUSE_INTO_ONE` (Phase 5)
+    instead fuses every realized (non-skipped) instance plus the untouched
+    seed Body together into a single Body (see `app.document.extrude.
+    _fuse_realized_instances`), registered under the seed Body's own
+    existing id rather than a brand-new one (mirrors `_apply_boss_or_cut`'s
+    own "the fused result inherits an existing target's identity"
+    convention). `skip_indices` (Phase 3) suppresses individual instances by
     their own linear index (the same `i * count_2 + j` row-major index for
     Rectangular, or the plain angular-step index for Circular, that
     `count_1`/`count_2`/`count_angular` themselves use) - a skipped index
     is filtered out before `app.document.pattern._rectangular_instances`/
     `_circular_instances` ever build a `BRepBuilderAPI_Transform` for it,
-    so a skipped instance never even briefly exists as a shape. Index `0`
+    so a skipped instance never even briefly exists as a shape (and is
+    therefore never part of a `FUSE_INTO_ONE` merge either). Index `0`
     (the untouched seed Body) can never usefully appear in `skip_indices` -
     it was never going to be (re)created in the first place - so the
     router rejects it explicitly (`app.document.router.
@@ -809,6 +841,8 @@ class PatternFeature(Feature):
     reverse_angular: bool = False
     # Phase 3 (both construction methods):
     skip_indices: list[int] = field(default_factory=list)
+    # Phase 5 (§2.10): KEEP_SEPARATE (default) vs. FUSE_INTO_ONE.
+    merge: MergeMode = MergeMode.KEEP_SEPARATE
 
     @property
     def type(self) -> str:
