@@ -187,9 +187,13 @@ class PartToolbar extends StatelessWidget {
           child: SafeArea(
             bottom: false,
             child: Padding(
-              // Clears the persistent toggle button this is opened from,
-              // which sits in the same top-left corner.
-              padding: const EdgeInsets.only(top: 56),
+              // Clears the persistent top-left button stack this is opened
+              // from (the orbit/select-mode FAB sitting just above the
+              // hamburger toggle, then the hamburger itself - see
+              // `part_screen.dart`'s own top-left `Positioned` Column) -
+              // 8px top inset + two 40px small FABs + an 8px gap between
+              // them + a little breathing room before this panel starts.
+              padding: const EdgeInsets.only(top: 104),
               child: Material(
                 elevation: 4,
                 borderRadius: const BorderRadius.only(
@@ -197,7 +201,11 @@ class PartToolbar extends StatelessWidget {
                   bottomRight: Radius.circular(12),
                 ),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 520),
+                  // Capped to a third of the screen's own height, rather
+                  // than a fixed pixel value, so this stays usable on
+                  // short/landscape viewports instead of overflowing or
+                  // eating almost the whole screen on a small phone.
+                  constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height / 3),
                   child: SizedBox(
                     width: 240,
                     child: SingleChildScrollView(

@@ -739,20 +739,27 @@ two-direction, always-separate output, guided "New > Pattern" flow.
 
 ### Phase 3 — Skip instances
 
-**Status: implemented (2026-07-28) — see `docs/status.md`'s same-dated
-entry for the full implementation/verification write-up.** Implemented
-*after* Phase 4 (Circular pattern) rather than before it, per this doc's
-own original phased-plan ordering being superseded by actual delivery
-order - this section's original design already anticipated both variants
-(a rectangular grid and a radial ring for Circular), so no redesign was
-needed, only implementation against the now-real `PatternFeature`/
-`PatternPanel`. Verified for real: the full backend `pytest` suite (1073
-tests, including 14 new skip-instance-specific ones) against genuine
-`pythonocc-core`, and the full client `flutter test` suite (985 tests,
-including a new `pattern_skip_grid_test.dart` plus widened
-`pattern_panel_test.dart` coverage) plus a clean `flutter analyze`, using
-the same local toolchains bootstrapped for every prior Phase's own
-verification pass.
+**Status: implemented (2026-07-28), UI redesigned same-day — see
+`docs/status.md`'s same-dated entries for the full implementation/
+verification write-up.** Implemented *after* Phase 4 (Circular pattern)
+rather than before it, per this doc's own original phased-plan ordering
+being superseded by actual delivery order - this section's original
+design already anticipated both variants (a rectangular grid and a radial
+ring for Circular), so no redesign was needed, only implementation against
+the now-real `PatternFeature`/`PatternPanel`. Verified for real: the full
+backend `pytest` suite (1073 tests, including 14 new skip-instance-
+specific ones) against genuine `pythonocc-core`, and the full client
+`flutter test` suite (985 tests, including a new `pattern_skip_grid_test.
+dart` plus widened `pattern_panel_test.dart` coverage) plus a clean
+`flutter analyze`, using the same local toolchains bootstrapped for every
+prior Phase's own verification pass.
+
+Direct user feedback the same day ("the area in the UI where instances are
+toggled is too big") replaced the panel-embedded dot grid described below
+with a viewport-native interaction instead - see the "revised same-day"
+note right after the Deliverable/Backend/Client bullets for the new
+shape; the bullets themselves are left as-written for the historical
+record of what was originally built and verified.
 
 Visual grid picker, for both Rectangular and Circular.
 
@@ -802,6 +809,50 @@ Visual grid picker, for both Rectangular and Circular.
   to a one-line filter per instance loop; the real work was the new,
   self-contained grid widget and its wiring - no design surprises, since
   Phase 4's own prior existence had already been accounted for here.
+
+**Revised same-day: viewport-native toggling, replacing the panel grid.**
+`pattern_skip_grid.dart`/`PatternSkipGrid` and its wiring into
+`pattern_panel.dart` were removed entirely; `PatternPanel` now shows only a
+one-line hint ("Tap an instance in the viewport to skip or keep it") once
+the pattern's own total count is `> 1`. The backend's own `skip_indices`
+field/validation/filtering is completely unchanged - only the client's own
+sequencing of *when* it sends the real selection changed:
+- While a Pattern is being configured, every debounced create/update call
+  (`_ensurePatternFeatureExists`) now always sends `skip_indices: []`
+  regardless of the user's current selection, so every instance stays
+  present (and tappable) in the live mesh throughout editing - toggling an
+  instance is a purely local `_patternSkipIndices` set mutation with no
+  network round-trip. The real selection is sent exactly once, in a final
+  PATCH `_confirmPattern` issues right before its own state teardown.
+  `_openPatternPanelForEdit` force-reveals every instance the same way the
+  moment an existing skip-carrying Pattern is opened for editing.
+- Tapping a Body belonging to the pattern's own instances (recovered from
+  its body id via the same `feature.id`/`feature.id#index` naming
+  `compute_part_bodies` already uses - see `extrude.py`'s own doc comment
+  there, reversed client-side with zero backend changes) toggles that
+  instance's skip state directly, via a new special case in
+  `_toggleSelectedEntity`. Index `0` (the seed) is excluded, matching the
+  backend's own validation.
+- `PartViewport` gained `skippedPreviewBodyIds` - a Body whose id is a
+  member gets a distinct, more-transparent pale-grey tint in `_syncMeshNode`
+  instead of the ordinary translucent preview orange, so kept vs. skipped
+  instances read apart at a glance.
+- The originally-planned "cubic node at the centre of each instance" marker
+  (a secondary, always-reachable toggle target for small/thin instances
+  where a direct Body tap is fiddly) was **not** built in this pass - the
+  primary Body-tap interaction covers the requested behaviour end to end
+  and was prioritized as the lower-risk, fully-precedented piece (reuses
+  the existing ray-based `hitTestFaces`/body-kind-selection pipeline
+  unchanged); the marker would need a genuinely new screen-space hit-test
+  (a Body's own centroid is occluded from every existing ray-based
+  hit-test by the Body's own surface - see `facesOccludeOtherHits`) and is
+  left as a follow-up, not scheduled.
+- New/changed tests: `pattern_skip_grid_test.dart` deleted outright;
+  `pattern_panel_test.dart`'s skip-grid test group replaced with a smaller
+  hint-visibility group; two new `part_screen_test.dart` integration tests
+  cover the reveal-all-while-editing/restore-on-confirm sequencing and the
+  viewport-tap-to-toggle interaction end to end (via a Pattern-aware fake
+  `/mesh` endpoint synthesizing real per-instance body ids).
 
 ### Phase 4 — Circular pattern
 

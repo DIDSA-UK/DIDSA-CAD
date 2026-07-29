@@ -583,6 +583,21 @@ class _PartScreenState extends State<PartScreen> {
       _confirmPatternBodySelection(entity);
       return;
     }
+    // Skip-instances redesign: a Body tap during `configuring` that lands
+    // on one of the pattern's own instances toggles that instance's own
+    // skip/keep state directly, instead of falling into the generic
+    // accumulate-toggle below (which would just add/remove it from the
+    // ambient [_selectedEntities] set - never what's wanted while a
+    // Pattern is being configured). Index 0 (the seed) is deliberately
+    // excluded - it can never be skipped, mirroring the backend's own
+    // `skip_indices` validation.
+    if (_patternStep == _PatternStep.configuring && entity.kind == SelectionEntityKind.body) {
+      final index = _patternInstanceIndexForBodyId(entity.bodyId);
+      if (index != null && index > 0) {
+        _togglePatternSkipIndex(index);
+        return;
+      }
+    }
     // An edge or Sketch Line tap during `configuring` sets (or clears, if
     // it's the already-picked one) whichever direction slot is currently
     // active - mirrors [_setMirrorPlane]'s replace-not-accumulate shape,
@@ -6006,6 +6021,11 @@ class _PartScreenState extends State<PartScreen> {
         _selectionMode = true;
         _selectionFilterOverrides.push(_patternAxisSelectionFilter);
       });
+      // Force every instance visible (and tappable) for the duration of
+      // this edit session - see [_ensurePatternFeatureExists]'s own doc
+      // comment on why the real skip set is only ever sent once, at
+      // [_confirmPattern] time.
+      if (feature.skipIndices.isNotEmpty) _runGuarded(_ensurePatternFeatureExists);
       return true;
     }
 
@@ -6067,6 +6087,11 @@ class _PartScreenState extends State<PartScreen> {
       _selectionMode = true;
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
     });
+    // Force every instance visible (and tappable) for the duration of this
+    // edit session - see [_ensurePatternFeatureExists]'s own doc comment on
+    // why the real skip set is only ever sent once, at [_confirmPattern]
+    // time.
+    if (feature.skipIndices.isNotEmpty) _runGuarded(_ensurePatternFeatureExists);
     return true;
   }
 
@@ -6244,16 +6269,65 @@ class _PartScreenState extends State<PartScreen> {
     _schedulePatternPreview();
   }
 
-  /// [PatternPanel.onSkipToggled]'s callback - toggles [index] in/out of
-  /// [_patternSkipIndices] (mirrors [PatternSkipGrid]'s own tap-to-toggle
-  /// shape).
-  void _onPatternSkipToggled(int index) {
+  /// Toggles [index] in/out of [_patternSkipIndices] - purely local, no
+  /// network round-trip (see [_ensurePatternFeatureExists]'s own doc
+  /// comment on why): every instance stays present in the live-edit mesh
+  /// regardless of this set's contents, so nothing needs re-solving, only
+  /// re-rendering (via [_patternSkippedBodyIds] feeding
+  /// [PartViewport.skippedPreviewBodyIds]). [_toggleSelectedEntity]'s own
+  /// pattern-instance-Body special case is the only caller.
+  void _togglePatternSkipIndex(int index) {
     setState(() {
       final next = Set<int>.of(_patternSkipIndices);
       if (!next.remove(index)) next.add(index);
       _patternSkipIndices = next;
     });
-    _schedulePatternPreview();
+  }
+
+  /// The current pattern-instance linear index [bodyId] belongs to, or
+  /// null if it isn't one of [_previewPatternFeatureId]'s own instances (or
+  /// no Pattern is being configured at all) - reverse of
+  /// `compute_part_bodies`'s own PatternFeature body-naming scheme (see
+  /// `extrude.py`'s doc comment there): the seed Body (index `0`) keeps
+  /// whatever id its own upstream Feature already gave it, so it's
+  /// recognized by equality with [_patternSourceBodyId] instead of the
+  /// Pattern's own id; every other instance is `_previewPatternFeatureId`
+  /// alone when there's exactly one (a 2-instance pattern), else
+  /// `'$_previewPatternFeatureId#$index'`.
+  int? _patternInstanceIndexForBodyId(String bodyId) {
+    if (bodyId == _patternSourceBodyId) return 0;
+    final featureId = _previewPatternFeatureId;
+    if (featureId == null) return null;
+    final totalCount = _patternMode == PatternMode.circular
+        ? _patternCountAngular
+        : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
+    if (totalCount <= 1) return null;
+    if (totalCount - 1 == 1) return bodyId == featureId ? 1 : null;
+    final prefix = '$featureId#';
+    if (!bodyId.startsWith(prefix)) return null;
+    return int.tryParse(bodyId.substring(prefix.length));
+  }
+
+  /// [PartViewport.skippedPreviewBodyIds]'s value - [_patternSkipIndices]
+  /// (linear instance indices) converted to the actual Body ids the
+  /// viewport renders, via the same naming scheme
+  /// [_patternInstanceIndexForBodyId] reverses. Empty whenever no Pattern
+  /// is being configured, or (defensively) whenever the current
+  /// count/mode implies fewer instances than an index in
+  /// [_patternSkipIndices] still refers to (a since-shrunk count - see
+  /// [_ensurePatternFeatureExists]'s own clamping note).
+  Set<String> get _patternSkippedBodyIds {
+    final featureId = _previewPatternFeatureId;
+    if (featureId == null || !_patternActive) return const {};
+    final totalCount = _patternMode == PatternMode.circular
+        ? _patternCountAngular
+        : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
+    if (totalCount <= 1) return const {};
+    final onlyOneInstance = totalCount - 1 == 1;
+    return {
+      for (final index in _patternSkipIndices)
+        if (index > 0 && index < totalCount) (onlyOneInstance ? featureId : '$featureId#$index'),
+    };
   }
 
   /// [_toggleSelectedEntity]'s edge/Sketch-Line special case for the
@@ -6419,7 +6493,18 @@ class _PartScreenState extends State<PartScreen> {
   /// existing PatternFeature - the update endpoint has no such parameter
   /// at all, mirroring `CreatePlaneFeatureUpdate.plane_type`'s identical
   /// immutability convention).
-  Future<void> _ensurePatternFeatureExists() async {
+  ///
+  /// [skipIndices] defaults to empty - every debounced live-edit call
+  /// (see [_schedulePatternPreview]) deliberately forces `skip_indices`
+  /// to `[]` regardless of [_patternSkipIndices]'s own current value, so
+  /// every instance stays present (and tappable - see
+  /// [_toggleSelectedEntity]'s pattern-instance-body special case) in the
+  /// viewport throughout editing. The user's *real* skip selection is a
+  /// purely local, network-free toggle on [_patternSkipIndices] while the
+  /// panel is open; it's only ever sent for real once, by [_confirmPattern]
+  /// passing its own clamped [_patternSkipIndices] snapshot as an explicit
+  /// override right before the panel closes.
+  Future<void> _ensurePatternFeatureExists({List<int> skipIndices = const []}) async {
     final part = _part;
     final sourceBodyId = _patternSourceBodyId;
     if (part == null || sourceBodyId == null) return;
@@ -6427,11 +6512,6 @@ class _PartScreenState extends State<PartScreen> {
     if (_patternMode == PatternMode.circular) {
       final axis = _patternAxis;
       if (axis == null) return;
-      // Phase 3: clamped to the *current* count_angular right before
-      // sending - see [_patternSkipIndices]'s own doc comment on why a
-      // stale out-of-range index must never be sent alongside a since-
-      // shrunk count in the same request.
-      final skipIndices = _patternSkipIndices.where((i) => i > 0 && i < _patternCountAngular).toList();
       final existingId = _previewPatternFeatureId;
       if (existingId == null) {
         final created = await _api.createPatternFeature(
@@ -6465,8 +6545,6 @@ class _PartScreenState extends State<PartScreen> {
     if (direction1 == null) return;
 
     final hasSecondDirection = _patternHasSecondDirection;
-    final totalCount = _patternCount1 * (hasSecondDirection ? _patternCount2 : 1);
-    final skipIndices = _patternSkipIndices.where((i) => i > 0 && i < totalCount).toList();
     final existingId = _previewPatternFeatureId;
     if (existingId == null) {
       final created = await _api.createPatternFeature(
@@ -6531,9 +6609,21 @@ class _PartScreenState extends State<PartScreen> {
   /// before the panel opened, and rolls B4 rollback forward - mirrors
   /// [_confirmMirror] exactly, plus popping the
   /// [_patternDirectionSelectionFilter] override [_openPatternPanel]/
-  /// [_confirmPatternBodySelection]/[_openPatternPanelForEdit] pushed.
+  /// [_confirmPatternBodySelection]/[_openPatternPanelForEdit] pushed, plus
+  /// (see [_ensurePatternFeatureExists]'s own doc comment) applying the
+  /// user's real [_patternSkipIndices] selection in one final PATCH before
+  /// the panel's own state is torn down - every debounced call up to this
+  /// point deliberately sent `skip_indices: []` instead, so the backend has
+  /// never yet seen the real selection.
   Future<void> _confirmPattern() async {
     _patternDebounce?.cancel();
+    if (_previewPatternFeatureId != null && _patternSourceBodyId != null) {
+      final totalCount = _patternMode == PatternMode.circular
+          ? _patternCountAngular
+          : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
+      final realSkipIndices = _patternSkipIndices.where((i) => i > 0 && i < totalCount).toList();
+      await _runGuarded(() => _ensurePatternFeatureExists(skipIndices: realSkipIndices));
+    }
     setState(() {
       _featureTreeVisible = false;
       _patternStep = null;
@@ -7172,6 +7262,7 @@ class _PartScreenState extends State<PartScreen> {
                   // concurrent live-edit flow is ever added.
                   previewOverlayBodyId: _filletActive ? _filletPreviewBodyId : _chamferPreviewBodyId,
                   previewOverlayMesh: _filletActive ? _filletPreviewMesh : _chamferPreviewMesh,
+                  skippedPreviewBodyIds: _patternSkippedBodyIds,
                   // On-device UX feedback on the guided "New > Mirror" flow:
                   // reference planes are temporarily forced visible for the
                   // `pickingPlane` step, regardless of the user's own
@@ -7508,8 +7599,6 @@ class _PartScreenState extends State<PartScreen> {
                       onCountAngularChanged: _onPatternCountAngularChanged,
                       onAngleTotalChanged: _onPatternAngleTotalChanged,
                       onReverseAngularChanged: _onPatternReverseAngularChanged,
-                      skipIndices: _patternSkipIndices,
-                      onSkipToggled: _onPatternSkipToggled,
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),
@@ -7804,6 +7893,36 @@ class _PartScreenState extends State<PartScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // On-device feedback: moved here from the
+                          // bottom-right FAB column, which used to hide
+                          // this FAB entirely whenever the toolbar was open
+                          // (it painted on top of the open toolbar panel
+                          // otherwise) or during the sketch-orientation
+                          // confirm step (it covered that step's own
+                          // Continue button) - sitting just above the
+                          // toolbar's own panel here means neither problem
+                          // applies, so this can now stay visible
+                          // unconditionally (aside from [_busy]), matching
+                          // the hamburger toggle's own "must stay visible
+                          // regardless of anything else" precedent directly
+                          // below.
+                          FloatingActionButton.small(
+                            heroTag: 'selection-mode-fab',
+                            tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+                            backgroundColor:
+                                _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
+                            onPressed: _busy ? null : _toggleSelectionMode,
+                            // The icon shows the mode a tap will switch
+                            // *into*: a cursor/pointer while in (default)
+                            // Orbit mode, an orbit/rotate glyph while in
+                            // Selection mode.
+                            child: SvgIcon(
+                              _selectionMode
+                                  ? 'assets/icons/viewport/viewport_orbit_mode.svg'
+                                  : 'assets/icons/viewport/viewport_selection_mode.svg',
+                            ),
+                          ),
+                          const SizedBox(height: 8),
                           // Fix 7: was an IconButton.filled, now a FAB above
                           // 'feature-tree-fab' in this same Column, matching
                           // how every other toolbar/viewport toggle here is a
@@ -8220,25 +8339,19 @@ class _PartScreenState extends State<PartScreen> {
       // paints floatingActionButton after the entire body (including the
       // body Stack's PartToolbar entry), so it would otherwise sit on top
       // of the open toolbar panel regardless of the body Stack's own child
-      // order. That's the only case that hides the mode-toggle FAB itself
-      // now (on-device feedback: it used to also hide for the whole
-      // Extrude/Create Plane panel lifetime, leaving no way to switch to
-      // Orbit mode and look around while confirming one of those - see
-      // _openExtrudePanel's own comment on the selectionMode default this
-      // replaced).
+      // order. (The mode-toggle FAB itself no longer lives in this column -
+      // on-device feedback moved it to sit just above the toolbar's own
+      // panel instead, alongside the hamburger toggle - see that FAB's own
+      // doc comment above.)
       //
       // The "Add" FAB stays hidden while either panel is open (you can't
-      // start a second Feature mid-flow) - extra bottom padding while one
-      // is active keeps the remaining mode-toggle FAB clear of that panel's
-      // own bottom-sheet content, which sits in the body Stack rather than
-      // a real `Scaffold.bottomSheet` Scaffold could otherwise push this
-      // FAB above automatically.
-      // Bug fix: the mode-toggle/Add FAB column sits bottom-right
-      // (Scaffold's default floatingActionButtonLocation) and paints after
-      // the whole body Stack, so it was covering the orientation confirm
-      // step's own bottom banner - specifically its Continue button,
-      // making the step impossible to accept. Hidden outright during that
-      // step, same as it already is while [_toolbarOpen].
+      // start a second Feature mid-flow).
+      // Bug fix: this FAB column sits bottom-right (Scaffold's default
+      // floatingActionButtonLocation) and paints after the whole body
+      // Stack, so it was covering the orientation confirm step's own
+      // bottom banner - specifically its Continue button, making the step
+      // impossible to accept. Hidden outright during that step, same as it
+      // already is while [_toolbarOpen].
       floatingActionButton: _toolbarOpen || _confirmingSketchOrientation
           ? null
           : Padding(
@@ -8257,21 +8370,6 @@ class _PartScreenState extends State<PartScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  FloatingActionButton(
-                    heroTag: 'selection-mode-fab',
-                    tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
-                    backgroundColor:
-                        _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
-                    onPressed: _busy ? null : _toggleSelectionMode,
-                    // The icon shows the mode a tap will switch *into*: a
-                    // cursor/pointer while in (default) Orbit mode, an
-                    // orbit/rotate glyph while in Selection mode.
-                    child: SvgIcon(
-                      _selectionMode
-                          ? 'assets/icons/viewport/viewport_orbit_mode.svg'
-                          : 'assets/icons/viewport/viewport_selection_mode.svg',
-                    ),
-                  ),
                   if (!_extrudeActive &&
                       !_createPlaneActive &&
                       !_filletActive &&
@@ -8281,44 +8379,38 @@ class _PartScreenState extends State<PartScreen> {
                       !_mirrorActive &&
                       !_patternActive &&
                       !_profilePickerActive &&
-                      !_pathPickerActive) ...[
-                    const SizedBox(height: 12),
+                      !_pathPickerActive)
                     FloatingActionButton(
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
                       child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
                     ),
-                  ],
                   // Prompt G: the profile picker's own "confirm" FAB, in the
                   // Add FAB's place (never both at once, same "one FAB slot"
                   // convention every other mode here follows) - ticks off
                   // the currently-picked loops and opens the target panel
                   // (see [_confirmProfilePicker]).
-                  if (_profilePickerActive) ...[
-                    const SizedBox(height: 12),
+                  if (_profilePickerActive)
                     FloatingActionButton(
                       heroTag: 'confirm-profile-picker-fab',
                       tooltip: 'Confirm profile selection',
                       onPressed: _busy ? null : _confirmProfilePicker,
                       child: const Icon(Icons.check),
                     ),
-                  ],
                   // The path picker's own "confirm" FAB, mirroring the
                   // profile picker's own directly above - ticks off the
                   // currently-picked path and opens SweepPanel (see
                   // [_confirmPathPicker]). Disabled until at least one
                   // segment is picked, same "requires 1+" rule Cut's own
                   // target-body picking already enforces elsewhere.
-                  if (_pathPickerActive) ...[
-                    const SizedBox(height: 12),
+                  if (_pathPickerActive)
                     FloatingActionButton(
                       heroTag: 'confirm-path-picker-fab',
                       tooltip: 'Confirm path selection',
                       onPressed: _busy || _pathPickerRefs.isEmpty ? null : _confirmPathPicker,
                       child: const Icon(Icons.check),
                     ),
-                  ],
                   // Pattern/Mirror scoping's Phase 1 `pickingBodies` step's
                   // own "confirm" FAB, mirroring the profile/path pickers'
                   // directly above - ticks off the currently-picked
@@ -8326,8 +8418,7 @@ class _PartScreenState extends State<PartScreen> {
                   // [_confirmMirrorBodySelection]). Disabled until at least
                   // one Body is picked, same "requires 1+" rule the path
                   // picker's own FAB enforces just above.
-                  if (_mirrorStep == _MirrorStep.pickingBodies) ...[
-                    const SizedBox(height: 12),
+                  if (_mirrorStep == _MirrorStep.pickingBodies)
                     FloatingActionButton(
                       heroTag: 'confirm-mirror-body-picker-fab',
                       tooltip: 'Confirm body selection',
@@ -8336,7 +8427,6 @@ class _PartScreenState extends State<PartScreen> {
                           : _confirmMirrorBodySelection,
                       child: const Icon(Icons.check),
                     ),
-                  ],
                 ],
               ),
             ),

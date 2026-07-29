@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'pattern_skip_grid.dart';
-
 /// Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
 /// §2.3/§4): Rectangular or Circular - mirrors [RevolveMode]'s own
 /// `apiValue`/`fromApiValue` str-enum convention, matching the backend's
@@ -121,13 +119,6 @@ class PatternPanel extends StatefulWidget {
   final void Function(double angle)? onAngleTotalChanged;
   final void Function(bool reverse)? onReverseAngularChanged;
 
-  /// Pattern/Mirror scoping's Phase 3: linear indices (Rectangular's own
-  /// `i * count_2 + j`; Circular's own angular-step `i`) of instances
-  /// currently suppressed - drives [PatternSkipGrid]'s hollow-vs-filled
-  /// dot rendering. Index `0` (the seed) is never a member.
-  final Set<int> skipIndices;
-  final void Function(int index) onSkipToggled;
-
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -167,8 +158,6 @@ class PatternPanel extends StatefulWidget {
     this.onCountAngularChanged,
     this.onAngleTotalChanged,
     this.onReverseAngularChanged,
-    required this.skipIndices,
-    required this.onSkipToggled,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -367,34 +356,29 @@ class _PatternPanelState extends State<PatternPanel> {
     );
   }
 
-  /// Pattern/Mirror scoping's Phase 3: the "Skip Instances" section shared
-  /// by both `_rectangularFields()`/`_circularFields()` - hidden entirely
-  /// when [totalCount] is `<= 1` (nothing to suppress yet, matching
-  /// [PatternSkipGrid]'s own identical guard - see its doc comment).
-  Widget _skipInstancesSection({
-    required PatternSkipGridLayout layout,
-    required int totalCount,
-    required int columns,
-    required double angleTotal,
-  }) {
+  /// Pattern/Mirror scoping's skip-instances redesign: replaces the old
+  /// panel-embedded dot-grid picker (deemed too large a UI footprint) with
+  /// a one-line pointer to the *viewport itself* - every instance is tapped
+  /// directly (or, in a follow-up, its own small marker) to toggle skip vs.
+  /// keep, coloured accordingly (see [PartViewport.skippedPreviewBodyIds]);
+  /// this panel no longer owns any of that interaction. Hidden entirely
+  /// when [totalCount] is `<= 1` (nothing to suppress yet).
+  Widget _skipInstancesHint({required int totalCount}) {
     if (totalCount <= 1) return const SizedBox.shrink();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const SizedBox(height: 12),
-        Text('Skip Instances', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-        const SizedBox(height: 6),
-        Center(
-          child: PatternSkipGrid(
-            layout: layout,
-            totalCount: totalCount,
-            columns: columns,
-            angleTotal: angleTotal,
-            skipIndices: widget.skipIndices,
-            onToggle: widget.onSkipToggled,
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        children: [
+          Icon(Icons.touch_app_outlined, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'Tap an instance in the viewport to skip or keep it',
+              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -458,12 +442,7 @@ class _PatternPanelState extends State<PatternPanel> {
               label: const Text('Add second direction'),
             ),
           ),
-        _skipInstancesSection(
-          layout: PatternSkipGridLayout.rectangular,
-          totalCount: (_count1 ?? 1) * (_count2 ?? 1),
-          columns: _count2 ?? 1,
-          angleTotal: 360.0,
-        ),
+        _skipInstancesHint(totalCount: (_count1 ?? 1) * (_count2 ?? 1)),
       ],
     );
   }
@@ -516,12 +495,7 @@ class _PatternPanelState extends State<PatternPanel> {
             ),
           ],
         ),
-        _skipInstancesSection(
-          layout: PatternSkipGridLayout.radial,
-          totalCount: _countAngular ?? 1,
-          columns: 1,
-          angleTotal: _angleTotal ?? 360.0,
-        ),
+        _skipInstancesHint(totalCount: _countAngular ?? 1),
       ],
     );
   }
