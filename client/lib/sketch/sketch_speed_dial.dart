@@ -5,12 +5,21 @@ import 'sketch_controller.dart';
 
 /// The tool switcher FAB. Two-level menu driven entirely by
 /// [SketchController.fabMenu]: tapping the main FAB opens a "categories"
-/// list ("Sketch Entities" / "Dimensions"); tapping "Sketch Entities"
-/// expands in place into the tool list (Line/Circle/Finish) with a "Back"
-/// action; tapping "Dimensions" enters dimension mode directly and closes
-/// the menu. The open/closed/category state lives on the controller (not
-/// local widget State) so [SketchScreen]'s tap-outside barrier can close
-/// the menu independently of this widget.
+/// list ("Sketch Entities" / "Tools"); tapping "Sketch Entities" expands in
+/// place into the tool list (Line/Circle/...) with a "Back" action; tapping
+/// a "Tools" entry enters that mode directly and closes the menu. The
+/// open/closed/category state lives on the controller (not local widget
+/// State) so [SketchScreen]'s tap-outside barrier can close the menu
+/// independently of this widget.
+///
+/// On-device feedback ("the tick/FAB confirm button should live in the
+/// flyup ribbon instead of a FAB, for every tool"): this FAB used to also
+/// carry a persistent "Finish" tick, shown above the main button, for
+/// every mode that needed a confirm-or-exit action - that's gone now, in
+/// favor of each mode's own bottom fly-up bar (`sketch_construction_method_
+/// bar.dart`, `sketch_dimension_bar.dart`, `sketch_offset_bar.dart`,
+/// `sketch_trim_bar.dart`, `sketch_convert_bar.dart`), so this widget is
+/// purely the tool-category picker again.
 class SketchSpeedDial extends StatelessWidget {
   final SketchController controller;
 
@@ -49,59 +58,10 @@ class SketchSpeedDial extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         final actions = _actionsFor(controller);
-        // On-device feedback: "is there a finish button" - the Sketch
-        // Entities category's own "Finish" action (below) only shows while
-        // that category is open, and every tool selection auto-closes the
-        // whole menu (see selectDrawTool) so there's a clear canvas to draw
-        // on - meaning a mid-Spline/mid-chain user had no visible way to
-        // finish without first reopening the menu and navigating back into
-        // Sketch Entities. This persistent copy shows regardless of
-        // fabMenu's own open/closed state, right above the main FAB, for as
-        // long as a Line chain or Spline is actually in progress.
-        //
-        // On-device feedback ("when I start the offset tool... there
-        // should be a fly up menu at the bottom with a button to finish
-        // the tool. same applies to trim/extend tool"): the same
-        // "no visible way out" gap applies to every mode entered via the
-        // new "Tools" category (Dimensions/Trim/Extend/Convert Entities/
-        // Offset) - none of them auto-return to Select on their own, and
-        // the only other way out (tapping the mode label in the toolbar)
-        // isn't obviously a button. `exitToSelectMode` is the correct
-        // "done" action for all four - none of them has its own
-        // finish-and-commit step the way chain/spline drawing does.
-        final activeToolMode = switch (controller.mode) {
-          SketchMode.dimension || SketchMode.trim || SketchMode.convert || SketchMode.offset => true,
-          _ => false,
-        };
-        final showPersistentFinish = controller.chainInProgress || controller.splineInProgress || activeToolMode;
-        VoidCallback finishAction() {
-          if (controller.chainInProgress) return controller.finishChain;
-          if (controller.splineInProgress) return controller.finishSpline;
-          // P54 (on-device feedback: "offset should allow the selection of
-          // multiple entities... if the origin lines are connected, the
-          // offset lines should be connected"): Offset mode picks
-          // accumulate (see SketchController._handleOffsetTap's own doc
-          // comment) rather than committing per-tap the way every other
-          // Tools mode does - Finish is what actually opens the value bar
-          // for the picked set, not just a bare "done, go back to Select"
-          // like the other three Tools modes below.
-          if (controller.mode == SketchMode.offset) return controller.finishOffsetChain;
-          return controller.exitToSelectMode;
-        }
-
         return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            if (showPersistentFinish)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _SpeedDialAction(
-                  svgAsset: 'assets/icons/actions/action_finish.svg',
-                  label: 'Finish',
-                  onPressed: finishAction(),
-                ),
-              ),
             if (actions.isNotEmpty)
               // Bounded + scrollable rather than a bare unconstrained
               // Column: the Sketch Entities tool list has grown past what
@@ -219,9 +179,6 @@ class SketchSpeedDial extends StatelessWidget {
           ),
         ];
       case FabMenuState.sketchEntities:
-        final showFinishChain = controller.activeTool == SketchTool.line && controller.chainInProgress;
-        final showFinishSpline =
-            controller.activeTool == SketchTool.spline && controller.splineInProgress;
         // On-device feedback: 10 tools in one vertical column ran too tall
         // even with the scroll fallback above - two rows of 5 keeps the
         // whole menu roughly square instead of a long ladder, so it fits
@@ -315,18 +272,6 @@ class SketchSpeedDial extends StatelessWidget {
             : allTools;
         final splitAt = (tools.length / 2).ceil();
         return [
-          if (showFinishChain)
-            _SpeedDialAction(
-              svgAsset: 'assets/icons/actions/action_finish.svg',
-              label: 'Finish',
-              onPressed: controller.finishChain,
-            ),
-          if (showFinishSpline)
-            _SpeedDialAction(
-              svgAsset: 'assets/icons/actions/action_finish.svg',
-              label: 'Finish',
-              onPressed: controller.finishSpline,
-            ),
           _rowOf(tools.sublist(0, splitAt)),
           _rowOf(tools.sublist(splitAt)),
           _SpeedDialAction(

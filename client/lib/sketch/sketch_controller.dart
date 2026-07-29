@@ -1662,6 +1662,7 @@ class SketchController extends ChangeNotifier {
   void enterTrimMode() {
     dropGrabbedEntity();
     _mode = SketchMode.trim;
+    _trimCornerMode = false;
     _fabMenu = FabMenuState.closed;
     _resetTransientDrawState();
     _selectionSet.clear();
@@ -1686,6 +1687,8 @@ class SketchController extends ChangeNotifier {
     _selectionSet.clear();
     _ribbonVisible = false;
     _dimensionSelection.clear();
+    _pendingConvertVertices.clear();
+    _pendingConvertEdges.clear();
     _ghosts = [];
     _activeGhostKey = null;
     notifyListeners();
@@ -1718,7 +1721,11 @@ class SketchController extends ChangeNotifier {
   void exitToSelectMode() {
     _mode = SketchMode.select;
     _resetTransientDrawState();
+    _selectionSet.clear();
     _dimensionSelection.clear();
+    _trimCornerMode = false;
+    _pendingConvertVertices.clear();
+    _pendingConvertEdges.clear();
     _ghosts = [];
     _activeGhostKey = null;
     notifyListeners();
@@ -7981,10 +7988,282 @@ class SketchController extends ChangeNotifier {
     }
   }
 
+  /// Trim/Extend's ribbon mode toggle ("Trim"/"Corner", mutually exclusive -
+  /// see `sketch_trim_bar.dart`). Off (plain per-tap trim/extend, unchanged)
+  /// is the default on entering the tool; on switches taps over to
+  /// [_toggleTrimCornerPick]'s two-entity accumulator instead, confirmed via
+  /// [confirmTrimCorner]. Always clears whatever's currently picked when
+  /// switching - the two submodes pick for entirely different purposes, so
+  /// carrying a stale pick across the switch would be misleading.
+  bool _trimCornerMode = false;
+  bool get trimCornerMode => _trimCornerMode;
+
+  void setTrimCornerMode(bool enabled) {
+    if (_trimCornerMode == enabled) return;
+    _trimCornerMode = enabled;
+    _selectionSet.clear();
+    notifyListeners();
+  }
+
+  /// Corner submode's own tap accumulator - reuses [_selectionSet] purely as
+  /// storage, same convention [_toggleOffsetChainPick] already established
+  /// for a different Tools mode. A second tap on an already-picked entity
+  /// removes it; picking a third entity while two are already held drops the
+  /// oldest first (a rolling window of the two most recent picks), so a
+  /// misclick is always recoverable with one more tap rather than needing to
+  /// clear both first.
+  void _toggleTrimCornerPick(SketchSelection hit) {
+    final index = _selectionSet.indexWhere((s) => s.sameAs(hit));
+    if (index != -1) {
+      _selectionSet.removeAt(index);
+    } else {
+      if (_selectionSet.length >= 2) _selectionSet.removeAt(0);
+      _selectionSet.add(hit);
+    }
+    notifyListeners();
+  }
+
+  /// One entity's own two endpoints (plus, for an Arc, its underlying
+  /// circle's center/radius) - [confirmTrimCorner]'s shared geometry shape
+  /// for both a Line and an Arc, so the intersection math below doesn't need
+  /// to special-case which kind it's looking at beyond "does it have a
+  /// center".
+  ({String aId, double ax, double ay, String bId, double bx, double by, double? cx, double? cy, double? r})?
+      _cornerShapeFor(SketchSelection selection) {
+    switch (selection.kind) {
+      case SelectionKind.line:
+        final line = lines[selection.id];
+        if (line == null) return null;
+        final p1 = points[line.startPointId];
+        final p2 = points[line.endPointId];
+        if (p1 == null || p2 == null) return null;
+        return (
+          aId: line.startPointId,
+          ax: p1.x,
+          ay: p1.y,
+          bId: line.endPointId,
+          bx: p2.x,
+          by: p2.y,
+          cx: null,
+          cy: null,
+          r: null,
+        );
+      case SelectionKind.arc:
+        final arc = arcs[selection.id];
+        if (arc == null) return null;
+        final center = points[arc.centerPointId];
+        final p1 = points[arc.startPointId];
+        final p2 = points[arc.endPointId];
+        if (center == null || p1 == null || p2 == null) return null;
+        final dx = p1.x - center.x;
+        final dy = p1.y - center.y;
+        return (
+          aId: arc.startPointId,
+          ax: p1.x,
+          ay: p1.y,
+          bId: arc.endPointId,
+          bx: p2.x,
+          by: p2.y,
+          cx: center.x,
+          cy: center.y,
+          r: math.sqrt(dx * dx + dy * dy),
+        );
+      default:
+        return null;
+    }
+  }
+
+  /// Classic two-line determinant intersection, treating both as infinite
+  /// (not just their own segment) - exactly what "extend to a corner" means
+  /// for two Lines. Null for parallel/coincident lines (determinant ~0).
+  ({double x, double y})? _lineLineIntersection(
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+    double x4,
+    double y4,
+  ) {
+    final denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (denom.abs() < 1e-9) return null;
+    final t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+    return (x: x1 + t * (x2 - x1), y: y1 + t * (y2 - y1));
+  }
+
+  /// An infinite line's intersection(s) with a circle - up to two points,
+  /// via the standard quadratic-in-t parametrization. Empty if the line
+  /// misses the circle entirely.
+  List<({double x, double y})> _lineCircleIntersections(
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double cx,
+    double cy,
+    double r,
+  ) {
+    final dx = x2 - x1;
+    final dy = y2 - y1;
+    final fx = x1 - cx;
+    final fy = y1 - cy;
+    final a = dx * dx + dy * dy;
+    if (a < 1e-12) return const [];
+    final b = 2 * (fx * dx + fy * dy);
+    final c = fx * fx + fy * fy - r * r;
+    final disc = b * b - 4 * a * c;
+    if (disc < 0) return const [];
+    final sqrtDisc = math.sqrt(disc);
+    final t1 = (-b - sqrtDisc) / (2 * a);
+    final t2 = (-b + sqrtDisc) / (2 * a);
+    return [
+      (x: x1 + t1 * dx, y: y1 + t1 * dy),
+      if (disc > 1e-9) (x: x1 + t2 * dx, y: y1 + t2 * dy),
+    ];
+  }
+
+  /// Two circles' intersection(s) - up to two points, via the standard
+  /// radical-line construction. Empty if the circles don't actually cross
+  /// (too far apart, one nested inside the other, or concentric).
+  List<({double x, double y})> _circleCircleIntersections(
+    double c1x,
+    double c1y,
+    double r1,
+    double c2x,
+    double c2y,
+    double r2,
+  ) {
+    final dx = c2x - c1x;
+    final dy = c2y - c1y;
+    final d = math.sqrt(dx * dx + dy * dy);
+    if (d < 1e-9 || d > r1 + r2 || d < (r1 - r2).abs()) return const [];
+    final a = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+    final hSq = r1 * r1 - a * a;
+    final h = hSq > 0 ? math.sqrt(hSq) : 0.0;
+    final xm = c1x + a * dx / d;
+    final ym = c1y + a * dy / d;
+    final rx = -dy * (h / d);
+    final ry = dx * (h / d);
+    return [
+      (x: xm + rx, y: ym + ry),
+      if (h > 1e-9) (x: xm - rx, y: ym - ry),
+    ];
+  }
+
+  double _cornerMoveCostSq(
+    ({String aId, double ax, double ay, String bId, double bx, double by, double? cx, double? cy, double? r}) shape,
+    ({double x, double y}) point,
+  ) {
+    final da = (shape.ax - point.x) * (shape.ax - point.x) + (shape.ay - point.y) * (shape.ay - point.y);
+    final db = (shape.bx - point.x) * (shape.bx - point.x) + (shape.by - point.y) * (shape.by - point.y);
+    return da < db ? da : db;
+  }
+
+  /// Dispatches to whichever of [_lineLineIntersection]/
+  /// [_lineCircleIntersections]/[_circleCircleIntersections] fits the two
+  /// shapes (by whether each has a center - a Line never does, an Arc
+  /// always does), then picks whichever candidate solution minimizes the
+  /// total distance both entities' near endpoints would have to move -
+  /// the same "closest plausible corner" a real CAD tool's own extend-to-
+  /// intersect resolves to, without needing to know where the user actually
+  /// clicked (this whole flow's only input is which two entities got
+  /// picked, not a click position on either).
+  ({double x, double y})? _cornerIntersection(
+    ({String aId, double ax, double ay, String bId, double bx, double by, double? cx, double? cy, double? r}) shapeA,
+    ({String aId, double ax, double ay, String bId, double bx, double by, double? cx, double? cy, double? r}) shapeB,
+  ) {
+    final candidates = <({double x, double y})>[];
+    if (shapeA.cx == null && shapeB.cx == null) {
+      final p = _lineLineIntersection(shapeA.ax, shapeA.ay, shapeA.bx, shapeA.by, shapeB.ax, shapeB.ay, shapeB.bx, shapeB.by);
+      if (p != null) candidates.add(p);
+    } else if (shapeA.cx == null || shapeB.cx == null) {
+      final line = shapeA.cx == null ? shapeA : shapeB;
+      final circle = shapeA.cx == null ? shapeB : shapeA;
+      candidates.addAll(
+        _lineCircleIntersections(line.ax, line.ay, line.bx, line.by, circle.cx!, circle.cy!, circle.r!),
+      );
+    } else {
+      candidates.addAll(
+        _circleCircleIntersections(shapeA.cx!, shapeA.cy!, shapeA.r!, shapeB.cx!, shapeB.cy!, shapeB.r!),
+      );
+    }
+    if (candidates.isEmpty) return null;
+    candidates.sort((p1, p2) {
+      final cost1 = _cornerMoveCostSq(shapeA, p1) + _cornerMoveCostSq(shapeB, p1);
+      final cost2 = _cornerMoveCostSq(shapeA, p2) + _cornerMoveCostSq(shapeB, p2);
+      return cost1.compareTo(cost2);
+    });
+    return candidates.first;
+  }
+
+  ({String pointId, double x, double y}) _nearestCornerEndpoint(
+    ({String aId, double ax, double ay, String bId, double bx, double by, double? cx, double? cy, double? r}) shape,
+    double ix,
+    double iy,
+  ) {
+    final da = (shape.ax - ix) * (shape.ax - ix) + (shape.ay - iy) * (shape.ay - iy);
+    final db = (shape.bx - ix) * (shape.bx - ix) + (shape.by - iy) * (shape.by - iy);
+    return da <= db ? (pointId: shape.aId, x: shape.ax, y: shape.ay) : (pointId: shape.bId, x: shape.bx, y: shape.by);
+  }
+
+  /// Corner submode's ribbon Tick: extends the two picked Lines/Arcs to
+  /// their mutual intersection and moves each one's own nearer endpoint
+  /// Point there, forming a corner. Purely client-computed (no dedicated
+  /// backend endpoint) - it's just two ordinary Point moves, the same
+  /// [_api.updatePoint] call/undo shape [_handleTrimLineTap]'s own
+  /// unshared-endpoint case already uses. Stays in Corner submode afterward
+  /// (picks clear, ready for another corner), same "leaves the tool hot for
+  /// another attempt" convention every other Trim/Extend tap already
+  /// follows. A no-op (with [errorMessage] set) if the two picked entities
+  /// don't actually meet anywhere (e.g. parallel lines).
+  Future<void> confirmTrimCorner() async {
+    if (_busy || _sketchId == null) return;
+    if (_selectionSet.length != 2) return;
+    final shapeA = _cornerShapeFor(_selectionSet[0]);
+    final shapeB = _cornerShapeFor(_selectionSet[1]);
+    if (shapeA == null || shapeB == null) return;
+    final intersection = _cornerIntersection(shapeA, shapeB);
+    if (intersection == null) {
+      errorMessage = "These entities don't meet at a corner";
+      notifyListeners();
+      return;
+    }
+    final ix = intersection.x;
+    final iy = intersection.y;
+    final moveA = _nearestCornerEndpoint(shapeA, ix, iy);
+    final moveB = _nearestCornerEndpoint(shapeB, ix, iy);
+    await _runGuarded(() async {
+      final sketchId = _sketchId!;
+      final originAX = moveA.x;
+      final originAY = moveA.y;
+      final originBX = moveB.x;
+      final originBY = moveB.y;
+      await _api.updatePoint(sketchId, moveA.pointId, ix, iy);
+      points[moveA.pointId] = SketchPointView(id: moveA.pointId, x: ix, y: iy);
+      await _api.updatePoint(sketchId, moveB.pointId, ix, iy);
+      points[moveB.pointId] = SketchPointView(id: moveB.pointId, x: ix, y: iy);
+      _pushUndo(() async {
+        await _api.updatePoint(sketchId, moveA.pointId, originAX, originAY);
+        points[moveA.pointId] = SketchPointView(id: moveA.pointId, x: originAX, y: originAY);
+        await _api.updatePoint(sketchId, moveB.pointId, originBX, originBY);
+        points[moveB.pointId] = SketchPointView(id: moveB.pointId, x: originBX, y: originBY);
+      });
+      await _solveAndTrackDof();
+    });
+    _selectionSet.clear();
+    notifyListeners();
+  }
+
   Future<void> _handleTrimTap(double hitRadius) async {
     if (_busy || _sketchId == null) return;
     final hit = _entityAt(cursorX, cursorY, hitRadius);
     if (hit == null) return;
+    if (_trimCornerMode) {
+      if (hit.kind != SelectionKind.line && hit.kind != SelectionKind.arc) return;
+      _toggleTrimCornerPick(hit);
+      return;
+    }
     switch (hit.kind) {
       case SelectionKind.line:
         await _handleTrimLineTap(hit.id);
@@ -8383,22 +8662,106 @@ class SketchController extends ChangeNotifier {
     _applyDimensionHit(hit);
   }
 
-  /// Sketcher-roadmap Phase 9 v2 (Convert Entities): [SketchMode.convert]'s
-  /// own body-vertex pick - called by [SketchCanvas]/[SketchScreen] (2D and
-  /// Orbit View respectively) when a tap lands on a `referenceGhostVertices`
-  /// marker while in [SketchMode.convert]. Materializes the vertex as a
-  /// real, *associative* Point via the backend's `convert_body_vertex`
-  /// endpoint - same live-linked/pinned mechanism [pickReferenceGhostVertex]
-  /// already uses (`external_references`, re-resolved on every solve,
-  /// surfaced as the feature tree's "lost reference" indicator if the Body
-  /// changes underneath it), but non-construction: real geometry meant to
+  /// Convert Entities' own staged-pick set - a tap now only stages a Body
+  /// vertex/edge (see [stageConvertVertex]/[stageConvertEdge]/
+  /// [stageConvertFaceEdges]) rather than converting it immediately; the
+  /// ribbon Tick ([confirmConvertSelection]) is what actually materializes
+  /// everything staged. Storage is a plain `(bodyId, index)` pair, not a
+  /// [SketchSelection] - unlike every other staged-pick set in this
+  /// controller (e.g. [_toggleOffsetChainPick]'s), these aren't real Sketch
+  /// entities yet, so they have no entity id of their own to store.
+  final List<(String, int)> _pendingConvertVertices = [];
+  final List<(String, int)> _pendingConvertEdges = [];
+  List<(String, int)> get pendingConvertVertices => List.unmodifiable(_pendingConvertVertices);
+  List<(String, int)> get pendingConvertEdges => List.unmodifiable(_pendingConvertEdges);
+  bool get hasPendingConvertSelection => _pendingConvertVertices.isNotEmpty || _pendingConvertEdges.isNotEmpty;
+
+  /// [SketchCanvas]/[SketchScreen]'s own tap handler for a Body vertex hit
+  /// in [SketchMode.convert] - stages it (a second tap on the same vertex
+  /// un-stages it, same "changed my mind" affordance [_toggleOffsetChainPick]
+  /// already uses) rather than converting it right away; see
+  /// [confirmConvertSelection] for the actual conversion.
+  void stageConvertVertex(String bodyId, int vertexIndex) {
+    final index = _pendingConvertVertices.indexWhere((e) => e.$1 == bodyId && e.$2 == vertexIndex);
+    if (index != -1) {
+      _pendingConvertVertices.removeAt(index);
+    } else {
+      _pendingConvertVertices.add((bodyId, vertexIndex));
+    }
+    notifyListeners();
+  }
+
+  /// [stageConvertVertex]'s edge-shaped sibling.
+  void stageConvertEdge(String bodyId, int edgeIndex) {
+    final index = _pendingConvertEdges.indexWhere((e) => e.$1 == bodyId && e.$2 == edgeIndex);
+    if (index != -1) {
+      _pendingConvertEdges.removeAt(index);
+    } else {
+      _pendingConvertEdges.add((bodyId, edgeIndex));
+    }
+    notifyListeners();
+  }
+
+  /// A Face tap's own "bring in every boundary edge" shortcut - stages
+  /// whichever of [edgeIndices] aren't already staged (never un-stages, since
+  /// a Face tap is additive by nature, not a single toggleable pick the way
+  /// a lone vertex/edge tap is).
+  void stageConvertFaceEdges(String bodyId, List<int> edgeIndices) {
+    var changed = false;
+    for (final edgeIndex in edgeIndices) {
+      if (!_pendingConvertEdges.any((e) => e.$1 == bodyId && e.$2 == edgeIndex)) {
+        _pendingConvertEdges.add((bodyId, edgeIndex));
+        changed = true;
+      }
+    }
+    if (changed) notifyListeners();
+  }
+
+  /// Discards every staged-but-unconverted pick without touching the
+  /// backend - Convert mode's own Exit affordance (`sketch_convert_bar.dart`).
+  void discardPendingConvertSelection() {
+    if (_pendingConvertVertices.isEmpty && _pendingConvertEdges.isEmpty) return;
+    _pendingConvertVertices.clear();
+    _pendingConvertEdges.clear();
+    notifyListeners();
+  }
+
+  /// Convert Entities' ribbon Tick: actually materializes every currently
+  /// staged vertex/edge pick as real Sketch geometry via
+  /// [pickConvertEntityVertex]/[pickConvertEntityEdge] below, then clears the
+  /// staged set and stays in Convert mode for further picks. Sequential
+  /// (same as [_convertFaceEdges]'s own reasoning), not `Future.wait` - two
+  /// staged picks sharing a Body vertex only reuse the same Point correctly
+  /// (`Sketch.add_or_reuse_external_vertex_reference`) if the first has
+  /// already completed before the second's request goes out.
+  Future<void> confirmConvertSelection() async {
+    final vertices = List<(String, int)>.of(_pendingConvertVertices);
+    final edges = List<(String, int)>.of(_pendingConvertEdges);
+    _pendingConvertVertices.clear();
+    _pendingConvertEdges.clear();
+    notifyListeners();
+    for (final (bodyId, vertexIndex) in vertices) {
+      await pickConvertEntityVertex(bodyId, vertexIndex);
+    }
+    for (final (bodyId, edgeIndex) in edges) {
+      await pickConvertEntityEdge(bodyId, edgeIndex);
+    }
+  }
+
+  /// Sketcher-roadmap Phase 9 v2 (Convert Entities): [confirmConvertSelection]'s
+  /// own per-vertex commit - materializes the vertex as a real, *associative*
+  /// Point via the backend's `convert_body_vertex` endpoint - same
+  /// live-linked/pinned mechanism [pickReferenceGhostVertex] already uses
+  /// (`external_references`, re-resolved on every solve, surfaced as the
+  /// feature tree's "lost reference" indicator if the Body changes
+  /// underneath it), but non-construction: real geometry meant to
   /// participate in a profile/Extrude, not a dimensioning-only reference.
   /// Known, inherited limitation: like any external-reference Point, this
   /// one is pinned server-side, but nothing here excludes it from
   /// [dragTargetPointIdAt] - dragging one visually "works" but the next
   /// solve snaps it back to its Body-derived position.
   ///
-  /// One undo entry per tap, mirroring every other single-commit draw
+  /// One undo entry per commit, mirroring every other single-commit draw
   /// action - a no-op (not pushed) if the backend reused an existing,
   /// already-tracking-this-exact-vertex Point (`Sketch.
   /// add_or_reuse_external_vertex_reference`, identity-matched, not

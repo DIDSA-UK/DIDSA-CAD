@@ -25,10 +25,12 @@ import '../viewport3d/view_preferences.dart';
 import 'sketch_canvas.dart';
 import 'sketch_construction_method_bar.dart';
 import 'sketch_controller.dart';
+import 'sketch_convert_bar.dart';
 import 'sketch_dimension_bar.dart';
 import 'sketch_offset_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
+import 'sketch_trim_bar.dart';
 import 'sketcher_preferences.dart';
 
 /// Phase 4.1/4.2: converts [controller]'s live points into the
@@ -759,41 +761,6 @@ class _SketchScreenState extends State<SketchScreen> {
                       );
                     },
                   ),
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: AnimatedBuilder(
-                        animation: _controller,
-                        builder: (context, _) {
-                          // Sketcher restructure Phase 2 follow-up (P12):
-                          // this used to be hidden outright during Orbit
-                          // View - now the same pill/tap-to-exitToSelectMode
-                          // mechanism doubles as the embedded 3D view's own
-                          // "enter cursor mode" toggle.
-                          if (_controller.mode == SketchMode.select) {
-                            return const SizedBox.shrink();
-                          }
-                          final pill = Material(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(16),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Text(
-                                _controller.modeLabel,
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                            ),
-                          );
-                          return GestureDetector(
-                            onTap: _controller.exitToSelectMode,
-                            child: pill,
-                          );
-                        },
-                      ),
-                    ),
-                  ),
                   // Bottom-right: the draw/dimension tool speed dial -
                   // sketcher restructure Phase 2: shown in Orbit View too
                   // now that it's genuinely interactive; P20: every tool
@@ -870,12 +837,22 @@ class _SketchScreenState extends State<SketchScreen> {
                       animation: _controller,
                       builder: (context, _) {
                         final mode = _controller.mode;
-                        // Every draw tool gets this fly-up bar (with its Exit
-                        // button) while active - SketchTool.point has no
-                        // construction-method choice, so
-                        // SketchConstructionMethodBar shows a plain
-                        // "Tap to place a point" message instead of chips,
-                        // but the bar (and its Exit button) still appears.
+                        // Every tool gets a fly-up bar (with its own Exit
+                        // button and contextual tooltip) while active -
+                        // SketchTool.point has no construction-method
+                        // choice, so SketchConstructionMethodBar shows a
+                        // plain "Tap to place a point" message instead of
+                        // chips, but the bar (and its Exit button) still
+                        // appears. On-device feedback ("the tick/FAB confirm
+                        // button should live in the flyup ribbon instead of
+                        // a FAB, for every tool"): Trim/Extend and Convert
+                        // Entities used to have no bar of their own at all
+                        // (their only affordance was the FAB tick plus the
+                        // mode-label pill this Stack used to also render) -
+                        // both get one now, same as every other tool, so
+                        // [visible] is simply "any mode but Select" and the
+                        // old FAB tick is gone entirely (see
+                        // sketch_speed_dial.dart).
                         //
                         // P26 (on-device feedback: "missing option to change
                         // number of sides of polygon", "missing finish
@@ -890,20 +867,14 @@ class _SketchScreenState extends State<SketchScreen> {
                         // screen-space overlay, same as SketchRibbon already
                         // is), so nothing here needed to change beyond
                         // dropping this gate.
-                        //
-                        // On-device feedback round 2: OffsetValueBar only
-                        // once picking is actually done (offsetPreviewTargets
-                        // non-null) - the picking phase itself relies on the
-                        // hover highlight and the Tools flyup's own Finish
-                        // button, not this bar.
-                        final showConstructionBar = mode == SketchMode.draw;
-                        final showDimensionBar = mode == SketchMode.dimension;
-                        final showOffsetBar =
-                            mode == SketchMode.offset && _controller.offsetPreviewTargets != null;
-                        final visible = showConstructionBar || showDimensionBar || showOffsetBar;
+                        final visible = mode != SketchMode.select;
                         final bar = switch (mode) {
                           SketchMode.dimension => SketchDimensionBar(controller: _controller),
-                          SketchMode.offset => OffsetValueBar(controller: _controller),
+                          SketchMode.offset => _controller.offsetPreviewTargets != null
+                              ? OffsetValueBar(controller: _controller)
+                              : OffsetPickBar(controller: _controller),
+                          SketchMode.trim => SketchTrimBar(controller: _controller),
+                          SketchMode.convert => SketchConvertBar(controller: _controller),
                           _ => SketchConstructionMethodBar(controller: _controller),
                         };
                         return IgnorePointer(
@@ -1219,23 +1190,23 @@ class _SketchScreenState extends State<SketchScreen> {
     final offset = _controller.mode == SketchMode.offset;
     switch (entity.kind) {
       case SelectionEntityKind.vertex:
-        unawaited(
-          convert
-              ? _controller.pickConvertEntityVertex(entity.bodyId, entity.id)
-              : _controller.pickReferenceGhostVertex(entity.bodyId, entity.id),
-        );
+        if (convert) {
+          _controller.stageConvertVertex(entity.bodyId, entity.id);
+          return;
+        }
+        unawaited(_controller.pickReferenceGhostVertex(entity.bodyId, entity.id));
       case SelectionEntityKind.edge:
         if (offset) {
           unawaited(_controller.pickBodyEdgeForOffset(entity.bodyId, entity.id));
           return;
         }
-        unawaited(
-          convert
-              ? _controller.pickConvertEntityEdge(entity.bodyId, entity.id)
-              : _controller.pickReferenceGhostEdge(entity.bodyId, entity.id),
-        );
+        if (convert) {
+          _controller.stageConvertEdge(entity.bodyId, entity.id);
+          return;
+        }
+        unawaited(_controller.pickReferenceGhostEdge(entity.bodyId, entity.id));
       case SelectionEntityKind.face:
-        if (convert) unawaited(_convertFaceEdges(entity));
+        if (convert) _convertFaceEdges(entity);
       default:
         break;
     }
@@ -1247,15 +1218,12 @@ class _SketchScreenState extends State<SketchScreen> {
   /// `part_screen.dart`'s `_toggleFilletFaceEdges` already resolves against
   /// - a stale hit against mesh data that's since changed, or a face
   /// bordering no edges at all, is a silent no-op, same as that method),
-  /// then converts each edge in turn. Sequential (not `Future.wait`), not
-  /// just for a stable insertion order: two adjacent edges around the
-  /// loop share a Body vertex, and `Sketch.add_or_reuse_external_vertex_
-  /// reference`'s own reuse only works correctly if the first edge's own
-  /// convert call has actually completed (and so materialized that shared
-  /// vertex) before the second one's request goes out - firing them
-  /// concurrently would race and likely mint two separate Points for the
-  /// same corner instead of one shared one.
-  Future<void> _convertFaceEdges(SelectionEntityRef faceEntity) async {
+  /// then stages every edge (see [SketchController.stageConvertFaceEdges])
+  /// rather than converting them immediately - the ribbon Tick
+  /// ([SketchController.confirmConvertSelection]) still converts the whole
+  /// loop sequentially, preserving the original shared-vertex-reuse
+  /// ordering this doc comment used to describe happening here directly.
+  void _convertFaceEdges(SelectionEntityRef faceEntity) {
     BodyMeshDto? body;
     for (final candidate in widget.bodies) {
       if (candidate.bodyId == faceEntity.bodyId) {
@@ -1265,9 +1233,7 @@ class _SketchScreenState extends State<SketchScreen> {
     }
     final faceEdgeIds = body?.mesh.faceEdgeIds;
     if (faceEdgeIds == null || faceEntity.id < 0 || faceEntity.id >= faceEdgeIds.length) return;
-    for (final edgeId in faceEdgeIds[faceEntity.id]) {
-      await _controller.pickConvertEntityEdge(faceEntity.bodyId, edgeId);
-    }
+    _controller.stageConvertFaceEdges(faceEntity.bodyId, faceEdgeIds[faceEntity.id]);
   }
 
   /// P12/P33: every real Sketch-entity kind is selectable in this cursor
@@ -1384,6 +1350,20 @@ class _SketchScreenState extends State<SketchScreen> {
           sketchFeatureId: featureId,
           sketchEntityId: selection.id,
         ));
+      }
+    }
+    // Convert Entities' own staged-but-not-yet-converted picks - reuses
+    // PartViewport's ordinary [SelectionEntityRef]-keyed highlight (the
+    // exact same mechanism fillet/chamfer's own multi-edge face picking
+    // already relies on) so a staged vertex/edge lights up here with zero
+    // extra rendering machinery, the same purple every other "picked"
+    // highlight in this app already uses.
+    if (_controller.mode == SketchMode.convert) {
+      for (final (bodyId, vertexIndex) in _controller.pendingConvertVertices) {
+        refs.add(SelectionEntityRef(kind: SelectionEntityKind.vertex, bodyId: bodyId, id: vertexIndex));
+      }
+      for (final (bodyId, edgeIndex) in _controller.pendingConvertEdges) {
+        refs.add(SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: bodyId, id: edgeIndex));
       }
     }
     return refs;

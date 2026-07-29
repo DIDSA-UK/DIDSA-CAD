@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -19,6 +21,15 @@ class SketchConstructionMethodBar extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
+        // On-device feedback ("the tick/FAB confirm button should live in
+        // the flyup ribbon instead of a FAB"): Line/Spline are the only two
+        // draw tools with a multi-tap "profile" in progress that a tick can
+        // meaningfully complete (every other tool commits its one shape in
+        // a single fixed tap sequence, with nothing left to "finish") - see
+        // [SketchController.finishChain]/[finishSpline].
+        final showFinishChain = controller.activeTool == SketchTool.line && controller.chainInProgress;
+        final showFinishSpline = controller.activeTool == SketchTool.spline && controller.splineInProgress;
+        final showFinish = showFinishChain || showFinishSpline;
         return SafeArea(
           top: false,
           child: Material(
@@ -57,6 +68,26 @@ class SketchConstructionMethodBar extends StatelessWidget {
                       },
                     ),
                     const SizedBox(width: 8),
+                    if (showFinish)
+                      IconButton(
+                        onPressed: () {
+                          if (showFinishChain) {
+                            controller.finishChain();
+                          } else {
+                            unawaited(controller.finishSpline());
+                          }
+                        },
+                        tooltip: 'Complete this profile and start a new one',
+                        icon: SvgPicture.asset(
+                          'assets/icons/actions/action_finish.svg',
+                          width: 26,
+                          height: 26,
+                          colorFilter: ColorFilter.mode(
+                            Theme.of(context).colorScheme.primary,
+                            BlendMode.srcIn,
+                          ),
+                        ),
+                      ),
                     TextButton.icon(
                       onPressed: controller.exitToSelectMode,
                       icon: SvgPicture.asset(
