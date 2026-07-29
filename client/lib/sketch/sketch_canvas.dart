@@ -503,17 +503,20 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // hasEntityNear below) every real sketch entity too - the reference
       // body's own ghost geometry is a backdrop, so it never steals a tap
       // real geometry would otherwise have won. [SketchMode.convert] picks
-      // via [SketchController.pickConvertEntityVertex]/
-      // [pickConvertEntityEdge] instead of [pickReferenceGhostVertex]/
-      // [pickReferenceGhostEdge] - same ghost hit-testing, different
-      // controller call, since a converted entity is real, editable
-      // geometry rather than a pinned dimensioning reference.
+      // via [SketchController.stageConvertVertex]/[stageConvertEdge]
+      // instead of [pickReferenceGhostVertex]/[pickReferenceGhostEdge] -
+      // same ghost hit-testing, different controller call, since a
+      // converted entity is real, editable geometry rather than a pinned
+      // dimensioning reference. Convert Entities now stages a pick rather
+      // than converting it immediately - [SketchController.
+      // confirmConvertSelection] (the ribbon Tick) is what actually
+      // materializes it.
       final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
       if (!controller.hasEntityNear(controller.cursorX, controller.cursorY, hitRadius)) {
         final ghostVertex = _referenceGhostVertexAt(transform, cursorScreen);
         if (ghostVertex != null) {
           if (controller.mode == SketchMode.convert) {
-            controller.pickConvertEntityVertex(ghostVertex.$1, ghostVertex.$2);
+            controller.stageConvertVertex(ghostVertex.$1, ghostVertex.$2);
           } else {
             controller.pickReferenceGhostVertex(ghostVertex.$1, ghostVertex.$2);
           }
@@ -527,7 +530,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         final ghostEdge = _referenceGhostEdgeAt(transform, cursorScreen);
         if (ghostEdge != null) {
           if (controller.mode == SketchMode.convert) {
-            controller.pickConvertEntityEdge(ghostEdge.$1, ghostEdge.$2);
+            controller.stageConvertEdge(ghostEdge.$1, ghostEdge.$2);
           } else {
             controller.pickReferenceGhostEdge(ghostEdge.$1, ghostEdge.$2);
           }
@@ -837,6 +840,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                       transform: transform,
                       referenceGhostSegments: widget.referenceGhostSegments,
                       referenceGhostVertices: widget.referenceGhostVertices,
+                      referenceGhostEdges: widget.referenceGhostEdges,
                       referenceBodyHidden: widget.referenceBodyHidden,
                       labelsVisible: widget.constraintLabelsVisible,
                       canvasColor: widget.canvasColor,
@@ -2053,6 +2057,7 @@ class _SketchPainter extends CustomPainter {
   final ViewTransform transform;
   final List<((double, double), (double, double))> referenceGhostSegments;
   final List<(String, int, double, double)> referenceGhostVertices;
+  final List<(String, int, (double, double), (double, double))> referenceGhostEdges;
   final bool referenceBodyHidden;
   final bool labelsVisible;
   final Color canvasColor;
@@ -2063,6 +2068,7 @@ class _SketchPainter extends CustomPainter {
     required this.transform,
     this.referenceGhostSegments = const [],
     this.referenceGhostVertices = const [],
+    this.referenceGhostEdges = const [],
     this.referenceBodyHidden = false,
     this.labelsVisible = true,
     this.canvasColor = SketchCanvas.defaultColor,
@@ -3589,15 +3595,42 @@ class _SketchPainter extends CustomPainter {
     // for body-vertex dimensioning (see SketchController.
     // pickReferenceGhostVertex) - small, solid dots (distinct from the
     // dashed wireframe above) so they read as tappable rather than just
-    // more outline. Only in SketchMode.dimension - a select-mode/draw-mode
-    // canvas has nothing to do with them, and drawing them unconditionally
-    // would just be visual clutter on every other body corner.
+    // more outline. Only in SketchMode.dimension/convert - a select-mode/
+    // draw-mode canvas has nothing to do with them, and drawing them
+    // unconditionally would just be visual clutter on every other body
+    // corner. Convert Entities' own staged-but-not-yet-converted picks
+    // (SketchController.pendingConvertVertices) paint in [_selectedColor]
+    // instead, the same purple every other "picked" highlight in this
+    // painter already uses, so a staged vertex reads as selected rather
+    // than just another tappable ghost before its own Tick actually
+    // converts it.
     if (!referenceBodyHidden &&
         referenceGhostVertices.isNotEmpty &&
-        controller.mode == SketchMode.dimension) {
-      final vertexPaint = Paint()..color = _referenceGhostColor;
-      for (final (_, _, x, y) in referenceGhostVertices) {
-        canvas.drawCircle(transform.sketchToScreen(x, y), 3.5, vertexPaint);
+        (controller.mode == SketchMode.dimension || controller.mode == SketchMode.convert)) {
+      final pendingVertices =
+          controller.mode == SketchMode.convert ? controller.pendingConvertVertices : const <(String, int)>[];
+      for (final (bodyId, vertexIndex, x, y) in referenceGhostVertices) {
+        final isPending = pendingVertices.any((p) => p.$1 == bodyId && p.$2 == vertexIndex);
+        final vertexPaint = Paint()..color = isPending ? _selectedColor : _referenceGhostColor;
+        canvas.drawCircle(transform.sketchToScreen(x, y), isPending ? 5 : 3.5, vertexPaint);
+      }
+    }
+
+    // Convert Entities' own staged edge picks - a solid highlighted
+    // overlay on top of the dashed reference wireframe (drawn above),
+    // mirroring the vertex dots' own pending/not-pending distinction.
+    if (!referenceBodyHidden && controller.mode == SketchMode.convert && controller.pendingConvertEdges.isNotEmpty) {
+      final pendingEdges = controller.pendingConvertEdges;
+      final pendingEdgePaint = Paint()
+        ..color = _selectedColor
+        ..strokeWidth = 2.5;
+      for (final (bodyId, edgeIndex, start, end) in referenceGhostEdges) {
+        if (!pendingEdges.any((p) => p.$1 == bodyId && p.$2 == edgeIndex)) continue;
+        canvas.drawLine(
+          transform.sketchToScreen(start.$1, start.$2),
+          transform.sketchToScreen(end.$1, end.$2),
+          pendingEdgePaint,
+        );
       }
     }
 

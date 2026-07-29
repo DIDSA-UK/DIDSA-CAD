@@ -1,8 +1,78 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import 'sketch_controller.dart';
+
+/// Offset's own picking-phase bar (on-device feedback: "the tick/FAB
+/// confirm button should live in the flyup ribbon instead of a FAB, for
+/// every tool") - shown while [SketchController.offsetPreviewTargets] is
+/// still null, i.e. before picking is done. A Circle tap skips this bar
+/// entirely (straight to [OffsetValueBar] below - a Circle has no chain
+/// endpoints to join with another pick, see [SketchController.
+/// _handleOffsetTap]'s own doc comment), so this bar's own Tick only ever
+/// needs to confirm one or more accumulated Line/Arc picks via
+/// [SketchController.finishOffsetChain].
+class OffsetPickBar extends StatelessWidget {
+  final SketchController controller;
+
+  const OffsetPickBar({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final count = controller.selectionSet.length;
+        return SafeArea(
+          top: false,
+          child: Material(
+            elevation: 8,
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      count == 0
+                          ? 'Select line/curve/edge to offset'
+                          : count == 1
+                              ? '1 entity picked - tap the tick to continue'
+                              : '$count entities picked - tap the tick to continue',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (count > 0)
+                    IconButton(
+                      onPressed: controller.finishOffsetChain,
+                      tooltip: 'Finish picking',
+                      icon: SvgPicture.asset(
+                        'assets/icons/actions/action_finish.svg',
+                        width: 26,
+                        height: 26,
+                        colorFilter: ColorFilter.mode(
+                          Theme.of(context).colorScheme.primary,
+                          BlendMode.srcIn,
+                        ),
+                      ),
+                    ),
+                  TextButton.icon(
+                    onPressed: controller.exitToSelectMode,
+                    icon: const Icon(Icons.close),
+                    label: const Text('Exit'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
 
 /// On-device feedback round 2 ("in the offset tool, a ghost preview should
 /// be shown so the user knows which is positive and negative. the screen
@@ -17,11 +87,9 @@ import 'sketch_controller.dart';
 /// instead).
 ///
 /// Visible only once [SketchController.offsetPreviewTargets] is non-null -
-/// i.e. once picking is actually done (a Circle tap, or [SketchController.
-/// finishOffsetChain]'s Finish button for one or more Line/Arc picks) - the
-/// picking phase itself has no bar of its own (the hover highlight and the
-/// persistent Finish button already in the Tools flyup are enough
-/// feedback).
+/// i.e. once picking is actually done (a Circle tap, or [OffsetPickBar]'s
+/// own Tick for one or more Line/Arc picks) - the picking phase itself is
+/// [OffsetPickBar] above, not this bar.
 class OffsetValueBar extends StatelessWidget {
   final SketchController controller;
 
