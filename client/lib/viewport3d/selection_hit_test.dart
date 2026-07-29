@@ -225,6 +225,51 @@ double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize, {double? orth
   return worldHeightAtDepth / viewportSize.height;
 }
 
+/// Below this many screen pixels apart, two hit candidates are treated as
+/// landing on the same screen spot - [_isCloserHit] then breaks the tie by
+/// depth ([HoverHit.rayT]) instead of pixel distance. Small enough to never
+/// affect two genuinely distinguishable picks (a hundredth of a pixel is
+/// imperceptible), comfortably above the floating-point noise two
+/// independently-evaluated OCCT curves can differ by.
+const double kPixelDistanceTieEpsilon = 1e-6;
+
+/// Bug fix (on-device feedback: "in orthographic view looking directly at
+/// the canvas, picking an arc picks the chord instead; picking a circle
+/// errors - rotating the camera away fixes it" - live-reproduced as a
+/// third, distinct cause from the two already fixed for this same report,
+/// see [_worldUnitsPerPixelAtDepth]'s and [_closestRaySegmentDistance]'s
+/// own doc comments): every hit-test loop below used to keep its very first
+/// in-range candidate on an exact pixel-distance tie (`<` never re-fires for
+/// an equal value). A straight prism - any Body extruded from a profile
+/// with a curved boundary, not just a fillet - has that same curve repeated
+/// on its near and far face (e.g. a rounded corner's top and bottom rim).
+/// Under an orthographic ray looking exactly down the extrusion axis, a
+/// point on the near curve and the corresponding point on the identical far
+/// curve sit at the *same* screen position - genuinely zero world-space
+/// ray-to-segment distance for both, confirmed live against a real filleted
+/// Body's mesh data, not merely close. [_worldUnitsPerPixelAtDepth]'s own
+/// orthographic fix does not resolve this: both candidates already compute
+/// zero raw distance, so no depth-dependent scaling could ever separate
+/// them. Whichever of the two came first in `MeshDto.edgeIds`/a Sketch
+/// entity id list won by accident of iteration order - for the reported
+/// case, the *far* (bottom) rim happened to iterate before the *near* (top)
+/// one, so the top rim's own arc reliably lost to its own far-side twin.
+/// From any other camera angle the near/far copies project to visibly
+/// different screen positions and this tie stops arising - matching the
+/// reported "rotate away and it picks correctly" behaviour exactly, same as
+/// the other two causes.
+///
+/// A user aiming at a specific screen spot means the nearest (smallest
+/// [HoverHit.rayT]) geometry there, exactly like [hitTestBodies]' own
+/// `facesOccludeOtherHits` already assumes for vertex/edge-vs-face - so a
+/// pixel-distance tie is now broken the same way, rather than left to
+/// accidental array order.
+bool _isCloserHit(double candidatePixelDistance, double candidateRayT, double bestPixelDistance, double bestRayT) {
+  final delta = candidatePixelDistance - bestPixelDistance;
+  if (delta.abs() > kPixelDistanceTieEpsilon) return delta < 0;
+  return candidateRayT < bestRayT;
+}
+
 /// Nearest of [vertices] (ids parallel in [ids]) to [ray], in screen space,
 /// within [radiusPixels] - or null if none are that close. A vertex behind
 /// the camera (`t <= 0`) is never considered.
@@ -247,7 +292,7 @@ HoverHit? hitTestVertices(
     final pixelDistance = worldDistance /
         _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
-    if (best == null || pixelDistance < best.pixelDistance!) {
+    if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
         entity: SelectionEntityRef(kind: SelectionEntityKind.vertex, id: ids[i]),
         rayT: t,
@@ -264,7 +309,49 @@ HoverHit? hitTestVertices(
 /// lines formula, with the segment parameter clamped to `[0, 1]` so the
 /// result respects the segment's actual endpoints rather than its infinite
 /// extension. Returns `(t along the ray, world-space distance)`, or null if
-/// the segment's closest point would be behind the camera (`t <= 0`).
+/// the segment's closest point would be behind the camera (`t <= 0`), or if
+/// the segment is (numerically) exactly parallel to the ray - see below.
+///
+/// Bug fix (on-device feedback: "in orthographic view looking directly at
+/// the canvas, picking an arc picks the chord instead; picking a circle
+/// errors - rotating the camera away fixes it" - a second, distinct cause
+/// from the one already fixed for this same report, see
+/// [_worldUnitsPerPixelAtDepth]'s own doc comment): live-reproduced against
+/// a real filleted Body (a box with one vertical corner rounded) - a
+/// rounded corner's fillet surface isn't always one continuous curved
+/// panel; OCCT frequently splits it into two, joined by a real, internal
+/// B-Rep edge running along the panel seam, radially inward from
+/// (typically) the sweep's own angular midpoint - i.e. running exactly
+/// parallel to the sketch plane's normal. A full circular Body edge (e.g. a
+/// cylinder's rim) has the same shape of seam edge for the same reason
+/// (`GCPnts`/OCCT's own closed-curve convention needs a parametric start/end
+/// somewhere), which is exactly the edge `degenerate_edge` (Router's own
+/// doc comment: "both endpoints the same Body vertex") fires for once
+/// picked and converted - a real edge, just not the one the tap meant.
+///
+/// A ray looking anywhere else has this seam edge projecting to a short
+/// but nonzero on-screen segment, clearly separated from the curve beside
+/// it, same as any other edge - no different from the general case. Only
+/// an orthographic ray looking *exactly* along the sketch plane's normal
+/// (every ray shares that one exact direction under orthographic
+/// projection - see [_worldUnitsPerPixelAtDepth]) can end up numerically
+/// *exactly* parallel to a seam edge that also runs along that normal,
+/// which is precisely what this function's own `denom` (`|d2|² · sin²θ`
+/// between the segment and the ray) measures: near-zero only for a
+/// (near-)zero-length segment or a (near-)parallel one. The old code
+/// treated both cases identically - clamp to the segment's start point,
+/// report whatever distance results - which is correct for a genuinely
+/// short segment, but actively wrong for a parallel one: a segment lying
+/// exactly along the ray reports a *real* zero-distance "hit" at any point
+/// along its own length, an on-screen sliver invisible in this exact view,
+/// that can - and, per the live repro, reliably does - out-tie a real,
+/// intended curve sample sitting right beside it in world space (arriving
+/// earlier in `MeshDto.edgeIds` decides the tie, since [hitTestEdges] only
+/// replaces its running-best on a strict `<`). A user can never deliberately
+/// aim at an edge-on sliver they cannot see, so a parallel segment is
+/// excluded outright below instead of being treated as an ultra-close hit -
+/// the zero-length case is unaffected, still resolving to its one real
+/// point.
 (double, double)? _closestRaySegmentDistance(
   vm.Vector3 rayOrigin,
   vm.Vector3 rayDirection,
@@ -282,7 +369,18 @@ HoverHit? hitTestVertices(
 
   // a = d1.dot(d1) == 1 since d1 is unit-length.
   final denom = c - b * b;
-  var segT = denom.abs() < 1e-9 ? 0.0 : (e - b * d) / denom;
+  double segT;
+  if (c < 1e-9) {
+    // Zero-length segment (segStart == segEnd): every segT resolves to the
+    // same single point, so 0 is as good as any other value.
+    segT = 0.0;
+  } else if (denom.abs() < 1e-9) {
+    // Segment (near-)parallel to the ray - see this function's own doc
+    // comment for why this is excluded rather than treated as a hit.
+    return null;
+  } else {
+    segT = (e - b * d) / denom;
+  }
   segT = segT.clamp(0.0, 1.0);
 
   final segPoint = segStart + d2 * segT;
@@ -314,7 +412,7 @@ HoverHit? hitTestEdges(
     final pixelDistance = worldDistance /
         _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
-    if (best == null || pixelDistance < best.pixelDistance!) {
+    if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
         entity: SelectionEntityRef(kind: SelectionEntityKind.edge, id: ids[i]),
         rayT: t,
@@ -351,7 +449,7 @@ HoverHit? hitTestSketchPoints(
     final pixelDistance = worldDistance /
         _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
-    if (best == null || pixelDistance < best.pixelDistance!) {
+    if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
         entity: SelectionEntityRef(
           kind: SelectionEntityKind.sketchPoint,
@@ -389,7 +487,7 @@ HoverHit? hitTestSketchLines(
     final pixelDistance = worldDistance /
         _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
     if (pixelDistance > radiusPixels) continue;
-    if (best == null || pixelDistance < best.pixelDistance!) {
+    if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
         entity: SelectionEntityRef(
           kind: SelectionEntityKind.sketchLine,
@@ -527,7 +625,7 @@ HoverHit? _hitTestSketchPolylines(
       final pixelDistance = worldDistance /
           _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
       if (pixelDistance > radiusPixels) continue;
-      if (best == null || pixelDistance < best.pixelDistance!) {
+      if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
         best = HoverHit(
           entity: SelectionEntityRef(
             kind: kind,
@@ -822,7 +920,7 @@ HoverHit? hitTestBodies({
         radiusPixels: vertexRadiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestVertex == null || hit.pixelDistance! < bestVertex.pixelDistance!)) {
+      if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
         bestVertex = taggedWithBody(hit, body.bodyId);
       }
     }
@@ -835,7 +933,7 @@ HoverHit? hitTestBodies({
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = taggedWithBody(hit, body.bodyId);
       }
     }
@@ -860,7 +958,7 @@ HoverHit? hitTestBodies({
         radiusPixels: vertexRadiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestVertex == null || hit.pixelDistance! < bestVertex.pixelDistance!)) {
+      if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
         bestVertex = hit;
       }
     }
@@ -874,7 +972,7 @@ HoverHit? hitTestBodies({
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
       }
     }
@@ -888,7 +986,7 @@ HoverHit? hitTestBodies({
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
       }
     }
@@ -902,7 +1000,7 @@ HoverHit? hitTestBodies({
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
       }
     }
@@ -916,7 +1014,7 @@ HoverHit? hitTestBodies({
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
       }
     }
@@ -930,7 +1028,7 @@ HoverHit? hitTestBodies({
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );
-      if (hit != null && (bestEdge == null || hit.pixelDistance! < bestEdge.pixelDistance!)) {
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
       }
     }

@@ -148,6 +148,39 @@ void main() {
     });
   });
 
+  group(
+      'on-device feedback ("in orthographic view looking directly at the canvas, picking an arc '
+      'picks the chord instead; picking a circle errors - rotating the camera away fixes it"): '
+      'pixel-distance ties broken by depth, not array order', () {
+    // A straight prism repeats its profile's curve on both its near and far
+    // face (e.g. a filleted corner's top and bottom rim) - live-reproduced
+    // against a real filleted Body's mesh data: under a straight-down
+    // orthographic ray, a point on the near rim and the matching point on
+    // the identical far rim sit at the *same* screen position, genuinely
+    // zero world-space ray-to-segment distance for both (not merely close -
+    // [orthographicHalfHeight]'s own fix above cannot separate them, since
+    // there is no nonzero distance for depth-scaling to act on). Both
+    // segments below cross the ray's own axis exactly (at y=0), one at
+    // depth 10 (the near/top rim), one at depth 20 (the far/bottom rim).
+    final nearSegment = (vm.Vector3(-1, 0, 10), vm.Vector3(1, 0, 10));
+    final farSegment = (vm.Vector3(-1, 0, 20), vm.Vector3(1, 0, 20));
+
+    test('the nearer of two exactly-tied segments wins when it is listed first', () {
+      final hit = hitTestEdges(straightDownZ, viewportSize, [nearSegment, farSegment], [1, 2]);
+      expect(hit?.entity.id, 1, reason: 'near segment (depth 10) should win over the tied far one');
+    });
+
+    test('the nearer of two exactly-tied segments still wins when it is listed second', () {
+      // Before this fix, whichever candidate happened to be tested first
+      // won an exact tie (`<` never re-fires for an equal value) - purely
+      // an artifact of `MeshDto.edgeIds` iteration order, not which one the
+      // camera actually sees. Swapping the array order must not change the
+      // winner once depth correctly breaks the tie.
+      final hit = hitTestEdges(straightDownZ, viewportSize, [farSegment, nearSegment], [2, 1]);
+      expect(hit?.entity.id, 1, reason: 'near segment (depth 10) should still win regardless of iteration order');
+    });
+  });
+
   group('Prompt C1: hitTestSketchPoints', () {
     test('a Point within the vertex pixel radius at its depth is hit, tagged with the Feature id', () {
       final hit = hitTestSketchPoints(
