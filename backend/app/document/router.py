@@ -17,6 +17,7 @@ from app.document.extrude import (
     compute_part_bodies,
     edge_endpoint_vertex_refs,
     resolve_circular_edge_arc,
+    resolve_full_circular_edge,
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
@@ -111,7 +112,7 @@ from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
-from app.sketch.schemas import ArcResponse, LineResponse, PointResponse
+from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
 logger = logging.getLogger(__name__)
@@ -1251,11 +1252,20 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
     (still real external vertex references), nothing currently pins a
     circular edge's own *centre* the way a vertex reference pins a
     corner, so it won't itself track a later change to the Body's shape.
-    Still out of scope, unchanged from before this fix: a full circular
-    edge (both topological endpoints the same Body vertex) still 422s as
-    `degenerate_edge` before ever reaching curve-type detection - real
-    Circle extraction for that case is a separate, not-yet-built
-    follow-up.
+
+    On-device feedback ("offsetting the circular edge of a cylinder fails
+    with a degenerate_edge error"): a *full* circular edge (both
+    topological endpoints the same Body vertex - a cylinder's rim, a
+    drilled hole, ...) used to always 422 as `degenerate_edge` before ever
+    reaching curve-type detection, since it has no two distinct vertices
+    for the chord-Line/Arc path's own "resolve both endpoints" shape to
+    hang off of. Now checked first, via `resolve_full_circular_edge` (the
+    same `resolve_planar_circle` coplanarity math `resolve_circular_edge_
+    arc` already uses, minus the CCW-endpoint step a full circle has no
+    use for) - a coplanar circular full edge resolves as a real Circle
+    (`add_circle`) instead. `degenerate_edge` remains the fallback for a
+    genuinely degenerate (zero-length) edge, or a full circular edge that
+    isn't coplanar with this Sketch.
 
     `add_or_reuse_external_vertex_reference`'s own identity-based (not
     position-based) matching is what lets two separately-converted
@@ -1275,9 +1285,29 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
     edge_ref = SubShapeRef(body_id=payload.body_id, shape_type=SubShapeType.EDGE, index=payload.edge_index)
     start_ref, end_ref = edge_endpoint_vertex_refs(bodies, edge_ref)
     if start_ref.index == end_ref.index:
-        raise HTTPException(
-            status_code=422,
-            detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
+        basis = basis_for_sketch(part, sketch, bodies, frozenset())
+        circle_params = resolve_full_circular_edge(bodies, edge_ref, basis)
+        if circle_params is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
+            )
+        center_x, center_y, radius = circle_params
+        center_point = sketch.add_point(center_x, center_y)
+        circle = sketch.add_circle(center_point.id, radius=radius, construction=False)
+        center_response = PointResponse(id=center_point.id, x=center_point.x, y=center_point.y)
+        return ConvertEdgeResponse(
+            circle=CircleResponse(
+                id=circle.id,
+                center_point_id=circle.center_point_id,
+                radius_point_id=circle.radius_point_id,
+                radius=circle.radius(sketch.points),
+                construction=circle.construction,
+                cardinal_point_ids=circle.cardinal_point_ids,
+            ),
+            start_point=center_response,
+            end_point=center_response,
+            center_point=center_response,
         )
 
     start_vertex_ref = ExternalVertexReference(body_id=start_ref.body_id, vertex_index=start_ref.index)

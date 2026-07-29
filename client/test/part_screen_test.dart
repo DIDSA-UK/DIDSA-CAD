@@ -561,8 +561,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Sketch 1'), findsOneWidget);
-    expect(find.text('Locked'), findsOneWidget);
-    expect(find.text('Editable'), findsOneWidget);
+    // On-device feedback ("we now have the ability to edit parent features
+    // and parametric flow is working" - the Locked badge was removed):
+    // every row shows "Editable" regardless of lock state now, not just the
+    // last (previously "unlocked") one.
+    expect(find.text('Editable'), findsNWidgets(2));
 
     // The hamburger toggle sits in the same top-left corner as the tree's
     // header, so it's hidden while the tree is open to avoid overlapping
@@ -687,92 +690,6 @@ void main() {
     expect(find.text('Sketch 1'), findsNothing);
     expect(find.text('Sketch 2'), findsNothing);
     expect(backend.features, isEmpty);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('bug-fix round: deleting the last Feature returns the new-last Feature to its '
-      'unlocked (black icon/"Editable") appearance, not stuck grey/"Locked"', (tester) async {
-    final backend = _FakeDocumentBackend(
-      seedFeatures: [
-        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
-      ],
-    );
-    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
-    final sketchBackend = _FakeSketchBackend();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: PartScreen(
-          documentApi: documentApi,
-          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-        ),
-      ),
-    );
-    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-
-    await tester.tap(find.byTooltip('Feature tree'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
-    // Before deleting: Sketch 1 locked (grey lock icon), Sketch 2 unlocked
-    // (primary-colour edit icon). The leading glyph is a plain Icon(Icons.
-    // lock) for a locked Feature but an SvgIcon (feature-type asset, not a
-    // named IconData) for an unlocked one - find.byType(Icon) alone only
-    // ever matches the locked case; a warning/visibility_off Icon can also
-    // sit in the same ListTile (lost-reference badge, hidden trailing), so
-    // the predicate excludes those explicitly rather than assuming the
-    // leading glyph is always first in the found set.
-    Finder leadingGlyphFor(String label) => find.descendant(
-          of: find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
-          matching: find.byWidgetPredicate(
-            (w) => (w is Icon && w.icon == Icons.lock) || w is SvgIcon,
-          ),
-        );
-    Color? glyphColorFor(String label) {
-      final widget = tester.widget(leadingGlyphFor(label));
-      return widget is Icon ? widget.color : (widget as SvgIcon).color;
-    }
-
-    bool isLockedFor(String label) => find
-        .descendant(
-          of: find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
-          matching: find.byIcon(Icons.lock),
-        )
-        .evaluate()
-        .isNotEmpty;
-
-    expect(glyphColorFor('Sketch 1'), Colors.grey);
-    expect(isLockedFor('Sketch 1'), isTrue);
-    expect(glyphColorFor('Sketch 2'), isNot(Colors.grey));
-
-    // Long-press the last (unlocked) Feature and delete just it - nothing
-    // depends on the last Feature, so this cascades to exactly one Feature
-    // and the dialog's confirm button reads "Delete" (not "Delete all") -
-    // see showCascadeDeleteDialog's own count == 1 branch.
-    await tester.longPress(find.text('Sketch 2'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Delete'));
-    await tester.pump();
-    // The cascade-delete preview is an awaited network round trip before the
-    // confirmation dialog even shows - pump past it rather than a single
-    // fixed-duration frame. Waits for the AlertDialog itself (not just any
-    // "Delete" text) since the closing context-menu sheet's own ListTile can
-    // still be mid-exit-animation and briefly coexist with the dialog,
-    // making a plain text search ambiguous.
-    await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
-    await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await _pumpUntil(tester, () => find.text('Sketch 2').evaluate().isEmpty);
-
-    // Sketch 1 is now the last Feature - it must render unlocked (black/
-    // primary-colour edit icon), not still show the grey lock icon it had
-    // while Sketch 2 existed.
-    expect(find.text('Sketch 1'), findsOneWidget);
-    expect(glyphColorFor('Sketch 1'), isNot(Colors.grey));
-    expect(isLockedFor('Sketch 1'), isFalse);
     expect(tester.takeException(), isNull);
   });
 

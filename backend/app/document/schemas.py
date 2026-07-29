@@ -14,7 +14,7 @@ from app.document.models import (
     SweepMode,
 )
 from app.sketch.models import Plane, SketchEntityType
-from app.sketch.schemas import ArcResponse, LineResponse, PointResponse
+from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
 
 
 class PartCreate(BaseModel):
@@ -234,20 +234,34 @@ class ConvertEdgeResponse(BaseModel):
     treats `create_line`'s own endpoint response.
 
     On-device feedback ("when I offset a curved edge it creates a straight
-    line"): exactly one of `line`/`arc` is ever set now - a coplanar
-    circular Body edge resolves as a real `arc` instead of always `line`
-    (its own chord), matching `PointRef`'s established "exactly one of two
-    optional fields" convention. `center_point` is only present alongside
-    `arc` - v1 limitation, spelled out on `router.convert_body_edge`'s own
-    doc comment: unlike `start_point`/`end_point`, the center is a plain,
-    non-associative Point (no existing mechanism pins a circular edge's
-    own center the way a vertex reference does), so it won't itself track
-    a later change to the Body's shape - only the Arc's start/end will,
-    via the same 'lost reference' machinery every other external reference
-    already has."""
+    line"): exactly one of `line`/`arc`/`circle` is ever set now - a
+    coplanar circular Body edge resolves as a real `arc` instead of always
+    `line` (its own chord), matching `PointRef`'s established "exactly one
+    of several optional fields" convention. `center_point` is only present
+    alongside `arc`/`circle` - v1 limitation, spelled out on
+    `router.convert_body_edge`'s own doc comment: unlike `start_point`/
+    `end_point`, the center is a plain, non-associative Point (no existing
+    mechanism pins a circular edge's own center the way a vertex reference
+    does), so it won't itself track a later change to the Body's shape -
+    only the Arc's start/end will, via the same 'lost reference' machinery
+    every other external reference already has.
+
+    On-device feedback ("offsetting the circular edge of a cylinder fails
+    with a degenerate_edge error"): `circle` is set instead of `line`/`arc`
+    for a *full* circular Body edge (both topological endpoints the same
+    Body vertex, e.g. a cylinder's rim or a drilled hole) - previously
+    always rejected with a `degenerate_edge` 422 before curve-type
+    detection ever ran, since a full circle has no distinct `start_point`/
+    `end_point` for the old chord-Line/Arc shape to hang off of. `start_
+    point`/`end_point` are meaningless for this case and are simply set
+    equal to `center_point` (kept required on the wire shape rather than
+    made optional, so existing clients that always read `start_point`/
+    `end_point` don't need a third null-check) - only `circle`/
+    `center_point` carry real information here."""
 
     line: LineResponse | None = None
     arc: ArcResponse | None = None
+    circle: CircleResponse | None = None
     start_point: PointResponse
     end_point: PointResponse
     center_point: PointResponse | None = None

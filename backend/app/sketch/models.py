@@ -2792,6 +2792,20 @@ class Sketch:
         "which of the two intersections did the user mean" tiebreaker,
         since the offset corner is always close to the original one).
 
+        Deliberately intersects against the *full* underlying circle, not
+        each raw Arc's own current swept portion (`line_vs_circle`/
+        `circle_vs_circle`, not the sweep-filtered `line_vs_arc`/
+        `arc_vs_arc` every trim/extend-against-an-Arc call site elsewhere
+        in this module uses) - same "extend to the natural corner"
+        philosophy `line_vs_line`'s own unclipped two-Line case already
+        has: an offset Arc's true corner with its neighbor often falls
+        just past its own pre-offset sweep (offsetting grows/shrinks the
+        radius without changing the stored start/end angles), so clipping
+        to that stale sweep would leave everyday, perfectly reasonable
+        corners unjoined - confirmed against this file's own `test_offset_
+        chain_joins_a_line_and_an_arc`/`test_offset_chain_joins_two_arcs`,
+        both of which rely on exactly this un-clipped extension.
+
         Returns None with no candidates at all (parallel Lines offset the
         same direction never meet again; an offset Arc's new radius/center
         pairing may simply no longer reach the other curve) - `offset_chain`

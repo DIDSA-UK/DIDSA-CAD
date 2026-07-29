@@ -612,6 +612,54 @@ class _FakeBackend {
           201,
         );
       }
+      // On-device feedback ("offsetting the circular edge of a cylinder
+      // fails with a degenerate_edge error"): edgeIndex 100 is this fake's
+      // own sentinel for "the real backend detected a coplanar *full*
+      // circular edge" - returns a circle (with its own 4 cardinal Points,
+      // same shape the real createCircle route already fakes below) rather
+      // than a line/arc, with start_point/end_point/center_point all the
+      // same Point, mirroring the real backend's own contract for this
+      // case.
+      if (edgeIndex == 100) {
+        final centerId = _newId('point');
+        final centerX = bodyId.length.toDouble() + 5;
+        const centerY = 0.0;
+        const radius = 5.0;
+        final centerPoint = {'id': centerId, 'x': centerX, 'y': centerY};
+        points[centerId] = centerPoint;
+        final cardinalPointIds = <String>[];
+        final cardinalOffsets = <String, (double, double)>{
+          'north': (centerX, centerY + radius),
+          'east': (centerX + radius, centerY),
+          'south': (centerX, centerY - radius),
+          'west': (centerX - radius, centerY),
+        };
+        for (final key in ['north', 'east', 'south', 'west']) {
+          final newId = _newId('point');
+          final offset = cardinalOffsets[key]!;
+          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+          cardinalPointIds.add(newId);
+        }
+        final circleId = _newId('circle');
+        final circle = {
+          'id': circleId,
+          'center_point_id': centerId,
+          'radius_point_id': cardinalPointIds.first,
+          'radius': radius,
+          'construction': false,
+          'cardinal_point_ids': cardinalPointIds,
+        };
+        circles[circleId] = circle;
+        return _json(
+          {
+            'circle': circle,
+            'start_point': centerPoint,
+            'end_point': centerPoint,
+            'center_point': centerPoint,
+          },
+          201,
+        );
+      }
       final lineId = _newId('line');
       final line = {
         'id': lineId,
@@ -6070,6 +6118,47 @@ void main() {
       expect(freshController.points.containsKey(endId), isFalse);
       expect(freshBackend.requestLog.any((r) => r.contains('DELETE') && r.contains('/arcs/')), isTrue);
     });
+
+    test(
+        'bug fix ("offsetting the circular edge of a cylinder fails with a degenerate_edge error"): '
+        'a full circular Body edge converts as a real Circle and goes straight to offsetPreviewTargets '
+        '(bypassing the chain-pick set, same as a Sketch-entity Circle tap already does)', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterOffsetMode();
+
+      await freshController.pickBodyEdgeForOffset('body-1', 100); // 100 = this fake's "full circle" sentinel
+
+      expect(freshController.lines, isEmpty);
+      expect(freshController.arcs, isEmpty);
+      expect(freshController.circles, hasLength(1));
+      final circle = freshController.circles.values.single;
+      expect(circle.construction, isFalse);
+      expect(circle.cardinalPointIds, hasLength(4));
+      for (final id in circle.cardinalPointIds) {
+        expect(freshController.points.containsKey(id), isTrue);
+      }
+      // Unlike the Arc/Line cases above, a Circle pick never enters the
+      // chain-accumulation selectionSet - it jumps straight to the value
+      // bar as a standalone target, since offsetChain rejects Circles.
+      expect(freshController.selectionSet, isEmpty);
+      expect(freshController.offsetPreviewTargets, hasLength(1));
+      expect(freshController.offsetPreviewTargets!.single.kind, SelectionKind.circle);
+      expect(freshController.offsetPreviewTargets!.single.id, circle.id);
+
+      final circleId = circle.id;
+      final cardinalIds = List<String>.from(circle.cardinalPointIds);
+
+      // Undo isn't reachable via the normal path here (offsetPreviewTargets
+      // bypasses the ribbon), but the conversion itself still pushed a real
+      // undo entry - confirm it cleans up the Circle and all 4 cardinal Points.
+      await freshController.undo();
+
+      expect(freshController.circles.containsKey(circleId), isFalse);
+      for (final id in cardinalIds) {
+        expect(freshController.points.containsKey(id), isFalse);
+      }
+      expect(freshBackend.requestLog.any((r) => r.contains('DELETE') && r.contains('/circles/')), isTrue);
+    });
   });
 
   group('offsetLine/offsetCircle/offsetArc (P49, Sketcher-roadmap Phase 9 v1: Offset Entities)', () {
@@ -7062,6 +7151,37 @@ void main() {
     expect(controller.selectionSet.length, 1);
     expect(controller.selectionSet.first.kind, SelectionKind.constraint);
     expect(controller.selectionSet.first.id, constraintId);
+  });
+
+  // On-device feedback ("when a constraint is selected the entity it's
+  // driving should change colour"): sketch_canvas.dart's `isSelected` and
+  // sketch_screen.dart's `_embeddedSelectedEntities` both expand a selected
+  // Constraint into the Line/Point ids it references via this method, to
+  // highlight them - exercised directly here since neither the CustomPainter
+  // nor the embedded 3D view is unit-testable at this level.
+  test('entitiesReferencedByConstraint returns the Line/Point ids a Vertical constraint '
+      'references', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 5);
+    controller.finishChain();
+    final line = controller.lines.values.single;
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(4, 4);
+    await controller.applyConstraintOption(ConstraintOptionType.vertical);
+    final constraintId = controller.constraints.entries.firstWhere((e) => e.value is VerticalConstraintDto).key;
+
+    final refs = controller.entitiesReferencedByConstraint(constraintId);
+
+    expect(refs.lineIds, {line.id});
+    expect(refs.pointIds, {line.startPointId, line.endPointId});
+  });
+
+  test('entitiesReferencedByConstraint returns an empty result for an unknown constraint id', () async {
+    final refs = controller.entitiesReferencedByConstraint('does-not-exist');
+
+    expect(refs.lineIds, isEmpty);
+    expect(refs.pointIds, isEmpty);
   });
 
   test('deleteSelected removes a selected Constraint and re-solves', () async {
@@ -8414,6 +8534,95 @@ void main() {
     expect(controller.constraints.values.whereType<CollinearConstraintDto>().length, 1);
   });
 
+  // On-device feedback: Equal/Collinear used to require exactly 2 selected
+  // Lines - selecting a 3rd offered neither. Both generalize to N lines by
+  // chaining pairwise against the first selected Line.
+  test('availableConstraintOptions offers Equal/Collinear (not Parallel/Perpendicular) for 3 '
+      'selected Lines', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(0, 8);
+    controller.finishChain();
+    await controller.handleCanvasTap(2, 20);
+    await controller.handleCanvasTap(9, 20);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(0.15, 7.1); // away from (0, 8)'s hit radius, see tests above
+    await controller.handleCanvasTap(5, 20.1);
+
+    final types = controller.availableConstraintOptions.map((o) => o.type).toSet();
+
+    expect(types, {ConstraintOptionType.equalLength, ConstraintOptionType.collinear});
+    expect(controller.canApplyConstraint(ConstraintOptionType.equalLength), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.collinear), isTrue);
+  });
+
+  test('addEqualLengthConstraint chains N-1 EqualLengthConstraints against the first selected '
+      'Line when 3 Lines are selected, and undoes as a single step', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(0, 8);
+    controller.finishChain();
+    await controller.handleCanvasTap(2, 20);
+    await controller.handleCanvasTap(9, 20);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1);
+    final firstLineId = (controller.selectionSet.single).id;
+    await controller.handleCanvasTap(0.15, 7.1);
+    await controller.handleCanvasTap(5, 20.1);
+
+    await controller.addEqualLengthConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.selectionSet, isEmpty);
+    final created = controller.constraints.values.whereType<EqualLengthConstraintDto>().toList();
+    expect(created.length, 2);
+    for (final constraint in created) {
+      expect({constraint.line1Id, constraint.line2Id}, contains(firstLineId));
+    }
+
+    await controller.undo();
+
+    expect(controller.constraints.values.whereType<EqualLengthConstraintDto>(), isEmpty);
+  });
+
+  test('addCollinearConstraint chains N-1 CollinearConstraints against the first selected Line '
+      'when 3 Lines are selected', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(2, 3);
+    await controller.handleCanvasTap(8, 3);
+    controller.finishChain();
+    await controller.handleCanvasTap(2, 40);
+    await controller.handleCanvasTap(9, 40);
+    controller.finishChain();
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(6.5, 3.1);
+    // Third line's midpoint is (5.5, 40), not (5, 40) - matches the same
+    // asymmetric-endpoints pattern the two tests above already use, so
+    // this tap doesn't land on/near the midpoint and snap-select a Point
+    // there instead of the Line (see the identical fix's own comment on
+    // addEqualLengthConstraint's sibling test above).
+    await controller.handleCanvasTap(5, 40.1);
+
+    await controller.addCollinearConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.selectionSet, isEmpty);
+    expect(controller.constraints.values.whereType<CollinearConstraintDto>().length, 2);
+  });
+
   // --- Stage 23g/23h: marquee selection and the Selected Entities list ------
 
   test('hasEntityNear is true near existing geometry and false on truly empty canvas', () async {
@@ -9416,6 +9625,69 @@ void main() {
       await freshController.offsetChain([], 1.0);
 
       expect(freshBackend.requestLog.any((r) => r.contains('/offset-chain')), isFalse);
+    });
+  });
+
+  group('hit-testing picks the nearest entity, not the first kind checked (on-device feedback: '
+      '"when I pick the arc to add to the offset, it seems to pick a straight line between the '
+      'end points of the arc")', () {
+    test('tapping a dome Arc that shares both endpoints with straight Lines picks the Arc, even '
+        'close to its own tangent points where a Line\'s own clamped segment end sits right next '
+        'to it', () async {
+      // Two vertical sides + an Arc bulging upward across the top, sharing
+      // an endpoint Point with each Line - the exact shape a rounded-top
+      // profile's own tangent points put a Line and an Arc directly
+      // against each other.
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(0, 10);
+      controller.finishChain();
+      await controller.handleCanvasTap(10, 0);
+      await controller.handleCanvasTap(10, 10);
+      controller.finishChain();
+
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(5, 10); // center
+      await controller.handleCanvasTap(10, 10); // start (radius 5, angle 0 relative to center)
+      // The direction hint is relative to the centre (5, 10), not
+      // absolute - (-100, 10) is 180 degrees from center, landing the end
+      // exactly at (0, 10) and sweeping CCW through 90 degrees (the
+      // dome's own peak), matching the Line's own end Points at both
+      // (0, 10) and (10, 10).
+      await controller.handleCanvasTap(-100, 10);
+      expect(controller.lines, hasLength(2));
+      expect(controller.arcs, hasLength(1));
+      final arc = controller.arcs.values.single;
+
+      controller.enterOffsetMode();
+      for (final (x, y) in [
+        (5.0, 15.0), // dome peak, far from either Line
+        (5 - 5 * 0.7071, 10 + 5 * 0.7071), // 45 degrees up-left of centre
+        (5 + 5 * 0.7071, 10 + 5 * 0.7071), // 45 degrees up-right of centre
+        // Just past the shared corner Point's own widened hit radius
+        // (radius * pointHitRadiusMultiplier = 0.6, see _entityAt's own
+        // doc comment) so this actually exercises the Line-vs-Arc
+        // tie-break instead of hitting the Point pass first - 0.65 above
+        // (10, 10)/(0, 10) is ~0.65 from the Line's own clamped segment
+        // end (just outside the default 0.5 hit radius, so the Line
+        // isn't even a candidate here) but only ~0.04 from the Arc's own
+        // curve (comfortably inside it).
+        (10.0, 10.65),
+        (0.0, 10.65),
+      ]) {
+        controller.enterOffsetMode(); // resets the pick set between probes
+        await controller.handleCanvasTap(x, y);
+        expect(controller.selectionSet, hasLength(1), reason: 'tap ($x, $y)');
+        expect(controller.selectionSet.single.kind, SelectionKind.arc, reason: 'tap ($x, $y)');
+        expect(controller.selectionSet.single.id, arc.id, reason: 'tap ($x, $y)');
+      }
+
+      // A tap clearly on one of the straight sides still correctly picks
+      // that Line, not the Arc - this fix is about picking the *nearest*
+      // entity, not about ever preferring an Arc.
+      controller.enterOffsetMode();
+      await controller.handleCanvasTap(10.0, 5.0);
+      expect(controller.selectionSet.single.kind, SelectionKind.line);
     });
   });
 }
