@@ -129,6 +129,14 @@ class PatternPanel extends StatefulWidget {
   final MergeMode merge;
   final void Function(MergeMode merge) onMergeChanged;
 
+  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+  /// §2.8/§4): Feature-tree entries (by Feature id) named as additional
+  /// pattern sources, on top of whatever Bodies were picked in the
+  /// viewport - see [PartScreen._patternSourceFeatureIds]. Mirrors
+  /// [MirrorPanel.sourceFeatureIds]/[onPickSourceFeatures] exactly.
+  final List<String> sourceFeatureIds;
+  final VoidCallback onPickSourceFeatures;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -170,6 +178,8 @@ class PatternPanel extends StatefulWidget {
     this.onReverseAngularChanged,
     required this.merge,
     required this.onMergeChanged,
+    this.sourceFeatureIds = const [],
+    required this.onPickSourceFeatures,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -584,6 +594,30 @@ class _PatternPanelState extends State<PatternPanel> {
                                 ],
                                 selected: {widget.merge},
                                 onSelectionChanged: (selection) => widget.onMergeChanged(selection.first),
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      widget.sourceFeatureIds.isEmpty
+                                          ? 'No Features added from the Build Tree'
+                                          : '${widget.sourceFeatureIds.length} Feature'
+                                              '${widget.sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: widget.onPickSourceFeatures,
+                                    icon: const Icon(Icons.account_tree_outlined, size: 16),
+                                    label: const Text('Add from Tree'),
+                                  ),
+                                ],
                               ),
                               const SizedBox(height: 8),
                               Row(

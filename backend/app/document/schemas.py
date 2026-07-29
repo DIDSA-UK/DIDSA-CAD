@@ -555,18 +555,21 @@ class SweepFeatureResponse(BaseModel):
 
 
 class MirrorFeatureCreate(BaseModel):
-    """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
-    §2.1/§4): creates a MirrorFeature reflecting every Body named in
-    `source_body_ids` across `mirror_plane`. `source_body_ids` must have at
-    least one entry (see `app.document.router._validate_mirror_source_
-    body_ids`) - multi-body seeding was pulled forward from its original
-    Phase 6 scoping into Phase 1 on guided-flow UX feedback; multi-*feature*
-    seeding (`source_feature_ids`) remains Phase 6. `merge` (Phase 5,
-    `docs/pattern-mirror-scope.md` §2.10) defaults to `KEEP_SEPARATE`,
-    matching `MirrorFeature`'s own dataclass default."""
+    """Pattern/Mirror scoping's Phase 1/6 (`docs/pattern-mirror-scope.md`
+    §2.1/§2.8/§4): creates a MirrorFeature reflecting every Body named in
+    `source_body_ids`, combined with every Body each `source_feature_ids`
+    entry currently resolves to (Phase 6 - a Feature-tree pick), across
+    `mirror_plane`. At least one entry between `source_body_ids`/`source_
+    feature_ids` is required (see `app.document.router._validate_mirror_
+    source_body_ids`) - multi-body seeding was pulled forward from its
+    original Phase 6 scoping into Phase 1 on guided-flow UX feedback;
+    multi-*feature* seeding (`source_feature_ids`) is Phase 6. `merge`
+    (Phase 5, `docs/pattern-mirror-scope.md` §2.10) defaults to `KEEP_
+    SEPARATE`, matching `MirrorFeature`'s own dataclass default."""
 
     source_body_ids: list[str]
     mirror_plane: PlaneRefSchema
+    source_feature_ids: list[str] = []
     merge: MergeMode = MergeMode.KEEP_SEPARATE
 
 
@@ -576,6 +579,7 @@ class MirrorFeatureUpdate(BaseModel):
 
     source_body_ids: list[str] | None = None
     mirror_plane: PlaneRefSchema | None = None
+    source_feature_ids: list[str] | None = None
     merge: MergeMode | None = None
 
 
@@ -584,6 +588,7 @@ class MirrorFeatureResponse(BaseModel):
     id: str
     source_body_ids: list[str]
     mirror_plane: PlaneRefSchema
+    source_feature_ids: list[str] = []
     merge: MergeMode
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
@@ -631,14 +636,17 @@ class PatternFeatureCreate(BaseModel):
     API layer, not the schema" split `CreatePlaneFeatureCreate` already
     uses for its own six construction methods.
 
-    `source_body_ids` must have exactly one entry (see `app.document.
-    router._validate_pattern_source_body_ids`) - unlike Mirror, Pattern's
-    own multi-body seeding remains Phase 6 scope, not pulled forward (see
-    `PatternFeature`'s own docstring). `merge` (Phase 5, `docs/pattern-
-    mirror-scope.md` §2.10) defaults to `KEEP_SEPARATE`, matching
-    `PatternFeature`'s own dataclass default."""
+    `source_body_ids`, combined with every Body each `source_feature_ids`
+    entry currently resolves to (Phase 6 - a Feature-tree pick), must have
+    at least one entry between them (see `app.document.router._validate_
+    pattern_source_body_ids`) - widened from Phase 2/4's original exactly-
+    one-`source_body_ids`-entry requirement, mirroring `MirrorFeatureCreate`'s
+    own Phase 1 shape (see `PatternFeature`'s own docstring). `merge`
+    (Phase 5, `docs/pattern-mirror-scope.md` §2.10) defaults to `KEEP_
+    SEPARATE`, matching `PatternFeature`'s own dataclass default."""
 
     source_body_ids: list[str]
+    source_feature_ids: list[str] = []
     pattern_type: PatternType = PatternType.RECTANGULAR
     direction_1: PatternDirectionRefSchema | None = None
     count_1: int = 1
@@ -679,6 +687,7 @@ class PatternFeatureUpdate(BaseModel):
     split `ExtrudeFeatureUpdate.target_body_ids` already establishes."""
 
     source_body_ids: list[str] | None = None
+    source_feature_ids: list[str] | None = None
     direction_1: PatternDirectionRefSchema | None = None
     count_1: int | None = None
     spacing_1: float | None = None
@@ -699,6 +708,7 @@ class PatternFeatureResponse(BaseModel):
     type: Literal["pattern"] = "pattern"
     id: str
     source_body_ids: list[str]
+    source_feature_ids: list[str] = []
     pattern_type: PatternType
     direction_1: PatternDirectionRefSchema | None = None
     count_1: int

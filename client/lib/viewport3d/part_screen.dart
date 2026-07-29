@@ -62,14 +62,20 @@ enum _ProfilePickerTarget { extrude, revolve, sweep }
 /// be simultaneous.
 enum _MirrorStep { pickingBodies, pickingPlane }
 
-/// Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
-/// §2.2/§4): which half of the guided Pattern flow is currently live -
-/// `pickingBody` (exactly one Body, per Phase 2's own single-body-seed
-/// scope - see `PatternFeature`'s own backend docstring) immediately
-/// advances to `configuring` the moment a Body is tapped, unlike Mirror's
-/// multi-select-then-confirm `pickingBodies` step, since there is only ever
-/// one valid choice to confirm.
-enum _PatternStep { pickingBody, configuring }
+/// Pattern/Mirror scoping's Phase 2/6 (`docs/pattern-mirror-scope.md`
+/// §2.2/§2.8/§4): which half of the guided Pattern flow is currently live -
+/// `pickingBodies` accumulates 1+ Body taps (Phase 6 widened this from
+/// Phase 2's original exactly-one-Body scope to mirror `_MirrorStep.
+/// pickingBodies`'s own multi-select-then-confirm shape exactly - see
+/// `_confirmPatternBodySelection`), then a checkmark FAB confirms and
+/// advances to `configuring`.
+enum _PatternStep { pickingBodies, configuring }
+
+/// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+/// §2.8/§4): which panel's `source_feature_ids` a live
+/// [FeatureTreePanel.isFeaturePickerMode] session is being edited for - see
+/// `_PartScreenState._sourceFeaturePickerTarget`.
+enum _SourceFeaturePickerTarget { mirror, pattern }
 
 /// Stage 7's new screen: a Part's Feature tree alongside a 3D viewport of
 /// its (placeholder, for this stage) mesh - separate from the 2D
@@ -595,17 +601,14 @@ class _PartScreenState extends State<PartScreen> {
       _setMirrorPlane(entity);
       return;
     }
-    // Pattern/Mirror scoping Phase 2: a Body tap during `pickingBody`
-    // immediately advances to `configuring` with that single Body (Phase
-    // 2's own exactly-one-source scope - see this file's own Pattern
-    // state-field section header comment) - never touches
-    // [_selectedEntities] itself, mirroring [_confirmMirrorBodySelection]'s
-    // own "capture, then clear for the next step" shape, just without a
-    // separate confirm tap since there is only one valid choice.
-    if (_patternStep == _PatternStep.pickingBody && entity.kind == SelectionEntityKind.body) {
-      _confirmPatternBodySelection(entity);
-      return;
-    }
+    // Pattern/Mirror scoping Phase 2/6: a Body tap during `pickingBodies`
+    // needs no special-casing at all (mirrors [_MirrorStep.pickingBodies]'s
+    // own identical shape, per its doc comment) - it falls straight into
+    // the generic accumulate-toggle below, since [_patternBodyPickerSelectionFilter]
+    // already guarantees nothing else can be hit-tested during this step.
+    // [_confirmPatternBodySelection] (a checkmark FAB, not a tap) captures
+    // every currently-selected Body and advances to `configuring`.
+    //
     // Skip-instances redesign: a Body tap during `configuring` that lands
     // on one of the pattern's own instances toggles that instance's own
     // skip/keep state directly, instead of falling into the generic
@@ -839,6 +842,24 @@ class _PartScreenState extends State<PartScreen> {
   /// [FeatureTreePanel] dims. Purely a visual aid; [_onSketchPicked]
   /// re-checks the tapped Sketch itself.
   Set<String> _pickableSketchIds = {};
+
+  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+  /// §2.8/§4): non-null while the Build Tree is acting as a multi-select
+  /// Feature picker for [MirrorPanel]/[PatternPanel]'s own `source_
+  /// feature_ids` - entered via [_startSourceFeaturePicker] (a button
+  /// inside either panel, not the guided "Add" FAB), which says which
+  /// panel's own field this session is editing. Threaded into
+  /// [FeatureTreePanel.isFeaturePickerMode] as a plain bool (`!= null`),
+  /// same "keep the panel itself reusable/dumb" convention
+  /// [_sketchPickerActive] already follows.
+  _SourceFeaturePickerTarget? _sourceFeaturePickerTarget;
+
+  /// While [_sourceFeaturePickerTarget] is non-null, the Feature ids
+  /// currently toggled on - seeded from whichever panel's own current
+  /// `source_feature_ids` when the picker opens ([_startSourceFeaturePicker]),
+  /// applied back on confirm ([_confirmSourceFeaturePicker]), discarded on
+  /// cancel ([_cancelSourceFeaturePicker]).
+  Set<String> _selectedSourceFeatureIds = {};
 
   /// The SketchFeature currently being extruded via [ExtrudePanel], or null
   /// when the panel is closed - set by the long-press "Extrude" context-menu
@@ -1102,6 +1123,15 @@ class _PartScreenState extends State<PartScreen> {
   /// completes (or is skipped).
   List<String>? _mirrorSourceBodyIds;
 
+  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+  /// §2.8/§4): Feature-tree entries (by Feature id) named as additional
+  /// sources, on top of [_mirrorSourceBodyIds] - populated via
+  /// [MirrorPanel.onPickSourceFeatures]'s own Build Tree multi-select
+  /// picker session (see [_startSourceFeaturePicker]/
+  /// [_confirmSourceFeaturePicker]), reset alongside [_mirrorSourceBodyIds]
+  /// everywhere that field is.
+  List<String> _mirrorSourceFeatureIds = [];
+
   /// The MirrorFeature created (or, in edit mode, already existing) for the
   /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
   /// Mirror needs no dual-mesh preview-overlay machinery at all (see
@@ -1127,7 +1157,12 @@ class _PartScreenState extends State<PartScreen> {
   /// started - [_cancelMirror] PATCHes these back verbatim when
   /// [_editingMirrorFeatureId] is set, same reason [_filletEditSnapshot]
   /// exists.
-  ({List<String> sourceBodyIds, PlaneRefDto mirrorPlane, MergeMode merge})? _mirrorEditSnapshot;
+  ({
+    List<String> sourceBodyIds,
+    PlaneRefDto mirrorPlane,
+    List<String> sourceFeatureIds,
+    MergeMode merge,
+  })? _mirrorEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - restored
   /// by both [_confirmMirror] and [_cancelMirror], same purpose
@@ -1185,13 +1220,13 @@ class _PartScreenState extends State<PartScreen> {
     plane: true,
   );
 
-  // --- Pattern/Mirror scoping Phase 2: Pattern -------------------------------
-  // See docs/pattern-mirror-scope.md §2.2/§4. Unlike Mirror, Pattern's own
-  // `source_body_ids` is Phase-2-restricted to exactly one entry (Pattern's
-  // own multi-body widening remains Phase 6, unlike Mirror's - see
-  // `PatternFeature`'s own backend docstring), so `pickingBody` immediately
-  // advances to `configuring` the moment one Body is tapped - no confirm
-  // step is needed the way Mirror's multi-select `pickingBodies` needs one.
+  // --- Pattern/Mirror scoping Phase 2/6: Pattern ------------------------------
+  // See docs/pattern-mirror-scope.md §2.2/§2.8/§4. Phase 6 widened Pattern's
+  // own `source_body_ids` from Phase 2's original exactly-one entry to 1+,
+  // mirroring Mirror's own Phase 1 revision - `pickingBodies` now
+  // accumulates 1+ Body taps and needs its own confirm step
+  // ([_confirmPatternBodySelection]), the same multi-select-then-confirm
+  // shape Mirror's own `pickingBodies` already has.
   //
   // `configuring` picks a *direction* (Direction 1 always, Direction 2
   // optional, for a 2D grid) rather than a plane - all three backend-
@@ -1209,10 +1244,18 @@ class _PartScreenState extends State<PartScreen> {
 
   bool get _patternActive => _patternStep != null;
 
-  /// The single Body being patterned (Phase 2 scope - see this section's
-  /// own header comment) - captured once `pickingBody` completes (or is
-  /// skipped, for the ambient [SelectionContextPanel] entry/edit mode).
-  String? _patternSourceBodyId;
+  /// The Body/Bodies being patterned - captured once `pickingBodies`
+  /// completes (or is skipped, for the ambient [SelectionContextPanel]
+  /// entry/edit mode). Widened from Phase 2's original single-Body `String?`
+  /// to a `List<String>?` in Phase 6, mirroring [_mirrorSourceBodyIds]'s
+  /// own shape exactly (see `docs/pattern-mirror-scope.md`'s Phase 6 entry).
+  List<String>? _patternSourceBodyIds;
+
+  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+  /// §2.8/§4): Feature-tree entries (by Feature id) named as additional
+  /// sources, on top of [_patternSourceBodyIds] - mirrors
+  /// [_mirrorSourceFeatureIds]'s own shape.
+  List<String> _patternSourceFeatureIds = [];
 
   /// Pattern/Mirror scoping Phase 4: Rectangular or Circular - always
   /// [PatternMode.rectangular] for a brand-new PatternFeature
@@ -1314,6 +1357,7 @@ class _PartScreenState extends State<PartScreen> {
     double angleTotal,
     bool reverseAngular,
     List<int> skipIndices,
+    List<String> sourceFeatureIds,
     MergeMode merge,
   })? _patternEditSnapshot;
 
@@ -1328,7 +1372,7 @@ class _PartScreenState extends State<PartScreen> {
 
   Timer? _patternDebounce;
 
-  /// Locks [_selectionFilterOverrides] to Bodies only for the `pickingBody`
+  /// Locks [_selectionFilterOverrides] to Bodies only for the `pickingBodies`
   /// half of the guided "Add" FAB's Pattern flow ([_startPatternPicker]) -
   /// mirrors [_mirrorBodyPickerSelectionFilter] exactly (a separate named
   /// constant rather than a shared one, matching this file's own "each
@@ -5644,6 +5688,91 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   // --- Pattern/Mirror scoping Phase 1: Mirror -------------------------------
+  // Pattern/Mirror scoping's Phase 6 (docs/pattern-mirror-scope.md
+  // §2.8/§4): the Build Tree's own multi-select Feature picker, shared by
+  // both MirrorPanel and PatternPanel's `source_feature_ids` field (see
+  // `_sourceFeaturePickerTarget`'s own doc comment) - entered via a button
+  // inside either panel, not the guided "Add" FAB.
+
+  /// Opens the Build Tree in its own multi-select Feature-picker mode,
+  /// seeded from whichever panel's own current `source_feature_ids`
+  /// [target] names, and forces the tree visible (unlike the ambient
+  /// Bodies/Planes/Features toggle, this session needs it open to pick
+  /// from).
+  void _startSourceFeaturePicker(_SourceFeaturePickerTarget target) {
+    setState(() {
+      _sourceFeaturePickerTarget = target;
+      _selectedSourceFeatureIds = {
+        ...(target == _SourceFeaturePickerTarget.mirror
+            ? _mirrorSourceFeatureIds
+            : _patternSourceFeatureIds),
+      };
+      _featureTreeVisible = true;
+    });
+  }
+
+  /// The Feature ids eligible to be picked during a live
+  /// [_sourceFeaturePickerTarget] session - every Feature of an accepted
+  /// producer type (mirrors the backend's own `_PATTERN_MIRROR_SOURCE_
+  /// FEATURE_TYPES`), excluding whichever Mirror/Pattern is currently being
+  /// configured itself (it can't name itself as its own source).
+  Set<String> get _sourceFeaturePickerPickableIds {
+    final target = _sourceFeaturePickerTarget;
+    if (target == null) return {};
+    final excludeId = target == _SourceFeaturePickerTarget.mirror
+        ? (_editingMirrorFeatureId ?? _previewMirrorFeatureId)
+        : (_editingPatternFeatureId ?? _previewPatternFeatureId);
+    const acceptedTypes = {'extrude', 'revolve', 'sweep', 'import', 'mirror', 'pattern'};
+    return {
+      for (final feature in _features)
+        if (acceptedTypes.contains(feature.type) && feature.id != excludeId) feature.id,
+    };
+  }
+
+  /// [FeatureTreePanel.onFeaturePickerToggle] - toggles [feature]'s
+  /// membership in [_selectedSourceFeatureIds].
+  void _toggleSourceFeaturePick(FeatureDto feature) {
+    setState(() {
+      if (_selectedSourceFeatureIds.contains(feature.id)) {
+        _selectedSourceFeatureIds.remove(feature.id);
+      } else {
+        _selectedSourceFeatureIds.add(feature.id);
+      }
+    });
+  }
+
+  /// Applies [_selectedSourceFeatureIds] back into whichever panel's own
+  /// field [_sourceFeaturePickerTarget] named, closes the picker, and
+  /// reschedules that panel's own live-preview debounce so the change is
+  /// reflected immediately.
+  void _confirmSourceFeaturePicker() {
+    final target = _sourceFeaturePickerTarget;
+    if (target == null) return;
+    setState(() {
+      if (target == _SourceFeaturePickerTarget.mirror) {
+        _mirrorSourceFeatureIds = _selectedSourceFeatureIds.toList();
+      } else {
+        _patternSourceFeatureIds = _selectedSourceFeatureIds.toList();
+      }
+      _sourceFeaturePickerTarget = null;
+      _selectedSourceFeatureIds = {};
+    });
+    if (target == _SourceFeaturePickerTarget.mirror) {
+      _scheduleMirrorPreview();
+    } else {
+      _schedulePatternPreview();
+    }
+  }
+
+  /// Discards [_selectedSourceFeatureIds] and closes the picker without
+  /// applying anything.
+  void _cancelSourceFeaturePicker() {
+    setState(() {
+      _sourceFeaturePickerTarget = null;
+      _selectedSourceFeatureIds = {};
+    });
+  }
+
   // See docs/pattern-mirror-scope.md §2.1/§4 and this file's own "Pattern/
   // Mirror scoping Phase 1: Mirror" state-field section above for the full
   // reasoning behind Mirror's two-stage (pick source Body/Bodies, confirm,
@@ -5662,6 +5791,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _mirrorStep = _MirrorStep.pickingBodies;
       _mirrorSourceBodyIds = null;
+      _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
@@ -5733,6 +5863,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _mirrorStep = _MirrorStep.pickingPlane;
       _mirrorSourceBodyIds = sourceBodyIds;
+      _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
@@ -5773,13 +5904,20 @@ class _PartScreenState extends State<PartScreen> {
     if (sourceBodyIds.isEmpty || mirrorPlane == null) return false;
 
     final merge = MergeMode.fromApiValue(feature.merge);
+    final sourceFeatureIds = feature.sourceFeatureIds;
     setState(() {
       _mirrorStep = _MirrorStep.pickingPlane;
       _editingMirrorFeatureId = feature.id;
       _previewMirrorFeatureId = feature.id;
       _mirrorSourceBodyIds = sourceBodyIds;
+      _mirrorSourceFeatureIds = sourceFeatureIds;
       _mirrorMerge = merge;
-      _mirrorEditSnapshot = (sourceBodyIds: sourceBodyIds, mirrorPlane: mirrorPlane, merge: merge);
+      _mirrorEditSnapshot = (
+        sourceBodyIds: sourceBodyIds,
+        mirrorPlane: mirrorPlane,
+        sourceFeatureIds: sourceFeatureIds,
+        merge: merge,
+      );
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
       _selectedEntities = {_mirrorPlaneEntityFor(mirrorPlane)};
@@ -5847,6 +5985,7 @@ class _PartScreenState extends State<PartScreen> {
         part.id,
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
+        sourceFeatureIds: _mirrorSourceFeatureIds,
         merge: _mirrorMerge,
       );
       _previewMirrorFeatureId = created.id;
@@ -5856,6 +5995,7 @@ class _PartScreenState extends State<PartScreen> {
         existingId,
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
+        sourceFeatureIds: _mirrorSourceFeatureIds,
         merge: _mirrorMerge,
       );
     }
@@ -5889,6 +6029,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _mirrorStep = null;
       _mirrorSourceBodyIds = null;
+      _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
@@ -5915,6 +6056,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _mirrorStep = null;
       _mirrorSourceBodyIds = null;
+      _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
@@ -5932,6 +6074,7 @@ class _PartScreenState extends State<PartScreen> {
             previewId,
             sourceBodyIds: editSnapshot.sourceBodyIds,
             mirrorPlane: editSnapshot.mirrorPlane,
+            sourceFeatureIds: editSnapshot.sourceFeatureIds,
             merge: editSnapshot.merge,
           );
           await _refreshFeatures();
@@ -5962,14 +6105,16 @@ class _PartScreenState extends State<PartScreen> {
   // reasoning behind Pattern's own picking shape.
 
   /// [FeaturePickerAction.pattern]'s guided "Add" FAB entry - starts the
-  /// `pickingBody` step with an empty selection and a Body-only filter;
-  /// [_confirmPatternBodySelection] advances to `configuring` the moment a
-  /// Body is tapped (mirrors [_startMirrorPicker]'s own shape, minus a
-  /// separate confirm step - Phase 2 only ever needs exactly one Body).
+  /// `pickingBodies` step with an empty selection and a Body-only filter;
+  /// [_confirmPatternBodySelection] advances to `configuring` once 1+
+  /// Bodies are picked (Phase 6 widened this from Phase 2's original
+  /// single-Body-immediately-advances shape to mirror [_startMirrorPicker]'s
+  /// own multi-select-then-confirm one exactly).
   void _startPatternPicker() {
     setState(() {
-      _patternStep = _PatternStep.pickingBody;
-      _patternSourceBodyId = null;
+      _patternStep = _PatternStep.pickingBodies;
+      _patternSourceBodyIds = null;
+      _patternSourceFeatureIds = [];
       _previewPatternFeatureId = null;
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -5981,39 +6126,53 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// [_toggleSelectedEntity]'s `pickingBody`-step Body-tap special case -
+  /// The number of Bodies picked so far during the `pickingBodies` step -
+  /// drives the step-1 banner text and gates its confirm FAB. Mirrors
+  /// [_mirrorPickedBodyCount] exactly.
+  int _patternPickedBodyCount() =>
+      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
+
+  /// Confirms the `pickingBodies` step (the banner's checkmark FAB - see
+  /// [_patternPickedBodyCount]) - captures every currently-selected Body,
   /// pops the body-only filter, pushes the edge-only `configuring` filter,
   /// and resets every Direction 1/2 field to its default via
   /// [_resetPatternConfiguringState]. Mirrors
-  /// [_confirmMirrorBodySelection]'s filter-swap shape.
-  void _confirmPatternBodySelection(SelectionEntityRef bodyEntity) {
+  /// [_confirmMirrorBodySelection]'s shape exactly.
+  void _confirmPatternBodySelection() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
     setState(() {
       _selectionFilterOverrides.pop();
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState(bodyEntity.bodyId);
+      _resetPatternConfiguringState(bodyIds);
     });
   }
 
   /// [SelectionContextPanel.onPattern]'s callback - `contextActionsFor`
-  /// enables this button for exactly one Body, nothing else, selected (see
-  /// that function's own Pattern branch). That Body is already exactly
-  /// what the user wants patterned, so this skips `pickingBody` entirely
-  /// and jumps straight to `configuring` with it pre-captured - mirrors
-  /// [_onMirrorTapped]'s own ambient-entry shape.
+  /// enables this button for 1+ Bodies, nothing else, selected (see that
+  /// function's own Pattern branch, widened alongside Mirror's in Phase 6).
+  /// Those Bodies are already exactly what the user wants patterned, so
+  /// this skips `pickingBodies` entirely and jumps straight to `configuring`
+  /// with them pre-captured - mirrors [_onMirrorTapped]'s own ambient-entry
+  /// shape.
   void _onPatternTapped() {
-    final bodies = _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).toList();
-    if (bodies.length != 1) return; // Defensive - contextActionsFor already guarantees this.
-    _openPatternPanel(bodies.first.bodyId);
+    final bodyIds = _selectedEntities
+        .where((e) => e.kind == SelectionEntityKind.body)
+        .map((e) => e.bodyId)
+        .toList();
+    if (bodyIds.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openPatternPanel(bodyIds);
   }
 
   /// Opens [PatternPanel] directly in the `configuring` step for a
-  /// brand-new PatternFeature patterning [sourceBodyId] - used by
-  /// [_onPatternTapped], whose Body is already selected going in, so there
-  /// is nothing for a `pickingBody` step to do. Pushes the edge-only
-  /// `configuring` filter directly - no body-only filter was ever pushed
-  /// for this entry point, so there is nothing to pop first (mirrors
-  /// [_openMirrorPanel]'s own shape).
-  void _openPatternPanel(String sourceBodyId) {
+  /// brand-new PatternFeature patterning [sourceBodyIds] - used by
+  /// [_onPatternTapped], whose Bodies are already selected going in, so
+  /// there is nothing for a `pickingBodies` step to do. Pushes the
+  /// edge-only `configuring` filter directly - no body-only filter was
+  /// ever pushed for this entry point, so there is nothing to pop first
+  /// (mirrors [_openMirrorPanel]'s own shape).
+  void _openPatternPanel(List<String> sourceBodyIds) {
     setState(() {
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -6021,19 +6180,20 @@ class _PartScreenState extends State<PartScreen> {
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState(sourceBodyId);
+      _resetPatternConfiguringState(sourceBodyIds);
     });
   }
 
   /// Shared by [_confirmPatternBodySelection]/[_openPatternPanel] - resets
   /// every Direction 1/2 field to its default and enters `configuring` for
-  /// [sourceBodyId]. Always called from inside a `setState` block by its
+  /// [sourceBodyIds]. Always called from inside a `setState` block by its
   /// two callers (each of which has its own filter-stack bookkeeping to do
   /// alongside this).
-  void _resetPatternConfiguringState(String sourceBodyId) {
+  void _resetPatternConfiguringState(List<String> sourceBodyIds) {
     _patternStep = _PatternStep.configuring;
     _patternMode = PatternMode.rectangular;
-    _patternSourceBodyId = sourceBodyId;
+    _patternSourceBodyIds = sourceBodyIds;
+    _patternSourceFeatureIds = [];
     _patternDirection1 = null;
     _patternDirection1EdgeEntity = null;
     _patternCount1 = 2;
@@ -6089,12 +6249,14 @@ class _PartScreenState extends State<PartScreen> {
       if (axis == null) return false;
       final axisEntity = _patternAxisEntityFor(axis);
       final merge = MergeMode.fromApiValue(feature.merge);
+      final sourceFeatureIds = feature.sourceFeatureIds;
       setState(() {
         _patternStep = _PatternStep.configuring;
         _patternMode = PatternMode.circular;
         _editingPatternFeatureId = feature.id;
         _previewPatternFeatureId = feature.id;
-        _patternSourceBodyId = sourceBodyIds.first;
+        _patternSourceBodyIds = sourceBodyIds;
+        _patternSourceFeatureIds = sourceFeatureIds;
         _patternDirection1 = null;
         _patternDirection1EdgeEntity = null;
         _patternCount1 = 2;
@@ -6129,6 +6291,7 @@ class _PartScreenState extends State<PartScreen> {
           angleTotal: feature.angleTotal,
           reverseAngular: feature.reverseAngular,
           skipIndices: feature.skipIndices,
+          sourceFeatureIds: sourceFeatureIds,
           merge: merge,
         );
         _meshBeforePattern = _bodies;
@@ -6156,13 +6319,15 @@ class _PartScreenState extends State<PartScreen> {
     final count1 = feature.count1 ?? 2;
     final spacing1 = feature.spacing1 ?? 10.0;
     final merge = MergeMode.fromApiValue(feature.merge);
+    final sourceFeatureIds = feature.sourceFeatureIds;
 
     setState(() {
       _patternStep = _PatternStep.configuring;
       _patternMode = PatternMode.rectangular;
       _editingPatternFeatureId = feature.id;
       _previewPatternFeatureId = feature.id;
-      _patternSourceBodyId = sourceBodyIds.first;
+      _patternSourceBodyIds = sourceBodyIds;
+      _patternSourceFeatureIds = sourceFeatureIds;
       _patternDirection1 = direction1;
       _patternDirection1EdgeEntity = direction1Entity;
       _patternCount1 = count1;
@@ -6197,6 +6362,7 @@ class _PartScreenState extends State<PartScreen> {
         angleTotal: 360.0,
         reverseAngular: false,
         skipIndices: feature.skipIndices,
+        sourceFeatureIds: sourceFeatureIds,
         merge: merge,
       );
       _meshBeforePattern = _bodies;
@@ -6416,33 +6582,48 @@ class _PartScreenState extends State<PartScreen> {
   /// null if it isn't one of [_previewPatternFeatureId]'s own instances (or
   /// no Pattern is being configured at all) - reverse of
   /// `compute_part_bodies`'s own PatternFeature body-naming scheme (see
-  /// `extrude.py`'s doc comment there): the seed Body (index `0`) keeps
-  /// whatever id its own upstream Feature already gave it, so it's
-  /// recognized by equality with [_patternSourceBodyId] instead of the
-  /// Pattern's own id; every other instance is `_previewPatternFeatureId`
+  /// `extrude.py`'s doc comment there): a source's own seed Body (index
+  /// `0`) keeps whatever id its own upstream Feature already gave it, so
+  /// it's recognized by membership in [_patternSourceBodyIds] instead of
+  /// the Pattern's own id. For a single effective source (Phase 2's
+  /// original shape, still exactly what happens whenever only one Body/
+  /// Feature is picked), every other instance is `_previewPatternFeatureId`
   /// alone when there's exactly one (a 2-instance pattern), else
-  /// `'$_previewPatternFeatureId#$index'`.
+  /// `'$_previewPatternFeatureId#$index'`. Phase 6 widened this for 2+
+  /// effective sources: `'$_previewPatternFeatureId#${sourceIndex}_$index'`
+  /// - the trailing `index` (shared across every source, since `skip_
+  /// indices` applies identically to all of them) is what this returns,
+  /// the leading `sourceIndex` is irrelevant here.
   int? _patternInstanceIndexForBodyId(String bodyId) {
-    if (bodyId == _patternSourceBodyId) return 0;
+    final sourceBodyIds = _patternSourceBodyIds;
+    if (sourceBodyIds != null && sourceBodyIds.contains(bodyId)) return 0;
     final featureId = _previewPatternFeatureId;
     if (featureId == null) return null;
     final totalCount = _patternMode == PatternMode.circular
         ? _patternCountAngular
         : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
     if (totalCount <= 1) return null;
-    if (totalCount - 1 == 1) return bodyId == featureId ? 1 : null;
+    final sourceCount = sourceBodyIds?.length ?? 1;
     final prefix = '$featureId#';
+    if (sourceCount <= 1) {
+      if (totalCount - 1 == 1) return bodyId == featureId ? 1 : null;
+      if (!bodyId.startsWith(prefix)) return null;
+      return int.tryParse(bodyId.substring(prefix.length));
+    }
     if (!bodyId.startsWith(prefix)) return null;
-    return int.tryParse(bodyId.substring(prefix.length));
+    final parts = bodyId.substring(prefix.length).split('_');
+    if (parts.length != 2) return null;
+    return int.tryParse(parts[1]);
   }
 
   /// [PartViewport.skippedPreviewBodyIds]'s value - [_patternSkipIndices]
   /// (linear instance indices) converted to the actual Body ids the
   /// viewport renders, via the same naming scheme
-  /// [_patternInstanceIndexForBodyId] reverses. Empty whenever no Pattern
-  /// is being configured, or (defensively) whenever the current
-  /// count/mode implies fewer instances than an index in
-  /// [_patternSkipIndices] still refers to (a since-shrunk count - see
+  /// [_patternInstanceIndexForBodyId] reverses, across every effective
+  /// source (Phase 6 - a skip index applies to all sources identically).
+  /// Empty whenever no Pattern is being configured, or (defensively)
+  /// whenever the current count/mode implies fewer instances than an index
+  /// in [_patternSkipIndices] still refers to (a since-shrunk count - see
   /// [_ensurePatternFeatureExists]'s own clamping note).
   Set<String> get _patternSkippedBodyIds {
     final featureId = _previewPatternFeatureId;
@@ -6451,10 +6632,19 @@ class _PartScreenState extends State<PartScreen> {
         ? _patternCountAngular
         : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
     if (totalCount <= 1) return const {};
-    final onlyOneInstance = totalCount - 1 == 1;
+    final sourceCount = _patternSourceBodyIds?.length ?? 1;
+    if (sourceCount <= 1) {
+      final onlyOneInstance = totalCount - 1 == 1;
+      return {
+        for (final index in _patternSkipIndices)
+          if (index > 0 && index < totalCount) (onlyOneInstance ? featureId : '$featureId#$index'),
+      };
+    }
     return {
       for (final index in _patternSkipIndices)
-        if (index > 0 && index < totalCount) (onlyOneInstance ? featureId : '$featureId#$index'),
+        if (index > 0 && index < totalCount)
+          for (var sourceIndex = 0; sourceIndex < sourceCount; sourceIndex++)
+            '$featureId#${sourceIndex}_$index',
     };
   }
 
@@ -6634,8 +6824,8 @@ class _PartScreenState extends State<PartScreen> {
   /// override right before the panel closes.
   Future<void> _ensurePatternFeatureExists({List<int> skipIndices = const []}) async {
     final part = _part;
-    final sourceBodyId = _patternSourceBodyId;
-    if (part == null || sourceBodyId == null) return;
+    final sourceBodyIds = _patternSourceBodyIds;
+    if (part == null || sourceBodyIds == null || sourceBodyIds.isEmpty) return;
 
     if (_patternMode == PatternMode.circular) {
       final axis = _patternAxis;
@@ -6644,7 +6834,8 @@ class _PartScreenState extends State<PartScreen> {
       if (existingId == null) {
         final created = await _api.createPatternFeature(
           part.id,
-          sourceBodyIds: [sourceBodyId],
+          sourceBodyIds: sourceBodyIds,
+          sourceFeatureIds: _patternSourceFeatureIds,
           patternType: 'circular',
           axis: axis,
           countAngular: _patternCountAngular,
@@ -6658,7 +6849,8 @@ class _PartScreenState extends State<PartScreen> {
         await _api.updatePatternFeature(
           part.id,
           existingId,
-          sourceBodyIds: [sourceBodyId],
+          sourceBodyIds: sourceBodyIds,
+          sourceFeatureIds: _patternSourceFeatureIds,
           axis: axis,
           countAngular: _patternCountAngular,
           angleTotal: _patternAngleTotal,
@@ -6679,7 +6871,8 @@ class _PartScreenState extends State<PartScreen> {
     if (existingId == null) {
       final created = await _api.createPatternFeature(
         part.id,
-        sourceBodyIds: [sourceBodyId],
+        sourceBodyIds: sourceBodyIds,
+        sourceFeatureIds: _patternSourceFeatureIds,
         direction1: direction1,
         count1: _patternCount1,
         spacing1: _patternSpacing1,
@@ -6696,7 +6889,8 @@ class _PartScreenState extends State<PartScreen> {
       await _api.updatePatternFeature(
         part.id,
         existingId,
-        sourceBodyIds: [sourceBodyId],
+        sourceBodyIds: sourceBodyIds,
+        sourceFeatureIds: _patternSourceFeatureIds,
         direction1: direction1,
         count1: _patternCount1,
         spacing1: _patternSpacing1,
@@ -6725,7 +6919,7 @@ class _PartScreenState extends State<PartScreen> {
   void _schedulePatternPreview() {
     _patternDebounce?.cancel();
     _patternDebounce = Timer(const Duration(milliseconds: 500), () {
-      if (_patternSourceBodyId == null) return;
+      if (_patternSourceBodyIds == null || _patternSourceBodyIds!.isEmpty) return;
       if (_patternMode == PatternMode.circular) {
         if (_patternAxis == null || _patternCountAngular < 2) return;
       } else {
@@ -6749,7 +6943,9 @@ class _PartScreenState extends State<PartScreen> {
   /// never yet seen the real selection.
   Future<void> _confirmPattern() async {
     _patternDebounce?.cancel();
-    if (_previewPatternFeatureId != null && _patternSourceBodyId != null) {
+    if (_previewPatternFeatureId != null &&
+        _patternSourceBodyIds != null &&
+        _patternSourceBodyIds!.isNotEmpty) {
       final totalCount = _patternMode == PatternMode.circular
           ? _patternCountAngular
           : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
@@ -6760,7 +6956,8 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _patternStep = null;
       _patternMode = PatternMode.rectangular;
-      _patternSourceBodyId = null;
+      _patternSourceBodyIds = null;
+      _patternSourceFeatureIds = [];
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
       _patternHasSecondDirection = false;
@@ -6799,7 +6996,8 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _patternStep = null;
       _patternMode = PatternMode.rectangular;
-      _patternSourceBodyId = null;
+      _patternSourceBodyIds = null;
+      _patternSourceFeatureIds = [];
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
       _patternHasSecondDirection = false;
@@ -6828,6 +7026,7 @@ class _PartScreenState extends State<PartScreen> {
             part.id,
             previewId,
             sourceBodyIds: editSnapshot.sourceBodyIds,
+            sourceFeatureIds: editSnapshot.sourceFeatureIds,
             direction1: editSnapshot.direction1,
             count1: editSnapshot.count1,
             spacing1: editSnapshot.spacing1,
@@ -7561,17 +7760,24 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: _featureTreeVisible &&
-                        !_extrudeActive &&
-                        !_createPlaneActive &&
-                        !_filletActive &&
-                        !_chamferActive &&
-                        !_revolveActive &&
-                        !_sweepActive &&
-                        !_mirrorActive &&
-                        !_patternActive &&
-                        !_profilePickerActive &&
-                        !_pathPickerActive,
+                    visible: (_featureTreeVisible &&
+                            !_extrudeActive &&
+                            !_createPlaneActive &&
+                            !_filletActive &&
+                            !_chamferActive &&
+                            !_revolveActive &&
+                            !_sweepActive &&
+                            !_mirrorActive &&
+                            !_patternActive &&
+                            !_profilePickerActive &&
+                            !_pathPickerActive) ||
+                        // Pattern/Mirror scoping's Phase 6: the Build Tree
+                        // multi-select Feature picker overrides every other
+                        // visibility rule above - it's opened from inside an
+                        // already-active Mirror/Pattern panel, which the
+                        // `!_mirrorActive`/`!_patternActive` guards above
+                        // would otherwise keep this hidden for.
+                        _sourceFeaturePickerTarget != null,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -7584,6 +7790,8 @@ class _PartScreenState extends State<PartScreen> {
                         _cancelRevolveSketchPicker();
                       } else if (_sweepSketchPickerActive) {
                         _cancelSweepSketchPicker();
+                      } else if (_sourceFeaturePickerTarget != null) {
+                        _cancelSourceFeaturePicker();
                       } else {
                         setState(() => _featureTreeVisible = false);
                       }
@@ -7606,6 +7814,10 @@ class _PartScreenState extends State<PartScreen> {
                         : _revolveSketchPickerActive
                             ? _onRevolveSketchPicked
                             : _onSweepSketchPicked,
+                    isFeaturePickerMode: _sourceFeaturePickerTarget != null,
+                    pickableFeaturePickerIds: _sourceFeaturePickerPickableIds,
+                    selectedFeaturePickerIds: _selectedSourceFeatureIds,
+                    onFeaturePickerToggle: _toggleSourceFeaturePick,
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
@@ -7703,8 +7915,11 @@ class _PartScreenState extends State<PartScreen> {
                 // [MirrorPanel] itself only ever handles the `pickingPlane`
                 // step - `pickingBodies` has no bottom panel of its own,
                 // just the top banner + confirm FAB just below (mirroring
-                // the profile/path picker's own shape).
-                if (_mirrorStep == _MirrorStep.pickingPlane)
+                // the profile/path picker's own shape). Also hidden while a
+                // Phase 6 source-Feature-picker session (opened from inside
+                // this very panel) has the Build Tree up instead.
+                if (_mirrorStep == _MirrorStep.pickingPlane &&
+                    _sourceFeaturePickerTarget != _SourceFeaturePickerTarget.mirror)
                   Positioned.fill(
                     child: MirrorPanel(
                       key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyIds?.join(',')),
@@ -7712,14 +7927,20 @@ class _PartScreenState extends State<PartScreen> {
                       hasPlanePicked: _mirrorPlaneEntity != null,
                       merge: _mirrorMerge,
                       onMergeChanged: _setMirrorMerge,
+                      sourceFeatureIds: _mirrorSourceFeatureIds,
+                      onPickSourceFeatures: () =>
+                          _startSourceFeaturePicker(_SourceFeaturePickerTarget.mirror),
                       onConfirm: _confirmMirror,
                       onCancel: _cancelMirror,
                     ),
                   ),
                 // [PatternPanel] itself only ever handles the `configuring`
-                // step - `pickingBody` has no bottom panel of its own,
-                // mirroring [MirrorPanel]'s own shape.
-                if (_patternStep == _PatternStep.configuring)
+                // step - `pickingBodies` has no bottom panel of its own,
+                // mirroring [MirrorPanel]'s own shape - including hiding
+                // while a Phase 6 source-Feature-picker session has the
+                // Build Tree up instead.
+                if (_patternStep == _PatternStep.configuring &&
+                    _sourceFeaturePickerTarget != _SourceFeaturePickerTarget.pattern)
                   Positioned.fill(
                     child: PatternPanel(
                       // Includes [_patternHasSecondDirection] so toggling it
@@ -7734,7 +7955,8 @@ class _PartScreenState extends State<PartScreen> {
                       // are always already whatever the user last set them
                       // to.
                       key: ValueKey(
-                        '${_editingPatternFeatureId ?? _patternSourceBodyId}-$_patternMode-$_patternHasSecondDirection',
+                        '${_editingPatternFeatureId ?? _patternSourceBodyIds?.join(',')}-'
+                        '$_patternMode-$_patternHasSecondDirection',
                       ),
                       title: _editingPatternFeatureId != null ? 'Edit Pattern' : 'Pattern',
                       mode: _patternMode,
@@ -7778,6 +8000,9 @@ class _PartScreenState extends State<PartScreen> {
                       onReverseAngularChanged: _onPatternReverseAngularChanged,
                       merge: _patternMerge,
                       onMergeChanged: _setPatternMerge,
+                      sourceFeatureIds: _patternSourceFeatureIds,
+                      onPickSourceFeatures: () =>
+                          _startSourceFeaturePicker(_SourceFeaturePickerTarget.pattern),
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),
@@ -8391,14 +8616,13 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
-                // Pattern/Mirror scoping's Phase 2 guided "Add" FAB entry
-                // (`_startPatternPicker`): shown for the whole `pickingBody`
-                // step - Cancel-only, mirroring the Fillet/Chamfer banners'
-                // shape, since a Body tap immediately advances to
-                // `configuring` on its own (Phase 2's own exactly-one-Body
-                // scope means there's nothing to separately confirm, unlike
-                // Mirror's own multi-select `pickingBodies` banner).
-                if (_patternStep == _PatternStep.pickingBody)
+                // Pattern/Mirror scoping's Phase 2/6 guided "Add" FAB entry
+                // (`_startPatternPicker`): shown for the whole `pickingBodies`
+                // step - Cancel-only in the banner, confirming via the
+                // checkmark FAB below, mirroring [_MirrorStep.pickingBodies]'s
+                // own identical banner exactly (Phase 6 widened Pattern from
+                // its original single-Body-immediately-advances shape).
+                if (_patternStep == _PatternStep.pickingBodies)
                   Positioned(
                     top: 8,
                     left: 0,
@@ -8406,21 +8630,34 @@ class _PartScreenState extends State<PartScreen> {
                     child: SafeArea(
                       bottom: false,
                       child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Select Body to Pattern'),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelPattern,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.sizeOf(context).width - 32,
+                          ),
+                          child: Material(
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      _patternPickedBodyCount() == 0
+                                          ? 'Select Body to Pattern'
+                                          : '${_patternPickedBodyCount()} body(s) selected - tap '
+                                              'checkmark to confirm',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  TextButton(
+                                    onPressed: _cancelPattern,
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -8570,6 +8807,34 @@ class _PartScreenState extends State<PartScreen> {
                       onPressed: _busy || _mirrorPickedBodyCount() == 0
                           ? null
                           : _confirmMirrorBodySelection,
+                      child: const Icon(Icons.check),
+                    ),
+                  // Pattern/Mirror scoping's Phase 2/6 `pickingBodies` step's
+                  // own "confirm" FAB - mirrors [_mirrorStep]'s identical one
+                  // just above exactly (Phase 6 widened Pattern to the same
+                  // multi-select-then-confirm shape Mirror's own Phase 1
+                  // revision already established).
+                  if (_patternStep == _PatternStep.pickingBodies)
+                    FloatingActionButton(
+                      heroTag: 'confirm-pattern-body-picker-fab',
+                      tooltip: 'Confirm body selection',
+                      onPressed: _busy || _patternPickedBodyCount() == 0
+                          ? null
+                          : _confirmPatternBodySelection,
+                      child: const Icon(Icons.check),
+                    ),
+                  // Pattern/Mirror scoping's Phase 6 Build-Tree Feature
+                  // picker's own "confirm" FAB, mirroring the body pickers'
+                  // shape just above - always enabled (an empty selection is
+                  // a legitimate "clear every Feature-tree source" choice,
+                  // unlike a body picker which would leave a Mirror/Pattern
+                  // with zero sources at all if nothing else were already
+                  // picked).
+                  if (_sourceFeaturePickerTarget != null)
+                    FloatingActionButton(
+                      heroTag: 'confirm-source-feature-picker-fab',
+                      tooltip: 'Confirm Feature selection',
+                      onPressed: _busy ? null : _confirmSourceFeaturePicker,
                       child: const Icon(Icons.check),
                     ),
                 ],

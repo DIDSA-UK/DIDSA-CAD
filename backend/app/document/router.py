@@ -360,6 +360,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return MirrorFeatureResponse(
             id=feature.id,
             source_body_ids=feature.source_body_ids,
+            source_feature_ids=feature.source_feature_ids,
             mirror_plane=_plane_ref_to_schema(feature.mirror_plane),
             merge=feature.merge,
             locked=part.is_locked(feature.id),
@@ -369,6 +370,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return PatternFeatureResponse(
             id=feature.id,
             source_body_ids=feature.source_body_ids,
+            source_feature_ids=feature.source_feature_ids,
             pattern_type=feature.pattern_type,
             direction_1=_pattern_direction_ref_to_schema(feature.direction_1)
             if feature.direction_1
@@ -465,55 +467,110 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
             )
 
 
-def _validate_mirror_source_body_ids(part: Part, source_body_ids: list[str]) -> None:
-    """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
-    §2.1/§4): `source_body_ids` must have at least one entry - on-device
-    feedback on the guided "New > Mirror" flow pulled multi-body seeding
-    forward from its original Phase 6 scoping into Phase 1 directly (see
-    `MirrorFeature`'s own updated docstring), so any positive count is
-    valid here now, not just exactly one. Each entry must resolve to a
-    Feature that produces a Body already in this Part, via the identical
-    accepted-type check `_validate_target_body_ids` already established (a
-    Body's id always traces back to one of these four Feature types through
-    `base_feature_id`) - a MirrorFeature itself is deliberately not (yet) an
-    accepted producer here, since chaining a Mirror off another Mirror's own
-    output is still Phase 6 scope (multi-*feature* seeding), unaffected by
-    this widening."""
-    if not source_body_ids:
-        raise HTTPException(
-            status_code=422,
-            detail="MirrorFeature requires at least one source_body_ids entry",
-        )
-    for source_id in source_body_ids:
-        source_feature = part.get_feature(base_feature_id(source_id))
-        if not isinstance(source_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
+_PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
+    ExtrudeFeature,
+    RevolveFeature,
+    SweepFeature,
+    ImportFeature,
+    MirrorFeature,
+    PatternFeature,
+)
+_PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
+    "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, or PatternFeature"
+)
+
+
+def _validate_source_feature_ids(
+    part: Part, source_feature_ids: list[str], feature_type_name: str
+) -> None:
+    """Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+    §2.8/§4), shared by both `_validate_mirror_source_body_ids`/`_validate_
+    pattern_source_body_ids`: each `source_feature_ids` entry must name a
+    real Feature in this Part, of the identical accepted-producer-type set
+    the two callers below already establish for a bare `source_body_ids`
+    Body id - a Feature-tree pick is just a different way of naming the
+    same kind of source, not a new kind of source. Deliberately does not
+    check the named Feature currently resolves to 1+ Bodies (that needs a
+    live `bodies` accumulator, not available at this payload-shape-
+    validation stage) - `app.document.mirror.effective_mirror_source_
+    body_ids`/`app.document.pattern.effective_pattern_source_body_ids`
+    raise their own structured `missing_reference` for that, reached via
+    `resolve_mirror`/`resolve_pattern`'s own eager-resolve-to-validate
+    call a few lines after this one."""
+    for feature_id in source_feature_ids:
+        source_feature = part.get_feature(feature_id)
+        if not isinstance(source_feature, _PATTERN_MIRROR_SOURCE_FEATURE_TYPES):
             raise HTTPException(
                 status_code=400,
-                detail=f"source_body_ids entry {source_id!r} does not refer to an ExtrudeFeature, "
-                "RevolveFeature, SweepFeature, or ImportFeature in this Part",
+                detail=f"source_feature_ids entry {feature_id!r} does not refer to an "
+                f"{_PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION} in this Part ({feature_type_name})",
             )
 
 
-def _validate_pattern_source_body_ids(part: Part, source_body_ids: list[str]) -> None:
-    """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
-    §2.2/§4): `source_body_ids` must have exactly one entry - unlike
-    Mirror, Pattern's own multi-body seeding is not pulled forward (see
-    `PatternFeature`'s own docstring for why); the entry must resolve to a
-    Feature that produces a Body already in this Part, via the identical
-    accepted-type check `_validate_mirror_source_body_ids`/`_validate_
-    target_body_ids` already establish."""
-    if len(source_body_ids) != 1:
+def _validate_mirror_source_body_ids(
+    part: Part, source_body_ids: list[str], source_feature_ids: list[str]
+) -> None:
+    """Pattern/Mirror scoping's Phase 1/6 (`docs/pattern-mirror-scope.md`
+    §2.1/§2.8/§4): `source_body_ids` combined with `source_feature_ids`
+    (Phase 6 - a Feature-tree pick is an alternate way of naming a source,
+    not a separate requirement) must have at least one entry between them
+    - on-device feedback on the guided "New > Mirror" flow pulled multi-
+    body seeding forward from its original Phase 6 scoping into Phase 1
+    directly (see `MirrorFeature`'s own updated docstring), so any
+    positive count is valid here now, not just exactly one. Each `source_
+    body_ids` entry must resolve to a Feature that produces a Body already
+    in this Part - Phase 6 widens the accepted-producer-type set to also
+    include `MirrorFeature`/`PatternFeature` themselves (completing the
+    nested-pattern/chained-mirror scope Phase 1's own docstring explicitly
+    deferred to "Phase 6 scope" - see `docs/pattern-mirror-scope.md` §3's
+    "Pattern seed = pattern" survey entry, "structurally unblocked
+    already"), on top of the original `ExtrudeFeature`/`RevolveFeature`/
+    `SweepFeature`/`ImportFeature` set `_validate_target_body_ids` still
+    uses for Boss/Cut's own unrelated `target_body_ids` concept. Each
+    `source_feature_ids` entry is validated by `_validate_source_feature_
+    ids`, sharing the identical accepted-type set."""
+    if not source_body_ids and not source_feature_ids:
         raise HTTPException(
             status_code=422,
-            detail="PatternFeature requires exactly one source_body_ids entry",
+            detail="MirrorFeature requires at least one source_body_ids or source_feature_ids entry",
         )
-    source_feature = part.get_feature(base_feature_id(source_body_ids[0]))
-    if not isinstance(source_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
+    for source_id in source_body_ids:
+        source_feature = part.get_feature(base_feature_id(source_id))
+        if not isinstance(source_feature, _PATTERN_MIRROR_SOURCE_FEATURE_TYPES):
+            raise HTTPException(
+                status_code=400,
+                detail=f"source_body_ids entry {source_id!r} does not refer to an "
+                f"{_PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION} in this Part",
+            )
+    _validate_source_feature_ids(part, source_feature_ids, "MirrorFeature")
+
+
+def _validate_pattern_source_body_ids(
+    part: Part, source_body_ids: list[str], source_feature_ids: list[str]
+) -> None:
+    """Pattern/Mirror scoping's Phase 2/6 (`docs/pattern-mirror-scope.md`
+    §2.2/§4): `source_body_ids` combined with `source_feature_ids` (Phase 6)
+    must have at least one entry between them - widened from Phase 2/4's
+    original exactly-one-`source_body_ids`-entry requirement, mirroring
+    `_validate_mirror_source_body_ids`'s own Phase 1 shape exactly (see
+    `PatternFeature`'s own docstring for the full reasoning), including its
+    identical Phase 6 widening of the accepted-producer-type set to
+    `MirrorFeature`/`PatternFeature` too. Each `source_feature_ids` entry
+    is validated by `_validate_source_feature_ids`."""
+    if not source_body_ids and not source_feature_ids:
         raise HTTPException(
-            status_code=400,
-            detail=f"source_body_ids entry {source_body_ids[0]!r} does not refer to an ExtrudeFeature, "
-            "RevolveFeature, SweepFeature, or ImportFeature in this Part",
+            status_code=422,
+            detail="PatternFeature requires at least one source_body_ids or source_feature_ids entry",
         )
+    for source_id in source_body_ids:
+        source_feature = part.get_feature(base_feature_id(source_id))
+        if not isinstance(source_feature, _PATTERN_MIRROR_SOURCE_FEATURE_TYPES):
+            raise HTTPException(
+                status_code=400,
+                detail=f"source_body_ids entry {source_id!r} does not refer to an "
+                f"{_PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION} in this Part",
+            )
+    _validate_source_feature_ids(part, source_feature_ids, "PatternFeature")
 
 
 def _validate_pattern_direction_ref(ref: PatternDirectionRef, field_name: str) -> None:
@@ -1886,13 +1943,15 @@ def create_mirror_feature(part_id: str, payload: MirrorFeatureCreate) -> MirrorF
     Mirror."""
     part = get_part_or_404(part_id)
     source_body_ids = list(payload.source_body_ids)
+    source_feature_ids = list(payload.source_feature_ids)
     mirror_plane = _plane_ref_to_domain(payload.mirror_plane)
-    _validate_mirror_source_body_ids(part, source_body_ids)
+    _validate_mirror_source_body_ids(part, source_body_ids, source_feature_ids)
     _validate_plane_ref(part, mirror_plane)
     feature = MirrorFeature(
         id=str(uuid.uuid4()),
         source_body_ids=source_body_ids,
         mirror_plane=mirror_plane,
+        source_feature_ids=source_feature_ids,
         merge=payload.merge,
     )
     resolve_mirror(part, feature)  # raises on an unresolvable reference; result unused here
@@ -1920,25 +1979,32 @@ def update_mirror_feature(
     new_source_body_ids = (
         list(payload.source_body_ids) if payload.source_body_ids is not None else feature.source_body_ids
     )
+    new_source_feature_ids = (
+        list(payload.source_feature_ids)
+        if payload.source_feature_ids is not None
+        else feature.source_feature_ids
+    )
     new_mirror_plane = (
         _plane_ref_to_domain(payload.mirror_plane)
         if payload.mirror_plane is not None
         else feature.mirror_plane
     )
     new_merge = payload.merge if payload.merge is not None else feature.merge
-    _validate_mirror_source_body_ids(part, new_source_body_ids)
+    _validate_mirror_source_body_ids(part, new_source_body_ids, new_source_feature_ids)
     _validate_plane_ref(part, new_mirror_plane)
 
     candidate = MirrorFeature(
         id=feature.id,
         source_body_ids=new_source_body_ids,
         mirror_plane=new_mirror_plane,
+        source_feature_ids=new_source_feature_ids,
         merge=new_merge,
     )
     resolve_mirror(part, candidate)  # raises on an unresolvable reference
 
     feature.source_body_ids = candidate.source_body_ids
     feature.mirror_plane = candidate.mirror_plane
+    feature.source_feature_ids = candidate.source_feature_ids
     feature.merge = candidate.merge
     return _feature_response(part, feature)
 
@@ -1954,6 +2020,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
     geometric validity) before ever persisting an unresolvable Pattern."""
     part = get_part_or_404(part_id)
     source_body_ids = list(payload.source_body_ids)
+    source_feature_ids = list(payload.source_feature_ids)
     direction_1 = (
         _pattern_direction_ref_to_domain(payload.direction_1) if payload.direction_1 is not None else None
     )
@@ -1961,7 +2028,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         _pattern_direction_ref_to_domain(payload.direction_2) if payload.direction_2 is not None else None
     )
     axis = _pattern_axis_ref_to_domain(payload.axis) if payload.axis is not None else None
-    _validate_pattern_source_body_ids(part, source_body_ids)
+    _validate_pattern_source_body_ids(part, source_body_ids, source_feature_ids)
     _validate_pattern_payload(
         payload.pattern_type,
         direction_1,
@@ -1977,6 +2044,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
     feature = PatternFeature(
         id=str(uuid.uuid4()),
         source_body_ids=source_body_ids,
+        source_feature_ids=source_feature_ids,
         pattern_type=payload.pattern_type,
         direction_1=direction_1,
         count_1=payload.count_1,
@@ -2021,6 +2089,11 @@ def update_pattern_feature(
     new_source_body_ids = (
         list(payload.source_body_ids) if payload.source_body_ids is not None else feature.source_body_ids
     )
+    new_source_feature_ids = (
+        list(payload.source_feature_ids)
+        if payload.source_feature_ids is not None
+        else feature.source_feature_ids
+    )
     new_direction_1 = (
         _pattern_direction_ref_to_domain(payload.direction_1)
         if payload.direction_1 is not None
@@ -2050,7 +2123,7 @@ def update_pattern_feature(
     )
     new_merge = payload.merge if payload.merge is not None else feature.merge
 
-    _validate_pattern_source_body_ids(part, new_source_body_ids)
+    _validate_pattern_source_body_ids(part, new_source_body_ids, new_source_feature_ids)
     _validate_pattern_payload(
         feature.pattern_type,
         new_direction_1,
@@ -2066,6 +2139,7 @@ def update_pattern_feature(
     candidate = PatternFeature(
         id=feature.id,
         source_body_ids=new_source_body_ids,
+        source_feature_ids=new_source_feature_ids,
         pattern_type=feature.pattern_type,
         direction_1=new_direction_1,
         count_1=new_count_1,
@@ -2085,6 +2159,7 @@ def update_pattern_feature(
     resolve_pattern(part, candidate)  # raises on an unresolvable reference
 
     feature.source_body_ids = candidate.source_body_ids
+    feature.source_feature_ids = candidate.source_feature_ids
     feature.direction_1 = candidate.direction_1
     feature.count_1 = candidate.count_1
     feature.spacing_1 = candidate.spacing_1

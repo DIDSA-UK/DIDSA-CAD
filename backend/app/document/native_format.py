@@ -650,6 +650,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "type": "pattern",
             "id": feature.id,
             "source_body_ids": list(feature.source_body_ids),
+            "source_feature_ids": list(feature.source_feature_ids),
             "pattern_type": feature.pattern_type.value,
             "direction_1": _pattern_direction_ref_to_dict(feature.direction_1)
             if feature.direction_1
@@ -759,6 +760,9 @@ def _feature_from_dict(data: dict) -> Feature:
         return PatternFeature(
             id=feature_id,
             source_body_ids=list(data.get("source_body_ids", [])),
+            # `source_feature_ids` (Phase 6) defaults to empty for any
+            # Pattern persisted before this field existed (Phase 2-5).
+            source_feature_ids=list(data.get("source_feature_ids", [])),
             # `pattern_type` (Phase 4) defaults to RECTANGULAR for any
             # Pattern persisted before this field existed (Phase 2) - see
             # `PatternType`'s own docstring.

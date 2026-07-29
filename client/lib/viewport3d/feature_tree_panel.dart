@@ -170,6 +170,39 @@ class FeatureTreePanel extends StatefulWidget {
   /// picker mode.
   final void Function(FeatureDto feature)? onSketchPicked;
 
+  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+  /// §2.8/§4): true while the tree is acting as a *multi-select* Feature
+  /// picker for a pending Mirror/Pattern's `source_feature_ids` - entered
+  /// from a button inside [MirrorPanel]/[PatternPanel] itself (not the
+  /// guided "Add" FAB), exited by a confirm/cancel action [PartScreen]
+  /// itself owns (mirroring the checkmark-FAB shape Mirror's own
+  /// `pickingBodies` step already uses, not a button embedded in this
+  /// panel). Unlike [isSketchPickerMode] (single-pick, commits
+  /// immediately), a row tap here toggles membership in
+  /// [selectedFeaturePickerIds] and the picker stays open - this codebase
+  /// had no existing multi-select entry point into the Build Tree at all
+  /// before this (confirmed by reading this file in full - every prior
+  /// mode here is single-pick), so this is new machinery, not a reuse.
+  final bool isFeaturePickerMode;
+
+  /// While [isFeaturePickerMode], the Feature ids eligible to be picked as
+  /// a source (every body-producing Feature type except the Mirror/Pattern
+  /// currently being configured itself) - the rest render dimmed and
+  /// don't respond to a tap, mirroring [pickableSketchIds]'s own visual-aid
+  /// role.
+  final Set<String> pickableFeaturePickerIds;
+
+  /// While [isFeaturePickerMode], the Feature ids currently toggled on -
+  /// shown with a checkbox-style trailing indicator instead of the normal
+  /// hidden/lost-reference one.
+  final Set<String> selectedFeaturePickerIds;
+
+  /// [isFeaturePickerMode]'s tap handler - called for an eligible
+  /// ([pickableFeaturePickerIds]) Feature row tap instead of [onFeatureTap],
+  /// toggling that Feature's membership in [selectedFeaturePickerIds].
+  /// Unused (and may be left null) outside picker mode.
+  final void Function(FeatureDto feature)? onFeaturePickerToggle;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -187,6 +220,10 @@ class FeatureTreePanel extends StatefulWidget {
     this.isSketchPickerMode = false,
     this.pickableSketchIds = const {},
     this.onSketchPicked,
+    this.isFeaturePickerMode = false,
+    this.pickableFeaturePickerIds = const {},
+    this.selectedFeaturePickerIds = const {},
+    this.onFeaturePickerToggle,
   });
 
   @override
@@ -274,6 +311,27 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                                 child: Text(
                                   'Select a sketch to extrude',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            // Pattern/Mirror Phase 6: names how many sources
+                            // are currently toggled on, since (unlike the
+                            // single-pick sketch banner above) there's no
+                            // other on-screen indication of the running
+                            // selection count while this panel is open.
+                            if (widget.isFeaturePickerMode)
+                              Container(
+                                width: double.infinity,
+                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                child: Text(
+                                  'Select source Features'
+                                  '${widget.selectedFeaturePickerIds.isEmpty ? '' : ' - ${widget.selectedFeaturePickerIds.length} selected'}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
@@ -479,12 +537,20 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     // isn't a Sketch with a known-closed profile.
     final pickerDimmed =
         widget.isSketchPickerMode && (!isSketch || !widget.pickableSketchIds.contains(feature.id));
+    // Pattern/Mirror Phase 6: the analogous dim rule for the multi-select
+    // Feature picker - unlike the sketch picker above, an ineligible row
+    // here is fully inert (no tap callback at all, see onTap below), the
+    // dimming alone communicates ineligibility.
+    final featurePickerDimmed =
+        widget.isFeaturePickerMode && !widget.pickableFeaturePickerIds.contains(feature.id);
+    final featurePickerSelected =
+        widget.isFeaturePickerMode && widget.selectedFeaturePickerIds.contains(feature.id);
     return Opacity(
-      opacity: hidden || pickerDimmed ? 0.5 : 1.0,
+      opacity: hidden || pickerDimmed || featurePickerDimmed ? 0.5 : 1.0,
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
-        selected: selected,
+        selected: selected || featurePickerSelected,
         // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
         // independent overlay badge - kept alongside (not instead of) the
         // type glyph below.
@@ -522,15 +588,21 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
               ? _rowSubtitleStyle.copyWith(color: Colors.amber.shade800, fontWeight: FontWeight.bold)
               : _rowSubtitleStyle,
         ),
-        trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+        trailing: widget.isFeaturePickerMode
+            ? (featurePickerSelected ? const Icon(Icons.check_circle, size: 18) : null)
+            : (hidden ? const Icon(Icons.visibility_off, size: 18) : null),
         onTap: () {
           if (widget.isSketchPickerMode) {
             if (isSketch) widget.onSketchPicked?.call(feature);
+          } else if (widget.isFeaturePickerMode) {
+            if (!featurePickerDimmed) widget.onFeaturePickerToggle?.call(feature);
           } else {
             widget.onFeatureTap(feature);
           }
         },
-        onLongPress: widget.isSketchPickerMode ? null : () => widget.onFeatureLongPress(feature),
+        onLongPress: widget.isSketchPickerMode || widget.isFeaturePickerMode
+            ? null
+            : () => widget.onFeatureLongPress(feature),
       ),
     );
   }

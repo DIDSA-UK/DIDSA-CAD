@@ -81,24 +81,18 @@ List<SelectionContextAction> contextActionsFor(
   // now. Checked before the generic mixed-Body guard below, same precedence
   // pattern the single/two-plane-like checks further down use against their
   // own generic buckets.
-  // Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
-  // §2.2/§4): a lone Body (exactly one, nothing else selected) also offers
-  // Pattern - unlike Mirror, Pattern's own multi-body seeding remains
-  // Phase 6 scope (see `PatternFeature`'s own backend docstring), so 2+
-  // Bodies still offer only Mirror, with Pattern shown disabled and a
-  // reason (the "explain, don't silently omit" convention Prompt D's own
-  // cross-body edge-selection guard already established for Chamfer/
-  // Fillet) rather than omitted outright.
+  // Pattern/Mirror scoping's Phase 2/6 (`docs/pattern-mirror-scope.md`
+  // §2.2/§2.8/§4): a Body-only selection also offers Pattern - Phase 6
+  // widened Pattern's own `source_body_ids` from Phase 2's original
+  // exactly-one to 1+ (mirroring Mirror's own Phase 1 revision exactly -
+  // see `PatternFeature`'s own backend docstring), so any positive count of
+  // Bodies now enables both Mirror and Pattern identically.
   final bodies = selection.where((s) => s.kind == SelectionEntityKind.body).toList();
   if (bodies.isNotEmpty) {
     if (bodies.length == selection.length) {
-      return [
-        const SelectionContextAction('Mirror', enabled: true),
-        SelectionContextAction(
-          'Pattern',
-          enabled: bodies.length == 1,
-          disabledReason: bodies.length == 1 ? null : 'Pattern requires exactly one Body',
-        ),
+      return const [
+        SelectionContextAction('Mirror', enabled: true),
+        SelectionContextAction('Pattern', enabled: true),
       ];
     }
     return const [];

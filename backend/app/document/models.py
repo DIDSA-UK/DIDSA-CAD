@@ -651,15 +651,18 @@ class MirrorFeature(Feature):
     own `MirrorFeature` branch), like a Boss with no `target_body_ids`.
     `merge=FUSE_INTO_ONE` (Phase 5) instead fuses every mirrored copy plus
     every source Body together into a single Body (see `app.document.
-    extrude._fuse_realized_instances`) - `source_feature_ids` (reserved but
-    unused until Phase 6's multi-*feature* seeding) remains later,
-    explicitly scoped work."""
+    extrude._fuse_realized_instances`). `source_feature_ids` (Phase 6,
+    §2.8) names Feature-tree entries as additional sources, resolved to
+    their current output Body/Bodies via the one-line `base_feature_id`
+    lookup (`{bid for bid in bodies if base_feature_id(bid) == fid}`),
+    combined with `source_body_ids` and deduplicated - see `app.document.
+    mirror.resolve_mirror_from_bodies`."""
 
     id: str
     source_body_ids: list[str]
     mirror_plane: PlaneRef
-    # Reserved for Phase 6 (multi-feature seed selection) - always empty
-    # in Phase 1; not yet read by app.document.mirror.
+    # Phase 6 (§2.8/§4): Feature-tree entries as additional sources - see
+    # this class's own docstring.
     source_feature_ids: list[str] = field(default_factory=list)
     # Phase 5 (§2.10): KEEP_SEPARATE (default) vs. FUSE_INTO_ONE.
     merge: MergeMode = MergeMode.KEEP_SEPARATE
@@ -784,14 +787,22 @@ class PatternFeature(Feature):
     "count includes the original" convention rather than adding a redundant
     zero-offset copy on top of the seed.
 
-    `source_body_ids` is constrained to exactly one entry (see
-    `app.document.router._validate_pattern_source_body_ids`) - kept a list
-    for the same forward-compatible-field-shape reason `MirrorFeature.
-    source_body_ids` started that way before its own Phase 1 multi-body
-    revision. Pattern's own multi-body widening remains explicitly scoped
-    to Phase 6 (see `docs/pattern-mirror-scope.md`'s Phase 6 entry), not
-    pulled forward the way Mirror's was - Mirror's revision was driven by
-    explicit on-device feedback this Feature hasn't had.
+    `source_body_ids` accepts one or more entries (Phase 6 - widened from
+    Phase 2/4's original exactly-one, mirroring `MirrorFeature.source_
+    body_ids`'s own Phase 1 revision exactly - see `app.document.router.
+    _validate_pattern_source_body_ids`). Every source shares the identical
+    instance-transform grid (the same `direction_1`/`direction_2`/`axis`,
+    `count_1`/`count_2`/`count_angular`, `spacing_1`/`spacing_2`,
+    `reverse_1`/`reverse_2`/`reverse_angular`) - each source's own index 0
+    is that source's own already-existing Body, untouched, exactly like
+    the single-source case (see `app.document.pattern.resolve_pattern_
+    from_bodies`, now keyed per-source). `source_feature_ids` (also Phase
+    6) names Feature-tree entries as additional sources - resolved to
+    their current output Body/Bodies via the same one-line `base_feature_
+    id` lookup `MirrorFeature.source_feature_ids` uses (see `docs/pattern-
+    mirror-scope.md` §2.8), combined with `source_body_ids` and
+    deduplicated (a Body named both directly and via its own owning
+    Feature is only ever patterned once).
 
     Every Rectangular-only and Circular-only field is optional/defaulted
     (not just the ones Phase 2 already had before Circular existed) -
@@ -824,6 +835,10 @@ class PatternFeature(Feature):
 
     id: str
     source_body_ids: list[str]
+    # Phase 6 (§2.8/§4): Feature-tree entries as additional sources,
+    # resolved to their current output Body/Bodies - see this class's own
+    # docstring.
+    source_feature_ids: list[str] = field(default_factory=list)
     pattern_type: PatternType = PatternType.RECTANGULAR
     # Rectangular:
     direction_1: PatternDirectionRef | None = None
