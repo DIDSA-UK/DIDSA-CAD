@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
 
 /// The "boss" or "cut" choice for a Revolve - Boss/Cut parity with Extrude
@@ -14,8 +15,8 @@ enum RevolveMode {
 
   String get apiValue => name;
 
-  static RevolveMode fromApiValue(String value) =>
-      RevolveMode.values.firstWhere((m) => m.apiValue == value, orElse: () => RevolveMode.boss);
+  static RevolveMode fromApiValue(String value) => RevolveMode.values
+      .firstWhere((m) => m.apiValue == value, orElse: () => RevolveMode.boss);
 }
 
 /// The bottom-sheet-style panel [PartScreen] opens for Revolve - structurally
@@ -33,6 +34,12 @@ class RevolvePanel extends StatefulWidget {
   /// when [PartScreen] opened this to edit an already-existing one instead -
   /// purely a label, same convention as [ExtrudePanel.title].
   final String title;
+
+  /// On-device feedback ("the tooltip at the top of the screen blocks the
+  /// FABs"): see [ResizableToolPanel]'s own doc comment - the axis/target-
+  /// body-picking banner text, now shown in the title row instead of a
+  /// separate floating banner.
+  final String? tooltip;
 
   final RevolveMode initialMode;
   final double initialAngle;
@@ -55,6 +62,7 @@ class RevolvePanel extends StatefulWidget {
   const RevolvePanel({
     super.key,
     this.title = 'Revolve',
+    this.tooltip,
     this.initialMode = RevolveMode.boss,
     this.initialAngle = 180.0,
     required this.hasAxis,
@@ -83,8 +91,11 @@ class _RevolvePanelState extends State<RevolvePanel> {
   void initState() {
     super.initState();
     _mode = widget.initialMode;
-    _angleController = TextEditingController(text: _formatAngle(widget.initialAngle));
-    _angle = (widget.initialAngle > 0 && widget.initialAngle <= 360) ? widget.initialAngle : null;
+    _angleController =
+        TextEditingController(text: _formatAngle(widget.initialAngle));
+    _angle = (widget.initialAngle > 0 && widget.initialAngle <= 360)
+        ? widget.initialAngle
+        : null;
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits the angle field or mode - onChanged was
     // only ever wired to those callbacks, never fired for the initial value
@@ -100,8 +111,9 @@ class _RevolvePanelState extends State<RevolvePanel> {
     super.dispose();
   }
 
-  static String _formatAngle(double value) =>
-      value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
+  static String _formatAngle(double value) => value == value.roundToDouble()
+      ? value.toStringAsFixed(0)
+      : value.toString();
 
   /// Confirm is disabled for an invalid angle, for no axis picked yet, or
   /// (mirrors [ExtrudePanel]'s own Cut rule) for a Cut with nothing picked
@@ -126,100 +138,92 @@ class _RevolvePanelState extends State<RevolvePanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 12),
-                SegmentedButton<RevolveMode>(
-                  segments: const [
-                    ButtonSegment(
-                      value: RevolveMode.boss,
-                      label: Text('Boss'),
-                      icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
-                    ),
-                    ButtonSegment(
-                      value: RevolveMode.cut,
-                      label: Text('Cut'),
-                      icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
-                    ),
-                  ],
-                  selected: {_mode},
-                  onSelectionChanged: (selection) => _onModeChanged(selection.first),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _angleController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'Angle (degrees)'),
-                  onChanged: (_) => _emitChange(),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _angle == null
-                      ? 'Enter an angle greater than 0 and at most 360'
-                      : 'Angle: ${_formatAngle(_angle!)}°',
-                  style: TextStyle(
-                    color: _angle == null
-                        ? Theme.of(context).colorScheme.error
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  widget.hasAxis ? 'Axis: selected' : 'Select an axis line in the viewport',
-                  style: TextStyle(
-                    color: widget.hasAxis
-                        ? Theme.of(context).colorScheme.onSurfaceVariant
-                        : Theme.of(context).colorScheme.error,
-                    fontSize: 12,
-                  ),
-                ),
-                // Mirrors ExtrudePanel's own Cut target-body status line -
-                // picking itself happens in the 3D viewport behind this
-                // panel, driven by PartScreen, not by any field in here.
-                if (_mode == RevolveMode.cut)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      widget.targetBodyCount == 0
-                          ? 'Select at least one target body in the viewport'
-                          : '${widget.targetBodyCount} target body/bodies selected',
-                      style: TextStyle(
-                        color: widget.targetBodyCount == 0
-                            ? Theme.of(context).colorScheme.error
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: _canConfirm ? widget.onConfirm : null,
-                      child: const Text('Confirm'),
-                    ),
-                  ],
-                ),
-              ],
+    return ResizableToolPanel(
+      title: widget.title,
+      tooltip: widget.tooltip,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SegmentedButton<RevolveMode>(
+            segments: const [
+              ButtonSegment(
+                value: RevolveMode.boss,
+                label: Text('Boss'),
+                icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
+              ),
+              ButtonSegment(
+                value: RevolveMode.cut,
+                label: Text('Cut'),
+                icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
+              ),
+            ],
+            selected: {_mode},
+            onSelectionChanged: (selection) => _onModeChanged(selection.first),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _angleController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Angle (degrees)'),
+            onChanged: (_) => _emitChange(),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _angle == null
+                ? 'Enter an angle greater than 0 and at most 360'
+                : 'Angle: ${_formatAngle(_angle!)}°',
+            style: TextStyle(
+              color: _angle == null
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 12,
             ),
           ),
-        ),
+          const SizedBox(height: 4),
+          Text(
+            widget.hasAxis
+                ? 'Axis: selected'
+                : 'Select an axis line in the viewport',
+            style: TextStyle(
+              color: widget.hasAxis
+                  ? Theme.of(context).colorScheme.onSurfaceVariant
+                  : Theme.of(context).colorScheme.error,
+              fontSize: 12,
+            ),
+          ),
+          // Mirrors ExtrudePanel's own Cut target-body status line -
+          // picking itself happens in the 3D viewport behind this
+          // panel, driven by PartScreen, not by any field in here.
+          if (_mode == RevolveMode.cut)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                widget.targetBodyCount == 0
+                    ? 'Select at least one target body in the viewport'
+                    : '${widget.targetBodyCount} target body/bodies selected',
+                style: TextStyle(
+                  color: widget.targetBodyCount == 0
+                      ? Theme.of(context).colorScheme.error
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: widget.onCancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _canConfirm ? widget.onConfirm : null,
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'resizable_tool_panel.dart';
+
 /// Prompt D: the bottom-sheet-style panel [PartScreen] opens once Fillet is
 /// enabled (one or more edges selected, all on the same Body - see
 /// `selection_actions.dart`'s `contextActionsFor`) - mirrors
@@ -12,6 +14,13 @@ class FilletPanel extends StatefulWidget {
   /// when [PartScreen] opened this to edit an already-existing one instead -
   /// purely a label, same convention as [CreatePlanePanel.title].
   final String title;
+
+  /// On-device feedback ("the tooltip at the top of the screen blocks the
+  /// FABs"): see [ResizableToolPanel]'s own doc comment - the guided-entry
+  /// "select edges (or a face)" banner text, now shown in the title row
+  /// instead of a separate floating banner. Null once at least one edge is
+  /// picked (this panel's own fields already guide the user from there).
+  final String? tooltip;
 
   final double initialRadius;
 
@@ -26,6 +35,7 @@ class FilletPanel extends StatefulWidget {
   const FilletPanel({
     super.key,
     this.title = 'Fillet',
+    this.tooltip,
     required this.initialRadius,
     this.onRadiusChanged,
     required this.onConfirm,
@@ -49,7 +59,8 @@ class _FilletPanelState extends State<FilletPanel> {
   @override
   void initState() {
     super.initState();
-    _radiusController = TextEditingController(text: _formatDistance(widget.initialRadius));
+    _radiusController =
+        TextEditingController(text: _formatDistance(widget.initialRadius));
     _radius = widget.initialRadius > 0 ? widget.initialRadius : null;
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits the radius field - onRadiusChanged was
@@ -66,8 +77,9 @@ class _FilletPanelState extends State<FilletPanel> {
     super.dispose();
   }
 
-  static String _formatDistance(double value) =>
-      value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
+  static String _formatDistance(double value) => value == value.roundToDouble()
+      ? value.toStringAsFixed(0)
+      : value.toString();
 
   bool get _canConfirm => _radius != null;
 
@@ -80,53 +92,45 @@ class _FilletPanelState extends State<FilletPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _radiusController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'Radius'),
-                  onChanged: (_) => _emitRadiusChange(),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _radius == null ? 'Enter a radius greater than 0' : 'Radius: ${_formatDistance(_radius!)}',
-                  style: TextStyle(
-                    color: _radius == null
-                        ? Theme.of(context).colorScheme.error
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: _canConfirm ? widget.onConfirm : null,
-                      child: const Text('Confirm'),
-                    ),
-                  ],
-                ),
-              ],
+    return ResizableToolPanel(
+      title: widget.title,
+      tooltip: widget.tooltip,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _radiusController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Radius'),
+            onChanged: (_) => _emitRadiusChange(),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _radius == null
+                ? 'Enter a radius greater than 0'
+                : 'Radius: ${_formatDistance(_radius!)}',
+            style: TextStyle(
+              color: _radius == null
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 12,
             ),
           ),
-        ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: widget.onCancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _canConfirm ? widget.onConfirm : null,
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

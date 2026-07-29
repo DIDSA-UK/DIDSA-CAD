@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
+import 'resizable_tool_panel.dart';
 
 /// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
 /// §2.1/§4): the bottom-sheet-style panel [PartScreen] opens once Mirror is
@@ -19,6 +20,13 @@ class MirrorPanel extends StatelessWidget {
   /// when [PartScreen] opened this to edit an already-existing one instead -
   /// purely a label, same convention as [FilletPanel.title].
   final String title;
+
+  /// On-device feedback ("the tooltip at the top of the screen blocks the
+  /// FABs"): see [ResizableToolPanel]'s own doc comment - the guided-entry
+  /// "Select Mirror Plane or Face" banner text, now shown in the title row
+  /// instead of a separate floating banner. Null once a plane is picked
+  /// (this panel's own status line below already covers that state).
+  final String? tooltip;
 
   /// True once a mirror plane has been picked in the viewport (a face, a
   /// fixed reference plane, or an existing Plane) - see
@@ -40,6 +48,7 @@ class MirrorPanel extends StatelessWidget {
   const MirrorPanel({
     super.key,
     this.title = 'Mirror',
+    this.tooltip,
     required this.hasPlanePicked,
     required this.merge,
     required this.onMergeChanged,
@@ -49,57 +58,49 @@ class MirrorPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 12),
-                Text(
-                  hasPlanePicked
-                      ? 'Mirror plane selected'
-                      : 'Select a face, reference plane, or plane to mirror about',
-                  style: TextStyle(
-                    color: hasPlanePicked
-                        ? Theme.of(context).colorScheme.onSurfaceVariant
-                        : Theme.of(context).colorScheme.error,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SegmentedButton<MergeMode>(
-                  segments: const [
-                    ButtonSegment(value: MergeMode.keepSeparate, label: Text('Keep Separate')),
-                    ButtonSegment(value: MergeMode.fuseIntoOne, label: Text('Merge into One Body')),
-                  ],
-                  selected: {merge},
-                  onSelectionChanged: (selection) => onMergeChanged(selection.first),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(onPressed: onCancel, child: const Text('Cancel')),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: hasPlanePicked ? onConfirm : null,
-                      child: const Text('Confirm'),
-                    ),
-                  ],
-                ),
-              ],
+    return ResizableToolPanel(
+      title: title,
+      tooltip: tooltip,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            hasPlanePicked
+                ? 'Mirror plane selected'
+                : 'Select a face, reference plane, or plane to mirror about',
+            style: TextStyle(
+              color: hasPlanePicked
+                  ? Theme.of(context).colorScheme.onSurfaceVariant
+                  : Theme.of(context).colorScheme.error,
+              fontSize: 12,
             ),
           ),
-        ),
+          const SizedBox(height: 12),
+          SegmentedButton<MergeMode>(
+            segments: const [
+              ButtonSegment(
+                  value: MergeMode.keepSeparate, label: Text('Keep Separate')),
+              ButtonSegment(
+                  value: MergeMode.fuseIntoOne,
+                  label: Text('Merge into One Body')),
+            ],
+            selected: {merge},
+            onSelectionChanged: (selection) => onMergeChanged(selection.first),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(onPressed: onCancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: hasPlanePicked ? onConfirm : null,
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

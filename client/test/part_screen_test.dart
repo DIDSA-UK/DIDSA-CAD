@@ -12,6 +12,7 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/resizable_tool_panel.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 
@@ -1286,10 +1287,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(find.text('Confirm'), findsOneWidget);
-      // Prompt A4's target-body-picker banner adds its own Cancel button
-      // alongside ExtrudePanel's own - both wired to the same
-      // _cancelExtrude, so two is the real, current count.
-      expect(find.text('Cancel'), findsNWidgets(2));
+      // On-device feedback ("the tooltip at the top of the screen blocks
+      // the FABs"): the target-body-picker banner's own separate Cancel
+      // button is gone now, its text folded into ExtrudePanel's own title
+      // row - see the sibling test in this same file for the full note.
+      expect(find.text('Cancel'), findsOneWidget);
 
       await tester.tap(find.text('Confirm'));
       await tester.pump();
@@ -1297,6 +1299,53 @@ void main() {
 
       expect(find.text('Extrude 1'), findsOneWidget);
       expect(backend.features.where((f) => f['type'] == 'extrude'), hasLength(1));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'on-device feedback ("the tooltip at the top of the screen blocks the FABs to recentre and to '
+    'switch between select/orbit"): the target-body-picking status text lives inside '
+    "ExtrudePanel's own [ResizableToolPanel] title row, not a separate full-width banner "
+    'floating over the corner FABs',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Extrude'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Boss (the default type) with nothing picked yet.
+      final bannerText = find.text('Select bodies to merge into (optional)');
+      expect(bannerText, findsOneWidget);
+      expect(
+        find.ancestor(of: bannerText, matching: find.byType(ResizableToolPanel)),
+        findsOneWidget,
+        reason: 'this status text used to float in its own top-level Positioned banner - it must '
+            "now be reached only through ExtrudePanel's own ResizableToolPanel shell",
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -1469,10 +1518,13 @@ void main() {
 
       expect(find.text('Select a sketch to extrude'), findsNothing);
       expect(find.text('Confirm'), findsOneWidget);
-      // Prompt A4's target-body-picker banner adds its own Cancel button
-      // alongside ExtrudePanel's own - both wired to the same
-      // _cancelExtrude, so two is the real, current count.
-      expect(find.text('Cancel'), findsNWidgets(2));
+      // On-device feedback ("the tooltip at the top of the screen blocks
+      // the FABs"): Prompt A4's target-body-picker banner used to add its
+      // own separate Cancel button alongside ExtrudePanel's own (both
+      // wired to the same _cancelExtrude) - that banner is gone now, its
+      // text folded into ExtrudePanel's own title row, so there's only
+      // ever the one Cancel.
+      expect(find.text('Cancel'), findsOneWidget);
 
       await tester.tap(find.text('Confirm'));
       await tester.pump();

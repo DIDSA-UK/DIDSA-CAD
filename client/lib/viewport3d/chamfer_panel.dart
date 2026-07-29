@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'resizable_tool_panel.dart';
+
 /// Prompt E: the bottom-sheet-style panel [PartScreen] opens once Chamfer is
 /// enabled (one or more edges selected, all on the same Body - see
 /// `selection_actions.dart`'s `contextActionsFor`) - structurally identical
@@ -11,6 +13,13 @@ class ChamferPanel extends StatefulWidget {
   /// when [PartScreen] opened this to edit an already-existing one instead -
   /// purely a label, same convention as [FilletPanel.title].
   final String title;
+
+  /// On-device feedback ("the tooltip at the top of the screen blocks the
+  /// FABs"): see [ResizableToolPanel]'s own doc comment - the guided-entry
+  /// "select edges (or a face)" banner text, now shown in the title row
+  /// instead of a separate floating banner. Null once at least one edge is
+  /// picked (this panel's own fields already guide the user from there).
+  final String? tooltip;
 
   final double initialDistance;
 
@@ -24,6 +33,7 @@ class ChamferPanel extends StatefulWidget {
   const ChamferPanel({
     super.key,
     this.title = 'Chamfer',
+    this.tooltip,
     required this.initialDistance,
     this.onDistanceChanged,
     required this.onConfirm,
@@ -47,14 +57,17 @@ class _ChamferPanelState extends State<ChamferPanel> {
   @override
   void initState() {
     super.initState();
-    _distanceController = TextEditingController(text: _formatDistance(widget.initialDistance));
+    _distanceController =
+        TextEditingController(text: _formatDistance(widget.initialDistance));
     _distance = widget.initialDistance > 0 ? widget.initialDistance : null;
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits the distance field - onDistanceChanged
     // was only ever wired to that callback, never fired for the initial
     // value this panel opens with (mirrors ExtrudePanel's identical fix).
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _distance != null) widget.onDistanceChanged?.call(_distance!);
+      if (mounted && _distance != null) {
+        widget.onDistanceChanged?.call(_distance!);
+      }
     });
   }
 
@@ -64,8 +77,9 @@ class _ChamferPanelState extends State<ChamferPanel> {
     super.dispose();
   }
 
-  static String _formatDistance(double value) =>
-      value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
+  static String _formatDistance(double value) => value == value.roundToDouble()
+      ? value.toStringAsFixed(0)
+      : value.toString();
 
   bool get _canConfirm => _distance != null;
 
@@ -78,55 +92,45 @@ class _ChamferPanelState extends State<ChamferPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _distanceController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'Distance'),
-                  onChanged: (_) => _emitDistanceChange(),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _distance == null
-                      ? 'Enter a distance greater than 0'
-                      : 'Distance: ${_formatDistance(_distance!)}',
-                  style: TextStyle(
-                    color: _distance == null
-                        ? Theme.of(context).colorScheme.error
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: _canConfirm ? widget.onConfirm : null,
-                      child: const Text('Confirm'),
-                    ),
-                  ],
-                ),
-              ],
+    return ResizableToolPanel(
+      title: widget.title,
+      tooltip: widget.tooltip,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _distanceController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Distance'),
+            onChanged: (_) => _emitDistanceChange(),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _distance == null
+                ? 'Enter a distance greater than 0'
+                : 'Distance: ${_formatDistance(_distance!)}',
+            style: TextStyle(
+              color: _distance == null
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 12,
             ),
           ),
-        ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: widget.onCancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _canConfirm ? widget.onConfirm : null,
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
