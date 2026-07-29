@@ -2658,23 +2658,42 @@ class Sketch:
         entirely unconnected entities) in the same call are handled
         correctly, each only joining within its own group.
 
-        Sign-convention caveat specific to chains: `distance`'s sign
-        applies identically to every entity, each still relative to *its
-        own* stored start->end direction (or radial-outward, for an Arc) -
-        there's no attempt to detect or normalize a single "outside of the
-        chain" direction across entities that happen to have been drawn
-        with inconsistent point ordering. A chain that offsets to the
-        wrong side on just one segment was very likely drawn in the
-        opposite direction to its neighbors - an existing characteristic
-        of this offset direction convention (see `offset_line`'s own doc
-        comment), not something new this method introduces.
+        Sign-convention caveat specific to chains, between two Lines or two
+        Arcs: `distance`'s sign still applies identically to each, relative
+        to its own stored start->end direction (or radial-outward, for an
+        Arc) - there's no attempt to detect or normalize a single "outside
+        of the chain" direction across entities that happen to have been
+        drawn with inconsistent point ordering. A chain that offsets to the
+        wrong side on just one Line-Line or Arc-Arc segment was very likely
+        drawn in the opposite direction to its neighbors - an existing
+        characteristic of this offset direction convention (see
+        `offset_line`'s own doc comment), not something new this method
+        introduces.
+
+        On-device feedback ("offsetting a curved edge doesn't offset the
+        arc properly" / "it went in the opposite direction to the lines"):
+        an Arc adjacent to a Line *is* handled specially, below - unlike
+        two Lines (whose relative direction is a free drawing choice this
+        method deliberately never second-guesses, per the paragraph
+        above), an Arc's own start/end are never a free choice - `add_arc`
+        always sweeps CCW, so "growing the radius" has one fixed physical
+        meaning regardless of how the Arc was drawn. Whether *that* meaning
+        happens to agree with a neighboring Line's own (also fixed, but
+        independently-chosen) offset direction is essentially down to
+        chance - especially for a Body-edge-converted profile, where the
+        Lines' own start/end order comes from whatever order OCCT's
+        topology walk happened to produce, not a deliberately consistent
+        winding. Rather than always trusting `radius + distance`, each Arc
+        with a Line neighbor tries *both* `radius + distance` and `radius -
+        distance` against that neighbor and keeps whichever one actually
+        joins - see the dedicated Arc pass below for the full reasoning.
 
         Raises `ValueError` for an empty `entity_ids`, a non-Line/Arc
         entity id, a zero-length Line, an Arc whose offset radius would
-        collapse/invert, `distance == 0`, or a Line/Arc collapsed to a
-        single Point by the resolved join (both ends landed on the same
-        Point); `KeyError` for a missing entity id - the same error
-        classes `offset_line`/`offset_arc` already use.
+        collapse/invert on every sign tried, `distance == 0`, or a Line/Arc
+        collapsed to a single Point by the resolved join (both ends landed
+        on the same Point); `KeyError` for a missing entity id - the same
+        error classes `offset_line`/`offset_arc` already use.
         """
         if not entity_ids:
             raise ValueError("offset_chain requires at least one entity id")
@@ -2693,36 +2712,72 @@ class Sketch:
         # Raw (unjoined) offset geometry per entity - identical math to
         # offset_line/offset_arc, just not materialized into real Points
         # yet, since a join below may still move either end first.
+        #
+        # Lines first: unlike Arcs (see the dedicated pass below), a Line's
+        # own offset direction is never re-evaluated - only ever computed
+        # once, the same way offset_line already does it.
         raw: dict[str, dict] = {}
         for entity_id, entity in entities.items():
-            if isinstance(entity, Line):
-                start = self.points[entity.start_point_id]
-                end = self.points[entity.end_point_id]
-                dx, dy = end.x - start.x, end.y - start.y
-                length = math.hypot(dx, dy)
-                if length == 0:
-                    raise ValueError(f"Cannot offset a zero-length Line: {entity_id}")
-                offset_x = -dy / length * distance
-                offset_y = dx / length * distance
-                raw[entity_id] = {
-                    "kind": "line",
-                    "start_xy": (start.x + offset_x, start.y + offset_y),
-                    "end_xy": (end.x + offset_x, end.y + offset_y),
-                    "orig_start_id": entity.start_point_id,
-                    "orig_end_id": entity.end_point_id,
-                }
-            else:
-                center = self.points[entity.center_point_id]
-                new_radius = entity.radius(self.points) + distance
+            if not isinstance(entity, Line):
+                continue
+            start = self.points[entity.start_point_id]
+            end = self.points[entity.end_point_id]
+            dx, dy = end.x - start.x, end.y - start.y
+            length = math.hypot(dx, dy)
+            if length == 0:
+                raise ValueError(f"Cannot offset a zero-length Line: {entity_id}")
+            offset_x = -dy / length * distance
+            offset_y = dx / length * distance
+            raw[entity_id] = {
+                "kind": "line",
+                "start_xy": (start.x + offset_x, start.y + offset_y),
+                "end_xy": (end.x + offset_x, end.y + offset_y),
+                "orig_start_id": entity.start_point_id,
+                "orig_end_id": entity.end_point_id,
+            }
+
+        # Every Line's own corner->(entity, end) index, keyed by the
+        # *original* (pre-offset) Point id - the Arc pass below uses this
+        # to find each Arc's own Line neighbor(s), if any, without yet
+        # touching Arc-Arc adjacency (unaffected by this fix - see the
+        # class docstring above for why that pairing is left exactly as
+        # before).
+        point_to_line_end: dict[str, list[tuple[str, str]]] = {}
+        for entity_id, r in raw.items():
+            point_to_line_end.setdefault(r["orig_start_id"], []).append((entity_id, "start_xy"))
+            point_to_line_end.setdefault(r["orig_end_id"], []).append((entity_id, "end_xy"))
+
+        # Bug fix (on-device feedback: "offsetting a curved edge doesn't
+        # offset the arc properly" / "it went in the opposite direction to
+        # the lines"): for each Arc, build both the `+distance` ("primary",
+        # this method's original, still-default behaviour) and `-distance`
+        # ("alternate") raw candidates, then - only where the Arc shares a
+        # corner with exactly one Line already resolved above - test each
+        # candidate against that Line via the same `_offset_chain_join`
+        # the real join pass below uses, and keep whichever candidate
+        # produces more actual joins. A tie (including 0-0, e.g. the raw
+        # shapes never reach each other on either sign) keeps the primary
+        # `+distance` candidate - this is a strict superset of the old
+        # behaviour, never worse, only ever picking `-distance` when doing
+        # so provably reconnects a corner the default sign would have left
+        # dangling. An Arc with no Line neighbor at all (only Arc
+        # neighbors, or unconnected within this call) always keeps the
+        # primary candidate - Arc-Arc adjacency is untouched by this fix.
+        for entity_id, entity in entities.items():
+            if not isinstance(entity, Arc):
+                continue
+            center = self.points[entity.center_point_id]
+            start = self.points[entity.start_point_id]
+            end = self.points[entity.end_point_id]
+            start_angle = math.atan2(start.y - center.y, start.x - center.x)
+            end_angle = math.atan2(end.y - center.y, end.x - center.x)
+            original_radius = entity.radius(self.points)
+
+            def _arc_candidate(signed_distance: float) -> dict | None:
+                new_radius = original_radius + signed_distance
                 if new_radius <= 0:
-                    raise ValueError(
-                        f"Offset distance would collapse or invert the Arc's radius: {entity_id}"
-                    )
-                start = self.points[entity.start_point_id]
-                end = self.points[entity.end_point_id]
-                start_angle = math.atan2(start.y - center.y, start.x - center.x)
-                end_angle = math.atan2(end.y - center.y, end.x - center.x)
-                raw[entity_id] = {
+                    return None
+                return {
                     "kind": "arc",
                     "center_xy": (center.x, center.y),
                     "radius": new_radius,
@@ -2737,6 +2792,31 @@ class Sketch:
                     "orig_start_id": entity.start_point_id,
                     "orig_end_id": entity.end_point_id,
                 }
+
+            primary = _arc_candidate(distance)
+            alternate = _arc_candidate(-distance)
+            if primary is None and alternate is None:
+                raise ValueError(f"Offset distance would collapse or invert the Arc's radius: {entity_id}")
+
+            chosen = primary if primary is not None else alternate
+            if primary is not None and alternate is not None:
+
+                def _line_neighbor_join_count(candidate: dict) -> int:
+                    count = 0
+                    for point_id in (entity.start_point_id, entity.end_point_id):
+                        neighbors = point_to_line_end.get(point_id, [])
+                        if len(neighbors) != 1:
+                            continue  # no Line here, or a branch/T-junction - not this fix's concern
+                        line_id, _ = neighbors[0]
+                        corner = self.points[point_id]
+                        if self._offset_chain_join(candidate, raw[line_id], (corner.x, corner.y)) is not None:
+                            count += 1
+                    return count
+
+                if _line_neighbor_join_count(alternate) > _line_neighbor_join_count(primary):
+                    chosen = alternate
+
+            raw[entity_id] = chosen
 
         # resolved[entity_id]["start_xy"/"end_xy"] starts as a copy of the
         # raw endpoint, overwritten in place per joined corner below.

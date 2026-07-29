@@ -109,6 +109,45 @@ void main() {
     });
   });
 
+  group(
+      'on-device feedback ("when in orthographic view looking directly at the canvas, picking '
+      'an arc picks its chord instead; picking a circle errors - rotating the camera away fixes '
+      'it"): orthographicHalfHeight', () {
+    // Two segments straddling the ray's own axis (closest point at y=0, same
+    // shape as hitTestEdges' own tests above) at different depths: A is
+    // genuinely closer to the ray in real world-space terms (0.05 off-axis)
+    // than B (0.3 off-axis, 6x farther) - the nearer one should always win.
+    // Without a projection-aware pixel-distance conversion, depth alone can
+    // flip that: the perspective-camera-shaped default formula scales
+    // world-units-per-pixel *up* with depth, so B's much larger real
+    // world-space offset still converts to a *smaller* pixel distance
+    // purely because it's farther away, letting it incorrectly outrank A -
+    // exactly the "picked the chord (whose own polyline segments, sharing
+    // both endpoints with the real arc, sit at a different depth along a
+    // straight-on ray) instead of the arc" symptom reported. Passing the
+    // orthographic camera's own real halfHeight fixes the ranking by making
+    // world-units-per-pixel constant regardless of depth, same as real
+    // orthographic projection actually behaves.
+    final segmentA = (vm.Vector3(0.05, -1, 10), vm.Vector3(0.05, 1, 10));
+    final segmentB = (vm.Vector3(0.3, -1, 100), vm.Vector3(0.3, 1, 100));
+
+    test('without it, the farther-but-more-off-axis segment can incorrectly outrank the nearer one', () {
+      final hit = hitTestEdges(straightDownZ, viewportSize, [segmentA, segmentB], [1, 2]);
+      expect(hit?.entity.id, 2, reason: 'B (farther off-axis) wins purely from depth-scaling, without the fix');
+    });
+
+    test('with it, the genuinely nearer (in world space) segment wins regardless of depth', () {
+      final hit = hitTestEdges(
+        straightDownZ,
+        viewportSize,
+        [segmentA, segmentB],
+        [1, 2],
+        orthographicHalfHeight: 30.0,
+      );
+      expect(hit?.entity.id, 1, reason: 'A (nearer in real world-space terms) correctly wins once fixed');
+    });
+  });
+
   group('Prompt C1: hitTestSketchPoints', () {
     test('a Point within the vertex pixel radius at its depth is hit, tagged with the Feature id', () {
       final hit = hitTestSketchPoints(

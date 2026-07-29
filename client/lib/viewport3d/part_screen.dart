@@ -2790,6 +2790,29 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// On-device bug report ("save asks for location every time, even after
+  /// already saving once"): whether a remembered [_lastSavedFilePath] can
+  /// actually be reused later for a silent, no-dialog write via `dart:io`.
+  ///
+  /// `file_picker`'s own `saveFile` only ever returns a genuine, dart:io-
+  /// writable absolute filesystem path on desktop (Windows/Linux/macOS) -
+  /// confirmed directly against the plugin's per-platform source, not just
+  /// its shared doc comment. On Android it hands back a path it
+  /// *fabricates* - `FilePickerDelegate.onActivityResult`'s own Java builds
+  /// it from a guessed `Environment.getExternalStoragePublicDirectory(
+  /// DIRECTORY_DOWNLOADS)` location, entirely unrelated to wherever the
+  /// user's Storage Access Framework picker actually wrote the file (any
+  /// other folder, another storage volume, ...). A later direct write to
+  /// that fabricated path is either denied outright by modern scoped
+  /// storage - the exact symptom reported: [_saveNativeFile]'s own
+  /// try/catch silently falls back to the dialog every single time,
+  /// because the "known" path was never real to begin with - or, worse,
+  /// would succeed by writing to the wrong location entirely. iOS's own
+  /// returned path has the same "would need a fresh security-scoped grant
+  /// to reuse reliably, not just the path string" uncertainty. Desktop's
+  /// real path is the only case this app can actually trust for this.
+  bool get _canPersistFilePathForReuse => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
   /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
   /// Document (every Part's ordered Feature list, plus every Sketch it
   /// references - no cached mesh/geometry) as this app's own native
@@ -2808,31 +2831,56 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Hands [bytes] to the platform's save-file dialog under
-  /// [suggestedFileName]. Remembers wherever the user actually saved to
-  /// (the dialog lets them rename/relocate even the suggestion) as both
-  /// [_lastSavedFileName] and [_lastSavedFilePath], so a later plain Save
-  /// can write straight back to it with no dialog.
+  /// [suggestedFileName].
+  ///
+  /// Bug fix: `file_picker`'s own desktop implementations (Linux/Windows,
+  /// and by the same shared doc comment's own admission, macOS) only ever
+  /// run the native save dialog and hand back the user's chosen path - the
+  /// `bytes` parameter is accepted but silently ignored, never actually
+  /// written anywhere (confirmed directly against the plugin's Linux/
+  /// Windows source: both just shell out to a native picker/Win32 dialog
+  /// and return its result, with no write step at all). This was true
+  /// before the fix below too - Save/Save As/Export have likely never
+  /// actually persisted anything on desktop. Writing [bytes] here
+  /// ourselves via `dart:io` is what actually saves the file there.
+  /// Mobile's own native save flow (Android's SAF `ContentResolver` write,
+  /// iOS's export-to-service) already does a real write of its own -
+  /// [_canPersistFilePathForReuse] gates this so it doesn't redundantly
+  /// (and, given mobile app sandboxing, riskily) attempt a second one.
+  ///
+  /// Remembers wherever the user actually saved to (the dialog lets them
+  /// rename/relocate even the suggestion) as [_lastSavedFileName] always,
+  /// and additionally as [_lastSavedFilePath] only where that path can
+  /// actually be trusted for a later silent write - see
+  /// [_canPersistFilePathForReuse]'s own doc comment for why mobile never
+  /// gets this.
   Future<void> _saveNativeFileViaDialog(String suggestedFileName, Uint8List bytes) async {
     final savedPath = await FilePicker.platform.saveFile(
       dialogTitle: 'Save Project',
       fileName: suggestedFileName,
       bytes: bytes,
     );
-    if (savedPath != null) {
-      _lastSavedFileName = savedPath.split('/').last;
-      _lastSavedFilePath = savedPath;
+    if (savedPath == null) return;
+    if (_canPersistFilePathForReuse) {
+      await File(savedPath).writeAsBytes(bytes);
     }
+    _lastSavedFileName = savedPath.split('/').last;
+    _lastSavedFilePath = _canPersistFilePathForReuse ? savedPath : null;
   }
 
   /// Native Save: on-device feedback fix - a plain Save used to always go
   /// through the same save-file dialog as Save As, even for a Part that had
-  /// already been saved/opened once this session. Now, when
-  /// [_lastSavedFilePath] is already known, it writes straight to that path
-  /// via `dart:io` with no dialog at all; the dialog (via
-  /// [_saveNativeFileViaDialog], re-suggesting [_lastSavedFileName]) is only
-  /// used for the very first save of a session, or as a fallback if the
-  /// remembered path is no longer writable (deleted/moved/permission
-  /// revoked since).
+  /// already been saved/opened once this session. On desktop, where
+  /// [_lastSavedFilePath] is a real, trustworthy path (see
+  /// [_canPersistFilePathForReuse]), this now writes straight to it via
+  /// `dart:io` with no dialog at all. On mobile, [_lastSavedFilePath] is
+  /// never set in the first place (same reasoning), so this always falls
+  /// through to the dialog (via [_saveNativeFileViaDialog], re-suggesting
+  /// [_lastSavedFileName]) - still an improvement over a bare "Save" doing
+  /// nothing, but not the silent overwrite desktop gets; true silent
+  /// overwrite on mobile would need this app to hold onto a persisted
+  /// Storage Access Framework/security-scoped-bookmark permission instead
+  /// of a plain path string, which nothing here does yet.
   Future<void> _saveNativeFile() async {
     setState(() => _toolbarOpen = false);
     await _runGuarded(() async {
@@ -3021,6 +3069,14 @@ class _PartScreenState extends State<PartScreen> {
   /// export entries into one "Export…" entry - [showExportFormatDialog] is
   /// the new first step, then the existing folder/filename picker below,
   /// mirroring [_importGeometry]'s own single-entry-plus-dialog shape.
+  ///
+  /// Bug fix: same desktop-only gap as native Save's own
+  /// [_saveNativeFileViaDialog] - `file_picker`'s desktop implementations
+  /// never actually write `bytes` themselves, only run the dialog and
+  /// return the chosen path, so this now writes the file itself via
+  /// `dart:io` there (see [_canPersistFilePathForReuse]'s own doc comment
+  /// for why mobile is excluded - its own native save flow already does a
+  /// real write).
   Future<void> _exportPart() async {
     setState(() => _toolbarOpen = false);
     final part = _part;
@@ -3029,11 +3085,14 @@ class _PartScreenState extends State<PartScreen> {
     if (format == null || !mounted) return;
     await _runGuarded(() async {
       final bytes = await _api.exportPart(part.id, format);
-      await FilePicker.platform.saveFile(
+      final savedPath = await FilePicker.platform.saveFile(
         dialogTitle: 'Export Part',
         fileName: '${part.name}.$format',
         bytes: bytes,
       );
+      if (savedPath != null && _canPersistFilePathForReuse) {
+        await File(savedPath).writeAsBytes(bytes);
+      }
     });
   }
 

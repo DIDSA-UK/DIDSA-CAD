@@ -173,6 +173,54 @@ def test_offset_chain_joins_two_arcs():
     assert (joined.x, joined.y) == pytest.approx(expected)
 
 
+def test_offset_chain_joins_an_arc_to_its_line_neighbors_on_either_distance_sign():
+    """On-device feedback ("offsetting a curved edge doesn't offset the arc
+    properly" / confirmed on a real device: "it went in the opposite
+    direction to the lines"): unlike a hand-drawn Sketch chain (whose Lines
+    this method deliberately never re-orients, see the class docstring),
+    a Body-edge-converted profile's Lines have no guaranteed consistent
+    winding - so `radius + distance` alone was only ever correct for one
+    of the two possible signs of `distance`; the other left the Arc
+    completely disconnected from both its Line neighbors (raw shapes that
+    simply never crossed). This exact shape - a rounded corner between two
+    Lines drawn in a not-particularly-consistent order - reproduces that:
+    only +1.0 joined before this fix; -1.0 left both corners unjoined.
+    Both signs must now join both corners.
+    """
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(17.0, 7.0)
+    tr1 = sketch.add_point(20.0, 7.0)  # angle 0 around center - tangent to `right`
+    tr2 = sketch.add_point(17.0, 10.0)  # angle 90 around center - tangent to `top`
+    br = sketch.add_point(20.0, 0.0)
+    tl = sketch.add_point(0.0, 10.0)
+
+    right = sketch.add_line(br.id, tr1.id)
+    arc = sketch.add_arc(center.id, tr1.id, tr2.id)
+    top = sketch.add_line(tr2.id, tl.id)
+
+    for distance in (1.0, -1.0):
+        [offset_right, offset_arc, offset_top] = sketch.offset_chain(
+            [right.id, arc.id, top.id], distance
+        )
+        assert offset_right.end_point_id == offset_arc.start_point_id, f"distance={distance}"
+        assert offset_arc.end_point_id == offset_top.start_point_id, f"distance={distance}"
+
+
+def test_offset_chain_arc_sign_fix_still_defaults_to_positive_distance_when_both_signs_join():
+    """The dual-candidate fix (see the test above) must not change any
+    already-correct result - when both `+distance` and `-distance` would
+    join equally well (or equally badly), `+distance` (`offset_arc`'s own
+    documented standalone convention) stays the tiebreak, same as
+    `test_offset_chain_joins_a_line_and_an_arc` above already covers for
+    the untouched Arc-Arc case."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    arc = _make_arc(sketch, 0.0, 0.0, 5.0, 0.0, math.pi / 2)  # (5,0) -> (0,5)
+
+    [result] = sketch.offset_chain([arc.id], 2.0)
+
+    assert result.radius(sketch.points) == pytest.approx(7.0)
+
+
 def test_offset_chain_leaves_a_t_junction_unjoined():
     """A Point shared by three (not two) of the given entities is a
     branch/T-junction - `offset_chain`'s own doc comment documents this as
