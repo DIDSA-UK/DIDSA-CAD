@@ -960,6 +960,10 @@ void main() {
           viewport.bodies.any((b) => b.bodyId == 'feature-2#2');
     });
 
+    // PatternPanel now has a bounded, resizable height (pull handle) with
+    // genuinely scrollable content - ensureVisible scrolls Confirm into
+    // view first, same as any other scrollable-panel test in this suite.
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
     await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -1047,6 +1051,10 @@ void main() {
         );
     await tester.pump();
 
+    // PatternPanel now has a bounded, resizable height (pull handle) with
+    // genuinely scrollable content - ensureVisible scrolls Confirm into
+    // view first, same as any other scrollable-panel test in this suite.
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
     await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));

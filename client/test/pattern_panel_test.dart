@@ -144,6 +144,10 @@ void main() {
     testWidgets('tapping Confirm fires onConfirm once valid', (tester) async {
       var confirmed = false;
       await tester.pumpWidget(harness(hasDirection1: true, onConfirm: () => confirmed = true));
+      // The panel now has a bounded, resizable height (pull handle) with
+      // genuinely scrollable content - ensureVisible scrolls Confirm into
+      // view first, same as any other scrollable-panel test in this suite.
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
       await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
       expect(confirmed, isTrue);
     });
@@ -203,6 +207,7 @@ void main() {
       await tester.pumpWidget(
         harness(hasSecondDirection: true, onSecondDirectionToggled: (e) => enabled = e),
       );
+      await tester.ensureVisible(find.text('Remove second direction'));
       await tester.tap(find.text('Remove second direction'));
       expect(enabled, isFalse);
     });
@@ -236,6 +241,7 @@ void main() {
     testWidgets('Cancel is always enabled and fires onCancel', (tester) async {
       var cancelled = false;
       await tester.pumpWidget(harness(onCancel: () => cancelled = true));
+      await tester.ensureVisible(find.widgetWithText(TextButton, 'Cancel'));
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       expect(cancelled, isTrue);
     });
@@ -406,6 +412,7 @@ void main() {
     testWidgets('tapping "Merge into One Body" fires onMergeChanged with fuseIntoOne', (tester) async {
       MergeMode? changedTo;
       await tester.pumpWidget(harness(onMergeChanged: (m) => changedTo = m));
+      await tester.ensureVisible(find.text('Merge into One Body'));
       await tester.tap(find.text('Merge into One Body'));
       expect(changedTo, MergeMode.fuseIntoOne);
     });
@@ -413,6 +420,72 @@ void main() {
     testWidgets('is shown in Circular mode too', (tester) async {
       await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
       expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
+    });
+  });
+
+  group('PatternPanel drag-to-resize handle', () {
+    testWidgets('is present at the top of the panel', (tester) async {
+      await tester.pumpWidget(harness());
+      expect(find.byKey(const Key('patternPanelDragHandle')), findsOneWidget);
+      expect(find.byKey(const Key('patternPanelResizableArea')), findsOneWidget);
+    });
+
+    testWidgets('dragging the handle up extends the panel (grows its height)', (tester) async {
+      await tester.pumpWidget(harness());
+      final before = tester.getSize(find.byKey(const Key('patternPanelResizableArea')));
+
+      await tester.drag(find.byKey(const Key('patternPanelDragHandle')), const Offset(0, -150));
+      await tester.pump();
+
+      final after = tester.getSize(find.byKey(const Key('patternPanelResizableArea')));
+      expect(after.height, greaterThan(before.height));
+    });
+
+    testWidgets('dragging the handle down retracts the panel (shrinks its height)', (tester) async {
+      await tester.pumpWidget(harness());
+      final before = tester.getSize(find.byKey(const Key('patternPanelResizableArea')));
+
+      await tester.drag(find.byKey(const Key('patternPanelDragHandle')), const Offset(0, 150));
+      await tester.pump();
+
+      final after = tester.getSize(find.byKey(const Key('patternPanelResizableArea')));
+      expect(after.height, lessThan(before.height));
+    });
+
+    testWidgets('the panel height never drags below the minimum fraction', (tester) async {
+      await tester.pumpWidget(harness());
+      // A wildly oversized downward drag should still clamp, not shrink
+      // to zero or throw.
+      await tester.drag(find.byKey(const Key('patternPanelDragHandle')), const Offset(0, 5000));
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      final after = tester.getSize(find.byKey(const Key('patternPanelResizableArea')));
+      expect(after.height, greaterThan(0));
+    });
+
+    testWidgets('the panel height never extends past the maximum fraction', (tester) async {
+      await tester.pumpWidget(harness());
+      // A wildly oversized upward drag should still clamp, not overflow
+      // past the available viewport height or throw.
+      await tester.drag(find.byKey(const Key('patternPanelDragHandle')), const Offset(0, -5000));
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      final after = tester.getSize(find.byKey(const Key('patternPanelResizableArea')));
+      final screenHeight = tester.view.physicalSize.height / tester.view.devicePixelRatio;
+      expect(after.height, lessThan(screenHeight));
+    });
+
+    testWidgets('the panel content remains scrollable when retracted', (tester) async {
+      // A tall configuration (second direction enabled) retracted to a
+      // small height must still let Confirm be reached via scrolling,
+      // not leave it permanently unreachable.
+      await tester.pumpWidget(harness(hasDirection1: true, hasSecondDirection: true, hasDirection2: true));
+      await tester.drag(find.byKey(const Key('patternPanelDragHandle')), const Offset(0, 150));
+      await tester.pump();
+
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+      expect(find.widgetWithText(FilledButton, 'Confirm'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }

@@ -179,6 +179,24 @@ class PatternPanel extends StatefulWidget {
 }
 
 class _PatternPanelState extends State<PatternPanel> {
+  /// On-device feedback: this panel's content (two direction sections,
+  /// each with count/spacing/reverse, plus the merge toggle) can run
+  /// taller than the available screen height on a short/landscape
+  /// viewport - previously the panel simply grew to fit its content with
+  /// no bound, so the [SingleChildScrollView] below never actually had
+  /// anything to scroll *within* (an unbounded scroll view just sizes to
+  /// its child), and Confirm/Cancel could end up pushed off-screen with
+  /// no way to reach them. This panel is now given an explicit, resizable
+  /// height instead - [_heightFraction] (a fraction of the available
+  /// viewport height, mirrors `FeatureTreePanel._widthFraction`'s own
+  /// drag-to-resize convention, just vertical instead of horizontal) -
+  /// so the scroll view is genuinely bounded and [_buildDragHandle] lets
+  /// the user pull it up to extend or push it down to retract.
+  double _heightFraction = _defaultHeightFraction;
+  static const double _defaultHeightFraction = 0.5;
+  static const double _minHeightFraction = 0.25;
+  static const double _maxHeightFraction = 0.85;
+
   late final TextEditingController _count1Controller;
   late final TextEditingController _spacing1Controller;
   late final TextEditingController _count2Controller;
@@ -514,57 +532,118 @@ class _PatternPanelState extends State<PatternPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 12),
-                  if (widget.canChangeMode)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: SegmentedButton<PatternMode>(
-                        segments: const [
-                          ButtonSegment(value: PatternMode.rectangular, label: Text('Rectangular')),
-                          ButtonSegment(value: PatternMode.circular, label: Text('Circular')),
-                        ],
-                        selected: {widget.mode},
-                        onSelectionChanged: (selection) => widget.onModeChanged(selection.first),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final totalHeight = constraints.maxHeight;
+        final panelHeight = (_heightFraction * totalHeight).clamp(
+          _minHeightFraction * totalHeight,
+          _maxHeightFraction * totalHeight,
+        );
+        return Align(
+          alignment: Alignment.bottomCenter,
+          child: SafeArea(
+            top: false,
+            child: SizedBox(
+              key: const Key('patternPanelResizableArea'),
+              height: panelHeight,
+              child: Material(
+                elevation: 4,
+                borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildDragHandle(totalHeight),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                              const SizedBox(height: 12),
+                              if (widget.canChangeMode)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: SegmentedButton<PatternMode>(
+                                    segments: const [
+                                      ButtonSegment(value: PatternMode.rectangular, label: Text('Rectangular')),
+                                      ButtonSegment(value: PatternMode.circular, label: Text('Circular')),
+                                    ],
+                                    selected: {widget.mode},
+                                    onSelectionChanged: (selection) => widget.onModeChanged(selection.first),
+                                  ),
+                                ),
+                              if (widget.mode == PatternMode.circular) _circularFields() else _rectangularFields(),
+                              const SizedBox(height: 12),
+                              SegmentedButton<MergeMode>(
+                                segments: const [
+                                  ButtonSegment(value: MergeMode.keepSeparate, label: Text('Keep Separate')),
+                                  ButtonSegment(value: MergeMode.fuseIntoOne, label: Text('Merge into One Body')),
+                                ],
+                                selected: {widget.merge},
+                                onSelectionChanged: (selection) => widget.onMergeChanged(selection.first),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
+                                  const SizedBox(width: 8),
+                                  FilledButton(
+                                    onPressed: _canConfirm ? widget.onConfirm : null,
+                                    child: const Text('Confirm'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
-                  if (widget.mode == PatternMode.circular) _circularFields() else _rectangularFields(),
-                  const SizedBox(height: 12),
-                  SegmentedButton<MergeMode>(
-                    segments: const [
-                      ButtonSegment(value: MergeMode.keepSeparate, label: Text('Keep Separate')),
-                      ButtonSegment(value: MergeMode.fuseIntoOne, label: Text('Merge into One Body')),
-                    ],
-                    selected: {widget.merge},
-                    onSelectionChanged: (selection) => widget.onMergeChanged(selection.first),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: _canConfirm ? widget.onConfirm : null,
-                        child: const Text('Confirm'),
-                      ),
-                    ],
-                  ),
-                ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// The top-edge resize grip - mirrors `FeatureTreePanel._buildDragHandle`'s
+  /// own drag-to-resize convention (a generous, mostly-invisible hit target
+  /// around a slim visible pill), adapted from horizontal to vertical:
+  /// dragging up (negative `dy`) extends the panel, dragging down retracts
+  /// it, clamped to [_minHeightFraction]/[_maxHeightFraction] so it can
+  /// never be dragged down to unusable or up past covering the whole
+  /// viewport.
+  Widget _buildDragHandle(double totalHeight) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeUpDown,
+      child: GestureDetector(
+        key: const Key('patternPanelDragHandle'),
+        behavior: HitTestBehavior.translucent,
+        onVerticalDragUpdate: (details) {
+          if (totalHeight <= 0) return;
+          setState(() {
+            _heightFraction = (_heightFraction - details.delta.dy / totalHeight).clamp(
+              _minHeightFraction,
+              _maxHeightFraction,
+            );
+          });
+        },
+        child: SizedBox(
+          height: 20,
+          width: double.infinity,
+          child: Center(
+            child: Container(
+              width: 56,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.outlineVariant,
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
           ),
