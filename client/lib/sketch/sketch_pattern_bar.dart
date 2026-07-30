@@ -255,14 +255,22 @@ class _PatternValueBarContentState extends State<_PatternValueBarContent> {
           ],
         ),
         const SizedBox(height: 4),
+        // Bug fix (on-device feedback: "the text input lines for count and
+        // spacing are miss aligned"): Count used a floating `labelText`
+        // (which reserves extra space above the input and shifts its own
+        // text down to make room) while Spacing used only a `hintText`
+        // (placeholder text sitting right at the top, no reserved space) -
+        // two different field heights/text baselines side by side in the
+        // same Row. Matches `PatternPanel`'s own Count/Spacing fields
+        // exactly now: both `labelText`-only, both `Expanded` rather than a
+        // fixed width, no `isDense`/`hintText`/`suffixText`.
         Row(
           children: [
-            SizedBox(
-              width: 90,
+            Expanded(
               child: TextField(
                 controller: countText,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(isDense: true, labelText: 'Count'),
+                decoration: const InputDecoration(labelText: 'Count'),
                 onChanged: (value) {
                   final count = int.tryParse(value);
                   if (count != null) onCount(count);
@@ -270,12 +278,11 @@ class _PatternValueBarContentState extends State<_PatternValueBarContent> {
               ),
             ),
             const SizedBox(width: 8),
-            SizedBox(
-              width: 110,
+            Expanded(
               child: TextField(
                 controller: spacingText,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                decoration: const InputDecoration(isDense: true, hintText: 'Spacing', suffixText: 'mm'),
+                decoration: const InputDecoration(labelText: 'Spacing'),
                 onChanged: (value) => onSpacing(double.tryParse(value)),
               ),
             ),

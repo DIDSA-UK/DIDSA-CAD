@@ -9960,6 +9960,64 @@ void main() {
       expect(freshBackend.requestLog.any((r) => r.startsWith('DELETE') && r.contains('pattern-instances')), isTrue);
     });
 
+    test(
+        'on-device feedback fix ("dynamic highlight isn\'t working"): hoveredEntity now previews a '
+        'committed pattern instance in Select mode, matching what a tap there actually selects', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+      freshController.setPatternSpacing1(5.0);
+      freshController.setPatternCount1(3);
+      await freshController.confirmPatternMirrorPreview();
+      final instanceId = freshController.patternInstances.keys.single;
+
+      freshController.exitToSelectMode();
+      expect(freshController.mode, SketchMode.select);
+
+      // Copy index 2 (offset 10) spans x:10..20 - clear of the real source
+      // Line (x:0..10) and of copy index 1 (x:5..15)'s own endpoints, so
+      // this can only ever resolve via the Pattern/Mirror fallback, never
+      // real geometry.
+      freshController.cursorX = 17;
+      freshController.cursorY = 0;
+      final hovered = freshController.hoveredEntity();
+      expect(hovered?.kind, SelectionKind.patternInstance);
+      expect(hovered?.id, instanceId);
+
+      // The same spot's own owning-instance ghosts (what the canvas would
+      // now redraw with hover emphasis) - non-empty for the real instance,
+      // empty for a bogus one that happens to have no ghosts of its own.
+      expect(freshController.patternMirrorGhostsForInstance(instanceId), isNotEmpty);
+      expect(freshController.patternMirrorGhostsForInstance('no-such-instance'), isEmpty);
+
+      await freshController.handleCanvasTap(17, 0);
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.patternInstance);
+      expect(freshController.selectionSet.single.id, instanceId);
+    });
+
+    test(
+        'hoveredEntity does not preview a Pattern/Mirror instance outside Select/Dimension mode - a synthetic '
+        'copy is never itself pickable as another Pattern\'s own source', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+      freshController.setPatternSpacing1(5.0);
+      freshController.setPatternCount1(3);
+      await freshController.confirmPatternMirrorPreview();
+
+      // Still in SketchMode.pattern (confirming doesn't itself exit to
+      // Select) - picking a *new* pattern's own sources here.
+      expect(freshController.mode, SketchMode.pattern);
+      freshController.cursorX = 17;
+      freshController.cursorY = 0;
+      expect(freshController.hoveredEntity(), isNull);
+    });
+
     test('confirmPatternMirrorPreview for Mirror creates a mirror instance and supports undo', () async {
       final freshBackend = _FakeBackend();
       freshBackend.seedSketch('sketch-mirror-1', 'origin-mirror-1');

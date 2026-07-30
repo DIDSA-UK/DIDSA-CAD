@@ -3016,10 +3016,29 @@ class SketchController extends ChangeNotifier {
   /// [pixelsPerUnit] (as every existing unit test does, since none of them
   /// models a real zoom level) falls back to the flat [snapRadius],
   /// matching those tests' existing expectations unchanged.
+  ///
+  /// Bug fix (on-device feedback: "patterned curves/lines are still not
+  /// selectable, dynamic highlight isn't working" / "mis-assignment
+  /// between hit box for dynamic highlight and select"): this used to stop
+  /// at [_entityAt] - it never consulted [_patternMirrorEntityAt] the way
+  /// [_resolveSelectableAt] (the actual tap-resolution this is meant to
+  /// preview) already does, so hovering a Pattern/Mirror instance's own
+  /// derived copy in Select/Dimension mode always previewed nothing even
+  /// though tapping it there genuinely did select it - the exact
+  /// highlight-vs-select mismatch reported. Mirrors [_resolveSelectableAt]'s
+  /// own fallback order and mode gate exactly (real geometry always wins;
+  /// a synthetic copy is only ever a fallback, and only in the two modes
+  /// that actually resolve one via [_resolveSelectableAt] in the first
+  /// place - every other mode's own tap handler calls bare [_entityAt]
+  /// directly, with no such fallback, so hovering shouldn't preview one
+  /// there either).
   SketchSelection? hoveredEntity([double? pixelsPerUnit]) {
     if (_mode == SketchMode.draw || !isIdle) return null;
     final radius = pixelsPerUnit == null ? snapRadius : hitRadiusForPixelsPerUnit(pixelsPerUnit);
-    return _entityAt(cursorX, cursorY, radius, includeOrigin: true);
+    final direct = _entityAt(cursorX, cursorY, radius, includeOrigin: true);
+    if (direct != null) return direct;
+    if (_mode != SketchMode.select && _mode != SketchMode.dimension) return null;
+    return _patternMirrorEntityAt(cursorX, cursorY, radius);
   }
 
   Timer? _centerRevealHideTimer;
@@ -8834,6 +8853,30 @@ class SketchController extends ChangeNotifier {
       ]);
     }
     return ghosts;
+  }
+
+  /// [patternMirrorGhosts]' own subset for exactly one committed instance
+  /// ([instanceId]) - unlike that flat list, which carries no id at all
+  /// (its whole point is being a plain, already-mixed bag ready to render),
+  /// this is what a hover/selected-instance highlight needs: something to
+  /// key a *different* paint color off. Bug fix (on-device feedback:
+  /// "patterned curves/lines are still not selectable, dynamic highlight
+  /// isn't working"): `sketch_canvas.dart`'s own ghost painter used to
+  /// always draw every committed instance's own derived copies in the
+  /// exact same plain ghost color, with zero awareness of
+  /// [hoveredEntity]/[selectionSet] at all - unlike every real Line/Circle/
+  /// Arc's own paint loop, which already checks both. So even once a
+  /// Pattern/Mirror instance genuinely was selected (`selectionSet` held a
+  /// real [SelectionKind.patternInstance]/[SelectionKind.mirrorInstance]
+  /// entry), nothing on screen ever showed it - indistinguishable from "the
+  /// tap did nothing at all" from the user's own point of view.
+  List<DrawGhost> patternMirrorGhostsForInstance(String instanceId) {
+    final committed = committedPatternMirrorExpansion;
+    return [
+      for (final entity in committed.entities)
+        if (entity.ownerInstanceId == instanceId)
+          if (_ghostForExpandedEntity(committed, entity) case final ghost?) ghost,
+    ];
   }
 
   /// Distance from `(x, y)` to [entity]'s own current (real-geometry-

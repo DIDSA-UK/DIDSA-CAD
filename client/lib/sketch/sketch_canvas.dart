@@ -3317,12 +3317,44 @@ class _SketchPainter extends CustomPainter {
   /// in every mode - it also covers already-committed instances, not just a
   /// live in-progress one - so it's called unconditionally, not gated on
   /// [SketchMode.pattern].
+  ///
+  /// Bug fix (on-device feedback: "patterned curves/lines are still not
+  /// selectable, dynamic highlight isn't working"): every committed
+  /// instance's own derived copies used to paint in this one flat
+  /// [_drawGhostColor], with no hover/selected styling at all - unlike
+  /// every real Line/Circle/Arc's own paint loop below, which already
+  /// checks both. A hovered or selected instance's own copies are now
+  /// redrawn on top in [_hoverColor]/[_selectedColor] (selected wins if
+  /// somehow both - can't actually happen, since a fresh hover always
+  /// clears once something is tapped-selected), the same emphasis colors
+  /// and [_lineStrokeWidthEmphasis] every other entity kind already uses -
+  /// see [SketchController.patternMirrorGhostsForInstance]'s own doc
+  /// comment for why this needs a second, id-keyed query rather than just
+  /// filtering [patternMirrorGhosts] itself (that flat list carries no id).
   void _paintPatternMirrorGhosts(Canvas canvas) {
     final paint = Paint()
       ..color = _drawGhostColor
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke;
     _paintLineCircleArcGhosts(canvas, controller.patternMirrorGhosts, paint);
+
+    final hovered = controller.hoveredEntity(transform.pixelsPerUnit);
+    final hoveredInstanceId = (hovered != null &&
+            (hovered.kind == SelectionKind.patternInstance || hovered.kind == SelectionKind.mirrorInstance))
+        ? hovered.id
+        : null;
+    final selectedInstanceIds = {
+      for (final s in controller.selectionSet)
+        if (s.kind == SelectionKind.patternInstance || s.kind == SelectionKind.mirrorInstance) s.id,
+    };
+    final highlightInstanceIds = {if (hoveredInstanceId != null) hoveredInstanceId, ...selectedInstanceIds};
+    for (final instanceId in highlightInstanceIds) {
+      final highlightPaint = Paint()
+        ..color = selectedInstanceIds.contains(instanceId) ? _selectedColor : _hoverColor
+        ..strokeWidth = _lineStrokeWidthEmphasis
+        ..style = PaintingStyle.stroke;
+      _paintLineCircleArcGhosts(canvas, controller.patternMirrorGhostsForInstance(instanceId), highlightPaint);
+    }
   }
 
   void _paintLineCircleArcGhosts(Canvas canvas, List<DrawGhost> ghosts, Paint paint) {
