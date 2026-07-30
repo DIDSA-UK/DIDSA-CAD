@@ -34,6 +34,7 @@ import 'override_stack.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
 import 'pattern_panel.dart';
+import 'picker_ribbon.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
@@ -494,14 +495,15 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectionMode = !_selectionMode);
   }
 
-  /// Whether the top-left hamburger/feature-tree FAB column (and, since
-  /// the on-device "move the select/orbit fab" fix, the top-right
-  /// selection-mode FAB it moved to) should currently show at all - the
-  /// exact same set of "something else owns this corner/needs the whole
-  /// screen right now" modes the top-left column's own `if` already
-  /// gated on before that fab moved out of it, now shared so both FABs
-  /// hide/show in lockstep rather than the moved one needing its own,
-  /// possibly-drifting copy of this condition.
+  /// Whether the top-left hamburger/feature-tree FAB column should
+  /// currently show at all - "something else owns this corner/needs the
+  /// whole screen right now" modes. On-device feedback ("I do want
+  /// select/orbit-mode switching available while a tool panel is open"):
+  /// the top-right selection-mode FAB used to share this exact condition
+  /// (from when it first moved to that corner) but now has its own,
+  /// deliberately less restrictive [_selectionModeFabVisible] instead - the
+  /// two corners can genuinely disagree now, so this is no longer a
+  /// "shared by both" condition, just the left column's own.
   bool get _viewportFabColumnsVisible =>
       !_featureTreeVisible &&
       !_planeSelectionMode &&
@@ -516,6 +518,48 @@ class _PartScreenState extends State<PartScreen> {
       !_patternActive &&
       !_profilePickerActive &&
       !_pathPickerActive;
+
+  /// Whether [FeatureTreePanel] is actually on screen right now - true
+  /// [_featureTreeVisible] alone is not enough, since that flag stays
+  /// true even while a tool session forces the panel itself hidden (see
+  /// [FeatureTreePanel.visible]'s own call site, which uses this exact
+  /// condition) - a stale true left over from opening the tree *before*
+  /// starting a tool must not itself hide anything.
+  bool get _featureTreePanelVisible =>
+      (_featureTreeVisible &&
+          !_extrudeActive &&
+          !_createPlaneActive &&
+          !_filletActive &&
+          !_chamferActive &&
+          !_revolveActive &&
+          !_sweepActive &&
+          !_mirrorActive &&
+          !_patternActive &&
+          !_profilePickerActive &&
+          !_pathPickerActive) ||
+      // Pattern/Mirror scoping's Phase 6: the Build Tree multi-select
+      // Feature picker overrides every other visibility rule above - it's
+      // opened from inside an already-active Mirror/Pattern panel, which
+      // the `!_mirrorActive`/`!_patternActive` guards above would
+      // otherwise keep this hidden for.
+      _sourceFeaturePickerTarget != null;
+
+  /// On-device feedback ("I do want select/orbit-mode switching available
+  /// while a tool panel is open"): deliberately a separate, wider-open
+  /// condition from [_viewportFabColumnsVisible] - unlike the hamburger/
+  /// feature-tree column (which genuinely can't coexist with a tool panel;
+  /// opening either one mid-flow would abandon whatever's in progress),
+  /// toggling orbit vs selection is just about which gesture set the
+  /// viewport dispatches to and stays meaningful throughout every tool's
+  /// own picking/preview session - a user reorienting the camera to see
+  /// what they're about to pick is exactly the case this FAB exists for.
+  /// Still hidden while [_featureTreePanelVisible] (the tree, not the
+  /// viewport, is the thing being interacted with) or
+  /// [_confirmingSketchOrientation] (that step already forces orbit mode
+  /// for its own duration - see [_addSketchFeature]'s own doc comment - so
+  /// the toggle would be both redundant and misleadingly implying a choice
+  /// that isn't actually available).
+  bool get _selectionModeFabVisible => !_featureTreePanelVisible && !_confirmingSketchOrientation;
 
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
@@ -7658,10 +7702,14 @@ class _PartScreenState extends State<PartScreen> {
                 // view button exactly; `top: 56` sits directly under it (its
                 // 40px `FloatingActionButton.small`/`IconButton.filled`
                 // height + an 8px gap, the same gap this Column's other
-                // FABs already use) - shares [_viewportFabColumnsVisible]
-                // with the top-left hamburger/feature-tree column so both
-                // hide/show together, same as before the move.
-                if (_viewportFabColumnsVisible)
+                // FABs already use). On-device feedback ("I do want select/
+                // orbit-mode switching available while a tool panel is
+                // open"): uses its own, deliberately wider-open
+                // [_selectionModeFabVisible] rather than sharing
+                // [_viewportFabColumnsVisible] with the top-left hamburger/
+                // feature-tree column - see that getter's own doc comment
+                // for why the two corners now genuinely differ.
+                if (_selectionModeFabVisible)
                   Positioned(
                     top: 56,
                     right: 8,
@@ -7760,24 +7808,7 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 Positioned.fill(
                   child: FeatureTreePanel(
-                    visible: (_featureTreeVisible &&
-                            !_extrudeActive &&
-                            !_createPlaneActive &&
-                            !_filletActive &&
-                            !_chamferActive &&
-                            !_revolveActive &&
-                            !_sweepActive &&
-                            !_mirrorActive &&
-                            !_patternActive &&
-                            !_profilePickerActive &&
-                            !_pathPickerActive) ||
-                        // Pattern/Mirror scoping's Phase 6: the Build Tree
-                        // multi-select Feature picker overrides every other
-                        // visibility rule above - it's opened from inside an
-                        // already-active Mirror/Pattern panel, which the
-                        // `!_mirrorActive`/`!_patternActive` guards above
-                        // would otherwise keep this hidden for.
-                        _sourceFeaturePickerTarget != null,
+                    visible: _featureTreePanelVisible,
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -7869,6 +7900,7 @@ class _PartScreenState extends State<PartScreen> {
                     child: ExtrudePanel(
                       key: ValueKey(_editingExtrudeFeatureId ?? _extrudeSketchFeature!.id),
                       title: _editingExtrudeFeatureId != null ? 'Edit Extrude' : 'Extrude',
+                      tooltip: _targetBodyPickerBannerText(),
                       initialType: _extrudeType,
                       initialStartDistance: _extrudeStartDistance,
                       initialEndDistance: _extrudeEndDistance,
@@ -7895,6 +7927,7 @@ class _PartScreenState extends State<PartScreen> {
                     child: FilletPanel(
                       key: ValueKey(_editingFilletFeatureId ?? _previewFilletFeatureId),
                       title: _editingFilletFeatureId != null ? 'Edit Fillet' : 'Fillet',
+                      tooltip: _previewFilletFeatureId == null ? 'Select edges (or a face) to fillet' : null,
                       initialRadius: _filletRadius,
                       onRadiusChanged: _onFilletRadiusChanged,
                       onConfirm: _confirmFillet,
@@ -7906,6 +7939,7 @@ class _PartScreenState extends State<PartScreen> {
                     child: ChamferPanel(
                       key: ValueKey(_editingChamferFeatureId ?? _previewChamferFeatureId),
                       title: _editingChamferFeatureId != null ? 'Edit Chamfer' : 'Chamfer',
+                      tooltip: _previewChamferFeatureId == null ? 'Select edges (or a face) to chamfer' : null,
                       initialDistance: _chamferDistance,
                       onDistanceChanged: _onChamferDistanceChanged,
                       onConfirm: _confirmChamfer,
@@ -7913,17 +7947,17 @@ class _PartScreenState extends State<PartScreen> {
                     ),
                   ),
                 // [MirrorPanel] itself only ever handles the `pickingPlane`
-                // step - `pickingBodies` has no bottom panel of its own,
-                // just the top banner + confirm FAB just below (mirroring
-                // the profile/path picker's own shape). Also hidden while a
-                // Phase 6 source-Feature-picker session (opened from inside
-                // this very panel) has the Build Tree up instead.
+                // step - `pickingBodies` has its own [PickerRibbon] instead
+                // (see above). Also hidden while a Phase 6 source-Feature-
+                // picker session (opened from inside this very panel) has
+                // the Build Tree up instead.
                 if (_mirrorStep == _MirrorStep.pickingPlane &&
                     _sourceFeaturePickerTarget != _SourceFeaturePickerTarget.mirror)
                   Positioned.fill(
                     child: MirrorPanel(
                       key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyIds?.join(',')),
                       title: _editingMirrorFeatureId != null ? 'Edit Mirror' : 'Mirror',
+                      tooltip: _previewMirrorFeatureId == null ? 'Select Mirror Plane or Face' : null,
                       hasPlanePicked: _mirrorPlaneEntity != null,
                       merge: _mirrorMerge,
                       onMergeChanged: _setMirrorMerge,
@@ -7959,6 +7993,11 @@ class _PartScreenState extends State<PartScreen> {
                         '$_patternMode-$_patternHasSecondDirection',
                       ),
                       title: _editingPatternFeatureId != null ? 'Edit Pattern' : 'Pattern',
+                      tooltip: _previewPatternFeatureId == null
+                          ? (_patternMode == PatternMode.circular
+                              ? 'Select an Edge, a Cylindrical Face, or a Sketch Line for the Axis'
+                              : 'Select an Edge, a Sketch Line, or a Fixed Axis for Direction')
+                          : null,
                       mode: _patternMode,
                       // Pattern/Mirror scoping Phase 4: `pattern_type` is
                       // never revised via PATCH (switching Rectangular <->
@@ -8012,6 +8051,7 @@ class _PartScreenState extends State<PartScreen> {
                     child: RevolvePanel(
                       key: ValueKey(_editingRevolveFeatureId ?? _revolveSketchFeature!.id),
                       title: _editingRevolveFeatureId != null ? 'Edit Revolve' : 'Revolve',
+                      tooltip: _revolvePickerBannerText(),
                       initialMode: _revolveMode,
                       initialAngle: _revolveAngle,
                       hasAxis: _revolveAxisEntity != null,
@@ -8026,6 +8066,7 @@ class _PartScreenState extends State<PartScreen> {
                     child: SweepPanel(
                       key: ValueKey(_editingSweepFeatureId ?? _sweepSketchFeature!.id),
                       title: _editingSweepFeatureId != null ? 'Edit Sweep' : 'Sweep',
+                      tooltip: _sweepPickerBannerText(),
                       initialMode: _sweepMode,
                       pathSegmentCount: _sweepPathRefs.length,
                       pathIsClosed: _sweepPathIsClosed(),
@@ -8035,187 +8076,34 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelSweep,
                     ),
                   ),
-                // Prompt A4: names the target-body picking mode live for the
-                // whole time the Extrude panel is open - same top-center
-                // pill convention as the plane-selection-mode banner below,
-                // since both are "pick something in the viewport, Cancel to
-                // back out" modes; unlike that one this doesn't need to
-                // check `!_featureTreeVisible`, since the tree is already
-                // forced hidden while the panel is open (see
-                // `FeatureTreePanel.visible` above). Bug fix: the text is
-                // long enough to overflow a plain unconstrained `Row` (the
-                // plane-selection banner's short fixed string never hit
-                // this) - `ConstrainedBox` caps the pill to the available
-                // width and `Flexible` lets the text wrap onto a second
-                // line instead of running off the right edge.
-                if (_extrudeActive)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _targetBodyPickerBannerText(),
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelExtrude,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                // Prompt F: mirrors the Extrude banner directly above exactly,
-                // substituting Revolve's own axis-plus-target-body banner
-                // text and Cancel callback.
-                if (_revolveActive)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _revolvePickerBannerText(),
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelRevolve,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                // Mirrors the Revolve banner directly above exactly,
-                // substituting Sweep's own target-body-only banner text
-                // (its path is already fixed by the time this panel shows -
-                // see [_sweepPickerBannerText]'s own doc comment) and Cancel
-                // callback.
-                if (_sweepActive)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _sweepPickerBannerText(),
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelSweep,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                // Names the path-picking mode live - same top-center pill
-                // convention as the plane-selection-mode/target-body-picking
-                // banners above. Tap a line to extend the path (or the most
-                // recently picked one again to undo it); the checkmark FAB
-                // (see floatingActionButton below) confirms once at least one
-                // segment is picked and opens SweepPanel.
+                // On-device feedback ("the tooltip at the top of the screen
+                // blocks the FABs to recentre and to switch between select/
+                // orbit"): this used to be a separate full-width banner
+                // floating at `top: 8` here, on top of the viewport's own
+                // corner FABs - see [ResizableToolPanel]'s own doc comment.
+                // [ExtrudePanel] now shows this same text in its own title
+                // row via its `tooltip` param instead.
+                // [RevolvePanel]/[SweepPanel] now show this same "Extrude
+                // banner" fix's text in their own title rows via their
+                // `tooltip` param - see the comment just above where the
+                // Extrude banner used to be.
+                // Names the path-picking mode live - on-device feedback
+                // ("the tooltip at the top of the screen blocks the FABs"):
+                // this used to be a separate full-width banner floating at
+                // `top: 8`, on top of the viewport's own corner FABs - now a
+                // bottom [PickerRibbon] instead, same shape every other
+                // tool's own bottom-sheet panel already uses (see
+                // [ResizableToolPanel]'s own doc comment) - the confirm
+                // checkmark that used to live in `floatingActionButton`
+                // below moves into the ribbon's own `onConfirm`.
                 if (_pathPickerActive)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _pathPickerBannerText(),
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelPathPicker,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Path',
+                      tooltip: _pathPickerBannerText(),
+                      onCancel: _cancelPathPicker,
+                      showConfirm: true,
+                      onConfirm: _busy || _pathPickerRefs.isEmpty ? null : _confirmPathPicker,
                     ),
                   ),
                 // Prompt G: names the profile-picking mode live - same
@@ -8224,45 +8112,15 @@ class _PartScreenState extends State<PartScreen> {
                 // toggle its whole loop; the checkmark FAB (see floatingActionButton
                 // below) confirms and opens the target panel.
                 if (_profilePickerActive)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _profilePickedCount() == 0
-                                          ? 'Tap profiles to include, or confirm to use all'
-                                          : '${_profilePickedCount()} profile(s) selected - tap '
-                                              'checkmark to confirm',
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelProfilePicker,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Profile',
+                      tooltip: _profilePickedCount() == 0
+                          ? 'Tap profiles to include, or confirm to use all'
+                          : '${_profilePickedCount()} profile(s) selected - tap checkmark to confirm',
+                      onCancel: _cancelProfilePicker,
+                      showConfirm: true,
+                      onConfirm: _busy ? null : _confirmProfilePicker,
                     ),
                   ),
                 // Always on top (last in the Stack) so it stays tappable
@@ -8334,34 +8192,16 @@ class _PartScreenState extends State<PartScreen> {
                 // Stage 10b: shown only while choosing a plane for a new
                 // Sketch via the "Add" FAB's flyout - names the mode and
                 // offers an explicit Cancel alongside the back-gesture
-                // handling in [build].
+                // handling in [build]. On-device feedback ("the tooltip at
+                // the top of the screen blocks the FABs"): moved from a
+                // full-width `top: 8` banner into a bottom [PickerRibbon] -
+                // no confirm button, tapping a plane advances immediately.
                 if (_planeSelectionMode)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Tap a reference plane for the new sketch'),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelPlaneSelectionMode,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'New Sketch',
+                      tooltip: 'Tap a reference plane for the new sketch',
+                      onCancel: _cancelPlaneSelectionMode,
                     ),
                   ),
                 // On-device feedback: the orientation confirm step's
@@ -8451,267 +8291,63 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
-                // On-device feedback: shown while [_filletActive] but no
-                // FilletFeature exists yet ([_openFilletPanel] opened with
-                // no edges - the "Add" FAB's guided entry, see
-                // [_startFilletPicker]) - same shape as the plane-selection
-                // banner just above. [FilletPanel] itself is already open
-                // underneath this (see [_openFilletPanel]'s own doc comment
-                // for why it opens immediately rather than waiting for a
-                // separate pick-then-confirm step); Cancel here is the same
-                // [_cancelFillet] the panel's own Cancel button uses - both
-                // are a no-op past the "restore selection, close" step since
-                // nothing was ever created to delete.
-                if (_filletActive && _previewFilletFeatureId == null)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Select edges (or a face) to fillet'),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelFillet,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                // Mirrors the Fillet banner directly above exactly, for
-                // Chamfer's own guided "Add" FAB entry.
-                if (_chamferActive && _previewChamferFeatureId == null)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Select edges (or a face) to chamfer'),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelChamfer,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                // On-device feedback ("the tooltip at the top of the screen
+                // blocks the FABs"): the guided-entry "select edges (or a
+                // face)" banners for Fillet/Chamfer used to float here at
+                // `top: 8` - [FilletPanel]/[ChamferPanel] now show that same
+                // text in their own title rows via their `tooltip` param
+                // instead (null once an edge is picked).
                 // Pattern/Mirror scoping's Phase 1 guided "Add" FAB entry
                 // (`_startMirrorPicker`): shown for the whole `pickingBodies`
-                // step - same top-center pill convention as the Fillet/
-                // Chamfer banners above, but Cancel-only here too since
-                // confirming is the checkmark FAB below (mirrors the
-                // profile/path picker's own "Cancel in the banner, confirm
-                // via the FAB" split, needed because Mirror's Bodies aren't
-                // committed to anything until this step's own confirm -
-                // unlike Fillet/Chamfer, where every edge tap already lives
-                // straight in the one FilletFeature/ChamferFeature being
-                // built).
+                // step. On-device feedback ("the tooltip at the top of the
+                // screen blocks the FABs"): moved from a full-width `top: 8`
+                // banner into a bottom [PickerRibbon] - Mirror's Bodies
+                // aren't committed to anything until this step's own
+                // confirm (unlike Fillet/Chamfer, where every edge tap
+                // already lives straight in the one FilletFeature/
+                // ChamferFeature being built), so this still needs its own
+                // confirm button, now the ribbon's `onConfirm` instead of
+                // the separate `floatingActionButton` checkmark below.
                 if (_mirrorStep == _MirrorStep.pickingBodies)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _mirrorPickedBodyCount() == 0
-                                          ? 'Select Body to Mirror'
-                                          : '${_mirrorPickedBodyCount()} body(s) selected - tap '
-                                              'checkmark to confirm',
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelMirror,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                // Shown for the `pickingPlane` step until a plane is
-                // actually picked (mirrors the Fillet/Chamfer banners'
-                // `_previewXFeatureId == null` condition exactly - a plane
-                // pick immediately creates the preview MirrorFeature via
-                // [_scheduleMirrorPreview], so this naturally disappears the
-                // moment one lands). Also shown for [_onMirrorTapped]'s
-                // ambient entry (which skips `pickingBodies` and opens
-                // straight into `pickingPlane`), but never for B4 edit mode
-                // ([_openMirrorPanelForEdit] always seeds
-                // [_previewMirrorFeatureId] immediately, so this never shows
-                // then - matching every other edit flow's own guided-entry-
-                // only banner convention).
-                if (_mirrorStep == _MirrorStep.pickingPlane && _previewMirrorFeatureId == null)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Select Mirror Plane or Face'),
-                                const SizedBox(width: 12),
-                                TextButton(
-                                  onPressed: _cancelMirror,
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Mirror',
+                      tooltip: _mirrorPickedBodyCount() == 0
+                          ? 'Select Body to Mirror'
+                          : '${_mirrorPickedBodyCount()} body(s) selected - tap checkmark to confirm',
+                      onCancel: _cancelMirror,
+                      showConfirm: true,
+                      onConfirm: _busy || _mirrorPickedBodyCount() == 0 ? null : _confirmMirrorBodySelection,
                     ),
                   ),
                 // Pattern/Mirror scoping's Phase 2/6 guided "Add" FAB entry
                 // (`_startPatternPicker`): shown for the whole `pickingBodies`
-                // step - Cancel-only in the banner, confirming via the
-                // checkmark FAB below, mirroring [_MirrorStep.pickingBodies]'s
-                // own identical banner exactly (Phase 6 widened Pattern from
-                // its original single-Body-immediately-advances shape).
+                // step, mirroring [_MirrorStep.pickingBodies]'s own identical
+                // [PickerRibbon] just above exactly (Phase 6 widened Pattern
+                // from its original single-Body-immediately-advances shape
+                // to Mirror's own multi-select-then-confirm one). On-device
+                // feedback ("the tooltip at the top of the screen blocks the
+                // FABs"): moved from a full-width `top: 8` banner into this
+                // bottom [PickerRibbon].
                 if (_patternStep == _PatternStep.pickingBodies)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _patternPickedBodyCount() == 0
-                                          ? 'Select Body to Pattern'
-                                          : '${_patternPickedBodyCount()} body(s) selected - tap '
-                                              'checkmark to confirm',
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelPattern,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Pattern',
+                      tooltip: _patternPickedBodyCount() == 0
+                          ? 'Select Body to Pattern'
+                          : '${_patternPickedBodyCount()} body(s) selected - tap checkmark to confirm',
+                      onCancel: _cancelPattern,
+                      showConfirm: true,
+                      onConfirm:
+                          _busy || _patternPickedBodyCount() == 0 ? null : _confirmPatternBodySelection,
                     ),
                   ),
-                // Shown for the `configuring` step until Direction 1
-                // (Rectangular) or the axis (Circular) is actually picked
-                // (mirrors the Mirror `pickingPlane` banner's own
-                // `_previewXFeatureId == null` condition exactly) - never
-                // shown for [_onPatternTapped]'s ambient entry or B4 edit
-                // mode for the same reasons Mirror's own `pickingPlane`
-                // banner isn't either.
-                if (_patternStep == _PatternStep.configuring && _previewPatternFeatureId == null)
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width - 32,
-                          ),
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(24),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      _patternMode == PatternMode.circular
-                                          ? 'Select an Edge, a Cylindrical Face, or a Sketch Line for the Axis'
-                                          : 'Select an Edge, a Sketch Line, or a Fixed Axis for Direction',
-                                      style: const TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  TextButton(
-                                    onPressed: _cancelPattern,
-                                    child: const Text('Cancel'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                // On-device feedback ("the tooltip at the top of the screen
+                // blocks the FABs"): the "Select an Edge..." guided-entry
+                // banner for `configuring` used to float here at `top: 8` -
+                // [PatternPanel] now shows that same text in its own title
+                // row via its `tooltip` param instead (null once Direction 1/
+                // the axis is picked).
               ],
             ),
           ),
@@ -8761,75 +8397,40 @@ class _PartScreenState extends State<PartScreen> {
                       !_mirrorActive &&
                       !_patternActive &&
                       !_profilePickerActive &&
-                      !_pathPickerActive)
+                      !_pathPickerActive &&
+                      // On-device feedback ("the tooltip at the top of the
+                      // screen blocks the FABs"): plane-selection mode's own
+                      // Cancel used to live in a top banner, nowhere near
+                      // this corner - now it's in a bottom [PickerRibbon]
+                      // (see where `_planeSelectionMode` builds one above),
+                      // which this FAB would otherwise sit directly on top
+                      // of.
+                      !_planeSelectionMode)
                     FloatingActionButton(
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
                       child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
                     ),
-                  // Prompt G: the profile picker's own "confirm" FAB, in the
-                  // Add FAB's place (never both at once, same "one FAB slot"
-                  // convention every other mode here follows) - ticks off
-                  // the currently-picked loops and opens the target panel
-                  // (see [_confirmProfilePicker]).
-                  if (_profilePickerActive)
-                    FloatingActionButton(
-                      heroTag: 'confirm-profile-picker-fab',
-                      tooltip: 'Confirm profile selection',
-                      onPressed: _busy ? null : _confirmProfilePicker,
-                      child: const Icon(Icons.check),
-                    ),
-                  // The path picker's own "confirm" FAB, mirroring the
-                  // profile picker's own directly above - ticks off the
-                  // currently-picked path and opens SweepPanel (see
-                  // [_confirmPathPicker]). Disabled until at least one
-                  // segment is picked, same "requires 1+" rule Cut's own
-                  // target-body picking already enforces elsewhere.
-                  if (_pathPickerActive)
-                    FloatingActionButton(
-                      heroTag: 'confirm-path-picker-fab',
-                      tooltip: 'Confirm path selection',
-                      onPressed: _busy || _pathPickerRefs.isEmpty ? null : _confirmPathPicker,
-                      child: const Icon(Icons.check),
-                    ),
-                  // Pattern/Mirror scoping's Phase 1 `pickingBodies` step's
-                  // own "confirm" FAB, mirroring the profile/path pickers'
-                  // directly above - ticks off the currently-picked
-                  // Body/Bodies and advances to `pickingPlane` (see
-                  // [_confirmMirrorBodySelection]). Disabled until at least
-                  // one Body is picked, same "requires 1+" rule the path
-                  // picker's own FAB enforces just above.
-                  if (_mirrorStep == _MirrorStep.pickingBodies)
-                    FloatingActionButton(
-                      heroTag: 'confirm-mirror-body-picker-fab',
-                      tooltip: 'Confirm body selection',
-                      onPressed: _busy || _mirrorPickedBodyCount() == 0
-                          ? null
-                          : _confirmMirrorBodySelection,
-                      child: const Icon(Icons.check),
-                    ),
-                  // Pattern/Mirror scoping's Phase 2/6 `pickingBodies` step's
-                  // own "confirm" FAB - mirrors [_mirrorStep]'s identical one
-                  // just above exactly (Phase 6 widened Pattern to the same
-                  // multi-select-then-confirm shape Mirror's own Phase 1
-                  // revision already established).
-                  if (_patternStep == _PatternStep.pickingBodies)
-                    FloatingActionButton(
-                      heroTag: 'confirm-pattern-body-picker-fab',
-                      tooltip: 'Confirm body selection',
-                      onPressed: _busy || _patternPickedBodyCount() == 0
-                          ? null
-                          : _confirmPatternBodySelection,
-                      child: const Icon(Icons.check),
-                    ),
+                  // On-device feedback ("the tooltip at the top of the
+                  // screen blocks the FABs"): the profile/path/Mirror-
+                  // body-picker "confirm" FABs that used to live here moved
+                  // into their own [PickerRibbon]'s `onConfirm` instead (see
+                  // where each mode's `Positioned.fill(child: PickerRibbon(
+                  // ...))` is built above) - a bottom ribbon with its own
+                  // Confirm button needs no separate FAB. Pattern's own
+                  // `pickingBodies` `PickerRibbon` (Phase 6) follows the
+                  // identical convention, so it needs no FAB here either.
+                  //
                   // Pattern/Mirror scoping's Phase 6 Build-Tree Feature
-                  // picker's own "confirm" FAB, mirroring the body pickers'
-                  // shape just above - always enabled (an empty selection is
-                  // a legitimate "clear every Feature-tree source" choice,
-                  // unlike a body picker which would leave a Mirror/Pattern
-                  // with zero sources at all if nothing else were already
-                  // picked).
+                  // picker's own "confirm" FAB - unlike the pickers above,
+                  // this session has no bottom ribbon of its own (its own
+                  // banner lives inside [FeatureTreePanel] itself, which
+                  // already occupies the screen), so it keeps a plain FAB.
+                  // Always enabled - an empty selection is a legitimate
+                  // "clear every Feature-tree source" choice, unlike a body
+                  // picker which would leave a Mirror/Pattern with zero
+                  // sources at all if nothing else were already picked.
                   if (_sourceFeaturePickerTarget != null)
                     FloatingActionButton(
                       heroTag: 'confirm-source-feature-picker-fab',

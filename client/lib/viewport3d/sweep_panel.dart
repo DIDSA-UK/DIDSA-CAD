@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
 
 /// The "boss" or "cut" choice for a Sweep - Boss/Cut parity with
@@ -13,8 +14,8 @@ enum SweepMode {
 
   String get apiValue => name;
 
-  static SweepMode fromApiValue(String value) =>
-      SweepMode.values.firstWhere((m) => m.apiValue == value, orElse: () => SweepMode.boss);
+  static SweepMode fromApiValue(String value) => SweepMode.values
+      .firstWhere((m) => m.apiValue == value, orElse: () => SweepMode.boss);
 }
 
 /// The bottom-sheet-style panel [PartScreen] opens for Sweep - structurally
@@ -34,6 +35,12 @@ class SweepPanel extends StatefulWidget {
   /// [PartScreen] opened this to edit an already-existing one instead -
   /// purely a label, same convention as [RevolvePanel.title].
   final String title;
+
+  /// On-device feedback ("the tooltip at the top of the screen blocks the
+  /// FABs"): see [ResizableToolPanel]'s own doc comment - the target-body-
+  /// picking banner text, now shown in the title row instead of a separate
+  /// floating banner.
+  final String? tooltip;
 
   final SweepMode initialMode;
 
@@ -56,6 +63,7 @@ class SweepPanel extends StatefulWidget {
   const SweepPanel({
     super.key,
     this.title = 'Sweep',
+    this.tooltip,
     this.initialMode = SweepMode.boss,
     required this.pathSegmentCount,
     required this.pathIsClosed,
@@ -94,7 +102,8 @@ class _SweepPanelState extends State<SweepPanel> {
   /// path-picking flow that preceded it only ever hands over a confirmed,
   /// resolvable path - see [PartScreen]'s own path-picking state), so there
   /// is no path-validity condition to gate on here.
-  bool get _canConfirm => !(_mode == SweepMode.cut && widget.targetBodyCount == 0);
+  bool get _canConfirm =>
+      !(_mode == SweepMode.cut && widget.targetBodyCount == 0);
 
   void _onModeChanged(SweepMode mode) {
     setState(() => _mode = mode);
@@ -103,81 +112,71 @@ class _SweepPanelState extends State<SweepPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 12),
-                SegmentedButton<SweepMode>(
-                  segments: const [
-                    ButtonSegment(
-                      value: SweepMode.boss,
-                      label: Text('Boss'),
-                      icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
-                    ),
-                    ButtonSegment(
-                      value: SweepMode.cut,
-                      label: Text('Cut'),
-                      icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
-                    ),
-                  ],
-                  selected: {_mode},
-                  onSelectionChanged: (selection) => _onModeChanged(selection.first),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Path: ${widget.pathSegmentCount} segment'
-                  '${widget.pathSegmentCount == 1 ? '' : 's'}, '
-                  '${widget.pathIsClosed ? 'closed' : 'open'}',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 12,
-                  ),
-                ),
-                // Mirrors RevolvePanel's own Cut target-body status line -
-                // picking itself happens in the 3D viewport behind this
-                // panel, driven by PartScreen, not by any field in here.
-                if (_mode == SweepMode.cut)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      widget.targetBodyCount == 0
-                          ? 'Select at least one target body in the viewport'
-                          : '${widget.targetBodyCount} target body/bodies selected',
-                      style: TextStyle(
-                        color: widget.targetBodyCount == 0
-                            ? Theme.of(context).colorScheme.error
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: _canConfirm ? widget.onConfirm : null,
-                      child: const Text('Confirm'),
-                    ),
-                  ],
-                ),
-              ],
+    return ResizableToolPanel(
+      title: widget.title,
+      tooltip: widget.tooltip,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SegmentedButton<SweepMode>(
+            segments: const [
+              ButtonSegment(
+                value: SweepMode.boss,
+                label: Text('Boss'),
+                icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
+              ),
+              ButtonSegment(
+                value: SweepMode.cut,
+                label: Text('Cut'),
+                icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
+              ),
+            ],
+            selected: {_mode},
+            onSelectionChanged: (selection) => _onModeChanged(selection.first),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Path: ${widget.pathSegmentCount} segment'
+            '${widget.pathSegmentCount == 1 ? '' : 's'}, '
+            '${widget.pathIsClosed ? 'closed' : 'open'}',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 12,
             ),
           ),
-        ),
+          // Mirrors RevolvePanel's own Cut target-body status line -
+          // picking itself happens in the 3D viewport behind this
+          // panel, driven by PartScreen, not by any field in here.
+          if (_mode == SweepMode.cut)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                widget.targetBodyCount == 0
+                    ? 'Select at least one target body in the viewport'
+                    : '${widget.targetBodyCount} target body/bodies selected',
+                style: TextStyle(
+                  color: widget.targetBodyCount == 0
+                      ? Theme.of(context).colorScheme.error
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: widget.onCancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _canConfirm ? widget.onConfirm : null,
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

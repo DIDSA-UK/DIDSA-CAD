@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
+import 'resizable_tool_panel.dart';
 
 /// Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
 /// §2.3/§4): Rectangular or Circular - mirrors [RevolveMode]'s own
@@ -13,7 +14,8 @@ enum PatternMode {
   String get apiValue => name;
 
   static PatternMode fromApiValue(String value) =>
-      PatternMode.values.firstWhere((m) => m.apiValue == value, orElse: () => PatternMode.rectangular);
+      PatternMode.values.firstWhere((m) => m.apiValue == value,
+          orElse: () => PatternMode.rectangular);
 }
 
 /// Pattern/Mirror scoping's Phase 2/4 (`docs/pattern-mirror-scope.md`
@@ -56,6 +58,12 @@ class PatternPanel extends StatefulWidget {
   /// when [PartScreen] opened this to edit an already-existing one instead -
   /// purely a label, same convention as [FilletPanel.title].
   final String title;
+
+  /// On-device feedback ("the tooltip at the top of the screen blocks the
+  /// FABs"): see [ResizableToolPanel]'s own doc comment - the axis/
+  /// direction-picking banner text, now shown in the title row instead of
+  /// a separate floating banner. Null once a preview already exists.
+  final String? tooltip;
 
   final PatternMode mode;
   final bool canChangeMode;
@@ -143,6 +151,7 @@ class PatternPanel extends StatefulWidget {
   const PatternPanel({
     super.key,
     this.title = 'Pattern',
+    this.tooltip,
     required this.mode,
     required this.canChangeMode,
     required this.onModeChanged,
@@ -193,16 +202,12 @@ class _PatternPanelState extends State<PatternPanel> {
   /// each with count/spacing/reverse, plus the merge toggle) can run
   /// taller than the available screen height on a short/landscape
   /// viewport - previously the panel simply grew to fit its content with
-  /// no bound, so the [SingleChildScrollView] below never actually had
-  /// anything to scroll *within* (an unbounded scroll view just sizes to
-  /// its child), and Confirm/Cancel could end up pushed off-screen with
-  /// no way to reach them. This panel is now given an explicit, resizable
-  /// height instead - [_heightFraction] (a fraction of the available
-  /// viewport height, mirrors `FeatureTreePanel._widthFraction`'s own
-  /// drag-to-resize convention, just vertical instead of horizontal) -
-  /// so the scroll view is genuinely bounded and [_buildDragHandle] lets
-  /// the user pull it up to extend or push it down to retract.
-  double _heightFraction = _defaultHeightFraction;
+  /// no bound, so the scroll view never actually had anything to scroll
+  /// *within* (an unbounded scroll view just sizes to its child), and
+  /// Confirm/Cancel could end up pushed off-screen with no way to reach
+  /// them. [ResizableToolPanel] (originally factored out of this exact
+  /// fix) now owns the resizable-height/drag-handle/scroll mechanics -
+  /// these three fractions are passed straight through to it.
   static const double _defaultHeightFraction = 0.5;
   static const double _minHeightFraction = 0.25;
   static const double _maxHeightFraction = 0.85;
@@ -228,15 +233,24 @@ class _PatternPanelState extends State<PatternPanel> {
     _spacing1 = widget.initialSpacing1 > 0 ? widget.initialSpacing1 : null;
     _count2 = widget.initialCount2 >= 1 ? widget.initialCount2 : null;
     _spacing2 = widget.initialSpacing2 > 0 ? widget.initialSpacing2 : null;
-    _countAngular = widget.initialCountAngular >= 1 ? widget.initialCountAngular : null;
+    _countAngular =
+        widget.initialCountAngular >= 1 ? widget.initialCountAngular : null;
     _angleTotal =
-        (widget.initialAngleTotal > 0 && widget.initialAngleTotal <= 360) ? widget.initialAngleTotal : null;
-    _count1Controller = TextEditingController(text: widget.initialCount1.toString());
-    _spacing1Controller = TextEditingController(text: _formatNumber(widget.initialSpacing1));
-    _count2Controller = TextEditingController(text: widget.initialCount2.toString());
-    _spacing2Controller = TextEditingController(text: _formatNumber(widget.initialSpacing2));
-    _countAngularController = TextEditingController(text: widget.initialCountAngular.toString());
-    _angleTotalController = TextEditingController(text: _formatNumber(widget.initialAngleTotal));
+        (widget.initialAngleTotal > 0 && widget.initialAngleTotal <= 360)
+            ? widget.initialAngleTotal
+            : null;
+    _count1Controller =
+        TextEditingController(text: widget.initialCount1.toString());
+    _spacing1Controller =
+        TextEditingController(text: _formatNumber(widget.initialSpacing1));
+    _count2Controller =
+        TextEditingController(text: widget.initialCount2.toString());
+    _spacing2Controller =
+        TextEditingController(text: _formatNumber(widget.initialSpacing2));
+    _countAngularController =
+        TextEditingController(text: widget.initialCountAngular.toString());
+    _angleTotalController =
+        TextEditingController(text: _formatNumber(widget.initialAngleTotal));
     // Mirrors FilletPanel/RevolvePanel's identical fix: without this, the
     // live preview underneath this panel doesn't appear until the user
     // actually edits a field, since onXChanged is only ever wired to field
@@ -245,7 +259,9 @@ class _PatternPanelState extends State<PatternPanel> {
       if (!mounted) return;
       if (_count1 != null) widget.onCount1Changed?.call(_count1!);
       if (_spacing1 != null) widget.onSpacing1Changed?.call(_spacing1!);
-      if (_countAngular != null) widget.onCountAngularChanged?.call(_countAngular!);
+      if (_countAngular != null) {
+        widget.onCountAngularChanged?.call(_countAngular!);
+      }
       if (_angleTotal != null) widget.onAngleTotalChanged?.call(_angleTotal!);
     });
   }
@@ -261,16 +277,24 @@ class _PatternPanelState extends State<PatternPanel> {
     super.dispose();
   }
 
-  static String _formatNumber(double value) =>
-      value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
+  static String _formatNumber(double value) => value == value.roundToDouble()
+      ? value.toStringAsFixed(0)
+      : value.toString();
 
   bool get _canConfirm {
     if (widget.mode == PatternMode.circular) {
-      return widget.hasAxis && _countAngular != null && _countAngular! >= 2 && _angleTotal != null;
+      return widget.hasAxis &&
+          _countAngular != null &&
+          _countAngular! >= 2 &&
+          _angleTotal != null;
     }
-    if (!widget.hasDirection1 || _count1 == null || _spacing1 == null) return false;
+    if (!widget.hasDirection1 || _count1 == null || _spacing1 == null) {
+      return false;
+    }
     if (widget.hasSecondDirection) {
-      if (!widget.hasDirection2 || _count2 == null || _spacing2 == null) return false;
+      if (!widget.hasDirection2 || _count2 == null || _spacing2 == null) {
+        return false;
+      }
     }
     final count2 = widget.hasSecondDirection ? (_count2 ?? 1) : 1;
     return (_count1! * count2) >= 2;
@@ -318,9 +342,11 @@ class _PatternPanelState extends State<PatternPanel> {
     if (angle != null) widget.onAngleTotalChanged?.call(angle);
   }
 
-  Widget _axisButton(String axis, void Function(String) onSetFixedAxis) => OutlinedButton(
+  Widget _axisButton(String axis, void Function(String) onSetFixedAxis) =>
+      OutlinedButton(
         onPressed: () => onSetFixedAxis(axis),
-        style: OutlinedButton.styleFrom(minimumSize: const Size(40, 36), padding: EdgeInsets.zero),
+        style: OutlinedButton.styleFrom(
+            minimumSize: const Size(40, 36), padding: EdgeInsets.zero),
         child: Text(axis.toUpperCase()),
       );
 
@@ -339,7 +365,8 @@ class _PatternPanelState extends State<PatternPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+        Text(label,
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
         const SizedBox(height: 6),
         Row(
           children: [
@@ -378,7 +405,8 @@ class _PatternPanelState extends State<PatternPanel> {
             Expanded(
               child: TextField(
                 controller: spacingController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 decoration: const InputDecoration(labelText: 'Spacing'),
                 onChanged: (_) => onEmitSpacing(),
               ),
@@ -387,7 +415,9 @@ class _PatternPanelState extends State<PatternPanel> {
             IconButton(
               tooltip: 'Reverse direction',
               isSelected: reverse,
-              onPressed: onReverseChanged == null ? null : () => onReverseChanged(!reverse),
+              onPressed: onReverseChanged == null
+                  ? null
+                  : () => onReverseChanged(!reverse),
               icon: const Icon(Icons.flip),
             ),
           ],
@@ -409,12 +439,15 @@ class _PatternPanelState extends State<PatternPanel> {
       padding: const EdgeInsets.only(top: 12),
       child: Row(
         children: [
-          Icon(Icons.touch_app_outlined, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+          Icon(Icons.touch_app_outlined,
+              size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
               'Tap an instance in the viewport to skip or keep it',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ),
         ],
@@ -435,7 +468,8 @@ class _PatternPanelState extends State<PatternPanel> {
                 ButtonSegment(value: 2, label: Text('Direction 2')),
               ],
               selected: {widget.activeDirectionSlot},
-              onSelectionChanged: (selection) => widget.onActiveDirectionSlotChanged(selection.first),
+              onSelectionChanged: (selection) =>
+                  widget.onActiveDirectionSlotChanged(selection.first),
             ),
           ),
         _directionSection(
@@ -491,7 +525,8 @@ class _PatternPanelState extends State<PatternPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('Axis', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+        Text('Axis',
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
         const SizedBox(height: 6),
         Text(
           widget.hasAxis
@@ -519,7 +554,8 @@ class _PatternPanelState extends State<PatternPanel> {
             Expanded(
               child: TextField(
                 controller: _angleTotalController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 decoration: const InputDecoration(labelText: 'Angle (degrees)'),
                 onChanged: (_) => _emitAngleTotal(),
               ),
@@ -530,7 +566,8 @@ class _PatternPanelState extends State<PatternPanel> {
               isSelected: widget.reverseAngular,
               onPressed: widget.onReverseAngularChanged == null
                   ? null
-                  : () => widget.onReverseAngularChanged!(!widget.reverseAngular),
+                  : () =>
+                      widget.onReverseAngularChanged!(!widget.reverseAngular),
               icon: const Icon(Icons.flip),
             ),
           ],
@@ -542,146 +579,89 @@ class _PatternPanelState extends State<PatternPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final totalHeight = constraints.maxHeight;
-        final panelHeight = (_heightFraction * totalHeight).clamp(
-          _minHeightFraction * totalHeight,
-          _maxHeightFraction * totalHeight,
-        );
-        return Align(
-          alignment: Alignment.bottomCenter,
-          child: SafeArea(
-            top: false,
-            child: SizedBox(
-              key: const Key('patternPanelResizableArea'),
-              height: panelHeight,
-              child: Material(
-                elevation: 4,
-                borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _buildDragHandle(totalHeight),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                              const SizedBox(height: 12),
-                              if (widget.canChangeMode)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 12),
-                                  child: SegmentedButton<PatternMode>(
-                                    segments: const [
-                                      ButtonSegment(value: PatternMode.rectangular, label: Text('Rectangular')),
-                                      ButtonSegment(value: PatternMode.circular, label: Text('Circular')),
-                                    ],
-                                    selected: {widget.mode},
-                                    onSelectionChanged: (selection) => widget.onModeChanged(selection.first),
-                                  ),
-                                ),
-                              if (widget.mode == PatternMode.circular) _circularFields() else _rectangularFields(),
-                              const SizedBox(height: 12),
-                              SegmentedButton<MergeMode>(
-                                segments: const [
-                                  ButtonSegment(value: MergeMode.keepSeparate, label: Text('Keep Separate')),
-                                  ButtonSegment(value: MergeMode.fuseIntoOne, label: Text('Merge into One Body')),
-                                ],
-                                selected: {widget.merge},
-                                onSelectionChanged: (selection) => widget.onMergeChanged(selection.first),
-                              ),
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      widget.sourceFeatureIds.isEmpty
-                                          ? 'No Features added from the Build Tree'
-                                          : '${widget.sourceFeatureIds.length} Feature'
-                                              '${widget.sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                  ),
-                                  TextButton.icon(
-                                    onPressed: widget.onPickSourceFeatures,
-                                    icon: const Icon(Icons.account_tree_outlined, size: 16),
-                                    label: const Text('Add from Tree'),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.end,
-                                children: [
-                                  TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
-                                  const SizedBox(width: 8),
-                                  FilledButton(
-                                    onPressed: _canConfirm ? widget.onConfirm : null,
-                                    child: const Text('Confirm'),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+    return ResizableToolPanel(
+      title: widget.title,
+      tooltip: widget.tooltip,
+      defaultHeightFraction: _defaultHeightFraction,
+      minHeightFraction: _minHeightFraction,
+      maxHeightFraction: _maxHeightFraction,
+      dragHandleKey: const Key('patternPanelDragHandle'),
+      resizableAreaKey: const Key('patternPanelResizableArea'),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (widget.canChangeMode)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: SegmentedButton<PatternMode>(
+                segments: const [
+                  ButtonSegment(
+                      value: PatternMode.rectangular,
+                      label: Text('Rectangular')),
+                  ButtonSegment(
+                      value: PatternMode.circular, label: Text('Circular')),
+                ],
+                selected: {widget.mode},
+                onSelectionChanged: (selection) =>
+                    widget.onModeChanged(selection.first),
+              ),
+            ),
+          if (widget.mode == PatternMode.circular)
+            _circularFields()
+          else
+            _rectangularFields(),
+          const SizedBox(height: 12),
+          SegmentedButton<MergeMode>(
+            segments: const [
+              ButtonSegment(
+                  value: MergeMode.keepSeparate, label: Text('Keep Separate')),
+              ButtonSegment(
+                  value: MergeMode.fuseIntoOne,
+                  label: Text('Merge into One Body')),
+            ],
+            selected: {widget.merge},
+            onSelectionChanged: (selection) =>
+                widget.onMergeChanged(selection.first),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  widget.sourceFeatureIds.isEmpty
+                      ? 'No Features added from the Build Tree'
+                      : '${widget.sourceFeatureIds.length} Feature'
+                          '${widget.sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
                 ),
               ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  /// The top-edge resize grip - mirrors `FeatureTreePanel._buildDragHandle`'s
-  /// own drag-to-resize convention (a generous, mostly-invisible hit target
-  /// around a slim visible pill), adapted from horizontal to vertical:
-  /// dragging up (negative `dy`) extends the panel, dragging down retracts
-  /// it, clamped to [_minHeightFraction]/[_maxHeightFraction] so it can
-  /// never be dragged down to unusable or up past covering the whole
-  /// viewport.
-  Widget _buildDragHandle(double totalHeight) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.resizeUpDown,
-      child: GestureDetector(
-        key: const Key('patternPanelDragHandle'),
-        behavior: HitTestBehavior.translucent,
-        onVerticalDragUpdate: (details) {
-          if (totalHeight <= 0) return;
-          setState(() {
-            _heightFraction = (_heightFraction - details.delta.dy / totalHeight).clamp(
-              _minHeightFraction,
-              _maxHeightFraction,
-            );
-          });
-        },
-        child: SizedBox(
-          height: 20,
-          width: double.infinity,
-          child: Center(
-            child: Container(
-              width: 56,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
+              TextButton.icon(
+                onPressed: widget.onPickSourceFeatures,
+                icon: const Icon(Icons.account_tree_outlined, size: 16),
+                label: const Text('Add from Tree'),
               ),
-            ),
+            ],
           ),
-        ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: widget.onCancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _canConfirm ? widget.onConfirm : null,
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
