@@ -337,21 +337,6 @@ def test_zero_source_body_ids_is_rejected():
     assert response.status_code == 422
 
 
-def test_two_source_body_ids_is_rejected_in_phase_2():
-    """Unlike Mirror, Pattern's own multi-body seeding remains Phase 6 scope
-    (see PatternFeature's own docstring) - exactly one source_body_ids entry
-    is required in Phase 2."""
-    part = _create_part()
-    sketch_a = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0)
-    _create_extrude_feature(part["id"], sketch_a["id"])
-    sketch_b = _create_square_sketch_feature(part["id"], x0=100.0, y0=100.0)
-    _create_extrude_feature(part["id"], sketch_b["id"])
-    body_id_a, body_id_b = _body_ids(part["id"])
-
-    response = _create_pattern(part["id"], [body_id_a, body_id_b], _fixed_axis_direction("x"), 3, 20.0)
-    assert response.status_code == 422
-
-
 def test_an_unknown_source_body_id_is_rejected():
     part, _body_id = _boxy_part_and_body()
     response = _create_pattern(part["id"], ["no-such-body"], _fixed_axis_direction("x"), 3, 20.0)

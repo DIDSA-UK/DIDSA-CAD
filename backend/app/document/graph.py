@@ -29,6 +29,7 @@ in the list" (see `transitive_dependents`'s own docstring)."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from app.document.models import (
@@ -132,6 +133,28 @@ def base_feature_id(body_id: str) -> str:
     at all and B2's cascade-delete graph walk needs to unit-test it without
     a real OCCT environment, the same way `topological_order` already is."""
     return body_id.split("#", 1)[0]
+
+
+def body_ids_for_feature_id(body_ids: Iterable[str], feature_id: str) -> list[str]:
+    """Pattern/Mirror Phase 6 (`docs/pattern-mirror-scope.md` §2.8/§4): every
+    entry of `body_ids` whose `base_feature_id` is `feature_id` - the exact
+    one-line Feature-tree-entry-as-selection-source lookup the scope doc
+    itself specifies (`{bid for bid in bodies if base_feature_id(bid) ==
+    fid}`), generalized only to preserve `body_ids`' own iteration order (a
+    bare set comprehension would not) since `app.document.mirror.resolve_
+    mirror_from_bodies`/`app.document.pattern.resolve_pattern_from_bodies`
+    need deterministic per-source ordering for their own Body registration.
+
+    Works identically regardless of which body-producing Feature type
+    `feature_id` names - an ExtrudeFeature/RevolveFeature/SweepFeature/
+    ImportFeature that mints exactly one un-suffixed id, or a MirrorFeature/
+    PatternFeature that may mint several `#N`-suffixed ones - no per-type
+    branching needed, the whole point of `base_feature_id` already being
+    generic. Returns an empty list (never raises) when `feature_id` doesn't
+    currently produce any Body at all - callers raise their own structured
+    `missing_reference`-shaped error for that, keeping this helper itself
+    OCCT-free and side-effect-free like every other lookup in this module."""
+    return [bid for bid in body_ids if base_feature_id(bid) == feature_id]
 
 
 def sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
@@ -343,9 +366,13 @@ def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:
     per-type dispatch readable - mirrors `FilletFeature`/`ChamferFeature`'s
     own `edge_refs` treatment for `source_body_ids` (deduplicated via a
     `set`, `base_feature_id`-mapped), plus `_plane_ref_dependency` for
-    `mirror_plane`. `source_feature_ids` is reserved for Phase 6 and always
-    empty in Phase 1 - not read here yet."""
+    `mirror_plane`. Pattern/Mirror Phase 6: every `source_feature_ids`
+    entry is already a bare Feature id (not a Body id), so it's added
+    directly, no `base_feature_id` mapping needed - deleting the Feature a
+    Mirror names as a Feature-tree source must cascade-delete the Mirror
+    too, identical reasoning to every other reference kind here."""
     deps: set[str] = {base_feature_id(bid) for bid in feature.source_body_ids}
+    deps.update(feature.source_feature_ids)
     plane_dep = _plane_ref_dependency(feature.mirror_plane)
     if plane_dep is not None:
         deps.add(plane_dep)
@@ -392,16 +419,20 @@ def _pattern_axis_dependency(part: Part, ref: PatternAxisRef | None) -> str | No
 
 
 def _pattern_dependencies(part: Part, feature: PatternFeature) -> tuple[str, ...]:
-    """Pattern/Mirror Phase 2/4: `build_feature_graph`'s `PatternFeature`
+    """Pattern/Mirror Phase 2/4/6: `build_feature_graph`'s `PatternFeature`
     dependency-edge logic, split out to keep `build_feature_graph` itself's
-    per-type dispatch readable - the owning Feature of its (single) `source_
-    body_ids` entry, plus whatever `direction_1`/`direction_2`/`axis` each
-    depend on via `_pattern_direction_dependency`/`_pattern_axis_dependency`
-    (at most one of `direction_1`/`direction_2` vs. `axis` is ever actually
-    set, per `feature.pattern_type`, but checking all three unconditionally
-    costs nothing and needs no `pattern_type` branch here), deduplicated via
-    a `set`."""
+    per-type dispatch readable - the owning Feature of every `source_
+    body_ids` entry (1+, Phase 6), every `source_feature_ids` entry added
+    directly (already a bare Feature id, not a Body id - no `base_feature_
+    id` mapping needed, mirrors `_mirror_dependencies`'s own identical
+    Phase 6 treatment), plus whatever `direction_1`/`direction_2`/`axis`
+    each depend on via `_pattern_direction_dependency`/`_pattern_axis_
+    dependency` (at most one of `direction_1`/`direction_2` vs. `axis` is
+    ever actually set, per `feature.pattern_type`, but checking all three
+    unconditionally costs nothing and needs no `pattern_type` branch here),
+    deduplicated via a `set`."""
     deps: set[str] = {base_feature_id(bid) for bid in feature.source_body_ids}
+    deps.update(feature.source_feature_ids)
     dep_1 = _pattern_direction_dependency(part, feature.direction_1)
     if dep_1 is not None:
         deps.add(dep_1)

@@ -336,4 +336,158 @@ void main() {
       await tester.pump();
     });
   });
+
+  group('Pattern/Mirror scoping Phase 6: isFeaturePickerMode', () {
+    testWidgets('shows the picker banner with no count when nothing is selected yet', (
+      tester,
+    ) async {
+      final features = [_extrude('e1', locked: false), _extrude('e2', locked: false)];
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            isFeaturePickerMode: true,
+            pickableFeaturePickerIds: const {'e1', 'e2'},
+          ),
+        ),
+      );
+
+      expect(find.text('Select source Features'), findsOneWidget);
+    });
+
+    testWidgets('the banner shows the current selection count', (tester) async {
+      final features = [_extrude('e1', locked: false), _extrude('e2', locked: false)];
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            isFeaturePickerMode: true,
+            pickableFeaturePickerIds: const {'e1', 'e2'},
+            selectedFeaturePickerIds: const {'e1'},
+          ),
+        ),
+      );
+
+      expect(find.text('Select source Features - 1 selected'), findsOneWidget);
+    });
+
+    testWidgets('tapping a pickable row calls onFeaturePickerToggle, not onFeatureTap', (
+      tester,
+    ) async {
+      final features = [_extrude('e1', locked: false)];
+      var toggled = false;
+      var tapped = false;
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) => tapped = true,
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            isFeaturePickerMode: true,
+            pickableFeaturePickerIds: const {'e1'},
+            onFeaturePickerToggle: (_) => toggled = true,
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Extrude 1'));
+      await tester.pump();
+
+      expect(toggled, isTrue);
+      expect(tapped, isFalse);
+    });
+
+    testWidgets('tapping a non-pickable row is inert - no callback fires', (tester) async {
+      final features = [_sketch('s1')];
+      var toggled = false;
+      var tapped = false;
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) => tapped = true,
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            isFeaturePickerMode: true,
+            pickableFeaturePickerIds: const {},
+            onFeaturePickerToggle: (_) => toggled = true,
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Sketch 1'));
+      await tester.pump();
+
+      expect(toggled, isFalse);
+      expect(tapped, isFalse);
+    });
+
+    testWidgets('a selected row shows a check-circle trailing icon', (tester) async {
+      final features = [_extrude('e1', locked: false)];
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            isFeaturePickerMode: true,
+            pickableFeaturePickerIds: const {'e1'},
+            selectedFeaturePickerIds: const {'e1'},
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    });
+
+    testWidgets('long-pressing a row is disabled while picking (no cascade-delete dialog trigger)', (
+      tester,
+    ) async {
+      final features = [_extrude('e1', locked: false)];
+      var longPressed = false;
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) => longPressed = true,
+            onClose: () {},
+            onBodyTap: (_) {},
+            isFeaturePickerMode: true,
+            pickableFeaturePickerIds: const {'e1'},
+          ),
+        ),
+      );
+
+      await tester.longPress(find.text('Extrude 1'));
+      await tester.pump();
+
+      expect(longPressed, isFalse);
+    });
+  });
 }

@@ -806,8 +806,8 @@ def compute_part_bodies(
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.import_geometry import resolve_import
-    from app.document.mirror import resolve_mirror_from_bodies
-    from app.document.pattern import resolve_pattern_from_bodies
+    from app.document.mirror import effective_mirror_source_body_ids, resolve_mirror_from_bodies
+    from app.document.pattern import effective_pattern_source_body_ids, resolve_pattern_from_bodies
     from app.document.revolve import resolve_revolve_from_bodies
     from app.document.sweep import resolve_sweep_from_bodies
 
@@ -883,16 +883,21 @@ def compute_part_bodies(
             # fuse/cut into `target_body_ids`, a concept Mirror doesn't have
             # until Phase 5's merge option). One source Body registers under
             # this Feature's own id directly (unchanged from before multi-
-            # body seeding); 2+ sources each get their own `#N`-suffixed id
+            # body seeding); 2+ sources - Phase 6's `source_feature_ids`
+            # expansion included - each get their own `#N`-suffixed id
             # (mirrors `_register_solids`'s own single-vs-multiple naming
             # convention, applied here across sources rather than within
             # one already-registered shape).
             #
             # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every mirrored
             # copy plus every source Body together into one Body, via the
-            # shared `_fuse_realized_instances` helper above.
+            # shared `_fuse_realized_instances` helper above - `base_ids` is
+            # the Phase 6 effective (source_body_ids + resolved source_
+            # feature_ids) list, not the raw field, so a Feature-tree-picked
+            # source's own real Body is absorbed into the fuse too.
             if feature.merge == MergeMode.FUSE_INTO_ONE:
-                _fuse_realized_instances(bodies, feature_index, feature.source_body_ids, mirrored_shapes)
+                base_ids = effective_mirror_source_body_ids(bodies, feature)
+                _fuse_realized_instances(bodies, feature_index, base_ids, mirrored_shapes)
             elif len(mirrored_shapes) == 1:
                 _register_solids(bodies, feature.id, mirrored_shapes[0])
             else:
@@ -902,40 +907,66 @@ def compute_part_bodies(
 
         if isinstance(feature, PatternFeature):
             try:
-                instances = resolve_pattern_from_bodies(part, bodies, feature, excluded_feature_ids)
+                per_source_instances = resolve_pattern_from_bodies(
+                    part, bodies, feature, excluded_feature_ids
+                )
             except HTTPException:
                 logger.warning("Skipping PatternFeature %s: could not be resolved", feature.id)
                 continue
-            # Index 0 (the seed Body itself) is never a key in `instances`
-            # (see `PatternFeature`'s own docstring) - the seed Body is
-            # already registered under its own id by whichever earlier
-            # Feature produced it, and this Feature never touches it, same
-            # Boss-with-no-target semantics `MirrorFeature` uses. Every
-            # other instance is a brand-new Body: `feature.id` alone when
-            # there's exactly one (a `count_1 * count_2 == 2` Rectangular
-            # pattern, or a `count_angular == 2` Circular one - Phase 4),
-            # `f"{feature.id}#{index}"` per instance otherwise - mirrors
-            # `_register_solids`'s own single-vs-multiple naming
-            # convention, keyed by the pattern's own linear index (row-
-            # major `i*count_2+j` for Rectangular, the plain angular-step
-            # index for Circular - not a freshly reindexed 0..N-1 either
-            # way) so a future Phase 3 skip-instance picker can address the
-            # exact same indices.
+            # Index 0 (each source's own seed Body) is never a key in that
+            # source's own inner dict (see `PatternFeature`'s own docstring)
+            # - a source's seed Body is already registered under its own id
+            # by whichever earlier Feature produced it, and this Feature
+            # never touches it, same Boss-with-no-target semantics
+            # `MirrorFeature` uses.
             #
             # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every realized
-            # (non-skipped) instance plus the untouched seed Body together
-            # into one Body, registered under the seed's own existing id -
-            # via the shared `_fuse_realized_instances` helper above.
+            # (non-skipped) instance across every source plus every source's
+            # own untouched seed Body together into one Body, registered
+            # under whichever source's own id sorts lowest - via the shared
+            # `_fuse_realized_instances` helper above. `base_ids` is the
+            # Phase 6 effective (source_body_ids + resolved source_
+            # feature_ids) list, not the raw field.
             if feature.merge == MergeMode.FUSE_INTO_ONE:
-                _fuse_realized_instances(
-                    bodies, feature_index, feature.source_body_ids, list(instances.values())
-                )
-            elif len(instances) == 1:
-                ((_, only_shape),) = instances.items()
-                _register_solids(bodies, feature.id, only_shape)
+                base_ids = effective_pattern_source_body_ids(bodies, feature)
+                realized_shapes = [
+                    shape for instances in per_source_instances.values() for shape in instances.values()
+                ]
+                _fuse_realized_instances(bodies, feature_index, base_ids, realized_shapes)
+            elif len(per_source_instances) == 1:
+                # The pre-Phase-6 single-source shape, unchanged: every new
+                # instance is a brand-new Body keyed by the pattern's own
+                # linear index alone - `feature.id` for exactly one (a
+                # `count_1 * count_2 == 2` Rectangular pattern, or a
+                # `count_angular == 2` Circular one), `f"{feature.id}#
+                # {index}"` per instance otherwise (mirrors `_register_
+                # solids`'s own single-vs-multiple naming convention, keyed
+                # by the pattern's own linear index - row-major
+                # `i*count_2+j` for Rectangular, the plain angular-step
+                # index for Circular - not a freshly reindexed 0..N-1
+                # either way, so a skip-instance picker can address the
+                # exact same indices).
+                ((_, instances),) = per_source_instances.items()
+                if len(instances) == 1:
+                    ((_, only_shape),) = instances.items()
+                    _register_solids(bodies, feature.id, only_shape)
+                else:
+                    for index, shape in instances.items():
+                        _register_solids(bodies, f"{feature.id}#{index}", shape)
             else:
-                for index, shape in instances.items():
-                    _register_solids(bodies, f"{feature.id}#{index}", shape)
+                # Phase 6: 2+ sources - every instance is a brand-new Body
+                # keyed by both which source it belongs to (`source_index`,
+                # the source's own position in `effective_pattern_source_
+                # body_ids`' order) and the pattern's own linear index
+                # within that source, `f"{feature.id}#{source_index}_
+                # {index}"` - a new, source-aware generalization of the
+                # single-source `#{index}` scheme above (kept distinct
+                # rather than always prefixing a source index, so every
+                # pre-Phase-6 single-source Pattern's own Body ids are
+                # completely unaffected by this change).
+                for source_index, (_, instances) in enumerate(per_source_instances.items()):
+                    for index, shape in instances.items():
+                        _register_solids(bodies, f"{feature.id}#{source_index}_{index}", shape)
             continue
 
         if isinstance(feature, RevolveFeature):

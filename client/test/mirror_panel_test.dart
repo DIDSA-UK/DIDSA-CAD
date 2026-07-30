@@ -23,6 +23,7 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -43,6 +44,7 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -64,6 +66,7 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () => confirmed = true,
               onCancel: () {},
             ),
@@ -82,6 +85,7 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -99,6 +103,7 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -118,6 +123,7 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -137,6 +143,7 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -156,6 +163,7 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -174,6 +182,7 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.fuseIntoOne,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -193,6 +202,7 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (m) => changedTo = m,
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -201,6 +211,65 @@ void main() {
       );
       await tester.tap(find.text('Merge into One Body'));
       expect(changedTo, MergeMode.fuseIntoOne);
+    });
+  });
+
+  group('Pattern/Mirror scoping Phase 6: MirrorPanel source Features from tree', () {
+    testWidgets('shows "No Features added" when sourceFeatureIds is empty', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('No Features added from the Build Tree'), findsOneWidget);
+    });
+
+    testWidgets('shows the count once sourceFeatureIds is non-empty', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              sourceFeatureIds: const ['f1', 'f2'],
+              onPickSourceFeatures: () {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('2 Features added from the Build Tree'), findsOneWidget);
+    });
+
+    testWidgets('tapping "Add from Tree" fires onPickSourceFeatures', (tester) async {
+      var tapped = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () => tapped = true,
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Add from Tree'));
+      expect(tapped, isTrue);
     });
   });
 
@@ -214,6 +283,7 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () => cancelled = true,
             ),

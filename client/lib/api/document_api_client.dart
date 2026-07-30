@@ -344,11 +344,19 @@ class FeatureDto {
   /// field entirely.
   final bool hasLostReference;
 
-  /// Pattern/Mirror scoping's Phase 1 - only present on a `"mirror"`
-  /// Feature: which single Body (by id) is being reflected (the backend's
-  /// `MirrorFeature.source_body_ids`, restricted to exactly one entry in
-  /// Phase 1 - see `docs/pattern-mirror-scope.md`).
+  /// Pattern/Mirror scoping's Phase 1/6 - present on both `"mirror"` and
+  /// `"pattern"` Features: which Body/Bodies (by id) are being reflected/
+  /// repeated (the backend's `MirrorFeature`/`PatternFeature.source_
+  /// body_ids` - 1+ entries as of Phase 1's own multi-body revision for
+  /// Mirror and Phase 6's for Pattern - see `docs/pattern-mirror-scope.md`).
   final List<String> sourceBodyIds;
+
+  /// Pattern/Mirror scoping's Phase 6 - present on both `"mirror"` and
+  /// `"pattern"` Features: Feature-tree entries (by Feature id) named as
+  /// additional sources, resolved server-side to their current output
+  /// Body/Bodies and combined with [sourceBodyIds] (the backend's
+  /// `MirrorFeature`/`PatternFeature.source_feature_ids`).
+  final List<String> sourceFeatureIds;
 
   /// Pattern/Mirror scoping's Phase 1 - only present on a `"mirror"`
   /// Feature: the plane it's mirrored across (a Body face, a fixed
@@ -443,6 +451,7 @@ class FeatureDto {
     this.pathRefs = const [],
     this.hasLostReference = false,
     this.sourceBodyIds = const [],
+    this.sourceFeatureIds = const [],
     this.mirrorPlane,
     this.direction1,
     this.count1,
@@ -520,6 +529,7 @@ class FeatureDto {
             const [],
         hasLostReference: json['has_lost_reference'] as bool? ?? false,
         sourceBodyIds: (json['source_body_ids'] as List?)?.cast<String>() ?? const [],
+        sourceFeatureIds: (json['source_feature_ids'] as List?)?.cast<String>() ?? const [],
         mirrorPlane: json['mirror_plane'] == null
             ? null
             : PlaneRefDto.fromJson(json['mirror_plane'] as Map<String, dynamic>),
@@ -955,6 +965,7 @@ class DocumentApiClient {
     String partId, {
     required List<String> sourceBodyIds,
     required PlaneRefDto mirrorPlane,
+    List<String> sourceFeatureIds = const [],
     MergeMode merge = MergeMode.keepSeparate,
   }) =>
       _send(
@@ -964,6 +975,7 @@ class DocumentApiClient {
               body: jsonEncode({
                 'source_body_ids': sourceBodyIds,
                 'mirror_plane': mirrorPlane.toJson(),
+                'source_feature_ids': sourceFeatureIds,
                 'merge': merge.apiValue,
               }),
             ),
@@ -971,14 +983,15 @@ class DocumentApiClient {
       );
 
   /// Partial update for an existing MirrorFeature - any of [sourceBodyIds]/
-  /// [mirrorPlane]/[merge] may be supplied; omitted fields keep their
-  /// current value. Used for the live-preview debounced re-solve, same
-  /// pattern as [updateFilletFeature].
+  /// [mirrorPlane]/[sourceFeatureIds]/[merge] may be supplied; omitted
+  /// fields keep their current value. Used for the live-preview debounced
+  /// re-solve, same pattern as [updateFilletFeature].
   Future<FeatureDto> updateMirrorFeature(
     String partId,
     String featureId, {
     List<String>? sourceBodyIds,
     PlaneRefDto? mirrorPlane,
+    List<String>? sourceFeatureIds,
     MergeMode? merge,
   }) =>
       _send(
@@ -988,6 +1001,7 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (sourceBodyIds != null) 'source_body_ids': sourceBodyIds,
                 if (mirrorPlane != null) 'mirror_plane': mirrorPlane.toJson(),
+                if (sourceFeatureIds != null) 'source_feature_ids': sourceFeatureIds,
                 if (merge != null) 'merge': merge.apiValue,
               }),
             ),
@@ -1011,6 +1025,7 @@ class DocumentApiClient {
   Future<FeatureDto> createPatternFeature(
     String partId, {
     required List<String> sourceBodyIds,
+    List<String> sourceFeatureIds = const [],
     String patternType = 'rectangular',
     PatternDirectionRefDto? direction1,
     int count1 = 1,
@@ -1033,6 +1048,7 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 'source_body_ids': sourceBodyIds,
+                'source_feature_ids': sourceFeatureIds,
                 'pattern_type': patternType,
                 if (direction1 != null) 'direction_1': direction1.toJson(),
                 'count_1': count1,
@@ -1063,6 +1079,7 @@ class DocumentApiClient {
     String partId,
     String featureId, {
     List<String>? sourceBodyIds,
+    List<String>? sourceFeatureIds,
     PatternDirectionRefDto? direction1,
     int? count1,
     double? spacing1,
@@ -1084,6 +1101,7 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (sourceBodyIds != null) 'source_body_ids': sourceBodyIds,
+                if (sourceFeatureIds != null) 'source_feature_ids': sourceFeatureIds,
                 if (direction1 != null) 'direction_1': direction1.toJson(),
                 if (count1 != null) 'count_1': count1,
                 if (spacing1 != null) 'spacing_1': spacing1,

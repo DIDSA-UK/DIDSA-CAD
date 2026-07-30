@@ -342,9 +342,20 @@ def test_pattern_feature_round_trips_through_real_json_including_merge():
         end_distance=10.0,
     )
     part.add_feature(extrude)
+    extrude_2 = ExtrudeFeature(
+        id="feat-extrude-2",
+        sketch_feature_id="feat-sketch",
+        extrude_type=ExtrudeType.BOSS,
+        start_distance=0.0,
+        end_distance=10.0,
+    )
+    part.add_feature(extrude_2)
     pattern = PatternFeature(
         id="feat-pattern",
         source_body_ids=[extrude.id],
+        # Phase 6: a non-empty source_feature_ids, so this round trip
+        # actually exercises the field, not an empty-vs-empty match.
+        source_feature_ids=[extrude_2.id],
         pattern_type=PatternType.RECTANGULAR,
         direction_1=None,
         count_1=3,
@@ -362,6 +373,7 @@ def test_pattern_feature_round_trips_through_real_json_including_merge():
     imported_pattern = imported_document.parts["part-pattern"].get_feature("feat-pattern")
 
     assert imported_pattern.source_body_ids == pattern.source_body_ids
+    assert imported_pattern.source_feature_ids == pattern.source_feature_ids == [extrude_2.id]
     assert imported_pattern.pattern_type == pattern.pattern_type
     assert imported_pattern.count_1 == pattern.count_1
     assert imported_pattern.spacing_1 == pattern.spacing_1
@@ -405,6 +417,10 @@ def test_mirror_and_pattern_merge_default_to_keep_separate_for_pre_phase_5_saves
     part = imported_document.parts["part-legacy"]
     assert part.get_feature("feat-mirror-legacy").merge == MergeMode.KEEP_SEPARATE
     assert part.get_feature("feat-pattern-legacy").merge == MergeMode.KEEP_SEPARATE
+    # Phase 6: a pre-Phase-6 save has no "source_feature_ids" key at all
+    # either - must default to empty, not raise.
+    assert part.get_feature("feat-mirror-legacy").source_feature_ids == []
+    assert part.get_feature("feat-pattern-legacy").source_feature_ids == []
 
 
 def test_export_only_includes_sketches_actually_referenced_by_a_sketch_feature():

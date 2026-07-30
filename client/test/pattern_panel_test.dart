@@ -43,6 +43,8 @@ void main() {
     void Function(bool reverse)? onReverseAngularChanged,
     MergeMode merge = MergeMode.keepSeparate,
     void Function(MergeMode merge)? onMergeChanged,
+    List<String> sourceFeatureIds = const [],
+    VoidCallback? onPickSourceFeatures,
     String title = 'Pattern',
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -83,6 +85,8 @@ void main() {
           onReverseAngularChanged: onReverseAngularChanged,
           merge: merge,
           onMergeChanged: onMergeChanged ?? (_) {},
+          sourceFeatureIds: sourceFeatureIds,
+          onPickSourceFeatures: onPickSourceFeatures ?? () {},
           onConfirm: onConfirm ?? () {},
           onCancel: onCancel ?? () {},
         ),
@@ -420,6 +424,34 @@ void main() {
     testWidgets('is shown in Circular mode too', (tester) async {
       await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
       expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
+    });
+  });
+
+  group('Pattern/Mirror scoping Phase 6: PatternPanel source Features from tree', () {
+    testWidgets('shows "No Features added" when sourceFeatureIds is empty', (tester) async {
+      await tester.pumpWidget(harness());
+      await tester.ensureVisible(find.text('No Features added from the Build Tree'));
+      expect(find.text('No Features added from the Build Tree'), findsOneWidget);
+    });
+
+    testWidgets('shows the count once sourceFeatureIds is non-empty', (tester) async {
+      await tester.pumpWidget(harness(sourceFeatureIds: const ['f1', 'f2', 'f3']));
+      await tester.ensureVisible(find.text('3 Features added from the Build Tree'));
+      expect(find.text('3 Features added from the Build Tree'), findsOneWidget);
+    });
+
+    testWidgets('tapping "Add from Tree" fires onPickSourceFeatures', (tester) async {
+      var tapped = false;
+      await tester.pumpWidget(harness(onPickSourceFeatures: () => tapped = true));
+      await tester.ensureVisible(find.text('Add from Tree'));
+      await tester.tap(find.text('Add from Tree'));
+      expect(tapped, isTrue);
+    });
+
+    testWidgets('is shown in Circular mode too', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
+      await tester.ensureVisible(find.text('No Features added from the Build Tree'));
+      expect(find.text('No Features added from the Build Tree'), findsOneWidget);
     });
   });
 

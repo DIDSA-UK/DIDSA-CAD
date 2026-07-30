@@ -1021,36 +1021,123 @@ Circular alike).
 
 ### Phase 6 — Multi-feature seed selection (+ Pattern's own multi-body)
 
+**Status: implemented (2026-07-29) — see `docs/status.md`'s matching
+dated entry for the full implementation/verification write-up.** Verified
+for real: the full backend `pytest` suite (1115 tests, including 20 new
+`test_stage_n_multi_source.py` ones plus native-format round-trip
+coverage) against genuine `pythonocc-core`, and the full client
+`flutter test` suite (1016 tests, including new `FeatureTreePanel`/
+`MirrorPanel`/`PatternPanel`/`PartScreen` Phase 6 coverage) plus a clean
+`flutter analyze`, using freshly-bootstrapped local toolchains (micromamba
++ conda-forge for the backend, a `master`-channel Flutter SDK clone for
+the client).
+
 "Patterning bodies, patterning features" at full generality.
 
 **Revision (2026-07-24)**: Mirror's own multi-*body* seeding (`source_
 body_ids` widened from exactly-one to 1+) was pulled forward into Phase 1
 directly, on guided-flow UX feedback — see that phase's own updated entry.
-What remains here is: (a) Pattern's own multi-body widening (Pattern
-hasn't shipped yet, so this was never split out separately until now),
-and (b) multi-*feature* seeding (`source_feature_ids`) for both Mirror and
-Pattern, which is a distinct capability (a Feature-tree entry as a
-selection source, resolved to its current output Body/Bodies) that
-multi-body widening alone doesn't provide.
+What remained here was: (a) Pattern's own multi-body widening, and (b)
+multi-*feature* seeding (`source_feature_ids`) for both Mirror and
+Pattern.
 
 - **Deliverable**: Pattern accepts a multi-select of Bodies (matching
   Mirror's own Phase-1-shipped behavior); both Pattern and Mirror accept
   Feature-tree entries as sources, resolved to their current output
   Body/Bodies per §2.8.
-- **Backend**: widen Pattern's own `source_body_ids` validation from
-  exactly-one to 1+ (mirrors Mirror's own Phase 1 revision exactly);
-  `source_feature_ids` resolves via the one-line `base_feature_id` lookup
-  from §2.8 — no new resolution machinery, for either Feature type.
-- **Client**: feed the existing multi-select accumulator directly into
-  Pattern's own panel (no new selection mechanism — mirrors Mirror's own
-  guided two-step wizard, built in Phase 1, as the template), plus a
-  Feature-tree multi-select entry point for `source_feature_ids` on both
-  Mirror and Pattern (verify during implementation whether
-  `feature_tree_panel.dart` already supports this).
-- **Complexity/risk**: low-medium. Pattern's own multi-body widening has a
-  direct, just-shipped precedent to copy (Mirror's Phase 1 revision); the
-  Feature-tree-as-selection-source wiring is the one piece needing a
-  direct on-device check before estimating further.
+- **Backend**: `PatternFeature.source_body_ids` validation widened from
+  exactly-one to 1+ (`app.document.router._validate_pattern_source_
+  body_ids`), mirroring `MirrorFeature`'s own Phase 1 revision exactly.
+  `source_feature_ids` (new list field, both Feature types) resolves via
+  the one-line `base_feature_id` lookup from §2.8 — no new resolution
+  machinery; the lookup itself lives in `app.document.graph.
+  body_ids_for_feature_id` (order-preserving, unlike the scope doc's own
+  set-comprehension pseudocode, since Pattern/Mirror both need
+  deterministic per-source Body registration). Each of `mirror.py`/
+  `pattern.py` gains a small `effective_mirror_source_body_ids`/
+  `effective_pattern_source_body_ids` wrapper: combines `source_body_ids`
+  with every Body each `source_feature_ids` entry currently resolves to,
+  deduplicated preserving order (naming the same Body both directly and
+  via its own owning Feature mirrors/patterns it once, not twice), raising
+  a structured `missing_reference` (keyed by `feature_id` instead of
+  `body_id`) for a `source_feature_ids` entry that currently resolves to
+  no Body at all. **Real design decision made along the way**: the
+  accepted-producer-type set for both `source_body_ids` and
+  `source_feature_ids` was widened to also include `MirrorFeature`/
+  `PatternFeature` themselves (previously only `ExtrudeFeature`/
+  `RevolveFeature`/`SweepFeature`/`ImportFeature`) — Phase 1's own
+  docstring had explicitly deferred chaining a Mirror/Pattern off another
+  Mirror/Pattern's own output to "Phase 6 scope"; this phase is where that
+  promise is actually delivered, completing §3's survey table's own
+  "Pattern seed = pattern (nested patterns) — structurally unblocked
+  already" entry for real rather than leaving it aspirational.
+  `compute_part_bodies`'s `MirrorFeature`/`PatternFeature` branches
+  (`extrude.py`) pass the *effective* (expanded) source-id list to
+  `_fuse_realized_instances` for `MergeMode.FUSE_INTO_ONE`, not the raw
+  field — a Feature-tree-picked source's own real Body must be absorbed
+  into the fuse too. Pattern's own multi-source instance naming: a single
+  effective source keeps the exact pre-Phase-6 scheme (`feature.id` /
+  `feature.id#{index}`) unchanged; 2+ sources use a new
+  `feature.id#{source_index}_{index}` scheme (every source shares the
+  identical instance-transform grid — same direction/axis/count/spacing/
+  skip_indices — so only the linear instance index, not a per-source one,
+  needs to vary). New `backend/tests/test_stage_n_multi_source.py` (20
+  tests): `source_feature_ids` alone, combined with `source_body_ids`,
+  dedup when a Body is named both ways, unknown/wrong-type
+  `source_feature_ids` rejection (400), a `MirrorFeature` accepted as a
+  nested `source_feature_ids` producer, PATCH updating
+  `source_feature_ids`, Pattern's 2+-`source_body_ids` widening producing
+  bodies for both sources (translated independently, verified via bbox),
+  multi-source `skip_indices` applying uniformly to every source,
+  multi-source `FUSE_INTO_ONE` absorbing every source and instance into
+  one survivor, and cascade delete via a `source_feature_ids`-only source
+  — plus `test_stage_native_format.py` round-trip/backward-compatibility
+  coverage for `PatternFeature.source_feature_ids`.
+- **Client**: on-device/real check (per this phase's own noted
+  uncertainty) confirmed `feature_tree_panel.dart` had **no** existing
+  multi-select mechanism at all — every prior mode there (the Extrude/
+  Revolve/Sweep Sketch pickers) is single-pick, commits immediately. New
+  `FeatureTreePanel.isFeaturePickerMode` (`pickableFeaturePickerIds`/
+  `selectedFeaturePickerIds`/`onFeaturePickerToggle`): a row tap toggles
+  membership instead of committing, dimmed-and-inert for a non-pickable
+  row (no SnackBar the way the sketch picker's own ineligible-tap
+  feedback works — dimming alone is enough here), a checkmark trailing
+  icon for a selected row, and a top banner naming the running selection
+  count — confirmed via a checkmark FAB `PartScreen` itself owns (`_start
+  SourceFeaturePicker`/`_confirmSourceFeaturePicker`/`_cancelSourceFeature
+  Picker`, new shared `_SourceFeaturePickerTarget { mirror, pattern }`
+  state), not a button embedded in the tree panel. `pickableFeaturePicker
+  Ids` mirrors the backend's own widened accepted-type set (`extrude`/
+  `revolve`/`sweep`/`import`/`mirror`/`pattern`), excluding whichever
+  Mirror/Pattern is currently being configured itself.
+  `mirror_panel.dart`/`pattern_panel.dart` both gained a `sourceFeatureIds`
+  summary line ("N Feature(s) added from the Build Tree") and an "Add from
+  Tree" button opening the picker.
+
+  Pattern's own multi-body widening: `_PatternStep.pickingBody` (singular,
+  immediately-advances-on-one-tap) became `pickingBodies` (plural),
+  restructured to mirror `_MirrorStep.pickingBodies`'s own multi-select-
+  then-confirm shape exactly (`_confirmPatternBodySelection` now a no-arg
+  checkmark-FAB confirm, not a per-tap single-Body handler) —
+  `_patternSourceBodyId: String?` became `_patternSourceBodyIds:
+  List<String>?` throughout `part_screen.dart`, including widening
+  `_patternInstanceIndexForBodyId`/`_patternSkippedBodyIds` (the Phase 3
+  viewport-tap-to-skip machinery) to parse both the pre-Phase-6 single-
+  source body-naming scheme and the new multi-source
+  `feature.id#{sourceIndex}_{index}` one. `selection_actions.dart`'s
+  ambient `contextActionsFor` Pattern branch widened from "exactly one
+  Body" to "1+ Bodies" to match, now identical to Mirror's own branch.
+- **Complexity/risk**: medium, as scoped — the backend half tracked the
+  original low-medium estimate closely (Pattern's multi-body widening
+  really was a direct copy of Mirror's Phase 1 revision; `source_
+  feature_ids` resolution really was the one-line lookup plus a thin
+  dedup wrapper). The client half ran higher than "low-medium": the
+  Feature-tree multi-select mechanism didn't exist and had to be built
+  from scratch (confirmed, not assumed, exactly per this phase's own
+  flagged uncertainty), and Pattern's `pickingBody` → `pickingBodies`
+  restructuring touched a wide surface of `part_screen.dart` (every state
+  field, picker/reset/edit/confirm/cancel function, and the skip-instance
+  body-naming parser) rather than being a narrow, local change.
 
 ### Phase 7 — Sketch-level Pattern and Mirror
 

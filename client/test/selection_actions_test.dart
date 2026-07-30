@@ -207,7 +207,7 @@ void main() {
     });
   });
 
-  group('Pattern/Mirror scoping Phase 1/2: contextActionsFor Mirror/Pattern', () {
+  group('Pattern/Mirror scoping Phase 1/2/6: contextActionsFor Mirror/Pattern', () {
     test('a lone Body offers a real, enabled Mirror and a real, enabled Pattern', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       final actions = contextActionsFor({body});
@@ -217,17 +217,15 @@ void main() {
       ]);
     });
 
-    test('two Bodies together offer Mirror enabled but Pattern disabled with a reason', () {
+    test(
+        'Phase 6: two Bodies together now offer both Mirror and Pattern enabled '
+        '(Pattern widened from exactly-one-Body to 1+, mirroring Mirror)', () {
       const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
       final actions = contextActionsFor({bodyA, bodyB});
       expect(actions, [
         const SelectionContextAction('Mirror', enabled: true),
-        const SelectionContextAction(
-          'Pattern',
-          enabled: false,
-          disabledReason: 'Pattern requires exactly one Body',
-        ),
+        const SelectionContextAction('Pattern', enabled: true),
       ]);
     });
 

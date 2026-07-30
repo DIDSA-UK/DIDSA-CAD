@@ -42,6 +42,16 @@ class MirrorPanel extends StatelessWidget {
   final MergeMode merge;
   final void Function(MergeMode merge) onMergeChanged;
 
+  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
+  /// §2.8/§4): Feature-tree entries (by Feature id) named as additional
+  /// mirror sources, on top of whatever Bodies were picked in the viewport
+  /// - see [PartScreen._mirrorSourceFeatureIds]. Only their count is shown
+  /// here (a full name-per-entry list would need a Feature lookup this
+  /// panel doesn't otherwise need) - [onPickSourceFeatures] opens the
+  /// Build Tree in its own multi-select picker mode to add/remove entries.
+  final List<String> sourceFeatureIds;
+  final VoidCallback onPickSourceFeatures;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -52,6 +62,8 @@ class MirrorPanel extends StatelessWidget {
     required this.hasPlanePicked,
     required this.merge,
     required this.onMergeChanged,
+    this.sourceFeatureIds = const [],
+    required this.onPickSourceFeatures,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -87,6 +99,30 @@ class MirrorPanel extends StatelessWidget {
             ],
             selected: {merge},
             onSelectionChanged: (selection) => onMergeChanged(selection.first),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  sourceFeatureIds.isEmpty
+                      ? 'No Features added from the Build Tree'
+                      : '${sourceFeatureIds.length} Feature'
+                          '${sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: onPickSourceFeatures,
+                icon: const Icon(Icons.account_tree_outlined, size: 16),
+                label: const Text('Add from Tree'),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Row(

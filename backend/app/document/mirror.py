@@ -22,6 +22,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
+from app.document.graph import body_ids_for_feature_id
 from app.document.models import MirrorFeature, Part
 
 
@@ -32,6 +33,46 @@ def _mirror_source_not_found(body_id: str) -> HTTPException:
     keyed by a bare Body id rather than a full `SubShapeRef`, since a
     Mirror references a whole Body, not one of its sub-shapes."""
     return HTTPException(status_code=422, detail={"type": "missing_reference", "body_id": body_id})
+
+
+def _mirror_source_feature_not_found(feature_id: str) -> HTTPException:
+    """Pattern/Mirror Phase 6: one of `source_feature_ids`' entries doesn't
+    currently resolve to any Body at all (`body_ids_for_feature_id` returned
+    empty - the Feature was deleted, or its own topology has drifted to
+    produce zero Bodies). Same structured 422 envelope as `_mirror_source_
+    not_found`, keyed by `feature_id` (a `type: "missing_reference"` shape
+    with a `feature_id` field instead of `body_id`, so a client can tell
+    the two failure modes apart)."""
+    return HTTPException(status_code=422, detail={"type": "missing_reference", "feature_id": feature_id})
+
+
+def effective_mirror_source_body_ids(bodies: dict[str, TopoDS_Shape], feature: MirrorFeature) -> list[str]:
+    """Pattern/Mirror Phase 6 (`docs/pattern-mirror-scope.md` §2.8/§4):
+    `feature.source_body_ids` (explicit Body picks) combined with every
+    Body each `feature.source_feature_ids` entry (a Feature-tree pick)
+    currently resolves to (`app.document.graph.body_ids_for_feature_id`,
+    the scope doc's own one-line lookup) - deduplicated, preserving first-
+    occurrence order, so a Body named both directly and via its own owning
+    Feature is only ever mirrored once. Raises `_mirror_source_feature_not_
+    found` for a `source_feature_ids` entry that currently resolves to no
+    Body at all - `source_body_ids` entries are left unvalidated here (the
+    caller, `resolve_mirror_from_bodies`, already raises its own `_mirror_
+    source_not_found` per entry as it iterates)."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for body_id in feature.source_body_ids:
+        if body_id not in seen:
+            seen.add(body_id)
+            ordered.append(body_id)
+    for feature_id in feature.source_feature_ids:
+        matches = body_ids_for_feature_id(bodies, feature_id)
+        if not matches:
+            raise _mirror_source_feature_not_found(feature_id)
+        for body_id in matches:
+            if body_id not in seen:
+                seen.add(body_id)
+                ordered.append(body_id)
+    return ordered
 
 
 def _mirror_failed(body_id: str) -> HTTPException:
@@ -50,8 +91,10 @@ def resolve_mirror_from_bodies(
     feature: MirrorFeature,
     excluded_feature_ids: frozenset[str],
 ) -> list[TopoDS_Shape]:
-    """The post-mirror shapes `feature` produces, one per `source_body_ids`
-    entry (same order), resolved against `bodies` - an already-in-progress
+    """The post-mirror shapes `feature` produces, one per effective source
+    (`effective_mirror_source_body_ids` - `source_body_ids` combined with
+    every Body each `source_feature_ids` entry currently resolves to,
+    Phase 6, same order), resolved against `bodies` - an already-in-progress
     `app.document.extrude.compute_part_bodies` accumulator, never a fresh
     recompute (same recursion-avoidance reasoning `app.document.fillet.
     resolve_fillet_from_bodies`'s own doc comment gives, since `resolve_
@@ -74,7 +117,7 @@ def resolve_mirror_from_bodies(
     trsf.SetMirror(gp_Ax2(origin, normal))
 
     mirrored_shapes = []
-    for body_id in feature.source_body_ids:
+    for body_id in effective_mirror_source_body_ids(bodies, feature):
         source = bodies.get(body_id)
         if source is None:
             raise _mirror_source_not_found(body_id)

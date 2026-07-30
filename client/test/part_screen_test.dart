@@ -24,6 +24,11 @@ class _FakeDocumentBackend {
   late int _nextFeatureId;
   final List<Map<String, dynamic>> features;
 
+  /// Pattern/Mirror scoping's Phase 6: the most recent pattern-features PATCH
+  /// body, for tests that need to assert on a field (e.g. `source_feature_
+  /// ids`) this fake doesn't otherwise expose any other way.
+  Map<String, dynamic>? lastPatternPatchBody;
+
   // Starts past every seeded Feature's id (seeds are always "feature-N" in
   // creation order) so a newly-created Feature's id never collides with a
   // seeded one.
@@ -199,6 +204,8 @@ class _FakeDocumentBackend {
       final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
       if (feature.isEmpty) return http.Response('not found: feature', 404);
       for (final key in [
+        'source_body_ids',
+        'source_feature_ids',
         'count_1',
         'spacing_1',
         'reverse_1',
@@ -212,6 +219,7 @@ class _FakeDocumentBackend {
       ]) {
         if (body.containsKey(key)) feature[key] = body[key];
       }
+      lastPatternPatchBody = body;
       return _json(feature, 200);
     }
 
@@ -891,6 +899,99 @@ void main() {
     await _pumpUntil(tester, () => find.text('Pattern 1').evaluate().isEmpty);
 
     expect(backend.features, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Pattern/Mirror scoping Phase 6: "Add from Tree" opens the Build Tree as a multi-select '
+      'Feature picker, and confirming a pick sends it as source_feature_ids', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'boss',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'locked': true,
+        },
+        {
+          'type': 'pattern',
+          'id': 'feature-3',
+          'source_body_ids': ['body-1'],
+          'source_feature_ids': <String>[],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Edit Pattern'), findsOneWidget);
+    // PatternPanel's own initState eager debounced update - see the "tapping
+    // a Pattern row..." test above for why this pump is needed here too.
+    await tester.pump(const Duration(milliseconds: 600));
+
+    await tester.ensureVisible(find.text('Add from Tree'));
+    await tester.tap(find.text('Add from Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // The Build Tree is now up as a multi-select Feature picker, not the
+    // ordinary read-only tree - PatternPanel itself is hidden underneath.
+    expect(find.text('Select source Features'), findsOneWidget);
+    expect(find.text('Edit Pattern'), findsNothing);
+
+    await tester.tap(find.text('Extrude 1'));
+    await tester.pump();
+    expect(find.text('Select source Features - 1 selected'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Confirm Feature selection'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // PatternPanel is back immediately (the picker's own confirm/cancel are
+    // synchronous UI state) - the debounced live-preview PATCH this
+    // triggers (see [_confirmSourceFeaturePicker]) lands separately, after
+    // its own 500ms debounce.
+    expect(find.text('Edit Pattern'), findsOneWidget);
+    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(backend.lastPatternPatchBody?['source_feature_ids'], ['feature-2']);
     expect(tester.takeException(), isNull);
   });
 

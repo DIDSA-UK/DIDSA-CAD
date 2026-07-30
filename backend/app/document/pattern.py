@@ -27,7 +27,7 @@ from OCC.Core.TopoDS import TopoDS_Shape, topods
 
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import basis_point_to_world, compute_part_bodies, resolve_subshape_from_bodies
-from app.document.graph import sketch_feature_id_for_sketch
+from app.document.graph import body_ids_for_feature_id, sketch_feature_id_for_sketch
 from app.document.models import (
     FixedAxis,
     Part,
@@ -51,11 +51,48 @@ _FIXED_AXIS_DIRECTIONS: dict[FixedAxis, gp_Dir] = {
 
 
 def _pattern_source_not_found(body_id: str) -> HTTPException:
-    """`source_body_ids`' single entry doesn't currently resolve to a Body
+    """One of `source_body_ids`' entries doesn't currently resolve to a Body
     in the accumulator - same structured 422 envelope as every other
     `missing_reference` in this codebase (`app.document.mirror.
     _mirror_source_not_found`, `app.document.extrude._missing_reference`)."""
     return HTTPException(status_code=422, detail={"type": "missing_reference", "body_id": body_id})
+
+
+def _pattern_source_feature_not_found(feature_id: str) -> HTTPException:
+    """Pattern/Mirror Phase 6: one of `source_feature_ids`' entries doesn't
+    currently resolve to any Body at all - mirrors `app.document.mirror.
+    _mirror_source_feature_not_found`'s identical reasoning."""
+    return HTTPException(status_code=422, detail={"type": "missing_reference", "feature_id": feature_id})
+
+
+def effective_pattern_source_body_ids(bodies: dict[str, TopoDS_Shape], feature: PatternFeature) -> list[str]:
+    """Pattern/Mirror Phase 6 (`docs/pattern-mirror-scope.md` §2.8/§4):
+    `feature.source_body_ids` (explicit Body picks) combined with every
+    Body each `feature.source_feature_ids` entry (a Feature-tree pick)
+    currently resolves to (`app.document.graph.body_ids_for_feature_id`) -
+    deduplicated, preserving first-occurrence order, so a Body named both
+    directly and via its own owning Feature is only ever patterned once.
+    Mirrors `app.document.mirror.effective_mirror_source_body_ids` exactly
+    (public for the same reason - `app.document.extrude.compute_part_
+    bodies`'s own `PatternFeature` branch needs the identical expanded list
+    for its `MergeMode.FUSE_INTO_ONE` base ids). Raises `_pattern_source_
+    feature_not_found` for a `source_feature_ids` entry that currently
+    resolves to no Body at all."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for body_id in feature.source_body_ids:
+        if body_id not in seen:
+            seen.add(body_id)
+            ordered.append(body_id)
+    for feature_id in feature.source_feature_ids:
+        matches = body_ids_for_feature_id(bodies, feature_id)
+        if not matches:
+            raise _pattern_source_feature_not_found(feature_id)
+        for body_id in matches:
+            if body_id not in seen:
+                seen.add(body_id)
+                ordered.append(body_id)
+    return ordered
 
 
 def _non_linear_edge(ref: SubShapeRef) -> HTTPException:
@@ -370,39 +407,57 @@ def resolve_pattern_from_bodies(
     bodies: dict[str, TopoDS_Shape],
     feature: PatternFeature,
     excluded_feature_ids: frozenset[str],
-) -> dict[int, TopoDS_Shape]:
-    """Every non-origin instance `feature` produces, keyed by its own linear
-    index (Rectangular: the flattened `i * count_2 + j`, row-major;
-    Circular: simply the angular-step index `i` - see `PatternFeature`'s
-    own docstring for both) - resolved against `bodies`, an already-in-
-    progress `app.document.extrude.compute_part_bodies` accumulator, never
-    a fresh recompute (same recursion-avoidance reasoning `app.document.
-    mirror.resolve_mirror_from_bodies`'s own doc comment gives, since
-    resolving a `sketch_line_ref` direction/axis may itself recurse into a
-    referenced `CreatePlaneFeature` via `resolve_sketch_basis`).
+) -> dict[str, dict[int, TopoDS_Shape]]:
+    """Every non-origin instance `feature` produces, keyed first by source
+    Body id (`effective_pattern_source_body_ids` - Phase 6's combined
+    `source_body_ids`/`source_feature_ids`, same order) and then by that
+    source's own linear index (Rectangular: the flattened `i * count_2 +
+    j`, row-major; Circular: simply the angular-step index `i` - see
+    `PatternFeature`'s own docstring for both) - resolved against `bodies`,
+    an already-in-progress `app.document.extrude.compute_part_bodies`
+    accumulator, never a fresh recompute (same recursion-avoidance
+    reasoning `app.document.mirror.resolve_mirror_from_bodies`'s own doc
+    comment gives, since resolving a `sketch_line_ref` direction/axis may
+    itself recurse into a referenced `CreatePlaneFeature` via `resolve_
+    sketch_basis`).
 
-    Index 0 is never a key in the returned dict for either `pattern_type` -
-    it is always the seed Body itself, already registered under its own id
-    and left completely untouched (this Feature never modifies its
-    source, same Boss-with-no-target semantics `MirrorFeature` uses).
+    Every source shares the identical instance-transform grid (Phase 6 -
+    `direction_1`/`direction_2`/`axis`, `count_1`/`count_2`/`count_
+    angular`, `spacing_1`/`spacing_2`, `reverse_1`/`reverse_2`/`reverse_
+    angular`, `skip_indices` all apply the same way to every source), so
+    `_direction_vector`/`_axis_from_ref` are (harmlessly) re-resolved once
+    per source rather than hoisted out - simpler than threading a resolved
+    direction/axis through, and every one of their own inputs is otherwise
+    identical across sources anyway.
+
+    Index 0 is never a key in either source's own inner dict - it is
+    always that source's own seed Body itself, already registered under
+    its own id and left completely untouched (this Feature never modifies
+    any source, same Boss-with-no-target semantics `MirrorFeature` uses).
     Dispatches to `_rectangular_instances`/`_circular_instances` per
     `feature.pattern_type` - the two instance-generation loops share no
     code beyond this common source-lookup/dispatch, since a translation
     loop and a rotation loop have genuinely different per-instance
     parameters (a direction pair vs. a single axis+angle)."""
-    source_id = feature.source_body_ids[0]
-    source = bodies.get(source_id)
-    if source is None:
-        raise _pattern_source_not_found(source_id)
-
-    if feature.pattern_type == PatternType.CIRCULAR:
-        return _circular_instances(part, bodies, feature, source, source_id, excluded_feature_ids)
-    return _rectangular_instances(part, bodies, feature, source, source_id, excluded_feature_ids)
+    result: dict[str, dict[int, TopoDS_Shape]] = {}
+    for source_id in effective_pattern_source_body_ids(bodies, feature):
+        source = bodies.get(source_id)
+        if source is None:
+            raise _pattern_source_not_found(source_id)
+        if feature.pattern_type == PatternType.CIRCULAR:
+            result[source_id] = _circular_instances(
+                part, bodies, feature, source, source_id, excluded_feature_ids
+            )
+        else:
+            result[source_id] = _rectangular_instances(
+                part, bodies, feature, source, source_id, excluded_feature_ids
+            )
+    return result
 
 
 def resolve_pattern(
     part: Part, feature: PatternFeature, excluded_feature_ids: frozenset[str] = frozenset()
-) -> dict[int, TopoDS_Shape]:
+) -> dict[str, dict[int, TopoDS_Shape]]:
     """Fresh entry point for the router's create/update validation -
     computes `bodies` *as if `feature` weren't in `part.features` yet*
     (excludes its own id in addition to whatever the caller already
