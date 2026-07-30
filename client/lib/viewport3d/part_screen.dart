@@ -5687,8 +5687,20 @@ class _PartScreenState extends State<PartScreen> {
   /// [_confirmCreatePlane] exactly, plus popping the
   /// [_filletSelectionFilter] override [_openFilletPanel]/
   /// [_openFilletPanelForEdit] pushed.
+  ///
+  /// Bug fix (identical to the Mirror/Pattern gap fixed in
+  /// [_confirmMirror]/[_confirmPattern]): [_endRollback] only refreshes the
+  /// mesh, and is a no-op entirely unless a B4 edit session engaged
+  /// rollback - never true for a brand-new Fillet created via the guided
+  /// flow. Without an explicit [_refreshFeatures] call, [_features] (what
+  /// [FeatureTreePanel] actually renders) never picks up the Feature this
+  /// whole session just created/edited until some unrelated later action
+  /// happens to refresh it - mirrors [_confirmSweep]'s own explicit
+  /// refresh-before-teardown shape.
   Future<void> _confirmFillet() async {
     _filletDebounce?.cancel();
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
     setState(() {
       // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
       // fix this mirrors.
@@ -7413,9 +7425,12 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Mirrors [_confirmFillet] exactly.
+  /// Mirrors [_confirmFillet] exactly, including its Mirror/Pattern-style
+  /// [_refreshFeatures] bug fix.
   Future<void> _confirmChamfer() async {
     _chamferDebounce?.cancel();
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
     setState(() {
       // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
       // fix this mirrors.
